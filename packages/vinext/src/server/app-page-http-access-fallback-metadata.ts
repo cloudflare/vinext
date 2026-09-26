@@ -40,6 +40,7 @@ type ResolveHttpAccessFallbackMetadataOptions<
   fallbackOnFileMetadataError?: boolean;
   metadataRoutes: readonly MetadataFileRoute[];
   routePath: string;
+  trailingSlash?: boolean;
 };
 
 function isPresent<T>(value: T | null | undefined): value is T {
@@ -202,6 +203,7 @@ export function resolveHttpAccessFallbackMetadata<TModule extends AppPageHeadMod
     routePath: options.routePath,
     routeSegments: options.routeSegments,
     sources: createHttpAccessFallbackMetadataPlan(options),
+    trailingSlash: options.trailingSlash,
   });
 }
 

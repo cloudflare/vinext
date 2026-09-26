@@ -434,6 +434,7 @@ export async function buildPageElements<
     routeSegments: route.routeSegments ?? null,
     searchParams,
     searchParamsObserver: metadataSearchParamsObserver,
+    trailingSlash: options.trailingSlash,
   });
   const { hasDynamicMetadata, pageSearchParams } = preparedHead;
   const streamGeneratedHead =
@@ -515,6 +516,7 @@ export async function buildPageElements<
       ...resolveNotFoundFallbackPlanOptions(),
       metadataRoutes,
       routePath: route.pattern,
+      trailingSlash: options.trailingSlash,
     }).catch(() => null);
   };
   const [resolvedMetadata, resolvedViewport] = await Promise.all([

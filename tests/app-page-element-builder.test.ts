@@ -2406,6 +2406,48 @@ describe("buildPageElements", () => {
     expect(boundaryParents).toEqual(["Intercept layout"]);
   });
 
+  it("passes trailingSlash-adjusted parent alternates to metadata error fallbacks", async () => {
+    const observedCanonical: unknown[] = [];
+    const route = createSyntheticRoute({
+      page: {
+        default: () => React.createElement("div", null, "page"),
+        generateMetadata: () => notFound(),
+      } as AppPageModule,
+      layouts: [
+        {
+          metadata: {
+            metadataBase: new URL("https://example.com"),
+            alternates: { canonical: "./" },
+          },
+        } as AppPageModule,
+      ],
+      notFound: {
+        default: () => React.createElement("div", null, "not found"),
+        async generateMetadata(
+          _props: unknown,
+          parent: Promise<{ alternates?: { canonical?: { url: string } } }>,
+        ) {
+          observedCanonical.push((await parent).alternates?.canonical);
+          return { title: "Missing" };
+        },
+      } as AppPageModule,
+      notFoundTreePosition: 0,
+      routeSegments: ["article"],
+      pattern: "/article",
+    });
+
+    const result = await buildPageElements({
+      ...createBaseOptions({ route, routePath: "/article" }),
+      trailingSlash: true,
+    });
+    const streamingMetadata = Object.entries(result as Record<string, unknown>).find(([key]) =>
+      key.startsWith("__vinext_streaming_metadata_body:"),
+    )?.[1];
+    expect(React.isValidElement(streamingMetadata)).toBe(true);
+    await (streamingMetadata as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata;
+    expect(observedCanonical).toEqual([{ url: "https://example.com/article/" }]);
+  });
+
   it("resolves a sibling intercept viewport before active slot viewports", async () => {
     const viewportParents: Array<{ source: string; width: unknown }> = [];
     const route = createSyntheticRoute({

@@ -322,6 +322,40 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('content="noindex"');
   });
 
+  it("passes trailingSlash-adjusted parent alternates to not-found metadata", async () => {
+    const observedCanonical: unknown[] = [];
+    const rootLayout = {
+      default: RootLayout,
+      metadata: {
+        metadataBase: new URL("https://example.com"),
+        alternates: { canonical: "./" },
+      },
+    } as TestModule;
+    const boundary = {
+      default: NotFoundBoundary,
+      async generateMetadata(
+        _props: unknown,
+        parent: Promise<{ alternates?: { canonical?: { url: string } } }>,
+      ) {
+        observedCanonical.push((await parent).alternates?.canonical);
+        return { title: "Missing" };
+      },
+    } as unknown as TestModule;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...createCommonOptions(),
+      matchedParams: {},
+      rootLayouts: [rootLayout],
+      rootNotFoundModule: boundary,
+      route: null,
+      statusCode: 404,
+      trailingSlash: true,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(observedCanonical).toEqual([{ url: "https://example.com/posts/missing/" }]);
+  });
+
   it("renders not-found boundary metadata exactly once for HTTP access fallbacks", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts

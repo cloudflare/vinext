@@ -6,6 +6,7 @@ import {
   resolveAppPageHead,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
+import { renderMetadataToHtml } from "../packages/vinext/src/shims/metadata.js";
 
 describe("app page head resolution", () => {
   it("prepares viewport independently while generated metadata is pending", async () => {
@@ -73,6 +74,97 @@ describe("app page head resolution", () => {
 
     expect(staticResult.hasDynamicMetadata).toBe(false);
     expect(generatedResult.hasDynamicMetadata).toBe(true);
+  });
+
+  it("passes resolved layout templates and string URLs through the real page parent", async () => {
+    const authorUrl = new URL("https://example.com/author");
+    const imageUrl = new URL("https://example.com/og.png");
+    const canonicalUrl = new URL("https://other.example/root?ref=source");
+    const rootLayout = {
+      metadata: {
+        title: { default: "Acme", template: "%s | Acme" },
+        authors: [{ name: "Author", url: authorUrl }],
+        openGraph: { images: [{ url: imageUrl }] },
+        alternates: {
+          canonical: { url: canonicalUrl },
+          languages: {
+            en: [{ url: new URL("https://other.example/root?lang=en"), title: "English" }],
+          },
+        },
+      },
+    };
+    const nestedLayout = { metadata: { description: "Nested" } };
+    let parentTitle: unknown;
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout, nestedLayout],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: {
+        async generateMetadata(
+          _props: unknown,
+          resolving: Promise<{
+            title: unknown;
+            authors: Array<{ url: string }>;
+            openGraph: { images: Array<{ url: string }> };
+            alternates: {
+              canonical: { url: string };
+              languages: { en: Array<{ url: string; title: string }> };
+            };
+          }>,
+        ) {
+          const parent = await resolving;
+          parentTitle = parent.title;
+          expect(parent.alternates.canonical.url.replace("ref=source", "ref=child")).toBe(
+            "https://other.example/blog/post?ref=child",
+          );
+          expect(parent.alternates.languages.en[0]).toEqual({
+            url: "https://other.example/blog/post?lang=en",
+            title: "English",
+          });
+          return {
+            title: "Article",
+            description: parent.authors[0].url.replace("/author", "/writer"),
+            openGraph: { images: [{ url: parent.openGraph.images[0].url.replace("og", "image") }] },
+            alternates: parent.alternates,
+          };
+        },
+      },
+      params: { slug: "post" },
+      routePath: "/blog/[slug]",
+      routeSegments: ["blog", "[slug]"],
+    });
+
+    expect(parentTitle).toEqual({ absolute: "Acme", template: "%s | Acme" });
+    expect(result.metadata?.title).toBe("Article | Acme");
+    expect(result.metadata?.description).toBe("https://example.com/writer");
+    expect(renderMetadataToHtml(result.metadata!, "/blog/post")).toContain(
+      'rel="canonical" href="https://other.example/blog/post?ref=source"',
+    );
+    expect(renderMetadataToHtml(result.metadata!, "/blog/post")).toContain(
+      'rel="alternate" href="https://other.example/blog/post?lang=en"',
+    );
+    expect(rootLayout.metadata.title.template).toBe("%s | Acme");
+    expect(rootLayout.metadata.authors[0].url).toBe(authorUrl);
+    expect(rootLayout.metadata.openGraph.images[0].url).toBe(imageUrl);
+    expect(rootLayout.metadata.alternates.canonical.url).toBe(canonicalUrl);
+  });
+
+  it("keeps a layout title template in a generated page's parent", async () => {
+    let parentTitle: unknown;
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [{ metadata: { title: { default: "Acme", template: "%s | Acme" } } }],
+      metadataRoutes: [],
+      pageModule: {
+        async generateMetadata(_props: unknown, resolving: Promise<{ title: unknown }>) {
+          parentTitle = (await resolving).title;
+          return { title: "Article" };
+        },
+      },
+      params: {},
+      routePath: "/article",
+    });
+    expect(parentTitle).toEqual({ absolute: "Acme", template: "%s | Acme" });
+    expect(result.metadata?.title).toBe("Article | Acme");
   });
 
   it("collects repeated search params into a null-prototype object", () => {

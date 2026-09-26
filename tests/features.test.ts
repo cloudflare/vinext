@@ -3134,7 +3134,7 @@ describe("MetadataHead rendering", () => {
     });
   });
 
-  it("accepts URL objects for canonical and openGraph.url", () => {
+  it("rebases canonical URL objects but preserves openGraph.url URL objects", () => {
     // Next.js allows string | URL for URL fields; passing a URL object must not throw
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
@@ -3144,8 +3144,22 @@ describe("MetadataHead rendering", () => {
         },
       }),
     );
-    expect(html).toContain('href="https://example.com/page"');
+    expect(html).toContain('href="https://example.com/"');
     expect(html).toContain('content="https://example.com/og"');
+  });
+
+  it("does not rebase openGraph.url URL objects to the request pathname", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          alternates: { canonical: new URL("https://example.com/base?ref=source") },
+          openGraph: { url: new URL("https://example.com/og") },
+        },
+        pathname: "/article",
+      }),
+    );
+    expect(html).toContain('rel="canonical" href="https://example.com/article?ref=source"');
+    expect(html).toContain('property="og:url" content="https://example.com/og"');
   });
 
   it("renders OG video and audio tags", () => {
