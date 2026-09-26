@@ -16,6 +16,7 @@ const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-sea
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const DATA_URL_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_URL__";
 const DATA_REQUESTS_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_REQUESTS__";
+const EVENTS_GLOBAL = "__SEARCH_PARAMS_GATE_EVENTS__";
 // Cache writes land after the response body ends, within this window.
 const CACHE_WRITE_WINDOW_MS = 2_000;
 
@@ -82,6 +83,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
   afterAll(() => {
     Reflect.deleteProperty(globalThis, DATA_URL_GLOBAL);
     Reflect.deleteProperty(globalThis, DATA_REQUESTS_GLOBAL);
+    Reflect.deleteProperty(globalThis, EVENTS_GLOBAL);
     server?.close();
     if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
@@ -128,20 +130,24 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     return miss;
   }
 
-  // Waits out the write window, then asserts a later request still isn't
-  // served from the cache, so a delayed write fails the test.
-  async function expectStillUnstored(pathname: string): Promise<void> {
+  // Waits out the write window, then repeats URLs requested before it, so a
+  // delayed write under any of their keys, with or without the query, fails
+  // the test.
+  async function expectStillUnstored(urls: readonly string[]): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, CACHE_WRITE_WINDOW_MS));
-    const later = await get(`${pathname}?q=${crypto.randomUUID()}`);
-    expect(later.cache).not.toBe("HIT");
-    expect(later.cacheControl).toContain("no-store");
+    for (const url of urls) {
+      const later = await get(url);
+      expect(later.cache, url).not.toBe("HIT");
+      expect(later.cacheControl, url).toContain("no-store");
+    }
   }
 
   // Asserts a page renders the real query on every request and is never stored.
   async function expectRealValuesNeverStored(pathname: string): Promise<void> {
     const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
-    const first = await get(`${pathname}?q=${firstQuery}`);
-    const second = await get(`${pathname}?q=${secondQuery}`);
+    const urls = [`${pathname}?q=${firstQuery}`, `${pathname}?q=${secondQuery}`];
+    const first = await get(urls[0]);
+    const second = await get(urls[1]);
 
     for (const [response, query] of [
       [first, firstQuery],
@@ -154,13 +160,16 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       expect(response.body).not.toContain('data-testid="search-fallback"');
     }
     expect(testIdText(second.body, "render-id")).not.toBe(testIdText(first.body, "render-id"));
-    await expectStillUnstored(pathname);
+    await expectStillUnstored(urls);
   }
 
   describe("settle timing: the subtree reading the query resolves late", () => {
-    // Runs first so its client module is still unloaded.
-    it("loaded cold, on the server's first request for it", async () => {
-      await expectStoredFallback("/settle/cold");
+    it("loaded as a module no client reference preload covers, after rendering starts", async () => {
+      const events: string[] = [];
+      Reflect.set(globalThis, EVENTS_GLOBAL, events);
+      await expectStoredFallback("/settle/late-module");
+      // A request polling for the stored entry can render again, after these.
+      expect(events.slice(0, 3)).toEqual(["render-started", "module-evaluated", "module-resolved"]);
     });
 
     it("loaded through React.lazy", async () => {
@@ -179,8 +188,9 @@ describe("useSearchParams() in production cache-candidate renders", () => {
 
     it("renders the real query in a client page that reads searchParams under loading.tsx, and never stores it", async () => {
       const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
-      const first = await get(`/settle/client-page?q=${firstQuery}`);
-      const second = await get(`/settle/client-page?q=${secondQuery}`);
+      const urls = [`/settle/client-page?q=${firstQuery}`, `/settle/client-page?q=${secondQuery}`];
+      const first = await get(urls[0]);
+      const second = await get(urls[1]);
 
       for (const [response, query] of [
         [first, firstQuery],
@@ -201,7 +211,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
           expect(searchValue).toBe(query);
         }
       }
-      await expectStillUnstored("/settle/client-page");
+      await expectStillUnstored(urls);
     });
   });
 
@@ -228,14 +238,17 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     it("fails a static route with a 500 and stores nothing, even with an error.tsx", async () => {
       const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const response = await get(`/missing/error-boundary?q=${crypto.randomUUID()}`);
+        const urls = [crypto.randomUUID(), crypto.randomUUID()].map(
+          (query) => `/missing/error-boundary?q=${query}`,
+        );
+        for (const url of urls) {
+          const response = await get(url);
           expect(response.status).toBe(500);
           expect(response.cache).not.toBe("HIT");
           expect(response.cacheControl).toContain("no-store");
           expect(response.body).not.toContain('data-testid="error-boundary"');
         }
-        await expectStillUnstored("/missing/error-boundary");
+        await expectStillUnstored(urls);
         expect(consoleError).toHaveBeenCalledWith(
           expect.stringContaining(
             'useSearchParams() should be wrapped in a suspense boundary at page "/missing/error-boundary"',

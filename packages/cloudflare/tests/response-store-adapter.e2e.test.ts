@@ -78,11 +78,15 @@ async function responseEntries(pathname: string): Promise<StoredResponseEntry[]>
   );
 }
 
+// Writes run in waitUntil after the response returns, so poll for them, then
+// fail unless exactly `count` entries were published.
 async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if ((await responseEntries(pathname)).length >= count) return;
+  let entries = await responseEntries(pathname);
+  for (let attempt = 0; attempt < 50 && entries.length < count; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 50));
+    entries = await responseEntries(pathname);
   }
+  assert.equal(entries.length, count, JSON.stringify(entries));
 }
 
 beforeEach(async () => {
@@ -288,6 +292,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const storedRscBody = await querylessRsc.text();
     assert.equal(queryless.headers.get("x-vinext-cache"), "HIT");
     assert.equal(querylessRsc.headers.get("x-vinext-cache"), "HIT");
+    // Each request gets its own representation, not the other's stored entry.
+    assert.match(queryless.headers.get("content-type") ?? "", /^text\/html/);
+    assert.match(querylessRsc.headers.get("content-type") ?? "", /^text\/x-component/);
     assert.doesNotMatch(querylessBody, new RegExp(canary));
     assert.doesNotMatch(storedRscBody, new RegExp(canary));
     assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), new RegExp(canary));

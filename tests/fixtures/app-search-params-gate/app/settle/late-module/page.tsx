@@ -1,13 +1,14 @@
 import { Suspense } from "react";
 import { RenderId, SearchFallback } from "../../fixture-parts";
-import { ColdSearchValue } from "./cold-search-value";
+import { LateSearchValue, RenderStarted } from "./late-search-value";
 
 export default function Page() {
   return (
     <main>
       <RenderId />
+      <RenderStarted />
       <Suspense fallback={<SearchFallback />}>
-        <ColdSearchValue />
+        <LateSearchValue />
       </Suspense>
     </main>
   );
