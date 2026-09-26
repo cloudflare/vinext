@@ -4,12 +4,6 @@ preferFrozenLockfile: true
 saveExact: true
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
-minimumReleaseAgeExclude:
-  - "@cloudflare/build-output-utils@0.8.0"
-  - "@cloudflare/config@0.18.0"
-  - "@cloudflare/vite-plugin@2.0.0-beta.sha-805ec1ff3"
-  - "cf@1.0.0-beta.1"
-  - "miniflare@5.20260923.0-alpha"
 resolutionMode: highest
 
 packages:
