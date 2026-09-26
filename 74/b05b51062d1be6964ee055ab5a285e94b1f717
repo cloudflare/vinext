@@ -1,0 +1,21 @@
+packages/cloudflare/src/deploy.ts
+  s_5b89f907d88418::t_8e9fb4f9553d10 548,561,566-567,577,2309,2420
+tests/cdn-adapter-build.test.ts
+  s_5b89f907d88418::t_f8864cb1cf2fcb 9,51,99-100,112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "74b05b51062d1be6964ee055ab5a285e94b1f717",
+  "prompts": {},
+  "sessions": {
+    "s_5b89f907d88418": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c383-5c6f-7ae3-bcd1-5d165c69d5bb",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
