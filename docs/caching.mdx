@@ -429,7 +429,7 @@ A static page defaults to `revalidate = false`, as in Next.js, unless a `revalid
 
 A static page is stored only when its render uses no dynamic API, such as calling `cookies()`, `headers()`, `connection()` or a `fetch` with `cache: "no-store"` outside a `"use cache"` or `unstable_cache` function, or reading `searchParams`. Under `dynamic = "force-static"`, `cookies()`, `headers()` and `searchParams` return empty values, the other APIs don't make the render dynamic, and the page is still stored.
 
-`useSearchParams()` in a client component does not make a page dynamic. Under `dynamic = "force-static"` it returns empty search params. Otherwise, in production, a cacheable page that calls it during server rendering gets the nearest `<Suspense>` fallback in its HTML, and the browser renders the real value after hydration, as in Next.js. Without a `<Suspense>` boundary above the call, the request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
+`useSearchParams()` in a client component does not make a page dynamic. Under `dynamic = "force-static"` it returns empty search params. Otherwise, in production, a cacheable page that calls it during server rendering gets the nearest `<Suspense>` fallback in its HTML, and the browser renders the real value after hydration, as in Next.js. Without a `<Suspense>` boundary above the call, an HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build. A client navigation's RSC request doesn't run the call, so it can still be stored; see [Differences from Next.js](/docs/reference/differences#caching).
 
 ## Query strings
 
