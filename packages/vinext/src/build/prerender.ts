@@ -553,6 +553,18 @@ export type StaticParamsMap = Record<
 >;
 
 /**
+ * Next.js fails `output: "export"` on any generateStaticParams call that
+ * returns no params (build/static-paths/app.ts callGenerateStaticParams).
+ */
+function emptyStaticExportParamsError(pattern: string): Error {
+  return new Error(
+    `Page "${pattern}" returned an empty array from "generateStaticParams()". ` +
+      `With "output: export", at least one route must be generated. ` +
+      `See more info here: https://nextjs.org/docs/messages/generate-static-params`,
+  );
+}
+
+/**
  * Resolve the params a route's layouts above its own pattern generate.
  * Handles top-down generateStaticParams resolution for nested dynamic routes.
  *
@@ -614,11 +626,7 @@ export async function resolveParentParams(
       if (results === null) continue;
       if (!Array.isArray(results)) return [];
       if (options.staticExport && results.length === 0) {
-        throw new Error(
-          `Page "${childRoute.pattern}" returned an empty array from "generateStaticParams()". ` +
-            `With "output: export", at least one route must be generated. ` +
-            `See more info here: https://nextjs.org/docs/messages/generate-static-params`,
-        );
+        throw emptyStaticExportParamsError(childRoute.pattern);
       }
 
       resolvedThisParent = true;
@@ -1478,6 +1486,9 @@ export async function prerenderApp({
                 break;
               }
               if (Array.isArray(childResults)) {
+                if (mode === "export" && childResults.length === 0) {
+                  throw emptyStaticExportParamsError(route.pattern);
+                }
                 for (const childParams of childResults) {
                   (paramSets as Record<string, string | string[]>[]).push({
                     ...parentParams,
@@ -1498,6 +1509,9 @@ export async function prerenderApp({
             }
           } else {
             const results = await generateStaticParamsFn({ params: {} });
+            if (mode === "export" && Array.isArray(results) && results.length === 0) {
+              throw emptyStaticExportParamsError(route.pattern);
+            }
             paramSets = Array.isArray(results) || results === null ? results : [];
           }
 

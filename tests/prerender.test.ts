@@ -2132,9 +2132,14 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
       fs.writeFileSync(filePath, content);
     }
     const renderedPaths: string[] = [];
+    const staticParamRequests: { pattern: string | null; parentParams: string | null }[] = [];
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (url.pathname === "/__vinext/prerender/static-params") {
+        staticParamRequests.push({
+          pattern: url.searchParams.get("pattern"),
+          parentParams: url.searchParams.get("parentParams"),
+        });
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(staticParamsByKey[url.searchParams.get("pattern") ?? ""] ?? null));
         return;
@@ -2162,7 +2167,7 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
         config: await resolveNextConfig({}),
         _prodServer: { server, port },
       });
-      return { result, renderedPaths };
+      return { result, renderedPaths, staticParamRequests };
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });
@@ -2242,6 +2247,65 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
     });
     expect(renderedPaths.filter((pathname) => pathname.startsWith("/en"))).toEqual([]);
   });
+
+  // Next.js calls each loader-tree segment's generateStaticParams as its own
+  // step, and calls the next one once with `{}` while no parent sets exist
+  // (build/static-paths/app.ts generateRouteStaticParams), so a route group's
+  // layout at the same prefix still runs after the layout above returns [].
+  it("calls a same-prefix route group layout once with no params after an empty layout", async () => {
+    const { result, renderedPaths, staticParamRequests } = await prerenderLayoutApp(
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/(group)/layout.tsx": layout,
+        "[lang]/(group)/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": [],
+        "layouts:[lang]/(group)": [{ lang: "en" }],
+        "/:lang/:slug": [{ slug: "x" }],
+      },
+    );
+
+    expect(staticParamRequests).toEqual([
+      { pattern: "layouts:[lang]", parentParams: null },
+      { pattern: "layouts:[lang]/(group)", parentParams: null },
+      { pattern: "/:lang/:slug", parentParams: JSON.stringify({ lang: "en" }) },
+    ]);
+    expect(renderedPaths).toContain("/en/x");
+    expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+  });
+
+  // Next.js fails an export build on any generateStaticParams call that
+  // returns no params (build/static-paths/app.ts callGenerateStaticParams),
+  // including the route's own segments, whether or not layouts above it
+  // supplied parent sets.
+  it.each([
+    [
+      "after its layouts supply parent sets",
+      { "[lang]/layout.tsx": layout, "[lang]/[slug]/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/:slug": [] },
+      "/:lang/:slug",
+    ],
+    ["with no parent sets", { "[slug]/page.tsx": page }, { "/:slug": [] }, "/:slug"],
+  ])(
+    "fails a static export when the route's own generateStaticParams returns no params %s",
+    async (_label, files, staticParamsByKey, pattern) => {
+      const { result, renderedPaths } = await prerenderLayoutApp(
+        files,
+        staticParamsByKey,
+        "export",
+      );
+
+      expect(result.routes.find((route) => route.route === pattern)).toMatchObject({
+        status: "error",
+        error: expect.stringContaining(
+          `Page "${pattern}" returned an empty array from "generateStaticParams()". With "output: export", at least one route must be generated.`,
+        ),
+      });
+      expect(result.routes.some((route) => route.status === "skipped")).toBe(false);
+      expect(renderedPaths.filter((pathname) => !pathname.startsWith("/__vinext"))).toEqual([]);
+    },
+  );
 });
 
 describe("routeStaticParamSets", () => {

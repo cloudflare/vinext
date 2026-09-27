@@ -105,27 +105,25 @@ export function appRouteHasMainTreeLoadingBoundary(route: AppRoute): boolean {
 }
 
 /**
- * Groups a route's layouts by the dynamic URL pattern prefix they sit at, for
- * generateStaticParams. Next.js composes only the segments of a route's own
- * loader tree, and route groups put different layouts at the same prefix, so
- * each group's key names the deepest layout's directory, which fixes every
- * layout above it.
+ * A route's layouts below a dynamic URL segment, one generateStaticParams
+ * provider each, keyed by the layout's directory. Next.js composes only the
+ * segments of a route's own loader tree, each segment as its own step
+ * (build/static-paths/app.ts generateRouteStaticParams), and route groups put
+ * different layouts at the same URL pattern prefix, so neither the pattern nor
+ * a shared provider identifies a layout.
  */
 export function appRouteLayoutStaticParamsGroups(
   route: Pick<AppRoute, "layouts" | "layoutTreePositions" | "routeSegments">,
-): { key: string; layoutPaths: string[]; pattern: string }[] {
-  const groups = new Map<string, { key: string; layoutPaths: string[]; pattern: string }>();
+): { key: string; layoutPath: string; pattern: string }[] {
+  const groups: { key: string; layoutPath: string; pattern: string }[] = [];
   for (const [index, layoutPath] of route.layouts.entries()) {
     const segments = route.routeSegments.slice(0, route.layoutTreePositions[index] ?? 0);
     const urlSegments = convertSegmentsToRouteParts(segments)?.urlSegments ?? [];
     const pattern = `/${urlSegments.join("/")}`;
     if (!pattern.includes(":")) continue;
-    const group = groups.get(pattern) ?? { key: "", layoutPaths: [], pattern };
-    group.key = `layouts:${segments.join("/")}`;
-    group.layoutPaths.push(layoutPath);
-    groups.set(pattern, group);
+    groups.push({ key: `layouts:${segments.join("/")}`, layoutPath, pattern });
   }
-  return [...groups.values()];
+  return groups;
 }
 
 // Trie cache — keyed by route array identity (same array = same trie)

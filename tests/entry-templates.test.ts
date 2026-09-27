@@ -1026,6 +1026,52 @@ describe("App Router generated manifest construction", () => {
     ]);
   });
 
+  it("keeps same-prefix layouts in one tree as separate generateStaticParams providers", () => {
+    // app/[lang]/layout.tsx and app/[lang]/(group)/layout.tsx both sit at the
+    // /:lang prefix, but Next.js calls each loader-tree segment's
+    // generateStaticParams as its own step (build/static-paths/app.ts
+    // generateRouteStaticParams), so an empty result from the first must not
+    // skip the second.
+    const routes = [
+      {
+        pattern: "/:lang/:slug",
+        patternParts: [":lang", ":slug"],
+        pagePath: "/tmp/test/app/[lang]/(group)/[slug]/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/[lang]/layout.tsx", "/tmp/test/app/[lang]/(group)/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null, null],
+        notFoundPath: null,
+        notFoundPaths: [null, null],
+        forbiddenPath: null,
+        forbiddenPaths: [null, null],
+        unauthorizedPath: null,
+        unauthorizedPaths: [null, null],
+        routeSegments: ["[lang]", "(group)", "[slug]"],
+        templateTreePositions: [],
+        layoutTreePositions: [1, 2],
+        isDynamic: true,
+        params: ["lang", "slug"],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/:lang/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], []),',
+      '  "layouts:[lang]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
+      '  "layouts:[lang]/(group)": __createAppPrerenderStaticParamsResolver([{ load: load_2 }], []),',
+    ]);
+  });
+
   it("keys layout generateStaticParams with canonical decoded route patterns", () => {
     const routes = [
       {

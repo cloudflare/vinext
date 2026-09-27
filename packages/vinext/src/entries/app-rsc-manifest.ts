@@ -489,7 +489,7 @@ function buildGenerateStaticParamsEntries(
   const sourcesByPattern = new Map<string, string[]>();
   // A route's params come only from its own tree: never from the page at a
   // prefix, which belongs to a sibling route, nor from another route group's
-  // layout there. Key each tree's layouts alone apart for deeper routes.
+  // layout there. Key each layout alone, by its directory, for deeper routes.
   const layoutGroupsByKey = new Map<string, { pattern: string; sources: string[] }>();
   const layoutSource = (layoutPath: string) => `{ load: ${imports.getLazyLoaderVar(layoutPath)} }`;
 
@@ -498,16 +498,14 @@ function buildGenerateStaticParamsEntries(
 
     const layoutGroups = appRouteLayoutStaticParamsGroups(route);
     for (const group of layoutGroups) {
+      if (group.pattern === route.pattern) {
+        appendStaticParamSource(sourcesByPattern, route.pattern, layoutSource(group.layoutPath));
+      }
       if (layoutGroupsByKey.has(group.key)) continue;
       layoutGroupsByKey.set(group.key, {
         pattern: group.pattern,
-        sources: group.layoutPaths.map(layoutSource),
+        sources: [layoutSource(group.layoutPath)],
       });
-    }
-    const ownLayoutPaths =
-      layoutGroups.find((group) => group.pattern === route.pattern)?.layoutPaths ?? [];
-    for (const layoutPath of ownLayoutPaths) {
-      appendStaticParamSource(sourcesByPattern, route.pattern, layoutSource(layoutPath));
     }
 
     if (route.pagePath) {
