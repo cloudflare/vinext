@@ -1,5 +1,21 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.11
+
+### Features
+
+- support direct `vite dev` and `vite build` commands with vinext's development, prerendering, and Cloudflare deployment lifecycle (#3381)
+- **Cloudflare:** support cf Build Output deployments (#3230)
+
+### Bug Fixes
+
+- **Cloudflare:** accept response store account and observability options (#3499)
+- **Cache:** replay "use cache" params under the original cache key (#3430)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.10
 
 ### Features
