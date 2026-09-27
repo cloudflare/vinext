@@ -487,6 +487,41 @@ describe("prerender path manifest", () => {
     ).toBeUndefined();
   });
 
+  it("leaves a route to on-demand generation when its only set has an empty required param", async () => {
+    // Next.js skips a set whose required scalar param is empty
+    // (build/static-paths/app.ts), so `{ id: "" }` lists no path for `/:id`.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[id]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ id: '' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pattern = new URL(
+        input instanceof Request ? input.url : String(input),
+      ).searchParams.get("pattern");
+      if (pattern === "/:id") return Response.json([{ id: "" }]);
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual([]);
+    // With no set left, the route's paths fall back to on-demand generation.
+    expect(manifest?.fallbackRoutePatterns).toContainEqual({ kind: "app-page", pattern: "/:id" });
+  });
+
   it("keeps a layout's params when the route's own generateStaticParams returns none", async () => {
     // Outside Cache Components and export, Next.js passes each parent set
     // through a generateStaticParams that returns no params

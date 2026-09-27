@@ -1522,7 +1522,14 @@ export async function prerenderApp({
             if (mode === "export" && Array.isArray(results) && results.length === 0) {
               throw emptyStaticExportParamsError(route.pattern);
             }
-            paramSets = Array.isArray(results) || results === null ? results : [];
+            // The resolver can reach the page after an empty layout result at
+            // the same pattern, so check these sets against the route too.
+            paramSets =
+              results === null
+                ? null
+                : routeStaticParamSets(route, Array.isArray(results) ? results : [], {
+                    staticExport: mode === "export",
+                  });
           }
 
           // null: route has no generateStaticParams (CF Workers Proxy returned null)

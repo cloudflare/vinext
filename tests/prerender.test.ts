@@ -2320,6 +2320,21 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
     expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
   });
 
+  // Next.js skips a set whose required scalar param is empty
+  // (build/static-paths/app.ts), so a page reached after an empty layout at
+  // the same pattern can't queue `/` for `/:id`.
+  it("skips an empty required param reached after an empty layout at the route's own pattern", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[id]/layout.tsx": layout, "[id]/page.tsx": page },
+      { "/:id": createAppPrerenderStaticParamsResolver([() => [], () => [{ id: "" }]]) },
+    );
+
+    expect(renderedPaths).not.toContain("/");
+    expect(result.routes.find((route) => route.route === "/:id")).toMatchObject({
+      status: "skipped",
+    });
+  });
+
   // A passed-through set that leaves a pathname param out is incomplete, so
   // Next.js prerenders none of the route's paths (hadAllParamsGenerated) and
   // leaves them to on-demand generation.
