@@ -287,10 +287,8 @@ function printHelp(): void {
     --prerender                  Configure vinext to pre-render static routes
     --no-prerender               Do not configure pre-rendering
     --experimental-cf            Use cf and Cloudflare Vite plugin v2 instead of Wrangler
-    --experimental-warm-cdn-cache
-                                 Add experimental CDN pre-warming to the Cloudflare deploy script
-    --no-experimental-warm-cdn-cache
-                                 Do not add experimental CDN pre-warming to the deploy script
+    --warm-cache                 Add cache warming to the Cloudflare deploy script
+    --no-warm-cache              Do not add cache warming to the deploy script
     --use-npm                    Use npm
     --use-pnpm                   Use pnpm
     --use-yarn                   Use Yarn

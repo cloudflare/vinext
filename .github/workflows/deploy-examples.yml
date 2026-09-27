@@ -332,7 +332,7 @@ jobs:
           WARM_CDN_TARGET: ${{ matrix.example.warm_cdn_target }}
           WORKER_NAME: ${{ matrix.example.worker_name }}
         run: |
-          args=(--skip-build --experimental-warm-cdn-cache)
+          args=(--skip-build --warm-cache)
           if [[ ! -f cloudflare.config.ts ]]; then
             args+=(--config "${{ matrix.example.wrangler_config }}")
             if [[ -n "$WORKER_NAME" ]]; then
@@ -340,7 +340,7 @@ jobs:
             fi
           fi
           if [[ -n "$WARM_CDN_TARGET" ]]; then
-            args+=(--warm-cdn-target "$WARM_CDN_TARGET")
+            args+=(--warm-cache-target "$WARM_CDN_TARGET")
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
 
@@ -404,13 +404,13 @@ jobs:
             --skip-build
             --config "${{ matrix.example.wrangler_config }}"
             --name "$WORKER_NAME"
-            --experimental-warm-cdn-cache
+            --warm-cache
           )
           # The shared demo contains an intentionally late-dynamic page. The
           # origin-managed KV adapter cannot classify that streamed MISS as a
           # BYPASS, so its live E2E proves the prewarmed data hit directly.
           if [[ "$WARM_CDN_CERTIFY" == "true" ]]; then
-            args+=(--warm-cdn-certify)
+            args+=(--warm-cache-certify)
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
 

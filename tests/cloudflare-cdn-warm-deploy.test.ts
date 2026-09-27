@@ -414,7 +414,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     await expect(
       deployWithCdnWarmup(tmpDir, [], { warmCdnPromotionDelay: 2_147_483_648 }),
     ).rejects.toThrow(
-      '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+      '--warm-cache-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });

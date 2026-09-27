@@ -988,14 +988,14 @@ describe("parseDeployArgs", () => {
   });
 
   it("requires CDN warming when certification is requested", () => {
-    expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
-      "--warm-cdn-certify requires --experimental-warm-cdn-cache.",
+    expect(() => parseDeployArgs(["--warm-cache-certify"])).toThrow(
+      "--warm-cache-certify requires --warm-cache.",
     );
   });
 
   it("requires CDN warming when an explicit warm target is requested", () => {
-    expect(() => parseDeployArgs(["--warm-cdn-target", "https://app.example.com"])).toThrow(
-      "--warm-cdn-target requires --experimental-warm-cdn-cache.",
+    expect(() => parseDeployArgs(["--warm-cache-target", "https://app.example.com"])).toThrow(
+      "--warm-cache-target requires --warm-cache.",
     );
   });
 
@@ -1033,8 +1033,13 @@ describe("parseDeployArgs", () => {
     const help = formatDeployHelp();
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
-    expect(help).toContain("--experimental-traffic-aware-warm-cache");
-    expect(help).toContain("Legacy --experimental-tpr and --tpr-* aliases remain supported");
+    expect(help).toContain("--traffic-aware-warm-cache");
+    expect(help).toContain("--warm-cache");
+    expect(help).toContain("--warm-cache-target");
+    expect(help).not.toContain("--experimental-");
+    expect(help).not.toContain("--warm-cdn-");
+    expect(help).not.toContain("--tpr-");
+    expect(help).not.toContain("Experimental:");
   });
 
   it("parses traffic-aware warming flags", () => {
@@ -1045,7 +1050,7 @@ describe("parseDeployArgs", () => {
       "20",
       "--tpr-window",
       "30",
-      "--experimental-traffic-aware-warm-cache",
+      "--traffic-aware-warm-cache",
       "--traffic-aware-coverage",
       "95",
       "--traffic-aware-limit",
@@ -1075,6 +1080,35 @@ describe("parseDeployArgs", () => {
     expect(parsed.tprWindow).toBe(48);
   });
 
+  it("keeps the experimental traffic-aware flag as a hidden alias", () => {
+    expect(parseDeployArgs(["--experimental-traffic-aware-warm-cache"])).toEqual(
+      parseDeployArgs(["--traffic-aware-warm-cache"]),
+    );
+  });
+
+  it.each([false, true])(
+    "prefers current warm-cache options over aliases (reversed: %s)",
+    (reverse) => {
+      const args = ["--warm-cache-timeout=2000", "--warm-cdn-timeout=1000"];
+      expect(parseDeployArgs(reverse ? args.reverse() : args).warmCdnTimeout).toBe(2000);
+    },
+  );
+
+  it("accepts mixed spellings and validates legacy options", () => {
+    expect(
+      parseDeployArgs(["--experimental-warm-cdn-cache", "--warm-cache-certify"]).warmCdnCertify,
+    ).toBe(true);
+    expect(
+      parseDeployArgs(["--warm-cache", "--warm-cdn-target=https://example.com"]).warmCdnTarget,
+    ).toBe("https://example.com");
+    expect(() => parseDeployArgs(["--warm-cdn-timeout=0"])).toThrow(
+      "--warm-cache-timeout expects a positive integer",
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
+      "--warm-cache-certify requires --warm-cache",
+    );
+  });
+
   it("parses --prerender-concurrency with space-separated value", () => {
     expect(parseDeployArgs(["--prerender-concurrency", "4"]).prerenderConcurrency).toBe(4);
   });
@@ -1099,30 +1133,39 @@ describe("parseDeployArgs", () => {
     );
   });
 
-  it("parses CDN warmup flags", () => {
-    const parsed = parseDeployArgs([
-      "--experimental-warm-cdn-cache",
-      "--warm-cdn-target=https://app.example.com/",
-      "--warm-cdn-concurrency",
+  it.each(["current", "legacy"])("parses %s cache warming flags", (spelling) => {
+    const args = [
+      "--warm-cache",
+      "--warm-cache-target=https://app.example.com/",
+      "--warm-cache-concurrency",
       "6",
-      "--warm-cdn-timeout=1500",
-      "--warm-cdn-retries",
+      "--warm-cache-timeout=1500",
+      "--warm-cache-retries",
       "0",
-      "--warm-cdn-discovery-timeout=90000",
-      "--warm-cdn-discovery-retries=7",
-      "--warm-cdn-probe-timeout=60000",
-      "--warm-cdn-probe-retries=4",
-      "--warm-cdn-certify",
-      "--warm-cdn-readiness-timeout=45000",
-      "--warm-cdn-readiness-retries=9",
-      "--warm-cdn-readiness-probes=8",
-      "--warm-cdn-readiness-probe-delay",
+      "--warm-cache-discovery-timeout=90000",
+      "--warm-cache-discovery-retries=7",
+      "--warm-cache-probe-timeout=60000",
+      "--warm-cache-probe-retries=4",
+      "--warm-cache-certify",
+      "--warm-cache-readiness-timeout=45000",
+      "--warm-cache-readiness-retries=9",
+      "--warm-cache-readiness-probes=8",
+      "--warm-cache-readiness-probe-delay",
       "750",
       "--dangerously-promote-on-cdn-warm-error",
-      "--warm-cdn-no-promote",
-      "--warm-cdn-promotion-delay=2500",
-      "--warm-cdn-include-fallbacks",
-    ]);
+      "--warm-cache-no-promote",
+      "--warm-cache-promotion-delay=2500",
+      "--warm-cache-include-fallbacks",
+    ];
+    const parsed = parseDeployArgs(
+      spelling === "legacy"
+        ? args.map((arg) =>
+            arg === "--warm-cache"
+              ? "--experimental-warm-cdn-cache"
+              : arg.replace(/^--warm-cache-/, "--warm-cdn-"),
+          )
+        : args,
+    );
 
     expect(parsed.warmCdnCache).toBe(true);
     expect(parsed.warmCdnTarget).toBe("https://app.example.com");
@@ -1152,9 +1195,9 @@ describe("parseDeployArgs", () => {
     "https://app.example.com:8443",
     "not-a-url",
   ])("rejects invalid CDN warm target %s", (target) => {
-    expect(() =>
-      parseDeployArgs(["--experimental-warm-cdn-cache", "--warm-cdn-target", target]),
-    ).toThrow("--warm-cdn-target expects an HTTPS origin");
+    expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-target", target])).toThrow(
+      "--warm-cache-target expects an HTTPS origin",
+    );
   });
 
   it("promotes warmed Worker versions by default", () => {
@@ -1163,62 +1206,62 @@ describe("parseDeployArgs", () => {
 
   it("parses the general no-promote flag and keeps the warmup-specific alias", () => {
     expect(parseDeployArgs(["--no-promote"]).warmCdnPromote).toBe(false);
-    expect(parseDeployArgs(["--warm-cdn-no-promote"]).warmCdnPromote).toBe(false);
+    expect(parseDeployArgs(["--warm-cache-no-promote"]).warmCdnPromote).toBe(false);
     expect(formatDeployHelp()).toContain("--no-promote");
   });
 
   it("allows the CDN warmup promotion delay to be set to zero", () => {
-    expect(parseDeployArgs(["--warm-cdn-promotion-delay=0"]).warmCdnPromotionDelay).toBe(0);
+    expect(parseDeployArgs(["--warm-cache-promotion-delay=0"]).warmCdnPromotionDelay).toBe(0);
   });
 
   it("allows the staged-readiness probe delay to be set to zero", () => {
-    expect(parseDeployArgs(["--warm-cdn-readiness-probe-delay=0"]).warmCdnReadinessProbeDelay).toBe(
-      0,
-    );
+    expect(
+      parseDeployArgs(["--warm-cache-readiness-probe-delay=0"]).warmCdnReadinessProbeDelay,
+    ).toBe(0);
   });
 
   it("throws for invalid CDN warmup numeric flags", () => {
-    expect(() => parseDeployArgs(["--warm-cdn-concurrency=0"])).toThrow(
-      '--warm-cdn-concurrency expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-concurrency=0"])).toThrow(
+      '--warm-cache-concurrency expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
-      '--warm-cdn-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-retries=-1"])).toThrow(
+      '--warm-cache-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-discovery-timeout=0"])).toThrow(
-      '--warm-cdn-discovery-timeout expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-discovery-timeout=0"])).toThrow(
+      '--warm-cache-discovery-timeout expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-discovery-retries=-1"])).toThrow(
-      '--warm-cdn-discovery-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-discovery-retries=-1"])).toThrow(
+      '--warm-cache-discovery-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-probe-timeout=0"])).toThrow(
-      '--warm-cdn-probe-timeout expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-probe-timeout=0"])).toThrow(
+      '--warm-cache-probe-timeout expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-probe-retries=-1"])).toThrow(
-      '--warm-cdn-probe-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-probe-retries=-1"])).toThrow(
+      '--warm-cache-probe-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-timeout=0"])).toThrow(
-      '--warm-cdn-readiness-timeout expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-timeout=0"])).toThrow(
+      '--warm-cache-readiness-timeout expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-retries=-1"])).toThrow(
-      '--warm-cdn-readiness-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-retries=-1"])).toThrow(
+      '--warm-cache-readiness-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=0"])).toThrow(
-      '--warm-cdn-readiness-probes expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probes=0"])).toThrow(
+      '--warm-cache-readiness-probes expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=1.5"])).toThrow(
-      '--warm-cdn-readiness-probes expects a positive integer, but got "1.5".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probes=1.5"])).toThrow(
+      '--warm-cache-readiness-probes expects a positive integer, but got "1.5".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=-1"])).toThrow(
-      '--warm-cdn-readiness-probe-delay expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probe-delay=-1"])).toThrow(
+      '--warm-cache-readiness-probe-delay expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=2147483648"])).toThrow(
-      '--warm-cdn-readiness-probe-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probe-delay=2147483648"])).toThrow(
+      '--warm-cache-readiness-probe-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=-1"])).toThrow(
-      '--warm-cdn-promotion-delay expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-promotion-delay=-1"])).toThrow(
+      '--warm-cache-promotion-delay expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=2147483648"])).toThrow(
-      '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    expect(() => parseDeployArgs(["--warm-cache-promotion-delay=2147483648"])).toThrow(
+      '--warm-cache-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
   });
 

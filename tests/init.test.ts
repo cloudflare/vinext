@@ -329,7 +329,7 @@ describe("addScripts", () => {
     expect(added).toContain("deploy:vinext");
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
+      "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cache",
     );
   });
 

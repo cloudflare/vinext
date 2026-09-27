@@ -140,11 +140,19 @@ export function parsePrerenderArg(args: string[]): boolean | undefined {
 }
 
 export function parseWarmCdnCacheArg(args: string[]): boolean | undefined {
-  return parseBooleanArg(
-    args,
-    "--experimental-warm-cdn-cache",
-    "--no-experimental-warm-cdn-cache",
-    '--experimental-warm-cdn-cache expects true or false when using the "--experimental-warm-cdn-cache=value" form.',
+  return (
+    parseBooleanArg(
+      args,
+      "--warm-cache",
+      "--no-warm-cache",
+      '--warm-cache expects true or false when using the "--warm-cache=value" form.',
+    ) ??
+    parseBooleanArg(
+      args,
+      "--experimental-warm-cdn-cache",
+      "--no-experimental-warm-cdn-cache",
+      '--warm-cache expects true or false when using the "--warm-cache=value" form.',
+    )
   );
 }
 
@@ -247,9 +255,7 @@ export async function resolveInitOptions(
     platformOptions?.cdnCache === "response-store" || platformOptions?.cdnCache === "workers-cache";
   if (platform === "cloudflare" && !supportsWarmCdnCache) {
     if (explicitWarmCdnCache === true) {
-      throw new Error(
-        "--experimental-warm-cdn-cache requires --cdn-cache=response-store or workers-cache.",
-      );
+      throw new Error("--warm-cache requires --cdn-cache=response-store or workers-cache.");
     }
   }
 
@@ -333,7 +339,7 @@ export async function resolveInitWarmCdnCache(
 
   try {
     while (true) {
-      const answer = (await question("  Enable experimental cache pre-warm during deploy? [y/N]: "))
+      const answer = (await question("  Enable cache pre-warm during deploy? [y/N]: "))
         .trim()
         .toLowerCase();
       if (answer === "") {

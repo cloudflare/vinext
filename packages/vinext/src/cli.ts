@@ -369,8 +369,7 @@ function printHelp(cmd?: string) {
     --platform <target>  Deployment target: cloudflare or node
     --prerender          Configure Vite builds to pre-render all static routes
                          (default: prompt, with No selected by default)
-    --experimental-warm-cdn-cache
-                         Add experimental CDN pre-warming to the Cloudflare deploy script
+    --warm-cache         Add cache warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)
     --experimental-cf    Generate cloudflare.config.ts with the v2 Cloudflare Vite plugin
                          and cf CLI instead of Wrangler config and scripts
@@ -395,8 +394,8 @@ function printHelp(cmd?: string) {
     vinext init --platform=cloudflare --image-optimization=none
                                 Do not configure Cloudflare Images
     vinext init --prerender     Add prerender: { routes: "*" } to vite.config.ts
-    vinext init --experimental-warm-cdn-cache
-                                Add experimental CDN pre-warming to deploy:vinext
+    vinext init --warm-cache
+                                Add cache warming to deploy:vinext
     vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts

@@ -189,7 +189,7 @@ function throwDiscoveryFailure(route: string, error: unknown): never {
   if (/cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(message)) {
     throw new Error(
       `Failed to discover warmup path(s) for ${route}: Cloudflare runtime bindings cannot execute in the local Node prerender server. ` +
-        "Use `vinext-cloudflare deploy --experimental-warm-cdn-cache` so path discovery runs against the staged Worker version.",
+        "Use `vinext-cloudflare deploy --warm-cache` so path discovery runs against the staged Worker version.",
       { cause: error },
     );
   }

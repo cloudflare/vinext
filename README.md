@@ -137,7 +137,7 @@ files to `.cjs`) when an unambiguous default Vite config requires the ESM migrat
 `"type": "commonjs"` is never changed. Direct `vite dev` and `vite build` do not perform these
 wrapper compatibility steps.
 
-`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-traffic-aware-warm-cache`.
+`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--warm-cache`, `--traffic-aware-warm-cache`.
 
 `vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the
 user which target they want, then pass `--platform=cloudflare` or `--platform=node`.
@@ -350,21 +350,21 @@ For TypeScript types, generate them with `wrangler types` and the `env` import w
 
 > **Note:** You do not need `getPlatformProxy()`, a custom worker entry with `fetch(request, env)`, or any other workaround. `cloudflare:workers` is the recommended way to access bindings in vinext.
 
-#### Traffic-aware pre-warming (experimental)
+#### Traffic-aware pre-warming
 
 Traffic-aware warming queries Cloudflare zone analytics at deploy time to select the routes that actually get traffic. Those routes then go through vinext's standard staged CDN pre-warming flow, including route resolution, cacheability checks, and promotion.
 
 ```bash
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache                              # Pre-warm routes covering 90% of traffic
-vp exec vinext-cloudflare deploy --experimental-traffic-aware-warm-cache                           # Same, with Vite+
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-coverage 95  # More aggressive coverage
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-limit 500    # Cap at 500 routes
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-window 48    # Use 48h of analytics
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache                              # Pre-warm routes covering 90% of traffic
+vp exec vinext-cloudflare deploy --traffic-aware-warm-cache                           # Same, with Vite+
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-coverage 95  # More aggressive coverage
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-limit 500    # Cap at 500 routes
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-window 48    # Use 48h of analytics
 ```
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
 
-The previous `--experimental-tpr` and `--tpr-*` names remain supported as aliases.
+The previous `--experimental-traffic-aware-warm-cache`, `--experimental-tpr`, and `--tpr-*` names remain supported as aliases.
 
 #### Custom Vite configuration
 
@@ -748,9 +748,9 @@ The generated version metadata binding lets staged discovery and warming verify
 the uploaded Worker version. Pass `versionMetadataBinding` to `cdnAdapter()`
 only when the deployment needs a custom binding name.
 
-`vinext-cloudflare deploy --experimental-warm-cdn-cache` performs the two-stage
+`vinext-cloudflare deploy --warm-cache` performs the two-stage
 upload and makes one final cache-fill request per admitted identity by default.
-Add `--warm-cdn-certify` only to opt into a second, header-only request that
+Add `--warm-cache-certify` only to opt into a second, header-only request that
 must prove every planned entry reusable before promotion.
 
 While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/response-store-demo](examples/response-store-demo) for the Workers Response Store adapter.

@@ -78,8 +78,8 @@ the same `versionMetadataBinding` to `cdnAdapter()` and
 `createWorkersCacheConfig()` only when the deployment needs a custom binding
 name.
 
-Use `--experimental-warm-cdn-cache` for the two-stage deploy. The default flow
-makes one final fill request per admitted identity. Add `--warm-cdn-certify`
+Use `--warm-cache` for the two-stage deploy. The default flow
+makes one final fill request per admitted identity. Add `--warm-cache-certify`
 only when you want an opt-in second, header-only request that must prove every
 planned entry reusable before promotion.
 

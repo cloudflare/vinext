@@ -227,10 +227,10 @@ export function addScripts(
         "deploy",
         options.experimentalCf
           ? options.warmCdnCache
-            ? "vinext-cloudflare deploy --experimental-warm-cdn-cache"
+            ? "vinext-cloudflare deploy --warm-cache"
             : "vinext-cloudflare deploy"
           : options.warmCdnCache
-            ? "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
+            ? "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cache"
             : "vinext-cloudflare deploy --config dist/server/wrangler.json",
       );
       if (options.deployResponseStore && !pkg.scripts["deploy:response-store"]) {

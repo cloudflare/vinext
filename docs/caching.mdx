@@ -171,14 +171,41 @@ This is the smallest persistent setup. The same data cache can hold ISR response
 Cache warming is optional during Cloudflare deploys. With a configured cache adapter, run:
 
 ```sh
-npx @vinext/cloudflare deploy --experimental-warm-cdn-cache
+npx @vinext/cloudflare deploy --warm-cache
 ```
 
 For an existing deployment serving 100% of traffic from one version, vinext uploads the new Worker, stages it at 0%, discovers routes through the staged Worker with its real bindings, checks readiness, and requests eligible responses to fill the configured cache before promoting the version. Unlike a local prerender and KV bulk upload, rendering happens in the deployed Worker. Static exports (`output: "export"`) still need local prerendered files.
 
-The default warmup makes one fill request per admitted cache identity. Add `--warm-cdn-certify` to require a second, header-only request that proves warmed entries are reusable before promotion. If staging or required warmup fails, the command stops rather than promoting an unverified version; inspect the deployment state before retrying. A first deployment cannot use this staged flow: deploy normally once, then enable warming on subsequent deploys. The command also needs a reachable production route or custom domain and a Worker name for staged version overrides; use `--warm-cdn-target https://example.com` if the target origin cannot be inferred.
+The default warmup makes one fill request per admitted cache identity. Add `--warm-cache-certify` to require a second, header-only request that proves warmed entries are reusable before promotion. If staging or required warmup fails, the command stops rather than promoting an unverified version; inspect the deployment state before retrying. A first deployment cannot use this staged flow: deploy normally once, then enable warming on subsequent deploys. The command also needs a reachable production route or custom domain and a Worker name for staged version overrides; use `--warm-cache-target https://example.com` if the target origin cannot be inferred.
 
 Only discoverable, cacheable route identities are warmed; dynamic parameters and query variants are not all enumerated automatically. HTML, RSC, and Pages Router data use separate requests where applicable. For Workers Cache, a warm request does not guarantee a cache hit in every region. See [Cloudflare's Workers Caching documentation](https://developers.cloudflare.com/workers/cache/).
+
+### Traffic-aware warming
+
+For apps with many routes, use traffic-aware warming to prioritize pages people actually visit:
+
+```sh
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache
+```
+
+vinext queries Cloudflare zone analytics, ranks page paths by request count, and resolves them against the app's routes. It selects paths up to the traffic coverage target or route limit, then uses the same staged warming flow and cacheability checks described above. Traffic can supply concrete dynamic paths that were not enumerated by `generateStaticParams()` or `getStaticPaths()`; pages that cannot be cached still render on demand.
+
+| Flag                             | Purpose                               | Default |
+| -------------------------------- | ------------------------------------- | ------- |
+| `--traffic-aware-coverage <pct>` | Target percentage of traffic to cover | `90`    |
+| `--traffic-aware-limit <count>`  | Maximum number of selected routes     | `1000`  |
+| `--traffic-aware-window <hours>` | Analytics lookback window             | `24`    |
+
+For example, target 95% of traffic from the last 48 hours, with a maximum of 500 routes:
+
+```sh
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache \
+  --traffic-aware-coverage 95 --traffic-aware-limit 500 --traffic-aware-window 48
+```
+
+This requires a custom domain in the Cloudflare configuration, a cache adapter that exposes build identity, and `CLOUDFLARE_API_TOKEN` with **Zone > Analytics > Read** and **Zone > Zone > Read** permissions for that zone. See [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/). Zone analytics are unavailable for `*.workers.dev` hosts.
+
+Use `--traffic-aware-warm-cache` on its own to select routes by traffic. Adding `--warm-cache` uses the full discovered warm plan instead of limiting it to the traffic-selected routes. Traffic-aware warming skips selection when all-route prerendering is configured, and skips warming when analytics or a safely stageable existing deployment are unavailable; the deploy then continues normally.
 
 ## Which option should I choose?
 

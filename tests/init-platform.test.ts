@@ -311,15 +311,20 @@ describe("prerender init choice", () => {
 
 describe("warm CDN cache init choice", () => {
   it("parses explicit warm CDN cache flags", () => {
+    expect(parseWarmCdnCacheArg(["--warm-cache"])).toBe(true);
+    expect(parseWarmCdnCacheArg(["--no-warm-cache"])).toBe(false);
+    expect(parseWarmCdnCacheArg(["--warm-cache=true"])).toBe(true);
+    expect(parseWarmCdnCacheArg(["--warm-cache=false"])).toBe(false);
     expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache"])).toBe(true);
     expect(parseWarmCdnCacheArg(["--no-experimental-warm-cdn-cache"])).toBe(false);
     expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache=true"])).toBe(true);
     expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache=false"])).toBe(false);
+    expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache", "--no-warm-cache"])).toBe(false);
   });
 
   it("rejects unsupported explicit values", () => {
-    expect(() => parseWarmCdnCacheArg(["--experimental-warm-cdn-cache=maybe"])).toThrow(
-      "--experimental-warm-cdn-cache expects true or false",
+    expect(() => parseWarmCdnCacheArg(["--warm-cache=maybe"])).toThrow(
+      "--warm-cache expects true or false",
     );
   });
 
@@ -346,7 +351,7 @@ describe("warm CDN cache init choice", () => {
         },
       }),
     ).resolves.toBe(false);
-    expect(prompts).toEqual(["  Enable experimental cache pre-warm during deploy? [y/N]: "]);
+    expect(prompts).toEqual(["  Enable cache pre-warm during deploy? [y/N]: "]);
     expect(output.read()?.toString()).toBe("\n");
   });
 });
@@ -501,7 +506,7 @@ describe("resolveInitOptions", () => {
       "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
       "  Choose a Workers Response Store mode:\n    1. Service binding (default)\n    2. Self-contained\n  Response Store mode [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
-      "  Enable experimental cache pre-warm during deploy? [y/N]: ",
+      "  Enable cache pre-warm during deploy? [y/N]: ",
     ]);
   });
 
@@ -573,28 +578,19 @@ describe("resolveInitOptions", () => {
           "--cdn-cache=data-cache",
           "--data-cache=kv",
           "--image-optimization=none",
-          "--experimental-warm-cdn-cache",
+          "--warm-cache",
         ],
         { env: {}, isInteractive: false },
       ),
-    ).rejects.toThrow(
-      "--experimental-warm-cdn-cache requires --cdn-cache=response-store or workers-cache",
-    );
+    ).rejects.toThrow("--warm-cache requires --cdn-cache=response-store or workers-cache");
   });
 
   it("rejects cache warming when caching is disabled", async () => {
     await expect(
       resolveInitOptions(
-        [
-          "--platform=cloudflare",
-          "--cdn-cache=none",
-          "--image-optimization=none",
-          "--experimental-warm-cdn-cache",
-        ],
+        ["--platform=cloudflare", "--cdn-cache=none", "--image-optimization=none", "--warm-cache"],
         { env: { CODEX_THREAD_ID: "test" } },
       ),
-    ).rejects.toThrow(
-      "--experimental-warm-cdn-cache requires --cdn-cache=response-store or workers-cache",
-    );
+    ).rejects.toThrow("--warm-cache requires --cdn-cache=response-store or workers-cache");
   });
 });

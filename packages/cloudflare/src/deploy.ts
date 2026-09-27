@@ -246,7 +246,7 @@ function validateTimerDelay(value: number, flag: string, raw = String(value)): n
 }
 
 function validatePromotionDelay(value: number, raw = String(value)): number {
-  return validateTimerDelay(value, "--warm-cdn-promotion-delay", raw);
+  return validateTimerDelay(value, "--warm-cache-promotion-delay", raw);
 }
 
 function validateCdnWarmTarget(raw: string): string {
@@ -255,7 +255,7 @@ function validateCdnWarmTarget(raw: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error(`--warm-cdn-target expects an HTTPS origin, but got "${raw}".`);
+    throw new Error(`--warm-cache-target expects an HTTPS origin, but got "${raw}".`);
   }
   if (
     url.protocol !== "https:" ||
@@ -267,7 +267,7 @@ function validateCdnWarmTarget(raw: string): string {
     url.hash !== ""
   ) {
     throw new Error(
-      `--warm-cdn-target expects an HTTPS origin without a path, query, credentials, or port, but got "${raw}".`,
+      `--warm-cache-target expects an HTTPS origin without a path, query, credentials, or port, but got "${raw}".`,
     );
   }
   return url.origin;
@@ -294,6 +294,30 @@ const deployArgOptions = {
   verbose: { type: "boolean", default: false },
   "prerender-all": { type: "boolean", default: false },
   "prerender-concurrency": { type: "string" },
+  "warm-cache": { type: "boolean", default: false },
+  "warm-cache-target": { type: "string" },
+  "warm-cache-concurrency": { type: "string" },
+  "warm-cache-timeout": { type: "string" },
+  "warm-cache-retries": { type: "string" },
+  "warm-cache-discovery-timeout": { type: "string" },
+  "warm-cache-discovery-retries": { type: "string" },
+  "warm-cache-probe-timeout": { type: "string" },
+  "warm-cache-probe-retries": { type: "string" },
+  "warm-cache-certify": { type: "boolean", default: false },
+  "warm-cache-readiness-timeout": { type: "string" },
+  "warm-cache-readiness-retries": { type: "string" },
+  "warm-cache-readiness-probes": { type: "string" },
+  "warm-cache-readiness-probe-delay": { type: "string" },
+  "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
+  "no-promote": { type: "boolean", default: false },
+  "warm-cache-no-promote": { type: "boolean", default: false },
+  "warm-cache-promotion-delay": { type: "string" },
+  "warm-cache-include-fallbacks": { type: "boolean", default: false },
+  "traffic-aware-warm-cache": { type: "boolean", default: false },
+  "traffic-aware-coverage": { type: "string" },
+  "traffic-aware-limit": { type: "string" },
+  "traffic-aware-window": { type: "string" },
+  // Backwards-compatible aliases (intentionally omitted from help).
   "experimental-warm-cdn-cache": { type: "boolean", default: false },
   "warm-cdn-target": { type: "string" },
   "warm-cdn-concurrency": { type: "string" },
@@ -308,16 +332,10 @@ const deployArgOptions = {
   "warm-cdn-readiness-retries": { type: "string" },
   "warm-cdn-readiness-probes": { type: "string" },
   "warm-cdn-readiness-probe-delay": { type: "string" },
-  "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
-  "no-promote": { type: "boolean", default: false },
   "warm-cdn-no-promote": { type: "boolean", default: false },
   "warm-cdn-promotion-delay": { type: "string" },
   "warm-cdn-include-fallbacks": { type: "boolean", default: false },
   "experimental-traffic-aware-warm-cache": { type: "boolean", default: false },
-  "traffic-aware-coverage": { type: "string" },
-  "traffic-aware-limit": { type: "string" },
-  "traffic-aware-window": { type: "string" },
-  // Backwards-compatible aliases.
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
@@ -327,11 +345,31 @@ const deployArgOptions = {
 export function parseDeployArgs(args: string[]) {
   const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
 
-  if (values["warm-cdn-certify"] && !values["experimental-warm-cdn-cache"]) {
-    throw new Error("--warm-cdn-certify requires --experimental-warm-cdn-cache.");
+  // Prefer the current spelling when both a flag and its legacy alias are supplied.
+  values["warm-cache"] ||= values["experimental-warm-cdn-cache"];
+  values["warm-cache-target"] ??= values["warm-cdn-target"];
+  values["warm-cache-concurrency"] ??= values["warm-cdn-concurrency"];
+  values["warm-cache-timeout"] ??= values["warm-cdn-timeout"];
+  values["warm-cache-retries"] ??= values["warm-cdn-retries"];
+  values["warm-cache-discovery-timeout"] ??= values["warm-cdn-discovery-timeout"];
+  values["warm-cache-discovery-retries"] ??= values["warm-cdn-discovery-retries"];
+  values["warm-cache-probe-timeout"] ??= values["warm-cdn-probe-timeout"];
+  values["warm-cache-probe-retries"] ??= values["warm-cdn-probe-retries"];
+  values["warm-cache-certify"] ||= values["warm-cdn-certify"];
+  values["warm-cache-readiness-timeout"] ??= values["warm-cdn-readiness-timeout"];
+  values["warm-cache-readiness-retries"] ??= values["warm-cdn-readiness-retries"];
+  values["warm-cache-readiness-probes"] ??= values["warm-cdn-readiness-probes"];
+  values["warm-cache-readiness-probe-delay"] ??= values["warm-cdn-readiness-probe-delay"];
+  values["warm-cache-no-promote"] ||= values["warm-cdn-no-promote"];
+  values["warm-cache-promotion-delay"] ??= values["warm-cdn-promotion-delay"];
+  values["warm-cache-include-fallbacks"] ||= values["warm-cdn-include-fallbacks"];
+  values["traffic-aware-warm-cache"] ||= values["experimental-traffic-aware-warm-cache"];
+
+  if (values["warm-cache-certify"] && !values["warm-cache"]) {
+    throw new Error("--warm-cache-certify requires --warm-cache.");
   }
-  if (values["warm-cdn-target"] && !values["experimental-warm-cdn-cache"]) {
-    throw new Error("--warm-cdn-target requires --experimental-warm-cdn-cache.");
+  if (values["warm-cache-target"] && !values["warm-cache"]) {
+    throw new Error("--warm-cache-target requires --warm-cache.");
   }
 
   function parseIntArg(name: string, raw: string | undefined): number | undefined {
@@ -358,92 +396,95 @@ export function parseDeployArgs(args: string[]) {
       values["prerender-concurrency"] === undefined
         ? undefined
         : parsePositiveIntegerArg(values["prerender-concurrency"], "--prerender-concurrency"),
-    warmCdnCache: values["experimental-warm-cdn-cache"],
+    warmCdnCache: values["warm-cache"],
     warmCdnTarget:
-      values["warm-cdn-target"] === undefined
+      values["warm-cache-target"] === undefined
         ? undefined
-        : validateCdnWarmTarget(values["warm-cdn-target"]),
+        : validateCdnWarmTarget(values["warm-cache-target"]),
     warmCdnConcurrency:
-      values["warm-cdn-concurrency"] === undefined
+      values["warm-cache-concurrency"] === undefined
         ? undefined
-        : parsePositiveIntegerArg(values["warm-cdn-concurrency"], "--warm-cdn-concurrency"),
+        : parsePositiveIntegerArg(values["warm-cache-concurrency"], "--warm-cache-concurrency"),
     warmCdnTimeout:
-      values["warm-cdn-timeout"] === undefined
+      values["warm-cache-timeout"] === undefined
         ? undefined
-        : parsePositiveIntegerArg(values["warm-cdn-timeout"], "--warm-cdn-timeout"),
+        : parsePositiveIntegerArg(values["warm-cache-timeout"], "--warm-cache-timeout"),
     warmCdnRetries:
-      values["warm-cdn-retries"] === undefined
+      values["warm-cache-retries"] === undefined
         ? undefined
-        : parseNonNegativeIntegerArg(values["warm-cdn-retries"], "--warm-cdn-retries"),
+        : parseNonNegativeIntegerArg(values["warm-cache-retries"], "--warm-cache-retries"),
     warmCdnDiscoveryTimeout:
-      values["warm-cdn-discovery-timeout"] === undefined
+      values["warm-cache-discovery-timeout"] === undefined
         ? undefined
         : parsePositiveIntegerArg(
-            values["warm-cdn-discovery-timeout"],
-            "--warm-cdn-discovery-timeout",
+            values["warm-cache-discovery-timeout"],
+            "--warm-cache-discovery-timeout",
           ),
     warmCdnDiscoveryRetries:
-      values["warm-cdn-discovery-retries"] === undefined
+      values["warm-cache-discovery-retries"] === undefined
         ? undefined
         : parseNonNegativeIntegerArg(
-            values["warm-cdn-discovery-retries"],
-            "--warm-cdn-discovery-retries",
+            values["warm-cache-discovery-retries"],
+            "--warm-cache-discovery-retries",
           ),
     warmCdnProbeTimeout:
-      values["warm-cdn-probe-timeout"] === undefined
+      values["warm-cache-probe-timeout"] === undefined
         ? undefined
-        : parsePositiveIntegerArg(values["warm-cdn-probe-timeout"], "--warm-cdn-probe-timeout"),
+        : parsePositiveIntegerArg(values["warm-cache-probe-timeout"], "--warm-cache-probe-timeout"),
     warmCdnProbeRetries:
-      values["warm-cdn-probe-retries"] === undefined
-        ? undefined
-        : parseNonNegativeIntegerArg(values["warm-cdn-probe-retries"], "--warm-cdn-probe-retries"),
-    warmCdnCertify: values["warm-cdn-certify"],
-    warmCdnReadinessTimeout:
-      values["warm-cdn-readiness-timeout"] === undefined
-        ? undefined
-        : parsePositiveIntegerArg(
-            values["warm-cdn-readiness-timeout"],
-            "--warm-cdn-readiness-timeout",
-          ),
-    warmCdnReadinessRetries:
-      values["warm-cdn-readiness-retries"] === undefined
+      values["warm-cache-probe-retries"] === undefined
         ? undefined
         : parseNonNegativeIntegerArg(
-            values["warm-cdn-readiness-retries"],
-            "--warm-cdn-readiness-retries",
+            values["warm-cache-probe-retries"],
+            "--warm-cache-probe-retries",
           ),
-    warmCdnReadinessProbes:
-      values["warm-cdn-readiness-probes"] === undefined
+    warmCdnCertify: values["warm-cache-certify"],
+    warmCdnReadinessTimeout:
+      values["warm-cache-readiness-timeout"] === undefined
         ? undefined
         : parsePositiveIntegerArg(
-            values["warm-cdn-readiness-probes"],
-            "--warm-cdn-readiness-probes",
+            values["warm-cache-readiness-timeout"],
+            "--warm-cache-readiness-timeout",
+          ),
+    warmCdnReadinessRetries:
+      values["warm-cache-readiness-retries"] === undefined
+        ? undefined
+        : parseNonNegativeIntegerArg(
+            values["warm-cache-readiness-retries"],
+            "--warm-cache-readiness-retries",
+          ),
+    warmCdnReadinessProbes:
+      values["warm-cache-readiness-probes"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(
+            values["warm-cache-readiness-probes"],
+            "--warm-cache-readiness-probes",
           ),
     warmCdnReadinessProbeDelay:
-      values["warm-cdn-readiness-probe-delay"] === undefined
+      values["warm-cache-readiness-probe-delay"] === undefined
         ? undefined
         : validateTimerDelay(
             parseNonNegativeIntegerArg(
-              values["warm-cdn-readiness-probe-delay"],
-              "--warm-cdn-readiness-probe-delay",
+              values["warm-cache-readiness-probe-delay"],
+              "--warm-cache-readiness-probe-delay",
             ),
-            "--warm-cdn-readiness-probe-delay",
-            values["warm-cdn-readiness-probe-delay"],
+            "--warm-cache-readiness-probe-delay",
+            values["warm-cache-readiness-probe-delay"],
           ),
     dangerouslyPromoteOnCdnWarmError: values["dangerously-promote-on-cdn-warm-error"],
-    warmCdnPromote: !values["no-promote"] && !values["warm-cdn-no-promote"],
+    warmCdnPromote: !values["no-promote"] && !values["warm-cache-no-promote"],
     warmCdnPromotionDelay:
-      values["warm-cdn-promotion-delay"] === undefined
+      values["warm-cache-promotion-delay"] === undefined
         ? undefined
         : validatePromotionDelay(
             parseNonNegativeIntegerArg(
-              values["warm-cdn-promotion-delay"],
-              "--warm-cdn-promotion-delay",
+              values["warm-cache-promotion-delay"],
+              "--warm-cache-promotion-delay",
             ),
-            values["warm-cdn-promotion-delay"],
+            values["warm-cache-promotion-delay"],
           ),
-    warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
-    experimentalTPR: values["experimental-traffic-aware-warm-cache"] || values["experimental-tpr"],
+    warmCdnIncludeFallbacks: values["warm-cache-include-fallbacks"],
+    experimentalTPR: values["traffic-aware-warm-cache"] || values["experimental-tpr"],
     tprCoverage: parseIntArg(
       "traffic-aware-coverage",
       values["traffic-aware-coverage"] ?? values["tpr-coverage"],
@@ -1152,38 +1193,41 @@ export async function deployWithCdnWarmup(
   if (options.warmCdnDiscoveryTimeout !== undefined) {
     parsePositiveIntegerArg(
       String(options.warmCdnDiscoveryTimeout),
-      "--warm-cdn-discovery-timeout",
+      "--warm-cache-discovery-timeout",
     );
   }
   if (options.warmCdnDiscoveryRetries !== undefined) {
     parseNonNegativeIntegerArg(
       String(options.warmCdnDiscoveryRetries),
-      "--warm-cdn-discovery-retries",
+      "--warm-cache-discovery-retries",
     );
   }
   if (options.warmCdnProbeTimeout !== undefined) {
-    parsePositiveIntegerArg(String(options.warmCdnProbeTimeout), "--warm-cdn-probe-timeout");
+    parsePositiveIntegerArg(String(options.warmCdnProbeTimeout), "--warm-cache-probe-timeout");
   }
   if (options.warmCdnProbeRetries !== undefined) {
-    parseNonNegativeIntegerArg(String(options.warmCdnProbeRetries), "--warm-cdn-probe-retries");
+    parseNonNegativeIntegerArg(String(options.warmCdnProbeRetries), "--warm-cache-probe-retries");
   }
   if (options.warmCdnReadinessTimeout !== undefined) {
     parsePositiveIntegerArg(
       String(options.warmCdnReadinessTimeout),
-      "--warm-cdn-readiness-timeout",
+      "--warm-cache-readiness-timeout",
     );
   }
   if (options.warmCdnReadinessRetries !== undefined) {
     parseNonNegativeIntegerArg(
       String(options.warmCdnReadinessRetries),
-      "--warm-cdn-readiness-retries",
+      "--warm-cache-readiness-retries",
     );
   }
   if (options.warmCdnReadinessProbes !== undefined) {
-    parsePositiveIntegerArg(String(options.warmCdnReadinessProbes), "--warm-cdn-readiness-probes");
+    parsePositiveIntegerArg(
+      String(options.warmCdnReadinessProbes),
+      "--warm-cache-readiness-probes",
+    );
   }
   if (options.warmCdnReadinessProbeDelay !== undefined) {
-    validateTimerDelay(options.warmCdnReadinessProbeDelay, "--warm-cdn-readiness-probe-delay");
+    validateTimerDelay(options.warmCdnReadinessProbeDelay, "--warm-cache-readiness-probe-delay");
   }
   if (options.warmCdnPromotionDelay !== undefined) {
     validatePromotionDelay(options.warmCdnPromotionDelay);
@@ -1242,7 +1286,7 @@ async function deployUploadedVersionWithCdnWarmup(
             : "CDN Route Handler warmup";
       throw new Error(
         `${warmupKind} requires a CDN adapter that declares build-identity response headers. ` +
-          "Configure that adapter capability or deploy without --experimental-warm-cdn-cache.",
+          "Configure that adapter capability or deploy without --warm-cache.",
       );
     }
     console.warn(
@@ -1433,7 +1477,7 @@ async function deployUploadedVersionWithCdnWarmup(
             phaseTimeoutMs: options.warmCdnReadinessTimeout,
             probeIntervalMs: options.warmCdnReadinessProbeDelay,
             requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
-            // Preserve the existing --warm-cdn-retries behavior while allowing
+            // Preserve the existing --warm-cache-retries behavior while allowing
             // readiness to be tuned independently by the dedicated option.
             retries: options.warmCdnReadinessRetries ?? options.warmCdnRetries,
             timeoutMs: options.warmCdnTimeout,
@@ -1513,7 +1557,7 @@ async function deployUploadedVersionWithCdnWarmup(
     } else if (initialWarmRequests > 0) {
       const message =
         "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
-        "Configure a route/custom domain and Worker name, or deploy without --experimental-warm-cdn-cache.";
+        "Configure a route/custom domain and Worker name, or deploy without --warm-cache.";
       if (!allowUnverifiedPromotion) {
         throw new StagedWarmupError(`${message} ${getStagedVersionCleanupNote()}`);
       }
@@ -1675,7 +1719,7 @@ async function deployUploadedVersionWithCdnWarmup(
       throw withPromotedVersionWarmupNote(
         new Error(
           "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
-            "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or deploy without --experimental-warm-cdn-cache.",
+            "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or deploy without --warm-cache.",
         ),
       );
     } else {
@@ -2179,7 +2223,7 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 
 export async function deploy(options: DeployOptions): Promise<void> {
   if (options.warmCdnTarget !== undefined && !options.warmCdnCache) {
-    throw new Error("--warm-cdn-target requires --experimental-warm-cdn-cache.");
+    throw new Error("--warm-cache-target requires --warm-cache.");
   }
   const warmCdnTarget =
     options.warmCdnTarget === undefined ? undefined : validateCdnWarmTarget(options.warmCdnTarget);

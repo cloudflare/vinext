@@ -216,7 +216,7 @@ describe("createVinextApp", () => {
     );
 
     expect(readFile(appPath, "app/page.tsx")).toContain("pnpm run deploy");
-    expect(readFile(appPath, "app/page.tsx")).not.toContain("--experimental-warm-cdn-cache");
+    expect(readFile(appPath, "app/page.tsx")).not.toContain("--warm-cache");
     const pkg = readPkg(appPath);
     expect(pkg.scripts?.deploy).toBe("vinext-cloudflare deploy --config dist/server/wrangler.json");
   });
@@ -404,6 +404,11 @@ describe("create-vinext-app CLI", () => {
       await runCreateVinextAppCli(["--help"]);
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Usage: create-vinext-app"));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--experimental-cf"));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--warm-cache"));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--no-warm-cache"));
+      expect(logSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("--experimental-warm-cdn-cache"),
+      );
     } finally {
       logSpy.mockRestore();
     }

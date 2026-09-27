@@ -2063,7 +2063,7 @@ describe("prerender path manifest", () => {
       await import("../packages/vinext/src/build/prerender-paths.js");
 
     await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
-      "Cloudflare runtime bindings cannot execute in the local Node prerender server. Use `vinext-cloudflare deploy --experimental-warm-cdn-cache`",
+      "Cloudflare runtime bindings cannot execute in the local Node prerender server. Use `vinext-cloudflare deploy --warm-cache`",
     );
   });
 
