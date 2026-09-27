@@ -944,28 +944,43 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(readFile(tmpDir, "vite.config.ts")).toContain('vinext({ prerender: { routes: "*" } })');
   });
 
-  it("configures prerender for Cloudflare init when explicitly requested", async () => {
-    setupProject(tmpDir, { router: "app" });
-    const { output } = await runInit(tmpDir, { prerender: true });
-    expect(readFile(tmpDir, "vite.config.ts")).toContain('prerender: { routes: "*" }');
-    expect(output).toContain(
-      "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
-    );
-  });
+  it.each([false, true])(
+    "configures prerender and warns when not served (typed cf: %s)",
+    async (experimentalCf) => {
+      setupProject(tmpDir, { router: "app" });
+      const { output } = await runInit(tmpDir, {
+        prerender: true,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          experimentalCf,
+        },
+      });
+      expect(readFile(tmpDir, "vite.config.ts")).toContain('prerender: { routes: "*" }');
+      expect(output).toContain(
+        "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
+      );
+    },
+  );
 
-  it("does not warn about unserved prerendering with the Static Assets cache", async () => {
-    setupProject(tmpDir, { router: "app" });
-    const { output } = await runInit(tmpDir, {
-      prerender: true,
-      cloudflare: {
-        dataCache: "none",
-        cdnCache: "static-assets",
-        imageOptimization: "none",
-      },
-    });
-    expect(readFile(tmpDir, "vite.config.ts")).toContain('prerender: { routes: "*" }');
-    expect(output).not.toContain("Cloudflare deploys do not serve them");
-  });
+  it.each([false, true])(
+    "does not warn about unserved Static Assets prerendering (typed cf: %s)",
+    async (experimentalCf) => {
+      setupProject(tmpDir, { router: "app" });
+      const { output } = await runInit(tmpDir, {
+        prerender: true,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "static-assets",
+          imageOptimization: "none",
+          experimentalCf,
+        },
+      });
+      expect(readFile(tmpDir, "vite.config.ts")).toContain('prerender: { routes: "*" }');
+      expect(output).not.toContain("Cloudflare deploys do not serve them");
+    },
+  );
 
   it("prints explicit steps to finish Cloudflare KV setup", async () => {
     setupProject(tmpDir, { router: "app" });

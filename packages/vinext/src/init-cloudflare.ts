@@ -396,6 +396,12 @@ function setupExperimentalCfPlatform(
       );
     }
   }
+  if (cloudflare.prerender && cloudflare.cdnCache !== "static-assets") {
+    nextSteps.push(
+      "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
+      "   Use the Static Assets cache to serve them, or cache warming to fill another cache.",
+    );
+  }
   nextSteps.push(
     'For TypeScript, add ".cloudflare/types" to the include list in tsconfig.json.',
     "Worker types are generated during dev/build; run `cf workers types` before standalone type-checks.",
