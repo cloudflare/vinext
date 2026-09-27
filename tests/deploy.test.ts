@@ -16,6 +16,7 @@ import {
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
   resolveCfBin,
+  resolvePrerenderOutputDirs,
   resolveDeploymentTool,
   resolveViteBuildMode,
   resolveDeploymentControlPlaneOptions,
@@ -540,6 +541,20 @@ describe("resolveWranglerBin", () => {
 });
 
 describe("cf Build Output deployment", () => {
+  it("uses the emitted Worker and assets directories for typed cf prerendering", () => {
+    const configured = { clientOutDir: "dist/client", rscOutDir: "dist/server" };
+    expect(resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toEqual(configured);
+    expect(resolvePrerenderOutputDirs(tmpDir, "wrangler", configured)).toEqual(configured);
+
+    writeFile(tmpDir, ".cloudflare/output/v0/workers/default/worker.config.json", "{}");
+    const workerDir = path.join(tmpDir, ".cloudflare", "output", "v0", "workers", "default");
+    expect(resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toEqual({
+      clientOutDir: path.join(workerDir, "assets"),
+      rscOutDir: path.join(workerDir, "bundle"),
+    });
+    expect(resolvePrerenderOutputDirs(tmpDir, "wrangler", configured)).toEqual(configured);
+  });
+
   it("builds the selected Cloudflare mode before prebuilt deployment", () => {
     expect(resolveViteBuildMode("cf", undefined)).toBe("production");
     expect(resolveViteBuildMode("cf", "staging")).toBe("staging");

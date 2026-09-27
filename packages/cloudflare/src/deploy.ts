@@ -208,6 +208,22 @@ type DeployViteConfigMetadata = {
   routeRootConfig: VinextRouteRootConfig | null;
 };
 
+/** The typed cf Vite plugin emits Worker and asset bundles into Build Output. */
+export function resolvePrerenderOutputDirs(
+  root: string,
+  deploymentTool: DeploymentTool,
+  configured: VinextRouteRootConfig | null,
+): VinextRouteRootConfig | null {
+  if (deploymentTool !== "cf") return configured;
+  const workerDir = path.join(root, ".cloudflare", "output", "v0", "workers", "default");
+  if (!fs.existsSync(path.join(workerDir, "worker.config.json"))) return configured;
+  return {
+    ...configured,
+    rscOutDir: path.join(workerDir, "bundle"),
+    clientOutDir: path.join(workerDir, "assets"),
+  };
+}
+
 function parsePositiveIntegerArg(raw: string, flag: string): number {
   if (raw === "") {
     throw new Error(`${flag} requires a value, but none was provided.`);
@@ -2240,6 +2256,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
+  const prerenderOutputDirs = resolvePrerenderOutputDirs(
+    info.root,
+    deploymentTool,
+    viteConfigMetadata.routeRootConfig,
+  );
 
   const canWarmTpr = options.experimentalTPR && !shouldPrerenderLocally && hasBuildIdentityHeader;
   if (options.experimentalTPR && shouldPrerenderLocally) {
@@ -2337,7 +2358,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
       isResponsePolicyHeader: (name) =>
         isConfiguredCdnResponsePolicyHeader(viteConfigMetadata.cacheConfig, name),
-      routeRootConfig: viteConfigMetadata.routeRootConfig,
+      routeRootConfig: prerenderOutputDirs,
     });
   }
 
@@ -2354,11 +2375,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       root: info.root,
       concurrency: options.prerenderConcurrency ?? viteConfigMetadata.prerenderConfig?.concurrency,
       nextConfig,
-      routeRootConfig: viteConfigMetadata.routeRootConfig,
+      routeRootConfig: prerenderOutputDirs,
     });
     if (nextConfig.output !== "export") {
       await finalizeCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig, info.root, {
-        clientOutDir: viteConfigMetadata.routeRootConfig?.clientOutDir,
+        clientOutDir: prerenderOutputDirs?.clientOutDir,
       });
     }
   }

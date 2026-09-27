@@ -835,6 +835,42 @@ describe("init — basic functionality", () => {
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
   });
 
+  it.each(["ASSETS", "STATIC"])(
+    "rejects Static Assets init on an existing typed config without mutating its %s binding",
+    async (binding) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(
+        tmpDir,
+        "cloudflare.config.ts",
+        `import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+export default defineConfig({ worker: defineWorker({ name: "test-app", env: { ${binding}: bindings.assets() } }) });
+`,
+      );
+      writeFile(
+        tmpDir,
+        "vite.config.ts",
+        `import vinext from "vinext";
+import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";
+export default { plugins: [vinext({ cache: { cdn: staticAssetsAdapter({ binding: "${binding}" }) } })] };
+`,
+      );
+      const before = snapshotProject(tmpDir);
+
+      await expect(
+        runInit(tmpDir, {
+          cloudflare: {
+            dataCache: "none",
+            cdnCache: "static-assets",
+            imageOptimization: "none",
+            experimentalCf: true,
+          },
+        }),
+      ).rejects.toThrow("Static Assets cache setup for an existing cloudflare.config.ts");
+
+      expect(snapshotProject(tmpDir)).toBe(before);
+    },
+  );
+
   it("preserves a custom Wrangler assets binding for the Static Assets cache", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(

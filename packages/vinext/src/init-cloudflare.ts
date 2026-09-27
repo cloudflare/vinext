@@ -71,6 +71,13 @@ export function validateCloudflarePlatformSetup(
       );
     }
     const typedConfigPath = path.join(context.root, "cloudflare.config.ts");
+    if (cloudflare.cdnCache === "static-assets" && fs.existsSync(typedConfigPath)) {
+      throw new Error(
+        "Static Assets cache setup for an existing cloudflare.config.ts must be configured manually. " +
+          "Keep its assets binding aligned with staticAssetsAdapter({ binding }) and include " +
+          '"/_vinext/static-cache/*" in assets.runWorkerFirst to protect private cache files.',
+      );
+    }
     if (
       cloudflare.cdnCache === "response-store" &&
       (cloudflare.responseStoreMode ?? "service-binding") === "service-binding" &&

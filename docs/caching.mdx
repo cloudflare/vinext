@@ -203,6 +203,8 @@ The private cache directory must be routed through the Worker so clients cannot 
 
 In typed `cloudflare.config.ts`, use `assets.runWorkerFirst` with the same pattern and declare `ASSETS: bindings.assets()`. An existing `run_worker_first: true` also protects these files. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns when configuring this cache.
 
+Existing typed configs require manual Static Assets setup; init stops before modifying the project so it cannot overwrite a custom binding or leave private files exposed.
+
 ## Cache warming
 
 Cache warming is optional during Cloudflare deploys. With a configured cache adapter, run:

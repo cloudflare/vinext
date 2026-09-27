@@ -283,6 +283,13 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     vinextPrerenderConfig: context.prerenderConfig,
     nextOutput: context.nextConfig.output,
   });
+  const buildOutput = {
+    ...context.routeRootConfig,
+    rscOutDir: builder.environments.rsc?.config.build.outDir ?? context.routeRootConfig?.rscOutDir,
+    ssrOutDir: builder.environments.ssr?.config.build.outDir ?? context.routeRootConfig?.ssrOutDir,
+    clientOutDir:
+      builder.environments.client?.config.build.outDir ?? context.routeRootConfig?.clientOutDir,
+  };
   let prerenderResult;
   if (prerenderDecision) {
     if (context.nextConfig.enablePrerenderSourceMaps) {
@@ -298,11 +305,11 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
       root: context.root,
       concurrency: context.prerenderConcurrency,
       nextConfig: context.nextConfig,
-      routeRootConfig: context.routeRootConfig,
+      routeRootConfig: buildOutput,
     });
     if (context.nextConfig.output !== "export") {
       await finalizeCacheAdapterPrerenderOutput(context.cacheConfig, context.root, {
-        clientOutDir: context.routeRootConfig?.clientOutDir,
+        clientOutDir: buildOutput.clientOutDir,
       });
     }
     await emitPrerenderPathManifest({
@@ -315,7 +322,7 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
       requestRouting: hasUncachedRequestRouting(context.cacheConfig) ? "uncached-stage" : undefined,
       isResponsePolicyHeader: (name) =>
         isConfiguredCdnResponsePolicyHeader(context.cacheConfig, name),
-      routeRootConfig: context.routeRootConfig,
+      routeRootConfig: buildOutput,
     });
   }
 
