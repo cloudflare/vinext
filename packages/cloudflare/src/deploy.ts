@@ -308,7 +308,7 @@ const deployArgOptions = {
   "warm-cache-readiness-retries": { type: "string" },
   "warm-cache-readiness-probes": { type: "string" },
   "warm-cache-readiness-probe-delay": { type: "string" },
-  "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
+  "dangerously-promote-on-warm-cache-error": { type: "boolean", default: false },
   "no-promote": { type: "boolean", default: false },
   "warm-cache-no-promote": { type: "boolean", default: false },
   "warm-cache-promotion-delay": { type: "string" },
@@ -318,6 +318,7 @@ const deployArgOptions = {
   "traffic-aware-limit": { type: "string" },
   "traffic-aware-window": { type: "string" },
   // Backwards-compatible aliases (intentionally omitted from help).
+  "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
   "experimental-warm-cdn-cache": { type: "boolean", default: false },
   "warm-cdn-target": { type: "string" },
   "warm-cdn-concurrency": { type: "string" },
@@ -346,6 +347,8 @@ export function parseDeployArgs(args: string[]) {
   const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
 
   // Prefer the current spelling when both a flag and its legacy alias are supplied.
+  values["dangerously-promote-on-warm-cache-error"] ||=
+    values["dangerously-promote-on-cdn-warm-error"];
   values["warm-cache"] ||= values["experimental-warm-cdn-cache"];
   values["warm-cache-target"] ??= values["warm-cdn-target"];
   values["warm-cache-concurrency"] ??= values["warm-cdn-concurrency"];
@@ -471,7 +474,7 @@ export function parseDeployArgs(args: string[]) {
             "--warm-cache-readiness-probe-delay",
             values["warm-cache-readiness-probe-delay"],
           ),
-    dangerouslyPromoteOnCdnWarmError: values["dangerously-promote-on-cdn-warm-error"],
+    dangerouslyPromoteOnCdnWarmError: values["dangerously-promote-on-warm-cache-error"],
     warmCdnPromote: !values["no-promote"] && !values["warm-cache-no-promote"],
     warmCdnPromotionDelay:
       values["warm-cache-promotion-delay"] === undefined

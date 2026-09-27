@@ -1036,6 +1036,8 @@ describe("parseDeployArgs", () => {
     expect(help).toContain("--traffic-aware-warm-cache");
     expect(help).toContain("--warm-cache");
     expect(help).toContain("--warm-cache-target");
+    expect(help).toContain("--dangerously-promote-on-warm-cache-error");
+    expect(help).not.toContain("--dangerously-promote-on-cdn-warm-error");
     expect(help).not.toContain("--experimental-");
     expect(help).not.toContain("--warm-cdn-");
     expect(help).not.toContain("--tpr-");
@@ -1152,7 +1154,7 @@ describe("parseDeployArgs", () => {
       "--warm-cache-readiness-probes=8",
       "--warm-cache-readiness-probe-delay",
       "750",
-      "--dangerously-promote-on-cdn-warm-error",
+      "--dangerously-promote-on-warm-cache-error",
       "--warm-cache-no-promote",
       "--warm-cache-promotion-delay=2500",
       "--warm-cache-include-fallbacks",
@@ -1162,7 +1164,12 @@ describe("parseDeployArgs", () => {
         ? args.map((arg) =>
             arg === "--warm-cache"
               ? "--experimental-warm-cdn-cache"
-              : arg.replace(/^--warm-cache-/, "--warm-cdn-"),
+              : arg
+                  .replace(/^--warm-cache-/, "--warm-cdn-")
+                  .replace(
+                    "--dangerously-promote-on-warm-cache-error",
+                    "--dangerously-promote-on-cdn-warm-error",
+                  ),
           )
         : args,
     );

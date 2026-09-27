@@ -57,7 +57,7 @@ export function formatDeployHelp(): string {
                              required before warming (default: 6)
     --warm-cache-readiness-probe-delay <ms>
                              Delay between staged-readiness probes (default: 1000)
-    --dangerously-promote-on-cdn-warm-error
+    --dangerously-promote-on-warm-cache-error
                              Promote even when ordinary staged warmup cannot be
                              verified (never bypasses --warm-cache-certify)
     --warm-cache-promotion-delay <ms>
