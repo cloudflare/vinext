@@ -260,6 +260,29 @@ export default { plugins: [vinext({ custom: true })] };
     expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
   });
 
+  it("adds multiple properties to a compact object with no spaces", () => {
+    const options = {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "kv" as const,
+        cdnCache: "workers-cache" as const,
+        imageOptimization: "cloudflare-images" as const,
+      },
+    };
+    for (const suffix of ["", " /* keep */"]) {
+      const input = `import vinext from "vinext"; export default {plugins:[vinext({custom:true${suffix}})]};`;
+      const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
+
+      expectValidConfig(output);
+      expect(output).toContain("custom:true,");
+      expect(output).toContain(suffix);
+      expect(output).toContain("cache: {");
+      expect(output).toContain("images: { optimizer: imagesOptimizer() }");
+      expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
+    }
+  });
+
   it("formats a compact config without spaces after the braces", () => {
     const input = "export default {plugins: [vinext()]};";
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {

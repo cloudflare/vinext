@@ -2002,6 +2002,8 @@ function ensureDefaultRequire(
   return binding;
 }
 
+const insertedCommas = new WeakMap<MagicString, Set<number>>();
+
 function insertObjectProperty(
   output: MagicString,
   object: AstObject,
@@ -2012,9 +2014,15 @@ function insertObjectProperty(
   const lastProperty = object.properties.at(-1) as AstNode | undefined;
   if (lastProperty) {
     const gap = code.slice(lastProperty.end, offset);
-    if (!endsWithCommaIgnoringWhitespaceAndComments(gap)) {
+    if (
+      !endsWithCommaIgnoringWhitespaceAndComments(gap) &&
+      !insertedCommas.get(output)?.has(lastProperty.end)
+    ) {
       if (/^[ \t]+$/.test(gap)) output.update(lastProperty.end, offset, ",");
       else output.appendLeft(lastProperty.end, ",");
+      const offsets = insertedCommas.get(output) ?? new Set<number>();
+      offsets.add(lastProperty.end);
+      insertedCommas.set(output, offsets);
     }
   }
   output.appendLeft(offset, `\n${source}\n`);
