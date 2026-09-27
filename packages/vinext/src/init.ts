@@ -96,6 +96,8 @@ export type InitOptions = {
   port?: number | false;
   /** Skip the compatibility check step */
   skipCheck?: boolean;
+  /** @internal — skip CSS Modules migration in the Next.js deploy harness. */
+  skipCssModules?: boolean;
   /** Force overwrite even if vite.config.ts exists */
   force?: boolean;
   /** Deployment target selected by the user */
@@ -644,7 +646,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const viteConfigExists = hasViteConfig(root);
 
   const isApp = detectProject(root).isAppRouter;
-  const hasCssModules = scanCssModuleFiles(root);
+  const hasCssModules = !options.skipCssModules && scanCssModuleFiles(root);
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 

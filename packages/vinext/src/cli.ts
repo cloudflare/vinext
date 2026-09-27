@@ -304,6 +304,7 @@ async function initCommand() {
     root: process.cwd(),
     port: parsed.port,
     skipCheck,
+    skipCssModules: rawArgs.includes("--skip-css-modules"),
     force,
     install,
     ...initOptions,

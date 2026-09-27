@@ -741,12 +741,14 @@ fi
 # --skip-check avoids the interactive compat report, --force overwrites any
 # existing vite.config.ts. Dep installation is a no-op since we already injected
 # them above.
+# --skip-css-modules keeps native CSS Module exports for Next.js fixtures
+# that import named classes instead of the default-only migration shim.
 #
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
 if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then
-  "${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
+  "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force >> "${BUILD_LOG}" 2>&1
   "${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
 else
   VITE_BIN="./node_modules/.bin/vite"
@@ -754,7 +756,7 @@ else
     echo "pnpm install failed: ${VITE_BIN} not found or not executable" >&2
     exit 1
   fi
-  "${VINEXT_BIN}" init --platform=node --skip-check --force --prerender >> "${BUILD_LOG}" 2>&1
+  "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force --prerender >> "${BUILD_LOG}" 2>&1
   "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
 fi
 

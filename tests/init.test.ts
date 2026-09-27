@@ -43,6 +43,26 @@ function readFile(dir: string, relativePath: string): string {
 }
 
 describe("CSS Modules discovery", () => {
+  // Next.js deploy fixtures rely on named CSS Module exports:
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/scss/basic-module/pages/index.js
+  it.each([false, true])(
+    "can skip CSS Modules setup for the harness (skip: %s)",
+    async (skipCssModules) => {
+      setupProject(tmpDir, { router: "pages" });
+      writeFile(tmpDir, "pages/index.module.scss", ".redText { color: red }");
+
+      const { result, output } = await runInit(tmpDir, { platform: "node", skipCssModules });
+      const config = readFile(tmpDir, "vite.config.ts");
+
+      expect(config.includes("patchCssModules")).toBe(!skipCssModules);
+      expect(config.includes("generateScopedName")).toBe(!skipCssModules);
+      expect(result.installedDeps.includes("vite-css-modules")).toBe(!skipCssModules);
+      expect(result.installedDeps.includes("postcss")).toBe(!skipCssModules);
+      expect(output.includes("Configured vite-css-modules")).toBe(!skipCssModules);
+      expect(config).toContain("vinext()");
+    },
+  );
+
   it("finds CSS, Sass, and hidden source modules without scanning dependencies or output", () => {
     writeFile(tmpDir, "node_modules/lib/ignored.module.css", "");
     writeFile(tmpDir, "dist/ignored.module.scss", "");
