@@ -371,8 +371,8 @@ function printHelp(cmd?: string) {
                          (Cloudflare deploy won't serve them unless using Static Assets)
     --warm-cache         Add cache warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)
-    --experimental-cf    Generate cloudflare.config.ts with the v2 Cloudflare Vite plugin
-                         and cf CLI instead of Wrangler config and scripts
+    --legacy-wrangler-cloudflare-init
+                         Use the legacy Wrangler setup instead of cf
     --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache,
                          static-assets, or data-cache
                          (default: none; response-store is the default cache choice)

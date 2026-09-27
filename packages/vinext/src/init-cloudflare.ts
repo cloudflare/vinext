@@ -60,7 +60,7 @@ export function validateCloudflarePlatformSetup(
   if (cloudflare.cdnCache === "static-assets" && !context.isAppRouter) {
     throw new Error("The Static Assets cache currently requires an App Router project.");
   }
-  if (cloudflare.experimentalCf) {
+  if (!cloudflare.legacyWrangler) {
     const existingWrangler = [
       "wrangler.toml",
       "wrangler.json",
@@ -69,7 +69,7 @@ export function validateCloudflarePlatformSetup(
     ].find((name) => fs.existsSync(path.join(context.root, name)));
     if (existingWrangler) {
       throw new Error(
-        `--experimental-cf cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first.`,
+        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
       );
     }
     const typedConfigPath = path.join(context.root, "cloudflare.config.ts");
@@ -101,7 +101,7 @@ export function validateCloudflarePlatformSetup(
         .includes("auxiliaryWorkers: [{ config: responseStoreServiceBinding }]")
     ) {
       throw new Error(
-        "--experimental-cf with Response Store service-binding requires a fresh Vite config so the auxiliary Worker is connected. Remove the existing Vite config or configure it manually.",
+        "Cloudflare init with Response Store service-binding requires a fresh Vite config so the auxiliary Worker is connected. Remove the existing Vite config or configure it manually.",
       );
     }
     if (context.existingViteConfigPath) {
@@ -180,7 +180,7 @@ export function setupCloudflarePlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
-  if (cloudflare.experimentalCf) return setupExperimentalCfPlatform(context, cloudflare);
+  if (!cloudflare.legacyWrangler) return setupCfPlatform(context, cloudflare);
   const projectInfo = detectProject(context.root);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
@@ -345,7 +345,7 @@ export function setupCloudflarePlatform(
   };
 }
 
-function setupExperimentalCfPlatform(
+function setupCfPlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {

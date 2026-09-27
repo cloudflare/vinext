@@ -22,6 +22,9 @@ This package provides Cloudflare-specific cache and image backends for vinext:
 Declare the adapters on the `vinext()` plugin in your Vite config:
 
 ```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 
@@ -33,8 +36,30 @@ export default defineConfig({
       },
       images: { optimizer: imagesOptimizer() }, // Cloudflare Images binding: IMAGES
     }),
-    cloudflare(),
+    cloudflare({ viteEnvironment: { name: "rsc" } }),
   ],
+});
+```
+
+This example uses the App Router; for the Pages Router, use `cloudflare()`.
+Configure those bindings in `cloudflare.config.ts`:
+
+```ts
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+
+export default defineConfig({
+  worker: defineWorker({
+    name: "example",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ASSETS: bindings.assets(),
+      VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+      IMAGES: bindings.images(),
+    },
+  }),
 });
 ```
 
@@ -43,9 +68,7 @@ export default defineConfig({
 `workersCacheCdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
 Worker entrypoints: the default entrypoint runs middleware and request-time
 routing with caching disabled, while `VinextCachedResponse` lazily loads the
-render stage with Workers Cache enabled. Legacy Cloudflare Vite plugin builds
-write these settings and the version metadata binding to the generated
-`dist/server/wrangler.json`.
+render stage with Workers Cache enabled.
 
 ```ts
 import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
@@ -57,18 +80,25 @@ Cloudflare Vite plugin v2 uses Build Output and treats `cloudflare.config.ts`
 as the deployment source of truth. Declare the equivalent policies there:
 
 ```ts
-import { defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
 
 const workersCache = await createWorkersCacheConfig();
 
-export default defineWorker({
-  // ...
-  ...workersCache,
-  env: {
-    ...workersCache.env,
-    // Other application bindings...
-  },
+export default defineConfig({
+  worker: defineWorker({
+    ...workersCache,
+    name: "example",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ...workersCache.env,
+      ASSETS: bindings.assets(),
+      // Other application bindings...
+    },
+  }),
 });
 ```
 
@@ -91,30 +121,29 @@ representation variants cannot collide.
 
 `responseStoreAdapter()` replaces both `workersCacheCdnAdapter()` and `kvDataAdapter()`.
 It defaults to a separate cache Worker reached through the `RESPONSE_STORE`
-service binding. `vinext init` writes two collocated source configs:
-`wrangler.jsonc` for the application and `wrangler.response-store.jsonc` for the
-cache Worker. The latter points directly at the installed
-`@cloudflare/workers-response-store` implementation and owns its R2 bucket,
-SQLite Durable Object, Worker name, and cache settings. Edit those configs to
-choose or reuse names, keeping the application service binding aligned with the
-cache Worker name.
+service binding. `vinext init` defines both Workers in `cloudflare.config.ts`.
+The service-binding helper points directly at the installed
+`@cloudflare/workers-response-store` implementation and configures its R2 binding,
+SQLite Durable Object, Worker name, and cache settings, along with the application's
+service binding and version metadata.
 
 The two Workers are deliberately deployed separately. Deploy the Response Store
 when its package or config changes, then deploy the application normally:
 
 ```sh
-npx wrangler deploy --config wrangler.response-store.jsonc
+pnpm run build:vinext
+pnpm run deploy:response-store
 npx @vinext/cloudflare deploy
 ```
 
 `vinext-cloudflare deploy` never creates, rewrites, or deploys the Response
 Store Worker.
 
-Cloudflare Vite plugin v2 projects can define the same service-binding setup in
-`cloudflare.config.ts` without a second Wrangler config:
+Create the named R2 bucket before the first deployment. `create-vinext-app`
+uses `build` instead of `build:vinext`. The source config uses the shared helper:
 
 ```ts
-import { defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 const responseStore = await createWorkersResponseStoreServiceBindingConfig({
@@ -140,7 +169,14 @@ export default defineConfig({
   worker: defineWorker({
     ...responseStore.applicationWorker,
     name: "example",
-    entrypoint: "./worker.ts",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ...responseStore.applicationWorker.env,
+      ASSETS: bindings.assets(),
+    },
   }),
 });
 ```
@@ -152,8 +188,7 @@ not to either Worker. It applies to both Workers in the project.
 
 The async config helpers import bindings and exports from your installed
 `@cloudflare/vite-plugin/experimental-config`. The plugin is an optional peer
-dependency of `@vinext/cloudflare`; these helpers require v2, but Wrangler-only
-projects do not need it.
+dependency of `@vinext/cloudflare`; these helpers require v2.
 
 Register the exported auxiliary Worker with the Cloudflare Vite plugin so it
 is built alongside the application:
@@ -162,8 +197,13 @@ is built alongside the application:
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { responseStoreServiceBinding } from "./cloudflare.config.ts";
 
-cloudflare({ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] });
+cloudflare({
+  viteEnvironment: { name: "rsc" },
+  auxiliaryWorkers: [{ config: responseStoreServiceBinding }],
+});
 ```
+
+For the Pages Router, omit `viteEnvironment: { name: "rsc" }`.
 
 Metadata sharding is opt-in and works in either deployment mode:
 
@@ -195,12 +235,36 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
 ```
 
-The corresponding typed config helper is
-`createWorkersResponseStoreSelfContainedConfig`.
+Use the matching helper in `cloudflare.config.ts`:
 
-In this mode `vinext init` places the required R2, SQLite Durable Object,
-Workers Cache entrypoint, and version-metadata configuration in
-`wrangler.jsonc`; no second Wrangler config is required.
+```ts
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersResponseStoreSelfContainedConfig } from "@vinext/cloudflare/cache/config";
+
+const cache = await createWorkersResponseStoreSelfContainedConfig({
+  worker: "example",
+  bucket: "example-response-store-cache-bodies",
+});
+
+export default defineConfig({
+  worker: defineWorker({
+    ...cache,
+    name: "example",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ...cache.env,
+      ASSETS: bindings.assets(),
+    },
+  }),
+});
+```
+
+The adapter generates the required exports during the build. This config declares
+the R2 and SQLite Durable Object bindings, Workers Cache entrypoint, and version
+metadata on the application Worker; no auxiliary Worker or separate deployment is needed.
 
 ## Deploy
 
@@ -210,10 +274,10 @@ Deploy Cloudflare Workers projects with the package CLI:
 npx @vinext/cloudflare deploy
 ```
 
-Projects with `cloudflare.config.ts` opt into the experimental Cloudflare Vite
-plugin v2 path and deploy their generated Build Output with `cf`. Existing
-Wrangler-configured projects continue to use Wrangler. A normal typed-config
-deploy needs neither `wrangler.jsonc` nor the Wrangler package.
+Cloudflare init and create-vinext-app use `cloudflare.config.ts`, Cloudflare Vite
+plugin v2, and `cf` by default. The deploy command builds and deploys the generated
+Cloudflare Build Output. Source config remains authoritative for bindings and
+cache policies.
 
 `vinext-cloudflare deploy` only deploys the entry Worker. It never deploys named
 auxiliary Workers, including during staged warming or `--no-promote` uploads.
@@ -225,12 +289,10 @@ cf deploy --prebuilt --mode production --worker example-response-store
 ```
 
 Use the mode and Worker name from your build. `cloudflare.config.ts` remains the
-source of truth; no auxiliary Wrangler config is required.
+source of truth.
 
 Experimental staged CDN warming uses `cf` to upload a version, read deployment
-status, stage and promote traffic, and apply triggers. Typed-config projects do
-not need an equivalent Wrangler config. Existing Wrangler-configured projects
-continue to use Wrangler for this flow.
+status, stage and promote traffic, and apply triggers.
 
 With Vite+, use `vpx @vinext/cloudflare deploy`, or
 `vp exec vinext-cloudflare deploy` when running the locally installed bin.

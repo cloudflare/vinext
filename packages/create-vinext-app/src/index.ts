@@ -20,7 +20,7 @@ type CloudflareInitOptions = {
   imageOptimization: InitImageOptimization;
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
-  experimentalCf?: boolean;
+  legacyWrangler?: boolean;
 };
 
 type PlatformPromptOptions = {
@@ -72,7 +72,7 @@ const packageManagerFlags: Record<string, PackageManagerName> = {
 function getTemplateFiles(initOptions: ResolvedInitOptions): Record<string, string> {
   const { platform } = initOptions;
   const isCloudflare = platform === "cloudflare";
-  const experimentalCf = isCloudflare && initOptions.cloudflare?.experimentalCf === true;
+  const useCf = isCloudflare && !initOptions.cloudflare?.legacyWrangler;
   const revalidate =
     !isCloudflare || initOptions.cloudflare?.cdnCache !== "none"
       ? "export const revalidate = 300;\n\n"
@@ -99,7 +99,7 @@ function getTemplateFiles(initOptions: ResolvedInitOptions): Record<string, stri
   const actionCard = isCloudflare
     ? `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Deploy</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">Ship the generated Worker with ${experimentalCf ? "cf" : "Wrangler"}.</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Ship the generated Worker with ${useCf ? "cf" : "Wrangler"}.</p>
             <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run deploy</code>
           </div>`
     : `<div className="rounded-lg border border-slate-200 bg-white p-5">
@@ -238,7 +238,7 @@ This project was created with create-vinext-app.
 
 - \`pnpm run dev\` starts the vinext dev server.
 - \`pnpm run build\` builds ${isCloudflare ? "the Cloudflare Worker output" : "production output"}.
-- \`pnpm run start\` ${isCloudflare ? (experimentalCf ? "previews the built Worker locally" : "starts the built Worker locally with Wrangler") : "starts the production server locally"}.
+- \`pnpm run start\` ${isCloudflare ? (useCf ? "previews the built Worker locally" : "starts the built Worker locally with Wrangler") : "starts the production server locally"}.
 ${isCloudflare ? "- `pnpm run deploy` deploys the Cloudflare Worker.\n" : ""}
 `,
     "tsconfig.json": `{
@@ -252,7 +252,7 @@ ${isCloudflare ? "- `pnpm run deploy` deploys the Cloudflare Worker.\n" : ""}
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
-    ${experimentalCf ? '"allowImportingTsExtensions": true,\n    ' : ""}"resolveJsonModule": true,
+    ${useCf ? '"allowImportingTsExtensions": true,\n    ' : ""}"resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
@@ -261,7 +261,7 @@ ${isCloudflare ? "- `pnpm run deploy` deploys the Cloudflare Worker.\n" : ""}
       "@/*": ["./*"]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"${experimentalCf ? ', ".cloudflare/types"' : ""}],
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"${useCf ? ', ".cloudflare/types"' : ""}],
   "exclude": ["node_modules"]
 }
 `,
@@ -287,7 +287,8 @@ function printHelp(): void {
     --image-optimization <type>  Cloudflare image optimization: cloudflare-images or none
     --prerender                  Configure vinext to pre-render static routes
     --no-prerender               Do not configure pre-rendering
-    --experimental-cf            Use cf and Cloudflare Vite plugin v2 instead of Wrangler
+    --legacy-wrangler-cloudflare-init
+                                 Use the legacy Wrangler setup instead of cf
     --warm-cache                 Add cache warming to the Cloudflare deploy script
     --no-warm-cache              Do not add cache warming to the deploy script
     --use-npm                    Use npm

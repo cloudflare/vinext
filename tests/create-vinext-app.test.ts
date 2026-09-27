@@ -160,11 +160,13 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, "app/globals.css")).toContain('@import "tailwindcss"');
     expect(readFile(appPath, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
     expect(readFile(appPath, "vite.config.ts")).toContain("cache: responseStoreAdapter()");
-    expect(readFile(appPath, "wrangler.jsonc")).toContain('"main": "vinext/server/fetch-handler"');
-    expect(readFile(appPath, "wrangler.response-store.jsonc")).toContain(
-      '"main": "./node_modules/@cloudflare/workers-response-store/dist/service.js"',
+    expect(readFile(appPath, "cloudflare.config.ts")).toContain(
+      'entrypoint: "vinext/server/fetch-handler"',
     );
-    expect(readFile(appPath, ".gitignore")).toContain(".wrangler/");
+    expect(readFile(appPath, "cloudflare.config.ts")).toContain(
+      "await createWorkersResponseStoreServiceBindingConfig",
+    );
+    expect(readFile(appPath, ".gitignore")).toContain(".cloudflare/");
     expect(readFile(appPath, ".gitignore")).toContain("next-env.d.ts");
     expect(fs.existsSync(path.join(appPath, "next-env.d.ts"))).toBe(false);
 
@@ -177,9 +179,10 @@ describe("createVinextApp", () => {
     expect(pkg.scripts).toEqual({
       dev: "vite dev",
       build: "vite build",
-      start: "wrangler dev --config dist/server/wrangler.json",
-      deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
-      "deploy:response-store": "wrangler deploy --config wrangler.response-store.jsonc",
+      start: "vite preview",
+      deploy: "vinext-cloudflare deploy",
+      "deploy:response-store":
+        "cf deploy --prebuilt --mode production --worker fresh-app-response-store",
     });
     expect(pkg.dependencies).toMatchObject({
       react: "latest",
@@ -194,11 +197,11 @@ describe("createVinextApp", () => {
     expect(pkg.devDependencies).toMatchObject({
       tailwindcss: "latest",
       typescript: "latest",
-      vite: "latest",
+      vite: "8.3.0",
       "@vitejs/plugin-react": "latest",
       "@vitejs/plugin-rsc": "latest",
-      "@cloudflare/vite-plugin": "latest",
-      wrangler: "latest",
+      "@cloudflare/vite-plugin": "beta",
+      cf: "latest",
     });
   });
 
@@ -218,7 +221,7 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, "app/page.tsx")).toContain("pnpm run deploy");
     expect(readFile(appPath, "app/page.tsx")).not.toContain("--warm-cache");
     const pkg = readPkg(appPath);
-    expect(pkg.scripts?.deploy).toBe("vinext-cloudflare deploy --config dist/server/wrangler.json");
+    expect(pkg.scripts?.deploy).toBe("vinext-cloudflare deploy");
   });
 
   it("uses the selected package manager without installing Next.js", async () => {
@@ -243,7 +246,7 @@ describe("createVinextApp", () => {
       'pnpm add "vinext" "react-server-dom-webpack" "@vinext/cloudflare" "@cloudflare/workers-response-store"',
     );
     expect(calls).toContain(
-      'pnpm add -D "vite" "@vitejs/plugin-react" "@vitejs/plugin-rsc" "@cloudflare/vite-plugin" "wrangler"',
+      'pnpm add -D "vite@8.3.0" "@vitejs/plugin-react" "@vitejs/plugin-rsc" "@cloudflare/vite-plugin@beta" "cf@latest"',
     );
     expect(calls.some((command) => command.split(/\s+/).includes('"next"'))).toBe(false);
     expect(calls.some((command) => command.includes("typegen"))).toBe(false);
@@ -403,12 +406,15 @@ describe("create-vinext-app CLI", () => {
     try {
       await runCreateVinextAppCli(["--help"]);
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Usage: create-vinext-app"));
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--experimental-cf"));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--warm-cache"));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--no-warm-cache"));
       expect(logSpy).not.toHaveBeenCalledWith(
         expect.stringContaining("--experimental-warm-cdn-cache"),
       );
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining("--legacy-wrangler-cloudflare-init"),
+      );
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("--experimental-cf"));
     } finally {
       logSpy.mockRestore();
     }
@@ -437,7 +443,7 @@ describe("create-vinext-app CLI", () => {
     expect(fs.existsSync(path.join(appPath, "wrangler.response-store.jsonc"))).toBe(false);
   });
 
-  it.each(["--experimental-cf", "--experimental-cf=true"])(
+  it.each(["--experimental-cf", "--experimental-cf=true", "--experimental-cf=false"])(
     "generates a cf project through the shared init flow with %s",
     async (flag) => {
       const appPath = path.join(tmpDir, "cf-app");
@@ -445,6 +451,7 @@ describe("create-vinext-app CLI", () => {
         runCreateVinextAppCli([
           flag,
           appPath,
+          "--platform=cloudflare",
           "--cdn-cache=response-store",
           "--skip-install",
           "--disable-git",
@@ -485,11 +492,13 @@ describe("create-vinext-app CLI", () => {
     },
   );
 
-  it("keeps the Wrangler flow with --experimental-cf=false", async () => {
+  it("keeps the Wrangler flow only with --legacy-wrangler-cloudflare-init", async () => {
     const appPath = path.join(tmpDir, "wrangler-app");
     await withQuietConsole(() =>
       runCreateVinextAppCli([
-        "--experimental-cf=false",
+        "--legacy-wrangler-cloudflare-init",
+        "--experimental-cf",
+        "--cdn-cache=response-store",
         appPath,
         "--skip-install",
         "--disable-git",
@@ -499,15 +508,33 @@ describe("create-vinext-app CLI", () => {
     expect(fs.existsSync(path.join(appPath, "cloudflare.config.ts"))).toBe(false);
     expect(fs.existsSync(path.join(appPath, "wrangler.jsonc"))).toBe(true);
     expect(readPkg(appPath).devDependencies).not.toHaveProperty("cf");
+    expect(readPkg(appPath).devDependencies).toHaveProperty("wrangler", "latest");
+    expect(readPkg(appPath).devDependencies).toHaveProperty("@cloudflare/vite-plugin", "1");
+    expect(readPkg(appPath).scripts).toMatchObject({
+      start: "wrangler dev --config dist/server/wrangler.json",
+      deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
+      "deploy:response-store": "wrangler deploy --config wrangler.response-store.jsonc",
+    });
+    expect(readFile(appPath, "wrangler.response-store.jsonc")).toContain(
+      '"main": "./node_modules/@cloudflare/workers-response-store/dist/service.js"',
+    );
+    expect(readFile(appPath, ".gitignore")).toContain(".wrangler/");
+    expect(readFile(appPath, "tsconfig.json")).not.toContain(".cloudflare/types");
+    expect(readFile(appPath, "app/page.tsx")).toContain("with Wrangler");
   });
 
-  it("rejects experimental cf with the Node platform before creating files", async () => {
+  it("rejects legacy Wrangler with the Node platform before creating files", async () => {
     const appPath = path.join(tmpDir, "invalid-cf-app");
     await expect(
       withQuietConsole(() =>
-        runCreateVinextAppCli([appPath, "--platform=node", "--experimental-cf", "--yes"]),
+        runCreateVinextAppCli([
+          appPath,
+          "--platform=node",
+          "--legacy-wrangler-cloudflare-init",
+          "--yes",
+        ]),
       ),
-    ).rejects.toThrow("--experimental-cf requires --platform=cloudflare");
+    ).rejects.toThrow("--legacy-wrangler-cloudflare-init requires --platform=cloudflare");
     expect(fs.existsSync(appPath)).toBe(false);
   });
 });

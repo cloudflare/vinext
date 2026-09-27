@@ -444,16 +444,21 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
-  it("opts into typed Cloudflare config only on Cloudflare", async () => {
+  it("opts into legacy Wrangler config only on Cloudflare", async () => {
     const options = await resolveInitOptions(
-      ["--platform=cloudflare", "--experimental-cf", "--cdn-cache=none", "--data-cache=none"],
+      [
+        "--platform=cloudflare",
+        "--legacy-wrangler-cloudflare-init",
+        "--cdn-cache=none",
+        "--data-cache=none",
+      ],
       { env: {}, isInteractive: false },
     );
-    expect(options.cloudflare?.experimentalCf).toBe(true);
+    expect(options.cloudflare?.legacyWrangler).toBe(true);
     expect(
       (
         await resolveInitOptions(
-          ["--experimental-cf", "--cdn-cache=none", "--image-optimization=none"],
+          ["--legacy-wrangler-cloudflare-init", "--cdn-cache=none", "--image-optimization=none"],
           {
             env: { CODEX_THREAD_ID: "test" },
           },
@@ -461,11 +466,11 @@ describe("resolveInitOptions", () => {
       ).platform,
     ).toBe("cloudflare");
     await expect(
-      resolveInitOptions(["--platform=node", "--experimental-cf"], {
+      resolveInitOptions(["--platform=node", "--legacy-wrangler-cloudflare-init"], {
         env: {},
         isInteractive: false,
       }),
-    ).rejects.toThrow("--experimental-cf requires --platform=cloudflare");
+    ).rejects.toThrow("--legacy-wrangler-cloudflare-init requires --platform=cloudflare");
   });
 
   it("keeps prerender available for Node init", async () => {
@@ -475,6 +480,27 @@ describe("resolveInitOptions", () => {
       }),
     ).resolves.toEqual({ platform: "node", prerender: true, cloudflare: undefined });
   });
+
+  it.each(["--experimental-cf", "--experimental-cf=true", "--experimental-cf=false"])(
+    "ignores the retired %s flag without changing platform selection or config",
+    async (flag) => {
+      for (const platform of ["cloudflare", "node"]) {
+        const args = [`--platform=${platform}`];
+        const prompts = { env: {}, isInteractive: false };
+        expect(await resolveInitOptions([...args, flag], prompts)).toEqual(
+          await resolveInitOptions(args, prompts),
+        );
+      }
+      await expect(
+        resolveInitOptions([flag], { env: { CODEX_THREAD_ID: "test" } }),
+      ).rejects.toThrow("needs a deployment target");
+      const legacy = ["--legacy-wrangler-cloudflare-init"];
+      const prompts = { env: {}, isInteractive: false };
+      expect(await resolveInitOptions([...legacy, flag], prompts)).toEqual(
+        await resolveInitOptions(legacy, prompts),
+      );
+    },
+  );
 
   it("defaults Cloudflare init to no cache", async () => {
     await expect(resolveInitOptions([], { env: {}, isInteractive: false })).resolves.toEqual({

@@ -19,7 +19,7 @@ export type CloudflareInitOptions = {
   imageOptimization: InitImageOptimization;
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
-  experimentalCf?: boolean;
+  legacyWrangler?: boolean;
   prerender?: boolean;
 };
 
@@ -163,15 +163,6 @@ export function parseWarmCdnCacheArg(args: string[]): boolean | undefined {
   );
 }
 
-export function parseExperimentalCfArg(args: string[]): boolean | undefined {
-  return parseBooleanArg(
-    args,
-    "--experimental-cf",
-    undefined,
-    '--experimental-cf expects true or false when using the "--experimental-cf=value" form.',
-  );
-}
-
 function parseBooleanArg(
   args: string[],
   enabledFlag: string,
@@ -247,15 +238,20 @@ export async function resolveInitOptions(
   args: string[],
   options: PlatformPromptOptions = {},
 ): Promise<ResolvedInitOptions> {
-  const experimentalCf = parseExperimentalCfArg(args);
+  const legacyWrangler = parseBooleanArg(
+    args,
+    "--legacy-wrangler-cloudflare-init",
+    undefined,
+    '--legacy-wrangler-cloudflare-init expects true or false when using the "--legacy-wrangler-cloudflare-init=value" form.',
+  );
   const platform =
-    experimentalCf && !parsePlatformArg(args)
+    legacyWrangler && !parsePlatformArg(args)
       ? "cloudflare"
       : await resolveInitPlatform(args, options);
   const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
-  if (experimentalCf && platform !== "cloudflare") {
-    throw new Error("--experimental-cf requires --platform=cloudflare.");
+  if (legacyWrangler && platform !== "cloudflare") {
+    throw new Error("--legacy-wrangler-cloudflare-init requires --platform=cloudflare.");
   }
   const explicitPrerender = parsePrerenderArg(args);
   if (
@@ -292,7 +288,7 @@ export async function resolveInitOptions(
         ? {
             ...platformOptions,
             warmCdnCache,
-            ...(experimentalCf ? { experimentalCf } : {}),
+            ...(legacyWrangler ? { legacyWrangler } : {}),
             ...(prerender ? { prerender: true } : {}),
           }
         : undefined,

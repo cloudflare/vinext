@@ -113,21 +113,120 @@ vinext({ cache: responseStoreAdapter({ shards: 16 }) });
 
 Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/path refreshes and purges fan out across all shards. The option is disabled by default, and changing the count starts a new cache layout for the deployed Worker version.
 
-The default service-binding mode keeps the cache service in a separate Worker. `vinext init` creates `wrangler.response-store.jsonc` alongside the application config and adds a deployment script:
+### Service-binding mode
 
-```sh
-pnpm run deploy:response-store
+The default service-binding mode keeps the cache service in a separate Worker. `vinext init` defines both Workers in `cloudflare.config.ts` using the config helper:
+
+```ts
+// cloudflare.config.ts
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
+
+const responseStore = await createWorkersResponseStoreServiceBindingConfig({
+  worker: {
+    name: "my-app-response-store",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    observability: {
+      enabled: true,
+      logs: { enabled: true, invocationLogs: true },
+      traces: { enabled: true, headSamplingRate: 0.1 },
+    },
+  },
+  bucket: "my-app-response-store-cache-bodies",
+});
+
+export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+
+export default defineConfig({
+  worker: defineWorker({
+    ...responseStore.applicationWorker,
+    name: "my-app",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ...responseStore.applicationWorker.env,
+      ASSETS: bindings.assets(),
+    },
+  }),
+});
 ```
 
-Then deploy the application using its normal deploy command. The Response Store only needs redeploying when its package or Wrangler configuration changes. New application versions can be deployed normally.
+The helper owns the Response Store's R2 binding, SQLite Durable Object export and binding, cache settings, and application service/version-metadata bindings. It imports bindings and exports from your installed Cloudflare Vite plugin. Set `accountId` on the top-level `defineConfig` object if needed, not on a Worker. You can also pass it to the helper and use the returned `responseStore.accountId` there.
 
-For a single-Worker deployment, you can also consider using self-contained mode:
+Register the exported Worker alongside the application in `vite.config.ts`:
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+import { responseStoreServiceBinding } from "./cloudflare.config.ts";
+
+export default defineConfig({
+  plugins: [
+    vinext({ cache: responseStoreAdapter() }),
+    cloudflare({
+      viteEnvironment: { name: "rsc" },
+      auxiliaryWorkers: [{ config: responseStoreServiceBinding }],
+    }),
+  ],
+});
+```
+
+This example uses the App Router. For the Pages Router, omit `viteEnvironment: { name: "rsc" }`. Create the R2 bucket, build both Workers, and deploy the Response Store explicitly:
+
+```sh
+pnpm exec cf r2 buckets create --name=my-app-response-store-cache-bodies
+pnpm run build:vinext
+pnpm run deploy:response-store
+pnpm run deploy:vinext
+```
+
+Init generates `deploy:response-store` as `cf deploy --prebuilt --mode production --worker my-app-response-store` using your project's Worker name. `create-vinext-app` names the other scripts `build` and `deploy`. Both Workers build together, but application deployments do not deploy the Response Store. Redeploy it only when its package or config changes.
+
+### Self-contained mode
+
+For a single-Worker deployment, select self-contained mode in the adapter:
 
 ```ts
 vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
 ```
 
 This avoids a second Worker, but the application Worker owns the R2 bucket, Durable Object, and cache-enabled entrypoint, which may not be desired for some applications.
+
+Use the matching config helper. The adapter generates the required Worker exports during the build:
+
+```ts
+// cloudflare.config.ts
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersResponseStoreSelfContainedConfig } from "@vinext/cloudflare/cache/config";
+
+const cache = await createWorkersResponseStoreSelfContainedConfig({
+  worker: "my-app",
+  bucket: "my-app-response-store-cache-bodies",
+});
+
+export default defineConfig({
+  worker: defineWorker({
+    ...cache,
+    name: "my-app",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ...cache.env,
+      ASSETS: bindings.assets(),
+    },
+  }),
+});
+```
+
+Create the named R2 bucket before the first deployment. No auxiliary Worker or separate Response Store deployment is needed in this mode.
 
 ## Workers Cache and KV
 
@@ -149,6 +248,34 @@ Workers Cache can serve a response without rerunning the render stage. Middlewar
 
 This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
 
+Use `createWorkersCacheConfig()` to configure the response entrypoints and version metadata, and add the KV binding for the data adapter:
+
+```ts
+// cloudflare.config.ts
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
+
+const cache = await createWorkersCacheConfig();
+
+export default defineConfig({
+  worker: defineWorker({
+    ...cache,
+    name: "my-app",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ...cache.env,
+      ASSETS: bindings.assets(),
+      VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+    },
+  }),
+});
+```
+
+The helper disables caching on the application's default entrypoint and enables it on `VinextCachedResponse`. The source config owns these policies; vinext does not rewrite them in the Build Output.
+
 ## KV data cache
 
 You can use Workers KV without Workers Cache:
@@ -163,13 +290,28 @@ vinext({
 });
 ```
 
-Add the matching namespace to `wrangler.jsonc`:
+Add the matching namespace to `cloudflare.config.ts`:
 
-```jsonc
-{
-  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-namespace-id>" }],
-}
+```ts
+// cloudflare.config.ts
+import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+
+export default defineConfig({
+  worker: defineWorker({
+    name: "my-app",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-09-27",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ASSETS: bindings.assets(),
+      VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+    },
+  }),
+});
 ```
+
+Create the namespace with `cf kv namespaces create --title=my-app-cache` and replace `<your-namespace-id>` with its ID.
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
 
@@ -305,7 +447,7 @@ Add `--warm-cache-certify` to require reusable cache hits for every selected ent
 - Choose **KV only** when you want the simplest persistent cache and do not need Workers Cache to serve responses.
 - Choose **Static Assets** when response content is immutable for the lifetime of a deployment and should be produced during the build.
 
-You can run `vinext init --platform=cloudflare` to configure these choices. The generated Vite and Wrangler files are normal source files and can be adjusted later.
+You can run `vinext init --platform=cloudflare` to configure these choices. The generated Vite and Cloudflare config files are normal source files and can be adjusted later.
 
 ## Freshness and revalidation
 

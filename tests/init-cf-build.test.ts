@@ -11,15 +11,15 @@ const tempRoot = fs.mkdtempSync(path.join(webRoot, ".init-cf-build-"));
 
 afterAll(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 
-describe("experimental cf init build", () => {
-  it("builds and type-checks a create-vinext-app --experimental-cf project", () => {
+describe("default cf init build", () => {
+  it("builds and type-checks a default create-vinext-app Cloudflare project", () => {
     const root = path.join(tempRoot, "created-cf-app");
     const create = spawnSync(
       process.execPath,
       [
         path.resolve(import.meta.dirname, "../packages/create-vinext-app/dist/cli.js"),
         root,
-        "--experimental-cf",
+        "--platform=cloudflare",
         "--cdn-cache=response-store",
         "--skip-install",
         "--disable-git",
@@ -88,14 +88,24 @@ describe("experimental cf init build", () => {
   }, 150_000);
 
   it.each([
-    ["service-binding", "app", "response-store", "service-binding"],
-    ["pages-service-binding", "pages", "response-store", "service-binding"],
-    ["self-contained", "app", "response-store", "self-contained"],
-    ["workers-cache", "app", "workers-cache", undefined],
-    ["pages", "pages", "none", undefined],
+    ["service-binding", "app", "response-store", "service-binding", undefined],
+    ["pages-service-binding", "pages", "response-store", "service-binding", undefined],
+    ["self-contained", "app", "response-store", "self-contained", undefined],
+    ["workers-cache", "app", "workers-cache", undefined, undefined],
+    ["pages", "pages", "none", undefined, undefined],
+    [
+      "docs-service-binding",
+      "app",
+      "response-store",
+      "service-binding",
+      "### Service-binding mode",
+    ],
+    ["docs-self-contained", "app", "response-store", "self-contained", "### Self-contained mode"],
+    ["docs-workers-cache", "app", "workers-cache", undefined, "## Workers Cache and KV"],
+    ["docs-kv", "app", "data-cache", undefined, "## KV data cache"],
   ] as const)(
-    "builds generated %s config",
-    async (name, router, cdnCache, responseStoreMode) => {
+    "builds %s config",
+    async (name, router, cdnCache, responseStoreMode, docsSection) => {
       const root = path.join(tempRoot, name);
       fs.mkdirSync(path.join(root, router), { recursive: true });
       fs.writeFileSync(
@@ -130,15 +140,38 @@ describe("experimental cf init build", () => {
           install: false,
           _today: "2026-09-23",
           cloudflare: {
-            dataCache: "none",
+            dataCache:
+              docsSection && (cdnCache === "workers-cache" || cdnCache === "data-cache")
+                ? "kv"
+                : "none",
             cdnCache,
             responseStoreMode,
             imageOptimization: router === "pages" ? "cloudflare-images" : "none",
-            experimentalCf: true,
           },
         });
       } finally {
         log.mockRestore();
+      }
+      if (docsSection) {
+        const docs = fs.readFileSync(
+          path.resolve(import.meta.dirname, "../docs/caching.mdx"),
+          "utf8",
+        );
+        const section = docs.split(docsSection)[1].split(/\n##? /)[0];
+        for (const filename of ["cloudflare.config.ts", "vite.config.ts"]) {
+          const example = section.match(
+            new RegExp("```ts\\n// " + filename.replaceAll(".", "\\.") + "\\n([\\s\\S]*?)```"),
+          )?.[1];
+          if (filename === "cloudflare.config.ts") expect(example).toBeDefined();
+          if (example) {
+            fs.writeFileSync(
+              path.join(root, filename),
+              example
+                .replaceAll("my-app", `init-cf-${name}`)
+                .replaceAll("<your-namespace-id>", "0123456789abcdef0123456789abcdef"),
+            );
+          }
+        }
       }
       const vinext = path.join(webRoot, "node_modules", ".bin", "vinext");
       const build = spawnSync(vinext, ["build"], {
