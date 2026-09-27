@@ -17,10 +17,27 @@ const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const DATA_URL_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_URL__";
 const DATA_REQUESTS_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_REQUESTS__";
 const EVENTS_GLOBAL = "__SEARCH_PARAMS_GATE_EVENTS__";
+const CACHE_HANDLER_KEY = Symbol.for("vinext.cacheHandler");
+const RSC_REQUEST: RequestInit = { headers: { Accept: "text/x-component", RSC: "1" } };
 // Cache writes land after the response body ends, within this window.
 const CACHE_WRITE_WINDOW_MS = 2_000;
 
 type PageResponse = { body: string; cache: string | null; cacheControl: string; status: number };
+
+// The production server runs in this process, so its cache is the memory
+// cache handler it registered on globalThis. Returns every stored key for the
+// pathname, HTML or RSC, with or without a query.
+function storedKeys(pathname: string): string[] {
+  const store: unknown = Reflect.get(Reflect.get(globalThis, CACHE_HANDLER_KEY) ?? {}, "store");
+  if (!(store instanceof Map)) throw new Error("Expected the server's memory cache handler");
+  return [...store.keys()].filter(
+    (key): key is string =>
+      typeof key === "string" &&
+      (key.endsWith(`:${pathname}`) ||
+        key.includes(`:${pathname}:`) ||
+        key.includes(`:${pathname}?`)),
+  );
+}
 
 function testIdText(html: string, testId: string): string | undefined {
   return html.match(new RegExp(`data-testid="${testId}"[^>]*>(?:<!--[^>]*-->)*([^<]*)<`))?.[1];
@@ -88,8 +105,8 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
-  async function get(pathname: string): Promise<PageResponse> {
-    const response = await fetch(new URL(pathname, baseUrl));
+  async function get(pathname: string, init?: RequestInit): Promise<PageResponse> {
+    const response = await fetch(new URL(pathname, baseUrl), init);
     return {
       body: await response.text(),
       cache: response.headers.get("x-vinext-cache"),
@@ -127,6 +144,12 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     expect(miss.cache).toBe("MISS");
     expect(hit.status).toBe(200);
     expect(hit.cache).toBe("HIT");
+    // The HTML and RSC entries are stored without the query, which shows
+    // storedKeys() reads the cache the server writes to.
+    expect(storedKeys(pathname).sort()).toEqual([
+      expect.stringMatching(new RegExp(`:${pathname}:html$`)),
+      expect.stringMatching(new RegExp(`:${pathname}:rsc$`)),
+    ]);
     // Every fixture renders its marker outside the boundary, so a missing one
     // can't make two separate renders compare equal.
     expect(testIdText(miss.body, "render-id")).toBeTruthy();
@@ -140,13 +163,24 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     return miss;
   }
 
-  // Waits out the write window, then repeats URLs requested before it, so a
-  // delayed write under any of their keys, with or without the query, fails
-  // the test.
-  async function expectStillUnstored(urls: readonly string[]): Promise<void> {
+  // Waits out the write window, then asserts the server's cache holds no HTML
+  // or RSC entry for the URLs' pathnames, with or without the query, and that
+  // repeating the URLs doesn't HIT. The read path can reject a stored entry,
+  // so a miss alone can't show nothing was written.
+  async function expectStillUnstored(
+    urls: readonly string[],
+    rscUrls: readonly string[] = [],
+  ): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, CACHE_WRITE_WINDOW_MS));
-    for (const url of urls) {
-      const later = await get(url);
+    const pathnames = new Set(
+      [...urls, ...rscUrls].map((url) => new URL(url, baseUrl).pathname.replace(/\.rsc$/, "")),
+    );
+    for (const pathname of pathnames) expect(storedKeys(pathname), pathname).toEqual([]);
+    for (const [url, init] of [
+      ...urls.map((url) => [url, undefined] as const),
+      ...rscUrls.map((url) => [url, RSC_REQUEST] as const),
+    ]) {
+      const later = await get(url, init);
       expect(later.cache, url).not.toBe("HIT");
       expect(later.cacheControl, url).toContain("no-store");
     }
@@ -170,7 +204,13 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       expect(response.body).not.toContain('data-testid="search-fallback"');
     }
     expect(testIdText(second.body, "render-id")).not.toBe(testIdText(first.body, "render-id"));
-    await expectStillUnstored(urls);
+    // An RSC request renders the page without SSR, so it's checked on its own.
+    const rscUrl = `${pathname}.rsc?q=${crypto.randomUUID()}`;
+    const rsc = await get(rscUrl, RSC_REQUEST);
+    expect(rsc.status).toBe(200);
+    expect(rsc.cache).not.toBe("HIT");
+    expect(rsc.cacheControl).toContain("no-store");
+    await expectStillUnstored(urls, [rscUrl]);
   }
 
   describe("settle timing: the subtree reading the query resolves late", () => {
