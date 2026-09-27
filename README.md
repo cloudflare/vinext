@@ -781,7 +781,7 @@ Cache Rules and prevents distinct representation, rewrite, or interception
 identities from colliding. With a staged deploy (`--experimental-warm-cdn-cache`),
 App Router pages its cacheability manifest certifies static leave the query
 string out of their identity, so every query of the page shares one entry, as
-in Next.js. Responses that get a `Cache-Control` or `Vary` from a
+in Next.js. Responses that get a `Cache-Control` from a
 `next.config` `headers()` rule keep the query. See [Query strings](docs/caching.mdx#query-strings).
 
 Adapter declarations do not access the Workers runtime, so nothing throws at
