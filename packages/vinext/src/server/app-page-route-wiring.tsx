@@ -719,12 +719,14 @@ function hasStreamedIcons(metadata: Metadata): boolean {
 }
 
 function createStreamedIconKey(pathname: string, metadataHtml: string): string {
+  // Keep route identity opaque so crawlers cannot mistake the key for a URL.
+  const input = `${pathname}\0${metadataHtml}`;
   let hash = 2166136261;
-  for (let index = 0; index < metadataHtml.length; index++) {
-    hash ^= metadataHtml.charCodeAt(index);
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return `${pathname}:${(hash >>> 0).toString(36)}`;
+  return `vi${(hash >>> 0).toString(36)}`;
 }
 
 const STREAMED_ICON_KEY_PLACEHOLDER = "vinext-pending-streamed-icon-key";
