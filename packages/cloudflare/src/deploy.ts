@@ -2224,7 +2224,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       prerenderDecision.reason === "flag" ? "--prerender-all" : "vinext prerender config";
     const replacement = options.warmCdnCache
       ? "Routes will be rendered and warmed through the staged Worker instead."
-      : "Use --experimental-warm-cdn-cache to render and warm routes through the deployed Worker instead.";
+      : "Use --warm-cache to render and warm routes through the deployed Worker instead.";
     console.warn(`\n  Warning: ${trigger} is ignored by Cloudflare deploy. ${replacement}`);
   }
   // Step 5: Build

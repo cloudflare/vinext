@@ -287,7 +287,7 @@ describe("deploy prerender config wiring", () => {
       expect(runPrerenderMock).not.toHaveBeenCalled();
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining(
-          "vinext prerender config is ignored by Cloudflare deploy. Use --experimental-warm-cdn-cache",
+          "vinext prerender config is ignored by Cloudflare deploy. Use --warm-cache",
         ),
       );
       warn.mockRestore();
@@ -303,9 +303,7 @@ describe("deploy prerender config wiring", () => {
 
     expect(runPrerenderMock).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "--prerender-all is ignored by Cloudflare deploy. Use --experimental-warm-cdn-cache",
-      ),
+      expect.stringContaining("--prerender-all is ignored by Cloudflare deploy. Use --warm-cache"),
     );
     warn.mockRestore();
   });
@@ -337,7 +335,7 @@ describe("deploy prerender config wiring", () => {
 
   it.each([
     ["TPR despite an ignored prerender setting", "true", false],
-    ["explicit CDN warming", undefined, true],
+    ["explicit CDN warming without analytics", undefined, true],
     ["staged warming with configured prerendering", "true", true],
   ])("keeps %s when TPR is also enabled", async (_, prerender, warmCdn) => {
     writeProject(prerender, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
@@ -385,7 +383,7 @@ describe("deploy prerender config wiring", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
     resolveTPRRoutesMock.mockResolvedValueOnce({
-      routes: [{ path: "/missing", requests: 10 }],
+      routes: prerender ? [{ path: "/missing", requests: 10 }] : [],
       targetUrl: "https://vinext.dev",
     });
 
@@ -414,7 +412,7 @@ describe("deploy prerender config wiring", () => {
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledOnce();
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidatePaths: ["/missing"],
+        candidatePaths: prerender ? ["/missing"] : [],
         requestRouting: "uncached-stage",
         pathDiscoveryTarget: expect.objectContaining({ baseUrl: "https://vinext.dev" }),
       }),

@@ -253,7 +253,7 @@ export async function resolveInitOptions(
   const explicitPrerender = parsePrerenderArg(args);
   if (platform === "cloudflare" && explicitPrerender === true) {
     throw new Error(
-      "--prerender is only supported by Node init. For Cloudflare, use --experimental-warm-cdn-cache with Workers Cache or Workers Response Store.",
+      "--prerender is only supported by Node init. For Cloudflare, use --warm-cache with Workers Cache or Workers Response Store.",
     );
   }
   const supportsWarmCdnCache =

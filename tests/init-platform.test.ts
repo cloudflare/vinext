@@ -529,7 +529,7 @@ describe("resolveInitOptions", () => {
         { env: { CODEX_THREAD_ID: "test" } },
       ),
     ).rejects.toThrow(
-      "--prerender is only supported by Node init. For Cloudflare, use --experimental-warm-cdn-cache",
+      "--prerender is only supported by Node init. For Cloudflare, use --warm-cache",
     );
   });
 
