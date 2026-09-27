@@ -193,9 +193,7 @@ jobs:
             warm_cdn_cache: true
           - name: static-assets-cache
             project: static-assets-cache
-            worker_name: static-assets-cache
             working_directory: examples/static-assets-cache
-            wrangler_config: dist/server/wrangler.json
           - name: static-export
             project: static-export
             working_directory: examples/static-export
@@ -298,13 +296,21 @@ jobs:
         run: vp exec cf deploy --prebuilt --mode production --worker "$RESPONSE_STORE_WORKER_NAME"
 
       - name: Deploy to Cloudflare Workers (Production)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == ''
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: deploy --config ${{ matrix.example.wrangler_config }}
+
+      - name: Deploy Build Output with cf (Production)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp exec cf deploy --prebuilt --mode production
 
       - name: Bootstrap CDN warmup Worker (Production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.bootstrap_warm_cdn == true
@@ -536,7 +542,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           status=0
-          for worker in kv static-assets-cache; do
+          for worker in kv; do
             vp exec wrangler delete "pr-${PR_NUMBER}-${worker}" --force || status=1
           done
           exit "$status"

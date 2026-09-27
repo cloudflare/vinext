@@ -116,6 +116,7 @@ catalogs:
 
 overrides:
   "@apps/web>vite": "catalog:cloudflare-vite-v2"
+  "static-assets-cache>vite": "catalog:cloudflare-vite-v2"
   "vite@8.3.0>rolldown": 1.2.9
   vite: "catalog:"
   vitest: "catalog:"

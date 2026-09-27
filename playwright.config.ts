@@ -306,7 +306,7 @@ const projectServers = {
       : {
           // Vite's build lifecycle prerenders and packages the Static Assets cache.
           command:
-            "npx vp run vinext#build && npx vp run @vinext/cloudflare#build && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4214",
+            "npx vp run vinext#build && npx vp run @vinext/cloudflare#build && npx vp run build && npx vite preview --port 4214",
           cwd: "./examples/static-assets-cache",
           port: 4214,
           reuseExistingServer: !process.env.CI,

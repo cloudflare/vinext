@@ -4,7 +4,7 @@ import path from "node:path";
 import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 const staticCacheDir = path.resolve(
-  "examples/static-assets-cache/dist/client/_vinext/static-cache",
+  "examples/static-assets-cache/.cloudflare/output/v0/workers/default/assets/_vinext/static-cache",
 );
 const buildTimeSource = '<span id="render-source">build-time</span>';
 
