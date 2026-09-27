@@ -81,7 +81,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/image": {
     status: "supported",
     detail:
-      "local images served via /_next/image (resized when an images optimizer is configured); remote images via @unpic/react",
+      "local images served via /_next/image (resized when an images optimizer is configured); remote images with width and height via @unpic/react, other remote images (fill or dimensionless) as a plain <img>",
   },
   "next/legacy/image": {
     status: "supported",
