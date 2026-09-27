@@ -1207,8 +1207,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // Safety: when per-user auth headers are present and the developer hasn't
     // explicitly opted into caching with `cache: 'force-cache'` or an explicit
-    // `next.revalidate`, skip caching to prevent accidental cross-user data
-    // leakage. Developers who understand the implications can still force
+    // `next.revalidate`, skip the fetch cache so one user's response isn't
+    // reused for another through it. This doesn't keep the value out of a
+    // stored page (see below). Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
     // This is an automatic safety bypass, not an explicit opt-out, so it does
     // NOT mark the page dynamic via markDynamicUsage(), and a static page that

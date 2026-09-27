@@ -92,8 +92,8 @@ representation, rewrite and interception variants cannot collide. For App
 Router pages that the cacheability manifest of a staged
 `--experimental-warm-cdn-cache` deploy marks `static-candidate`, the identity
 leaves out the query string, so every query of the page shares one entry, as in
-Next.js. Other requests, and responses that a `next.config` `headers()` rule
-makes cacheable, keep the query in their identity. See
+Next.js. Other requests, and responses that get a `Cache-Control` or `Vary`
+from a `next.config` `headers()` rule, keep the query in their identity. See
 [the caching guide](https://vinext.dev/docs/guides/caching#query-strings).
 
 ### Workers Response Store
