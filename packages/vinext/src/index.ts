@@ -3701,7 +3701,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             env.command === "serve" &&
             hasCloudflarePlugin &&
             nextConfig?.aliases["next-intl/config"] &&
-            !config.environments?.rsc?.optimizeDeps?.noDiscovery
+            !(
+              config.environments?.rsc?.optimizeDeps?.noDiscovery ??
+              config.optimizeDeps?.noDiscovery
+            )
           ) {
             // Work around plugin-rsc's root probes discovering next-intl's
             // dependencies during the first render. Only root-resolvable deps
@@ -3728,7 +3731,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const additionalClientOptimizeIncludes: string[] = [];
           if (
             env.command === "serve" &&
-            nextConfig?.aliases["next-intl/config"] &&
             !(
               config.environments?.client?.optimizeDeps?.noDiscovery ??
               config.optimizeDeps?.noDiscovery
@@ -3739,12 +3741,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(config.environments?.client?.optimizeDeps?.exclude ?? []),
             ];
             // RSC exposes next-intl's private provider and Link modules as raw
-            // client references. Prebundle both use-intl entry points so these
+            // client references. Prebundle use-intl's available entry points so these
             // references share the same context as optimized application imports.
             try {
               const projectRequire = createRequire(path.join(root, "package.json"));
               const packageRequire = createRequire(projectRequire.resolve("next-intl"));
-              for (const id of ["use-intl", "use-intl/react"]) {
+              for (const id of [
+                "use-intl",
+                "use-intl/react",
+                // next-intl 3.x uses private provider and locale-hook exports.
+                "use-intl/_IntlProvider",
+                "use-intl/_useLocale",
+              ]) {
                 const include = `next-intl > ${id}`;
                 if (
                   excluded.includes("use-intl") ||
@@ -3757,12 +3765,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   additionalClientOptimizeIncludes.push(include);
                 } catch {}
               }
+              // The private Link reference also imports next/link on hydration.
+              // Discover it before the browser starts to avoid reloading React.
+              if (!excluded.includes("next") && !excluded.includes("next/link")) {
+                additionalClientOptimizeIncludes.push("next/link");
+              }
             } catch {}
-            // The private Link reference also imports next/link on hydration.
-            // Discover it before the browser starts to avoid reloading React.
-            if (!excluded.includes("next") && !excluded.includes("next/link")) {
-              additionalClientOptimizeIncludes.push("next/link");
-            }
           }
           const appClientInput: Record<string, string> = { index: VIRTUAL_APP_BROWSER_ENTRY };
           if (hasPagesDir) {

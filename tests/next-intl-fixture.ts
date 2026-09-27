@@ -8,10 +8,12 @@ export async function createNextIntlFixture({
   convention = "middleware",
   layout = "hoisted",
   cloudflare = true,
+  requestConfig = true,
 }: {
   convention?: string;
   layout?: string;
   cloudflare?: boolean;
+  requestConfig?: boolean;
 } = {}): Promise<string> {
   const fixture = path.resolve(process.cwd(), "tests/fixtures/ecosystem/next-intl");
   const nodeModules =
@@ -66,6 +68,42 @@ export async function createNextIntlFixture({
         'matcher: ["/", "/(en|de)/:path*"]',
       ),
     );
+    if (!requestConfig) {
+      await fs.rm(path.join(root, "i18n/request.ts"));
+      await fs.rm(middlewarePath);
+      const localeLayout = path.join(root, "app/[locale]/layout.tsx");
+      await fs.writeFile(
+        localeLayout,
+        (await fs.readFile(localeLayout, "utf8"))
+          .replace("hasLocale, NextIntlClientProvider", "NextIntlClientProvider")
+          .replace('import { getMessages } from "next-intl/server";', "")
+          .replace("hasLocale(locales, locale)", "locales.includes(locale as any)")
+          .replace(
+            "await getMessages()",
+            "(await import(`@vinext-test/next-intl/locales/${locale}.json`)).default",
+          )
+          .replace(
+            "messages={messages}",
+            'messages={messages} locale={locale} formats={{}} now={new Date(0)} timeZone="UTC"',
+          ),
+      );
+      const page = path.join(root, "app/[locale]/page.tsx");
+      await fs.writeFile(
+        page,
+        (await fs.readFile(page, "utf8"))
+          .replace(
+            'import { getTranslations, setRequestLocale } from "next-intl/server";',
+            'import { createTranslator } from "next-intl";',
+          )
+          .replace('import { Link } from "../../i18n/navigation";', 'import Link from "next/link";')
+          .replace("setRequestLocale(locale);", "")
+          .replace(
+            'await getTranslations("HomePage")',
+            'createTranslator({ locale, messages: (await import(`@vinext-test/next-intl/locales/${locale}.json`)).default, namespace: "HomePage" })',
+          )
+          .replace('href="/" locale="de"', 'href="/de"'),
+      );
+    }
     if (convention === "proxy") {
       await fs.mkdir(path.join(root, "src"));
       for (const dir of ["app", "i18n"])

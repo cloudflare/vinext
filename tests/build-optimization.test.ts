@@ -247,12 +247,42 @@ describe("next-intl dependency optimization", () => {
     "intl-messageformat",
   ];
   const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react", "next/link"];
+  const legacyClientDependencies = [
+    "next-intl > use-intl/_IntlProvider",
+    "next-intl > use-intl/_useLocale",
+  ];
 
   it.each([
     { scenario: "Cloudflare dev", expected: dependencies, clientExpected: clientDependencies },
     { scenario: "Node dev", cloudflare: false, expected: [], clientExpected: clientDependencies },
     { scenario: "production", command: "build", expected: [], clientExpected: [] },
     { scenario: "without next-intl", nextIntl: false, expected: [], clientExpected: [] },
+    {
+      scenario: "without request config",
+      requestConfig: false,
+      expected: [],
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "next-intl 3.x exports",
+      legacy: true,
+      expected: dependencies,
+      clientExpected: [...clientDependencies, ...legacyClientDependencies],
+    },
+    {
+      scenario: "top-level noDiscovery",
+      topLevelNoDiscovery: true,
+      expected: [],
+      clientExpected: [],
+    },
+    {
+      scenario: "environment discovery overrides top-level noDiscovery",
+      topLevelNoDiscovery: true,
+      noDiscovery: false,
+      clientNoDiscovery: false,
+      expected: dependencies,
+      clientExpected: clientDependencies,
+    },
     {
       scenario: "RSC noDiscovery",
       noDiscovery: true,
@@ -290,7 +320,8 @@ describe("next-intl dependency optimization", () => {
       await fsp.writeFile(path.join(root, "app/page.tsx"), "export default function Page() {}");
       await fsp.writeFile(path.join(root, "next.config.mjs"), "export default {};");
       await fsp.mkdir(path.join(root, "i18n"));
-      await fsp.writeFile(path.join(root, "i18n/request.ts"), "export default {};");
+      if (options.requestConfig !== false)
+        await fsp.writeFile(path.join(root, "i18n/request.ts"), "export default {};");
       // Only config resolution runs here. Mock installed packages with actual
       // files so missing/isolated dependencies exercise Node's resolver.
       const installed = options.missing ? dependencies.slice(0, 2) : dependencies;
@@ -311,7 +342,13 @@ describe("next-intl dependency optimization", () => {
           path.join(dir, "package.json"),
           JSON.stringify({
             name: "use-intl",
-            exports: { ".": "./index.js", "./react": "./react.js" },
+            exports: {
+              ".": "./index.js",
+              "./react": "./react.js",
+              ...(options.legacy
+                ? { "./_IntlProvider": "./index.js", "./_useLocale": "./react.js" }
+                : {}),
+            },
           }),
         );
         for (const file of ["index.js", "react.js"])
@@ -325,6 +362,7 @@ describe("next-intl dependency optimization", () => {
           build: {},
           plugins: options.cloudflare === false ? [] : [{ name: "vite-plugin-cloudflare" }],
           optimizeDeps: {
+            noDiscovery: options.topLevelNoDiscovery,
             include: ["user-selected"],
             exclude: options.excluded ? ["negotiator", "use-intl"] : [],
           },
@@ -349,9 +387,11 @@ describe("next-intl dependency optimization", () => {
       expect(includes).toContain("user-selected");
       expect(dependencies.filter((id) => includes.includes(id))).toEqual(options.expected);
       const clientIncludes = result.environments.client.optimizeDeps.include;
-      expect(clientDependencies.filter((id) => clientIncludes.includes(id))).toEqual(
-        options.clientExpected,
-      );
+      expect(
+        [...clientDependencies, ...legacyClientDependencies].filter((id) =>
+          clientIncludes.includes(id),
+        ),
+      ).toEqual(options.clientExpected);
       for (const name of ["client", "ssr"]) {
         const otherIncludes = result.environments[name].optimizeDeps.include ?? [];
         expect(dependencies.filter((id) => otherIncludes.includes(id))).toEqual([]);

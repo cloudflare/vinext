@@ -30,6 +30,13 @@ for (const options of [
     layout: "isolated",
     convention: "middleware",
   },
+  {
+    name: "explicit provider props without request config",
+    cloudflare: false,
+    layout: "isolated",
+    convention: "middleware",
+    requestConfig: false,
+  },
 ]) {
   test(`next-intl hydrates, navigates, and preserves context through HMR: ${options.name}`, async ({
     page,
