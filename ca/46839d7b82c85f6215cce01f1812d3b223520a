@@ -1,0 +1,41 @@
+.changeset/auto-_vinext_cloudflare_1.0.0-beta.10-5d1e970.md
+  s_91961782d2d263::t_321c52b058ec21 1-16
+.changeset/pre.json
+  s_91961782d2d263::t_df141f71ab9340 15,20,23,29-30,33,45,60,65-66
+packages/cloudflare/CHANGELOG.md
+  s_ec9872ba117679::t_8132dbd6554971 3-18
+packages/cloudflare/package.json
+  s_ec9872ba117679::t_b709e903eb3908 3
+packages/create-vinext-app/CHANGELOG.md
+  s_ec9872ba117679::t_c4fb6a9946847a 3-12
+packages/create-vinext-app/package.json
+  s_ec9872ba117679::t_4e55c820d5a6ff 3
+packages/vinext/CHANGELOG.md
+  s_ec9872ba117679::t_3b0789fdc83e71 3-33
+packages/vinext/package.json
+  s_ec9872ba117679::t_938f6acc8b4b73 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ca46839d7b82c85f6215cce01f1812d3b223520a",
+  "prompts": {},
+  "sessions": {
+    "s_91961782d2d263": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b497-6f2c-71f1-b1a7-1c633befa6d9",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "James <james@eli.cx>"
+    },
+    "s_ec9872ba117679": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7613f98f-3422-4778-b027-13938ffd9dfc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
