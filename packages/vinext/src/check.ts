@@ -96,7 +96,8 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/headers": { status: "supported" },
   "next/server": {
     status: "supported",
-    detail: "NextRequest, NextResponse, NextURL, userAgent, after, connection, URLPattern",
+    detail:
+      "NextRequest, NextResponse, NextFetchEvent, userAgent, userAgentFromString, after, connection, URLPattern",
   },
   "next/cache": {
     status: "supported",
@@ -109,11 +110,12 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/font/google": {
     status: "supported",
     detail:
-      "self-hosted with fallback metrics; falls back to the Google Fonts CDN when font options aren't statically analyzable",
+      "self-hosted with fallback metrics; falls back to the Google Fonts CDN when font options aren't statically analyzable or the font can't be fetched",
   },
   "next/font/local": {
     status: "supported",
-    detail: "className and variable modes both work; @font-face is generated at runtime",
+    detail:
+      "className and variable modes both work; @font-face is generated at runtime; no adjusted fallback metrics (adjustFontFallback is ignored)",
   },
   "next/og": { status: "supported", detail: "ImageResponse via @vercel/og" },
   "next/config": {
@@ -347,9 +349,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
       'auto-detected from (src/)i18n/request.{ts,tsx,js,jsx}, so createNextIntlPlugin isn\'t needed; client components can fail with "No intl context found" (cloudflare/vinext#177)',
   },
   "@clerk/nextjs": {
-    status: "partial",
+    status: "supported",
     detail:
-      "clerkMiddleware, auth.protect, ClerkProvider and client hooks work; auth() in Server Components is verified in production builds only",
+      "clerkMiddleware, auth()/auth.protect in Server Components, ClerkProvider and client hooks work",
   },
   "@auth/nextjs": {
     status: "unsupported",
@@ -367,7 +369,7 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "@sentry/nextjs": {
     status: "supported",
     detail:
-      "standard instrumentation.ts + withSentryConfig setup works; webpack/Turbopack plugin build features (auto-instrumentation, component annotation) don't run",
+      "standard instrumentation.ts + withSentryConfig setup works; webpack/Turbopack plugin build features (source map upload, auto-instrumentation, component annotation) don't run",
   },
   "@t3-oss/env-nextjs": { status: "supported" },
   tailwindcss: { status: "supported" },

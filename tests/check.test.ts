@@ -84,12 +84,19 @@ describe("scanImports", () => {
     expect(items[0].detail).toContain("publicRuntimeConfig");
   });
 
-  it("recognizes next/root-params", () => {
+  it("recognizes next/root-params and its dist path", () => {
     writeFile("app/[lang]/page.tsx", `import { lang } from "next/root-params";`);
+    writeFile(
+      "lib/root.ts",
+      `import { getRootParam } from "next/dist/server/request/root-params";`,
+    );
 
     const items = scanImports(tmpDir);
-    expect(items[0].name).toBe("next/root-params");
-    expect(items[0].status).toBe("supported");
+    expect(items.map((i) => i.name).sort()).toEqual([
+      "next/dist/server/request/root-params",
+      "next/root-params",
+    ]);
+    expect(items.every((i) => i.status === "supported")).toBe(true);
   });
 
   it("detects unsupported imports", () => {
@@ -947,7 +954,7 @@ describe("checkLibraries", () => {
     expect(items.every((i) => i.status === "unsupported")).toBe(true);
   });
 
-  it("detects @clerk/nextjs as partial", () => {
+  it("detects @clerk/nextjs as supported", () => {
     writeFile(
       "package.json",
       JSON.stringify({
@@ -957,7 +964,7 @@ describe("checkLibraries", () => {
 
     const items = checkLibraries(tmpDir);
     expect(items).toHaveLength(1);
-    expect(items[0].status).toBe("partial");
+    expect(items[0].status).toBe("supported");
     expect(items[0].detail).toContain("clerkMiddleware");
   });
 
@@ -1010,14 +1017,13 @@ describe("checkLibraries", () => {
         dependencies: {
           tailwindcss: "^3.0.0",
           "next-auth": "^4.0.0",
-          "@sentry/nextjs": "^7.0.0",
+          "next-intl": "^4.0.0",
         },
       }),
     );
 
     const items = checkLibraries(tmpDir);
-    expect(items[0].status).toBe("unsupported");
-    expect(items[items.length - 1].status).toBe("supported");
+    expect(items.map((i) => i.status)).toEqual(["unsupported", "partial", "supported"]);
   });
 });
 
