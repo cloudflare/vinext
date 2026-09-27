@@ -370,7 +370,13 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: vp exec cf workers versions create --prebuilt --mode production --preview-alias pr-${{ github.event.pull_request.number }}
+        run: |
+          if [[ "${{ matrix.example.name }}" == 'static-assets-cache' ]]; then
+            # A Worker Preview can be created before the production Worker exists.
+            vp exec cf previews deploy pr-${{ github.event.pull_request.number }} --prebuilt --mode production
+          else
+            vp exec cf workers versions create --prebuilt --mode production --preview-alias pr-${{ github.event.pull_request.number }}
+          fi
 
       - name: Deploy Named Preview Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == '' && matrix.example.worker_name
