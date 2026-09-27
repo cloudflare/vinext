@@ -47,8 +47,9 @@ export function formatDeployHelp(): string {
     --warm-cdn-probe-retries <n>
                              Cacheability-probe retries (default: 2)
     --warm-cdn-certify      With either warming mode, re-request warmed
-                             entries using headers only and require every planned
-                             entry to be reusable before promotion
+                             entries using headers only and require reusable hits.
+                             Traffic-aware warming requires every selected entry
+                             to be reusable before promotion
     --warm-cdn-readiness-timeout <ms>
                              Explicit total staged-readiness deadline (default:
                              120000)

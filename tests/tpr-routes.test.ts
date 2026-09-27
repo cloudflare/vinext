@@ -15,6 +15,49 @@ afterEach(() => {
 });
 
 describe("TPR route resolution", () => {
+  it.each([
+    ["missing token", "no CLOUDFLARE_API_TOKEN set"],
+    ["missing zone", "could not resolve zone for app.example.com"],
+    ["analytics failure", "analytics query failed: Zone analytics error: denied"],
+    ["empty traffic", "no traffic data available (first deploy?)"],
+  ])("preserves the typed warmup origin with %s", async (scenario, skipped) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-skip-"));
+    try {
+      const output = path.join(root, ".cloudflare/output/v0/workers/default");
+      fs.mkdirSync(output, { recursive: true });
+      fs.writeFileSync(
+        path.join(output, "worker.config.json"),
+        JSON.stringify({ domains: ["app.example.com"] }),
+      );
+      if (scenario === "missing token") delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = "token";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string | URL | Request) => {
+          const url = input instanceof Request ? input.url : input.toString();
+          if (url.includes("/zones?")) {
+            return Response.json({
+              success: true,
+              result: scenario === "missing zone" ? [] : [{ id: "zone-id" }],
+            });
+          }
+          return Response.json(
+            scenario === "analytics failure"
+              ? { errors: [{ message: "denied" }] }
+              : { data: { viewer: { zones: [] } } },
+          );
+        }),
+      );
+      await expect(resolveTPRRoutes({ root, typedConfig: true, window: 24 })).resolves.toEqual({
+        routes: [],
+        targetUrl: "https://app.example.com",
+        skipped,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a generated typed-config domain instead of a Wrangler config", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-typed-"));
     try {

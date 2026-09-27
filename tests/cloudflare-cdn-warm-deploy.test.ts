@@ -2188,12 +2188,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   });
 
   it.each([
-    { skipSelectedRoute: false, promote: true },
-    { skipSelectedRoute: true, promote: true },
-    { skipSelectedRoute: true, promote: false },
+    { trafficOnly: true, skipSelectedRoute: false, promote: true },
+    { trafficOnly: true, skipSelectedRoute: true, promote: true },
+    { trafficOnly: true, skipSelectedRoute: true, promote: false },
+    { trafficOnly: false, skipSelectedRoute: true, promote: true },
   ])(
-    "certifies all binding-backed paths (skipped route: $skipSelectedRoute, promote: $promote)",
-    async ({ skipSelectedRoute, promote }) => {
+    "certifies binding-backed paths (traffic only: $trafficOnly, skipped route: $skipSelectedRoute, promote: $promote)",
+    async ({ trafficOnly, skipSelectedRoute, promote }) => {
       const events: string[] = [];
       let warmAttempt = 0;
       writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
@@ -2262,6 +2263,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             rscPaths: [],
           };
         },
+        selectWarmPlan: trafficOnly ? (plan) => plan : undefined,
         statusSource: "data-cache",
         warmCdnCertify: true,
         warmCdnPromote: promote,
@@ -2271,7 +2273,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         warmCdnRetries: 0,
       });
 
-      if (skipSelectedRoute) {
+      if (trafficOnly && skipSelectedRoute) {
         await expect(deployment).rejects.toThrow(
           "only 1/2 cacheable entries completed their initial fill",
         );

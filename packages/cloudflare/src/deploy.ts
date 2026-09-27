@@ -1463,7 +1463,7 @@ async function deployUploadedVersionWithCdnWarmup(
                   options.optionalWarmTargetKeys!.has(cdnWarmTargetKey(target)),
                 ).length
               : 0;
-            if (options.warmCdnCertify) {
+            if ((hasPreparedWarmPlan || options.selectWarmPlan) && options.warmCdnCertify) {
               if (warmResult.warmed + optionalSkipped !== stagedWarmRequests) {
                 throw new Error(
                   `CDN warmup cannot certify the staged cache because only ${warmResult.warmed}/${stagedWarmRequests - optionalSkipped} cacheable entries completed their initial fill.`,
@@ -1540,7 +1540,7 @@ async function deployUploadedVersionWithCdnWarmup(
     );
   }
 
-  if (options.warmCdnCertify && !stagedCacheFilled) {
+  if (options.selectWarmPlan && options.warmCdnCertify && !stagedCacheFilled) {
     const error = new Error("CDN warmup cannot succeed because no cache entries were certified.");
     throw staged ? withStagedVersionCleanupNote(error) : error;
   }

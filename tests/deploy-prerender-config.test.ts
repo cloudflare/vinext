@@ -371,7 +371,7 @@ describe("deploy prerender config wiring", () => {
 
   it.each([
     ["all-route prerendering", "true", false, true],
-    ["explicit CDN warming", undefined, true, false],
+    ["explicit CDN warming without analytics", undefined, true, false],
     ["staged warming with configured prerendering", "true", true, false],
   ])("keeps %s when TPR is also enabled", async (_, prerender, warmCdn, prerenderLocally) => {
     writeProject(prerender, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
@@ -419,7 +419,8 @@ describe("deploy prerender config wiring", () => {
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
     if (!prerender) {
       resolveTPRRoutesMock.mockResolvedValueOnce({
-        routes: [{ path: "/missing", requests: 10 }],
+        routes: [],
+        targetUrl: "https://vinext.dev",
       });
     }
 
@@ -449,8 +450,11 @@ describe("deploy prerender config wiring", () => {
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledOnce();
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidatePaths: prerender ? [] : ["/missing"],
+        candidatePaths: [],
         requestRouting: "uncached-stage",
+        ...(!prerender && {
+          pathDiscoveryTarget: expect.objectContaining({ baseUrl: "https://vinext.dev" }),
+        }),
       }),
     );
     expect(fetchMock).toHaveBeenCalled();
