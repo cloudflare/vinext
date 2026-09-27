@@ -1525,6 +1525,92 @@ describe("_rewriteCachedFontCssToServedUrls", () => {
     );
   });
 
+  describe("cache written by a checkout at another path", () => {
+    // `.vinext/fonts/*/style.css` is keyed only by the Google Fonts URL and
+    // is never rewritten once present, so a checkout that was moved, copied,
+    // or restored from a CI or Docker cache reads CSS holding the absolute
+    // paths of whichever checkout wrote it, not its own `cacheDir`.
+    const cacheDir = "/home/user/new/.vinext/fonts";
+
+    it.each([
+      ["a moved checkout", "/home/user/old"],
+      ["a Finder duplicate with parentheses and a space", "/Users/me/project (copy)"],
+      ["an apostrophe", "/home/o'neil/app"],
+      ["regex metacharacters", "/srv/app+$1[x]"],
+      ["a Windows drive path written by the forward-slash writer", "C:/Users/me/project"],
+    ])("rewrites paths from %s", (_label, writtenRoot) => {
+      const css = `src: url(${writtenRoot}/.vinext/fonts/geist-4db05770f54f/geist-8e42e564.woff2) format('woff2');`;
+
+      const out = rewriteCachedFontCssToServedUrls(css, cacheDir);
+
+      expect(out).toBe(
+        "src: url(/_next/static/_vinext_fonts/geist-4db05770f54f/geist-8e42e564.woff2) format('woff2');",
+      );
+    });
+
+    it("rewrites every block of a multi-subset stylesheet and leaves the rest intact", () => {
+      const written = "/Users/me/project (copy)/.vinext/fonts/geist-4db05770f54f";
+      const css = [
+        "/* cyrillic */",
+        "@font-face {",
+        "  font-family: 'Geist';",
+        `  src: url(${written}/geist-8e42e564.woff2) format('woff2');`,
+        "  unicode-range: U+0301, U+0400-045F;",
+        "}",
+        "/* latin */",
+        "@font-face {",
+        "  font-family: 'Geist';",
+        `  src: url(${written}/geist-bd9fc9d8.woff2) format('woff2');`,
+        "  unicode-range: U+0000-00FF;",
+        "}",
+      ].join("\n");
+
+      const out = rewriteCachedFontCssToServedUrls(css, cacheDir);
+
+      expect(out).toBe(
+        css.replaceAll("/Users/me/project (copy)/.vinext/fonts", "/_next/static/_vinext_fonts"),
+      );
+    });
+
+    it("rewrites quoted url() references", () => {
+      const css = `src: url("/home/user/old/.vinext/fonts/geist-abc/geist-def.woff2") format('woff2');`;
+
+      expect(rewriteCachedFontCssToServedUrls(css, cacheDir)).toBe(
+        `src: url("/_next/static/_vinext_fonts/geist-abc/geist-def.woff2") format('woff2');`,
+      );
+    });
+
+    it("rewrites paths from both this checkout and another in the same stylesheet", () => {
+      const css = [
+        "src: url(/home/user/new/.vinext/fonts/geist-abc/a.woff2) format('woff2');",
+        "src: url(/home/user/old/.vinext/fonts/geist-abc/b.woff2) format('woff2');",
+      ].join("\n");
+
+      expect(rewriteCachedFontCssToServedUrls(css, cacheDir)).toBe(
+        [
+          "src: url(/_next/static/_vinext_fonts/geist-abc/a.woff2) format('woff2');",
+          "src: url(/_next/static/_vinext_fonts/geist-abc/b.woff2) format('woff2');",
+        ].join("\n"),
+      );
+    });
+
+    it("rewrites them under a custom assetsDir", () => {
+      const css = "src: url(/home/user/old/.vinext/fonts/geist-abc/geist-def.woff2);";
+
+      expect(rewriteCachedFontCssToServedUrls(css, cacheDir, "static")).toBe(
+        "src: url(/static/_vinext_fonts/geist-abc/geist-def.woff2);",
+      );
+    });
+
+    it("rewrites them when this checkout's cacheDir uses Windows separators", () => {
+      const css = "src: url(C:/Users/me/old/.vinext/fonts/geist-abc/geist-def.woff2);";
+
+      expect(rewriteCachedFontCssToServedUrls(css, "C:\\Users\\me\\new\\.vinext\\fonts")).toBe(
+        "src: url(/_next/static/_vinext_fonts/geist-abc/geist-def.woff2);",
+      );
+    });
+  });
+
   it("is a no-op when cacheDir is empty", () => {
     // Defensive guard: before Vite's configResolved hook runs, `cacheDir`
     // is the empty string. A naive split/join on "" would insert the URL

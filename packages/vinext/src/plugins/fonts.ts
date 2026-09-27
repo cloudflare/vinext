@@ -96,6 +96,7 @@ const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
  */
 const VINEXT_FONT_URL_NAMESPACE = "_vinext_fonts";
 const MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH = 500;
+const CACHED_FONT_DIR_SEGMENT = "/.vinext/fonts";
 
 function formatGoogleFontsErrorBody(body: string): string {
   const trimmed = body.trim();
@@ -130,9 +131,16 @@ function formatGoogleFontsErrorBody(body: string): string {
  * kept only so the exported helper can be driven directly from unit
  * tests without synthesizing a full plugin context.
  *
- * Uses split/join rather than regex because `cacheDir` is an absolute
- * filesystem path that may contain regex metacharacters on unusual
- * filesystems.
+ * The cached `style.css` is never rewritten once present, so it can hold the
+ * cache directory of a different checkout: one that was moved or copied, or
+ * a `.vinext/` restored from a CI or Docker cache. After replacing this
+ * checkout's `cacheDir`, any remaining `<dir>/.vinext/fonts/` path is
+ * resolved back to the directory it was written with, read from its
+ * enclosing `url(`, and replaced the same way.
+ *
+ * Uses split/join rather than regex because either cache directory is an
+ * absolute filesystem path that may contain regex metacharacters, quotes,
+ * or parentheses.
  */
 export function _rewriteCachedFontCssToServedUrls(
   css: string,
@@ -140,9 +148,28 @@ export function _rewriteCachedFontCssToServedUrls(
   assetsDir: string = DEFAULT_ASSETS_DIR,
 ): string {
   const normalizedCacheDir = toSlash(cacheDir);
-  if (!normalizedCacheDir || !css.includes(normalizedCacheDir)) return css;
-  const prefix = assetsDir || DEFAULT_ASSETS_DIR;
-  return css.split(normalizedCacheDir).join(`/${prefix}/${VINEXT_FONT_URL_NAMESPACE}`);
+  if (!normalizedCacheDir) return css;
+  const servedPrefix = `/${assetsDir || DEFAULT_ASSETS_DIR}/${VINEXT_FONT_URL_NAMESPACE}`;
+  let rewritten = css.split(normalizedCacheDir).join(servedPrefix);
+
+  for (
+    let segmentIndex = rewritten.indexOf(`${CACHED_FONT_DIR_SEGMENT}/`);
+    segmentIndex !== -1;
+    segmentIndex = rewritten.indexOf(`${CACHED_FONT_DIR_SEGMENT}/`)
+  ) {
+    const urlIndex = rewritten.lastIndexOf("url(", segmentIndex);
+    if (urlIndex === -1) break;
+    let pathStart = urlIndex + "url(".length;
+    if (rewritten[pathStart] === '"' || rewritten[pathStart] === "'") pathStart++;
+    const writtenCacheDir = rewritten.slice(
+      pathStart,
+      segmentIndex + CACHED_FONT_DIR_SEGMENT.length,
+    );
+    const next = rewritten.split(writtenCacheDir).join(servedPrefix);
+    if (next === rewritten) break;
+    rewritten = next;
+  }
+  return rewritten;
 }
 
 /**
