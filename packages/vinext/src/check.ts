@@ -47,24 +47,30 @@ function compareByStatus(a: { status: Status }, b: { status: Status }): number {
 }
 
 /**
- * App Router file conventions. Each convention lists the extensions that the
- * Next.js docs recognise for that file type — note that the boundary files
- * (loading/error/not-found) only exist as React components, so they don't
- * accept `.ts`/`.js`.
+ * Default `pageExtensions`. vinext resolves every route convention (pages,
+ * layouts, boundaries, route handlers, proxy/middleware) against this list.
  */
-const APP_ROUTER_EXTENSIONS = {
-  page: [".tsx", ".jsx", ".ts", ".js"],
-  layout: [".tsx", ".jsx", ".ts", ".js"],
-  loading: [".tsx", ".jsx"],
-  error: [".tsx", ".jsx"],
-  "not-found": [".tsx", ".jsx"],
-} as const satisfies Record<string, readonly string[]>;
+const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 
-type AppRouterFileType = keyof typeof APP_ROUTER_EXTENSIONS;
+type AppRouterFileType = "page" | "layout" | "route" | "loading" | "error" | "not-found";
 
-/** True if `file` is an App Router file of the given convention. */
-function isAppRouterFile(file: string, type: AppRouterFileType): boolean {
-  return APP_ROUTER_EXTENSIONS[type].some((ext) => file.endsWith(`${type}${ext}`));
+/**
+ * True if `relFile` (relative to the app directory) is an App Router file of
+ * the given convention. Files inside private `_folder` segments are not routes.
+ */
+function isAppRouterFile(relFile: string, type: AppRouterFileType): boolean {
+  const segments = relFile.split("/");
+  const basename = segments.pop() ?? "";
+  if (segments.some((segment) => segment.startsWith("_"))) return false;
+  return PAGE_EXTENSIONS.some((ext) => basename === `${type}${ext}`);
+}
+
+/** The first `<name><ext>` file found in `dir` for the default page extensions. */
+function findConventionFile(dir: string, name: string): string | null {
+  for (const ext of PAGE_EXTENSIONS) {
+    if (fs.existsSync(path.join(dir, `${name}${ext}`))) return `${name}${ext}`;
+  }
+  return null;
 }
 
 // ── Import support map ─────────────────────────────────────────────────────
@@ -1048,56 +1054,62 @@ export function checkConventions(root: string): CheckItem[] {
   const pagesDir = findDir(root, "pages", "src/pages");
   const appDirPath = findDir(root, "app", "src/app");
 
-  const hasProxy =
-    fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
-  const hasMiddleware =
-    fs.existsSync(path.join(root, "middleware.ts")) ||
-    fs.existsSync(path.join(root, "middleware.js"));
+  // proxy/middleware live next to app/ and pages/: in src/ when those resolve
+  // there, otherwise at the root (mirrors the plugin's base-dir detection).
+  const srcDir = path.join(root, "src");
+  const usesSrcDir =
+    pagesDir !== path.join(root, "pages") &&
+    appDirPath !== path.join(root, "app") &&
+    (pagesDir !== null || appDirPath !== null);
+  const conventionDir = usesSrcDir ? srcDir : root;
+  const conventionPrefix = usesSrcDir ? "src/" : "";
+  const proxyFile = findConventionFile(conventionDir, "proxy");
+  const middlewareFile = findConventionFile(conventionDir, "middleware");
 
   if (pagesDir !== null) {
-    const isSrc = pagesDir.includes("src/pages");
+    const isSrc = pagesDir === path.join(srcDir, "pages");
     items.push({
       name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
     });
 
-    // Count pages
-    const pageFiles = routeFiles(pagesDir);
+    // Count pages. `_app`, `_document` and `_error` are only special at the
+    // pages root; API routes are the files under `pages/api/`.
+    const pageFiles = routeFiles(pagesDir).map((f) => path.relative(pagesDir, f));
+    const isSpecial = (f: string, name: string) => /^[^/.]+/.exec(f)?.[0] === name;
+    const apiRoutes = pageFiles.filter((f) => f.startsWith("api/"));
     const pages = pageFiles.filter(
       (f) =>
-        !f.includes("/api/") &&
-        !f.includes("_app") &&
-        !f.includes("_document") &&
-        !f.includes("_error"),
+        !f.startsWith("api/") &&
+        !isSpecial(f, "_app") &&
+        !isSpecial(f, "_document") &&
+        !isSpecial(f, "_error"),
     );
-    const apiRoutes = pageFiles.filter((f) => f.includes("/api/"));
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
     if (apiRoutes.length) {
       items.push({ name: `${apiRoutes.length} API route(s)`, status: "supported" });
     }
 
     // Check for _app, _document
-    if (pageFiles.some((f) => f.includes("_app"))) {
+    if (pageFiles.some((f) => isSpecial(f, "_app"))) {
       items.push({ name: "Custom _app", status: "supported" });
     }
-    if (pageFiles.some((f) => f.includes("_document"))) {
+    if (pageFiles.some((f) => isSpecial(f, "_document"))) {
       items.push({ name: "Custom _document", status: "supported" });
     }
   }
 
   if (appDirPath !== null) {
-    const isSrc = appDirPath.includes("src/app");
+    const isSrc = appDirPath === path.join(srcDir, "app");
     items.push({
       name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
     });
 
-    const appFiles = routeFiles(appDirPath);
+    const appFiles = routeFiles(appDirPath).map((f) => path.relative(appDirPath, f));
     const pages = appFiles.filter((f) => isAppRouterFile(f, "page"));
     const layouts = appFiles.filter((f) => isAppRouterFile(f, "layout"));
-    const routes = appFiles.filter(
-      (f) => f.endsWith("route.tsx") || f.endsWith("route.ts") || f.endsWith("route.js"),
-    );
+    const routes = appFiles.filter((f) => isAppRouterFile(f, "route"));
     const loadings = appFiles.filter((f) => isAppRouterFile(f, "loading"));
     const errors = appFiles.filter((f) => isAppRouterFile(f, "error"));
     const notFounds = appFiles.filter((f) => isAppRouterFile(f, "not-found"));
@@ -1114,10 +1126,19 @@ export function checkConventions(root: string): CheckItem[] {
       items.push({ name: `${notFounds.length} not-found page(s)`, status: "supported" });
   }
 
-  if (hasProxy) {
-    items.push({ name: "proxy.ts (Next.js 16)", status: "supported" });
-  } else if (hasMiddleware) {
-    items.push({ name: "middleware.ts (deprecated in Next.js 16)", status: "supported" });
+  if (proxyFile && middlewareFile) {
+    items.push({
+      name: `Both ${conventionPrefix}${middlewareFile} and ${conventionPrefix}${proxyFile}`,
+      status: "unsupported",
+      detail: `only one is allowed — keep ${conventionPrefix}${proxyFile} and remove ${conventionPrefix}${middlewareFile}`,
+    });
+  } else if (proxyFile) {
+    items.push({ name: `${conventionPrefix}${proxyFile} (Next.js 16)`, status: "supported" });
+  } else if (middlewareFile) {
+    items.push({
+      name: `${conventionPrefix}${middlewareFile} (deprecated in Next.js 16)`,
+      status: "supported",
+    });
   }
 
   if (pagesDir === null && appDirPath === null) {
@@ -1128,26 +1149,14 @@ export function checkConventions(root: string): CheckItem[] {
     });
   }
 
-  // Check for "type": "module" in package.json
-  const pkgPath = path.join(root, "package.json");
-  if (fs.existsSync(pkgPath)) {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-    if (pkg.type !== "module") {
-      items.push({
-        name: 'Missing "type": "module" in package.json',
-        status: "unsupported",
-        detail: "required for Vite — vinext init will add it automatically",
-      });
-    }
-  }
-
   // Scan all source files once for per-file checks:
   //   - ViewTransition import from react
   //   - free uses of __dirname / __filename (CJS globals, not available in ESM)
   //
   // For __dirname/__filename we use hasFreeCjsGlobal(), a single-pass scanner that
   // skips string literals, template literals, and comments before testing for the
-  // identifier, so tokens inside those contexts are never matched.
+  // identifier, so tokens inside those contexts are never matched. next.config.*
+  // is skipped: vinext's config loader injects these globals the way Next.js does.
   const runtimeSourceFiles = sourceFiles.filter(isRuntimeSourceFile);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   const viewTransitionFiles: string[] = [];
@@ -1160,7 +1169,7 @@ export function checkConventions(root: string): CheckItem[] {
       viewTransitionFiles.push(rel);
     }
 
-    if (hasFreeCjsGlobal(content)) {
+    if (hasFreeCjsGlobal(content) && !/^next\.config\.[cm]?[jt]s$/.test(rel)) {
       cjsGlobalFiles.push(rel);
     }
   }
@@ -1199,8 +1208,8 @@ export function checkConventions(root: string): CheckItem[] {
       if (stringPluginRegex.test(content)) {
         items.push({
           name: `PostCSS string-form plugins (${configFile})`,
-          status: "partial",
-          detail: "string-form PostCSS plugins need resolution — vinext handles this automatically",
+          status: "supported",
+          detail: "string-form PostCSS plugins are resolved automatically by vinext",
         });
       }
       break; // Only check the first config file found
@@ -1210,9 +1219,9 @@ export function checkConventions(root: string): CheckItem[] {
   if (cjsGlobalFiles.length > 0) {
     items.push({
       name: "__dirname / __filename (CommonJS globals)",
-      status: "unsupported",
+      status: "partial",
       detail:
-        "CJS globals unavailable in ESM — use fileURLToPath(import.meta.url) / dirname(...), or import.meta.dirname / import.meta.filename (Node 22+)",
+        "provided in server code, but they point at the built server output rather than your source tree (reading files next to the source won't work once built), and they are not defined in client code",
       files: cjsGlobalFiles,
     });
   }
@@ -1357,6 +1366,9 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     for (const item of allItems) {
       if (item.status === "partial") {
         lines.push(`    \x1b[33m~\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
+        for (const f of item.files ?? []) {
+          lines.push(`       \x1b[90m${f}\x1b[0m`);
+        }
       }
     }
   }
@@ -1368,12 +1380,13 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     lines.push(`    Run \x1b[36mvinext init\x1b[0m to set up your project automatically`);
     lines.push("");
     lines.push("  Or manually:");
-    lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
     lines.push(
-      `    2. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-react${hasAppRouter ? " @vitejs/plugin-rsc react-server-dom-webpack" : ""}\x1b[0m`,
+      `    1. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-react${hasAppRouter ? " @vitejs/plugin-rsc react-server-dom-webpack" : ""}\x1b[0m`,
     );
-    lines.push(`    3. Create vite.config.ts (see docs)`);
-    lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);
+    lines.push(
+      `    2. Replace the next scripts in package.json with \x1b[36mvinext dev\x1b[0m / \x1b[36mvinext build\x1b[0m / \x1b[36mvinext start\x1b[0m`,
+    );
+    lines.push(`    3. Run: \x1b[36mvinext dev\x1b[0m`);
   }
 
   lines.push("");
