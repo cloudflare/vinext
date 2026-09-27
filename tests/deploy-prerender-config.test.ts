@@ -366,7 +366,7 @@ export function createBuilder(config) {
 
   it.each([
     ["TPR despite an ignored prerender setting", "true", false],
-    ["explicit CDN warming without analytics", undefined, true],
+    ["explicit cache warming without analytics", undefined, true],
     ["staged warming with configured prerendering", "true", true],
   ])("keeps %s when TPR is also enabled", async (_, prerender, warmCdn) => {
     writeProject(prerender, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
@@ -722,20 +722,23 @@ export function createBuilder(config) {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("runs static export during deploy when output export is configured inline", async () => {
-    writeProjectWithInlineNextConfig('{ output: "export" }');
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+  it.each([undefined, true])(
+    "runs static export during deploy (prerenderAll: %s)",
+    async (prerenderAll) => {
+      writeProjectWithInlineNextConfig('{ output: "export" }');
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true });
+      await deploy({ root: tmpDir, skipBuild: true, prerenderAll });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        root: tmpDir,
-        concurrency: undefined,
-        nextConfig: expect.objectContaining({ output: "export" }),
-      }),
-    );
-  });
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          root: tmpDir,
+          concurrency: undefined,
+          nextConfig: expect.objectContaining({ output: "export" }),
+        }),
+      );
+    },
+  );
 
   it("passes deploy prerender concurrency through static export", async () => {
     writeProjectWithInlineNextConfig('{ output: "export" }');

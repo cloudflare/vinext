@@ -2206,7 +2206,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     vinextPrerenderConfig,
     nextOutput: nextConfig.output,
   });
-  const shouldPrerenderLocally = prerenderDecision?.reason === "next-export";
+  const shouldPrerenderLocally = nextConfig.output === "export";
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
   const hasStagedRequestRouting =
@@ -2335,7 +2335,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   // Step 6a: static export still requires local prerendered artifacts. Worker
-  // deployments render through the deployed Worker during CDN pre-warming.
+  // deployments render through the deployed Worker during cache warming.
   let prerenderResult: Awaited<ReturnType<typeof runPrerender>> | undefined = undefined;
   if (shouldPrerenderLocally) {
     console.log("\n  Pre-rendering all routes (output: 'export')...");

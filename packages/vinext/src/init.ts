@@ -536,7 +536,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   if (platform === "cloudflare" && options.prerender) {
     throw new Error(
-      "Cloudflare init does not configure prerendering. Use CDN pre-warming during deploy instead.",
+      "Cloudflare init does not configure prerendering. Use cache warming during deploy instead.",
     );
   }
   const exec =
