@@ -280,7 +280,7 @@ let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
  *
  * ```ts
  * import { vinext } from "vinext";
- * import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+ * import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
  *
  * export default defineConfig({
  *   plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })],

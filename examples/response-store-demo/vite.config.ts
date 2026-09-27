@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
 import type { ResponseStoreLocationHint } from "@cloudflare/workers-response-store";

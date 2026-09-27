@@ -37,10 +37,8 @@ import {
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
-import {
-  cdnAdapter,
-  workersCacheCdnAdapter,
-} from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
 import {
   responseStoreAdapter,
   type ResponseStoreAdapterOptions,
@@ -136,10 +134,10 @@ describe("generateCacheAdaptersModule", () => {
 
   it("wires both adapters and guards against double registration", () => {
     const code = generateCacheAdaptersModule({
-      cdn: { adapter: "@vinext/cloudflare/cache/cdn-adapter" },
+      cdn: { adapter: "@vinext/cloudflare/cache/workers-cache-cdn-adapter" },
       data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter" },
     });
-    expect(code).toContain(`from "@vinext/cloudflare/cache/cdn-adapter";`);
+    expect(code).toContain(`from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";`);
     expect(code).toContain(`from "@vinext/cloudflare/cache/kv-data-adapter";`);
     expect(code).toContain("registerDataCacheHandler(() => __vinextDataAdapterFactory(");
     expect(code).toContain("registerCdnCacheAdapter(() => __vinextCdnAdapterFactory(");
@@ -164,7 +162,7 @@ describe("generateCacheAdaptersModule", () => {
 
   it("logs registration failures without printing raw Error stack traces", () => {
     const code = generateCacheAdaptersModule({
-      cdn: { adapter: "@vinext/cloudflare/cache/cdn-adapter" },
+      cdn: { adapter: "@vinext/cloudflare/cache/workers-cache-cdn-adapter" },
       data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter" },
     });
     expect(code).toContain("function __vinextFormatAdapterError(error)");

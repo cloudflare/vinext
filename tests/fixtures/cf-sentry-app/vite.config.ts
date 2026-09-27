@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { workersCacheCdnAdapter } from "../../../packages/cloudflare/src/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "../../../packages/cloudflare/src/cache/workers-cache-cdn-adapter";
 import { responseStoreAdapter } from "../../../packages/cloudflare/src/cache/response-store-adapter";
 
 const workersCache = process.env.VINEXT_SENTRY_CACHE === "workers";

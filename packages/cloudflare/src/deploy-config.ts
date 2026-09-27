@@ -10,7 +10,7 @@ import {
 import {
   DEFAULT_CDN_VERSION_METADATA_BINDING,
   type CdnAdapterOptions,
-} from "./cache/cdn-adapter.js";
+} from "./cache/workers-cache-cdn-adapter.js";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");

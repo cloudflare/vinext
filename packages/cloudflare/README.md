@@ -8,7 +8,7 @@ This package provides Cloudflare-specific cache and image backends for vinext:
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the
   data cache (`fetch`, `"use cache"`, `unstable_cache`) with a Workers KV
   namespace.
-- **`workersCacheCdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — delegates
+- **`workersCacheCdnAdapter()`** (`@vinext/cloudflare/cache/workers-cache-cdn-adapter`) — delegates
   page-level ISR serving and revalidation to Cloudflare Workers Cache through
   an automatically generated cache-enabled response entrypoint.
 - **`responseStoreAdapter()`** (`@vinext/cloudflare/cache/response-store-adapter`) —
@@ -41,6 +41,7 @@ export default defineConfig({
 ### Workers Cache
 
 `cdnAdapter` remains available as a deprecated alias of `workersCacheCdnAdapter`.
+The previous `@vinext/cloudflare/cache/cdn-adapter` import path also remains supported.
 
 `workersCacheCdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
 Worker entrypoints: the default entrypoint runs middleware and request-time
@@ -50,7 +51,7 @@ write these settings and the version metadata binding to the generated
 `dist/server/wrangler.json`.
 
 ```ts
-import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 
 vinext({ cache: { cdn: workersCacheCdnAdapter() } });
 ```

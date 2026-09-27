@@ -355,7 +355,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
   it("rejects replacing an existing cache configuration with Workers Response Store", () => {
     const input = `import vinext from "vinext";
-import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })] };
 `;
 
@@ -1064,12 +1064,17 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     ).toContain('workersCacheCdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
   });
 
-  it.each(["workersCacheCdnAdapter", "cdnAdapter"])(
-    "aligns an existing %s with a custom version metadata binding",
-    (adapter) => {
+  it.each([
+    ["workers-cache-cdn-adapter", "workersCacheCdnAdapter"],
+    ["workers-cache-cdn-adapter", "cdnAdapter"],
+    ["cdn-adapter", "workersCacheCdnAdapter"],
+    ["cdn-adapter", "cdnAdapter"],
+  ])(
+    "aligns an existing %s import of %s with a custom version metadata binding",
+    (source, adapter) => {
       const input = `import { defineConfig } from "vite";
 import vinext from "vinext";
-import { ${adapter} } from "@vinext/cloudflare/cache/cdn-adapter";
+import { ${adapter} } from "@vinext/cloudflare/cache/${source}";
 
 export default defineConfig({
   plugins: [vinext({ cache: { cdn: ${adapter}() } })],

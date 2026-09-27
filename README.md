@@ -704,14 +704,14 @@ The cache is pluggable. The default `MemoryCacheHandler` works out of the box. S
 Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships Cloudflare adapters for this:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
-- **`workersCacheCdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
+- **`workersCacheCdnAdapter()`** (`@vinext/cloudflare/cache/workers-cache-cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
 
 The two fill different slots and can be used together:
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 export default defineConfig({

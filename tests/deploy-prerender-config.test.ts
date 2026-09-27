@@ -136,7 +136,9 @@ function writeProject(prerenderConfig: string | undefined, cacheConfig?: string)
         ? ['import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter";']
         : []),
       ...(cacheConfig?.includes("workersCacheCdnAdapter")
-        ? ['import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";']
+        ? [
+            'import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter";',
+          ]
         : []),
       "",
       "export default defineConfig({",
@@ -220,7 +222,7 @@ function writeApiOnlyProject(): void {
     [
       'import { defineConfig } from "vite";',
       'import { cloudflare } from "@cloudflare/vite-plugin";',
-      'import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";',
+      'import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter";',
       'import vinext from "../packages/vinext/src/index";',
       "",
       "export default defineConfig({",

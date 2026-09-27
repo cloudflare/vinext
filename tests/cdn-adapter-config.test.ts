@@ -10,7 +10,7 @@ import {
 import {
   workersCacheCdnAdapter,
   DEFAULT_CDN_VERSION_METADATA_BINDING,
-} from "../packages/cloudflare/src/cache/cdn-adapter.js";
+} from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
 import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
 import { resolveCdnAdapterConfig } from "../packages/cloudflare/src/deploy-config.js";
 import { assertCdnVersionMetadataConfig } from "../packages/cloudflare/src/wrangler-version-metadata.js";
