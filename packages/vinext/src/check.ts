@@ -968,16 +968,33 @@ function findNextConfigPath(root: string): string | null {
 }
 
 /**
- * The `appDir` option passed to `vinext()` in the Vite config: the string when
- * it is a literal, `null` when present but not statically readable, and
- * `undefined` when absent.
+ * The base directory set by `vinext({ appDir })` in the Vite config: the
+ * resolved path when it is a string literal written inline in the `vinext()`
+ * call and resolves inside the project, `null` when an `appDir` is present but
+ * can't be resolved that way (a variable, a Vite `root`, a path outside the
+ * project), and `undefined` when the Vite config never mentions `appDir`.
  */
 function readVinextAppDirOption(root: string): string | null | undefined {
   const viteConfigPath = findViteConfigPath(root);
   if (!viteConfigPath) return undefined;
   const source = fs.readFileSync(viteConfigPath, "utf-8");
   if (!/\bappDir\s*:/.test(source)) return undefined;
-  return /\bappDir\s*:\s*(["'])([^"'\n]+)\1/.exec(source)?.[2] ?? null;
+  if (/\broot\s*:/.test(source)) return null;
+  const literal = /\bvinext\s*\(\s*\{[^{}]*?\bappDir\s*:\s*(["'])([^"'\n]+)\1/.exec(source)?.[2];
+  if (literal === undefined) return null;
+  const baseDir = path.resolve(root, literal);
+  const rel = path.relative(root, baseDir);
+  return rel.startsWith("..") || path.isAbsolute(rel) ? null : baseDir;
+}
+
+/**
+ * Whether `rel` is a next.config the loader provides `__dirname`/`__filename`
+ * for: TypeScript configs get them injected, and `.cjs` or CommonJS-flavoured
+ * `.js` configs are loaded with `require`. An ESM `.js` config gets neither.
+ */
+function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
+  if (/^next\.config\.(?:ts|mts|cjs)$/.test(rel)) return true;
+  return rel === "next.config.js" && !/^\s*(?:import\s*[\w{*"']|export\s)/m.test(content);
 }
 
 /** The dotted `pageExtensions` vinext resolves route conventions with. */
@@ -1110,7 +1127,7 @@ export function checkConventions(root: string): CheckItem[] {
   const appDirOption = readVinextAppDirOption(root);
   const baseDir =
     typeof appDirOption === "string"
-      ? path.resolve(root, appDirOption)
+      ? appDirOption
       : findDir(root, "app", "pages") === null && findDir(root, "src/app", "src/pages") !== null
         ? srcDir
         : root;
@@ -1217,7 +1234,10 @@ export function checkConventions(root: string): CheckItem[] {
     items.push({
       name: "No pages/ or app/ directory found",
       status: "unsupported",
-      detail: "vinext requires a pages/ or app/ directory",
+      detail:
+        appDirOption === null
+          ? "vinext requires a pages/ or app/ directory (the vinext({ appDir }) option in the Vite config couldn't be read statically)"
+          : "vinext requires a pages/ or app/ directory",
     });
   }
 
@@ -1243,7 +1263,7 @@ export function checkConventions(root: string): CheckItem[] {
       viewTransitionFiles.push(rel);
     }
 
-    if (hasFreeCjsGlobal(content) && !/^next\.config\.(?:ts|mts|js|cjs)$/.test(rel)) {
+    if (hasFreeCjsGlobal(content) && !isNextConfigWithCjsGlobals(rel, content)) {
       cjsGlobalFiles.push(rel);
     }
   }

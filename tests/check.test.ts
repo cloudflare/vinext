@@ -1092,6 +1092,35 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
   });
 
+  it.each([
+    [
+      "an appDir outside the vinext() call",
+      `const docs = { appDir: "src" };\nexport default { plugins: [vinext()] };`,
+    ],
+    ["a Vite root", `export default { root: "frontend", plugins: [vinext({ appDir: "src" })] };`],
+    [
+      "an appDir outside the project",
+      `export default { plugins: [vinext({ appDir: "../routes" })] };`,
+    ],
+  ])("falls back to auto-detection for %s", (_, viteConfig) => {
+    writeFile("vite.config.ts", viteConfig);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
+    expect(items.find((i) => i.name.startsWith("App Router"))).toBeUndefined();
+    // appDir may still select another base, so src/app/ isn't reported as ignored.
+    expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
+  });
+
+  it("notes an unreadable appDir when no router directory is found", () => {
+    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "../routes" })] };`);
+
+    const item = checkConventions(tmpDir).find((i) => i.name.startsWith("No pages/"));
+    expect(item?.detail).toContain("vinext({ appDir })");
+  });
+
   it("resolves conventions with custom pageExtensions from next.config", () => {
     writeFile(
       "next.config.mjs",
@@ -1496,13 +1525,16 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.includes("__dirname"))).toBeUndefined();
   });
 
-  it("still flags __dirname in next.config.mjs (ESM configs get no CJS globals)", () => {
-    writeFile("next.config.mjs", `export default { sassOptions: { includePaths: [__dirname] } };`);
-    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+  it.each(["next.config.mjs", "next.config.js"])(
+    "still flags __dirname in an ESM %s (ESM configs get no CJS globals)",
+    (config) => {
+      writeFile(config, `export default { sassOptions: { includePaths: [__dirname] } };`);
+      writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
 
-    const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name.includes("__dirname"))?.files).toEqual(["next.config.mjs"]);
-  });
+      const items = checkConventions(tmpDir);
+      expect(items.find((i) => i.name.includes("__dirname"))?.files).toEqual([config]);
+    },
+  );
 
   it.each(["app", "src/app", "pages", "src/pages"])(
     "applies project gitignore to %s counts and CJS findings",
