@@ -350,9 +350,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
       'auto-detected from (src/)i18n/request.{ts,tsx,js,jsx}, so createNextIntlPlugin isn\'t needed; client components can fail with "No intl context found" (cloudflare/vinext#177)',
   },
   "@clerk/nextjs": {
-    status: "partial",
+    status: "supported",
     detail:
-      "clerkMiddleware, auth.protect, ClerkProvider and client hooks work; auth() in Server Components works in production builds, but calling headers() from middleware fails in dev",
+      "clerkMiddleware, auth()/auth.protect in Server Components, ClerkProvider and client hooks work",
   },
   "@auth/nextjs": {
     status: "unsupported",

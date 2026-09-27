@@ -954,7 +954,7 @@ describe("checkLibraries", () => {
     expect(items.every((i) => i.status === "unsupported")).toBe(true);
   });
 
-  it("detects @clerk/nextjs as partial", () => {
+  it("detects @clerk/nextjs as supported", () => {
     writeFile(
       "package.json",
       JSON.stringify({
@@ -964,7 +964,7 @@ describe("checkLibraries", () => {
 
     const items = checkLibraries(tmpDir);
     expect(items).toHaveLength(1);
-    expect(items[0].status).toBe("partial");
+    expect(items[0].status).toBe("supported");
     expect(items[0].detail).toContain("clerkMiddleware");
   });
 
