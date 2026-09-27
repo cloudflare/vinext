@@ -1463,7 +1463,7 @@ async function deployUploadedVersionWithCdnWarmup(
                   options.optionalWarmTargetKeys!.has(cdnWarmTargetKey(target)),
                 ).length
               : 0;
-            if (hasPreparedWarmPlan && options.warmCdnCertify) {
+            if (options.warmCdnCertify) {
               if (warmResult.warmed + optionalSkipped !== stagedWarmRequests) {
                 throw new Error(
                   `CDN warmup cannot certify the staged cache because only ${warmResult.warmed}/${stagedWarmRequests - optionalSkipped} cacheable entries completed their initial fill.`,
