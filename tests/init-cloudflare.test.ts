@@ -67,7 +67,8 @@ export default defineConfig({ plugins: [vinext(), cloudflare()], server: { port:
     const output = updateViteConfigForCssModules("vite.config.ts", input).code;
 
     expectValidConfig(output);
-    expect(output).toContain("server: { port: 3902 },\n  css:");
+    expect(output).toContain("defineConfig({\n  plugins:");
+    expect(output).toContain("],\n  server: { port: 3902 },\n  css:");
     expect(output).toContain("import { createHash } from 'node:crypto';");
     expect(output).toContain("import path from 'node:path';");
     expect(updateViteConfigForCssModules("vite.config.ts", output).code).toBe(output);
@@ -228,9 +229,53 @@ export default { plugins: [vinext(), cloudflare()], server: { port: 3902 } };
     const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
 
     expectValidConfig(output);
-    expect(output).toContain("server: { port: 3902 },\n  resolve:");
+    expect(output).toContain("export default {\n  plugins:");
+    expect(output).toContain("],\n  server: { port: 3902 },\n  resolve:");
     expect(output).toContain("import path from 'node:path';");
     expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
+  });
+
+  it("keeps all options when several properties are inserted into a compact object", () => {
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext({ custom: true })] };
+`;
+    const options = {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "kv" as const,
+        cdnCache: "workers-cache" as const,
+        imageOptimization: "cloudflare-images" as const,
+      },
+    };
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
+    const config = output.slice(output.indexOf("export default"));
+
+    expectValidConfig(output);
+    expect(config).toContain("custom: true");
+    expect(config).toContain("cache: {");
+    expect(config).toContain("kvDataAdapter()");
+    expect(config).toContain("workersCacheCdnAdapter()");
+    expect(config).toContain("images: { optimizer: imagesOptimizer() }");
+    expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
+  });
+
+  it("formats a compact config without spaces after the braces", () => {
+    const input = "export default {plugins: [vinext()]};";
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+    });
+
+    expectValidConfig(output);
+    expect(output).toContain("export default {\n  plugins: [\n    vinext(");
+    expect(output).toContain("  ]\n};");
+    expect(
+      updateViteConfigForCloudflare("vite.config.ts", output, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+      }),
+    ).toBe(output);
   });
 
   it("keeps trailing comments after the last property without adding a second comma", () => {
@@ -888,7 +933,7 @@ export default { plugins: [first(), /* keep second */ second()] };
     });
     expectValidConfig(output);
     expect(output).toContain(
-      "plugins: [\n  first(),\n  /* keep second */\n  second(),\n  vinext(),\n  cloudflare(),\n]",
+      "plugins: [\n    first(),\n    /* keep second */\n    second(),\n    vinext(),\n    cloudflare(),\n  ]",
     );
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {

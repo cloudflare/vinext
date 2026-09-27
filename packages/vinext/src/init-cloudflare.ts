@@ -2013,11 +2013,44 @@ function insertObjectProperty(
   if (lastProperty) {
     const gap = code.slice(lastProperty.end, offset);
     if (!endsWithCommaIgnoringWhitespaceAndComments(gap)) {
-      if (/^[ \t]+$/.test(gap)) output.overwrite(lastProperty.end, offset, ",");
+      if (/^[ \t]+$/.test(gap)) output.update(lastProperty.end, offset, ",");
       else output.appendLeft(lastProperty.end, ",");
     }
   }
   output.appendLeft(offset, `\n${source}\n`);
+}
+
+function formatInlineConfig(filePath: string, code: string, originalCode: string): string {
+  if (code === originalCode) return code;
+  const config = findConfigObject(parseViteConfig(filePath, code));
+  if (!config || config.properties.length === 0) return code;
+
+  const output = new MagicString(code);
+  const lineStart = code.lastIndexOf("\n", config.start) + 1;
+  const indent = code.slice(lineStart, config.start).match(/^[ \t]*/)?.[0] ?? "";
+  const properties = config.properties as AstNode[];
+  const first = properties[0];
+  const opening = code.slice(config.start + 1, first.start);
+  if (/^[ \t]*$/.test(opening)) {
+    if (opening) output.update(config.start + 1, first.start, `\n${indent}  `);
+    else output.appendLeft(first.start, `\n${indent}  `);
+  }
+  for (let index = 1; index < properties.length; index++) {
+    const previous = properties[index - 1];
+    const current = properties[index];
+    const gap = code.slice(previous.end, current.start);
+    if (/^,[ \t]*$/.test(gap)) {
+      output.update(previous.end, current.start, `,\n${indent}  `);
+    }
+  }
+  const last = properties.at(-1)!;
+  const closing = code.slice(last.end, config.end - 1);
+  if (/^,?[ \t]*$/.test(closing)) {
+    const replacement = `${closing.includes(",") ? "," : ""}\n${indent}`;
+    if (closing) output.update(last.end, config.end - 1, replacement);
+    else output.appendLeft(last.end, replacement);
+  }
+  return output.toString();
 }
 
 function endsWithCommaIgnoringWhitespaceAndComments(code: string): boolean {
@@ -2432,8 +2465,11 @@ function ensurePlugins(
       .slice(0, (plugins as AstNode).start)
       .split("\n")
       .at(-1)
-      ?.match(/^\s*/)?.[0] ?? "";
-  const elementIndent = `${propertyIndent}  `;
+      ?.match(/^[ \t]*/)?.[0] ?? "";
+  const inlinePropertyIndent = code.slice(config.start, (plugins as AstNode).start).includes("\n")
+    ? propertyIndent
+    : `${propertyIndent}  `;
+  const elementIndent = `${inlinePropertyIndent}  `;
   const missingExpressions: string[] = [];
   for (const addition of additions) {
     const alreadyConfigured = array.elements.some(
@@ -2486,7 +2522,7 @@ function ensurePlugins(
     closingOffset,
     `${prefix}\n${missingExpressions
       .map((expression) => indentBlock(expression, elementIndent))
-      .join(",\n")},\n${propertyIndent}`,
+      .join(",\n")},\n${inlinePropertyIndent}`,
   );
 }
 
@@ -2681,10 +2717,16 @@ export function updateViteConfigForCssModules(
     }
     const updated = output.toString();
     parseViteConfig(filePath, updated);
-    return { code: updated, preservedExistingGenerateScopedName: Boolean(existingName) };
+    return {
+      code: formatInlineConfig(filePath, updated, code),
+      preservedExistingGenerateScopedName: Boolean(existingName),
+    };
   }
   parseViteConfig(filePath, withCss);
-  return { code: withCss, preservedExistingGenerateScopedName: Boolean(existingName) };
+  return {
+    code: formatInlineConfig(filePath, withCss, code),
+    preservedExistingGenerateScopedName: Boolean(existingName),
+  };
 }
 
 function ensureNativeAliases(
@@ -3126,7 +3168,7 @@ export function updateViteConfigForCloudflare(
     ensureNativeAliases(output, config, options.nativeModulesToStub, pathBinding, code);
   }
 
-  return output.toString();
+  return formatInlineConfig(filePath, output.toString(), code);
 }
 
 export function usesCommonJsViteConfig(filePath: string, code: string): boolean {
