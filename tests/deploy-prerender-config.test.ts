@@ -468,9 +468,14 @@ describe("deploy prerender config wiring", () => {
     ).toBe(true);
   });
 
-  it.each([undefined, "https://override.example.com"])(
-    "uses the TPR origin for no-promote discovery unless explicitly overridden (%s)",
-    async (warmCdnTarget) => {
+  it.each([
+    { warmCdnTarget: undefined, certify: false, promote: false },
+    { warmCdnTarget: "https://override.example.com", certify: false, promote: false },
+    { warmCdnTarget: undefined, certify: true, promote: false },
+    { warmCdnTarget: undefined, certify: true, promote: true },
+  ])(
+    "uses inferred targets and rejects empty certified TPR plans (target: $warmCdnTarget, certify: $certify, promote: $promote)",
+    async ({ warmCdnTarget, certify, promote }) => {
       writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
       writeFile(
         "node_modules/wrangler/package.json",
@@ -489,15 +494,27 @@ describe("deploy prerender config wiring", () => {
       });
       const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-      await expect(
-        deploy({
-          root: tmpDir,
-          skipBuild: true,
-          experimentalTPR: true,
-          warmCdnPromote: false,
-          warmCdnTarget,
-        }),
-      ).resolves.toBeUndefined();
+      const result = deploy({
+        root: tmpDir,
+        skipBuild: true,
+        experimentalTPR: true,
+        warmCdnPromote: promote,
+        warmCdnCertify: certify,
+        warmCdnTarget,
+      });
+      if (certify) {
+        await expect(result).rejects.toThrow("no cache entries were certified");
+        expect(spawn).not.toHaveBeenCalled();
+        expect(
+          vi
+            .mocked(execFileSync)
+            .mock.calls.some(([, args]) =>
+              (args as string[]).includes("22222222-2222-4222-8222-222222222222@100%"),
+            ),
+        ).toBe(false);
+      } else {
+        await expect(result).resolves.toBeUndefined();
+      }
 
       expect(
         vi

@@ -1540,6 +1540,11 @@ async function deployUploadedVersionWithCdnWarmup(
     );
   }
 
+  if (options.warmCdnCertify && !stagedCacheFilled) {
+    const error = new Error("CDN warmup cannot succeed because no cache entries were certified.");
+    throw staged ? withStagedVersionCleanupNote(error) : error;
+  }
+
   const countRemainingWarmRequests = (): number =>
     remainingWarmPlan.paths.length +
     remainingWarmPlan.pagesDataPaths.length +
