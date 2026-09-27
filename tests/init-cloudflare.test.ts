@@ -58,6 +58,21 @@ describe("CSS Modules configuration", () => {
     expect(updateViteConfigForCssModules("vite.config.ts", first.code).code).toBe(first.code);
   });
 
+  it("keeps punctuation and import quotes when adding CSS Modules to an inline config", () => {
+    const input = `import { cloudflare } from '@cloudflare/vite-plugin';
+import vinext from 'vinext';
+import { defineConfig } from 'vite';
+export default defineConfig({ plugins: [vinext(), cloudflare()], server: { port: 3902 } });
+`;
+    const output = updateViteConfigForCssModules("vite.config.ts", input).code;
+
+    expectValidConfig(output);
+    expect(output).toContain("server: { port: 3902 },\n  css:");
+    expect(output).toContain("import { createHash } from 'node:crypto';");
+    expect(output).toContain("import path from 'node:path';");
+    expect(updateViteConfigForCssModules("vite.config.ts", output).code).toBe(output);
+  });
+
   it("rejects reassigned config objects and incomplete existing plugins", () => {
     expect(() =>
       updateViteConfigForCssModules(
@@ -204,6 +219,38 @@ describe("generateWranglerConfig", () => {
 });
 
 describe("updateViteConfigForCloudflare", () => {
+  it("keeps a compact config's comma attached to its last property and matches import quotes", () => {
+    const input = `import vinext from 'vinext';
+import { cloudflare } from '@cloudflare/vite-plugin';
+export default { plugins: [vinext(), cloudflare()], server: { port: 3902 } };
+`;
+    const options = { isAppRouter: false, nativeModulesToStub: ["sharp"] };
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
+
+    expectValidConfig(output);
+    expect(output).toContain("server: { port: 3902 },\n  resolve:");
+    expect(output).toContain("import path from 'node:path';");
+    expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
+  });
+
+  it("keeps trailing comments after the last property without adding a second comma", () => {
+    const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default {
+  plugins: [vinext(), cloudflare()],
+  server: { port: 3902 }, /* keep server comment */
+};
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: ["sharp"],
+    });
+
+    expectValidConfig(output);
+    expect(output).toContain("server: { port: 3902 }, /* keep server comment */");
+    expect(output).not.toContain("*/,");
+  });
+
   it("does not configure caching by default", () => {
     const output = generateAppRouterViteConfig();
     expectValidConfig(output);

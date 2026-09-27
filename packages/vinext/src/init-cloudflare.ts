@@ -1859,6 +1859,15 @@ function findImportedBinding(
   return undefined;
 }
 
+function quoteImportSource(program: ESTree.Program, source: string): string {
+  const firstImport = program.body.find(
+    (statement): statement is ESTree.ImportDeclaration => statement.type === "ImportDeclaration",
+  );
+  return firstImport?.source.raw?.startsWith("'")
+    ? `'${source.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`
+    : JSON.stringify(source);
+}
+
 function ensureNamedImport(
   program: ESTree.Program,
   output: MagicString,
@@ -1888,7 +1897,7 @@ function ensureNamedImport(
 
   const offset = importInsertionOffset(program);
   const specifier = binding === imported ? imported : `${imported} as ${binding}`;
-  const sourceText = `import { ${specifier} } from ${JSON.stringify(source)};`;
+  const sourceText = `import { ${specifier} } from ${quoteImportSource(program, source)};`;
   output.appendLeft(offset, offset === 0 ? `${sourceText}\n` : `\n${sourceText}`);
   return binding;
 }
@@ -1912,7 +1921,7 @@ function ensureDefaultImport(
   if (existing) return existing.local.name;
 
   const offset = importInsertionOffset(program);
-  const sourceText = `import ${binding} from ${JSON.stringify(source)};`;
+  const sourceText = `import ${binding} from ${quoteImportSource(program, source)};`;
   output.appendLeft(offset, offset === 0 ? `${sourceText}\n` : `\n${sourceText}`);
   return binding;
 }
@@ -2000,12 +2009,15 @@ function insertObjectProperty(
   code: string,
 ): void {
   const offset = object.end - 1;
-  const lastProperty = object.properties.at(-1);
-  const hasProperties = lastProperty !== undefined;
-  const hasTrailingComma = endsWithCommaIgnoringWhitespaceAndComments(
-    code.slice(lastProperty?.end ?? object.start + 1, offset),
-  );
-  output.appendLeft(offset, `${hasProperties && !hasTrailingComma ? "," : ""}\n${source}\n`);
+  const lastProperty = object.properties.at(-1) as AstNode | undefined;
+  if (lastProperty) {
+    const gap = code.slice(lastProperty.end, offset);
+    if (!endsWithCommaIgnoringWhitespaceAndComments(gap)) {
+      if (/^[ \t]+$/.test(gap)) output.overwrite(lastProperty.end, offset, ",");
+      else output.appendLeft(lastProperty.end, ",");
+    }
+  }
+  output.appendLeft(offset, `\n${source}\n`);
 }
 
 function endsWithCommaIgnoringWhitespaceAndComments(code: string): boolean {
