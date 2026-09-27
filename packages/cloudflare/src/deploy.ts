@@ -2218,7 +2218,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     info,
     viteConfigMetadata.cacheConfig,
   );
-  const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
+  const shouldEmitPrerenderPathManifest = !options.skipBuild && shouldPrerenderLocally;
   if (prerenderDecision && !shouldPrerenderLocally) {
     const trigger =
       prerenderDecision.reason === "flag" ? "--prerender-all" : "vinext prerender config";

@@ -308,6 +308,37 @@ describe("deploy prerender config wiring", () => {
     warn.mockRestore();
   });
 
+  it.each([false, true])(
+    "does not discover local prerender paths after building a Worker (prerenderAll: %s)",
+    async (prerenderAll) => {
+      writeProject(prerenderAll ? undefined : "true");
+      const viteUrl = pathToFileURL(createRequire(import.meta.url).resolve("vite")).href;
+      writeFile(
+        "node_modules/vite/package.json",
+        JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
+      );
+      writeFile(
+        "node_modules/vite/index.js",
+        `export * from ${JSON.stringify(viteUrl)};
+export function createBuilder(config) {
+  return { async buildApp() { config.__vinextBuildLifecycle.onComplete(); } };
+}
+`,
+      );
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+        await deploy({ root: tmpDir, prerenderAll });
+
+        expect(emitPrerenderPathManifestMock).not.toHaveBeenCalled();
+        expect(runPrerenderMock).not.toHaveBeenCalled();
+        expect(spawn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   it("loads Vite config even when the prerender-all flag already decides prerendering", async () => {
     writeProject("true");
     fs.appendFileSync(
