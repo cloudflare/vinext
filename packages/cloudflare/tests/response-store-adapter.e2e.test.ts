@@ -80,6 +80,14 @@ async function responseEntries(pathname: string): Promise<StoredResponseEntry[]>
   );
 }
 
+// Every stored metadata entry that names the path, whatever its revalidator,
+// so an absence check also catches a malformed entry.
+async function storedEntriesNaming(pathname: string): Promise<unknown[]> {
+  return (await metadataEntries())
+    .flat()
+    .filter((entry) => JSON.stringify(entry).includes(pathname));
+}
+
 // Whether the R2 body backing each entry holds the entry's active revision.
 // The store publishes metadata before it uploads the body, and reads MISS
 // until the upload lands.
@@ -363,12 +371,13 @@ describe("Cloudflare Workers Response Store adapter", () => {
     // Writes run in waitUntil after the response returns, so hold the absence
     // through the same window the other tests poll for a publication, checking
     // after every delay, including the last.
-    assert.equal((await responseEntries(pathname)).length, 0);
+    assert.deepEqual(await storedEntriesNaming(pathname), []);
     for (let attempt = 0; attempt < 50; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 50));
-      assert.equal((await responseEntries(pathname)).length, 0);
+      assert.deepEqual(await storedEntriesNaming(pathname), []);
     }
-  });
+    // Two publication polls and the absence window, 2.5s each, plus requests.
+  }, 15_000);
 
   test("keeps a page whose cacheLife revalidates after 60 seconds fresh for 60 seconds", async () => {
     const pathname = "/cache-life";
