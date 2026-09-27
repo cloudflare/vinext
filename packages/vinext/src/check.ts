@@ -979,26 +979,94 @@ function findNextConfigPath(root: string): string | null {
   return null;
 }
 
+/** An option that is set, but not statically readable from the Vite config. */
+const UNRESOLVED = Symbol("unresolved");
+type VinextOption = ESTree.Expression | typeof UNRESOLVED | undefined;
+
+/** The first `vinext(…)` call in a parsed Vite config. */
+function findVinextCall(node: unknown): ESTree.CallExpression | undefined {
+  if (!node || typeof node !== "object") return undefined;
+  const call = node as ESTree.CallExpression;
+  if (call.type === "CallExpression" && call.callee.type === "Identifier") {
+    if (call.callee.name === "vinext") return call;
+  }
+  for (const value of Object.values(node)) {
+    const found = findVinextCall(value);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 /**
- * The base directory set by `vinext({ appDir })` in the Vite config: the
- * resolved path when it is a string literal written inline in the `vinext()`
- * call and resolves inside the project, `null` when an `appDir` is present but
- * can't be resolved that way (a variable, a Vite `root`, a path outside the
- * project), and `undefined` when the Vite config never mentions `appDir`.
+ * Read the options passed to `vinext()` in the Vite config. Returns a lookup
+ * that gives an option's expression, `undefined` when it isn't set, or
+ * `UNRESOLVED` when the options can't be read statically (a variable, a
+ * spread, no identifiable call) and the config mentions the option.
  */
-function readVinextAppDirOption(root: string, source: string | null): string | null | undefined {
-  if (source === null || !/\bappDir\s*:/.test(source)) return undefined;
-  if (/\broot\s*:/.test(source)) return null;
-  const literal = /\bvinext\s*\(\s*\{[^{}]*?\bappDir\s*:\s*(["'])([^"'\n]+)\1/.exec(source)?.[2];
-  if (literal === undefined) return null;
-  const baseDir = path.resolve(root, literal);
-  const rel = path.relative(root, baseDir);
-  return rel.startsWith("..") || path.isAbsolute(rel) ? null : baseDir;
+function readVinextOptions(source: string | null): {
+  source: string | null;
+  get: (name: string) => VinextOption;
+} {
+  let props: Map<string, ESTree.Expression> | null = null;
+  if (source !== null) {
+    try {
+      const call = findVinextCall(parseAst(source, { lang: "ts" }));
+      const arg = call?.arguments[0];
+      if (call && (arg === undefined || arg.type === "ObjectExpression")) {
+        props = new Map();
+        for (const prop of arg?.properties ?? []) {
+          const name = propertyKeyName(prop);
+          if (name === null) {
+            props = null;
+            break;
+          }
+          props.set(name, (prop as ESTree.ObjectProperty).value as ESTree.Expression);
+        }
+      }
+    } catch {
+      // Unparseable config: options mentioned in it are unresolved.
+    }
+  }
+  return {
+    source,
+    get: (name) => {
+      if (props) return props.get(name);
+      return source !== null && new RegExp(`\\b${name}\\s*:`).test(source) ? UNRESOLVED : undefined;
+    },
+  };
+}
+
+/**
+ * The value of a `vinext()` option written as a literal (`undefined` when it
+ * isn't set or is `undefined`), or `UNRESOLVED` for any other expression.
+ */
+function literalOption(option: VinextOption): unknown {
+  if (option === undefined) return undefined;
+  if (option === UNRESOLVED) return UNRESOLVED;
+  if (option.type === "Literal") return option.value;
+  if (option.type === "Identifier" && option.name === "undefined") return undefined;
+  return UNRESOLVED;
 }
 
 function readViteConfigSource(root: string): string | null {
   const viteConfigPath = findViteConfigPath(root);
   return viteConfigPath ? fs.readFileSync(viteConfigPath, "utf-8") : null;
+}
+
+/**
+ * The base directory set by `vinext({ appDir })`: the resolved path when it is
+ * a string literal that resolves inside the project, `null` when it is set but
+ * can't be resolved that way (not a literal, a Vite `root`, a path outside the
+ * project), and `undefined` when it isn't set.
+ */
+function readVinextAppDir(root: string, options: ReturnType<typeof readVinextOptions>) {
+  const value = literalOption(options.get("appDir"));
+  // Like the plugin's `if (options.appDir)`, an empty value means auto-detect.
+  if (!value) return undefined;
+  if (typeof value !== "string" || /\broot\s*:/.test(options.source ?? "")) return null;
+  const baseDir = path.resolve(root, value);
+  const rel = path.relative(root, baseDir);
+  return rel.startsWith("..") || path.isAbsolute(rel) ? null : baseDir;
 }
 
 /**
@@ -1029,16 +1097,25 @@ function exportsPostcssConfigObject(content: string): boolean {
 }
 
 /**
- * The dotted `pageExtensions` vinext resolves route conventions with. An
- * inline `vinext({ nextConfig })` replaces next.config.* on disk, so the
- * defaults are used rather than trusting an overridden file.
+ * The dotted `pageExtensions` vinext resolves route conventions with. A truthy
+ * `vinext({ nextConfig })` replaces next.config.* on disk: an inline object is
+ * read, anything else leaves the value unresolved (vinext's defaults).
  */
-function readPageExtensions(root: string, viteConfigSource: string | null): string[] {
-  const configPath = findNextConfigPath(root);
-  const configured =
-    configPath && !(viteConfigSource !== null && /\bnextConfig\s*:/.test(viteConfigSource))
-      ? collectConfigKeys(fs.readFileSync(configPath, "utf-8")).pageExtensions
-      : undefined;
+function readPageExtensions(root: string, options: ReturnType<typeof readVinextOptions>) {
+  const nextConfig = options.get("nextConfig");
+  let configured: string[] | undefined;
+  if (!literalOption(nextConfig)) {
+    const configPath = findNextConfigPath(root);
+    if (configPath)
+      configured = collectConfigKeys(fs.readFileSync(configPath, "utf-8")).pageExtensions;
+  } else if (
+    nextConfig !== undefined &&
+    nextConfig !== UNRESOLVED &&
+    nextConfig.type === "ObjectExpression"
+  ) {
+    const inline = options.source!.slice(nextConfig.start, nextConfig.end);
+    configured = collectConfigKeys(`export default ${inline};`).pageExtensions;
+  }
   return normalizePageExtensions(configured).map((ext) => `.${ext}`);
 }
 
@@ -1144,8 +1221,8 @@ export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
   // Route conventions resolve against `pageExtensions` (which may add e.g.
   // `.mdx` or compound `page.tsx`), so scan those alongside source files.
-  const viteConfigSource = readViteConfigSource(root);
-  const pageExts = readPageExtensions(root, viteConfigSource);
+  const vinextOptions = readVinextOptions(readViteConfigSource(root));
+  const pageExts = readPageExtensions(root, vinextOptions);
   const scanExts = [...new Set([...SOURCE_EXTENSIONS, ...pageExts])];
   const sourceFiles = findSourceFiles(root, scanExts);
   // The project scan doesn't follow symlinks, so rescan a route directory
@@ -1166,13 +1243,11 @@ export function checkConventions(root: string): CheckItem[] {
   // `vinext({ appDir })` when set, else the root when either is there, else
   // src/. proxy/middleware live in src/ when that is the base, else the root.
   const srcDir = path.join(root, "src");
-  const appDirOption = readVinextAppDirOption(root, viteConfigSource);
+  const appDirOption = readVinextAppDir(root, vinextOptions);
   // `vinext({ disableAppRouter: true })` skips app/ even when it exists.
-  const mentionsDisableAppRouter =
-    viteConfigSource !== null && /\bdisableAppRouter\s*:/.test(viteConfigSource);
-  const disablesAppRouter =
-    mentionsDisableAppRouter &&
-    /\bvinext\s*\(\s*\{[^{}]*?\bdisableAppRouter\s*:\s*true\b/.test(viteConfigSource);
+  const disableAppRouter = literalOption(vinextOptions.get("disableAppRouter"));
+  const disablesAppRouter = disableAppRouter !== UNRESOLVED && Boolean(disableAppRouter);
+  const mayDisableAppRouter = disableAppRouter === UNRESOLVED || Boolean(disableAppRouter);
   const baseDir =
     typeof appDirOption === "string"
       ? appDirOption
@@ -1193,7 +1268,7 @@ export function checkConventions(root: string): CheckItem[] {
   // ignored src/ directory when the base came from auto-detection (and skip
   // src/app/ when the App Router may be disabled).
   if (appDirOption === undefined && !usesSrcDir) {
-    for (const dir of mentionsDisableAppRouter ? ["pages"] : ["app", "pages"]) {
+    for (const dir of mayDisableAppRouter ? ["pages"] : ["app", "pages"]) {
       if (findDir(root, dir) === null && findDir(root, `src/${dir}`) !== null) {
         items.push({
           name: `src/${dir}/ is ignored`,

@@ -1103,10 +1103,49 @@ describe("checkConventions", () => {
     expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
   });
 
+  it("only reads appDir from the vinext() call", () => {
+    writeFile(
+      "vite.config.ts",
+      `const docs = { appDir: "src" };\nexport default { plugins: [vinext()] };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
+    expect(items.find((i) => i.name === "src/app/ is ignored")).toBeDefined();
+  });
+
+  it("reads vinext() options that follow nested option objects", () => {
+    writeFile(
+      "vite.config.ts",
+      `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["tsx"] }, appDir: "src" })] };`,
+    );
+    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
+    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
+    expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("keeps next.config pageExtensions when vinext({ nextConfig }) is unset", () => {
+    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
+    writeFile(
+      "vite.config.ts",
+      `// nextConfig: { pageExtensions: ["tsx"] }\nexport default { plugins: [vinext({ nextConfig: undefined })] };`,
+    );
+    writeFile("pages/index.mdx", `# Home`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
   it("skips the App Router when vinext({ disableAppRouter: true }) is set", () => {
     writeFile(
       "vite.config.ts",
-      `export default { plugins: [vinext({ disableAppRouter: true })] };`,
+      `export default { plugins: [vinext({ nextConfig: {}, disableAppRouter: true })] };`,
     );
     writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
     writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
@@ -1129,10 +1168,6 @@ describe("checkConventions", () => {
   });
 
   it.each([
-    [
-      "an appDir outside the vinext() call",
-      `const docs = { appDir: "src" };\nexport default { plugins: [vinext()] };`,
-    ],
     ["a Vite root", `export default { root: "frontend", plugins: [vinext({ appDir: "src" })] };`],
     [
       "an appDir outside the project",
