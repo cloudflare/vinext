@@ -347,6 +347,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     await rsc.text();
+    // A Flight response, so this exercises the RSC render and its cache write.
+    assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
 
     for (const response of [first, second, rsc]) {
       assert.equal(response.status, 200);
