@@ -258,9 +258,22 @@ describe("next-intl dependency optimization", () => {
     { scenario: "production", command: "build", expected: [], clientExpected: [] },
     { scenario: "without next-intl", nextIntl: false, expected: [], clientExpected: [] },
     {
+      scenario: "resolvable but undeclared next-intl without request config",
+      declared: false,
+      requestConfig: false,
+      expected: [],
+      clientExpected: [],
+    },
+    {
       scenario: "without request config",
       requestConfig: false,
       expected: [],
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "request config without a direct declaration",
+      declared: false,
+      expected: dependencies,
       clientExpected: clientDependencies,
     },
     {
@@ -319,6 +332,13 @@ describe("next-intl dependency optimization", () => {
       await fsp.mkdir(path.join(root, "app"));
       await fsp.writeFile(path.join(root, "app/page.tsx"), "export default function Page() {}");
       await fsp.writeFile(path.join(root, "next.config.mjs"), "export default {};");
+      await fsp.writeFile(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          dependencies:
+            options.nextIntl === false || options.declared === false ? {} : { "next-intl": "*" },
+        }),
+      );
       await fsp.mkdir(path.join(root, "i18n"));
       if (options.requestConfig !== false)
         await fsp.writeFile(path.join(root, "i18n/request.ts"), "export default {};");

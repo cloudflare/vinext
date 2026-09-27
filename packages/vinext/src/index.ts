@@ -3729,8 +3729,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
           }
           const additionalClientOptimizeIncludes: string[] = [];
+          let hasNextIntl = Boolean(nextConfig?.aliases["next-intl/config"]);
+          if (env.command === "serve" && !hasNextIntl) {
+            // pnpm's NODE_PATH can make unrelated workspace packages resolvable.
+            // Config-free apps must declare next-intl before adding its includes.
+            try {
+              const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+              hasNextIntl = [
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+              ].some((field) => Object.hasOwn(pkg[field] ?? {}, "next-intl"));
+            } catch {}
+          }
           if (
             env.command === "serve" &&
+            hasNextIntl &&
             !(
               config.environments?.client?.optimizeDeps?.noDiscovery ??
               config.optimizeDeps?.noDiscovery
