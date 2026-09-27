@@ -972,7 +972,8 @@ function findNextConfigPath(root: string): string | null {
  * resolved path when it is a string literal written inline in the `vinext()`
  * call and resolves inside the project, `null` when an `appDir` is present but
  * can't be resolved that way (a variable, a Vite `root`, a path outside the
- * project), and `undefined` when the Vite config never mentions `appDir`.
+ * project or through a symlink), and `undefined` when the Vite config never
+ * mentions `appDir`.
  */
 function readVinextAppDirOption(root: string): string | null | undefined {
   const viteConfigPath = findViteConfigPath(root);
@@ -984,7 +985,11 @@ function readVinextAppDirOption(root: string): string | null | undefined {
   if (literal === undefined) return null;
   const baseDir = path.resolve(root, literal);
   const rel = path.relative(root, baseDir);
-  return rel.startsWith("..") || path.isAbsolute(rel) ? null : baseDir;
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  // The project scan doesn't follow symlinks, and the plugin compares canonical
+  // paths, so leave a base reached through a symlink to auto-detection.
+  if (!fs.existsSync(baseDir)) return baseDir;
+  return fs.realpathSync(baseDir) === path.join(fs.realpathSync(root), rel) ? baseDir : null;
 }
 
 /**
@@ -1167,13 +1172,20 @@ export function checkConventions(root: string): CheckItem[] {
     const pageFiles = routeFiles(pagesDir)
       .filter(isPageFile)
       .map((f) => path.relative(pagesDir, f));
-    const isCustom = (name: string) => pageExts.some((ext) => pageFiles.includes(`${name}${ext}`));
+    // Like the Pages Router, strip the longest matching page extension.
+    const stripPageExt = (file: string) => {
+      const ext = pageExts
+        .filter((e) => file.endsWith(e))
+        .reduce((a, b) => (b.length > a.length ? b : a), "");
+      return file.slice(0, file.length - ext.length);
+    };
+    const isCustom = (name: string) => pageFiles.some((f) => stripPageExt(f) === name);
     const apiRoutes = pageFiles.filter((f) => f.startsWith("api/"));
     const pages = pageFiles.filter((f) => {
       const segments = f.split("/");
       const basename = segments.pop() ?? "";
       if (segments.some((dir) => dir === "api" || reserved.has(dir))) return false;
-      return segments.length > 0 || !reserved.has(basename.split(".")[0]);
+      return segments.length > 0 || !reserved.has(stripPageExt(basename));
     });
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
     if (apiRoutes.length) {
@@ -1299,12 +1311,25 @@ export function checkConventions(root: string): CheckItem[] {
       // quote. (It also won't see a string preceded by a `/* comment */`, which is
       // not worth handling.)
       const stringPluginRegex = /plugins\s*:\s*\[\s*['"]/;
+      // vinext only resolves string plugins in an exported config object, so a
+      // config exported as a function is left to Vite, which can't load them.
+      const functionExportRegex =
+        /(?:module\.exports\s*=|export\s+default)\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[\w$]+\s*=>)/;
       if (stringPluginRegex.test(content)) {
-        items.push({
-          name: `PostCSS string-form plugins (${configFile})`,
-          status: "supported",
-          detail: "string-form PostCSS plugins are resolved automatically by vinext",
-        });
+        items.push(
+          functionExportRegex.test(content)
+            ? {
+                name: `PostCSS string-form plugins (${configFile})`,
+                status: "partial",
+                detail:
+                  "vinext only resolves string-form plugins when the config exports an object, not a function",
+              }
+            : {
+                name: `PostCSS string-form plugins (${configFile})`,
+                status: "supported",
+                detail: "string-form PostCSS plugins are resolved automatically by vinext",
+              },
+        );
       }
       break; // Only check the first config file found
     }

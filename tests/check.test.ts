@@ -1114,6 +1114,21 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
   });
 
+  it.runIf(process.platform !== "win32")(
+    "auto-detects when the appDir base is reached through a symlink",
+    () => {
+      writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "routes" })] };`);
+      writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+      writeFile("src/proxy.ts", `export default function proxy() {}`);
+      fs.symlinkSync(path.join(tmpDir, "src"), path.join(tmpDir, "routes"));
+
+      const items = checkConventions(tmpDir);
+      expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
+      expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
+      expect(items.find((i) => i.name === "src/proxy.ts (Next.js 16)")).toBeDefined();
+    },
+  );
+
   it("notes an unreadable appDir when no router directory is found", () => {
     writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "../routes" })] };`);
 
@@ -1194,6 +1209,16 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
     expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
     expect(items.find((i) => i.name === "Custom _document")).toBeUndefined();
+  });
+
+  it("counts root pages whose name only starts with a reserved name", () => {
+    writeFile("pages/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/_app.admin.tsx", `export default function P() { return null; }`);
+
+    const items = checkConventions(tmpDir);
+    // The Pages Router strips only the page extension, so `_app.admin` is an ordinary page.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
   });
 
   it("does not label a root app/ as src/app/ when the project lives under a src directory", () => {
@@ -1430,6 +1455,14 @@ describe("checkConventions", () => {
     expect(postcss).toBeDefined();
     expect(postcss?.status).toBe("supported");
     expect(postcss?.detail).toContain("string-form");
+  });
+
+  it("reports string-form plugins in a function-exported PostCSS config as partial", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("postcss.config.mjs", `export default () => ({ plugins: ["autoprefixer"] });`);
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
   });
 
   it("does not flag PostCSS when no config exists", () => {
