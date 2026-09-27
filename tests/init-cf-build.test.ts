@@ -93,6 +93,7 @@ describe("default cf init build", () => {
     ["self-contained", "app", "response-store", "self-contained"],
     ["workers-cache", "app", "workers-cache", undefined],
     ["workers-cache-kv", "app", "workers-cache", undefined],
+    ["static-assets", "app", "static-assets", undefined],
     ["kv", "app", "data-cache", undefined],
     ["pages", "pages", "none", undefined],
   ] as const)(
@@ -121,6 +122,24 @@ describe("default cf init build", () => {
         fs.writeFileSync(
           path.join(root, "pages", "index.tsx"),
           "export default function Home() { return <main>cf init smoke test</main> }",
+        );
+      }
+      const hasCssModules = name === "service-binding" || name === "pages";
+      if (hasCssModules) {
+        // init installs this dependency for CSS Modules; reuse the workspace fixture's copy.
+        fs.mkdirSync(path.join(root, "node_modules"));
+        fs.symlinkSync(
+          path.resolve(
+            import.meta.dirname,
+            "fixtures/init-css-modules/node_modules/vite-css-modules",
+          ),
+          path.join(root, "node_modules/vite-css-modules"),
+          "junction",
+        );
+        fs.writeFileSync(path.join(root, router, "card.module.css"), ".card { color: red }");
+        fs.writeFileSync(
+          path.join(root, router, router === "app" ? "page.tsx" : "index.tsx"),
+          'import styles from "./card.module.css";\nexport default function Home() { return <main className={styles.card}>cf init smoke test</main> }',
         );
       }
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -165,7 +184,7 @@ describe("default cf init build", () => {
           ? `cf deploy --prebuilt --mode production --worker init-cf-${name}-response-store`
           : undefined,
       );
-      if (name === "service-binding") {
+      if (name === "service-binding" || name === "pages" || name === "static-assets") {
         const preview = spawn(
           path.join(webRoot, "node_modules", ".bin", "vite"),
           ["preview", "--host", "127.0.0.1", "--port", "0"],
@@ -199,7 +218,25 @@ describe("default cf init build", () => {
           });
           const response = await fetch(url);
           expect(response.status, output).toBe(200);
-          expect(await response.text()).toContain("cf init smoke test");
+          const html = await response.text();
+          expect(html).toContain("cf init smoke test");
+          if (hasCssModules) expect(html).toMatch(/class="_card_[a-f0-9]{7}"/);
+          if (name === "static-assets") {
+            expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+            const rsc = await fetch(url, { headers: { Accept: "text/x-component", RSC: "1" } });
+            expect(rsc.status).toBe(200);
+            expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
+            expect(await rsc.text()).toContain("cf init smoke test");
+            const cachePath = "/_vinext/static-cache";
+            const artifacts = fs.readdirSync(path.join(workersDir, "default/assets", cachePath));
+            expect(artifacts).toContain("index.json");
+            expect(artifacts.some((file) => file.endsWith(".html"))).toBe(true);
+            expect(artifacts.some((file) => file.endsWith(".rsc"))).toBe(true);
+            for (const file of artifacts) {
+              const privateAsset = await fetch(new URL(`${cachePath}/${file}`, url));
+              expect(privateAsset.status, file).toBe(404);
+            }
+          }
         } finally {
           preview.kill();
         }

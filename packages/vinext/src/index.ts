@@ -1659,8 +1659,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   });
   const pagesClientAssetsOutputDirs = new Set<string>();
+  // Workers must keep this module inside their deployable output directory.
   const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
-    !selectedMultiStageOutput && !hasAppDir && environmentName === "ssr"
+    !selectedMultiStageOutput && !hasAppDir && !hasCloudflarePlugin && environmentName === "ssr"
       ? path.dirname(outputDir)
       : outputDir;
   let pagesClientAssetsModule: string | null = internalOptions.__pagesClientAssetsModule ?? null;

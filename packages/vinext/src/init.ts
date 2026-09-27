@@ -163,7 +163,14 @@ const CSS_MODULE_GLOBS = [
   "**/.*/**/*.module.{css,scss,sass}",
   "**/.*/**/.*.module.{css,scss,sass}",
 ];
-const CSS_MODULE_IGNORES = new Set(["node_modules", ".git", ".next", ".vinext", ".wrangler"]);
+const CSS_MODULE_IGNORES = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  ".vinext",
+  ".wrangler",
+  ".cloudflare",
+]);
 const CSS_MODULE_ROOT_IGNORES = new Set(["dist", "out", "build", "coverage"]);
 
 export function scanCssModuleFiles(root: string): boolean {

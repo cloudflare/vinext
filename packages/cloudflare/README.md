@@ -236,7 +236,7 @@ cf deploy --prebuilt --mode production --worker example-response-store
 Use the mode and Worker name from your build. `cloudflare.config.ts` remains the
 source of truth.
 
-Experimental staged CDN warming uses `cf` to upload a version, read deployment
+Staged cache warming uses `cf` to upload a version, read deployment
 status, stage and promote traffic, and apply triggers.
 
 With Vite+, use `vpx @vinext/cloudflare deploy`, or

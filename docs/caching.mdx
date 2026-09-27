@@ -289,18 +289,25 @@ This is deliberately read-only. Cache writes, `revalidatePath()`, and `revalidat
 
 Finite `revalidate` intervals do not refresh packaged responses either. Use a writable response cache if those routes need runtime ISR; Static Assets always serves the build-time snapshot until the next deployment.
 
-The private cache directory must be routed through the Worker so clients cannot fetch raw cache files directly. `vinext init --platform=cloudflare --cdn-cache=static-assets` configures this automatically. For manual Wrangler setup, add the following to your existing `assets` configuration:
+The private cache directory must be routed through the Worker so clients cannot fetch raw cache files directly. `vinext init --platform=cloudflare --cdn-cache=static-assets` configures this automatically. For manual setup, add the following to your existing Worker in `cloudflare.config.ts`:
 
-```jsonc
-{
-  "assets": {
-    "binding": "ASSETS",
-    "run_worker_first": ["/_vinext/static-cache/*"],
+```ts
+import { bindings } from "@cloudflare/vite-plugin/experimental-config";
+
+defineWorker({
+  // ...existing Worker settings
+  assets: {
+    // ...existing asset settings
+    runWorkerFirst: ["/_vinext/static-cache/*"],
   },
-}
+  env: {
+    // ...existing bindings
+    ASSETS: bindings.assets(),
+  },
+});
 ```
 
-In typed `cloudflare.config.ts`, use `assets.runWorkerFirst` with the same pattern and declare `ASSETS: bindings.assets()`. An existing `run_worker_first: true` also protects these files. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns when configuring this cache.
+An existing `runWorkerFirst: true` also protects these files. Preserve any other Worker-first routes when adding the private directory pattern. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns when configuring this cache.
 
 Existing typed configs require manual Static Assets setup; init stops before modifying the project so it cannot overwrite a custom binding or leave private files exposed.
 
