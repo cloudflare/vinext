@@ -239,6 +239,129 @@ describe("createClientManualChunks (installed layout)", () => {
 
 // ─── optimizeDeps.exclude — prevents esbuild scanning virtual module imports ─
 
+describe("next-intl dependency optimization", () => {
+  const dependencies = [
+    "@formatjs/intl-localematcher",
+    "negotiator",
+    "@formatjs/fast-memoize",
+    "intl-messageformat",
+  ];
+  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react", "next/link"];
+
+  it.each([
+    { scenario: "Cloudflare dev", expected: dependencies, clientExpected: clientDependencies },
+    { scenario: "Node dev", cloudflare: false, expected: [], clientExpected: clientDependencies },
+    { scenario: "production", command: "build", expected: [], clientExpected: [] },
+    { scenario: "without next-intl", nextIntl: false, expected: [], clientExpected: [] },
+    {
+      scenario: "RSC noDiscovery",
+      noDiscovery: true,
+      expected: [],
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "client noDiscovery",
+      clientNoDiscovery: true,
+      expected: dependencies,
+      clientExpected: [],
+    },
+    {
+      scenario: "client exclusions",
+      clientExcluded: true,
+      expected: dependencies,
+      clientExpected: ["next-intl > use-intl"],
+    },
+    {
+      scenario: "explicit exclusions",
+      excluded: true,
+      expected: ["@formatjs/intl-localematcher", "intl-messageformat"],
+      clientExpected: ["next/link"],
+    },
+    {
+      scenario: "dependencies unavailable from root",
+      missing: true,
+      expected: ["@formatjs/intl-localematcher", "negotiator"],
+      clientExpected: clientDependencies,
+    },
+  ])("preserves optimizer behavior for $scenario", async (options) => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-next-intl-optimizer-"));
+    try {
+      await fsp.mkdir(path.join(root, "app"));
+      await fsp.writeFile(path.join(root, "app/page.tsx"), "export default function Page() {}");
+      await fsp.writeFile(path.join(root, "next.config.mjs"), "export default {};");
+      await fsp.mkdir(path.join(root, "i18n"));
+      await fsp.writeFile(path.join(root, "i18n/request.ts"), "export default {};");
+      // Only config resolution runs here. Mock installed packages with actual
+      // files so missing/isolated dependencies exercise Node's resolver.
+      const installed = options.missing ? dependencies.slice(0, 2) : dependencies;
+      for (const name of [...installed, ...(options.nextIntl === false ? [] : ["next-intl"])]) {
+        const dir = path.join(root, "node_modules", name);
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(
+          path.join(dir, "package.json"),
+          JSON.stringify({ name, main: "index.js" }),
+        );
+        await fsp.writeFile(path.join(dir, "index.js"), "module.exports = {};");
+      }
+      if (options.nextIntl !== false) {
+        // use-intl is nested under next-intl, as with an isolated installation.
+        const dir = path.join(root, "node_modules/next-intl/node_modules/use-intl");
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(
+          path.join(dir, "package.json"),
+          JSON.stringify({
+            name: "use-intl",
+            exports: { ".": "./index.js", "./react": "./react.js" },
+          }),
+        );
+        for (const file of ["index.js", "react.js"])
+          await fsp.writeFile(path.join(dir, file), "module.exports = {};");
+      }
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const main = vinext({ rsc: false }).find((plugin: any) => plugin.name === "vinext:config");
+      const result = await (main as any).config(
+        {
+          root,
+          build: {},
+          plugins: options.cloudflare === false ? [] : [{ name: "vite-plugin-cloudflare" }],
+          optimizeDeps: {
+            include: ["user-selected"],
+            exclude: options.excluded ? ["negotiator", "use-intl"] : [],
+          },
+          environments: {
+            client: {
+              optimizeDeps: {
+                noDiscovery: options.clientNoDiscovery,
+                exclude: options.clientExcluded ? ["use-intl/react", "next/link"] : [],
+              },
+            },
+            rsc: {
+              optimizeDeps: {
+                noDiscovery: options.noDiscovery,
+                exclude: options.excluded ? ["@formatjs/fast-memoize"] : [],
+              },
+            },
+          },
+        },
+        { command: options.command ?? "serve" },
+      );
+      const includes = result.environments.rsc.optimizeDeps.include;
+      expect(includes).toContain("user-selected");
+      expect(dependencies.filter((id) => includes.includes(id))).toEqual(options.expected);
+      const clientIncludes = result.environments.client.optimizeDeps.include;
+      expect(clientDependencies.filter((id) => clientIncludes.includes(id))).toEqual(
+        options.clientExpected,
+      );
+      for (const name of ["client", "ssr"]) {
+        const otherIncludes = result.environments[name].optimizeDeps.include ?? [];
+        expect(dependencies.filter((id) => otherIncludes.includes(id))).toEqual([]);
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("optimizeDeps.exclude for vinext", () => {
   const rscClientShimExcludes = [
     "vinext/shims/error-boundary",
