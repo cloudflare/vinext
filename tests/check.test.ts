@@ -1042,6 +1042,25 @@ describe("checkConventions", () => {
     expect(items.filter((i) => i.name.includes("proxy.ts"))).toHaveLength(1);
   });
 
+  it("flags having both proxy and middleware in src/", () => {
+    writeFile("src/proxy.ts", `export default function proxy() {}`);
+    writeFile("src/middleware.ts", `export function middleware() {}`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const both = items.find((i) => i.name === "Both src/middleware.ts and src/proxy.ts");
+    expect(both?.status).toBe("unsupported");
+  });
+
+  it("looks for proxy at the root when pages/ is at the root and app/ is in src/", () => {
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "proxy.ts (Next.js 16)")).toBeDefined();
+  });
+
   it("detects proxy and middleware in src/ for src-layout projects", () => {
     writeFile("src/proxy.tsx", `export default function proxy() {}`);
     writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
@@ -1074,6 +1093,18 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
     expect(items.find((i) => i.name === "1 API route(s)")).toBeDefined();
     expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
+  });
+
+  it("only treats root-level _app/_document files as custom", () => {
+    writeFile("pages/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_app.tsx", `export default function P() { return null; }`);
+    writeFile("pages/_document/index.tsx", `export default function P() { return null; }`);
+
+    const items = checkConventions(tmpDir);
+    // pages/admin/_app.tsx is an ordinary page; a pages/_document/ directory is not loaded.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
+    expect(items.find((i) => i.name === "Custom _document")).toBeUndefined();
   });
 
   it("does not label a root app/ as src/app/ when the project lives under a src directory", () => {
@@ -1255,7 +1286,8 @@ describe("checkConventions", () => {
   });
 
   it("does not flag missing type:module in package.json", () => {
-    // vinext dev/build add "type": "module" themselves when a vite.config needs it.
+    // Not a Next.js compatibility issue: vinext init adds it, and the manual
+    // next steps list it.
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
 
@@ -1886,8 +1918,9 @@ describe("formatReport", () => {
     expect(report).toContain("@vitejs/plugin-react");
     expect(report).toContain("@vitejs/plugin-rsc");
     expect(report).toContain("react-server-dom-webpack");
-    expect(report).toContain("vinext dev");
-    expect(report).not.toContain("npx vite dev");
+    expect(report).toContain('"type": "module"');
+    expect(report).toContain("plugins: [vinext()]");
+    expect(report).toContain("npx vite dev");
   });
 
   it("does not list App Router-only packages in manual install steps for Pages Router projects", () => {

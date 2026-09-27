@@ -1058,9 +1058,7 @@ export function checkConventions(root: string): CheckItem[] {
   // there, otherwise at the root (mirrors the plugin's base-dir detection).
   const srcDir = path.join(root, "src");
   const usesSrcDir =
-    pagesDir !== path.join(root, "pages") &&
-    appDirPath !== path.join(root, "app") &&
-    (pagesDir !== null || appDirPath !== null);
+    findDir(root, "app", "pages") === null && findDir(root, "src/app", "src/pages") !== null;
   const conventionDir = usesSrcDir ? srcDir : root;
   const conventionPrefix = usesSrcDir ? "src/" : "";
   const proxyFile = findConventionFile(conventionDir, "proxy");
@@ -1073,10 +1071,12 @@ export function checkConventions(root: string): CheckItem[] {
       status: "supported",
     });
 
-    // Count pages. `_app`, `_document` and `_error` are only special at the
-    // pages root; API routes are the files under `pages/api/`.
+    // Count pages. `_app`, `_document` and `_error` (files or directories) are
+    // only special at the pages root; API routes are the files under `pages/api/`.
     const pageFiles = routeFiles(pagesDir).map((f) => path.relative(pagesDir, f));
     const isSpecial = (f: string, name: string) => /^[^/.]+/.exec(f)?.[0] === name;
+    const isCustom = (name: string) =>
+      PAGE_EXTENSIONS.some((ext) => pageFiles.includes(`${name}${ext}`));
     const apiRoutes = pageFiles.filter((f) => f.startsWith("api/"));
     const pages = pageFiles.filter(
       (f) =>
@@ -1091,10 +1091,10 @@ export function checkConventions(root: string): CheckItem[] {
     }
 
     // Check for _app, _document
-    if (pageFiles.some((f) => isSpecial(f, "_app"))) {
+    if (isCustom("_app")) {
       items.push({ name: "Custom _app", status: "supported" });
     }
-    if (pageFiles.some((f) => isSpecial(f, "_document"))) {
+    if (isCustom("_document")) {
       items.push({ name: "Custom _document", status: "supported" });
     }
   }
@@ -1169,7 +1169,7 @@ export function checkConventions(root: string): CheckItem[] {
       viewTransitionFiles.push(rel);
     }
 
-    if (hasFreeCjsGlobal(content) && !/^next\.config\.[cm]?[jt]s$/.test(rel)) {
+    if (hasFreeCjsGlobal(content) && !/^next\.config\.(?:ts|mts|mjs|js|cjs)$/.test(rel)) {
       cjsGlobalFiles.push(rel);
     }
   }
@@ -1380,13 +1380,12 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     lines.push(`    Run \x1b[36mvinext init\x1b[0m to set up your project automatically`);
     lines.push("");
     lines.push("  Or manually:");
+    lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
     lines.push(
-      `    1. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-react${hasAppRouter ? " @vitejs/plugin-rsc react-server-dom-webpack" : ""}\x1b[0m`,
+      `    2. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-react${hasAppRouter ? " @vitejs/plugin-rsc react-server-dom-webpack" : ""}\x1b[0m`,
     );
-    lines.push(
-      `    2. Replace the next scripts in package.json with \x1b[36mvinext dev\x1b[0m / \x1b[36mvinext build\x1b[0m / \x1b[36mvinext start\x1b[0m`,
-    );
-    lines.push(`    3. Run: \x1b[36mvinext dev\x1b[0m`);
+    lines.push(`    3. Create vite.config.ts with \x1b[36mplugins: [vinext()]\x1b[0m`);
+    lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);
   }
 
   lines.push("");
