@@ -267,11 +267,11 @@ describe("Next.js deploy harness", () => {
 
     expect(script).toContain('if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then');
     expect(script).toContain(
-      '"${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1',
+      '"${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force >> "${BUILD_LOG}" 2>&1',
     );
     expect(script).toContain('"${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1');
     expect(script).toContain(
-      '"${VINEXT_BIN}" init --platform=node --skip-check --force --prerender',
+      '"${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force --prerender',
     );
   });
 
