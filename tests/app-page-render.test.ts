@@ -77,6 +77,15 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import {
+  _consumeRequestScopedCacheLife,
+  _peekRequestScopedCacheLife,
+} from "../packages/vinext/src/shims/cache-request-state.js";
+import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
+import {
+  setCurrentFetchRevalidate,
+  withFetchCache,
+} from "../packages/vinext/src/shims/fetch-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
@@ -2598,6 +2607,48 @@ describe("static routes under the default revalidate = false", () => {
       ["rsc:/posts/post", { revalidate: Infinity }],
     ]);
   });
+
+  // In a Next.js 16.2.7 build, a static page whose only fetch is force-cache,
+  // `revalidate: false` or tags-only keeps `initialRevalidateSeconds: false`;
+  // only a numeric fetch revalidate gives it a finite lifetime.
+  it.each<{ name: string; init: RequestInit; revalidate: number }>([
+    { name: "force-cache", init: { cache: "force-cache" }, revalidate: Infinity },
+    { name: "revalidate: false", init: { next: { revalidate: false } }, revalidate: Infinity },
+    { name: "tags only", init: { next: { tags: ["page-data"] } }, revalidate: Infinity },
+    { name: "revalidate: 60", init: { next: { revalidate: 60 } }, revalidate: 60 },
+  ])(
+    "stores the lifetime a cached fetch with $name gives the page",
+    async ({ init, revalidate }) => {
+      const common = createCommonOptions();
+      const cleanupFetchCache = withFetchCache();
+      setCacheHandler(new MemoryCacheHandler());
+      try {
+        await runWithRequestContext(createRequestContext(), async () => {
+          setCurrentFetchRevalidate(Infinity);
+          // The page's data fetch, resolved before its render reads the lifetime.
+          await (await fetch("data:text/plain,page-data", init)).text();
+          const response = await renderAppPageLifecycle({
+            ...common.options,
+            getRequestCacheLife: _consumeRequestScopedCacheLife,
+            isProduction: true,
+            peekRequestCacheLife: _peekRequestScopedCacheLife,
+            revalidateSeconds: Infinity,
+          });
+          await response.text();
+          await Promise.all(common.waitUntilPromises);
+        });
+      } finally {
+        cleanupFetchCache();
+      }
+
+      expect(common.isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl])).toEqual(
+        [
+          ["html:/posts/post", { revalidate }],
+          ["rsc:/posts/post", { revalidate }],
+        ],
+      );
+    },
+  );
 
   // Next.js pairs expireTime only with a finite revalidate, so the default
   // keeps no expire of its own unless a cacheLife sets one.

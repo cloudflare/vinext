@@ -64,6 +64,8 @@ const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
 const { registerFrameworkTracingIntegration } =
   await import("../packages/vinext/src/server/tracer.js");
+const { _peekRequestScopedCacheLife } =
+  await import("../packages/vinext/src/shims/cache-request-state.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -931,6 +933,64 @@ describe("fetch cache shim", () => {
     expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([
       31_536_000, 31_536_000,
     ]);
+  });
+
+  // Next.js only lowers the page's revalidate for a fetch whose own
+  // `next.revalidate` is a number below it (server/lib/patch-fetch.ts). A
+  // cached fetch without one is stored for a year but leaves a
+  // `revalidate = false` page indefinite.
+  it.each<{ name: string; init?: RequestInit; fetchCacheMode?: "default-cache" | "force-cache" }>([
+    { name: "force-cache", init: { cache: "force-cache" } },
+    { name: "revalidate: false", init: { next: { revalidate: false } } },
+    { name: "tags only", init: { next: { tags: ["tags-only"] } } },
+    { name: "fetchCache = force-cache", fetchCacheMode: "force-cache" },
+    { name: "fetchCache = default-cache", fetchCacheMode: "default-cache" },
+  ])(
+    "a cached fetch with $name leaves an indefinite page lifetime unset",
+    async ({ init, fetchCacheMode }) => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        setCurrentFetchRevalidate(Infinity);
+        if (fetchCacheMode) setCurrentFetchCacheMode(fetchCacheMode);
+
+        await fetch("https://api.example.com/indefinite-page-lifetime", init);
+
+        const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+        const store = (handler as any).store as Map<string, any>;
+        expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([31_536_000]);
+        expect(_peekRequestScopedCacheLife()).toBeNull();
+      });
+    },
+  );
+
+  it("a tags-only fetch leaves the page lifetime to the route revalidate it inherits", async () => {
+    await runWithRequestContext(createRequestContext(), async () => {
+      setCurrentFetchRevalidate(60);
+
+      await fetch("https://api.example.com/tags-only-route-lifetime", {
+        next: { tags: ["tags-only-route-lifetime"] },
+      });
+
+      const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+      const store = (handler as any).store as Map<string, any>;
+      expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([60]);
+      expect(_peekRequestScopedCacheLife()).toBeNull();
+    });
+  });
+
+  it.each<{ name: string; init: RequestInit }>([
+    { name: "next.revalidate", init: { next: { revalidate: 60 } } },
+    {
+      name: "force-cache and next.revalidate",
+      init: { cache: "force-cache", next: { revalidate: 60 } },
+    },
+  ])("a cached fetch with $name sets the page lifetime", async ({ init }) => {
+    await runWithRequestContext(createRequestContext(), async () => {
+      setCurrentFetchRevalidate(Infinity);
+
+      await fetch("https://api.example.com/finite-page-lifetime", init);
+
+      expect(_peekRequestScopedCacheLife()).toEqual({ revalidate: 60 });
+    });
   });
 
   it("resets the active route revalidate between fetch-cache scopes", async () => {

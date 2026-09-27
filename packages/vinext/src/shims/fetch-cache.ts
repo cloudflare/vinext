@@ -1287,8 +1287,14 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // lifetime is shorter. Later metadata-only fetches inherit that live
       // minimum rather than the route's original segment-config seed.
       lowerCurrentFetchRevalidate(nextOpts.revalidate);
+      // Only this explicit lifetime shortens the page's. A fetch without a
+      // numeric `next.revalidate` (force-cache, `revalidate: false`, tags only
+      // or a fetchCache default) stores its entry for a year or the route's
+      // revalidate, but leaves a `revalidate = false` page indefinite: Next.js
+      // lowers the prerender store only when the fetch's own revalidate is
+      // shorter (server/lib/patch-fetch.ts).
+      recordFiniteFetchRevalidate(nextOpts.revalidate);
     }
-    recordFiniteFetchRevalidate(revalidateSeconds);
     const reqTags = _getState().currentRequestTags;
     const tags = encodeCacheTags(nextOpts?.tags ?? []);
     if (tags.length > 0) {

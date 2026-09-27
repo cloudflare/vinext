@@ -424,7 +424,7 @@ vinext stores a rendered App Router page (ISR) when Next.js would treat its rout
 
 Other routes render on every request. Their `"use cache"` functions and cached `fetch` calls are still reused. Routes built with `cacheComponents` follow their own rules, and [Differences from Next.js](/docs/reference/differences#caching) lists the cases where vinext classifies a route differently.
 
-A static page defaults to `revalidate = false`, as in Next.js, unless a `revalidate` export, a cached `fetch`, `cacheLife()` or a `"use cache"` function in its render sets a lifetime. A `revalidate = false` page is rendered again only after `revalidatePath()` or `revalidateTag()` invalidates it, or once the cache drops it.
+A static page defaults to `revalidate = false`, as in Next.js, unless a `revalidate` export, a `fetch` with a numeric `next.revalidate`, `cacheLife()` or a `"use cache"` function in its render sets a lifetime. A cached `fetch` without one, such as `cache: "force-cache"`, doesn't shorten the page's lifetime. A `revalidate = false` page is rendered again only after `revalidatePath()` or `revalidateTag()` invalidates it, or once the cache drops it.
 
 Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `cache: "no-store"` outside a cache scope, and reading `searchParams`. Under `dynamic = "force-static"` they return empty values or don't count, so the page is still stored.
 
