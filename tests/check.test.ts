@@ -1114,20 +1114,19 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
   });
 
-  it.runIf(process.platform !== "win32")(
-    "auto-detects when the appDir base is reached through a symlink",
-    () => {
-      writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "routes" })] };`);
-      writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-      writeFile("src/proxy.ts", `export default function proxy() {}`);
-      fs.symlinkSync(path.join(tmpDir, "src"), path.join(tmpDir, "routes"));
+  it.runIf(process.platform !== "win32")("scans an appDir base reached through a symlink", () => {
+    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "routes" })] };`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/proxy.ts", `export default function proxy() {}`);
+    fs.symlinkSync(path.join(tmpDir, "src"), path.join(tmpDir, "routes"));
 
-      const items = checkConventions(tmpDir);
-      expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
-      expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
-      expect(items.find((i) => i.name === "src/proxy.ts (Next.js 16)")).toBeDefined();
-    },
-  );
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (routes/app/)")).toBeDefined();
+    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
+    expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "src/proxy.ts (Next.js 16)")).toBeDefined();
+  });
 
   it("notes an unreadable appDir when no router directory is found", () => {
     writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "../routes" })] };`);
@@ -1462,6 +1461,16 @@ describe("checkConventions", () => {
     writeFile("postcss.config.mjs", `export default () => ({ plugins: ["autoprefixer"] });`);
 
     const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+  });
+
+  it("checks the PostCSS config vinext loads first", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("postcss.config.js", `module.exports = () => ({ plugins: ["autoprefixer"] });`);
+    writeFile("postcss.config.mjs", `export default { plugins: ["@tailwindcss/postcss"] };`);
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.name).toBe("PostCSS string-form plugins (postcss.config.js)");
     expect(postcss?.status).toBe("partial");
   });
 

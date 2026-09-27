@@ -7,6 +7,7 @@
 
 import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
 import { normalizePageExtensions } from "./routing/file-matcher.js";
+import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import ignore, { type Ignore } from "ignore";
@@ -972,8 +973,7 @@ function findNextConfigPath(root: string): string | null {
  * resolved path when it is a string literal written inline in the `vinext()`
  * call and resolves inside the project, `null` when an `appDir` is present but
  * can't be resolved that way (a variable, a Vite `root`, a path outside the
- * project or through a symlink), and `undefined` when the Vite config never
- * mentions `appDir`.
+ * project), and `undefined` when the Vite config never mentions `appDir`.
  */
 function readVinextAppDirOption(root: string): string | null | undefined {
   const viteConfigPath = findViteConfigPath(root);
@@ -985,11 +985,7 @@ function readVinextAppDirOption(root: string): string | null | undefined {
   if (literal === undefined) return null;
   const baseDir = path.resolve(root, literal);
   const rel = path.relative(root, baseDir);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
-  // The project scan doesn't follow symlinks, and the plugin compares canonical
-  // paths, so leave a base reached through a symlink to auto-detection.
-  if (!fs.existsSync(baseDir)) return baseDir;
-  return fs.realpathSync(baseDir) === path.join(fs.realpathSync(root), rel) ? baseDir : null;
+  return rel.startsWith("..") || path.isAbsolute(rel) ? null : baseDir;
 }
 
 /**
@@ -1116,9 +1112,14 @@ export function checkConventions(root: string): CheckItem[] {
   const pageExts = readPageExtensions(root);
   const scanExts = [...new Set([...SOURCE_EXTENSIONS, ...pageExts])];
   const sourceFiles = findSourceFiles(root, scanExts);
+  // The project scan doesn't follow symlinks, so rescan a route directory
+  // reached through one (the directory itself or a configured appDir base).
+  const realRoot = fs.realpathSync(root);
+  const isThroughSymlink = (dir: string) =>
+    fs.realpathSync(dir) !== path.join(realRoot, path.relative(root, dir));
   const routeFiles = (dir: string) => {
     const files = sourceFiles.filter((file) => file.startsWith(`${dir}/`));
-    if (files.length || !fs.lstatSync(dir).isSymbolicLink()) return files;
+    if (files.length || !isThroughSymlink(dir)) return files;
     const rules = ancestorGitignoreRules(root, dir);
     if (isGitignored(dir, true, rules)) return [];
     return findSourceFiles(dir, scanExts, rules);
@@ -1136,7 +1137,9 @@ export function checkConventions(root: string): CheckItem[] {
       : findDir(root, "app", "pages") === null && findDir(root, "src/app", "src/pages") !== null
         ? srcDir
         : root;
-  const usesSrcDir = baseDir === srcDir;
+  // Like the plugin, compare canonical paths so an appDir symlinked to src/ counts.
+  const canonical = (dir: string) => (fs.existsSync(dir) ? fs.realpathSync(dir) : dir);
+  const usesSrcDir = canonical(baseDir) === canonical(srcDir);
   const pagesDir = findDir(baseDir, "pages");
   const appDirPath = findDir(baseDir, "app");
   const conventionPrefix = usesSrcDir ? "src/" : "";
@@ -1289,9 +1292,8 @@ export function checkConventions(root: string): CheckItem[] {
     });
   }
 
-  // Check PostCSS config for string-form plugins
-  const postcssConfigs = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"];
-  for (const configFile of postcssConfigs) {
+  // Check PostCSS config for string-form plugins, in the order vinext loads them
+  for (const configFile of POSTCSS_CONFIG_FILES) {
     const configPath = path.join(root, configFile);
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf-8");
