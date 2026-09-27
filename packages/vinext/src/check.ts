@@ -5,7 +5,7 @@
  * showing what will work, what needs changes, and an overall score.
  */
 
-import { detectPackageManager, findDir } from "./utils/project.js";
+import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
 import { normalizePageExtensions } from "./routing/file-matcher.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
@@ -967,6 +967,19 @@ function findNextConfigPath(root: string): string | null {
   return null;
 }
 
+/**
+ * The `appDir` option passed to `vinext()` in the Vite config: the string when
+ * it is a literal, `null` when present but not statically readable, and
+ * `undefined` when absent.
+ */
+function readVinextAppDirOption(root: string): string | null | undefined {
+  const viteConfigPath = findViteConfigPath(root);
+  if (!viteConfigPath) return undefined;
+  const source = fs.readFileSync(viteConfigPath, "utf-8");
+  if (!/\bappDir\s*:/.test(source)) return undefined;
+  return /\bappDir\s*:\s*(["'])([^"'\n]+)\1/.exec(source)?.[2] ?? null;
+}
+
 /** The dotted `pageExtensions` vinext resolves route conventions with. */
 function readPageExtensions(root: string): string[] {
   const configPath = findNextConfigPath(root);
@@ -1090,19 +1103,28 @@ export function checkConventions(root: string): CheckItem[] {
   };
   const isPageFile = (file: string) => pageExts.some((ext) => file.endsWith(ext));
 
-  // Like the plugin, look for app/ and pages/ in a single base directory: the
-  // root when either is there, otherwise src/. proxy/middleware live there too.
+  // Like the plugin, look for app/ and pages/ in a single base directory:
+  // `vinext({ appDir })` when set, else the root when either is there, else
+  // src/. proxy/middleware live in src/ when that is the base, else the root.
   const srcDir = path.join(root, "src");
-  const usesSrcDir =
-    findDir(root, "app", "pages") === null && findDir(root, "src/app", "src/pages") !== null;
-  const baseDir = usesSrcDir ? srcDir : root;
+  const appDirOption = readVinextAppDirOption(root);
+  const baseDir =
+    typeof appDirOption === "string"
+      ? path.resolve(root, appDirOption)
+      : findDir(root, "app", "pages") === null && findDir(root, "src/app", "src/pages") !== null
+        ? srcDir
+        : root;
+  const usesSrcDir = baseDir === srcDir;
   const pagesDir = findDir(baseDir, "pages");
   const appDirPath = findDir(baseDir, "app");
   const conventionPrefix = usesSrcDir ? "src/" : "";
-  const proxyFile = findConventionFile(baseDir, "proxy", pageExts);
-  const middlewareFile = findConventionFile(baseDir, "middleware", pageExts);
+  const conventionDir = usesSrcDir ? srcDir : root;
+  const proxyFile = findConventionFile(conventionDir, "proxy", pageExts);
+  const middlewareFile = findConventionFile(conventionDir, "middleware", pageExts);
 
-  if (!usesSrcDir) {
+  // An unresolvable appDir option may select another base, so only flag an
+  // ignored src/ directory when the base came from auto-detection.
+  if (appDirOption === undefined && !usesSrcDir) {
     for (const dir of ["app", "pages"]) {
       if (findDir(root, dir) === null && findDir(root, `src/${dir}`) !== null) {
         items.push({
@@ -1116,7 +1138,7 @@ export function checkConventions(root: string): CheckItem[] {
 
   if (pagesDir !== null) {
     items.push({
-      name: usesSrcDir ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
+      name: `Pages Router (${path.relative(root, pagesDir)}/)`,
       status: "supported",
     });
 
@@ -1152,7 +1174,7 @@ export function checkConventions(root: string): CheckItem[] {
 
   if (appDirPath !== null) {
     items.push({
-      name: usesSrcDir ? "App Router (src/app/)" : "App Router (app/)",
+      name: `App Router (${path.relative(root, appDirPath)}/)`,
       status: "supported",
     });
 
@@ -1221,7 +1243,7 @@ export function checkConventions(root: string): CheckItem[] {
       viewTransitionFiles.push(rel);
     }
 
-    if (hasFreeCjsGlobal(content) && !/^next\.config\.(?:ts|mts|mjs|js|cjs)$/.test(rel)) {
+    if (hasFreeCjsGlobal(content) && !/^next\.config\.(?:ts|mts|js|cjs)$/.test(rel)) {
       cjsGlobalFiles.push(rel);
     }
   }
@@ -1312,9 +1334,7 @@ export function runCheck(root: string): CheckResult {
  */
 export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
   const lines: string[] = [];
-  const hasAppRouter = result.conventions.some(
-    (item) => item.name === "App Router (app/)" || item.name === "App Router (src/app/)",
-  );
+  const hasAppRouter = result.conventions.some((item) => item.name.startsWith("App Router ("));
   const statusIcon = (s: Status) =>
     s === "supported"
       ? "\x1b[32m✓\x1b[0m"

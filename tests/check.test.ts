@@ -1081,6 +1081,17 @@ describe("checkConventions", () => {
     expect(checkConventions(tmpDir).find((i) => i.name === "2 page(s)")).toBeDefined();
   });
 
+  it("uses the vinext({ appDir }) base from the Vite config", () => {
+    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "src" })] };`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
+    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
+    expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
+  });
+
   it("resolves conventions with custom pageExtensions from next.config", () => {
     writeFile(
       "next.config.mjs",
@@ -1483,6 +1494,14 @@ describe("checkConventions", () => {
 
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name.includes("__dirname"))).toBeUndefined();
+  });
+
+  it("still flags __dirname in next.config.mjs (ESM configs get no CJS globals)", () => {
+    writeFile("next.config.mjs", `export default { sassOptions: { includePaths: [__dirname] } };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name.includes("__dirname"))?.files).toEqual(["next.config.mjs"]);
   });
 
   it.each(["app", "src/app", "pages", "src/pages"])(
