@@ -272,7 +272,7 @@ Create the namespace with `cf kv namespaces create --title=my-app-cache` and rep
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
 
-Each cached page or data entry in KV expires `ttlSeconds` after it is written (30 days by default, set with `kvDataAdapter({ ttlSeconds })`). This includes pages with `revalidate = false`, which are rendered again on the next request once their entry expires.
+Each cached page or data entry in KV expires after the adapter's `ttlSeconds` (30 days by default, set with `kvDataAdapter({ ttlSeconds })` and raised to KV's 60-second minimum if lower). This includes pages with `revalidate = false`, which are rendered again on the next request once their entry expires.
 
 ## Static Assets response cache
 
@@ -420,7 +420,7 @@ You can run `vinext init --platform=cloudflare` to configure these choices. The 
 vinext stores a rendered App Router page (ISR) only when Next.js would treat its route as static or SSG:
 
 - a route without dynamic segments;
-- a dynamic-segment route with `generateStaticParams` on its last dynamic segment, in that segment's layout, a deeper layout or the page. The layouts and pages of parallel route slots count too. Returning `[]` opts every path into on-demand ISR, unless `dynamicParams = false`, which makes unknown paths 404;
+- a dynamic-segment route with `generateStaticParams` on its last dynamic segment, in that segment's layout, a deeper layout or the page. Parallel route slots count too, except the layout of a slot that renders its `default` page. Returning `[]` opts every path into on-demand ISR, unless `dynamicParams = false`, which makes unknown paths 404;
 - a route with `dynamic = "force-static"` or `dynamic = "error"`.
 
 `dynamic = "force-dynamic"`, `revalidate = 0` and an edge `runtime` override these rules. Every other route renders on every request and is not stored as a page in the ISR cache, even when it exports `revalidate`. Its `"use cache"` functions and cached `fetch` calls are still reused. Routes built with `cacheComponents` follow their own rules.

@@ -75,7 +75,7 @@ All of these resolve automatically to vinext shims. Do not rewrite imports in ap
 | `revalidate`      | Yes                                                    |
 | `dynamic`         | Yes                                                    |
 | `dynamicParams`   | Yes                                                    |
-| `runtime`         | Partly: edge `runtime` skips ISR; placement is ignored |
+| `runtime`         | Partly: edge skips ISR, unless `cacheComponents` is on |
 | `preferredRegion` | Ignored                                                |
 
 ## next.config.js Options
