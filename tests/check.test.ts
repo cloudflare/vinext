@@ -1131,6 +1131,49 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
   });
 
+  it.each([
+    [
+      "a renamed default import",
+      `import createVinext from "vinext";\nexport default { plugins: [createVinext({ appDir: "src" })] };`,
+    ],
+    [
+      "options after a spread",
+      `export default { plugins: [vinext({ ...shared, appDir: "src" })] };`,
+    ],
+    ["TypeScript wrappers", `export default { plugins: [vinext({ appDir: "src" as const })] };`],
+    [
+      "a root key outside the Vite config",
+      `const docs = { root: "docs" };\nexport default { plugins: [vinext({ appDir: "src" })] };`,
+    ],
+  ])("reads appDir through %s", (_, viteConfig) => {
+    writeFile("vite.config.ts", viteConfig);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
+    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
+  });
+
+  it("treats options that an earlier spread may set as unresolved", () => {
+    writeFile("vite.config.ts", `export default { plugins: [vinext({ ...shared })] };`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    // The spread may set appDir, so src/app/ isn't reported as ignored.
+    expect(checkConventions(tmpDir).find((i) => i.name.includes("is ignored"))).toBeUndefined();
+  });
+
+  it("reads pageExtensions from a spread of a static object", () => {
+    writeFile(
+      "next.config.mjs",
+      `const routes = { pageExtensions: ["mdx"] };\nexport default { ...routes };`,
+    );
+    writeFile("pages/index.mdx", `# Home`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
   it("keeps next.config pageExtensions when vinext({ nextConfig }) is unset", () => {
     writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
     writeFile(
@@ -1554,6 +1597,17 @@ describe("checkConventions", () => {
     expect(postcss?.status).toBe(status);
   });
 
+  it("isn't fooled by a commented-out object export in a PostCSS config", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile(
+      "postcss.config.mjs",
+      `const config = () => ({ plugins: ["autoprefixer"] }); // export default {\nexport default config;`,
+    );
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+  });
+
   it("checks the PostCSS config vinext loads first", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("postcss.config.js", `module.exports = () => ({ plugins: ["autoprefixer"] });`);
@@ -1610,9 +1664,10 @@ describe("checkConventions", () => {
     const items = checkConventions(tmpDir);
     const elapsed = Date.now() - start;
 
-    // The first element is a bare string, so it is still correctly flagged...
+    // The first element is a bare string, so it is still flagged (partial: the
+    // unterminated config does not parse, so it cannot be confirmed as an object)...
     const postcss = items.find((i) => i.name.includes("PostCSS"));
-    expect(postcss?.status).toBe("supported");
+    expect(postcss?.status).toBe("partial");
     // ...and crucially it returns quickly instead of backtracking for minutes.
     expect(elapsed).toBeLessThan(2000);
   });
@@ -1669,6 +1724,20 @@ describe("checkConventions", () => {
       expect(item?.files).toEqual([config]);
     },
   );
+
+  it("reports __dirname in client modules as unsupported", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("components/Widget.tsx", `"use client";\nconst dir = __dirname;`);
+    writeFile("lib/db.ts", `const dir = __dirname;`);
+
+    const items = checkConventions(tmpDir);
+    const client = items.find((i) => i.name === "__dirname / __filename in client modules");
+    expect(client?.status).toBe("unsupported");
+    expect(client?.files).toEqual(["components/Widget.tsx"]);
+    const server = items.find((i) => i.name === "__dirname / __filename (CommonJS globals)");
+    expect(server?.status).toBe("partial");
+    expect(server?.files).toEqual(["lib/db.ts"]);
+  });
 
   it("detects ESM syntax in next.config.js that doesn't start a line", () => {
     writeFile("next.config.js", `const dir = __dirname; export default { env: { dir } };`);

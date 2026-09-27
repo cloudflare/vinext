@@ -8,7 +8,7 @@
 import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
 import { normalizePageExtensions } from "./routing/file-matcher.js";
 import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
-import { escapeRegExp } from "./utils/regex.js";
+import { unwrapExpression } from "./plugins/ast-utils.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import ignore, { type Ignore } from "ignore";
@@ -932,9 +932,20 @@ function collectConfigKeys(source: string): ConfigKeys {
   // Merge keys across all candidate config objects (multi-phase branches).
   // A branch without a readable `pageExtensions` resolves to the defaults.
   const branchExtensions: (string[] | undefined)[] = [];
+  // Expand spreads of statically known objects (`{ ...shared, … }`) in place,
+  // so later properties still win.
+  const expandSpreads = (
+    obj: ESTree.ObjectExpression,
+    depth = 0,
+  ): ESTree.ObjectExpression["properties"] =>
+    obj.properties.flatMap((prop) => {
+      if (prop.type !== "SpreadElement" || depth > 10) return [prop];
+      const spread = resolveObjects(prop.argument);
+      return spread.length === 1 ? expandSpreads(spread[0], depth + 1) : [prop];
+    });
   for (const configObj of configObjs) {
     let branchExts: string[] | undefined;
-    for (const prop of configObj.properties) {
+    for (const prop of expandSpreads(configObj)) {
       const name = propertyKeyName(prop);
       if (!name) continue;
       top.add(name);
@@ -983,15 +994,28 @@ function findNextConfigPath(root: string): string | null {
 const UNRESOLVED = Symbol("unresolved");
 type VinextOption = ESTree.Expression | typeof UNRESOLVED | undefined;
 
-/** The first `vinext(…)` call in a parsed Vite config. */
-function findVinextCall(node: unknown): ESTree.CallExpression | undefined {
+/**
+ * The first call to `callee` in a parsed Vite config, with the nearest
+ * enclosing object that has a `plugins` key (the Vite config it's part of).
+ */
+function findVinextCall(
+  node: unknown,
+  callee: string,
+  viteConfig?: ESTree.ObjectExpression,
+): { call: ESTree.CallExpression; viteConfig?: ESTree.ObjectExpression } | undefined {
   if (!node || typeof node !== "object") return undefined;
-  const call = node as ESTree.CallExpression;
-  if (call.type === "CallExpression" && call.callee.type === "Identifier") {
-    if (call.callee.name === "vinext") return call;
+  const expr = node as ESTree.Expression;
+  if (expr.type === "CallExpression" && expr.callee.type === "Identifier") {
+    if (expr.callee.name === callee) return { call: expr, viteConfig };
+  }
+  if (
+    expr.type === "ObjectExpression" &&
+    expr.properties.some((p) => propertyKeyName(p) === "plugins")
+  ) {
+    viteConfig = expr;
   }
   for (const value of Object.values(node)) {
-    const found = findVinextCall(value);
+    const found = findVinextCall(value, callee, viteConfig);
     if (found) return found;
   }
   return undefined;
@@ -1000,25 +1024,44 @@ function findVinextCall(node: unknown): ESTree.CallExpression | undefined {
 /**
  * Read the options passed to `vinext()` in the Vite config. Returns a lookup
  * that gives an option's expression, `undefined` when it isn't set, or
- * `UNRESOLVED` when the options can't be read statically (a variable, a
- * spread, no identifiable call) and the config mentions the option.
+ * `UNRESOLVED` when it can't be read statically (the options are a variable,
+ * a spread or computed key may set it, or no call can be identified) and the
+ * config may set it. `setsViteRoot` is whether the enclosing Vite config sets
+ * `root`, which changes what a relative `appDir` resolves against.
  */
 function readVinextOptions(source: string | null): {
   source: string | null;
+  setsViteRoot: boolean;
   get: (name: string) => VinextOption;
 } {
   let props: Map<string, ESTree.Expression> | null = null;
+  let mayBeOverridden = false;
+  let setsViteRoot = false;
   if (source !== null) {
     try {
-      const call = findVinextCall(parseAst(source, { lang: "ts" }));
-      const arg = call?.arguments[0];
-      if (call && (arg === undefined || arg.type === "ObjectExpression")) {
+      const program = parseAst(source, { lang: "ts" });
+      // Follow a renamed default import (`import createVinext from "vinext"`).
+      let callee = "vinext";
+      for (const node of program.body) {
+        if (node.type !== "ImportDeclaration" || node.source.value !== "vinext") continue;
+        const specifier = node.specifiers.find((s) => s.type === "ImportDefaultSpecifier");
+        if (specifier) callee = specifier.local.name;
+      }
+      const found = findVinextCall(program, callee);
+      const arg = found?.call.arguments[0];
+      const options = arg && (unwrapExpression(arg) as ESTree.Expression | ESTree.SpreadElement);
+      setsViteRoot =
+        found?.viteConfig?.properties.some((p) => propertyKeyName(p) === "root") ?? false;
+      if (found && (options === undefined || options.type === "ObjectExpression")) {
         props = new Map();
-        for (const prop of arg?.properties ?? []) {
+        for (const prop of options?.properties ?? []) {
           const name = propertyKeyName(prop);
           if (name === null) {
-            props = null;
-            break;
+            // A spread or computed key may set any earlier option; later
+            // properties still win.
+            props.clear();
+            mayBeOverridden = true;
+            continue;
           }
           props.set(name, (prop as ESTree.ObjectProperty).value as ESTree.Expression);
         }
@@ -1029,8 +1072,9 @@ function readVinextOptions(source: string | null): {
   }
   return {
     source,
+    setsViteRoot,
     get: (name) => {
-      if (props) return props.get(name);
+      if (props) return props.get(name) ?? (mayBeOverridden ? UNRESOLVED : undefined);
       return source !== null && new RegExp(`\\b${name}\\s*:`).test(source) ? UNRESOLVED : undefined;
     },
   };
@@ -1043,8 +1087,9 @@ function readVinextOptions(source: string | null): {
 function literalOption(option: VinextOption): unknown {
   if (option === undefined) return undefined;
   if (option === UNRESOLVED) return UNRESOLVED;
-  if (option.type === "Literal") return option.value;
-  if (option.type === "Identifier" && option.name === "undefined") return undefined;
+  const expr = unwrapExpression(option) as ESTree.Expression;
+  if (expr.type === "Literal") return expr.value;
+  if (expr.type === "Identifier" && expr.name === "undefined") return undefined;
   return UNRESOLVED;
 }
 
@@ -1063,7 +1108,7 @@ function readVinextAppDir(root: string, options: ReturnType<typeof readVinextOpt
   const value = literalOption(options.get("appDir"));
   // Like the plugin's `if (options.appDir)`, an empty value means auto-detect.
   if (!value) return undefined;
-  if (typeof value !== "string" || /\broot\s*:/.test(options.source ?? "")) return null;
+  if (typeof value !== "string" || options.setsViteRoot) return null;
   const baseDir = path.resolve(root, value);
   const rel = path.relative(root, baseDir);
   return rel.startsWith("..") || path.isAbsolute(rel) ? null : baseDir;
@@ -1088,12 +1133,41 @@ function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
 
 /** Whether a PostCSS config exports an object literal, directly or via a variable. */
 function exportsPostcssConfigObject(content: string): boolean {
-  if (/(?:module\.exports\s*=|export\s+default)\s*\{/.test(content)) return true;
-  const name = /(?:module\.exports\s*=|export\s+default)\s*([\w$]+)\s*;?\s*$/m.exec(content)?.[1];
-  if (name === undefined) return false;
-  return new RegExp(`(?:const|let|var)\\s+${escapeRegExp(name)}\\s*(?::[^=]+)?=\\s*\\{`).test(
-    content,
-  );
+  let program: ESTree.Program;
+  try {
+    program = parseAst(content, { lang: "ts" });
+  } catch {
+    return false;
+  }
+  const vars = new Map<string, ESTree.Expression>();
+  let exported: ESTree.Expression | undefined;
+  for (const node of program.body) {
+    if (node.type === "VariableDeclaration") {
+      for (const decl of node.declarations) {
+        if (decl.id.type === "Identifier" && decl.init) vars.set(decl.id.name, decl.init);
+      }
+    } else if (node.type === "ExportDefaultDeclaration") {
+      if (!node.declaration.type.endsWith("Declaration")) {
+        exported = node.declaration as ESTree.Expression;
+      }
+    } else if (
+      node.type === "ExpressionStatement" &&
+      node.expression.type === "AssignmentExpression" &&
+      node.expression.left.type === "MemberExpression" &&
+      node.expression.left.object.type === "Identifier" &&
+      node.expression.left.object.name === "module" &&
+      node.expression.left.property.type === "Identifier" &&
+      node.expression.left.property.name === "exports"
+    ) {
+      exported = node.expression.right;
+    }
+  }
+  if (exported === undefined) return false;
+  let value = unwrapExpression(exported) as ESTree.Expression | null;
+  if (value?.type === "Identifier") {
+    value = unwrapExpression(vars.get(value.name)) as ESTree.Expression | null;
+  }
+  return value?.type === "ObjectExpression";
 }
 
 /**
@@ -1108,13 +1182,12 @@ function readPageExtensions(root: string, options: ReturnType<typeof readVinextO
     const configPath = findNextConfigPath(root);
     if (configPath)
       configured = collectConfigKeys(fs.readFileSync(configPath, "utf-8")).pageExtensions;
-  } else if (
-    nextConfig !== undefined &&
-    nextConfig !== UNRESOLVED &&
-    nextConfig.type === "ObjectExpression"
-  ) {
-    const inline = options.source!.slice(nextConfig.start, nextConfig.end);
-    configured = collectConfigKeys(`export default ${inline};`).pageExtensions;
+  } else if (nextConfig !== undefined && nextConfig !== UNRESOLVED) {
+    const inline = unwrapExpression(nextConfig) as ESTree.Expression;
+    if (inline.type === "ObjectExpression") {
+      const inlineSource = options.source!.slice(inline.start, inline.end);
+      configured = collectConfigKeys(`export default ${inlineSource};`).pageExtensions;
+    }
   }
   return normalizePageExtensions(configured).map((ext) => `.${ext}`);
 }
@@ -1389,6 +1462,7 @@ export function checkConventions(root: string): CheckItem[] {
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];
+  const clientCjsGlobalFiles: string[] = [];
   const configCjsGlobalFiles: string[] = [];
   for (const file of runtimeSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
@@ -1401,6 +1475,8 @@ export function checkConventions(root: string): CheckItem[] {
     if (hasFreeCjsGlobal(content)) {
       if (rel.startsWith("next.config.")) {
         if (!isNextConfigWithCjsGlobals(rel, content)) configCjsGlobalFiles.push(rel);
+      } else if (/^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*["']use client["']/.test(content)) {
+        clientCjsGlobalFiles.push(rel);
       } else {
         cjsGlobalFiles.push(rel);
       }
@@ -1466,6 +1542,16 @@ export function checkConventions(root: string): CheckItem[] {
       detail:
         "ESM configs get no CommonJS globals, so loading the config fails — use import.meta.dirname / import.meta.filename",
       files: configCjsGlobalFiles,
+    });
+  }
+
+  if (clientCjsGlobalFiles.length > 0) {
+    items.push({
+      name: "__dirname / __filename in client modules",
+      status: "unsupported",
+      detail:
+        "these globals are only provided in server code; the browser has no __dirname / __filename",
+      files: clientCjsGlobalFiles,
     });
   }
 
