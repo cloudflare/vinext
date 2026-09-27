@@ -778,7 +778,7 @@ describe("KVCacheHandler", () => {
     );
 
     it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
-      "falls back to the 30-day TTL for ttlSeconds %s, as deploy seeding does",
+      "falls back to the 30-day TTL for ttlSeconds %s",
       async (ttlSeconds) => {
         await new KVCacheHandler(kv as any, { ttlSeconds }).set("invalid-ttl", {
           kind: "FETCH",
