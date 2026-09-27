@@ -876,6 +876,31 @@ function collectConfigKeys(source: string): ConfigKeys {
     return [];
   }
 
+  // Resolve a static array of string literals (through variable refs, TS
+  // `as`/`satisfies` and parentheses). Returns undefined unless every element
+  // is a string literal, so a partly dynamic list is never half-read.
+  function resolveStringArray(
+    node: ESTree.Expression | null | undefined,
+    depth = 0,
+  ): string[] | undefined {
+    if (!node || depth > 10) return undefined;
+    if (node.type === "Identifier") return resolveStringArray(vars.get(node.name), depth + 1);
+    if (
+      node.type === "TSAsExpression" ||
+      node.type === "TSSatisfiesExpression" ||
+      node.type === "ParenthesizedExpression"
+    ) {
+      return resolveStringArray(node.expression, depth + 1);
+    }
+    if (node.type !== "ArrayExpression") return undefined;
+    const values: string[] = [];
+    for (const el of node.elements) {
+      if (el?.type !== "Literal" || typeof el.value !== "string") return undefined;
+      values.push(el.value);
+    }
+    return values;
+  }
+
   // Find the exported config object(s): `export default <expr>` or
   // `module.exports = <expr>`.
   let configObjs: ESTree.ObjectExpression[] = [];
@@ -907,14 +932,7 @@ function collectConfigKeys(source: string): ConfigKeys {
       top.add(name);
       // `prop` is a non-spread Property here (propertyKeyName returned a name).
       const value = (prop as ESTree.ObjectProperty).value;
-      if (name === "pageExtensions") {
-        const list = value.type === "Identifier" ? vars.get(value.name) : value;
-        if (list?.type === "ArrayExpression") {
-          pageExtensions = list.elements.flatMap((el) =>
-            el?.type === "Literal" && typeof el.value === "string" ? [el.value] : [],
-          );
-        }
-      }
+      if (name === "pageExtensions") pageExtensions = resolveStringArray(value);
       const childObjs = resolveObjects(value);
       if (!childObjs.length) continue;
       const children = nested.get(name) ?? new Set<string>();
@@ -1102,21 +1120,22 @@ export function checkConventions(root: string): CheckItem[] {
       status: "supported",
     });
 
-    // Count pages. `_app`, `_document` and `_error` (files or directories) are
-    // only special at the pages root; API routes are the files under `pages/api/`.
+    // Count pages the way the Pages Router scans them: directories named `api`,
+    // `_app`, `_document` or `_error` are skipped at any depth, and the
+    // `_app`/`_document`/`_error` files are only special at the pages root.
+    // API routes are the files under `pages/api/`.
+    const reserved = new Set(["_app", "_document", "_error"]);
     const pageFiles = routeFiles(pagesDir)
       .filter(isPageFile)
       .map((f) => path.relative(pagesDir, f));
-    const isSpecial = (f: string, name: string) => /^[^/.]+/.exec(f)?.[0] === name;
     const isCustom = (name: string) => pageExts.some((ext) => pageFiles.includes(`${name}${ext}`));
     const apiRoutes = pageFiles.filter((f) => f.startsWith("api/"));
-    const pages = pageFiles.filter(
-      (f) =>
-        !f.startsWith("api/") &&
-        !isSpecial(f, "_app") &&
-        !isSpecial(f, "_document") &&
-        !isSpecial(f, "_error"),
-    );
+    const pages = pageFiles.filter((f) => {
+      const segments = f.split("/");
+      const basename = segments.pop() ?? "";
+      if (segments.some((dir) => dir === "api" || reserved.has(dir))) return false;
+      return segments.length > 0 || !reserved.has(basename.split(".")[0]);
+    });
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
     if (apiRoutes.length) {
       items.push({ name: `${apiRoutes.length} API route(s)`, status: "supported" });

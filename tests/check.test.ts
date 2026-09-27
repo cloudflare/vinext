@@ -1064,6 +1064,23 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.startsWith("App Router"))).toBeUndefined();
   });
 
+  it("reads pageExtensions through TS wrappers and ignores partly dynamic lists", () => {
+    writeFile(
+      "next.config.ts",
+      `const exts = ["page.tsx"] as const;\nexport default { pageExtensions: exts };`,
+    );
+    writeFile("pages/index.page.tsx", `export default function Home() { return null; }`);
+    writeFile("pages/Button.tsx", `export function Button() { return null; }`);
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+
+    // A list with a non-literal element is not half-read: vinext's defaults apply.
+    writeFile(
+      "next.config.ts",
+      `const extra = "mdx";\nexport default { pageExtensions: ["page.tsx", extra] };`,
+    );
+    expect(checkConventions(tmpDir).find((i) => i.name === "2 page(s)")).toBeDefined();
+  });
+
   it("resolves conventions with custom pageExtensions from next.config", () => {
     writeFile(
       "next.config.mjs",
@@ -1114,6 +1131,17 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
     expect(items.find((i) => i.name === "1 API route(s)")).toBeDefined();
     expect(items.find((i) => i.name === "Custom _app")).toBeUndefined();
+  });
+
+  it("skips api and reserved directories at any depth, like the Pages Router", () => {
+    writeFile("pages/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_app.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_app/index.tsx", `export default function P() { return null; }`);
+    writeFile("pages/admin/_error/index.tsx", `export default function P() { return null; }`);
+
+    const items = checkConventions(tmpDir);
+    // index.tsx and admin/_app.tsx; files inside nested _app/ and _error/ dirs are never loaded.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
   });
 
   it("only treats root-level _app/_document files as custom", () => {
