@@ -175,7 +175,7 @@ This is the smallest persistent setup. The same data cache can hold ISR response
 
 ## Static Assets response cache
 
-For immutable routes, `staticAssetsAdapter()` packages locally prerendered App Router HTML, RSC payloads, and metadata responses into `dist/client`. The Worker reads those artifacts through its `ASSETS` binding:
+For immutable routes, `staticAssetsAdapter()` packages locally prerendered App Router HTML, RSC payloads, and metadata responses into the configured client assets output. The Worker reads those artifacts through its `ASSETS` binding:
 
 ```ts
 import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";
@@ -189,6 +189,19 @@ vinext({
 ```
 
 This is deliberately read-only. Cache writes, `revalidatePath()`, and `revalidateTag()` do not change the packaged responses; deploying a new build replaces them. Routes that were not prerendered continue to render normally, but this adapter does not persist their responses. Configure a separate `cache.data` adapter if the app also uses cached data.
+
+The private cache directory must be routed through the Worker so clients cannot fetch raw cache files directly. `vinext init --platform=cloudflare --cdn-cache=static-assets` configures this automatically. For manual Wrangler setup, add the following to your existing `assets` configuration:
+
+```jsonc
+{
+  "assets": {
+    "binding": "ASSETS",
+    "run_worker_first": ["/_vinext/static-cache/*"],
+  },
+}
+```
+
+In typed `cloudflare.config.ts`, use `assets.runWorkerFirst` with the same pattern and declare `ASSETS: bindings.assets()`. An existing `run_worker_first: true` also protects these files. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns when configuring this cache.
 
 ## Cache warming
 

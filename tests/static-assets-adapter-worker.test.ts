@@ -8,6 +8,7 @@ import { staticAssetsAdapter } from "../packages/cloudflare/src/cache/static-ass
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
 import { finalizeCacheAdapterPrerenderOutput } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import vinext from "../packages/vinext/src/index.js";
+import { generateWranglerConfig } from "../packages/vinext/src/init-cloudflare.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
   import.meta.dirname,
@@ -32,13 +33,18 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     write(
       root,
       "wrangler.jsonc",
-      JSON.stringify({
-        name: "vinext-static-assets-cache",
-        compatibility_date: "2026-04-01",
-        compatibility_flags: ["nodejs_compat"],
-        main: "vinext/server/fetch-handler",
-        assets: { not_found_handling: "none", binding: "ASSETS" },
-      }),
+      generateWranglerConfig(
+        {
+          root,
+          projectName: "vinext-static-assets-cache",
+          isAppRouter: true,
+          hasISR: false,
+          hasMDX: false,
+          nativeModulesToStub: [],
+        },
+        { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
+        "2026-04-01",
+      ),
     );
     write(
       root,
@@ -134,5 +140,16 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
     expect(rsc.headers.get("content-type")).toContain("text/x-component");
     expect(await rsc.text()).toContain("served from prerender assets");
+  });
+
+  it("does not expose the packaged cache through public asset URLs", async () => {
+    const artifacts = fs.readdirSync(path.join(root, "dist/client/_vinext/static-cache"));
+    expect(artifacts).toContain("index.json");
+    expect(artifacts.some((file) => file.endsWith(".html"))).toBe(true);
+    expect(artifacts.some((file) => file.endsWith(".rsc"))).toBe(true);
+    for (const file of artifacts) {
+      const response = await fetch(`${baseUrl}/_vinext/static-cache/${file}`);
+      expect(response.status, file).toBe(404);
+    }
   });
 });

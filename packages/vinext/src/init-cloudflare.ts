@@ -503,6 +503,9 @@ export function generateWranglerConfig(
       directory: "dist/client",
       not_found_handling: "none",
       binding: "ASSETS",
+      ...(options.cdnCache === "static-assets"
+        ? { run_worker_first: ["/_vinext/static-cache/*"] }
+        : {}),
     },
   };
 
@@ -1158,7 +1161,8 @@ export function updateWranglerConfigForCloudflare(
       output,
       '  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS" }',
     );
-  } else if (options.cdnCache === "static-assets") {
+  }
+  if (options.cdnCache === "static-assets") {
     const assetsProperty = findTopLevelJsonProperty(output, "assets")!;
     const assets = JSON.parse(
       stripJsonComments(output.slice(assetsProperty.valueStart, assetsProperty.valueEnd)),
@@ -1166,11 +1170,39 @@ export function updateWranglerConfigForCloudflare(
     if (!assets || typeof assets !== "object" || Array.isArray(assets)) {
       throw new Error("The existing Wrangler config has an invalid assets value.");
     }
+    const workerFirst = assets.run_worker_first;
+    if (
+      workerFirst !== undefined &&
+      typeof workerFirst !== "boolean" &&
+      !Array.isArray(workerFirst)
+    ) {
+      throw new Error("The existing Wrangler config has an invalid assets.run_worker_first value.");
+    }
+    // Exclusions override positive routes, so merely appending our private path
+    // cannot guarantee that the Worker protects it when exclusions are present.
+    if (
+      Array.isArray(workerFirst) &&
+      workerFirst.some((pattern) => typeof pattern !== "string" || pattern.startsWith("!"))
+    ) {
+      throw new Error(
+        "Static Assets cache requires run_worker_first without exclusion patterns. Use true or an array of positive path patterns.",
+      );
+    }
+    const protectedRouting =
+      workerFirst === true
+        ? true
+        : [
+            ...new Set([
+              ...(Array.isArray(workerFirst) ? workerFirst : []),
+              "/_vinext/static-cache/*",
+            ]),
+          ];
     if (
       typeof assets.directory !== "string" ||
       assets.directory.length === 0 ||
       typeof assets.binding !== "string" ||
-      assets.binding.length === 0
+      assets.binding.length === 0 ||
+      JSON.stringify(workerFirst) !== JSON.stringify(protectedRouting)
     ) {
       const updatedAssets = JSON.stringify({
         ...assets,
@@ -1180,6 +1212,7 @@ export function updateWranglerConfigForCloudflare(
         ...(typeof assets.binding === "string" && assets.binding.length > 0
           ? {}
           : { binding: "ASSETS" }),
+        run_worker_first: protectedRouting,
       });
       output = `${output.slice(0, assetsProperty.valueStart)}${updatedAssets}${output.slice(assetsProperty.valueEnd)}`;
     }

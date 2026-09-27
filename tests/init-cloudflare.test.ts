@@ -21,6 +21,21 @@ function expectValidConfig(output: string): void {
 }
 
 describe("generateWranglerConfig", () => {
+  it("routes private Static Assets cache files through the Worker", () => {
+    const output = generateWranglerConfig(
+      {
+        root: "/tmp/my-app",
+        projectName: "my-app",
+        isAppRouter: true,
+        hasISR: false,
+        hasMDX: false,
+        nativeModulesToStub: [],
+      },
+      { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
+    );
+    expect(JSON.parse(output).assets.run_worker_first).toEqual(["/_vinext/static-cache/*"]);
+  });
+
   it.each(["service-binding", "self-contained"] as const)(
     "pretty-prints the generated %s Response Store config",
     (responseStoreMode) => {
@@ -1086,6 +1101,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       directory: "dist/client",
       not_found_handling: "none",
       binding: "ASSETS",
+      run_worker_first: ["/_vinext/static-cache/*"],
     });
     expect(
       updateWranglerConfigForCloudflare(output, {
@@ -1105,7 +1121,41 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(JSON.parse(output).assets).toEqual({
       binding: "STATIC",
       directory: "dist/client",
+      run_worker_first: ["/_vinext/static-cache/*"],
     });
+  });
+
+  it.each([
+    { assets: undefined, expected: ["/_vinext/static-cache/*"] },
+    {
+      assets: { directory: "build/client", binding: "STATIC" },
+      expected: ["/_vinext/static-cache/*"],
+    },
+    { assets: { run_worker_first: false }, expected: ["/_vinext/static-cache/*"] },
+    { assets: { run_worker_first: true }, expected: true },
+    { assets: { run_worker_first: ["/api/*"] }, expected: ["/api/*", "/_vinext/static-cache/*"] },
+    {
+      assets: { run_worker_first: ["/_vinext/static-cache/*"] },
+      expected: ["/_vinext/static-cache/*"],
+    },
+  ])("protects Static Assets when updating $assets", ({ assets, expected }) => {
+    const options = {
+      cdnCache: "static-assets" as const,
+      dataCache: "none" as const,
+      imageOptimization: "none" as const,
+    };
+    const output = updateWranglerConfigForCloudflare(JSON.stringify({ assets }), options);
+    expect(JSON.parse(output).assets.run_worker_first).toEqual(expected);
+    expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
+  });
+
+  it("rejects Worker-first exclusions that could expose private Static Assets", () => {
+    expect(() =>
+      updateWranglerConfigForCloudflare(
+        JSON.stringify({ assets: { run_worker_first: ["/*", "!/_vinext/*"] } }),
+        { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
+      ),
+    ).toThrow("Static Assets cache requires run_worker_first without exclusion patterns");
   });
 
   it("rejects an existing Cloudflare Pages config instead of adding an incompatible main", () => {
