@@ -1059,6 +1059,27 @@ describe("checkConventions", () => {
 
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name === "proxy.ts (Next.js 16)")).toBeDefined();
+    // vinext uses the root as its base, so src/app is not loaded.
+    expect(items.find((i) => i.name === "src/app/ is ignored")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name.startsWith("App Router"))).toBeUndefined();
+  });
+
+  it("resolves conventions with custom pageExtensions from next.config", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default { pageExtensions: ["page.tsx", "api.ts", "mdx"] };`,
+    );
+    writeFile("pages/_app.page.tsx", `export default function App() { return null; }`);
+    writeFile("pages/index.page.tsx", `export default function Home() { return null; }`);
+    writeFile("pages/docs.mdx", `# Docs`);
+    writeFile("pages/components/Button.tsx", `export function Button() { return null; }`);
+    writeFile("proxy.api.ts", `export default function proxy() {}`);
+
+    const items = checkConventions(tmpDir);
+    // Button.tsx doesn't match pageExtensions, so it's not a page.
+    expect(items.find((i) => i.name === "2 page(s)")).toBeDefined();
+    expect(items.find((i) => i.name === "Custom _app")).toBeDefined();
+    expect(items.find((i) => i.name === "proxy.api.ts (Next.js 16)")).toBeDefined();
   });
 
   it("detects proxy and middleware in src/ for src-layout projects", () => {

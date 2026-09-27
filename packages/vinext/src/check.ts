@@ -6,6 +6,7 @@
  */
 
 import { detectPackageManager, findDir } from "./utils/project.js";
+import { normalizePageExtensions } from "./routing/file-matcher.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import ignore, { type Ignore } from "ignore";
@@ -46,28 +47,23 @@ function compareByStatus(a: { status: Status }, b: { status: Status }): number {
   return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
 }
 
-/**
- * Default `pageExtensions`. vinext resolves every route convention (pages,
- * layouts, boundaries, route handlers, proxy/middleware) against this list.
- */
-const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
-
 type AppRouterFileType = "page" | "layout" | "route" | "loading" | "error" | "not-found";
 
 /**
  * True if `relFile` (relative to the app directory) is an App Router file of
  * the given convention. Files inside private `_folder` segments are not routes.
+ * `exts` are the dotted `pageExtensions` that vinext resolves conventions with.
  */
-function isAppRouterFile(relFile: string, type: AppRouterFileType): boolean {
+function isAppRouterFile(relFile: string, type: AppRouterFileType, exts: string[]): boolean {
   const segments = relFile.split("/");
   const basename = segments.pop() ?? "";
   if (segments.some((segment) => segment.startsWith("_"))) return false;
-  return PAGE_EXTENSIONS.some((ext) => basename === `${type}${ext}`);
+  return exts.some((ext) => basename === `${type}${ext}`);
 }
 
-/** The first `<name><ext>` file found in `dir` for the default page extensions. */
-function findConventionFile(dir: string, name: string): string | null {
-  for (const ext of PAGE_EXTENSIONS) {
+/** The first `<name><ext>` file found in `dir` for the given page extensions. */
+function findConventionFile(dir: string, name: string, exts: string[]): string | null {
+  for (const ext of exts) {
     if (fs.existsSync(path.join(dir, `${name}${ext}`))) return `${name}${ext}`;
   }
   return null;
@@ -748,6 +744,8 @@ type ConfigKeys = {
   top: Set<string>;
   /** For each object-valued property, its child key names (for `parent.child`). */
   nested: Map<string, Set<string>>;
+  /** `pageExtensions`, when set to an array of string literals. */
+  pageExtensions?: string[];
 };
 
 /** The property key name of an object property, or null for spreads/computed keys. */
@@ -772,6 +770,7 @@ function propertyKeyName(prop: ESTree.ObjectExpression["properties"][number]): s
 function collectConfigKeys(source: string): ConfigKeys {
   const top = new Set<string>();
   const nested = new Map<string, Set<string>>();
+  let pageExtensions: string[] | undefined;
 
   let program: ESTree.Program;
   try {
@@ -907,7 +906,16 @@ function collectConfigKeys(source: string): ConfigKeys {
       if (!name) continue;
       top.add(name);
       // `prop` is a non-spread Property here (propertyKeyName returned a name).
-      const childObjs = resolveObjects((prop as ESTree.ObjectProperty).value);
+      const value = (prop as ESTree.ObjectProperty).value;
+      if (name === "pageExtensions") {
+        const list = value.type === "Identifier" ? vars.get(value.name) : value;
+        if (list?.type === "ArrayExpression") {
+          pageExtensions = list.elements.flatMap((el) =>
+            el?.type === "Literal" && typeof el.value === "string" ? [el.value] : [],
+          );
+        }
+      }
+      const childObjs = resolveObjects(value);
       if (!childObjs.length) continue;
       const children = nested.get(name) ?? new Set<string>();
       for (const childObj of childObjs) {
@@ -920,13 +928,10 @@ function collectConfigKeys(source: string): ConfigKeys {
     }
   }
 
-  return { top, nested };
+  return { top, nested, pageExtensions };
 }
 
-/**
- * Analyze next.config.js/mjs/ts for supported and unsupported options.
- */
-export function analyzeConfig(root: string): CheckItem[] {
+function findNextConfigPath(root: string): string | null {
   // Mirror the Next.js-compatible set in shims/constants.ts. Accepts both
   // `.ts`/`.mts` (Next.js-recognized) and `.cjs`/`.cts` (defensive — Next.js
   // does not, but if a user has them we should still scan and report).
@@ -937,15 +942,27 @@ export function analyzeConfig(root: string): CheckItem[] {
     "next.config.js",
     "next.config.cjs",
   ];
-  let configPath: string | null = null;
   for (const f of configFiles) {
     const p = path.join(root, f);
-    if (fs.existsSync(p)) {
-      configPath = p;
-      break;
-    }
+    if (fs.existsSync(p)) return p;
   }
+  return null;
+}
 
+/** The dotted `pageExtensions` vinext resolves route conventions with. */
+function readPageExtensions(root: string): string[] {
+  const configPath = findNextConfigPath(root);
+  const configured = configPath
+    ? collectConfigKeys(fs.readFileSync(configPath, "utf-8")).pageExtensions
+    : undefined;
+  return normalizePageExtensions(configured).map((ext) => `.${ext}`);
+}
+
+/**
+ * Analyze next.config.js/mjs/ts for supported and unsupported options.
+ */
+export function analyzeConfig(root: string): CheckItem[] {
+  const configPath = findNextConfigPath(root);
   if (!configPath) {
     return [
       {
@@ -1041,42 +1058,57 @@ export function checkLibraries(root: string): CheckItem[] {
  */
 export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
-  const sourceFiles = findSourceFiles(root);
+  // Route conventions resolve against `pageExtensions` (which may add e.g.
+  // `.mdx` or compound `page.tsx`), so scan those alongside source files.
+  const pageExts = readPageExtensions(root);
+  const scanExts = [...new Set([...SOURCE_EXTENSIONS, ...pageExts])];
+  const sourceFiles = findSourceFiles(root, scanExts);
   const routeFiles = (dir: string) => {
     const files = sourceFiles.filter((file) => file.startsWith(`${dir}/`));
     if (files.length || !fs.lstatSync(dir).isSymbolicLink()) return files;
     const rules = ancestorGitignoreRules(root, dir);
     if (isGitignored(dir, true, rules)) return [];
-    return findSourceFiles(dir, SOURCE_EXTENSIONS, rules);
+    return findSourceFiles(dir, scanExts, rules);
   };
+  const isPageFile = (file: string) => pageExts.some((ext) => file.endsWith(ext));
 
-  // Check for pages/ and app/ at root level, then fall back to src/
-  const pagesDir = findDir(root, "pages", "src/pages");
-  const appDirPath = findDir(root, "app", "src/app");
-
-  // proxy/middleware live next to app/ and pages/: in src/ when those resolve
-  // there, otherwise at the root (mirrors the plugin's base-dir detection).
+  // Like the plugin, look for app/ and pages/ in a single base directory: the
+  // root when either is there, otherwise src/. proxy/middleware live there too.
   const srcDir = path.join(root, "src");
   const usesSrcDir =
     findDir(root, "app", "pages") === null && findDir(root, "src/app", "src/pages") !== null;
-  const conventionDir = usesSrcDir ? srcDir : root;
+  const baseDir = usesSrcDir ? srcDir : root;
+  const pagesDir = findDir(baseDir, "pages");
+  const appDirPath = findDir(baseDir, "app");
   const conventionPrefix = usesSrcDir ? "src/" : "";
-  const proxyFile = findConventionFile(conventionDir, "proxy");
-  const middlewareFile = findConventionFile(conventionDir, "middleware");
+  const proxyFile = findConventionFile(baseDir, "proxy", pageExts);
+  const middlewareFile = findConventionFile(baseDir, "middleware", pageExts);
+
+  if (!usesSrcDir) {
+    for (const dir of ["app", "pages"]) {
+      if (findDir(root, dir) === null && findDir(root, `src/${dir}`) !== null) {
+        items.push({
+          name: `src/${dir}/ is ignored`,
+          status: "unsupported",
+          detail: `vinext looks for app/ and pages/ in one directory (the project root here) — move src/${dir}/ to ${dir}/`,
+        });
+      }
+    }
+  }
 
   if (pagesDir !== null) {
-    const isSrc = pagesDir === path.join(srcDir, "pages");
     items.push({
-      name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
+      name: usesSrcDir ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
     });
 
     // Count pages. `_app`, `_document` and `_error` (files or directories) are
     // only special at the pages root; API routes are the files under `pages/api/`.
-    const pageFiles = routeFiles(pagesDir).map((f) => path.relative(pagesDir, f));
+    const pageFiles = routeFiles(pagesDir)
+      .filter(isPageFile)
+      .map((f) => path.relative(pagesDir, f));
     const isSpecial = (f: string, name: string) => /^[^/.]+/.exec(f)?.[0] === name;
-    const isCustom = (name: string) =>
-      PAGE_EXTENSIONS.some((ext) => pageFiles.includes(`${name}${ext}`));
+    const isCustom = (name: string) => pageExts.some((ext) => pageFiles.includes(`${name}${ext}`));
     const apiRoutes = pageFiles.filter((f) => f.startsWith("api/"));
     const pages = pageFiles.filter(
       (f) =>
@@ -1100,19 +1132,18 @@ export function checkConventions(root: string): CheckItem[] {
   }
 
   if (appDirPath !== null) {
-    const isSrc = appDirPath === path.join(srcDir, "app");
     items.push({
-      name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
+      name: usesSrcDir ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
     });
 
     const appFiles = routeFiles(appDirPath).map((f) => path.relative(appDirPath, f));
-    const pages = appFiles.filter((f) => isAppRouterFile(f, "page"));
-    const layouts = appFiles.filter((f) => isAppRouterFile(f, "layout"));
-    const routes = appFiles.filter((f) => isAppRouterFile(f, "route"));
-    const loadings = appFiles.filter((f) => isAppRouterFile(f, "loading"));
-    const errors = appFiles.filter((f) => isAppRouterFile(f, "error"));
-    const notFounds = appFiles.filter((f) => isAppRouterFile(f, "not-found"));
+    const pages = appFiles.filter((f) => isAppRouterFile(f, "page", pageExts));
+    const layouts = appFiles.filter((f) => isAppRouterFile(f, "layout", pageExts));
+    const routes = appFiles.filter((f) => isAppRouterFile(f, "route", pageExts));
+    const loadings = appFiles.filter((f) => isAppRouterFile(f, "loading", pageExts));
+    const errors = appFiles.filter((f) => isAppRouterFile(f, "error", pageExts));
+    const notFounds = appFiles.filter((f) => isAppRouterFile(f, "not-found", pageExts));
 
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
     if (layouts.length) items.push({ name: `${layouts.length} layout(s)`, status: "supported" });
@@ -1157,7 +1188,9 @@ export function checkConventions(root: string): CheckItem[] {
   // skips string literals, template literals, and comments before testing for the
   // identifier, so tokens inside those contexts are never matched. next.config.*
   // is skipped: vinext's config loader injects these globals the way Next.js does.
-  const runtimeSourceFiles = sourceFiles.filter(isRuntimeSourceFile);
+  const runtimeSourceFiles = sourceFiles.filter(
+    (file) => isRuntimeSourceFile(file) && SOURCE_EXTENSIONS.some((ext) => file.endsWith(ext)),
+  );
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];
