@@ -22,7 +22,13 @@ const RSC_REQUEST: RequestInit = { headers: { Accept: "text/x-component", RSC: "
 // Cache writes land after the response body ends, within this window.
 const CACHE_WRITE_WINDOW_MS = 2_000;
 
-type PageResponse = { body: string; cache: string | null; cacheControl: string; status: number };
+type PageResponse = {
+  body: string;
+  cache: string | null;
+  cacheControl: string;
+  contentType: string;
+  status: number;
+};
 
 // The production server runs in this process, so its cache is the memory
 // cache handler it registered on globalThis. Returns every stored key for the
@@ -111,6 +117,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       body: await response.text(),
       cache: response.headers.get("x-vinext-cache"),
       cacheControl: response.headers.get("cache-control") ?? "",
+      contentType: response.headers.get("content-type") ?? "",
       status: response.status,
     };
   }
@@ -164,18 +171,25 @@ describe("useSearchParams() in production cache-candidate renders", () => {
   }
 
   // Waits out the write window, then asserts the server's cache holds no HTML
-  // or RSC entry for the URLs' pathnames, with or without the query, and that
-  // repeating the URLs doesn't HIT. The read path can reject a stored entry,
-  // so a miss alone can't show nothing was written.
+  // or RSC entry for the pathnames, with or without the query.
+  async function expectNoStoredEntries(pathnames: ReadonlySet<string>): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, CACHE_WRITE_WINDOW_MS));
+    for (const pathname of pathnames) expect(storedKeys(pathname), pathname).toEqual([]);
+  }
+
+  // Asserts the server's cache holds no entry for the URLs' pathnames, and
+  // that repeating the URLs doesn't HIT. The read path can reject a stored
+  // entry, so a miss alone can't show nothing was written. The repeats render
+  // again and can schedule their own writes, so the cache is checked again
+  // once their write window has passed.
   async function expectStillUnstored(
     urls: readonly string[],
     rscUrls: readonly string[] = [],
   ): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, CACHE_WRITE_WINDOW_MS));
     const pathnames = new Set(
       [...urls, ...rscUrls].map((url) => new URL(url, baseUrl).pathname.replace(/\.rsc$/, "")),
     );
-    for (const pathname of pathnames) expect(storedKeys(pathname), pathname).toEqual([]);
+    await expectNoStoredEntries(pathnames);
     for (const [url, init] of [
       ...urls.map((url) => [url, undefined] as const),
       ...rscUrls.map((url) => [url, RSC_REQUEST] as const),
@@ -183,7 +197,9 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       const later = await get(url, init);
       expect(later.cache, url).not.toBe("HIT");
       expect(later.cacheControl, url).toContain("no-store");
+      if (init) expect(later.contentType, url).toContain("text/x-component");
     }
+    await expectNoStoredEntries(pathnames);
   }
 
   // Asserts a page renders the real query on every request and is never stored.
@@ -208,6 +224,8 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     const rscUrl = `${pathname}.rsc?q=${crypto.randomUUID()}`;
     const rsc = await get(rscUrl, RSC_REQUEST);
     expect(rsc.status).toBe(200);
+    // A Flight response, not HTML, so the RSC render path and its writes run.
+    expect(rsc.contentType).toContain("text/x-component");
     expect(rsc.cache).not.toBe("HIT");
     expect(rsc.cacheControl).toContain("no-store");
     await expectStillUnstored(urls, [rscUrl]);
