@@ -1,0 +1,33 @@
+.changeset/auto-_vinext_cloudflare_1.0.0-beta.10-1979d9c.md
+  s_ec9872ba117679::t_6acb907fea2281 1-16
+.changeset/pre.json
+  s_ec9872ba117679::t_a78591f7fc7de7 15,20,23,29-30,33,45,60,65-66
+packages/cloudflare/CHANGELOG.md
+  s_ec9872ba117679::t_8b0da5aae3cf92 3-18
+packages/cloudflare/package.json
+  s_ec9872ba117679::t_91e6a4e156b974 3
+packages/create-vinext-app/CHANGELOG.md
+  s_ec9872ba117679::t_eadb5c718e523d 3-12
+packages/create-vinext-app/package.json
+  s_ec9872ba117679::t_a64ca73deff351 3
+packages/vinext/CHANGELOG.md
+  s_ec9872ba117679::t_eac596a7cc7b4a 3-33
+packages/vinext/package.json
+  s_ec9872ba117679::t_476bf287b00832 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ada212b9cb72d7dc84ce28602b120733db269cae",
+  "prompts": {},
+  "sessions": {
+    "s_ec9872ba117679": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7613f98f-3422-4778-b027-13938ffd9dfc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
