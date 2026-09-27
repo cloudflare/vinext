@@ -946,8 +946,13 @@ describe("analyzeConfig", () => {
         cacheMaxMemorySize: 0,
         reactMaxHeadersLength: 1000,
         turbopack: { resolveAlias: {} },
+        instrumentationClientInject: ["./lib/rum.ts"],
         compiler: { removeConsole: true, define: {} },
-        experimental: { optimizePackageImports: ["my-lib"], staleTimes: { dynamic: 30 } },
+        experimental: {
+          optimizePackageImports: ["my-lib"],
+          staleTimes: { dynamic: 30 },
+          turbo: { resolveAlias: {} },
+        },
       };`,
     );
 
@@ -964,6 +969,8 @@ describe("analyzeConfig", () => {
     expect(status("cacheMaxMemorySize")).toBe("supported");
     expect(status("reactMaxHeadersLength")).toBe("supported");
     expect(status("turbopack")).toBe("partial");
+    expect(status("experimental.turbo")).toBe("partial");
+    expect(status("instrumentationClientInject")).toBe("supported");
     expect(status("compiler.define")).toBe("supported");
     expect(status("experimental.staleTimes")).toBe("supported");
     expect(status("experimental.optimizePackageImports")).toBe("supported");

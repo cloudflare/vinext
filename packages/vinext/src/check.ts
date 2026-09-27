@@ -248,6 +248,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "partial",
     detail: "resolveAlias and resolveExtensions are honoured; rules (loaders) are ignored",
   },
+  instrumentationClientInject: { status: "supported" },
   webpack: {
     status: "partial",
     detail:
@@ -295,6 +296,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "experimental.serverComponentsExternalPackages": {
     status: "supported",
     detail: "legacy alias of serverExternalPackages",
+  },
+  "experimental.turbo": {
+    status: "partial",
+    detail:
+      "legacy alias of turbopack; resolveAlias and resolveExtensions are honoured, rules (loaders) are ignored",
   },
   "experimental.staleTimes": { status: "supported" },
   "experimental.scrollRestoration": { status: "supported" },
