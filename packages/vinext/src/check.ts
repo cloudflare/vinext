@@ -217,17 +217,81 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   images: {
     status: "partial",
     detail:
-      "remotePatterns validated; on-the-fly optimization via images.optimizer (Cloudflare Images), passthrough otherwise",
+      "remotePatterns, sizes, qualities and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
   },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
     status: "supported",
     detail: "'export' mode and 'standalone' output (dist/standalone/server.js)",
   },
-  transpilePackages: { status: "supported", detail: "Vite handles this natively" },
+  transpilePackages: {
+    status: "supported",
+    detail: "listed packages are bundled instead of externalized on the server",
+  },
+  serverExternalPackages: { status: "supported" },
+  pageExtensions: { status: "supported" },
+  assetPrefix: { status: "supported" },
+  sassOptions: { status: "supported" },
+  generateBuildId: { status: "supported" },
+  deploymentId: { status: "supported" },
   webpack: {
+    status: "partial",
+    detail:
+      "resolve.alias, resolve.extensions and MDX loader options are carried over; other webpack loaders and plugins are ignored — migrate them to Vite plugins",
+  },
+  cacheHandler: {
     status: "unsupported",
-    detail: "Vite replaces webpack — custom webpack configs need migration",
+    detail: "ignored; configure cache adapters with vinext({ cache }) in vite.config",
+  },
+  cacheHandlers: {
+    status: "unsupported",
+    detail: "ignored; configure cache adapters with vinext({ cache }) in vite.config",
+  },
+  cacheLife: {
+    status: "unsupported",
+    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
+  },
+  "experimental.cacheLife": {
+    status: "unsupported",
+    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
+  },
+  skipTrailingSlashRedirect: {
+    status: "unsupported",
+    detail: "ignored; trailing-slash redirects are always applied",
+  },
+  reactCompiler: {
+    status: "unsupported",
+    detail: "ignored; enable the React Compiler with vinext({ react: { compiler: true } })",
+  },
+  "experimental.reactCompiler": {
+    status: "unsupported",
+    detail: "ignored; enable the React Compiler with vinext({ react: { compiler: true } })",
+  },
+  modularizeImports: {
+    status: "unsupported",
+    detail: "ignored; experimental.optimizePackageImports is supported",
+  },
+  typedRoutes: {
+    status: "unsupported",
+    detail: "typed Link hrefs are not generated; vinext typegen provides PageProps/LayoutProps",
+  },
+  "compiler.removeConsole": { status: "supported" },
+  "compiler.styledComponents": {
+    status: "partial",
+    detail:
+      "SWC transform not applied; styled-components still work at runtime, without displayName or css prop support",
+  },
+  "compiler.emotion": {
+    status: "partial",
+    detail: "SWC transform not applied; @emotion/react still works at runtime",
+  },
+  "compiler.relay": {
+    status: "unsupported",
+    detail: "Relay graphql tag transform is not applied",
+  },
+  "experimental.optimizePackageImports": {
+    status: "supported",
+    detail: "barrel imports rewritten to direct imports",
   },
   enablePrerenderSourceMaps: {
     status: "supported",
@@ -237,11 +301,21 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "partial",
     detail: "experimental support; behavior is incomplete",
   },
-  "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
-  "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
+  "experimental.ppr": {
+    status: "unsupported",
+    detail: "removed in Next.js 16 and ignored; use cacheComponents",
+  },
+  "experimental.dynamicIO": {
+    status: "unsupported",
+    detail: "renamed to cacheComponents in Next.js 16 and ignored; use cacheComponents",
+  },
+  "experimental.typedRoutes": {
+    status: "unsupported",
+    detail: "typed Link hrefs are not generated; vinext typegen provides PageProps/LayoutProps",
+  },
   "experimental.serverActions": {
     status: "supported",
-    detail: "server actions via 'use server' directive",
+    detail: "bodySizeLimit and allowedOrigins are enforced",
   },
   "experimental.allowedRevalidateHeaderKeys": {
     status: "supported",
@@ -285,7 +359,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "experimental.middlewarePrefetch": {
     status: "unsupported",
-    detail: "not recognized; use of this option is ignored",
+    detail: "deprecated alias of experimental.proxyPrefetch; ignored",
   },
   "experimental.proxyPrefetch": {
     status: "unsupported",
@@ -293,7 +367,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "experimental.middlewareClientMaxBodySize": {
     status: "unsupported",
-    detail: "not recognized; use of this option is ignored",
+    detail: "deprecated alias of experimental.proxyClientMaxBodySize; ignored",
   },
   "experimental.proxyClientMaxBodySize": {
     status: "unsupported",
@@ -301,15 +375,15 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "experimental.externalMiddlewareRewritesResolve": {
     status: "unsupported",
-    detail: "not recognized; use of this option is ignored",
+    detail: "deprecated alias of experimental.externalProxyRewritesResolve; ignored",
   },
   "experimental.externalProxyRewritesResolve": {
     status: "unsupported",
     detail: "not recognized; use of this option is ignored",
   },
   "experimental.instrumentationHook": {
-    status: "unsupported",
-    detail: "not recognized; instrumentation files are enabled automatically",
+    status: "supported",
+    detail: "no longer needed; instrumentation.ts is loaded automatically",
   },
   skipMiddlewareUrlNormalize: {
     status: "partial",
@@ -330,7 +404,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   poweredByHeader: {
     status: "supported",
-    detail: "not sent (matching Next.js default when disabled)",
+    detail: "vinext never sends an X-Powered-By header",
   },
 };
 
@@ -1175,35 +1249,10 @@ export function analyzeConfig(root: string): CheckItem[] {
   const present = collectConfigKeys(fs.readFileSync(configPath, "utf-8"));
   const items: CheckItem[] = [];
 
-  // Known top-level options we report on when present in the config object.
-  const configOptions = [
-    "basePath",
-    "trailingSlash",
-    "redirects",
-    "rewrites",
-    "headers",
-    "i18n",
-    "env",
-    "images",
-    "allowedDevOrigins",
-    "output",
-    "transpilePackages",
-    "webpack",
-    "cacheComponents",
-    "reactStrictMode",
-    "poweredByHeader",
-    "skipMiddlewareUrlNormalize",
-    "skipProxyUrlNormalize",
-  ];
-
-  for (const opt of configOptions) {
-    if (!present.top.has(opt)) continue;
-    const support = CONFIG_SUPPORT[opt];
-    if (support) {
-      items.push({ name: opt, status: support.status, detail: support.detail });
-    } else {
-      items.push({ name: opt, status: "unsupported", detail: "not recognized" });
-    }
+  // Top-level options: any CONFIG_SUPPORT key without a dot that is present
+  // on the config object.
+  for (const [key, support] of Object.entries(CONFIG_SUPPORT)) {
+    if (!key.includes(".") && present.top.has(key)) items.push({ name: key, ...support });
   }
 
   // Nested (dot-notation) options: the child must be a key inside its parent
