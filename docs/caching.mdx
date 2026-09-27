@@ -93,6 +93,8 @@ This matches Next.js behavior and lets vinext identify the route at build time, 
 
 When caching is enabled through `vinext init`, Workers Response Store is the default choice.
 
+The snippets below extend the generated config; keep your other Worker settings and bindings.
+
 ## Workers Response Store
 
 Workers Response Store is the most complete and best supported option. Workers Cache serves hot responses, R2 provides a durable backing store, and a SQLite Durable Object tracks metadata and invalidation state. An edge miss can read the stored response from R2 instead of immediately rendering the route again.
@@ -118,8 +120,6 @@ Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/pa
 The default service-binding mode keeps the cache service in a separate Worker. `vinext init` defines both Workers in `cloudflare.config.ts` using the config helper:
 
 ```ts
-// cloudflare.config.ts
-import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 const responseStore = await createWorkersResponseStoreServiceBindingConfig({
@@ -127,57 +127,40 @@ const responseStore = await createWorkersResponseStoreServiceBindingConfig({
     name: "my-app-response-store",
     compatibilityDate: "2026-09-27",
     compatibilityFlags: ["nodejs_compat"],
-    observability: {
-      enabled: true,
-      logs: { enabled: true, invocationLogs: true },
-      traces: { enabled: true, headSamplingRate: 0.1 },
-    },
   },
   bucket: "my-app-response-store-cache-bodies",
 });
 
 export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+```
 
-export default defineConfig({
-  worker: defineWorker({
-    ...responseStore.applicationWorker,
-    name: "my-app",
-    entrypoint: "vinext/server/fetch-handler",
-    compatibilityDate: "2026-09-27",
-    compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none" },
-    env: {
-      ...responseStore.applicationWorker.env,
-      ASSETS: bindings.assets(),
-    },
-  }),
+Merge the application settings into the existing Worker config, preserving your other bindings:
+
+```ts
+defineWorker({
+  // ...existing Worker settings
+  ...responseStore.applicationWorker,
+  env: {
+    // ...existing bindings
+    ...responseStore.applicationWorker.env,
+  },
 });
 ```
 
 The helper owns the Response Store's R2 binding, SQLite Durable Object export and binding, cache settings, and application service/version-metadata bindings. It imports bindings and exports from your installed Cloudflare Vite plugin. Set `accountId` on the top-level `defineConfig` object if needed, not on a Worker. You can also pass it to the helper and use the returned `responseStore.accountId` there.
 
-Register the exported Worker alongside the application in `vite.config.ts`:
+Add the exported Worker to your existing `cloudflare()` options in `vite.config.ts`:
 
 ```ts
-// vite.config.ts
-import { defineConfig } from "vite";
-import vinext from "vinext";
-import { cloudflare } from "@cloudflare/vite-plugin";
-import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
 import { responseStoreServiceBinding } from "./cloudflare.config.ts";
 
-export default defineConfig({
-  plugins: [
-    vinext({ cache: responseStoreAdapter() }),
-    cloudflare({
-      viteEnvironment: { name: "rsc" },
-      auxiliaryWorkers: [{ config: responseStoreServiceBinding }],
-    }),
-  ],
+cloudflare({
+  // ...existing plugin options
+  auxiliaryWorkers: [{ config: responseStoreServiceBinding }],
 });
 ```
 
-This example uses the App Router. For the Pages Router, omit `viteEnvironment: { name: "rsc" }`. Create the R2 bucket, build both Workers, and deploy the Response Store explicitly:
+Create the R2 bucket, build both Workers, and deploy the Response Store explicitly:
 
 ```sh
 pnpm exec cf r2 buckets create --name=my-app-response-store-cache-bodies
@@ -201,8 +184,6 @@ This avoids a second Worker, but the application Worker owns the R2 bucket, Dura
 Use the matching config helper. The adapter generates the required Worker exports during the build:
 
 ```ts
-// cloudflare.config.ts
-import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreSelfContainedConfig } from "@vinext/cloudflare/cache/config";
 
 const cache = await createWorkersResponseStoreSelfContainedConfig({
@@ -210,19 +191,10 @@ const cache = await createWorkersResponseStoreSelfContainedConfig({
   bucket: "my-app-response-store-cache-bodies",
 });
 
-export default defineConfig({
-  worker: defineWorker({
-    ...cache,
-    name: "my-app",
-    entrypoint: "vinext/server/fetch-handler",
-    compatibilityDate: "2026-09-27",
-    compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none" },
-    env: {
-      ...cache.env,
-      ASSETS: bindings.assets(),
-    },
-  }),
+defineWorker({
+  // ...existing Worker settings
+  ...cache,
+  env: { /* existing bindings, */ ...cache.env },
 });
 ```
 
@@ -251,26 +223,19 @@ This setup is fast when an entry is present at the edge, but Workers Cache is di
 Use `createWorkersCacheConfig()` to configure the response entrypoints and version metadata, and add the KV binding for the data adapter:
 
 ```ts
-// cloudflare.config.ts
-import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
 
 const cache = await createWorkersCacheConfig();
 
-export default defineConfig({
-  worker: defineWorker({
-    ...cache,
-    name: "my-app",
-    entrypoint: "vinext/server/fetch-handler",
-    compatibilityDate: "2026-09-27",
-    compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none" },
-    env: {
-      ...cache.env,
-      ASSETS: bindings.assets(),
-      VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
-    },
-  }),
+defineWorker({
+  // ...existing Worker settings
+  ...cache,
+  env: {
+    // ...existing bindings
+    ...cache.env,
+    VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+  },
 });
 ```
 
@@ -290,25 +255,15 @@ vinext({
 });
 ```
 
-Add the matching namespace to `cloudflare.config.ts`:
+Add the matching namespace to the Worker's `env` in `cloudflare.config.ts`:
 
 ```ts
-// cloudflare.config.ts
-import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 
-export default defineConfig({
-  worker: defineWorker({
-    name: "my-app",
-    entrypoint: "vinext/server/fetch-handler",
-    compatibilityDate: "2026-09-27",
-    compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none" },
-    env: {
-      ASSETS: bindings.assets(),
-      VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
-    },
-  }),
-});
+env: {
+  // ...existing bindings
+  VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+},
 ```
 
 Create the namespace with `cf kv namespaces create --title=my-app-cache` and replace `<your-namespace-id>` with its ID.

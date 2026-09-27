@@ -338,26 +338,16 @@ export default async function Page() {
 
 This works because `@cloudflare/vite-plugin` runs the RSC environment in workerd, where `cloudflare:workers` is a native module. In production builds, the import is externalized so workerd resolves it at runtime. All binding types are supported: D1, R2, KV, Durable Objects, AI, Queues, Vectorize, Browser Rendering, etc.
 
-Define your bindings in `cloudflare.config.ts`:
+Add bindings to your Worker's `env` in `cloudflare.config.ts`:
 
 ```ts
-import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 
-export default defineConfig({
-  accountId: "<your-account-id>",
-  worker: defineWorker({
-    name: "my-app",
-    entrypoint: "vinext/server/fetch-handler",
-    compatibilityDate: "2026-09-27",
-    compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none" },
-    env: {
-      ASSETS: bindings.assets(),
-      DB: bindings.d1({ name: "my-db", id: "<your-database-id>" }),
-      CACHE: bindings.kv({ id: "<your-namespace-id>" }),
-    },
-  }),
-});
+env: {
+  // ...existing bindings
+  DB: bindings.d1({ name: "my-db", id: "<your-database-id>" }),
+  CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+},
 ```
 
 Binding and runtime types are generated in `.cloudflare/types` during dev and build. Include that directory in `tsconfig.json`; run `cf workers types` before standalone type-checks. Generated types and Build Output stay gitignored.
@@ -730,49 +720,33 @@ Instead of wiring up cache handlers imperatively from a worker entry, you can de
 The KV and Workers Cache adapters fill different slots and can be used together:
 
 ```ts
-import { defineConfig } from "vite";
-import vinext from "vinext";
-import { cloudflare } from "@cloudflare/vite-plugin";
 import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
-export default defineConfig({
-  plugins: [
-    vinext({
-      cache: {
-        cdn: workersCacheCdnAdapter(),
-        data: kvDataAdapter(),
-      },
-    }),
-    cloudflare({ viteEnvironment: { name: "rsc" } }),
-  ],
+vinext({
+  cache: {
+    cdn: workersCacheCdnAdapter(),
+    data: kvDataAdapter(),
+  },
 });
 ```
-
-This example uses the App Router; for the Pages Router, use `cloudflare()`.
 
 The KV data adapter reads `env[binding]` at runtime. Configure its namespace and the Workers Cache entrypoints in `cloudflare.config.ts`:
 
 ```ts
-import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
 
 const cache = await createWorkersCacheConfig();
 
-export default defineConfig({
-  worker: defineWorker({
-    ...cache,
-    name: "my-app",
-    entrypoint: "vinext/server/fetch-handler",
-    compatibilityDate: "2026-09-27",
-    compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none" },
-    env: {
-      ...cache.env,
-      ASSETS: bindings.assets(),
-      VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
-    },
-  }),
+defineWorker({
+  // ...existing Worker settings
+  ...cache,
+  env: {
+    // ...existing bindings
+    ...cache.env,
+    VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+  },
 });
 ```
 
