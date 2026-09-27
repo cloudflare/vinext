@@ -37,10 +37,31 @@ describe("App Router Production build", () => {
   let outDir: string;
 
   beforeAll(async () => {
+    // Build only the routes exercised below, rather than rebuilding every
+    // unrelated app-basic regression fixture for each build-ID variant.
+    const fixturePaths = [
+      "package.json",
+      "tsconfig.json",
+      "instrumentation.ts",
+      "instrumentation-state.ts",
+      "prod-singleton-state.ts",
+      "app/layout.tsx",
+      "app/page.tsx",
+      "app/not-found.tsx",
+      "app/about",
+      "app/actions",
+      "app/blog",
+      "app/components",
+      "app/dashboard",
+    ].map((entry) => path.join(APP_FIXTURE_DIR, entry));
     fixtureDir = await createIsolatedFixture(
       APP_FIXTURE_DIR,
       "vinext-app-production-build-",
-      undefined,
+      (src) =>
+        fixturePaths.some(
+          (entry) =>
+            src === entry || src.startsWith(entry + path.sep) || entry.startsWith(src + path.sep),
+        ),
       path.join(APP_FIXTURE_DIR, "node_modules"),
     );
     outDir = path.join(fixtureDir, "dist");
