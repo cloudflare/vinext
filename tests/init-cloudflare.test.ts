@@ -1066,8 +1066,6 @@ export default { plugins: [vinext({ imageOptimization: true })] };
 
   it.each([
     ["workers-cache-cdn-adapter", "workersCacheCdnAdapter"],
-    ["workers-cache-cdn-adapter", "cdnAdapter"],
-    ["cdn-adapter", "workersCacheCdnAdapter"],
     ["cdn-adapter", "cdnAdapter"],
   ])(
     "aligns an existing %s import of %s with a custom version metadata binding",

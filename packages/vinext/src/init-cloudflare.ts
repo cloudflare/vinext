@@ -2472,17 +2472,15 @@ export function updateViteConfigForCloudflare(
         ? existingCdnSlot.value.callee.name
         : undefined;
     const adapterImports = [
-      "@vinext/cloudflare/cache/workers-cache-cdn-adapter",
-      "@vinext/cloudflare/cache/cdn-adapter",
-    ].flatMap((source) =>
-      ["workersCacheCdnAdapter", "cdnAdapter"].map((imported) => ({
-        source,
-        imported,
-        local: commonJs
-          ? findRequiredBinding(program, source, imported)
-          : findImportedBinding(program, source, imported),
-      })),
-    );
+      ["@vinext/cloudflare/cache/workers-cache-cdn-adapter", "workersCacheCdnAdapter"],
+      ["@vinext/cloudflare/cache/cdn-adapter", "cdnAdapter"],
+    ].map(([source, imported]) => ({
+      source,
+      imported,
+      local: commonJs
+        ? findRequiredBinding(program, source, imported)
+        : findImportedBinding(program, source, imported),
+    }));
     const {
       source,
       imported,

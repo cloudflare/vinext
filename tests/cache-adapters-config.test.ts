@@ -387,8 +387,11 @@ describe("registration is wired into every router/runtime entry", () => {
 });
 
 describe("workersCacheCdnAdapter builder + factory", () => {
-  it("builder resolves the runtime factory to an absolute path", () => {
+  it("builder resolves the runtime factory to an absolute path", async () => {
     expect(cdnAdapter).toBe(workersCacheCdnAdapter);
+    expect(
+      await import("../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js"),
+    ).not.toHaveProperty("cdnAdapter");
     const descriptor = workersCacheCdnAdapter();
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);

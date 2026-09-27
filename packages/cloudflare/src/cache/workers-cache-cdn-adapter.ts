@@ -92,6 +92,3 @@ export function workersCacheCdnAdapter(options?: CdnAdapterOptions) {
     },
   };
 }
-
-/** @deprecated Use {@link workersCacheCdnAdapter} instead. */
-export const cdnAdapter = workersCacheCdnAdapter;
