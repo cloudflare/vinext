@@ -1081,6 +1081,42 @@ describe("checkConventions", () => {
     expect(checkConventions(tmpDir).find((i) => i.name === "2 page(s)")).toBeDefined();
   });
 
+  it("scans the pageExtensions of every phase branch", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default (phase) => phase === "phase-production-build"\n  ? { pageExtensions: ["page.tsx"] }\n  : { pageExtensions: ["mdx"] };`,
+    );
+    writeFile("pages/index.page.tsx", `export default function Home() { return null; }`);
+    writeFile("pages/docs.mdx", `# Docs`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "2 page(s)")).toBeDefined();
+  });
+
+  it("ignores next.config pageExtensions when vinext({ nextConfig }) replaces it", () => {
+    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
+    writeFile(
+      "vite.config.ts",
+      `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["tsx"] } })] };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("skips the App Router when vinext({ disableAppRouter: true }) is set", () => {
+    writeFile(
+      "vite.config.ts",
+      `export default { plugins: [vinext({ disableAppRouter: true })] };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
+    expect(items.find((i) => i.name.startsWith("App Router"))).toBeUndefined();
+    expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
+  });
+
   it("uses the vinext({ appDir }) base from the Vite config", () => {
     writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "src" })] };`);
     writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
@@ -1464,6 +1500,25 @@ describe("checkConventions", () => {
     expect(postcss?.status).toBe("partial");
   });
 
+  it.each([
+    [
+      "a function exported through a variable",
+      `const config = () => ({ plugins: ["autoprefixer"] });\nexport default config;`,
+      "partial",
+    ],
+    [
+      "an object exported through a variable",
+      `const config = { plugins: ["@tailwindcss/postcss"] };\nexport default config;`,
+      "supported",
+    ],
+  ])("classifies string-form plugins in %s", (_, source, status) => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("postcss.config.mjs", source);
+
+    const postcss = checkConventions(tmpDir).find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe(status);
+  });
+
   it("checks the PostCSS config vinext loads first", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("postcss.config.js", `module.exports = () => ({ plugins: ["autoprefixer"] });`);
@@ -1573,10 +1628,20 @@ describe("checkConventions", () => {
       writeFile(config, `export default { sassOptions: { includePaths: [__dirname] } };`);
       writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
 
-      const items = checkConventions(tmpDir);
-      expect(items.find((i) => i.name.includes("__dirname"))?.files).toEqual([config]);
+      const item = checkConventions(tmpDir).find((i) => i.name.includes("__dirname"));
+      expect(item?.name).toBe("__dirname / __filename in an ESM next.config");
+      expect(item?.status).toBe("unsupported");
+      expect(item?.files).toEqual([config]);
     },
   );
+
+  it("detects ESM syntax in next.config.js that doesn't start a line", () => {
+    writeFile("next.config.js", `const dir = __dirname; export default { env: { dir } };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const item = checkConventions(tmpDir).find((i) => i.name.includes("__dirname"));
+    expect(item?.status).toBe("unsupported");
+  });
 
   it.each(["app", "src/app", "pages", "src/pages"])(
     "applies project gitignore to %s counts and CJS findings",
