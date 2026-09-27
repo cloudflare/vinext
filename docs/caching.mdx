@@ -190,6 +190,8 @@ vinext({
 
 This is deliberately read-only. Cache writes, `revalidatePath()`, and `revalidateTag()` do not change the packaged responses; deploying a new build replaces them. Routes that were not prerendered continue to render normally, but this adapter does not persist their responses. Configure a separate `cache.data` adapter if the app also uses cached data.
 
+Finite `revalidate` intervals do not refresh packaged responses either. Use a writable response cache if those routes need runtime ISR; Static Assets always serves the build-time snapshot until the next deployment.
+
 The private cache directory must be routed through the Worker so clients cannot fetch raw cache files directly. `vinext init --platform=cloudflare --cdn-cache=static-assets` configures this automatically. For manual Wrangler setup, add the following to your existing `assets` configuration:
 
 ```jsonc
