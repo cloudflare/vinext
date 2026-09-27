@@ -40,9 +40,6 @@ export default defineConfig({
 
 ### Workers Cache
 
-`cdnAdapter` remains available as a deprecated alias only from the original
-`@vinext/cloudflare/cache/cdn-adapter` import path.
-
 `workersCacheCdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
 Worker entrypoints: the default entrypoint runs middleware and request-time
 routing with caching disabled, while `VinextCachedResponse` lazily loads the
