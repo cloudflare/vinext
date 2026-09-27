@@ -943,8 +943,11 @@ describe("analyzeConfig", () => {
         sassOptions: {},
         generateBuildId: async () => "build",
         deploymentId: "dpl_1",
-        compiler: { removeConsole: true },
-        experimental: { optimizePackageImports: ["my-lib"] },
+        cacheMaxMemorySize: 0,
+        reactMaxHeadersLength: 1000,
+        turbopack: { resolveAlias: {} },
+        compiler: { removeConsole: true, define: {} },
+        experimental: { optimizePackageImports: ["my-lib"], staleTimes: { dynamic: 30 } },
       };`,
     );
 
@@ -958,6 +961,11 @@ describe("analyzeConfig", () => {
     expect(status("generateBuildId")).toBe("supported");
     expect(status("deploymentId")).toBe("supported");
     expect(status("compiler.removeConsole")).toBe("supported");
+    expect(status("cacheMaxMemorySize")).toBe("supported");
+    expect(status("reactMaxHeadersLength")).toBe("supported");
+    expect(status("turbopack")).toBe("partial");
+    expect(status("compiler.define")).toBe("supported");
+    expect(status("experimental.staleTimes")).toBe("supported");
     expect(status("experimental.optimizePackageImports")).toBe("supported");
   });
 

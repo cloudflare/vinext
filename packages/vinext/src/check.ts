@@ -238,6 +238,16 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   sassOptions: { status: "supported" },
   generateBuildId: { status: "supported" },
   deploymentId: { status: "supported" },
+  crossOrigin: { status: "supported" },
+  expireTime: { status: "supported" },
+  htmlLimitedBots: { status: "supported" },
+  cacheMaxMemorySize: { status: "supported" },
+  reactMaxHeadersLength: { status: "supported" },
+  "typescript.tsconfigPath": { status: "supported" },
+  turbopack: {
+    status: "partial",
+    detail: "resolveAlias and resolveExtensions are honoured; rules (loaders) are ignored",
+  },
   webpack: {
     status: "partial",
     detail:
@@ -279,6 +289,25 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   typedRoutes: {
     status: "partial",
     detail: "typed Link hrefs are not generated; vinext typegen provides PageProps/LayoutProps",
+  },
+  "compiler.define": { status: "supported" },
+  "compiler.defineServer": { status: "supported" },
+  "experimental.serverComponentsExternalPackages": {
+    status: "supported",
+    detail: "legacy alias of serverExternalPackages",
+  },
+  "experimental.staleTimes": { status: "supported" },
+  "experimental.scrollRestoration": { status: "supported" },
+  "experimental.globalNotFound": { status: "supported" },
+  "experimental.clientTraceMetadata": { status: "supported" },
+  "experimental.useLightningcss": { status: "supported" },
+  "experimental.lightningCssFeatures": { status: "supported" },
+  "experimental.disableOptimizedLoading": { status: "supported" },
+  "experimental.gestureTransition": { status: "supported" },
+  "experimental.appNavFailHandling": { status: "supported" },
+  "experimental.rootParams": {
+    status: "supported",
+    detail: "no longer needed; root params are always available",
   },
   "compiler.removeConsole": {
     status: "supported",
