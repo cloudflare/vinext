@@ -58,7 +58,9 @@ vinext({ cache: { cdn: workersCacheCdnAdapter() } });
 ```
 
 Cloudflare Vite plugin v2 uses Build Output and treats `cloudflare.config.ts`
-as the deployment source of truth. Declare the equivalent policies there:
+as the deployment source of truth. Declare the equivalent policies there.
+In these snippets, `existingExports` is your current Worker's `exports` object,
+or `{}` if it has none:
 
 ```ts
 import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
@@ -69,6 +71,7 @@ defineWorker({
   // ...existing Worker settings
   ...workersCache,
   env: { /* existing bindings, */ ...workersCache.env },
+  exports: { ...existingExports, ...workersCache.exports },
 });
 ```
 
@@ -152,7 +155,7 @@ dependency of `@vinext/cloudflare`; these helpers require v2.
 Add the exported auxiliary Worker to your existing Cloudflare Vite plugin options:
 
 ```ts
-import { responseStoreServiceBinding } from "./cloudflare.config.ts";
+import { responseStoreServiceBinding } from "./cloudflare.config";
 
 cloudflare({
   // ...existing plugin options
@@ -204,6 +207,7 @@ defineWorker({
   // ...existing Worker settings
   ...cache,
   env: { /* existing bindings, */ ...cache.env },
+  exports: { ...existingExports, ...cache.exports },
 });
 ```
 

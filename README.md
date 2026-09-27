@@ -731,7 +731,7 @@ vinext({
 });
 ```
 
-The KV data adapter reads `env[binding]` at runtime. Configure its namespace and the Workers Cache entrypoints in `cloudflare.config.ts`:
+The KV data adapter reads `env[binding]` at runtime. Configure its namespace and the Workers Cache entrypoints in `cloudflare.config.ts`. Here, `existingExports` is your current Worker's `exports` object, or `{}` if it has none:
 
 ```ts
 import { bindings } from "@cloudflare/vite-plugin/experimental-config";
@@ -747,6 +747,7 @@ defineWorker({
     ...cache.env,
     VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
   },
+  exports: { ...existingExports, ...cache.exports },
 });
 ```
 

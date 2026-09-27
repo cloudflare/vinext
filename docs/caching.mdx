@@ -93,7 +93,7 @@ This matches Next.js behavior and lets vinext identify the route at build time, 
 
 When caching is enabled through `vinext init`, Workers Response Store is the default choice.
 
-The snippets below extend the generated config; keep your other Worker settings and bindings.
+The snippets below extend the generated config; keep your other Worker settings and bindings. `existingExports` represents your current Worker's `exports` object, or `{}` if it has none.
 
 ## Workers Response Store
 
@@ -152,7 +152,7 @@ The helper owns the Response Store's R2 binding, SQLite Durable Object export an
 Add the exported Worker to your existing `cloudflare()` options in `vite.config.ts`:
 
 ```ts
-import { responseStoreServiceBinding } from "./cloudflare.config.ts";
+import { responseStoreServiceBinding } from "./cloudflare.config";
 
 cloudflare({
   // ...existing plugin options
@@ -195,6 +195,7 @@ defineWorker({
   // ...existing Worker settings
   ...cache,
   env: { /* existing bindings, */ ...cache.env },
+  exports: { ...existingExports, ...cache.exports },
 });
 ```
 
@@ -236,6 +237,7 @@ defineWorker({
     ...cache.env,
     VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
   },
+  exports: { ...existingExports, ...cache.exports },
 });
 ```
 

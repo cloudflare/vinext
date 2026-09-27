@@ -11,6 +11,25 @@ const tempRoot = fs.mkdtempSync(path.join(webRoot, ".init-cf-build-"));
 
 afterAll(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 
+function typecheckProject(root: string): void {
+  // Workspace-linked vinext resolves its dev Vite+ copy. Published consumers
+  // share the app's Vite peer; model that single type identity in this fixture.
+  const tsconfigPath = path.join(root, "tsconfig.json");
+  const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, "utf8"));
+  tsconfig.compilerOptions.paths ??= {};
+  tsconfig.compilerOptions.paths.vite = [
+    path.join(webRoot, "node_modules/vite/dist/node/index.d.ts"),
+  ];
+  fs.writeFileSync(tsconfigPath, JSON.stringify(tsconfig));
+  const tsc = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
+  const types = spawnSync(process.execPath, [tsc, "--project", "tsconfig.json"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  expect(types.status, `${types.stdout}\n${types.stderr}`).toBe(0);
+}
+
 describe("default cf init build", () => {
   it("builds and type-checks a default create-vinext-app Cloudflare project", () => {
     const root = path.join(tempRoot, "created-cf-app");
@@ -70,21 +89,7 @@ describe("default cf init build", () => {
     );
     expect(responseStoreConfig.observability).toEqual(observability);
     expect(responseStoreConfig).not.toHaveProperty("accountId");
-    // Workspace-linked vinext resolves its dev Vite+ copy. Published consumers
-    // share the app's Vite peer; model that single type identity in this fixture.
-    const tsconfigPath = path.join(root, "tsconfig.json");
-    const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, "utf8"));
-    tsconfig.compilerOptions.paths.vite = [
-      path.join(webRoot, "node_modules/vite/dist/node/index.d.ts"),
-    ];
-    fs.writeFileSync(tsconfigPath, JSON.stringify(tsconfig));
-    const tsc = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
-    const types = spawnSync(process.execPath, [tsc, "--project", "tsconfig.json"], {
-      cwd: root,
-      encoding: "utf8",
-      timeout: 30_000,
-    });
-    expect(types.status, `${types.stdout}\n${types.stderr}`).toBe(0);
+    typecheckProject(root);
   }, 150_000);
 
   it.each([
@@ -142,6 +147,23 @@ describe("default cf init build", () => {
           'import styles from "./card.module.css";\nexport default function Home() { return <main className={styles.card}>cf init smoke test</main> }',
         );
       }
+      // create-next-app uses bundler resolution without allowImportingTsExtensions:
+      // https://github.com/vercel/next.js/blob/canary/packages/create-next-app/templates/app/ts/tsconfig.json
+      const tsconfig = JSON.stringify({
+        compilerOptions: {
+          target: "ES2017",
+          lib: ["dom", "dom.iterable", "esnext"],
+          module: "esnext",
+          moduleResolution: "bundler",
+          noEmit: true,
+          strict: true,
+          skipLibCheck: true,
+        },
+        include: ["vite.config.ts", "cloudflare.config.ts", ".cloudflare/types"],
+      });
+      if (responseStoreMode === "service-binding") {
+        fs.writeFileSync(path.join(root, "tsconfig.json"), tsconfig);
+      }
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       try {
         await init({
@@ -160,6 +182,9 @@ describe("default cf init build", () => {
       } finally {
         log.mockRestore();
       }
+      if (responseStoreMode === "service-binding") {
+        expect(fs.readFileSync(path.join(root, "tsconfig.json"), "utf8")).toBe(tsconfig);
+      }
       const vinext = path.join(webRoot, "node_modules", ".bin", "vinext");
       const build = spawnSync(vinext, ["build"], {
         cwd: root,
@@ -170,6 +195,7 @@ describe("default cf init build", () => {
       expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
       expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(true);
       expect(fs.existsSync(path.join(root, "worker-configuration.d.ts"))).toBe(false);
+      if (responseStoreMode === "service-binding") typecheckProject(root);
       const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
       expect(
         fs.existsSync(path.join(workersDir, "default", "worker.config.json")),

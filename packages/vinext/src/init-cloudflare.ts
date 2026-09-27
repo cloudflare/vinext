@@ -1505,7 +1505,7 @@ export function generateAppRouterViteConfig(
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
     ...(serviceBinding
-      ? ['import { responseStoreServiceBinding } from "./cloudflare.config.ts";']
+      ? ['import { responseStoreServiceBinding } from "./cloudflare.config";']
       : []),
     ...cacheImports(options),
     ...(hasCssModules
@@ -1585,7 +1585,7 @@ export function generatePagesRouterViteConfig(
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
     ...(serviceBinding
-      ? ['import { responseStoreServiceBinding } from "./cloudflare.config.ts";']
+      ? ['import { responseStoreServiceBinding } from "./cloudflare.config";']
       : []),
     ...cacheImports(options),
     ...(hasCssModules
