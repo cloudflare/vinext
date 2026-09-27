@@ -24,6 +24,7 @@ export default defineConfig({
     ...responseStore.applicationWorker,
     name: "vinext-web",
     domains: ["vinext.dev"],
+    workersDev: true,
     entrypoint: "./worker/index.ts",
     compatibilityDate: "2026-04-08",
     compatibilityFlags: ["nodejs_compat"],
