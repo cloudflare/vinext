@@ -121,10 +121,15 @@ export function createRscOnErrorHandler(
   let loggedPrerenderErrors: Set<unknown> | undefined;
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
+    const reportableError =
+      error && typeof error === "object" && ORIGINAL_SERVER_ERROR in error
+        ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
+        : error;
 
     // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
-    // Expected response/HMR cancellations are not render failures.
-    if (isAppRenderAbortError(error)) {
+    // Expected response/HMR cancellations are not render failures, including
+    // originals wrapped by production error sanitization.
+    if (isAppRenderAbortError(error) || isAppRenderAbortError(reportableError)) {
       return undefined;
     }
 
@@ -132,7 +137,8 @@ export function createRscOnErrorHandler(
     // dynamic-server) carry a recognized digest and are not real failures:
     // return the digest and skip reporting, exactly like Next.js. A digest on
     // its own is NOT a signal — those errors fall through to reporting below.
-    const wellKnownDigest = getDigestForWellKnownError(error);
+    const wellKnownDigest =
+      getDigestForWellKnownError(error) ?? getDigestForWellKnownError(reportableError);
     if (wellKnownDigest !== undefined) {
       return wellKnownDigest;
     }
@@ -163,10 +169,6 @@ export function createRscOnErrorHandler(
       return undefined;
     }
 
-    const reportableError =
-      error && typeof error === "object" && ORIGINAL_SERVER_ERROR in error
-        ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
-        : error;
     if (options.requestInfo && options.errorContext && error) {
       options.reportRequestError(reportableError, options.requestInfo, options.errorContext);
     }

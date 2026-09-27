@@ -319,10 +319,11 @@ describe("app RSC error primitives", () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
+      const reportRequestError = vi.fn();
       const onError = createRscOnErrorHandler({
         errorContext: renderErrorContext("/feed"),
         nodeEnv: "production",
-        reportRequestError() {},
+        reportRequestError,
         requestInfo: { path: "/feed", method: "GET", headers: {} },
       });
       for (const digest of [
@@ -331,9 +332,16 @@ describe("app RSC error primitives", () => {
         "BAILOUT_TO_CLIENT_SIDE_RENDERING",
         "DYNAMIC_SERVER_USAGE",
       ]) {
-        onError({ digest });
+        const error = Object.assign(new Error("control flow"), { digest });
+        expect(onError(error)).toBe(digest);
+        expect(onError(sanitizeErrorForClient(error, "production"))).toBe(digest);
       }
-      onError(Object.assign(new Error("cancelled"), { name: "AbortError" }));
+      for (const name of ["AbortError", "ResponseAborted"]) {
+        const error = Object.assign(new Error("cancelled"), { name });
+        expect(onError(error)).toBeUndefined();
+        expect(onError(sanitizeErrorForClient(error, "production"))).toBeUndefined();
+      }
+      expect(reportRequestError).not.toHaveBeenCalled();
       expect(consoleError).not.toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
