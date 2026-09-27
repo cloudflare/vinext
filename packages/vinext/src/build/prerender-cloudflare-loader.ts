@@ -9,7 +9,7 @@ export function registerPrerenderCloudflareLoader(): void {
   const stub = `
     export const tracing = undefined;
     function unavailable() {
-      throw new Error("Cloudflare bindings are unavailable during build-time prerendering. Use deployment pre-warming for binding-dependent routes.");
+      throw new Error("Cloudflare bindings are unavailable during build-time prerendering. Use cache warming for binding-dependent routes.");
     }
     const inaccessible = new Proxy({}, {
       get: unavailable,

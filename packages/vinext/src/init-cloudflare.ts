@@ -303,7 +303,7 @@ export function setupCloudflarePlatform(
   if (cloudflare.prerender && cloudflare.cdnCache !== "static-assets") {
     nextSteps.push(
       "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
-      "   Use the Static Assets cache to serve them, or CDN pre-warming to fill another cache.",
+      "   Use the Static Assets cache to serve them, or cache warming to fill another cache.",
     );
   }
   if (needsKvNamespaceId) {
