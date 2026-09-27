@@ -363,7 +363,7 @@ npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-window 
 npx @vinext/cloudflare deploy --traffic-aware-warm-cache --warm-cache-target https://example.com  # Set the production origin manually
 ```
 
-Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
+Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with **Zone > Analytics > Read** and **Zone > Zone > Read** permissions for that zone.
 
 For typed config projects, declare the custom domain with `domains: ["example.com"]` on the Worker in `cloudflare.config.ts`. The first domain in the generated Build Output is used for both analytics and staged warming. Wrangler projects retain domain selection from their configured routes and deployed triggers. Use `--warm-cache-target https://example.com` to override the origin. Add `--warm-cache-certify` to require reusable cache hits before promotion, or `--no-promote` to leave the warmed version at 0% traffic for verification.
 

@@ -77,7 +77,8 @@ export function formatDeployHelp(): string {
   Traffic-aware warming uses Cloudflare zone analytics to select the
   highest-traffic routes, then feeds those routes into the same staged CDN
   pre-warming flow used by --warm-cache. It requires a custom
-  domain and a CLOUDFLARE_API_TOKEN with Zone Analytics read permission.
+  domain and a CLOUDFLARE_API_TOKEN with Zone > Analytics > Read and
+  Zone > Zone > Read permissions for that zone.
   Use --warm-cache-target <origin> to provide the production HTTPS origin
   manually for traffic-aware analytics selection, discovery, probing, and warming.
 

@@ -8,7 +8,7 @@
     "build": "vite build",
     "typegen": "cf workers types",
     "start": "vinext start",
-    "deploy:cloudflare": "vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://vinext.dev",
+    "deploy:cloudflare": "vinext-cloudflare deploy --warm-cache --warm-cache-target https://vinext.dev",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "cf d1 migrations apply 63e7cd24-9d47-4f17-a41d-b5806babc406 --local",
     "db:migrate:remote": "cf d1 migrations apply 63e7cd24-9d47-4f17-a41d-b5806babc406"
