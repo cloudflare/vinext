@@ -202,7 +202,7 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 | Domain-based i18n             | Not supported; path-prefix i18n works                     |
 | `next/jest`                   | Not supported; use Vitest                                 |
 | Turbopack/webpack config      | Ignored; use Vite plugins instead                         |
-| `runtime` / `preferredRegion` | Route segment configs ignored                             |
+| `runtime` / `preferredRegion` | Don't choose where code runs; edge `runtime` skips ISR    |
 | PPR (Partial Prerendering)    | Use `"use cache"` directive instead (Next.js 16 approach) |
 
 ## Anti-patterns

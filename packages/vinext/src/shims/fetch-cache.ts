@@ -1314,9 +1314,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
         // The developer opted into caching but we couldn't build a cache key
         // (body too large / unserializable). That is an internal vinext
-        // limitation, not an explicit uncached-fetch decision, so record only
-        // the dynamic fetch observation (outside a cache scope) without marking
-        // the page dynamic. A static page that makes this fetch is still stored.
+        // limitation, not an explicit uncached-fetch decision, so additionally
+        // record the dynamic fetch observation (outside a cache scope) without
+        // marking the page dynamic. A static page that makes this fetch is
+        // still stored.
         recordDynamicFetchObservation(input);
         return recordFetchOutcome(await dedupeFetch(input, fetchInit), "miss", cacheReason);
       }
