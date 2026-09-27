@@ -625,7 +625,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `connection()`                             | ✅  | Forces dynamic rendering                                                                    |
 | `"use cache"` directive                    | ✅  | File-level and function-level. `cacheLife()` profiles, `cacheTag()`, stale-while-revalidate |
 | `instrumentation.ts`                       | ✅  | `register()`, `onRequestError()`, and [framework tracing](docs/tracing.mdx)                 |
-| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`, edge `runtime` (pages). No `preferredRegion`      |
+| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`, `runtime` (not placement). No `preferredRegion`   |
 
 ### Configuration
 
