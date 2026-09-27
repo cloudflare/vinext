@@ -1081,87 +1081,19 @@ describe("checkConventions", () => {
     expect(checkConventions(tmpDir).find((i) => i.name === "2 page(s)")).toBeDefined();
   });
 
-  it("scans the pageExtensions of every phase branch", () => {
+  it("uses the default extensions when pageExtensions differs between phases", () => {
     writeFile(
       "next.config.mjs",
       `export default (phase) => phase === "phase-production-build"\n  ? { pageExtensions: ["page.tsx"] }\n  : { pageExtensions: ["mdx"] };`,
     );
-    writeFile("pages/index.page.tsx", `export default function Home() { return null; }`);
+    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
     writeFile("pages/docs.mdx", `# Docs`);
 
-    expect(checkConventions(tmpDir).find((i) => i.name === "2 page(s)")).toBeDefined();
-  });
-
-  it("ignores next.config pageExtensions when vinext({ nextConfig }) replaces it", () => {
-    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
-    writeFile(
-      "vite.config.ts",
-      `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["tsx"] } })] };`,
-    );
-    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
-
-    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
-  });
-
-  it("only reads appDir from the vinext() call", () => {
-    writeFile(
-      "vite.config.ts",
-      `const docs = { appDir: "src" };\nexport default { plugins: [vinext()] };`,
-    );
-    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-
     const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
-    expect(items.find((i) => i.name === "src/app/ is ignored")).toBeDefined();
-  });
-
-  it("reads vinext() options that follow nested option objects", () => {
-    writeFile(
-      "vite.config.ts",
-      `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["tsx"] }, appDir: "src" })] };`,
-    );
-    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
-    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-
-    const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
-    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
     expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
-  });
-
-  it.each([
-    [
-      "a renamed default import",
-      `import createVinext from "vinext";\nexport default { plugins: [createVinext({ appDir: "src" })] };`,
-    ],
-    [
-      "options after a spread",
-      `export default { plugins: [vinext({ ...shared, appDir: "src" })] };`,
-    ],
-    ["TypeScript wrappers", `export default { plugins: [vinext({ appDir: "src" as const })] };`],
-    [
-      "a root key outside the Vite config",
-      `const docs = { root: "docs" };\nexport default { plugins: [vinext({ appDir: "src" })] };`,
-    ],
-  ])("reads appDir through %s", (_, viteConfig) => {
-    writeFile("vite.config.ts", viteConfig);
-    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-
-    const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
-    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
-  });
-
-  it("treats options that an earlier spread may set as unresolved", () => {
-    writeFile("vite.config.ts", `export default { plugins: [vinext({ ...shared })] };`);
-    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-
-    // The spread may set appDir, so src/app/ isn't reported as ignored.
-    expect(checkConventions(tmpDir).find((i) => i.name.includes("is ignored"))).toBeUndefined();
+    expect(items.find((i) => i.name === "Pages Router (pages/)")?.detail).toContain(
+      "pageExtensions differs between next.config phases",
+    );
   });
 
   it("reads pageExtensions from a spread of a static object", () => {
@@ -1174,79 +1106,37 @@ describe("checkConventions", () => {
     expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
   });
 
-  it("keeps next.config pageExtensions when vinext({ nextConfig }) is unset", () => {
-    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
-    writeFile(
-      "vite.config.ts",
-      `// nextConfig: { pageExtensions: ["tsx"] }\nexport default { plugins: [vinext({ nextConfig: undefined })] };`,
-    );
-    writeFile("pages/index.mdx", `# Home`);
-
-    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
-  });
-
-  it("skips the App Router when vinext({ disableAppRouter: true }) is set", () => {
-    writeFile(
-      "vite.config.ts",
-      `export default { plugins: [vinext({ nextConfig: {}, disableAppRouter: true })] };`,
-    );
-    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-
-    const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
-    expect(items.find((i) => i.name.startsWith("App Router"))).toBeUndefined();
-    expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
-  });
-
-  it("uses the vinext({ appDir }) base from the Vite config", () => {
-    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "src" })] };`);
-    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-
-    const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
-    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
-    expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
-  });
-
   it.each([
-    ["a Vite root", `export default { root: "frontend", plugins: [vinext({ appDir: "src" })] };`],
-    [
-      "an appDir outside the project",
-      `export default { plugins: [vinext({ appDir: "../routes" })] };`,
-    ],
-  ])("falls back to auto-detection for %s", (_, viteConfig) => {
+    `export default { plugins: [vinext({ appDir: "src" })] };`,
+    `export default { plugins: [vinext({ disableAppRouter: true })] };`,
+    `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["mdx"] } })] };`,
+  ])("notes vinext() routing options instead of evaluating them: %s", (viteConfig) => {
     writeFile("vite.config.ts", viteConfig);
     writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
     writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
 
     const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
-    expect(items.find((i) => i.name.startsWith("App Router"))).toBeUndefined();
-    // appDir may still select another base, so src/app/ isn't reported as ignored.
+    expect(items.find((i) => i.name === "Pages Router (pages/)")?.detail).toContain(
+      "vinext() routing options",
+    );
+    // The options may select src/app/, so it isn't reported as ignored.
     expect(items.find((i) => i.name.includes("is ignored"))).toBeUndefined();
   });
 
-  it.runIf(process.platform !== "win32")("scans an appDir base reached through a symlink", () => {
-    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "routes" })] };`);
-    writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/proxy.ts", `export default function proxy() {}`);
-    fs.symlinkSync(path.join(tmpDir, "src"), path.join(tmpDir, "routes"));
-
-    const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "App Router (routes/app/)")).toBeDefined();
-    expect(items.find((i) => i.name.startsWith("Pages Router"))).toBeUndefined();
-    expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
-    expect(items.find((i) => i.name === "src/proxy.ts (Next.js 16)")).toBeDefined();
-  });
-
-  it("notes an unreadable appDir when no router directory is found", () => {
+  it("notes vinext() routing options when no router directory is found", () => {
     writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "../routes" })] };`);
 
     const item = checkConventions(tmpDir).find((i) => i.name.startsWith("No pages/"));
-    expect(item?.detail).toContain("vinext({ appDir })");
+    expect(item?.detail).toContain("vinext() routing options");
+  });
+
+  it.runIf(process.platform !== "win32")("scans route files under a symlinked src/", () => {
+    writeFile("real-src/app/page.tsx", `export default function Home() { return <div/>; }`);
+    fs.symlinkSync(path.join(tmpDir, "real-src"), path.join(tmpDir, "src"));
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
+    expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
   });
 
   it("resolves conventions with custom pageExtensions from next.config", () => {
@@ -1589,6 +1479,11 @@ describe("checkConventions", () => {
       `const config = { plugins: ["@tailwindcss/postcss"] };\nexport default config;`,
       "supported",
     ],
+    [
+      "an object with options besides plugins",
+      `export default { parser: "postcss-scss", plugins: ["autoprefixer"] };`,
+      "partial",
+    ],
   ])("classifies string-form plugins in %s", (_, source, status) => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("postcss.config.mjs", source);
@@ -1699,8 +1594,8 @@ describe("checkConventions", () => {
     const items = checkConventions(tmpDir);
     const cjs = items.find((i) => i.name.includes("__dirname"));
     expect(cjs).toBeDefined();
-    expect(cjs?.status).toBe("partial");
-    expect(cjs?.detail).toContain("client code");
+    expect(cjs?.status).toBe("unsupported");
+    expect(cjs?.detail).toContain("server code");
     expect(cjs?.files).toContain("lib/db.ts");
   });
 
@@ -1719,25 +1614,10 @@ describe("checkConventions", () => {
       writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
 
       const item = checkConventions(tmpDir).find((i) => i.name.includes("__dirname"));
-      expect(item?.name).toBe("__dirname / __filename in an ESM next.config");
       expect(item?.status).toBe("unsupported");
       expect(item?.files).toEqual([config]);
     },
   );
-
-  it("reports __dirname in client modules as unsupported", () => {
-    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("components/Widget.tsx", `"use client";\nconst dir = __dirname;`);
-    writeFile("lib/db.ts", `const dir = __dirname;`);
-
-    const items = checkConventions(tmpDir);
-    const client = items.find((i) => i.name === "__dirname / __filename in client modules");
-    expect(client?.status).toBe("unsupported");
-    expect(client?.files).toEqual(["components/Widget.tsx"]);
-    const server = items.find((i) => i.name === "__dirname / __filename (CommonJS globals)");
-    expect(server?.status).toBe("partial");
-    expect(server?.files).toEqual(["lib/db.ts"]);
-  });
 
   it("detects ESM syntax in next.config.js that doesn't start a line", () => {
     writeFile("next.config.js", `const dir = __dirname; export default { env: { dir } };`);
@@ -2150,7 +2030,7 @@ describe("formatReport", () => {
   });
 
   it("lists affected files under partial items", () => {
-    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
+    writeFile("components/Fade.tsx", `import { ViewTransition } from "react";`);
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
 
@@ -2158,8 +2038,8 @@ describe("formatReport", () => {
     const report = formatReport(result);
 
     expect(report).toContain("Partial support");
-    expect(report).toContain("__dirname");
-    expect(report).toContain("lib/db.ts");
+    expect(report).toContain("ViewTransition");
+    expect(report).toContain("components/Fade.tsx");
   });
 
   it("shows partial support section when there are partial items", () => {
