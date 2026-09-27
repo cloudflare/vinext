@@ -228,7 +228,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "listed packages are bundled instead of externalized on the server",
   },
-  serverExternalPackages: { status: "supported" },
+  serverExternalPackages: {
+    status: "supported",
+    detail:
+      "externalized on the Node.js server; Cloudflare Workers and Nitro builds bundle them, since there are no node_modules at runtime",
+  },
   pageExtensions: { status: "supported" },
   assetPrefix: { status: "supported" },
   sassOptions: { status: "supported" },
