@@ -30,6 +30,8 @@ export type CheckResult = {
   config: CheckItem[];
   libraries: CheckItem[];
   conventions: CheckItem[];
+  /** Whether app/ or src/app/ exists, which makes vinext() register the RSC plugin. */
+  hasAppDir?: boolean;
   summary: {
     supported: number;
     partial: number;
@@ -751,8 +753,11 @@ type ConfigKeys = {
    * branch agrees on.
    */
   pageExtensions?: string[];
-  /** Whether phase branches set different `pageExtensions`. */
-  pageExtensionsVary?: boolean;
+  /**
+   * Whether `pageExtensions` can't be read statically (not all literals, maybe
+   * set by an unresolved spread) or differs between phase branches.
+   */
+  pageExtensionsUnresolved?: boolean;
 };
 
 /** The property key name of an object property, or null for spreads/computed keys. */
@@ -945,20 +950,28 @@ function collectConfigKeys(source: string): ConfigKeys {
       const spread = resolveObjects(prop.argument);
       return spread.length === 1 ? expandSpreads(spread[0], depth + 1) : [prop];
     });
+  let pageExtensionsUnresolved = false;
   for (const configObj of configObjs) {
     let branchExts: string[] | undefined;
+    let branchUnresolved = false;
     // Within one object a later property replaces an earlier one (including
     // one from a spread), so child keys are tracked per branch, then merged.
     const branchNested = new Map<string, Set<string>>();
     for (const prop of expandSpreads(configObj)) {
-      // An unresolved spread may override an earlier `pageExtensions`.
-      if (prop.type === "SpreadElement") branchExts = undefined;
+      // An unresolved spread may set or override `pageExtensions`.
+      if (prop.type === "SpreadElement") {
+        branchExts = undefined;
+        branchUnresolved = true;
+      }
       const name = propertyKeyName(prop);
       if (!name) continue;
       top.add(name);
       // `prop` is a non-spread Property here (propertyKeyName returned a name).
       const value = (prop as ESTree.ObjectProperty).value;
-      if (name === "pageExtensions") branchExts = resolveStringArray(value);
+      if (name === "pageExtensions") {
+        branchExts = resolveStringArray(value);
+        branchUnresolved = branchExts === undefined;
+      }
       branchNested.delete(name);
       const childObjs = resolveObjects(value);
       if (!childObjs.length) continue;
@@ -975,15 +988,15 @@ function collectConfigKeys(source: string): ConfigKeys {
       nested.set(name, new Set([...(nested.get(name) ?? []), ...children]));
     }
     branchExtensions.push(branchExts);
+    if (branchUnresolved) pageExtensionsUnresolved = true;
   }
-  let pageExtensionsVary = false;
-  if (branchExtensions.some(Boolean)) {
+  if (!pageExtensionsUnresolved && branchExtensions.some(Boolean)) {
     const sets = branchExtensions.map((e) => normalizePageExtensions(e));
     if (new Set(sets.map((set) => set.join(","))).size === 1) pageExtensions = sets[0];
-    else pageExtensionsVary = true;
+    else pageExtensionsUnresolved = true;
   }
 
-  return { top, nested, pageExtensions, pageExtensionsVary };
+  return { top, nested, pageExtensions, pageExtensionsUnresolved };
 }
 
 function findNextConfigPath(root: string): string | null {
@@ -1057,6 +1070,8 @@ function exportsPostcssPluginsOnlyObject(content: string): boolean {
         expr.callee.type === "MemberExpression" &&
         expr.callee.object.type === "Identifier" &&
         expr.callee.object.name === "Object" &&
+        expr.callee.property.type === "Identifier" &&
+        ["assign", "defineProperty", "defineProperties"].includes(expr.callee.property.name) &&
         expr.arguments[0]?.type === "Identifier"
       ) {
         mutated.add(expr.arguments[0].name);
@@ -1096,14 +1111,14 @@ function exportsPostcssPluginsOnlyObject(content: string): boolean {
 
 /**
  * The dotted `pageExtensions` vinext resolves route conventions with, and
- * whether they differ between phase branches (then vinext's defaults are used).
+ * whether the configured value is unresolved (then vinext's defaults are used).
  */
-function readPageExtensions(root: string): { exts: string[]; vary: boolean } {
+function readPageExtensions(root: string): { exts: string[]; unresolved: boolean } {
   const configPath = findNextConfigPath(root);
   const keys = configPath ? collectConfigKeys(fs.readFileSync(configPath, "utf-8")) : undefined;
   return {
     exts: normalizePageExtensions(keys?.pageExtensions).map((ext) => `.${ext}`),
-    vary: keys?.pageExtensionsVary ?? false,
+    unresolved: keys?.pageExtensionsUnresolved ?? false,
   };
 }
 
@@ -1217,9 +1232,9 @@ export function checkConventions(root: string): CheckItem[] {
   const pageExts = setsInlineNextConfig
     ? normalizePageExtensions(undefined).map((ext) => `.${ext}`)
     : pageExtensionsRead.exts;
-  const pageExtensionsVary = !setsInlineNextConfig && pageExtensionsRead.vary;
+  const pageExtensionsUnresolved = !setsInlineNextConfig && pageExtensionsRead.unresolved;
   // With the real extensions unknown, a proxy/middleware conflict can't be claimed.
-  const pageExtensionsUncertain = setsInlineNextConfig || pageExtensionsVary;
+  const pageExtensionsUncertain = setsInlineNextConfig || pageExtensionsUnresolved;
   const scanExts = [...new Set([...SOURCE_EXTENSIONS, ...pageExts])];
   const sourceFiles = findSourceFiles(root, scanExts);
   // The project scan doesn't follow symlinks, so rescan a route directory
@@ -1262,9 +1277,9 @@ export function checkConventions(root: string): CheckItem[] {
       "vite.config passes vinext() routing options (appDir / disableAppRouter / nextConfig), which this check doesn't evaluate — detected with vinext's defaults",
     );
   }
-  if (pageExtensionsVary) {
+  if (pageExtensionsUnresolved) {
     routingNotes.push(
-      "pageExtensions differs between next.config phases — files counted with vinext's default extensions",
+      "pageExtensions in next.config can't be read statically or differs between phases — files counted with vinext's default extensions",
     );
   }
   const routingDetail = routingNotes.length ? routingNotes.join("; ") : undefined;
@@ -1491,6 +1506,7 @@ export function runCheck(root: string): CheckResult {
     config,
     libraries,
     conventions,
+    hasAppDir: findDir(root, "app", "src/app") !== null,
     summary: { supported, partial, unsupported, total, score },
   };
 }
@@ -1500,11 +1516,7 @@ export function runCheck(root: string): CheckResult {
  */
 export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
   const lines: string[] = [];
-  // vinext() registers the RSC plugin whenever app/ or src/app/ exists, even
-  // when another base directory is used for routing.
-  const hasAppRouter = result.conventions.some(
-    (item) => item.name.startsWith("App Router (") || item.name === "src/app/ is ignored",
-  );
+  const hasAppRouter = result.hasAppDir === true;
   const statusIcon = (s: Status) =>
     s === "supported"
       ? "\x1b[32m✓\x1b[0m"

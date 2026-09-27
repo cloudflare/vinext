@@ -1101,7 +1101,7 @@ describe("checkConventions", () => {
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name === "1 page(s)")).toBeDefined();
     expect(items.find((i) => i.name === "Pages Router (pages/)")?.detail).toContain(
-      "pageExtensions differs between next.config phases",
+      "pageExtensions in next.config can't be read statically or differs between phases",
     );
   });
 
@@ -1124,6 +1124,18 @@ describe("checkConventions", () => {
     writeFile("pages/index.tsx", `export default function Home() { return null; }`);
 
     expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("doesn't claim a proxy/middleware conflict when pageExtensions can't be read", () => {
+    writeFile(
+      "next.config.mjs",
+      `import { ext } from "./exts.mjs";\nexport default { pageExtensions: ["mdx", ext] };`,
+    );
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("middleware.js", `export default function middleware() {}`);
+    writeFile("pages/index.mdx", `# Home`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name.startsWith("Both"))).toBeUndefined();
   });
 
   it("doesn't claim a proxy/middleware conflict when pageExtensions differs between phases", () => {
@@ -1519,6 +1531,11 @@ describe("checkConventions", () => {
     [
       "an object exported through a variable",
       `const config = { plugins: ["@tailwindcss/postcss"] };\nexport default config;`,
+      "supported",
+    ],
+    [
+      "a frozen object",
+      `const config = { plugins: ["@tailwindcss/postcss"] };\nObject.freeze(config);\nexport default config;`,
       "supported",
     ],
     [
@@ -2171,6 +2188,15 @@ describe("formatReport", () => {
     expect(report).toContain("@vitejs/plugin-react");
     expect(report).not.toContain("@vitejs/plugin-rsc");
     expect(report).not.toContain("react-server-dom-webpack");
+  });
+
+  it("lists App Router packages when vinext() options may select src/app/", () => {
+    writeFile("vite.config.ts", `export default { plugins: [vinext({ appDir: "src" })] };`);
+    writeFile("pages/index.tsx", `export default function Home() { return <div />; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div />; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    expect(formatReport(runCheck(tmpDir))).toContain("@vitejs/plugin-rsc");
   });
 
   it("lists App Router packages when an ignored src/app/ still makes vinext load the RSC plugin", () => {
