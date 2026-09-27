@@ -23,9 +23,14 @@ export function registerPrerenderCloudflareLoader(): void {
     export class WorkerEntrypoint { constructor() { unavailable(); } }
     export class DurableObject { constructor() { unavailable(); } }
     export class RpcTarget { constructor() { unavailable(); } }
+    export class RpcPromise { constructor() { unavailable(); } }
+    export class RpcProperty { constructor() { unavailable(); } }
+    export class ServiceStub { constructor() { unavailable(); } }
     export class WorkflowEntrypoint { constructor() { unavailable(); } }
     export class WorkflowStep { constructor() { unavailable(); } }
     export function RpcStub() { unavailable(); }
+    export function restore() { unavailable(); }
+    export function abortIsolate() { unavailable(); }
     export function withEnv() { unavailable(); }
     export function withExports() { unavailable(); }
     export function withEnvAndExports() { unavailable(); }
