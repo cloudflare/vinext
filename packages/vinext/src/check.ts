@@ -97,7 +97,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/server": {
     status: "supported",
     detail:
-      "NextRequest, NextResponse, NextFetchEvent, userAgent, userAgentFromString, after, connection, URLPattern",
+      "NextRequest, NextResponse, NextFetchEvent, userAgent, userAgentFromString, after, connection",
   },
   "next/cache": {
     status: "supported",
@@ -110,7 +110,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/font/google": {
     status: "supported",
     detail:
-      "self-hosted with fallback metrics; falls back to the Google Fonts CDN when font options aren't statically analyzable or the font can't be fetched",
+      "self-hosted with fallback metrics; falls back to the Google Fonts CDN when font options aren't statically analyzable or the network fetch fails",
   },
   "next/font/local": {
     status: "supported",
@@ -155,7 +155,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "next/dist/shared/lib/utils": {
     status: "supported",
-    detail: "execOnce, getLocationOrigin, getURL, SP/ST",
+    detail: "execOnce, getLocationOrigin and a subset of the other shared helpers",
   },
   "next/dist/server/api-utils": {
     status: "supported",
@@ -191,7 +191,8 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "next/root-params": {
     status: "supported",
-    detail: "root param getters generated from the root layout's dynamic segments",
+    detail:
+      "root param getters generated from the root layout's dynamic segments; TypeScript types come from the next package",
   },
   "next/dist/server/request/root-params": {
     status: "supported",
@@ -341,7 +342,7 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next-view-transitions": { status: "supported" },
   "@vercel/analytics": {
     status: "supported",
-    detail: "renders client-side; events are only collected when deployed on Vercel",
+    detail: "renders client-side; by default events are only collected when deployed on Vercel",
   },
   "next-intl": {
     status: "partial",
@@ -349,9 +350,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
       'auto-detected from (src/)i18n/request.{ts,tsx,js,jsx}, so createNextIntlPlugin isn\'t needed; client components can fail with "No intl context found" (cloudflare/vinext#177)',
   },
   "@clerk/nextjs": {
-    status: "supported",
+    status: "partial",
     detail:
-      "clerkMiddleware, auth()/auth.protect in Server Components, ClerkProvider and client hooks work",
+      "clerkMiddleware, auth.protect, ClerkProvider and client hooks work; auth() in Server Components works in production builds, but calling headers() from middleware fails in dev",
   },
   "@auth/nextjs": {
     status: "unsupported",
@@ -367,7 +368,7 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "uses only public next/* APIs (headers, cookies, NextRequest/NextResponse)",
   },
   "@sentry/nextjs": {
-    status: "supported",
+    status: "partial",
     detail:
       "standard instrumentation.ts + withSentryConfig setup works; webpack/Turbopack plugin build features (source map upload, auto-instrumentation, component annotation) don't run",
   },

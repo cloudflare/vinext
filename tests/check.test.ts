@@ -954,7 +954,7 @@ describe("checkLibraries", () => {
     expect(items.every((i) => i.status === "unsupported")).toBe(true);
   });
 
-  it("detects @clerk/nextjs as supported", () => {
+  it("detects @clerk/nextjs as partial", () => {
     writeFile(
       "package.json",
       JSON.stringify({
@@ -964,11 +964,11 @@ describe("checkLibraries", () => {
 
     const items = checkLibraries(tmpDir);
     expect(items).toHaveLength(1);
-    expect(items[0].status).toBe("supported");
+    expect(items[0].status).toBe("partial");
     expect(items[0].detail).toContain("clerkMiddleware");
   });
 
-  it("reports next-intl as partial and @sentry/nextjs as supported", () => {
+  it("reports next-intl and @sentry/nextjs as partial", () => {
     writeFile(
       "package.json",
       JSON.stringify({
@@ -978,7 +978,7 @@ describe("checkLibraries", () => {
 
     const items = checkLibraries(tmpDir);
     expect(items.find((i) => i.name === "next-intl")?.status).toBe("partial");
-    expect(items.find((i) => i.name === "@sentry/nextjs")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "@sentry/nextjs")?.status).toBe("partial");
   });
 
   it("detects supported CSS-in-JS libraries", () => {
