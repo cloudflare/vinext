@@ -78,7 +78,11 @@ function findConventionFile(dir: string, name: string, exts: string[]): string |
 const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   next: { status: "supported", detail: "type-only exports (Metadata, NextPage, etc.)" },
   "next/link": { status: "supported" },
-  "next/image": { status: "supported", detail: "uses @unpic/react (no local optimization yet)" },
+  "next/image": {
+    status: "supported",
+    detail:
+      "local images served via /_next/image (resized when an images optimizer is configured); remote images via @unpic/react",
+  },
   "next/legacy/image": {
     status: "supported",
     detail: "pre-Next.js 13 Image API with layout prop; translated to modern Image",
@@ -90,24 +94,33 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "next/navigation": { status: "supported" },
   "next/headers": { status: "supported" },
-  "next/server": { status: "supported", detail: "NextRequest/NextResponse shimmed" },
+  "next/server": {
+    status: "supported",
+    detail: "NextRequest, NextResponse, NextURL, userAgent, after, connection, URLPattern",
+  },
   "next/cache": {
     status: "supported",
-    detail: "revalidateTag, revalidatePath, unstable_cache, io, cacheLife, cacheTag",
+    detail:
+      "revalidateTag, revalidatePath, updateTag, refresh, unstable_cache, unstable_noStore, io, cacheLife, cacheTag",
   },
   "next/dynamic": { status: "supported" },
   "next/head": { status: "supported" },
   "next/script": { status: "supported" },
   "next/font/google": {
-    status: "partial",
-    detail: "fonts loaded from CDN, not self-hosted at build time",
+    status: "supported",
+    detail:
+      "self-hosted with fallback metrics; falls back to the Google Fonts CDN when font options aren't statically analyzable",
   },
   "next/font/local": {
     status: "supported",
-    detail: "className and variable modes both work; no build-time subsetting",
+    detail: "className and variable modes both work; @font-face is generated at runtime",
   },
   "next/og": { status: "supported", detail: "ImageResponse via @vercel/og" },
-  "next/config": { status: "supported" },
+  "next/config": {
+    status: "partial",
+    detail:
+      "getConfig() returns empty publicRuntimeConfig/serverRuntimeConfig; runtime config was removed in Next.js 16, use environment variables",
+  },
   "next/amp": { status: "unsupported", detail: "AMP is not supported" },
   "next/offline": {
     status: "partial",
@@ -117,7 +130,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/app": { status: "supported", detail: "custom _app.tsx" },
   "next/error": { status: "supported" },
   "next/form": { status: "supported", detail: "Form component with client-side navigation" },
-  "next/web-vitals": { status: "supported", detail: "reportWebVitals helper" },
+  "next/web-vitals": { status: "supported", detail: "useReportWebVitals hook" },
   "next/constants": { status: "supported", detail: "PHASE_* constants" },
   "next/third-parties/google": {
     status: "unsupported",
@@ -140,19 +153,19 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "next/dist/shared/lib/utils": {
     status: "supported",
-    detail: "execOnce, getLocationOrigin and other shared utilities",
+    detail: "execOnce, getLocationOrigin, getURL, SP/ST",
   },
   "next/dist/server/api-utils": {
     status: "supported",
-    detail: "NextApiRequestCookies and Pages Router API route utilities",
+    detail: "NextApiRequestCookies / NextApiRequestQuery types",
   },
   "next/dist/server/web/spec-extension/cookies": {
     status: "supported",
-    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+    detail: "RequestCookies / ResponseCookies",
   },
   "next/dist/compiled/@edge-runtime/cookies": {
     status: "supported",
-    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+    detail: "RequestCookies / ResponseCookies",
   },
   "next/dist/server/app-render/work-unit-async-storage.external": {
     status: "supported",
@@ -173,6 +186,14 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/dist/client/components/navigation": {
     status: "supported",
     detail: "internal navigation module; re-exports next/navigation",
+  },
+  "next/root-params": {
+    status: "supported",
+    detail: "root param getters generated from the root layout's dynamic segments",
+  },
+  "next/dist/server/request/root-params": {
+    status: "supported",
+    detail: "getRootParam()",
   },
   "next/dist/server/config-shared": {
     status: "supported",
@@ -316,16 +337,19 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next-themes": { status: "supported" },
   nuqs: { status: "supported" },
   "next-view-transitions": { status: "supported" },
-  "@vercel/analytics": { status: "supported", detail: "analytics script injected client-side" },
-  "next-intl": {
+  "@vercel/analytics": {
     status: "supported",
+    detail: "renders client-side; events are only collected when deployed on Vercel",
+  },
+  "next-intl": {
+    status: "partial",
     detail:
-      "auto-detected from i18n/request.{ts,tsx,js,jsx}; createNextIntlPlugin wrapper not needed",
+      'auto-detected from (src/)i18n/request.{ts,tsx,js,jsx}, so createNextIntlPlugin isn\'t needed; client components can fail with "No intl context found" (cloudflare/vinext#177)',
   },
   "@clerk/nextjs": {
     status: "partial",
     detail:
-      "clerkMiddleware, auth.protect, ClerkProvider, client hooks work; auth() in Server Components requires next/headers shim (wip)",
+      "clerkMiddleware, auth.protect, ClerkProvider and client hooks work; auth() in Server Components is verified in production builds only",
   },
   "@auth/nextjs": {
     status: "unsupported",
@@ -341,8 +365,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "uses only public next/* APIs (headers, cookies, NextRequest/NextResponse)",
   },
   "@sentry/nextjs": {
-    status: "partial",
-    detail: "client-side works, server integration needs manual setup",
+    status: "supported",
+    detail:
+      "standard instrumentation.ts + withSentryConfig setup works; webpack/Turbopack plugin build features (auto-instrumentation, component annotation) don't run",
   },
   "@t3-oss/env-nextjs": { status: "supported" },
   tailwindcss: { status: "supported" },
@@ -354,7 +379,11 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "shadcn-ui": { status: "supported" },
   zod: { status: "supported" },
   "react-hook-form": { status: "supported" },
-  prisma: { status: "supported", detail: "works on Cloudflare Workers with Prisma Accelerate" },
+  prisma: {
+    status: "supported",
+    detail:
+      "works on Cloudflare Workers with driver adapters (D1, Hyperdrive) or Prisma Accelerate",
+  },
   drizzle: { status: "supported", detail: "works with D1 on Cloudflare Workers" },
 };
 
