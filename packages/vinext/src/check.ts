@@ -947,23 +947,32 @@ function collectConfigKeys(source: string): ConfigKeys {
     });
   for (const configObj of configObjs) {
     let branchExts: string[] | undefined;
+    // Within one object a later property replaces an earlier one (including
+    // one from a spread), so child keys are tracked per branch, then merged.
+    const branchNested = new Map<string, Set<string>>();
     for (const prop of expandSpreads(configObj)) {
+      // An unresolved spread may override an earlier `pageExtensions`.
+      if (prop.type === "SpreadElement") branchExts = undefined;
       const name = propertyKeyName(prop);
       if (!name) continue;
       top.add(name);
       // `prop` is a non-spread Property here (propertyKeyName returned a name).
       const value = (prop as ESTree.ObjectProperty).value;
       if (name === "pageExtensions") branchExts = resolveStringArray(value);
+      branchNested.delete(name);
       const childObjs = resolveObjects(value);
       if (!childObjs.length) continue;
-      const children = nested.get(name) ?? new Set<string>();
+      const children = new Set<string>();
       for (const childObj of childObjs) {
         for (const childProp of childObj.properties) {
           const childName = propertyKeyName(childProp);
           if (childName) children.add(childName);
         }
       }
-      nested.set(name, children);
+      branchNested.set(name, children);
+    }
+    for (const [name, children] of branchNested) {
+      nested.set(name, new Set([...(nested.get(name) ?? []), ...children]));
     }
     branchExtensions.push(branchExts);
   }
@@ -1030,8 +1039,29 @@ function exportsPostcssPluginsOnlyObject(content: string): boolean {
     return false;
   }
   const vars = new Map<string, ESTree.Expression>();
+  // Bindings modified after their declaration (`config.parser = …`,
+  // `Object.assign(config, …)`), whose initializer isn't the exported shape.
+  const mutated = new Set<string>();
   let exported: ESTree.Expression | undefined;
   for (const node of program.body) {
+    if (node.type === "ExpressionStatement") {
+      const expr = node.expression;
+      if (
+        expr.type === "AssignmentExpression" &&
+        expr.left.type === "MemberExpression" &&
+        expr.left.object.type === "Identifier"
+      ) {
+        mutated.add(expr.left.object.name);
+      } else if (
+        expr.type === "CallExpression" &&
+        expr.callee.type === "MemberExpression" &&
+        expr.callee.object.type === "Identifier" &&
+        expr.callee.object.name === "Object" &&
+        expr.arguments[0]?.type === "Identifier"
+      ) {
+        mutated.add(expr.arguments[0].name);
+      }
+    }
     if (node.type === "VariableDeclaration") {
       for (const decl of node.declarations) {
         if (decl.id.type === "Identifier" && decl.init) vars.set(decl.id.name, decl.init);
@@ -1055,6 +1085,7 @@ function exportsPostcssPluginsOnlyObject(content: string): boolean {
   if (exported === undefined) return false;
   let value = unwrapExpression(exported) as ESTree.Expression | null;
   if (value?.type === "Identifier") {
+    if (mutated.has(value.name)) return false;
     value = unwrapExpression(vars.get(value.name)) as ESTree.Expression | null;
   }
   return (
@@ -1178,7 +1209,17 @@ export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
   // Route conventions resolve against `pageExtensions` (which may add e.g.
   // `.mdx` or compound `page.tsx`), so scan those alongside source files.
-  const { exts: pageExts, vary: pageExtensionsVary } = readPageExtensions(root);
+  // An inline `vinext({ nextConfig })` replaces next.config.* on disk; it isn't
+  // evaluated here, so vinext's default extensions are used.
+  const viteConfigSource = readViteConfigSource(root);
+  const setsInlineNextConfig = viteConfigSource !== null && /\bnextConfig\b/.test(viteConfigSource);
+  const pageExtensionsRead = readPageExtensions(root);
+  const pageExts = setsInlineNextConfig
+    ? normalizePageExtensions(undefined).map((ext) => `.${ext}`)
+    : pageExtensionsRead.exts;
+  const pageExtensionsVary = !setsInlineNextConfig && pageExtensionsRead.vary;
+  // With the real extensions unknown, a proxy/middleware conflict can't be claimed.
+  const pageExtensionsUncertain = setsInlineNextConfig || pageExtensionsVary;
   const scanExts = [...new Set([...SOURCE_EXTENSIONS, ...pageExts])];
   const sourceFiles = findSourceFiles(root, scanExts);
   // The project scan doesn't follow symlinks, so rescan a route directory
@@ -1212,7 +1253,6 @@ export function checkConventions(root: string): CheckItem[] {
   // vinext() options in the Vite config can change which directories are used
   // (appDir, disableAppRouter, an inline nextConfig). They aren't evaluated
   // here, so note that the layout below assumes vinext's defaults.
-  const viteConfigSource = readViteConfigSource(root);
   const routingNotes: string[] = [];
   const customizesRouting =
     viteConfigSource !== null &&
@@ -1313,7 +1353,7 @@ export function checkConventions(root: string): CheckItem[] {
       items.push({ name: `${notFounds.length} not-found page(s)`, status: "supported" });
   }
 
-  if (proxyFile && middlewareFile) {
+  if (proxyFile && middlewareFile && !pageExtensionsUncertain) {
     items.push({
       name: `Both ${conventionPrefix}${middlewareFile} and ${conventionPrefix}${proxyFile}`,
       status: "unsupported",
@@ -1460,7 +1500,11 @@ export function runCheck(root: string): CheckResult {
  */
 export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
   const lines: string[] = [];
-  const hasAppRouter = result.conventions.some((item) => item.name.startsWith("App Router ("));
+  // vinext() registers the RSC plugin whenever app/ or src/app/ exists, even
+  // when another base directory is used for routing.
+  const hasAppRouter = result.conventions.some(
+    (item) => item.name.startsWith("App Router (") || item.name === "src/app/ is ignored",
+  );
   const statusIcon = (s: Status) =>
     s === "supported"
       ? "\x1b[32m✓\x1b[0m"

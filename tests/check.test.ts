@@ -492,6 +492,15 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
   });
 
+  it("drops nested keys that a later property replaces", () => {
+    writeFile(
+      "next.config.mjs",
+      `const shared = { experimental: { ppr: true } };\nexport default { ...shared, experimental: {} };`,
+    );
+
+    expect(analyzeConfig(tmpDir).find((i) => i.name === "experimental.ppr")).toBeUndefined();
+  });
+
   // Mirrors Next.js: test/e2e/app-dir/app-shells
   it("detects experimental.appShells as partial (config recognized, behavior not implemented)", () => {
     writeFile(
@@ -1096,6 +1105,39 @@ describe("checkConventions", () => {
     );
   });
 
+  it("uses the default extensions when an unresolved spread may override pageExtensions", () => {
+    writeFile(
+      "next.config.mjs",
+      `import shared from "./shared.mjs";\nexport default { pageExtensions: ["mdx"], ...shared };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("uses the default extensions when vinext({ nextConfig }) replaces next.config", () => {
+    writeFile("next.config.mjs", `export default { pageExtensions: ["mdx"] };`);
+    writeFile(
+      "vite.config.ts",
+      `export default { plugins: [vinext({ nextConfig: { pageExtensions: ["tsx"] } })] };`,
+    );
+    writeFile("pages/index.tsx", `export default function Home() { return null; }`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name === "1 page(s)")).toBeDefined();
+  });
+
+  it("doesn't claim a proxy/middleware conflict when pageExtensions differs between phases", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default (phase) => phase === "phase-production-build"\n  ? { pageExtensions: ["prod.ts"] }\n  : { pageExtensions: ["dev.ts"] };`,
+    );
+    writeFile("pages/index.prod.ts", `export default function Home() { return null; }`);
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("middleware.js", `export default function middleware() {}`);
+
+    expect(checkConventions(tmpDir).find((i) => i.name.startsWith("Both"))).toBeUndefined();
+  });
+
   it("reads pageExtensions from a spread of a static object", () => {
     writeFile(
       "next.config.mjs",
@@ -1478,6 +1520,11 @@ describe("checkConventions", () => {
       "an object exported through a variable",
       `const config = { plugins: ["@tailwindcss/postcss"] };\nexport default config;`,
       "supported",
+    ],
+    [
+      "an object that is modified after it's declared",
+      `const config = { plugins: ["autoprefixer"] };\nconfig.parser = "postcss-scss";\nexport default config;`,
+      "partial",
     ],
     [
       "an object with options besides plugins",
@@ -2124,6 +2171,16 @@ describe("formatReport", () => {
     expect(report).toContain("@vitejs/plugin-react");
     expect(report).not.toContain("@vitejs/plugin-rsc");
     expect(report).not.toContain("react-server-dom-webpack");
+  });
+
+  it("lists App Router packages when an ignored src/app/ still makes vinext load the RSC plugin", () => {
+    writeFile("pages/index.tsx", `export default function Home() { return <div />; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div />; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const report = formatReport(runCheck(tmpDir));
+    expect(report).toContain("@vitejs/plugin-rsc");
+    expect(report).toContain("react-server-dom-webpack");
   });
 });
 
