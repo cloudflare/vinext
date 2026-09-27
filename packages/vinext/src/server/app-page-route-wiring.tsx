@@ -33,6 +33,7 @@ import {
 } from "vinext/shims/metadata";
 import { BfcacheSegmentBoundary, Children, ParallelSlot, Slot } from "vinext/shims/slot";
 import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
+import { fnv1a64 } from "vinext/internal/utils/hash";
 import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
@@ -720,13 +721,7 @@ function hasStreamedIcons(metadata: Metadata): boolean {
 
 function createStreamedIconKey(pathname: string, metadataHtml: string): string {
   // Keep route identity opaque so crawlers cannot mistake the key for a URL.
-  const input = `${pathname}\0${metadataHtml}`;
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index++) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `vi${(hash >>> 0).toString(36)}`;
+  return `vi${fnv1a64(`${pathname}\0${metadataHtml}`)}`;
 }
 
 const STREAMED_ICON_KEY_PLACEHOLDER = "vinext-pending-streamed-icon-key";

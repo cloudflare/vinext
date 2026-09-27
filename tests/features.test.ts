@@ -3470,6 +3470,10 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     expect(marker("/blog/my-post:pk5ufy:0", "/favicon.ico")).toBe(key);
     expect(marker("/blog/another-post", "/favicon.ico")).not.toBe(key);
     expect(marker("/blog/my-post:pk5ufy:0", "/other.ico")).not.toBe(key);
+    // These paths collide under the previous single-round 32-bit FNV hash.
+    expect(marker("/products/vb9e3r", "/favicon.ico")).not.toBe(
+      marker("/products/obz81c", "/favicon.ico"),
+    );
   });
 
   it("body placement: serializes icon-bearing metadata once", () => {
