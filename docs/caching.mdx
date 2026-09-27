@@ -90,7 +90,7 @@ When caching is enabled through `vinext init`, Workers Response Store is the def
 
 Workers Response Store is the most complete and best supported option. Workers Cache serves hot responses, R2 provides a durable backing store, and a SQLite Durable Object tracks metadata and invalidation state. An edge miss can read the stored response from R2 instead of immediately rendering the route again.
 
-It also handles the data cache, so it replaces both `cdnAdapter()` and `kvDataAdapter()`:
+It also handles the data cache, so it replaces both `workersCacheCdnAdapter()` and `kvDataAdapter()`:
 
 ```ts
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
@@ -127,12 +127,12 @@ This avoids a second Worker, but the application Worker owns the R2 bucket, Dura
 The older split setup uses Workers Cache for rendered responses and Workers KV for cached data:
 
 ```ts
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 vinext({
   cache: {
-    cdn: cdnAdapter(),
+    cdn: workersCacheCdnAdapter(),
     data: kvDataAdapter(),
   },
 });

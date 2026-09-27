@@ -1541,7 +1541,7 @@ describe("viteConfigHasCacheAdapter", () => {
     writeFile(
       tmpDir,
       "vite.config.ts",
-      `export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };`,
+      `export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })] };`,
     );
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
   });
@@ -1720,7 +1720,7 @@ describe("formatMissingCacheAdapterError", () => {
 
   it("no longer references the cdn adapter", () => {
     const msg = formatMissingCacheAdapterError({});
-    expect(msg).not.toContain("cdnAdapter");
+    expect(msg).not.toContain("workersCacheCdnAdapter");
     expect(msg).not.toContain("cdn-adapter");
   });
 });

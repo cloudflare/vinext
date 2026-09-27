@@ -606,7 +606,7 @@ describe("init — basic functionality", () => {
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("vinext({");
     expect(config).toContain("data: kvDataAdapter()");
-    expect(config).toContain("cdn: cdnAdapter()");
+    expect(config).toContain("cdn: workersCacheCdnAdapter()");
     expect(config).not.toContain("plugin-rsc");
   });
 
@@ -619,7 +619,7 @@ describe("init — basic functionality", () => {
     expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc"]);
     expect(readFile(tmpDir, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
     expect(readFile(tmpDir, "vite.config.ts")).toContain("data: kvDataAdapter()");
-    expect(readFile(tmpDir, "vite.config.ts")).toContain("cdn: cdnAdapter()");
+    expect(readFile(tmpDir, "vite.config.ts")).toContain("cdn: workersCacheCdnAdapter()");
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       cache: { enabled: true },
@@ -808,7 +808,7 @@ describe("init — basic functionality", () => {
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain('prerender: { routes: "*" }');
     expect(config).toContain("data: kvDataAdapter()");
-    expect(config).toContain("cdn: cdnAdapter()");
+    expect(config).toContain("cdn: workersCacheCdnAdapter()");
     expect(config).toContain("images: { optimizer: imagesOptimizer() }");
   });
 
@@ -1120,7 +1120,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("data: customData()");
-    expect(config).toContain("cdn: cdnAdapter()");
+    expect(config).toContain("cdn: workersCacheCdnAdapter()");
     expect(config).not.toContain("kvDataAdapter");
     const wrangler = readFile(tmpDir, "wrangler.jsonc");
     expect(wrangler).toContain("// preserve me");

@@ -5,7 +5,7 @@ export const DEFAULT_CDN_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
 
 const CLOUDFLARE_WORKER_ENTRY_ID = "virtual:cloudflare/worker-entry";
 
-/** Options accepted by {@link cdnAdapter}, forwarded to the runtime factory. */
+/** Options accepted by {@link workersCacheCdnAdapter}, forwarded to the runtime factory. */
 export type CdnAdapterOptions = {
   /** Version metadata binding used to verify version-overridden requests. */
   versionMetadataBinding?: string;
@@ -32,14 +32,14 @@ export type CdnAdapterOptions = {
  * identities cannot collide. Workers Cache owns this key independently of
  * zone Cache Rules.
  */
-export function cdnAdapter(options?: CdnAdapterOptions) {
+export function workersCacheCdnAdapter(options?: CdnAdapterOptions) {
   if (
     options?.versionMetadataBinding !== undefined &&
     (typeof options.versionMetadataBinding !== "string" ||
       options.versionMetadataBinding.length === 0)
   ) {
     throw new TypeError(
-      "[vinext] cdnAdapter({ versionMetadataBinding }) must be a non-empty string binding name.",
+      "[vinext] workersCacheCdnAdapter({ versionMetadataBinding }) must be a non-empty string binding name.",
     );
   }
   const versionMetadataBinding =
@@ -92,3 +92,6 @@ export function cdnAdapter(options?: CdnAdapterOptions) {
     },
   };
 }
+
+/** @deprecated Use {@link workersCacheCdnAdapter} instead. */
+export const cdnAdapter = workersCacheCdnAdapter;

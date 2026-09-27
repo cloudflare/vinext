@@ -1252,7 +1252,7 @@ function cacheImports(options: CloudflareInitOptions): string[] {
     imports.push('import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";');
   }
   if (options.cdnCache === "workers-cache") {
-    imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
+    imports.push('import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
   }
   if (options.cdnCache === "response-store") {
     imports.push(
@@ -1284,7 +1284,7 @@ function vinextExpression(
       versionMetadataBinding === DEFAULT_VERSION_METADATA_BINDING
         ? ""
         : `{ versionMetadataBinding: ${JSON.stringify(versionMetadataBinding)} }`;
-    cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
+    cacheEntries.push(`cdn: workersCacheCdnAdapter(${adapterOptions})`);
   }
   const optionEntries: string[] = [];
   if (responseStore) {
@@ -2463,18 +2463,26 @@ export function updateViteConfigForCloudflare(
     cacheAdditions.push({ name: "data", expression: `${binding}()` });
   }
   if (configureCaches && cacheOptions.cdnCache === "workers-cache") {
-    const imported = "cdnAdapter";
     const source = "@vinext/cloudflare/cache/cdn-adapter";
+    const existingCdnSlot = getVinextCacheSlot(existingVinextCall, "cdn");
+    const existingCallee =
+      existingCdnSlot?.value.type === "CallExpression" &&
+      existingCdnSlot.value.callee.type === "Identifier"
+        ? existingCdnSlot.value.callee.name
+        : undefined;
+    const imported =
+      ["workersCacheCdnAdapter", "cdnAdapter"].find(
+        (name) =>
+          existingCallee &&
+          existingCallee ===
+            (commonJs
+              ? findRequiredBinding(program, source, name)
+              : findImportedBinding(program, source, name)),
+      ) ?? "workersCacheCdnAdapter";
     const existing = commonJs
       ? findRequiredBinding(program, source, imported)
       : findImportedBinding(program, source, imported);
-    const existingCdnSlot = getVinextCacheSlot(existingVinextCall, "cdn");
-    const existingUsesCloudflareAdapter = Boolean(
-      existing &&
-      existingCdnSlot?.value.type === "CallExpression" &&
-      existingCdnSlot.value.callee.type === "Identifier" &&
-      existingCdnSlot.value.callee.name === existing,
-    );
+    const existingUsesCloudflareAdapter = Boolean(existing && existingCallee === existing);
     // An existing custom CDN adapter is user-owned; init must not replace it.
     if (!existingCdnSlot || existingUsesCloudflareAdapter) {
       const local = existing ?? allocateBinding(bindings, imported);
