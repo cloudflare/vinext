@@ -217,7 +217,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   images: {
     status: "partial",
     detail:
-      "remotePatterns, sizes, qualities and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
+      "remotePatterns, deviceSizes/imageSizes, qualities and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
   },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
@@ -260,22 +260,26 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "ignored; trailing-slash redirects are always applied",
   },
   reactCompiler: {
-    status: "unsupported",
+    status: "partial",
     detail: "ignored; enable the React Compiler with vinext({ react: { compiler: true } })",
   },
   "experimental.reactCompiler": {
-    status: "unsupported",
+    status: "partial",
     detail: "ignored; enable the React Compiler with vinext({ react: { compiler: true } })",
   },
   modularizeImports: {
-    status: "unsupported",
-    detail: "ignored; experimental.optimizePackageImports is supported",
+    status: "partial",
+    detail:
+      "ignored, so imports resolve unoptimized; experimental.optimizePackageImports is supported",
   },
   typedRoutes: {
-    status: "unsupported",
+    status: "partial",
     detail: "typed Link hrefs are not generated; vinext typegen provides PageProps/LayoutProps",
   },
-  "compiler.removeConsole": { status: "supported" },
+  "compiler.removeConsole": {
+    status: "supported",
+    detail: "console calls are stripped from client bundles only",
+  },
   "compiler.styledComponents": {
     status: "partial",
     detail:
@@ -283,7 +287,8 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "compiler.emotion": {
     status: "partial",
-    detail: "SWC transform not applied; @emotion/react still works at runtime",
+    detail:
+      "SWC transform not applied; @emotion/react still works at runtime, but component selectors need the transform",
   },
   "compiler.relay": {
     status: "unsupported",
@@ -310,7 +315,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "renamed to cacheComponents in Next.js 16 and ignored; use cacheComponents",
   },
   "experimental.typedRoutes": {
-    status: "unsupported",
+    status: "partial",
     detail: "typed Link hrefs are not generated; vinext typegen provides PageProps/LayoutProps",
   },
   "experimental.serverActions": {

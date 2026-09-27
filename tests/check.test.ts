@@ -506,7 +506,9 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items.find((i) => i.name === "images")?.status).toBe("partial");
+    const images = items.find((i) => i.name === "images");
+    expect(images?.status).toBe("partial");
+    expect(images?.detail).toContain("vinext({ images: { optimizer } })");
   });
 
   it("detects experimental.ppr as unsupported", () => {
@@ -899,25 +901,35 @@ describe("analyzeConfig", () => {
       "next.config.mjs",
       `export default {
         cacheHandler: "./cache-handler.js",
+        cacheHandlers: { default: "./handler.js" },
         cacheLife: { blog: { revalidate: 60 } },
         skipTrailingSlashRedirect: true,
         reactCompiler: true,
         modularizeImports: {},
-        compiler: { relay: { src: "./" }, styledComponents: true },
-        experimental: { dynamicIO: true },
+        typedRoutes: true,
+        compiler: { relay: { src: "./" }, styledComponents: true, emotion: true },
+        experimental: { dynamicIO: true, cacheLife: {}, reactCompiler: true },
       };`,
     );
 
     const items = analyzeConfig(tmpDir);
     const status = (name: string) => items.find((i) => i.name === name)?.status;
     expect(status("cacheHandler")).toBe("unsupported");
+    expect(status("cacheHandlers")).toBe("unsupported");
     expect(status("cacheLife")).toBe("unsupported");
+    expect(status("experimental.cacheLife")).toBe("unsupported");
     expect(status("skipTrailingSlashRedirect")).toBe("unsupported");
-    expect(status("reactCompiler")).toBe("unsupported");
-    expect(status("modularizeImports")).toBe("unsupported");
     expect(status("compiler.relay")).toBe("unsupported");
-    expect(status("compiler.styledComponents")).toBe("partial");
     expect(status("experimental.dynamicIO")).toBe("unsupported");
+    // Ignored, but the app still works — it only loses an optimization or type check.
+    expect(status("reactCompiler")).toBe("partial");
+    expect(status("experimental.reactCompiler")).toBe("partial");
+    expect(status("modularizeImports")).toBe("partial");
+    expect(status("typedRoutes")).toBe("partial");
+    expect(status("compiler.styledComponents")).toBe("partial");
+    expect(status("compiler.emotion")).toBe("partial");
+    // A parent object without its own entry is not reported.
+    expect(status("compiler")).toBeUndefined();
   });
 
   it("reports honoured next.config options that were previously unlisted", () => {
@@ -927,6 +939,10 @@ describe("analyzeConfig", () => {
         enablePrerenderSourceMaps: true,
         serverExternalPackages: ["sharp"],
         assetPrefix: "https://cdn.example.com",
+        pageExtensions: ["tsx", "mdx"],
+        sassOptions: {},
+        generateBuildId: async () => "build",
+        deploymentId: "dpl_1",
         compiler: { removeConsole: true },
         experimental: { optimizePackageImports: ["my-lib"] },
       };`,
@@ -937,6 +953,10 @@ describe("analyzeConfig", () => {
     expect(status("enablePrerenderSourceMaps")).toBe("supported");
     expect(status("serverExternalPackages")).toBe("supported");
     expect(status("assetPrefix")).toBe("supported");
+    expect(status("pageExtensions")).toBe("supported");
+    expect(status("sassOptions")).toBe("supported");
+    expect(status("generateBuildId")).toBe("supported");
+    expect(status("deploymentId")).toBe("supported");
     expect(status("compiler.removeConsole")).toBe("supported");
     expect(status("experimental.optimizePackageImports")).toBe("supported");
   });
