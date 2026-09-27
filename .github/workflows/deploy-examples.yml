@@ -251,8 +251,6 @@ jobs:
 
       - name: Build example
         if: matrix.example.static_export != true
-        env:
-          CLOUDFLARE_PREVIEW_BUILD: ${{ github.event_name == 'pull_request' && matrix.example.name == 'static-assets-cache' && 'true' || '' }}
         run: |
           if [[ -f cloudflare.config.ts ]]; then
             vp run build
@@ -372,13 +370,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          if [[ "${{ matrix.example.name }}" == 'static-assets-cache' ]]; then
-            # A Worker Preview can be created before the production Worker exists.
-            vp exec cf previews deploy pr-${{ github.event.pull_request.number }} --prebuilt --mode production
-          else
-            vp exec cf workers versions create --prebuilt --mode production --preview-alias pr-${{ github.event.pull_request.number }}
-          fi
+        run: vp exec cf workers versions create --prebuilt --mode production --preview-alias pr-${{ github.event.pull_request.number }}
 
       - name: Deploy Named Preview Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == '' && matrix.example.worker_name
@@ -542,18 +534,11 @@ jobs:
 
       - name: Delete named preview Workers
         if: github.event.action == 'closed'
-        # PRs opened before a named preview existed have nothing to delete.
-        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          status=0
-          for worker in kv; do
-            vp exec wrangler delete "pr-${PR_NUMBER}-${worker}" --force || status=1
-          done
-          exit "$status"
+          WORKER_NAME: pr-${{ github.event.pull_request.number }}-kv
+        run: vp exec wrangler delete "$WORKER_NAME" --force
 
   comment:
     name: Comment Preview URLs
