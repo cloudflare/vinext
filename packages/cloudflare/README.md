@@ -8,7 +8,7 @@ This package provides Cloudflare-specific cache and image backends for vinext:
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the
   data cache (`fetch`, `"use cache"`, `unstable_cache`) with a Workers KV
   namespace.
-- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — delegates
+- **`workersCacheCdnAdapter()`** (`@vinext/cloudflare/cache/workers-cache-cdn-adapter`) — delegates
   page-level ISR serving and revalidation to Cloudflare Workers Cache through
   an automatically generated cache-enabled response entrypoint.
 - **`responseStoreAdapter()`** (`@vinext/cloudflare/cache/response-store-adapter`) —
@@ -40,7 +40,7 @@ export default defineConfig({
 
 ### Workers Cache
 
-`cdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
+`workersCacheCdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
 Worker entrypoints: the default entrypoint runs middleware and request-time
 routing with caching disabled, while `VinextCachedResponse` lazily loads the
 render stage with Workers Cache enabled. Legacy Cloudflare Vite plugin builds
@@ -48,9 +48,9 @@ write these settings and the version metadata binding to the generated
 `dist/server/wrangler.json`.
 
 ```ts
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 
-vinext({ cache: { cdn: cdnAdapter() } });
+vinext({ cache: { cdn: workersCacheCdnAdapter() } });
 ```
 
 Cloudflare Vite plugin v2 uses Build Output and treats `cloudflare.config.ts`
@@ -74,7 +74,7 @@ export default defineWorker({
 
 The generated version metadata binding lets staged warmup prove that every
 discovery, probe, and fill request reached the uploaded Worker version. Pass
-the same `versionMetadataBinding` to `cdnAdapter()` and
+the same `versionMetadataBinding` to `workersCacheCdnAdapter()` and
 `createWorkersCacheConfig()` only when the deployment needs a custom binding
 name.
 
@@ -89,7 +89,7 @@ representation variants cannot collide.
 
 ### Workers Response Store
 
-`responseStoreAdapter()` replaces both `cdnAdapter()` and `kvDataAdapter()`.
+`responseStoreAdapter()` replaces both `workersCacheCdnAdapter()` and `kvDataAdapter()`.
 It defaults to a separate cache Worker reached through the `RESPONSE_STORE`
 service binding. `vinext init` writes two collocated source configs:
 `wrangler.jsonc` for the application and `wrangler.response-store.jsonc` for the

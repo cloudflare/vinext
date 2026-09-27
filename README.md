@@ -365,7 +365,9 @@ npx @vinext/cloudflare deploy --traffic-aware-warm-cache --warm-cache-target htt
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
 
-Use `--warm-cache-target <origin>` to override the inferred production origin for analytics zone selection and staged warming. See the [caching guide](https://vinext.dev/docs/guides/caching) for all selection controls and requirements.
+For typed config projects, declare the custom domain with `domains: ["example.com"]` on the Worker in `cloudflare.config.ts`. The first domain in the generated Build Output is used for both analytics and staged warming. Wrangler projects retain domain selection from their configured routes and deployed triggers. Use `--warm-cache-target https://example.com` to override the origin. Add `--warm-cache-certify` to require reusable cache hits before promotion, or `--no-promote` to leave the warmed version at 0% traffic for verification.
+
+Use the traffic-aware flag on its own to apply the coverage and route limits. Combining it with `--warm-cache` retains full build-discovered warming. See the [caching guide](https://vinext.dev/docs/guides/caching) for all selection controls and requirements.
 
 The previous `--experimental-traffic-aware-warm-cache`, `--experimental-tpr`, and `--tpr-*` names remain supported as aliases.
 
@@ -707,21 +709,21 @@ The cache is pluggable. The default `MemoryCacheHandler` works out of the box. S
 Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships Cloudflare adapters for this:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
-- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
+- **`workersCacheCdnAdapter()`** (`@vinext/cloudflare/cache/workers-cache-cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
 
 The two fill different slots and can be used together:
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 export default defineConfig({
   plugins: [
     vinext({
       cache: {
-        cdn: cdnAdapter(),
+        cdn: workersCacheCdnAdapter(),
         data: kvDataAdapter(),
       },
     }),
@@ -739,7 +741,7 @@ The KV data adapter reads `env[binding]` at runtime, so add the matching KV name
 
 `binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s), and `entryCacheTtlSeconds` (optional KV edge-cache TTL for entry reads; tag markers keep KV's default).
 
-When `cdnAdapter()` is used in a Cloudflare build, vinext emits two Worker
+When `workersCacheCdnAdapter()` is used in a Cloudflare build, vinext emits two Worker
 entrypoints and configures Workers Cache only on the response entrypoint. The
 default entrypoint keeps caching disabled so middleware and request-time routing
 run on every request. Do not enable Workers Cache on the default entrypoint in
@@ -748,7 +750,7 @@ the per-entrypoint cache settings and version metadata binding used for staged
 discovery and warming.
 
 The generated version metadata binding lets staged discovery and warming verify
-the uploaded Worker version. Pass `versionMetadataBinding` to `cdnAdapter()`
+the uploaded Worker version. Pass `versionMetadataBinding` to `workersCacheCdnAdapter()`
 only when the deployment needs a custom binding name.
 
 `vinext-cloudflare deploy --warm-cache` performs the two-stage
@@ -765,7 +767,7 @@ interception identities from colliding.
 
 Adapter declarations do not access the Workers runtime, so nothing throws at
 config-evaluation or dev time when bindings are unavailable. Builders may also
-provide platform-specific output hooks; `cdnAdapter()` uses one to configure
+provide platform-specific output hooks; `workersCacheCdnAdapter()` uses one to configure
 the Cloudflare entrypoints after the application build. Runtime adapters (and
 their `env` binding lookups) are instantiated lazily on the first request.
 

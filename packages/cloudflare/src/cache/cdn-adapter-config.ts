@@ -52,7 +52,7 @@ export function configureCdnVersionMetadata(
 
   if (!options.bindingIsExplicit) {
     throw new Error(
-      `[vinext] cdnAdapter() uses the default version metadata binding ${JSON.stringify(options.binding)}, but the generated Wrangler config already declares ${JSON.stringify(existingBinding)}. Align the Wrangler binding or configure cdnAdapter({ versionMetadataBinding: ${JSON.stringify(existingBinding)} }).`,
+      `[vinext] workersCacheCdnAdapter() uses the default version metadata binding ${JSON.stringify(options.binding)}, but the generated Wrangler config already declares ${JSON.stringify(existingBinding)}. Align the Wrangler binding or configure workersCacheCdnAdapter({ versionMetadataBinding: ${JSON.stringify(existingBinding)} }).`,
     );
   }
 
@@ -67,7 +67,7 @@ export function configureWorkersCacheEntrypoints(
   const compatibilityFlags = config.compatibility_flags ?? [];
   if (compatibilityFlags.includes("disable_ctx_exports")) {
     throw new Error(
-      "[vinext] cdnAdapter() requires ctx.exports, but the generated Wrangler config explicitly disables it with disable_ctx_exports.",
+      "[vinext] workersCacheCdnAdapter() requires ctx.exports, but the generated Wrangler config explicitly disables it with disable_ctx_exports.",
     );
   }
 
@@ -83,7 +83,7 @@ export function configureWorkersCacheEntrypoints(
     const existing = configuredExports[name];
     if (existing?.type !== undefined && existing.type !== "worker") {
       throw new Error(
-        `[vinext] cdnAdapter() cannot configure the reserved Worker export ${JSON.stringify(name)} because it is already declared as ${JSON.stringify(existing.type)}.`,
+        `[vinext] workersCacheCdnAdapter() cannot configure the reserved Worker export ${JSON.stringify(name)} because it is already declared as ${JSON.stringify(existing.type)}.`,
       );
     }
   }

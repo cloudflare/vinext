@@ -54,7 +54,7 @@ describe("updateViteConfigForCloudflare", () => {
     expectValidConfig(output);
     expect(output).not.toContain("responseStoreAdapter");
     expect(output).not.toContain("kvDataAdapter");
-    expect(output).not.toContain("cdnAdapter");
+    expect(output).not.toContain("workersCacheCdnAdapter");
     expect(output).not.toContain("cache:");
   });
 
@@ -355,8 +355,8 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
   it("rejects replacing an existing cache configuration with Workers Response Store", () => {
     const input = `import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
-export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
+export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })] };
 `;
 
     expect(() =>
@@ -752,7 +752,7 @@ export default { plugins: [vinext()] };
     );
     expectValidConfig(output);
     expect(output).toContain(
-      "vinext({\n    cache: { data: kvDataAdapter(), cdn: cdnAdapter() },\n    images: { optimizer: imagesOptimizer() },\n  })",
+      "vinext({\n    cache: { data: kvDataAdapter(), cdn: workersCacheCdnAdapter() },\n    images: { optimizer: imagesOptimizer() },\n  })",
     );
   });
 
@@ -881,7 +881,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     });
     expectValidConfig(output);
     expect(output).toContain("data: existingData()");
-    expect(output).toContain("cdn: cdnAdapter()");
+    expect(output).toContain("cdn: workersCacheCdnAdapter()");
     expect(output).not.toContain("kvDataAdapter");
   });
 
@@ -1061,33 +1061,24 @@ export default { plugins: [vinext({ imageOptimization: true })] };
         false,
         "CUSTOM_VERSION",
       ),
-    ).toContain('cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
+    ).toContain('workersCacheCdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
   });
 
-  it("aligns an existing Cloudflare CDN adapter with a custom version metadata binding", () => {
-    const input = `import { defineConfig } from "vite";
+  it.each([
+    ["workers-cache-cdn-adapter", "workersCacheCdnAdapter"],
+    ["cdn-adapter", "cdnAdapter"],
+  ])(
+    "aligns an existing %s import of %s with a custom version metadata binding",
+    (source, adapter) => {
+      const input = `import { defineConfig } from "vite";
 import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { ${adapter} } from "@vinext/cloudflare/cache/${source}";
 
 export default defineConfig({
-  plugins: [vinext({ cache: { cdn: cdnAdapter() } })],
+  plugins: [vinext({ cache: { cdn: ${adapter}() } })],
 });
 `;
-    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
-      isAppRouter: false,
-      nativeModulesToStub: [],
-      cache: {
-        dataCache: "none",
-        cdnCache: "workers-cache",
-        imageOptimization: "none",
-      },
-      versionMetadataBinding: "CUSTOM_VERSION",
-    });
-
-    expectValidConfig(output);
-    expect(output).toContain('cdn: cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
-    expect(
-      updateViteConfigForCloudflare("vite.config.ts", output, {
+      const output = updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
         nativeModulesToStub: [],
         cache: {
@@ -1096,9 +1087,24 @@ export default defineConfig({
           imageOptimization: "none",
         },
         versionMetadataBinding: "CUSTOM_VERSION",
-      }),
-    ).toBe(output);
-  });
+      });
+
+      expectValidConfig(output);
+      expect(output).toContain(`cdn: ${adapter}({ versionMetadataBinding: "CUSTOM_VERSION" })`);
+      expect(
+        updateViteConfigForCloudflare("vite.config.ts", output, {
+          isAppRouter: false,
+          nativeModulesToStub: [],
+          cache: {
+            dataCache: "none",
+            cdnCache: "workers-cache",
+            imageOptimization: "none",
+          },
+          versionMetadataBinding: "CUSTOM_VERSION",
+        }),
+      ).toBe(output);
+    },
+  );
 
   it("preserves a custom Wrangler Images binding for the Vite adapter", () => {
     const options = {

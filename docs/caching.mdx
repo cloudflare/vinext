@@ -90,7 +90,7 @@ When caching is enabled through `vinext init`, Workers Response Store is the def
 
 Workers Response Store is the most complete and best supported option. Workers Cache serves hot responses, R2 provides a durable backing store, and a SQLite Durable Object tracks metadata and invalidation state. An edge miss can read the stored response from R2 instead of immediately rendering the route again.
 
-It also handles the data cache, so it replaces both `cdnAdapter()` and `kvDataAdapter()`:
+It also handles the data cache, so it replaces both `workersCacheCdnAdapter()` and `kvDataAdapter()`:
 
 ```ts
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
@@ -127,12 +127,12 @@ This avoids a second Worker, but the application Worker owns the R2 bucket, Dura
 The older split setup uses Workers Cache for rendered responses and Workers KV for cached data:
 
 ```ts
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 vinext({
   cache: {
-    cdn: cdnAdapter(),
+    cdn: workersCacheCdnAdapter(),
     data: kvDataAdapter(),
   },
 });
@@ -245,14 +245,16 @@ npx @vinext/cloudflare deploy --traffic-aware-warm-cache \
 
 This requires a custom domain, a cache adapter that exposes build identity, and `CLOUDFLARE_API_TOKEN` with **Zone > Analytics > Read** and **Zone > Zone > Read** permissions for that zone. See [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/). Zone analytics are unavailable for `*.workers.dev` hosts.
 
-By default, vinext infers the custom domain from the Cloudflare configuration. Use `--warm-cache-target` to provide the production HTTPS origin manually; its hostname selects the analytics zone, and the same origin is used for staged discovery, probing, and warming:
+For typed config projects, declare `domains: ["example.com"]` on the Worker in `cloudflare.config.ts`. The first domain in the generated Build Output is used for both analytics and staged warming. Wrangler projects use their configured routes for analytics and deployed triggers for the warming origin. Use `--warm-cache-target` to provide the production HTTPS origin manually; its hostname selects the analytics zone, and the same origin is used for staged discovery, probing, and warming:
 
 ```sh
 npx @vinext/cloudflare deploy --traffic-aware-warm-cache \
   --warm-cache-target https://example.com
 ```
 
-Use `--traffic-aware-warm-cache` on its own to select routes by traffic. Adding `--warm-cache` uses the full discovered warm plan instead of limiting it to the traffic-selected routes. Traffic-aware warming skips selection when all-route prerendering is configured, and skips warming when analytics or a safely stageable existing deployment are unavailable; the deploy then continues normally.
+Use `--traffic-aware-warm-cache` on its own to select routes by traffic. Adding `--warm-cache` uses the full discovered warm plan instead of limiting it to the traffic-selected routes. Traffic-aware warming skips selection when all-route prerendering is configured, and normally skips warming when analytics or a safely stageable existing deployment are unavailable.
+
+Add `--warm-cache-certify` to require reusable cache hits for every selected entry before promotion. Certification fails if warming is skipped or no entries can be certified. Use `--no-promote` to leave the warmed version at 0% traffic for verification.
 
 ## Which option should I choose?
 

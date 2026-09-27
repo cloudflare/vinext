@@ -989,7 +989,7 @@ describe("parseDeployArgs", () => {
 
   it("requires CDN warming when certification is requested", () => {
     expect(() => parseDeployArgs(["--warm-cache-certify"])).toThrow(
-      "--warm-cache-certify requires --warm-cache.",
+      "--warm-cache-certify requires --warm-cache or --traffic-aware-warm-cache.",
     );
   });
 
@@ -1018,6 +1018,24 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnTarget).toBe("https://app.example.com");
     expect(parsed.warmCdnCache).toBe(false);
   });
+
+  it.each([
+    ["--traffic-aware-warm-cache", "--warm-cache-target", "--warm-cache-certify"],
+    ["--experimental-traffic-aware-warm-cache", "--warm-cdn-target", "--warm-cdn-certify"],
+    ["--experimental-tpr", "--warm-cdn-target", "--warm-cdn-certify"],
+  ])(
+    "allows an explicit target and certification with %s",
+    (trafficFlag, targetFlag, certifyFlag) => {
+      expect(
+        parseDeployArgs([trafficFlag, targetFlag, "https://vinext.dev", certifyFlag]),
+      ).toMatchObject({
+        experimentalTPR: true,
+        warmCdnCache: false,
+        warmCdnTarget: "https://vinext.dev",
+        warmCdnCertify: true,
+      });
+    },
+  );
 
   it("parses --env with space-separated value", () => {
     expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
@@ -1611,7 +1629,7 @@ describe("viteConfigHasCacheAdapter", () => {
     writeFile(
       tmpDir,
       "vite.config.ts",
-      `export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };`,
+      `export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })] };`,
     );
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
   });
@@ -1790,7 +1808,7 @@ describe("formatMissingCacheAdapterError", () => {
 
   it("no longer references the cdn adapter", () => {
     const msg = formatMissingCacheAdapterError({});
-    expect(msg).not.toContain("cdnAdapter");
+    expect(msg).not.toContain("workersCacheCdnAdapter");
     expect(msg).not.toContain("cdn-adapter");
   });
 });

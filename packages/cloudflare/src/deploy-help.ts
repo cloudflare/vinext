@@ -29,6 +29,7 @@ export function formatDeployHelp(): string {
     --warm-cache-target <origin>
                              HTTPS origin to use for discovery, probing, and warming
                              (overrides URLs inferred from Wrangler output)
+                             Also supported with traffic-aware warming
     --warm-cache-concurrency <count>
                              Maximum number of CDN warmup requests in parallel (default: 25)
     --warm-cache-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
@@ -44,9 +45,10 @@ export function formatDeployHelp(): string {
                              this duration (default: 120000)
     --warm-cache-probe-retries <n>
                              Cacheability-probe retries (default: 2)
-    --warm-cache-certify      With --warm-cache, re-request warmed
-                             entries using headers only and require every planned
-                             entry to be reusable before promotion
+    --warm-cache-certify      With either warming mode, re-request warmed
+                             entries using headers only and require reusable hits.
+                             Traffic-aware warming requires every selected entry
+                             to be reusable before promotion
     --warm-cache-readiness-timeout <ms>
                              Explicit total staged-readiness deadline (default:
                              120000)

@@ -368,11 +368,12 @@ export function parseDeployArgs(args: string[]) {
   values["warm-cache-include-fallbacks"] ||= values["warm-cdn-include-fallbacks"];
   values["traffic-aware-warm-cache"] ||= values["experimental-traffic-aware-warm-cache"];
   const trafficAwareWarmCache = values["traffic-aware-warm-cache"] || values["experimental-tpr"];
+  const warming = values["warm-cache"] || trafficAwareWarmCache;
 
-  if (values["warm-cache-certify"] && !values["warm-cache"]) {
-    throw new Error("--warm-cache-certify requires --warm-cache.");
+  if (values["warm-cache-certify"] && !warming) {
+    throw new Error("--warm-cache-certify requires --warm-cache or --traffic-aware-warm-cache.");
   }
-  if (values["warm-cache-target"] && !values["warm-cache"] && !trafficAwareWarmCache) {
+  if (values["warm-cache-target"] && !warming) {
     throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
   }
 
@@ -1504,7 +1505,7 @@ async function deployUploadedVersionWithCdnWarmup(
                   options.optionalWarmTargetKeys!.has(cdnWarmTargetKey(target)),
                 ).length
               : 0;
-            if (hasPreparedWarmPlan && options.warmCdnCertify) {
+            if ((hasPreparedWarmPlan || options.selectWarmPlan) && options.warmCdnCertify) {
               if (warmResult.warmed + optionalSkipped !== stagedWarmRequests) {
                 throw new Error(
                   `CDN warmup cannot certify the staged cache because only ${warmResult.warmed}/${stagedWarmRequests - optionalSkipped} cacheable entries completed their initial fill.`,
@@ -1579,6 +1580,11 @@ async function deployUploadedVersionWithCdnWarmup(
     console.warn(
       "  CDN warmup: pre-traffic version override skipped because the current deployment is not one version serving 100% traffic.",
     );
+  }
+
+  if (options.selectWarmPlan && options.warmCdnCertify && !stagedCacheFilled) {
+    const error = new Error("CDN warmup cannot succeed because no cache entries were certified.");
+    throw staged ? withStagedVersionCleanupNote(error) : error;
   }
 
   const countRemainingWarmRequests = (): number =>
@@ -2401,6 +2407,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
   const shouldWarmCdnCache = options.warmCdnCache || shouldWarmTpr;
+  if (options.warmCdnCertify && !shouldWarmCdnCache) {
+    throw new Error("Cannot certify traffic-aware warming because pre-warming was skipped.");
+  }
   const shouldSelectTpr = shouldWarmTpr && !options.warmCdnCache;
   const candidatePathsOnly = shouldSelectTpr && !needsCacheabilityProbeManifest;
   // Static export still needs local artifacts. Other pre-warm deploys render
@@ -2555,7 +2564,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           : undefined,
         statusSource: warmupStatusSource,
         warmCdnConcurrency: options.warmCdnConcurrency,
-        warmCdnTarget,
+        warmCdnTarget: warmCdnTarget ?? tpr?.targetUrl,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,
         warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,
@@ -2574,6 +2583,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     } catch (error) {
       if (
         options.warmCdnCache ||
+        options.warmCdnCertify ||
         (options.warmCdnPromote === false && error instanceof StagedWarmupError)
       ) {
         throw error;

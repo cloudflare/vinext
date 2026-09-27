@@ -40,6 +40,8 @@ export type TPROptions = {
 
 export type TPRRouteResult = {
   routes: TrafficEntry[];
+  /** Custom-domain origin from typed Build Output for staged pre-warming. */
+  targetUrl?: string;
   /** If TPR was skipped, the reason. */
   skipped?: string;
 };
@@ -249,14 +251,6 @@ export function selectRoutes(
  */
 export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteResult> {
   const { root, config, window: windowHours } = options;
-  const skip = (reason: string): TPRRouteResult => ({
-    routes: [],
-    skipped: reason,
-  });
-
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-  if (!apiToken) return skip("no CLOUDFLARE_API_TOKEN set");
-
   const wranglerConfig =
     options.hostname || options.typedConfig ? null : parseWranglerConfig(root, config);
   const buildOutputConfigPath = path.join(
@@ -268,8 +262,6 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
       ? (JSON.parse(fs.readFileSync(buildOutputConfigPath, "utf8")) as { domains?: unknown })
           .domains
       : undefined;
-  if (!wranglerConfig && !options.hostname && !options.typedConfig)
-    return skip("could not parse wrangler config");
   const hostname =
     options.hostname ??
     (Array.isArray(typedDomains)
@@ -279,6 +271,18 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
       : undefined) ??
     wranglerConfig?.env?.[options.env ?? ""]?.customDomain ??
     wranglerConfig?.customDomain;
+  // Wrangler's analytics domain may be zone_name rather than the route host.
+  // Its warmup origin continues to come from the deployed triggers.
+  const targetUrl = options.typedConfig && hostname ? `https://${hostname}` : undefined;
+  const skip = (reason: string): TPRRouteResult => ({
+    routes: [],
+    targetUrl,
+    skipped: reason,
+  });
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!apiToken) return skip("no CLOUDFLARE_API_TOKEN set");
+  if (!wranglerConfig && !options.hostname && !options.typedConfig)
+    return skip("could not parse wrangler config");
   if (!hostname) {
     return skip("no custom domain — zone analytics unavailable");
   }
@@ -298,5 +302,5 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
   }
   if (traffic.length === 0) return skip("no traffic data available (first deploy?)");
 
-  return { routes: traffic };
+  return { routes: traffic, targetUrl };
 }

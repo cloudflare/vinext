@@ -1,5 +1,36 @@
 # vinext
 
+## 1.0.0-beta.13
+
+### Features
+
+- support direct `vite dev` and `vite build` commands with vinext's development, prerendering, and Cloudflare deployment lifecycle (#3381)
+- **Cloudflare:** support cf Build Output deployments (#3230)
+
+### Bug Fixes
+
+#### Cache
+
+- admit metadata routes to the CDN cache on their own Cache-Control (#3449)
+- replay "use cache" params under the original cache key (#3430)
+- keep "use cache" pages with props prerenderable (#3421)
+
+#### Misc
+
+- **OG:** support @vercel/og 1.0.3 on Node and Workers (#3409)
+- align Pages Router navigation with Next.js for URL objects, repeated slashes, dynamic routes, and browser history in development and production (#3354, #3367, #3368)
+- **Build:** keep browser client out of multi-stage server outputs (#3440)
+
+### Performance
+
+- **Build:** look up action owner modules once per build pass (#3415)
+
+### Contributors
+
+- @james-elicx
+- @mhsnook
+- @shortstuffsushi
+
 ## 1.0.0-beta.12
 
 ### Bug Fixes

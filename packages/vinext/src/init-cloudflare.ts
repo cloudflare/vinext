@@ -1252,7 +1252,9 @@ function cacheImports(options: CloudflareInitOptions): string[] {
     imports.push('import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";');
   }
   if (options.cdnCache === "workers-cache") {
-    imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
+    imports.push(
+      'import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";',
+    );
   }
   if (options.cdnCache === "response-store") {
     imports.push(
@@ -1284,7 +1286,7 @@ function vinextExpression(
       versionMetadataBinding === DEFAULT_VERSION_METADATA_BINDING
         ? ""
         : `{ versionMetadataBinding: ${JSON.stringify(versionMetadataBinding)} }`;
-    cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
+    cacheEntries.push(`cdn: workersCacheCdnAdapter(${adapterOptions})`);
   }
   const optionEntries: string[] = [];
   if (responseStore) {
@@ -2463,18 +2465,28 @@ export function updateViteConfigForCloudflare(
     cacheAdditions.push({ name: "data", expression: `${binding}()` });
   }
   if (configureCaches && cacheOptions.cdnCache === "workers-cache") {
-    const imported = "cdnAdapter";
-    const source = "@vinext/cloudflare/cache/cdn-adapter";
-    const existing = commonJs
-      ? findRequiredBinding(program, source, imported)
-      : findImportedBinding(program, source, imported);
     const existingCdnSlot = getVinextCacheSlot(existingVinextCall, "cdn");
-    const existingUsesCloudflareAdapter = Boolean(
-      existing &&
+    const existingCallee =
       existingCdnSlot?.value.type === "CallExpression" &&
-      existingCdnSlot.value.callee.type === "Identifier" &&
-      existingCdnSlot.value.callee.name === existing,
-    );
+      existingCdnSlot.value.callee.type === "Identifier"
+        ? existingCdnSlot.value.callee.name
+        : undefined;
+    const adapterImports = [
+      ["@vinext/cloudflare/cache/workers-cache-cdn-adapter", "workersCacheCdnAdapter"],
+      ["@vinext/cloudflare/cache/cdn-adapter", "cdnAdapter"],
+    ].map(([source, imported]) => ({
+      source,
+      imported,
+      local: commonJs
+        ? findRequiredBinding(program, source, imported)
+        : findImportedBinding(program, source, imported),
+    }));
+    const {
+      source,
+      imported,
+      local: existing,
+    } = adapterImports.find(({ local }) => local && local === existingCallee) ?? adapterImports[0];
+    const existingUsesCloudflareAdapter = Boolean(existing && existingCallee === existing);
     // An existing custom CDN adapter is user-owned; init must not replace it.
     if (!existingCdnSlot || existingUsesCloudflareAdapter) {
       const local = existing ?? allocateBinding(bindings, imported);

@@ -1,5 +1,15 @@
 # create-vinext-app
 
+## 1.0.0-beta.4
+
+### Features
+
+- **Cloudflare:** support cf Build Output deployments (#3230)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.3
 
 ### Features
