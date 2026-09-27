@@ -100,7 +100,6 @@ export function validateCloudflarePlatformSetup(
           isAppRouter: context.isAppRouter,
           nativeModulesToStub: detectProject(context.root).nativeModulesToStub,
           cache: cloudflare,
-          prerender: context.prerender,
         },
       );
     }
@@ -300,7 +299,6 @@ function setupExperimentalCfPlatform(
       isAppRouter: context.isAppRouter,
       nativeModulesToStub: projectInfo.nativeModulesToStub,
       cache: cloudflare,
-      prerender: context.prerender,
     });
     if (updated !== current) {
       fs.writeFileSync(context.existingViteConfigPath, updated, "utf-8");
@@ -312,7 +310,6 @@ function setupExperimentalCfPlatform(
           projectInfo,
           cloudflare,
           "IMAGES",
-          context.prerender,
           DEFAULT_VERSION_METADATA_BINDING,
           serviceBinding,
         )
@@ -320,7 +317,6 @@ function setupExperimentalCfPlatform(
           projectInfo,
           cloudflare,
           "IMAGES",
-          context.prerender,
           DEFAULT_VERSION_METADATA_BINDING,
           serviceBinding,
         );
