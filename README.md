@@ -360,9 +360,12 @@ vp exec vinext-cloudflare deploy --traffic-aware-warm-cache                     
 npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-coverage 95  # More aggressive coverage
 npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-limit 500    # Cap at 500 routes
 npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-window 48    # Use 48h of analytics
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --warm-cache-target https://example.com  # Set the production origin manually
 ```
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
+
+Use `--warm-cache-target <origin>` to override the inferred production origin for analytics zone selection and staged warming. See the [caching guide](https://vinext.dev/docs/guides/caching) for all selection controls and requirements.
 
 The previous `--experimental-traffic-aware-warm-cache`, `--experimental-tpr`, and `--tpr-*` names remain supported as aliases.
 

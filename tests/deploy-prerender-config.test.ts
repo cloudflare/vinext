@@ -467,40 +467,56 @@ describe("deploy prerender config wiring", () => {
     ).toBe(true);
   });
 
-  it("allows TPR no-promote deploys with no resolved warm routes", async () => {
-    writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
-    writeFile(
-      "node_modules/wrangler/package.json",
-      JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
-    );
-    writeFile(
-      "node_modules/wrangler/index.js",
-      `export * from ${JSON.stringify(realWranglerUrl)};\n`,
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
-    writeFile("dist/server/index.js", "export default {};\n");
-    resolveTPRRoutesMock.mockResolvedValueOnce({
-      routes: [{ path: "/missing", requests: 10 }],
-    });
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+  it.each([undefined, "https://manual.example.com/"])(
+    "allows TPR no-promote deploys with no resolved warm routes (target: %s)",
+    async (target) => {
+      writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+      writeFile(
+        "node_modules/wrangler/package.json",
+        JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+      );
+      writeFile(
+        "node_modules/wrangler/index.js",
+        `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+      );
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      resolveTPRRoutesMock.mockResolvedValueOnce({
+        routes: [{ path: "/missing", requests: 10 }],
+      });
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await expect(
-      deploy({
-        root: tmpDir,
-        skipBuild: true,
-        experimentalTPR: true,
-        warmCdnPromote: false,
-      }),
-    ).resolves.toBeUndefined();
+      await expect(
+        deploy({
+          root: tmpDir,
+          skipBuild: true,
+          experimentalTPR: true,
+          warmCdnPromote: false,
+          warmCdnTarget: target,
+        }),
+      ).resolves.toBeUndefined();
 
-    expect(
-      vi.mocked(execFileSync).mock.calls.some(([, args]) => (args as string[]).includes("upload")),
-    ).toBe(true);
-    expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
-      expect.objectContaining({ candidatePathsOnly: true }),
-    );
-  });
+      expect(
+        vi
+          .mocked(execFileSync)
+          .mock.calls.some(([, args]) => (args as string[]).includes("upload")),
+      ).toBe(true);
+      expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
+        expect.objectContaining({ candidatePathsOnly: true }),
+      );
+      expect(resolveTPRRoutesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ hostname: target ? "manual.example.com" : undefined }),
+      );
+      if (target) {
+        expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pathDiscoveryTarget: expect.objectContaining({ baseUrl: "https://manual.example.com" }),
+          }),
+        );
+      }
+    },
+  );
 
   it("uses a normal deploy when TPR has no cache warmup identity", async () => {
     writeProject(undefined);

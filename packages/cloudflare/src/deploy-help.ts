@@ -76,6 +76,8 @@ export function formatDeployHelp(): string {
   highest-traffic routes, then feeds those routes into the same staged CDN
   pre-warming flow used by --warm-cache. It requires a custom
   domain and a CLOUDFLARE_API_TOKEN with Zone Analytics read permission.
+  Use --warm-cache-target <origin> to provide the production HTTPS origin
+  manually for traffic-aware analytics selection, discovery, probing, and warming.
 
   Workers Cache automatically uses tiered caching. Warmed entries can therefore
   be reused outside the data center reached by the warmup request after cache
@@ -100,6 +102,8 @@ export function formatDeployHelp(): string {
                                                                           Cover 95% of traffic
     vinext-cloudflare deploy --traffic-aware-warm-cache --traffic-aware-limit 500
                                                                           Cap at 500 routes
+    vinext-cloudflare deploy --traffic-aware-warm-cache --warm-cache-target https://example.com
+                                                                          Select and warm traffic routes for an explicit origin
 `;
 }
 

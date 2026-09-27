@@ -367,12 +367,13 @@ export function parseDeployArgs(args: string[]) {
   values["warm-cache-promotion-delay"] ??= values["warm-cdn-promotion-delay"];
   values["warm-cache-include-fallbacks"] ||= values["warm-cdn-include-fallbacks"];
   values["traffic-aware-warm-cache"] ||= values["experimental-traffic-aware-warm-cache"];
+  const trafficAwareWarmCache = values["traffic-aware-warm-cache"] || values["experimental-tpr"];
 
   if (values["warm-cache-certify"] && !values["warm-cache"]) {
     throw new Error("--warm-cache-certify requires --warm-cache.");
   }
-  if (values["warm-cache-target"] && !values["warm-cache"]) {
-    throw new Error("--warm-cache-target requires --warm-cache.");
+  if (values["warm-cache-target"] && !values["warm-cache"] && !trafficAwareWarmCache) {
+    throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
   }
 
   function parseIntArg(name: string, raw: string | undefined): number | undefined {
@@ -487,7 +488,7 @@ export function parseDeployArgs(args: string[]) {
             values["warm-cache-promotion-delay"],
           ),
     warmCdnIncludeFallbacks: values["warm-cache-include-fallbacks"],
-    experimentalTPR: values["traffic-aware-warm-cache"] || values["experimental-tpr"],
+    experimentalTPR: trafficAwareWarmCache,
     tprCoverage: parseIntArg(
       "traffic-aware-coverage",
       values["traffic-aware-coverage"] ?? values["tpr-coverage"],
@@ -2225,8 +2226,8 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function deploy(options: DeployOptions): Promise<void> {
-  if (options.warmCdnTarget !== undefined && !options.warmCdnCache) {
-    throw new Error("--warm-cache-target requires --warm-cache.");
+  if (options.warmCdnTarget !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
+    throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
   }
   const warmCdnTarget =
     options.warmCdnTarget === undefined ? undefined : validateCdnWarmTarget(options.warmCdnTarget);

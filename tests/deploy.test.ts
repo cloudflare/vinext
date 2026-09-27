@@ -995,8 +995,28 @@ describe("parseDeployArgs", () => {
 
   it("requires CDN warming when an explicit warm target is requested", () => {
     expect(() => parseDeployArgs(["--warm-cache-target", "https://app.example.com"])).toThrow(
-      "--warm-cache-target requires --warm-cache.",
+      "--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.",
     );
+  });
+
+  it.each([
+    "--traffic-aware-warm-cache",
+    "--experimental-traffic-aware-warm-cache",
+    "--experimental-tpr",
+  ])("accepts a manual target with %s without enabling full cache warming", (flag) => {
+    const parsed = parseDeployArgs([flag, "--warm-cache-target=https://app.example.com/"]);
+    expect(parsed.warmCdnTarget).toBe("https://app.example.com");
+    expect(parsed.experimentalTPR).toBe(true);
+    expect(parsed.warmCdnCache).toBe(false);
+  });
+
+  it("accepts the legacy target flag with traffic-aware warming", () => {
+    const parsed = parseDeployArgs([
+      "--traffic-aware-warm-cache",
+      "--warm-cdn-target=https://app.example.com",
+    ]);
+    expect(parsed.warmCdnTarget).toBe("https://app.example.com");
+    expect(parsed.warmCdnCache).toBe(false);
   });
 
   it("parses --env with space-separated value", () => {

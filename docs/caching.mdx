@@ -190,11 +190,51 @@ npx @vinext/cloudflare deploy --traffic-aware-warm-cache
 
 vinext queries Cloudflare zone analytics, ranks page paths by request count, and resolves them against the app's routes. It selects paths up to the traffic coverage target or route limit, then uses the same staged warming flow and cacheability checks described above. Traffic can supply concrete dynamic paths that were not enumerated by `generateStaticParams()` or `getStaticPaths()`; pages that cannot be cached still render on demand.
 
-| Flag                             | Purpose                               | Default |
-| -------------------------------- | ------------------------------------- | ------- |
-| `--traffic-aware-coverage <pct>` | Target percentage of traffic to cover | `90`    |
-| `--traffic-aware-limit <count>`  | Maximum number of selected routes     | `1000`  |
-| `--traffic-aware-window <hours>` | Analytics lookback window             | `24`    |
+<table>
+  <thead>
+    <tr>
+      <th>Flag</th>
+      <th>Purpose</th>
+      <th>Default</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <code>--traffic-aware-coverage &lt;pct&gt;</code>
+      </td>
+      <td>Target percentage of traffic to cover</td>
+      <td>
+        <code>90</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>--traffic-aware-limit &lt;count&gt;</code>
+      </td>
+      <td>Maximum number of selected routes</td>
+      <td>
+        <code>1000</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>--traffic-aware-window &lt;hours&gt;</code>
+      </td>
+      <td>Analytics lookback window</td>
+      <td>
+        <code>24</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>--warm-cache-target &lt;origin&gt;</code>
+      </td>
+      <td>HTTPS origin for analytics zone selection, discovery, probing, and warming</td>
+      <td>Inferred from Cloudflare configuration and deploy output</td>
+    </tr>
+  </tbody>
+</table>
 
 For example, target 95% of traffic from the last 48 hours, with a maximum of 500 routes:
 
@@ -203,7 +243,14 @@ npx @vinext/cloudflare deploy --traffic-aware-warm-cache \
   --traffic-aware-coverage 95 --traffic-aware-limit 500 --traffic-aware-window 48
 ```
 
-This requires a custom domain in the Cloudflare configuration, a cache adapter that exposes build identity, and `CLOUDFLARE_API_TOKEN` with **Zone > Analytics > Read** and **Zone > Zone > Read** permissions for that zone. See [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/). Zone analytics are unavailable for `*.workers.dev` hosts.
+This requires a custom domain, a cache adapter that exposes build identity, and `CLOUDFLARE_API_TOKEN` with **Zone > Analytics > Read** and **Zone > Zone > Read** permissions for that zone. See [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/). Zone analytics are unavailable for `*.workers.dev` hosts.
+
+By default, vinext infers the custom domain from the Cloudflare configuration. Use `--warm-cache-target` to provide the production HTTPS origin manually; its hostname selects the analytics zone, and the same origin is used for staged discovery, probing, and warming:
+
+```sh
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache \
+  --warm-cache-target https://example.com
+```
 
 Use `--traffic-aware-warm-cache` on its own to select routes by traffic. Adding `--warm-cache` uses the full discovered warm plan instead of limiting it to the traffic-selected routes. Traffic-aware warming skips selection when all-route prerendering is configured, and skips warming when analytics or a safely stageable existing deployment are unavailable; the deploy then continues normally.
 
