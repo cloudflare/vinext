@@ -811,6 +811,30 @@ describe("init — basic functionality", () => {
     });
   });
 
+  it("configures the typed cf asset binding to protect packaged prerender entries", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+        experimentalCf: true,
+      },
+    });
+
+    const vite = readFile(tmpDir, "vite.config.ts");
+    expect(vite).toContain("cdn: staticAssetsAdapter()");
+    expect(vite).toContain('prerender: { routes: "*" }');
+    expect(vite).not.toContain("clientOutDir:");
+    const config = readFile(tmpDir, "cloudflare.config.ts");
+    expect(config).toContain(
+      'assets: { notFoundHandling: "none", runWorkerFirst: ["/_vinext/static-cache/*"] }',
+    );
+    expect(config).toContain("ASSETS: bindings.assets()");
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+  });
+
   it("preserves a custom Wrangler assets binding for the Static Assets cache", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(

@@ -464,7 +464,7 @@ ${shared}export default defineConfig({
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
     compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none" },
+    assets: { notFoundHandling: "none"${options.cdnCache === "static-assets" ? ', runWorkerFirst: ["/_vinext/static-cache/*"]' : ""} },
     env: {
       ${envBindings.join(",\n      ")},
     },
