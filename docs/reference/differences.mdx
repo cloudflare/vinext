@@ -28,7 +28,7 @@ At request time, vinext decides whether a render is dynamic while it renders. (A
 - export `dynamic = "force-dynamic"` from the route's `layout.tsx` (a `"use client"` page can't export segment config), or read `searchParams` in a server component page and pass the values down;
 - wrap `useSearchParams()` in `<Suspense>`, as Next.js requires.
 
-Next.js also treats a route as SSG when a layout above its last dynamic segment returns every param from `generateStaticParams`. vinext renders such a route on every request, because it doesn't run the generator to classify requests. Add `generateStaticParams` to the last dynamic segment, even one that returns `[]`, to make it static in both.
+Next.js also treats a route as SSG when a layout above its last dynamic segment returns every param from `generateStaticParams`. Unless the route exports `dynamic = "force-static"` or `"error"`, vinext renders it on every request, because it doesn't run the generator to classify requests. Add `generateStaticParams` to the last dynamic segment, even one that returns `[]`, to make it static in both.
 
 ## Compatibility
 
