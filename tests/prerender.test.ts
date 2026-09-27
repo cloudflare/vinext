@@ -27,6 +27,8 @@ import {
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
+import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
+import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
@@ -2140,8 +2142,21 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
           pattern: url.searchParams.get("pattern"),
           parentParams: url.searchParams.get("parentParams"),
         });
+        const staticParams = staticParamsByKey[url.searchParams.get("pattern") ?? ""];
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify(staticParamsByKey[url.searchParams.get("pattern") ?? ""] ?? null));
+        // A resolver runs through the real endpoint, as in a built server.
+        if (typeof staticParams === "function") {
+          void handleAppPrerenderEndpoint(new Request(url), {
+            isPrerenderEnabled: () => true,
+            pathname: url.pathname,
+            staticParamsMap: { [url.searchParams.get("pattern") ?? ""]: staticParams as never },
+          }).then(async (response) => {
+            res.statusCode = response?.status ?? 404;
+            res.end(await response?.text());
+          });
+          return;
+        }
+        res.end(JSON.stringify(staticParams ?? null));
         return;
       }
       // The raw request target, so an empty segment ("//details") shows.
@@ -2275,6 +2290,77 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
     expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
   });
 
+  // Outside a partial prerender and export, Next.js passes each parent set
+  // through a generateStaticParams that returns no params, the route's own
+  // included (build/static-paths/app.ts generateRouteStaticParams).
+  it("keeps a layout's params when the route's own generateStaticParams returns none", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[lang]/layout.tsx": layout, "[lang]/details/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/details": [] },
+    );
+
+    expect(renderedPaths).toContain("/en/details");
+    expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+  });
+
+  it("passes parents through an empty layout at the route's own pattern", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/[slug]/layout.tsx": layout,
+        "[lang]/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": [{ lang: "en" }],
+        "/:lang/:slug": createAppPrerenderStaticParamsResolver([() => [], () => [{ slug: "x" }]]),
+      },
+    );
+
+    expect(renderedPaths).toContain("/en/x");
+    expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+  });
+
+  // A passed-through set that leaves a pathname param out is incomplete, so
+  // Next.js prerenders none of the route's paths (hadAllParamsGenerated) and
+  // leaves them to on-demand generation.
+  it("still skips an incomplete set passed through an empty own result", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[lang]/layout.tsx": layout, "[lang]/[slug]/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/:slug": [] },
+    );
+
+    expect(result.routes.find((route) => route.route === "/:lang/:slug")).toMatchObject({
+      status: "skipped",
+      reason: "empty-static-params",
+    });
+    expect(renderedPaths.filter((pathname) => pathname.startsWith("/en"))).toEqual([]);
+  });
+
+  // Next.js rejects malformed generateStaticParams output in every mode
+  // (build/static-paths/app.ts callGenerateStaticParams), so a later layout
+  // must not run as if the malformed one had returned [].
+  it("fails the build when a layout's malformed output precedes a valid route group layout", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/(group)/layout.tsx": layout,
+        "[lang]/(group)/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": createAppPrerenderStaticParamsResolver([() => undefined]),
+        "layouts:[lang]/(group)": createAppPrerenderStaticParamsResolver([() => [{ lang: "en" }]]),
+        "/:lang/:slug": createAppPrerenderStaticParamsResolver([() => [{ slug: "x" }]]),
+      },
+    );
+
+    expect(result.routes.find((route) => route.route === "/:lang/:slug")).toMatchObject({
+      status: "error",
+      fatal: true,
+      error: expect.stringContaining("generateStaticParams must return an array"),
+    });
+    expect(renderedPaths.filter((pathname) => pathname.startsWith("/en"))).toEqual([]);
+  });
+
   // Next.js fails an export build on any generateStaticParams call that
   // returns no params (build/static-paths/app.ts callGenerateStaticParams),
   // including the route's own segments, whether or not layouts above it
@@ -2287,6 +2373,19 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
       "/:lang/:slug",
     ],
     ["with no parent sets", { "[slug]/page.tsx": page }, { "/:slug": [] }, "/:slug"],
+    [
+      "from a layout at its own pattern",
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/[slug]/layout.tsx": layout,
+        "[lang]/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": [{ lang: "en" }],
+        "/:lang/:slug": createAppPrerenderStaticParamsResolver([() => [], () => [{ slug: "x" }]]),
+      },
+      "/:lang/:slug",
+    ],
   ])(
     "fails a static export when the route's own generateStaticParams returns no params %s",
     async (_label, files, staticParamsByKey, pattern) => {

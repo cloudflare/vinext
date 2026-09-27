@@ -1346,6 +1346,9 @@ export async function prerenderApp({
             if (Object.keys(params).length > 0) {
               search.set("parentParams", JSON.stringify(params));
             }
+            // Next.js fails an export on any empty generateStaticParams result,
+            // so a composed resolver must not pass parents through one.
+            if (mode === "export") search.set("rejectEmptyResults", "1");
             const res = await fetch(`${baseUrl}/__vinext/prerender/static-params?${search}`, {
               headers: secretHeaders,
             });
@@ -1488,6 +1491,13 @@ export async function prerenderApp({
               if (Array.isArray(childResults)) {
                 if (mode === "export" && childResults.length === 0) {
                   throw emptyStaticExportParamsError(route.pattern);
+                }
+                // As for a layout, an empty own result passes the parent set
+                // through (build/static-paths/app.ts generateRouteStaticParams);
+                // routeStaticParamSets below still drops it if incomplete.
+                if (childResults.length === 0) {
+                  (paramSets as Record<string, string | string[]>[]).push(parentParams);
+                  continue;
                 }
                 for (const childParams of childResults) {
                   (paramSets as Record<string, string | string[]>[]).push({

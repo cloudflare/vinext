@@ -487,6 +487,61 @@ describe("prerender path manifest", () => {
     ).toBeUndefined();
   });
 
+  it("keeps a layout's params when the route's own generateStaticParams returns none", async () => {
+    // Outside Cache Components and export, Next.js passes each parent set
+    // through a generateStaticParams that returns no params
+    // (build/static-paths/app.ts generateRouteStaticParams), including the
+    // page's own, so /[lang]/details still lists /en/details.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[lang]/layout.tsx",
+      [
+        "export function generateStaticParams() { return [{ lang: 'en' }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[lang]/details/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[lang]/[slug]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pattern = new URL(
+        input instanceof Request ? input.url : String(input),
+      ).searchParams.get("pattern");
+      if (pattern === "layouts:[lang]") return Response.json([{ lang: "en" }]);
+      if (pattern === "/:lang/details" || pattern === "/:lang/:slug") return Response.json([]);
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toContain("/en/details");
+    // A passed-through set that leaves a pathname param out is incomplete, so
+    // none of /[lang]/[slug]'s paths is listed (hadAllParamsGenerated).
+    expect(manifest?.paths?.filter((pathname) => pathname.startsWith("/en/"))).toEqual([
+      "/en/details",
+    ]);
+  });
+
   it.each([
     ["returns its own params", [{ slug: "sibling" }]],
     ["returns no params", []],
@@ -2387,6 +2442,47 @@ describe("prerender path manifest", () => {
       ].join("\n"),
     );
     vi.mocked(fetch).mockResolvedValue(Response.json([]));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(
+      emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" }),
+    ).rejects.toThrow(
+      "When using Cache Components, all `generateStaticParams` functions must return at least one result.",
+    );
+  });
+
+  it("keeps a composed resolver from passing parents through an empty Cache Components result", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("next.config.js", "export default { cacheComponents: true };\n");
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[lang]/layout.tsx",
+      "export default function Layout({ children }) { return children; }\n",
+    );
+    writeFile(
+      "app/[lang]/[slug]/layout.tsx",
+      "export default function Layout({ children }) { return children; }\n",
+    );
+    writeFile("app/[lang]/[slug]/page.tsx", "export default function Page() { return null; }\n");
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const pattern = url.searchParams.get("pattern");
+      if (pattern === "layouts:[lang]") return Response.json([{ lang: "en" }]);
+      // The [slug] layout returns [] and the page [{ slug: "x" }]: the
+      // composed resolver passes the parent through only when not told to
+      // reject empty results.
+      if (pattern === "/:lang/:slug") {
+        return Response.json(
+          url.searchParams.get("rejectEmptyResults") === "1" ? [] : [{ slug: "x" }],
+        );
+      }
+      return defaultFetch(input, init);
+    });
 
     const { emitPrerenderPathManifest } =
       await import("../packages/vinext/src/build/prerender-paths.js");

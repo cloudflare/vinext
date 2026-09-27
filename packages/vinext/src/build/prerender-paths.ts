@@ -830,7 +830,10 @@ async function collectAppPaths(options: {
     get(_target, pattern: string) {
       return async ({ params }: { params: Record<string, string | string[]> }) => {
         if (!options.baseUrl) return null;
-        const cacheKey = `${pattern}\0${JSON.stringify(params)}`;
+        // Under Cache Components every empty result is rejected below, so a
+        // composed resolver must not pass parents through one.
+        const rejectEmptyResults = requireNonEmptyStaticParams;
+        const cacheKey = `${pattern}\0${JSON.stringify(params)}\0${rejectEmptyResults}`;
         let request = staticParamsCache.get(cacheKey);
         if (request === undefined) {
           request = (async () => {
@@ -838,6 +841,7 @@ async function collectAppPaths(options: {
             if (Object.keys(params).length > 0) {
               search.set("parentParams", JSON.stringify(params));
             }
+            if (rejectEmptyResults) search.set("rejectEmptyResults", "1");
             const text = await fetchDiscoveryEndpoint(
               `${options.baseUrl}/__vinext/prerender/static-params?${search}`,
               options.secretHeaders,
@@ -865,7 +869,7 @@ async function collectAppPaths(options: {
           staticParamsCache.set(cacheKey, request);
         }
         const value = await request;
-        if (requireNonEmptyStaticParams && value?.length === 0) {
+        if (rejectEmptyResults && value?.length === 0) {
           throw new Error(
             "When using Cache Components, all `generateStaticParams` functions must return at least one result. " +
               "This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.\n\n" +
@@ -943,6 +947,10 @@ async function collectAppPaths(options: {
             break;
           }
           if (Array.isArray(childResults)) {
+            // As for a layout, an empty own result passes the parent set
+            // through (build/static-paths/app.ts generateRouteStaticParams);
+            // routeStaticParamSets below still drops it if incomplete.
+            if (childResults.length === 0) paramSets.push(parentParams);
             for (const childParams of childResults) {
               paramSets.push({ ...parentParams, ...childParams });
             }
