@@ -251,6 +251,8 @@ jobs:
 
       - name: Build example
         if: matrix.example.static_export != true
+        env:
+          CLOUDFLARE_PREVIEW_BUILD: ${{ github.event_name == 'pull_request' && matrix.example.name == 'static-assets-cache' && 'true' || '' }}
         run: |
           if [[ -f cloudflare.config.ts ]]; then
             vp run build
