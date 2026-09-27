@@ -32,9 +32,9 @@
  *   assets that are runtime-fetched (not statically imported) need inlining.
  *
  * `createOgAssetsPlugin` — vinext:og-assets
- *   Guarantees each @vercel/og binary WASM module (resvg.wasm, yoga.wasm) ships
- *   exactly once in the RSC output, with every loader strategy resolving to that
- *   single file. The `import("./x.wasm?module")` path makes the bundler emit a
+ *   Guarantees @vercel/og's binary WASM modules ship in the RSC and SSR output,
+ *   with every loader strategy resolving to the emitted or copied file.
+ *   The `import("./x.wasm?module")` path makes the bundler emit a
  *   hashed asset (used by workerd); the og-font-patch transform also injects a
  *   `new URL("./x.wasm", import.meta.url)` disk-read fallback (used by Node.js).
  *   When the bundler already emitted the asset, this plugin rewrites the fallback
@@ -48,6 +48,7 @@ import path from "pathslash";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
+import { resolveHarfbuzzWasmPath } from "./og-harfbuzz.js";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
@@ -202,10 +203,9 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
 }
 
 // @vercel/og WASM assets that need a single physical copy in the output.
-// Both are imported via `import("./<name>?module")` (workerd path) AND read
-// from disk via `new URL("./<name>", import.meta.url)` (Node.js fallback path),
-// the latter injected by the vinext:og-font-patch transform.
-const OG_WASM_ASSETS = ["resvg.wasm", "yoga.wasm"] as const;
+// Workerd imports these as compiled modules; Node reads them from disk. The
+// vinext OG transforms inject the fallback URLs where needed.
+const OG_WASM_ASSETS = ["resvg.wasm", "yoga.wasm", "hb.wasm"] as const;
 
 /**
  * Find an emitted WASM asset in the output bundle whose name corresponds to the
@@ -218,8 +218,9 @@ const OG_WASM_ASSETS = ["resvg.wasm", "yoga.wasm"] as const;
  * @returns the emitted asset's `fileName` (relative to outDir), or null.
  */
 function findEmittedWasmAsset(
-  bundle: Record<string, { type: string; fileName: string }>,
+  bundle: Record<string, { type: string; fileName: string; source?: string | Uint8Array }>,
   baseName: string,
+  expectedSource?: Uint8Array,
 ): string | null {
   const stem = baseName.replace(/\.wasm$/, "");
   // Matches `resvg.wasm`, Vite's default `resvg-<hash>.wasm`, or the
@@ -227,9 +228,15 @@ function findEmittedWasmAsset(
   const re = new RegExp(`^${stem}(?:[-.][\\w-]+)?\\.wasm$`);
   for (const output of Object.values(bundle)) {
     if (output.type !== "asset") continue;
-    if (re.test(path.basename(output.fileName))) return output.fileName;
+    if (!re.test(path.basename(output.fileName))) continue;
+    if (expectedSource && !isSameBytes(output.source, expectedSource)) continue;
+    return output.fileName;
   }
   return null;
+}
+
+function isSameBytes(source: string | Uint8Array | undefined, expected: Uint8Array): boolean {
+  return source instanceof Uint8Array && Buffer.from(source).equals(expected);
 }
 
 /**
@@ -295,12 +302,10 @@ export function createOgAssetsPlugin(): Plugin {
   // generateBundle; writeBundle must NOT copy a second root copy for these.
   //
   // Cross-hook dependency: this is written in generateBundle and read in
-  // writeBundle. Rollup runs generateBundle before writeBundle within a single
-  // env build, and both hooks early-return unless `envName === "rsc"`, so the
-  // ordering holds today. If a future refactor reorders or parallelizes env
-  // builds, this shared state could go stale (writeBundle would copy a
-  // redundant root file) — keep the produce/consume pair in the same env.
-  let dedupedBases = new Set<string>();
+  // writeBundle, which Rollup runs in that order within a single env build.
+  // Both the RSC and SSR builds use it, so it is keyed by environment: a build
+  // never reads another environment's result, however env builds are ordered.
+  const dedupedBasesByEnvironment = new Map<string, Set<string>>();
 
   return {
     name: "vinext:og-assets",
@@ -311,9 +316,10 @@ export function createOgAssetsPlugin(): Plugin {
       order: "post",
       handler(_options, bundle) {
         const envName = this.environment?.name;
-        if (envName !== "rsc") return;
+        if (envName !== "rsc" && envName !== "ssr") return;
 
-        dedupedBases = new Set<string>();
+        const dedupedBases = new Set<string>();
+        dedupedBasesByEnvironment.set(envName, dedupedBases);
 
         const chunks = Object.values(bundle).filter(
           (o): o is typeof o & { type: "chunk"; code: string } => o.type === "chunk",
@@ -324,13 +330,23 @@ export function createOgAssetsPlugin(): Plugin {
           const referenced = chunks.some((c) => c.code.includes(base));
           if (!referenced) continue;
 
-          const emitted = findEmittedWasmAsset(bundle as never, base);
-          if (!emitted) continue; // no emitted asset → leave for writeBundle to copy
+          // `hb` is a short, generic stem, and Vite hashes may contain `-`, so
+          // the name alone cannot tell hb-<hash>.wasm from an app's
+          // hb-font-<hash>.wasm. Accept only the real HarfBuzz binary.
+          const emitted = findEmittedWasmAsset(
+            bundle as never,
+            base,
+            base === "hb.wasm"
+              ? fs.readFileSync(
+                  resolveHarfbuzzWasmPath(createRequire(import.meta.url).resolve("@vercel/og")),
+                )
+              : undefined,
+          );
 
           for (const chunk of chunks) {
             const re = fallbackUrlRegex(base);
             const chunkDir = path.dirname(chunk.fileName);
-            const rel = path.relative(chunkDir, emitted);
+            const rel = path.relative(chunkDir, emitted ?? base);
             const ref = rel.startsWith(".") ? rel : `./${rel}`;
 
             // Use MagicString so the chunk's sourcemap stays in sync with the
@@ -367,7 +383,7 @@ export function createOgAssetsPlugin(): Plugin {
           // Even if the fallback reference wasn't found (e.g. unexpected minifier
           // shape), the emitted asset still satisfies the workerd loader, so the
           // root copy is redundant. Mark as deduped to avoid shipping it twice.
-          dedupedBases.add(base);
+          if (emitted) dedupedBases.add(base);
         }
       },
     },
@@ -377,7 +393,7 @@ export function createOgAssetsPlugin(): Plugin {
       order: "post",
       async handler(options, bundle) {
         const envName = this.environment?.name;
-        if (envName !== "rsc") return;
+        if (envName !== "rsc" && envName !== "ssr") return;
 
         const outDir = options.dir;
         if (!outDir) return;
@@ -389,19 +405,31 @@ export function createOgAssetsPlugin(): Plugin {
         const chunkCode = Object.values(bundle)
           .map((output) => (output.type === "chunk" ? output.code : ""))
           .join("\n");
+        const dedupedBases = dedupedBasesByEnvironment.get(envName);
+        dedupedBasesByEnvironment.delete(envName);
         const referencedAssets = OG_WASM_ASSETS.filter(
-          (asset) => chunkCode.includes(asset) && !dedupedBases.has(asset),
+          (asset) => chunkCode.includes(asset) && !dedupedBases?.has(asset),
         );
         if (referencedAssets.length === 0) return;
 
-        // Find @vercel/og in node_modules. The yoga.wasm source is written
-        // there by the vinext:og-font-patch transform earlier in the build.
+        // Find @vercel/og in node_modules and copy only the missing WASM sources.
         try {
           const require = createRequire(import.meta.url);
           const ogPkgPath = require.resolve("@vercel/og/package.json");
           const ogDistDir = path.join(path.dirname(ogPkgPath), "dist");
 
-          copyMissingOgWasm({ outDir, sourceDir: ogDistDir, assets: referencedAssets });
+          copyMissingOgWasm({
+            outDir,
+            sourceDir: ogDistDir,
+            assets: referencedAssets.filter((asset) => asset !== "hb.wasm"),
+          });
+          if (referencedAssets.includes("hb.wasm")) {
+            copyMissingOgWasm({
+              outDir,
+              sourceDir: path.dirname(resolveHarfbuzzWasmPath(ogPkgPath)),
+              assets: ["hb.wasm"],
+            });
+          }
         } catch {
           // @vercel/og not installed — nothing to copy
         }

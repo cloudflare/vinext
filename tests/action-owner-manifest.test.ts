@@ -135,6 +135,70 @@ describe("server action owner manifest", () => {
     });
   });
 
+  it("looks up each module and resolves each client reference once across routes", async () => {
+    const routes = Array.from({ length: 50 }, (_, index) => ({
+      ...route(`/r${index}`, `/app/r${index}/page.tsx`),
+      layouts: ["/app/layout.tsx"],
+    }));
+    const rscGraph: Record<string, string[]> = {
+      "/app/layout.tsx": ["/app/nav.tsx", "/app/button.tsx?rsc"],
+      "/app/nav.tsx": ["/app/actions.ts"],
+    };
+    for (let index = 0; index < routes.length; index++) {
+      rscGraph[`/app/r${index}/page.tsx`] = ["/app/nav.tsx", "/app/button.tsx?rsc"];
+    }
+    const rscLookups: string[] = [];
+    const routeReachability = collectRscActionReachability({
+      getModuleInfo(id) {
+        rscLookups.push(id);
+        return moduleInfo(rscGraph)(id);
+      },
+      ...referenceMaps({
+        clients: { "/app/button.tsx?rsc": "/app/button.tsx" },
+        servers: {
+          "/app/actions.ts": { exportNames: ["navAction"], referenceKey: "actions" },
+        },
+      }),
+      routes,
+    });
+
+    const resolvedIds: string[] = [];
+    await resolveClientReferenceImportIds({
+      resolveId: async (id) => {
+        resolvedIds.push(id);
+        return id;
+      },
+      routeReachability,
+    });
+
+    const clientLookups: string[] = [];
+    addClientActionReachability({
+      getModuleInfo(id) {
+        clientLookups.push(id);
+        return moduleInfo({ "/app/button.tsx": ["/app/client-action.ts?server-proxy"] })(id);
+      },
+      ...referenceMaps({
+        servers: {
+          "/app/client-action.ts?server-proxy": {
+            exportNames: ["buttonAction"],
+            referenceKey: "client-action",
+          },
+        },
+      }),
+      routeReachability,
+    });
+
+    const patterns = routes.map((entry) => entry.pattern);
+    expect(buildActionOwnerManifest(routeReachability)).toEqual({
+      "actions#navAction": patterns,
+      "client-action#buttonAction": patterns,
+    });
+    expect(rscLookups).toHaveLength(new Set(rscLookups).size);
+    expect(new Set(rscLookups).size).toBe(routes.length + 4);
+    expect(resolvedIds).toEqual(["/app/button.tsx"]);
+    expect(clientLookups).toHaveLength(new Set(clientLookups).size);
+  });
+
   it("conservatively associates every reference exported by a reachable module", () => {
     const result = collectReachableActionReferences({
       getModuleInfo: moduleInfo({

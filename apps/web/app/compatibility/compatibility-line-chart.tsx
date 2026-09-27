@@ -40,6 +40,11 @@ export type TrendPoint = {
 const W = 800;
 const H = 280;
 const PADDING = { top: 16, right: 16, bottom: 28, left: 40 };
+const MIN_RATE = 0.5;
+
+function yForRate(rate: number, plotH: number): number {
+  return PADDING.top + ((1 - Math.max(rate, MIN_RATE)) / (1 - MIN_RATE)) * plotH;
+}
 
 // Date formatting is pinned to en-US so server and client agree (this is a
 // client component, so SSR runs in node which defaults to en-US, while the
@@ -119,8 +124,8 @@ export function CompatibilityLineChart({
         series.length === 1
           ? PADDING.left + plotW / 2
           : PADDING.left + ((p.createdAt - minX) / xRange) * plotW;
-      const overallY = PADDING.top + (1 - p.overallPassRate) * plotH;
-      const supportedY = PADDING.top + (1 - p.supportedPassRate) * plotH;
+      const overallY = yForRate(p.overallPassRate, plotH);
+      const supportedY = yForRate(p.supportedPassRate, plotH);
       return { x, overallY, supportedY, index: i };
     });
     return { xy, minX, maxX, plotW, plotH };
@@ -141,22 +146,21 @@ export function CompatibilityLineChart({
     .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.overallY}`)
     .join(" ");
 
-  // Y-axis ticks at 0, 25, 50, 75, 100%.
-  const yTicks = [0, 0.25, 0.5, 0.75, 1];
+  const yTicks = [MIN_RATE, 0.6, 0.7, 0.8, 0.9, 1];
   const plotH = view.plotH;
 
   return (
     <div className="relative">
       <svg
         role="img"
-        aria-label="Supported and overall compatibility pass rates over time"
+        aria-label="Supported and overall compatibility pass rates over time, from 50% to 100%"
         viewBox={`0 0 ${W} ${H}`}
         width="100%"
         style={{ maxWidth: "100%", display: "block" }}
       >
         {/* Y gridlines + labels */}
         {yTicks.map((t) => {
-          const y = PADDING.top + (1 - t) * plotH;
+          const y = yForRate(t, plotH);
           return (
             <g key={t}>
               <line

@@ -58,6 +58,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Build vinext for command-level unit tests
+        run: vp run vinext#build
       - run: vp test run --project unit --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
 
   test-integration:
@@ -352,7 +354,7 @@ jobs:
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cna-cloudflare
-        run: vp exec vinext build
+        run: vp exec vite build
 
       - name: Verify generated Cloudflare build output
         working-directory: ${{ runner.temp }}/cna-cloudflare
@@ -442,7 +444,7 @@ jobs:
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cva-cloudflare
-        run: vp exec vinext build
+        run: vp exec vite build
 
       - name: Verify generated Cloudflare build output
         working-directory: ${{ runner.temp }}/cva-cloudflare
@@ -555,6 +557,14 @@ jobs:
             shardTotal: 1
           - project: static-export
             label: static-export
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-static-assets
+            label: cloudflare-static-assets
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-static-export
+            label: cloudflare-static-export
             shardIndex: 1
             shardTotal: 1
           - project: static-export-basepath

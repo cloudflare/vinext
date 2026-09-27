@@ -31,7 +31,7 @@
  *
  * The default export is the adapter factory the generated
  * `virtual:vinext-cache-adapters` registration imports; configure it from
- * vite.config via the {@link cdnAdapter} builder in `./cdn-adapter.ts` (which
+ * vite.config via the {@link workersCacheCdnAdapter} builder in `./workers-cache-cdn-adapter.ts` (which
  * `require.resolve`s this file).
  */
 

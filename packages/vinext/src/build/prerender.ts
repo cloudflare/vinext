@@ -1,5 +1,5 @@
 /**
- * Prerendering phase for vinext build.
+ * Prerendering phase for vite build.
  *
  * Classifies every route, renders static and ISR routes to HTML/JSON/RSC files,
  * and writes a `vinext-prerender.json` build index.
@@ -687,7 +687,7 @@ export async function prerenderPages({
       console.warn(
         "[vinext] Warning: prerender secret not found. " +
           "/__vinext/prerender/* endpoints will return 403 and dynamic routes will produce no paths. " +
-          "Run `vinext build` to regenerate the secret.",
+          "Run `vite build` to regenerate the secret.",
       );
     }
 
@@ -1066,7 +1066,7 @@ export async function prerenderPages({
  * `vinext-prerender.json` to `outDir`.
  *
  * If the bundle does not exist, an error is thrown directing the user to run
- * `vinext build` first.
+ * `vite build` first.
  *
  * Speculative static rendering: routes classified as 'unknown' (no explicit
  * config, non-dynamic URL) are attempted with an empty headers/cookies context.
@@ -1125,7 +1125,7 @@ export async function prerenderApp({
       console.warn(
         "[vinext] Warning: prerender secret not found. " +
           "/__vinext/prerender/* endpoints will return 403 and generateStaticParams will not be called. " +
-          "Run `vinext build` to regenerate the secret.",
+          "Run `vite build` to regenerate the secret.",
       );
     }
 

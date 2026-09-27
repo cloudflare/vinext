@@ -28,8 +28,8 @@ Detect the router: if an `app/` directory exists at root or under `src/`, it's A
 | ---------------------------------- | ---------------------------------------------------------------------- |
 | `vinext check`                     | Scan project for compatibility issues, produce scored report           |
 | `vinext init`                      | Automated migration — installs deps, generates config, converts to ESM |
-| `vinext dev`                       | Development server with HMR                                            |
-| `vinext build`                     | Production build (multi-environment for App Router)                    |
+| `npx vite dev`                     | Development server with HMR                                            |
+| `npx vite build`                   | Production build (multi-environment for App Router)                    |
 | `vinext start`                     | Local production server                                                |
 | `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                 |
 | `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                      |
@@ -77,12 +77,12 @@ Replace all `next` commands in `package.json` scripts:
 
 | Before       | After          | Notes                      |
 | ------------ | -------------- | -------------------------- |
-| `next dev`   | `vinext dev`   | Dev server with HMR        |
-| `next build` | `vinext build` | Production build           |
+| `next dev`   | `vite dev`     | Dev server with HMR        |
+| `next build` | `vite build`   | Production build           |
 | `next start` | `vinext start` | Local production server    |
 | `next lint`  | `vinext lint`  | Delegates to eslint/oxlint |
 
-Preserve flags: `next dev --port 3001` → `vinext dev --port 3001`.
+Preserve Vite-compatible flags: `next dev --port 3001` → `vite dev --port 3001`. Translate Next-only build flags into `vinext()` options in `vite.config.ts` instead of forwarding them to Vite.
 
 ### 3c. Convert to ESM
 
@@ -186,7 +186,7 @@ Nitro auto-detects the platform in most CI/CD environments, so the preset is oft
 
 ## Phase 5: Verify
 
-1. Run `vinext dev` to start the development server
+1. Run the generated `dev:vinext` script (or `npx vite dev`) to start the development server
 2. Confirm the server starts without errors
 3. Navigate key routes and check functionality
 4. Report the result to the user — if errors occur, share full output

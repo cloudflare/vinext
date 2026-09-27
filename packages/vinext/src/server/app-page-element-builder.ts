@@ -1,5 +1,6 @@
 import { Suspense, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
+import { withUseCachePageMarker } from "vinext/shims/internal/app-page-props-cache-key";
 import {
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
@@ -578,7 +579,7 @@ export async function buildPageElements<
     renderDependency?: AppPageRenderDependency | null,
   ) => {
     if (isReactOwnedAppComponent(PageComponent)) {
-      const invocationProps = { ...props };
+      const invocationProps: Record<string, unknown> = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
@@ -586,11 +587,11 @@ export async function buildPageElements<
             })
           : makeThenableParams(pageSearchParams);
       }
-      return createElement(PageComponent, invocationProps);
+      return createElement(PageComponent, withUseCachePageMarker(PageComponent, invocationProps));
     }
 
     const PageInvoker = () => {
-      const invocationProps = { ...props };
+      const invocationProps: Record<string, unknown> = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
@@ -598,7 +599,12 @@ export async function buildPageElements<
       }
 
       try {
-        const result = invokeAppComponent(PageComponent, invocationProps);
+        // Like Next.js (create-component-tree.tsx), a "use cache" page
+        // component receives `$$isPage` so its cache omits searchParams.
+        const result = invokeAppComponent(
+          PageComponent,
+          withUseCachePageMarker(PageComponent, invocationProps),
+        );
         if (isPromiseLike(result)) {
           if (renderDependency) {
             // A declared-async page reaches its first continuation before this

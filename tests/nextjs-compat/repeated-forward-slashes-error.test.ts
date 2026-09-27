@@ -8,10 +8,8 @@
  * `resolveHref`. The upstream e2e renders the page and asserts the message
  * appears in the server CLI output (`next.cliOutput`).
  *
- * vinext's fixture server runs SSR in-process, so the Link shim's
- * `console.error` surfaces in this test process. We spy on it across an
- * actual SSR render (not just an isolated ReactDOMServer.renderToString — see
- * tests/link.test.ts for that) to exercise the full app-router render path.
+ * Pages Router uses `resolveHref` and emits the warning; App Router formats
+ * the href without normalizing it or emitting the Pages-only diagnostic.
  *
  * Fixture page: fixtures/app-basic/app/repeated-slashes-link/page.tsx
  */
@@ -36,21 +34,16 @@ describe("Next.js compat: repeated-forward-slashes-error", () => {
     await server?.close();
   });
 
-  // Next.js: it('should log error when href has repeated forward-slashes', ...)
-  it("should log error when a Link href has repeated forward-slashes", async () => {
+  it("leaves repeated forward-slashes unchanged in App Router Link", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const { html } = await fetchHtml(baseUrl, "/repeated-slashes-link");
-      // Sanity: the page rendered.
       expect(html).toContain("repeated-slashes-link-page");
+      expect(html).toContain('href="/hello//world"');
 
       const messages = errorSpy.mock.calls.map((args) => String(args[0]));
       const invalidHrefWarning = messages.find((m) => m.includes("Invalid href"));
-      expect(invalidHrefWarning).toBeDefined();
-      expect(invalidHrefWarning).toContain("Invalid href '/hello//world'");
-      expect(invalidHrefWarning).toContain(
-        "Repeated forward-slashes (//) or backslashes \\ are not valid in the href.",
-      );
+      expect(invalidHrefWarning).toBeUndefined();
     } finally {
       errorSpy.mockRestore();
     }

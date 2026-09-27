@@ -284,7 +284,6 @@ describe("optimizeDeps.exclude for vinext", () => {
       const result = await (mainPlugin as any).config(mockConfig, {
         command: "build",
       });
-
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
       // Incoming excludes from other plugins must survive the merge
@@ -530,8 +529,28 @@ describe("optimizeDeps.exclude for vinext", () => {
       // applies top-level ssr.* as defaults for environments.ssr.*, so
       // setting noExternal: true here would force-bundle React despite
       // external: true and recreate the duplicate-React bug.
-      expect(result.ssr?.noExternal).toBeUndefined();
+      expect(result.ssr?.noExternal).not.toBe(true);
+      expect(result.ssr?.noExternal).not.toContain("react");
       expect(result.ssr?.external).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  // @vercel/og 1.x throws on native import; it only runs once
+  // vinext:og-harfbuzz has transformed it, so `ssr.external: true` must not
+  // externalize it in any Node server environment.
+  it("keeps @vercel/og in the transform pipeline when ssr.external: true", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-og-no-external-");
+
+    try {
+      const result = await fixture.config({ ssr: { external: true } });
+
+      expect(result.ssr.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.rsc.resolve.external).toBe(true);
+      expect(result.environments.rsc.resolve.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.ssr.resolve.external).toBe(true);
+      expect(result.environments.ssr.resolve.noExternal).toEqual(["@vercel/og"]);
     } finally {
       await fixture.cleanup();
     }
@@ -925,7 +944,7 @@ describe("process.env.NODE_ENV define", () => {
     );
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
-    return { mainPlugin: mainPlugin as any, tmpDir, fsp };
+    return { mainPlugin: mainPlugin as any, plugins, tmpDir, fsp };
   }
 
   it("is injected as production for build", async () => {
@@ -4296,12 +4315,14 @@ describe("createMultiStageChunkFileNames", () => {
           fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
         ).resolves.toContain("export default");
         const outputFiles = await fsp.readdir(outputDir, { recursive: true });
-        const responseStageFile = outputFiles.find((file) =>
+        // The browser `client` environment inherits top-level `build.ssr` in
+        // buildApp(); only the `ssr` environment may emit the stage entry.
+        const responseStageFiles = outputFiles.filter((file) =>
           /^vinext-response-stage-.+\.js$/.test(path.basename(file)),
         );
-        expect(responseStageFile).toBeDefined();
+        expect(responseStageFiles).toHaveLength(1);
         const responseStage = (await import(
-          `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
+          `${pathToFileURL(path.join(outputDir, responseStageFiles[0]!)).href}?output=${index}`
         )) as { load(): Promise<unknown> };
         await expect(responseStage.load()).resolves.toBeDefined();
       }
@@ -4429,7 +4450,7 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
-  it("applies stage isolation to every server output but not the App SSR renderer", async () => {
+  it("applies App stage isolation only to the RSC environment", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
     try {
@@ -4481,6 +4502,22 @@ describe("createMultiStageChunkFileNames", () => {
         }),
       ).toBeUndefined();
       expect(ssrEmit).not.toHaveBeenCalled();
+
+      const auxiliaryEmit = vi.fn();
+      const auxiliaryContext = {
+        emitFile: auxiliaryEmit,
+        environment: {
+          config: { build: { ssr: true }, consumer: "server" },
+          name: "response_store_service_binding",
+        },
+      };
+      await (outputPlugin as any).buildStart.call(auxiliaryContext);
+      expect(
+        await (outputPlugin as any).outputOptions.call(auxiliaryContext, {
+          chunkFileNames: "auxiliary/[name].js",
+        }),
+      ).toBeUndefined();
+      expect(auxiliaryEmit).not.toHaveBeenCalled();
 
       const customClientEmit = vi.fn();
       const customClientContext = {

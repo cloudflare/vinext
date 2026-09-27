@@ -1,6 +1,7 @@
 import path from "node:path";
 import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
+import { createOgHarfbuzzPlugin } from "./packages/vinext/src/plugins/og-harfbuzz.js";
 
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
 const VINEXT_SRC = path.resolve(import.meta.dirname, "packages/vinext/src");
@@ -169,11 +170,13 @@ export default defineConfig({
 
     projects: [
       {
+        plugins: [createOgHarfbuzzPlugin()],
         resolve: {
           alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "unit",
+          server: { deps: { inline: ["@vercel/og"] } },
           setupFiles: [MSW_SETUP],
           // `scripts/**` covers the release-tooling unit tests
           // (scripts/create-changeset.test.ts, scripts/version.test.ts), which
@@ -243,11 +246,13 @@ export default defineConfig({
         },
       },
       {
+        plugins: [createOgHarfbuzzPlugin()],
         resolve: {
           alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "integration",
+          server: { deps: { inline: ["@vercel/og"] } },
           env: {
             VINEXT_PARALLEL_INTEGRATION: "true",
           },

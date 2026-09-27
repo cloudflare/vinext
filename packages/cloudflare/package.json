@@ -1,6 +1,6 @@
 {
   "name": "@vinext/cloudflare",
-  "version": "1.0.0-beta.9",
+  "version": "1.0.0-beta.11",
   "description": "Cloudflare cache and image adapters for vinext.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
@@ -57,6 +57,7 @@
     "@cloudflare/workers-response-store": "workspace:*"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "catalog:cloudflare-vite-v2",
     "@types/node": "catalog:",
     "miniflare": "catalog:",
     "vinext": "workspace:*",
@@ -65,7 +66,13 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
+    "@cloudflare/vite-plugin": "*",
     "vinext": "workspace:^"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/vite-plugin": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22"

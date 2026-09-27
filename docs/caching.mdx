@@ -81,6 +81,13 @@ This matches Next.js behavior and lets vinext identify the route at build time, 
       <td>A simple persistent cache without Workers Cache</td>
       <td>Requests still reach the Worker and KV is eventually consistent</td>
     </tr>
+    <tr>
+      <td>Static Assets</td>
+      <td>Workers Static Assets</td>
+      <td>Separately configured</td>
+      <td>Immutable sites that should render during the build but still run as a Worker</td>
+      <td>Read-only until the next deployment; runtime writes and invalidations are ignored</td>
+    </tr>
   </tbody>
 </table>
 
@@ -90,7 +97,7 @@ When caching is enabled through `vinext init`, Workers Response Store is the def
 
 Workers Response Store is the most complete and best supported option. Workers Cache serves hot responses, R2 provides a durable backing store, and a SQLite Durable Object tracks metadata and invalidation state. An edge miss can read the stored response from R2 instead of immediately rendering the route again.
 
-It also handles the data cache, so it replaces both `cdnAdapter()` and `kvDataAdapter()`:
+It also handles the data cache, so it replaces both `workersCacheCdnAdapter()` and `kvDataAdapter()`:
 
 ```ts
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
@@ -127,12 +134,12 @@ This avoids a second Worker, but the application Worker owns the R2 bucket, Dura
 The older split setup uses Workers Cache for rendered responses and Workers KV for cached data:
 
 ```ts
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 vinext({
   cache: {
-    cdn: cdnAdapter(),
+    cdn: workersCacheCdnAdapter(),
     data: kvDataAdapter(),
   },
 });
@@ -141,8 +148,6 @@ vinext({
 Workers Cache can serve a response without rerunning the render stage. Middleware and request routing still run before vinext selects the cached response entrypoint.
 
 This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
-
-The Workers Cache adapter supports staged cache warming through the Cloudflare deploy command. Warming is less direct because Workers Cache admission is controlled by response headers rather than a programmatic `put` API. vinext must render and probe routes to build a cacheability manifest, then make requests to fill the cache; it cannot simply upload known responses into Workers Cache. HTML and RSC payloads also use separate cache entries, so warming needs separate HTTP requests to seed both.
 
 ## KV data cache
 
@@ -168,12 +173,137 @@ Add the matching namespace to `wrangler.jsonc`:
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
 
+## Static Assets response cache
+
+For immutable routes, `staticAssetsAdapter()` packages locally prerendered App Router HTML, RSC payloads, and metadata responses into the configured client assets output. The Worker reads those artifacts through its `ASSETS` binding:
+
+```ts
+import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";
+
+vinext({
+  prerender: true,
+  cache: {
+    cdn: staticAssetsAdapter(),
+  },
+});
+```
+
+This is deliberately read-only. Cache writes, `revalidatePath()`, and `revalidateTag()` do not change the packaged responses; deploying a new build replaces them. Routes that were not prerendered continue to render normally, but this adapter does not persist their responses. Configure a separate `cache.data` adapter if the app also uses cached data.
+
+Finite `revalidate` intervals do not refresh packaged responses either. Use a writable response cache if those routes need runtime ISR; Static Assets always serves the build-time snapshot until the next deployment.
+
+The private cache directory must be routed through the Worker so clients cannot fetch raw cache files directly. `vinext init --platform=cloudflare --cdn-cache=static-assets` configures this automatically. For manual Wrangler setup, add the following to your existing `assets` configuration:
+
+```jsonc
+{
+  "assets": {
+    "binding": "ASSETS",
+    "run_worker_first": ["/_vinext/static-cache/*"],
+  },
+}
+```
+
+In typed `cloudflare.config.ts`, use `assets.runWorkerFirst` with the same pattern and declare `ASSETS: bindings.assets()`. An existing `run_worker_first: true` also protects these files. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns when configuring this cache.
+
+Existing typed configs require manual Static Assets setup; init stops before modifying the project so it cannot overwrite a custom binding or leave private files exposed.
+
+## Cache warming
+
+Cache warming is optional during Cloudflare deploys. With a configured cache adapter, run:
+
+```sh
+npx @vinext/cloudflare deploy --warm-cache
+```
+
+For an existing deployment serving 100% of traffic from one version, vinext uploads the new Worker, stages it at 0%, discovers routes through the staged Worker with its real bindings, checks readiness, and requests eligible responses to fill the configured cache before promoting the version. Unlike a local prerender and KV bulk upload, rendering happens in the deployed Worker. Static exports (`output: "export"`) still need local prerendered files.
+
+The default warmup makes one fill request per admitted cache identity. Add `--warm-cache-certify` to require a second, header-only request that proves warmed entries are reusable before promotion. If staging or required warmup fails, the command stops rather than promoting an unverified version; inspect the deployment state before retrying. A first deployment cannot use this staged flow: deploy normally once, then enable warming on subsequent deploys. The command also needs a reachable production route or custom domain and a Worker name for staged version overrides; use `--warm-cache-target https://example.com` if the target origin cannot be inferred.
+
+Only discoverable, cacheable route identities are warmed; dynamic parameters and query variants are not all enumerated automatically. HTML, RSC, and Pages Router data use separate requests where applicable. For Workers Cache, a warm request does not guarantee a cache hit in every region. See [Cloudflare's Workers Caching documentation](https://developers.cloudflare.com/workers/cache/).
+
+### Traffic-aware warming
+
+For apps with many routes, use traffic-aware warming to prioritize pages people actually visit:
+
+```sh
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache
+```
+
+vinext queries Cloudflare zone analytics, ranks page paths by request count, and resolves them against the app's routes. It selects paths up to the traffic coverage target or route limit, then uses the same staged warming flow and cacheability checks described above. Traffic can supply concrete dynamic paths that were not enumerated by `generateStaticParams()` or `getStaticPaths()`; pages that cannot be cached still render on demand.
+
+<table>
+  <thead>
+    <tr>
+      <th>Flag</th>
+      <th>Purpose</th>
+      <th>Default</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <code>--traffic-aware-coverage &lt;pct&gt;</code>
+      </td>
+      <td>Target percentage of traffic to cover</td>
+      <td>
+        <code>90</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>--traffic-aware-limit &lt;count&gt;</code>
+      </td>
+      <td>Maximum number of selected routes</td>
+      <td>
+        <code>1000</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>--traffic-aware-window &lt;hours&gt;</code>
+      </td>
+      <td>Analytics lookback window</td>
+      <td>
+        <code>24</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>--warm-cache-target &lt;origin&gt;</code>
+      </td>
+      <td>HTTPS origin for analytics zone selection, discovery, probing, and warming</td>
+      <td>Inferred from Cloudflare configuration and deploy output</td>
+    </tr>
+  </tbody>
+</table>
+
+For example, target 95% of traffic from the last 48 hours, with a maximum of 500 routes:
+
+```sh
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache \
+  --traffic-aware-coverage 95 --traffic-aware-limit 500 --traffic-aware-window 48
+```
+
+This requires a custom domain, a cache adapter that exposes build identity, and `CLOUDFLARE_API_TOKEN` with **Zone > Analytics > Read** and **Zone > Zone > Read** permissions for that zone. See [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/). Zone analytics are unavailable for `*.workers.dev` hosts.
+
+For typed config projects, declare `domains: ["example.com"]` on the Worker in `cloudflare.config.ts`. The first domain in the generated Build Output is used for both analytics and staged warming. Wrangler projects use their configured routes for analytics and deployed triggers for the warming origin. Use `--warm-cache-target` to provide the production HTTPS origin manually; its hostname selects the analytics zone, and the same origin is used for staged discovery, probing, and warming:
+
+```sh
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache \
+  --warm-cache-target https://example.com
+```
+
+Use `--traffic-aware-warm-cache` on its own to select routes by traffic. Adding `--warm-cache` uses the full discovered warm plan instead of limiting it to the traffic-selected routes. Traffic-aware warming skips selection when all-route prerendering is configured, and normally skips warming when analytics or a safely stageable existing deployment are unavailable.
+
+Add `--warm-cache-certify` to require reusable cache hits for every selected entry before promotion. Certification fails if warming is skipped or no entries can be certified. Use `--no-promote` to leave the warmed version at 0% traffic for verification.
+
 ## Which option should I choose?
 
 - Choose **no persistent cache** while migrating an app or when every response is intentionally dynamic.
 - Choose **Workers Response Store (recommended)** for the most complete Cloudflare caching setup and durable response storage.
 - Choose **Workers Cache + KV** when you specifically want the existing native Workers Cache architecture and accept that responses have no backing store.
 - Choose **KV only** when you want the simplest persistent cache and do not need Workers Cache to serve responses.
+- Choose **Static Assets** when response content is immutable for the lifetime of a deployment and should be produced during the build.
 
 You can run `vinext init --platform=cloudflare` to configure these choices. The generated Vite and Wrangler files are normal source files and can be adjusted later.
 

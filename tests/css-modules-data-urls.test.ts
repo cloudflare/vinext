@@ -10,7 +10,7 @@
  * intervention the literal data URL is passed through to runtime. Node and
  * `workerd` then reject the import with
  * `ERR_UNKNOWN_MODULE_FORMAT: Unknown module format: text/css+module`,
- * breaking the entire vinext build.
+ * breaking the entire vite build.
  *
  * vinext's `vinext:css-data-url` plugin rewrites these imports into
  * synthetic `.module.css` / `.css` modules so the normal CSS pipeline

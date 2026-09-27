@@ -23,15 +23,30 @@ function expectValidConfig(output: string): void {
 }
 
 describe("CSS Modules configuration", () => {
-  it.each([generateAppRouterViteConfig, generatePagesRouterViteConfig])(
-    "generates a default-only plugin and stable scoped names",
-    (generate) => {
-      const config = generate(undefined, undefined, "IMAGES", false, "CF_VERSION_METADATA", true);
-      expectValidConfig(config);
-      expect(config).toContain('patchCssModules({ exportMode: "default" })');
-      expect(config).toContain("generateScopedName(name: string, filename: string)");
-    },
-  );
+  it.each([
+    generateAppRouterViteConfig(
+      undefined,
+      undefined,
+      "IMAGES",
+      "CF_VERSION_METADATA",
+      false,
+      "ASSETS",
+      "dist/client",
+      true,
+    ),
+    generatePagesRouterViteConfig(
+      undefined,
+      undefined,
+      "IMAGES",
+      "CF_VERSION_METADATA",
+      false,
+      true,
+    ),
+  ])("generates a default-only plugin and stable scoped names", (config) => {
+    expectValidConfig(config);
+    expect(config).toContain('patchCssModules({ exportMode: "default" })');
+    expect(config).toContain("generateScopedName(name: string, filename: string)");
+  });
 
   it("patches a literal Vite config idempotently without dropping options", () => {
     const input =
@@ -134,8 +149,10 @@ describe("CSS Modules configuration", () => {
       },
       undefined,
       "IMAGES",
-      false,
       "CF_VERSION_METADATA",
+      false,
+      "ASSETS",
+      "dist/client",
       true,
     );
     expectValidConfig(config);
@@ -145,6 +162,21 @@ describe("CSS Modules configuration", () => {
 });
 
 describe("generateWranglerConfig", () => {
+  it("routes private Static Assets cache files through the Worker", () => {
+    const output = generateWranglerConfig(
+      {
+        root: "/tmp/my-app",
+        projectName: "my-app",
+        isAppRouter: true,
+        hasISR: false,
+        hasMDX: false,
+        nativeModulesToStub: [],
+      },
+      { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
+    );
+    expect(JSON.parse(output).assets.run_worker_first).toEqual(["/_vinext/static-cache/*"]);
+  });
+
   it.each(["service-binding", "self-contained"] as const)(
     "pretty-prints the generated %s Response Store config",
     (responseStoreMode) => {
@@ -177,7 +209,7 @@ describe("updateViteConfigForCloudflare", () => {
     expectValidConfig(output);
     expect(output).not.toContain("responseStoreAdapter");
     expect(output).not.toContain("kvDataAdapter");
-    expect(output).not.toContain("cdnAdapter");
+    expect(output).not.toContain("workersCacheCdnAdapter");
     expect(output).not.toContain("cache:");
   });
 
@@ -210,6 +242,119 @@ export default { plugins: [vinext()] };
 
     expectValidConfig(output);
     expect(output).toContain('cache: responseStoreAdapter({ mode: "self-contained" })');
+  });
+
+  it("configures build-time prerendering for the Static Assets cache", () => {
+    const options = {
+      dataCache: "none" as const,
+      cdnCache: "static-assets" as const,
+      imageOptimization: "none" as const,
+    };
+    const generated = generateAppRouterViteConfig(undefined, options);
+    expectValidConfig(generated);
+    expect(generated).toContain(
+      'import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";',
+    );
+    expect(generated).toContain("cache: { cdn: staticAssetsAdapter() }");
+    expect(generated).toContain('prerender: { routes: "*" }');
+
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext()] };
+`;
+    const updated = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: true,
+      nativeModulesToStub: [],
+      cache: options,
+    });
+    expectValidConfig(updated);
+    expect(updated).toContain("cache: { cdn: staticAssetsAdapter() }");
+    expect(updated).toContain('prerender: { routes: "*" }');
+    expect(
+      updateViteConfigForCloudflare("vite.config.ts", updated, {
+        isAppRouter: true,
+        nativeModulesToStub: [],
+        cache: options,
+      }),
+    ).toBe(updated);
+  });
+
+  it("enables prerendering when adding Static Assets to an existing vinext config", () => {
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext({ prerender: false })] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: true,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "kv",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+      },
+    });
+    expectValidConfig(output);
+    expect(output).toContain("data: kvDataAdapter()");
+    expect(output).toContain("cdn: staticAssetsAdapter()");
+    expect(output).toContain('prerender: { routes: "*" }');
+    expect(output).not.toContain("prerender: false");
+  });
+
+  it("aligns Static Assets with a custom Wrangler assets binding", () => {
+    const input = `import vinext from "vinext";
+import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";
+export default { plugins: [vinext({ cache: { cdn: staticAssetsAdapter() } })] };
+`;
+    const options = {
+      isAppRouter: true,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none" as const,
+        cdnCache: "static-assets" as const,
+        imageOptimization: "none" as const,
+      },
+      assetsBinding: "STATIC",
+      assetsDirectory: "build/client",
+    };
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
+    expectValidConfig(output);
+    expect(output).toContain('cdn: staticAssetsAdapter({ binding: "STATIC" })');
+    expect(output).toContain('clientOutDir: "build/client"');
+    expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
+  });
+
+  it("rejects a Static Assets output directory mismatch", () => {
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext({ clientOutDir: "build/client" })] };
+`;
+    expect(() =>
+      updateViteConfigForCloudflare("vite.config.ts", input, {
+        isAppRouter: true,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "static-assets",
+          imageOptimization: "none",
+        },
+        assetsDirectory: "dist/client",
+      }),
+    ).toThrow("must match Wrangler assets.directory");
+  });
+
+  it("rejects replacing a custom CDN adapter with Static Assets", () => {
+    const input = `import vinext from "vinext";
+import { customCdn } from "./custom-cache.js";
+export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
+`;
+    expect(() =>
+      updateViteConfigForCloudflare("vite.config.ts", input, {
+        isAppRouter: true,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "static-assets",
+          imageOptimization: "none",
+        },
+      }),
+    ).toThrow("does not match the selected Static Assets cache");
   });
 
   it("configures the application and separate Response Store Workers", () => {
@@ -478,8 +623,8 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
   it("rejects replacing an existing cache configuration with Workers Response Store", () => {
     const input = `import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
-export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
+export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })] };
 `;
 
     expect(() =>
@@ -875,29 +1020,11 @@ export default { plugins: [vinext()] };
     );
     expectValidConfig(output);
     expect(output).toContain(
-      "vinext({\n    cache: { data: kvDataAdapter(), cdn: cdnAdapter() },\n    images: { optimizer: imagesOptimizer() },\n  })",
+      "vinext({\n    cache: { data: kvDataAdapter(), cdn: workersCacheCdnAdapter() },\n    images: { optimizer: imagesOptimizer() },\n  })",
     );
   });
 
-  it("adds prerender to an existing vinext options object", () => {
-    const output = updateViteConfigForCloudflare(
-      "vite.config.ts",
-      `import vinext from "vinext";
-export default { plugins: [vinext({ cache: { data: customData() } })] };
-`,
-      {
-        isAppRouter: false,
-        nativeModulesToStub: [],
-        cache: { dataCache: "kv", cdnCache: "data-cache", imageOptimization: "none" },
-        prerender: true,
-      },
-    );
-    expectValidConfig(output);
-    expect(output).toContain("cache: { data: customData() }");
-    expect(output).toContain('prerender: { routes: "*" }');
-  });
-
-  it("preserves an existing prerender option", () => {
+  it("preserves an existing user-authored prerender option", () => {
     const input = `import vinext from "vinext";
 export default { plugins: [vinext({ prerender: true })] };
 `;
@@ -905,7 +1032,6 @@ export default { plugins: [vinext({ prerender: true })] };
       isAppRouter: false,
       nativeModulesToStub: [],
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
-      prerender: true,
     });
     expectValidConfig(output);
     expect(output.match(/prerender/g)).toHaveLength(1);
@@ -1004,7 +1130,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     });
     expectValidConfig(output);
     expect(output).toContain("data: existingData()");
-    expect(output).toContain("cdn: cdnAdapter()");
+    expect(output).toContain("cdn: workersCacheCdnAdapter()");
     expect(output).not.toContain("kvDataAdapter");
   });
 
@@ -1103,6 +1229,76 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(output).toBe(input);
   });
 
+  it("adds the default binding to existing assets used by the Static Assets cache", () => {
+    const output = updateWranglerConfigForCloudflare(
+      `{ "assets": { "directory": "dist/client", "not_found_handling": "none" } }\n`,
+      {
+        dataCache: "none",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+      },
+    );
+    expect(JSON.parse(output).assets).toEqual({
+      directory: "dist/client",
+      not_found_handling: "none",
+      binding: "ASSETS",
+      run_worker_first: ["/_vinext/static-cache/*"],
+    });
+    expect(
+      updateWranglerConfigForCloudflare(output, {
+        dataCache: "none",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+      }),
+    ).toBe(output);
+  });
+
+  it("repairs a missing Static Assets directory", () => {
+    const output = updateWranglerConfigForCloudflare(`{ "assets": { "binding": "STATIC" } }\n`, {
+      dataCache: "none",
+      cdnCache: "static-assets",
+      imageOptimization: "none",
+    });
+    expect(JSON.parse(output).assets).toEqual({
+      binding: "STATIC",
+      directory: "dist/client",
+      run_worker_first: ["/_vinext/static-cache/*"],
+    });
+  });
+
+  it.each([
+    { assets: undefined, expected: ["/_vinext/static-cache/*"] },
+    {
+      assets: { directory: "build/client", binding: "STATIC" },
+      expected: ["/_vinext/static-cache/*"],
+    },
+    { assets: { run_worker_first: false }, expected: ["/_vinext/static-cache/*"] },
+    { assets: { run_worker_first: true }, expected: true },
+    { assets: { run_worker_first: ["/api/*"] }, expected: ["/api/*", "/_vinext/static-cache/*"] },
+    {
+      assets: { run_worker_first: ["/_vinext/static-cache/*"] },
+      expected: ["/_vinext/static-cache/*"],
+    },
+  ])("protects Static Assets when updating $assets", ({ assets, expected }) => {
+    const options = {
+      cdnCache: "static-assets" as const,
+      dataCache: "none" as const,
+      imageOptimization: "none" as const,
+    };
+    const output = updateWranglerConfigForCloudflare(JSON.stringify({ assets }), options);
+    expect(JSON.parse(output).assets.run_worker_first).toEqual(expected);
+    expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
+  });
+
+  it("rejects Worker-first exclusions that could expose private Static Assets", () => {
+    expect(() =>
+      updateWranglerConfigForCloudflare(
+        JSON.stringify({ assets: { run_worker_first: ["/*", "!/_vinext/*"] } }),
+        { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
+      ),
+    ).toThrow("Static Assets cache requires run_worker_first without exclusion patterns");
+  });
+
   it("rejects an existing Cloudflare Pages config instead of adding an incompatible main", () => {
     const input = `{ "pages_build_output_dir": "./dist/client" }\n`;
 
@@ -1181,36 +1377,26 @@ export default { plugins: [vinext({ imageOptimization: true })] };
           imageOptimization: "none",
         },
         "IMAGES",
-        false,
         "CUSTOM_VERSION",
       ),
-    ).toContain('cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
+    ).toContain('workersCacheCdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
   });
 
-  it("aligns an existing Cloudflare CDN adapter with a custom version metadata binding", () => {
-    const input = `import { defineConfig } from "vite";
+  it.each([
+    ["workers-cache-cdn-adapter", "workersCacheCdnAdapter"],
+    ["cdn-adapter", "cdnAdapter"],
+  ])(
+    "aligns an existing %s import of %s with a custom version metadata binding",
+    (source, adapter) => {
+      const input = `import { defineConfig } from "vite";
 import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { ${adapter} } from "@vinext/cloudflare/cache/${source}";
 
 export default defineConfig({
-  plugins: [vinext({ cache: { cdn: cdnAdapter() } })],
+  plugins: [vinext({ cache: { cdn: ${adapter}() } })],
 });
 `;
-    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
-      isAppRouter: false,
-      nativeModulesToStub: [],
-      cache: {
-        dataCache: "none",
-        cdnCache: "workers-cache",
-        imageOptimization: "none",
-      },
-      versionMetadataBinding: "CUSTOM_VERSION",
-    });
-
-    expectValidConfig(output);
-    expect(output).toContain('cdn: cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
-    expect(
-      updateViteConfigForCloudflare("vite.config.ts", output, {
+      const output = updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
         nativeModulesToStub: [],
         cache: {
@@ -1219,9 +1405,24 @@ export default defineConfig({
           imageOptimization: "none",
         },
         versionMetadataBinding: "CUSTOM_VERSION",
-      }),
-    ).toBe(output);
-  });
+      });
+
+      expectValidConfig(output);
+      expect(output).toContain(`cdn: ${adapter}({ versionMetadataBinding: "CUSTOM_VERSION" })`);
+      expect(
+        updateViteConfigForCloudflare("vite.config.ts", output, {
+          isAppRouter: false,
+          nativeModulesToStub: [],
+          cache: {
+            dataCache: "none",
+            cdnCache: "workers-cache",
+            imageOptimization: "none",
+          },
+          versionMetadataBinding: "CUSTOM_VERSION",
+        }),
+      ).toBe(output);
+    },
+  );
 
   it("preserves a custom Wrangler Images binding for the Vite adapter", () => {
     const options = {
@@ -1240,20 +1441,6 @@ export default defineConfig({
     expect(getWranglerImagesBinding(output)).toBe("CUSTOM_IMAGES");
     const vite = generateAppRouterViteConfig(undefined, options, "CUSTOM_IMAGES");
     expect(vite).toContain('imagesOptimizer({ binding: "CUSTOM_IMAGES" })');
-  });
-
-  it("generates Cloudflare Vite config with prerender when opted in", () => {
-    const options = {
-      dataCache: "none" as const,
-      cdnCache: "data-cache" as const,
-      imageOptimization: "none" as const,
-    };
-    expect(generateAppRouterViteConfig(undefined, options, "IMAGES", true)).toContain(
-      'prerender: { routes: "*" }',
-    );
-    expect(generatePagesRouterViteConfig(undefined, options, "IMAGES", true)).toContain(
-      'prerender: { routes: "*" }',
-    );
   });
 
   it("repairs an unusable Wrangler Images binding", () => {

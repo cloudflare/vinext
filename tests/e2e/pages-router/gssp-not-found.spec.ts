@@ -1,6 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { waitForHydration } from "../helpers";
 
+test("stamps initial history state in dev when middleware is present", async ({ page }) => {
+  await page.goto("/");
+  await waitForHydration(page);
+  const state = await page.evaluate(() => history.state);
+  expect(state).toMatchObject({ url: "/", as: "/", __N: true });
+  expect(typeof state.key).toBe("string");
+});
+
 const cases = [
   {
     href: "/gssp-not-found?hiding=true",

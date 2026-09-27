@@ -127,6 +127,8 @@ export function hasRemoteMatch(
 
 // ─── Private IP detection ───────────────────────────────────────────────
 
+const IPV4_LITERAL_CHARS_RE = /^[0-9a-fA-FxX.]+$/;
+
 /**
  * Determine whether a string is a private (non-routable) IP address.
  * Works for IPv4 and IPv6, including bracketed and IPv4-mapped forms.
@@ -143,6 +145,14 @@ export function isPrivateIp(ip: string): boolean {
   // Strip IPv6 brackets so ipaddr.js can parse the raw address.
   if (ip.startsWith("[") && ip.endsWith("]")) {
     ip = ip.slice(1, -1);
+  }
+
+  // Hostnames are the common case. Every IPv4 form ipaddr.js accepts
+  // (dotted, decimal, octal, hex) uses only these characters, and IPv6
+  // always contains ":". Skip the parse (which throws for hostnames, and
+  // exceptions are expensive in the render path) when neither holds.
+  if (!ip.includes(":") && !IPV4_LITERAL_CHARS_RE.test(ip)) {
+    return false;
   }
 
   try {
