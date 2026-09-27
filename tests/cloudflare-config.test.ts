@@ -22,6 +22,7 @@ describe("typed Cloudflare cache config", () => {
          import config, { responseStoreServiceBinding } from "./apps/web/cloudflare.config.ts";
          assert.equal(responseStoreServiceBinding.name, "vinext-web-response-store");
          assert.equal(config.worker.env.RESPONSE_STORE.worker.name, "vinext-web-response-store");
+         assert.deepEqual(config.worker.domains, ["vinext.dev"]);
          const workflow = readFileSync(".github/workflows/deploy-examples.yml", "utf8");
          const step = workflow.split("- name: Deploy configured Response Store service with cf")[1].split("\\n      - name:")[0];
          assert.ok(step.includes("if: github.event_name == 'push' && github.ref == 'refs/heads/main' &&"));

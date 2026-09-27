@@ -6,12 +6,13 @@ import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import type { TPRRouteResult } from "../packages/cloudflare/src/tpr.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
 const discoverPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
 const resolveTPRRoutesMock = vi.hoisted(() =>
-  vi.fn(async () => ({ routes: [] as { path: string; requests: number }[] })),
+  vi.fn(async (): Promise<TPRRouteResult> => ({ routes: [] })),
 );
 const realWranglerUrl = pathToFileURL(
   createRequire(path.join(process.cwd(), "examples/app-router-cloudflare/package.json")).resolve(
@@ -467,40 +468,57 @@ describe("deploy prerender config wiring", () => {
     ).toBe(true);
   });
 
-  it("allows TPR no-promote deploys with no resolved warm routes", async () => {
-    writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
-    writeFile(
-      "node_modules/wrangler/package.json",
-      JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
-    );
-    writeFile(
-      "node_modules/wrangler/index.js",
-      `export * from ${JSON.stringify(realWranglerUrl)};\n`,
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
-    writeFile("dist/server/index.js", "export default {};\n");
-    resolveTPRRoutesMock.mockResolvedValueOnce({
-      routes: [{ path: "/missing", requests: 10 }],
-    });
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+  it.each([undefined, "https://override.example.com"])(
+    "uses the TPR origin for no-promote discovery unless explicitly overridden (%s)",
+    async (warmCdnTarget) => {
+      writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+      writeFile(
+        "node_modules/wrangler/package.json",
+        JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+      );
+      writeFile(
+        "node_modules/wrangler/index.js",
+        `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+      );
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      resolveTPRRoutesMock.mockResolvedValueOnce({
+        routes: [{ path: "/missing", requests: 10 }],
+        targetUrl: "https://vinext.dev",
+      });
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await expect(
-      deploy({
-        root: tmpDir,
-        skipBuild: true,
-        experimentalTPR: true,
-        warmCdnPromote: false,
-      }),
-    ).resolves.toBeUndefined();
+      await expect(
+        deploy({
+          root: tmpDir,
+          skipBuild: true,
+          experimentalTPR: true,
+          warmCdnPromote: false,
+          warmCdnTarget,
+        }),
+      ).resolves.toBeUndefined();
 
-    expect(
-      vi.mocked(execFileSync).mock.calls.some(([, args]) => (args as string[]).includes("upload")),
-    ).toBe(true);
-    expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
-      expect.objectContaining({ candidatePathsOnly: true }),
-    );
-  });
+      expect(
+        vi
+          .mocked(execFileSync)
+          .mock.calls.some(([, args]) => (args as string[]).includes("upload")),
+      ).toBe(true);
+      expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          candidatePathsOnly: true,
+          pathDiscoveryTarget: expect.objectContaining({
+            baseUrl: warmCdnTarget ?? "https://vinext.dev",
+          }),
+        }),
+      );
+      expect(resolveTPRRoutesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hostname: warmCdnTarget ? new URL(warmCdnTarget).hostname : undefined,
+        }),
+      );
+    },
+  );
 
   it("uses a normal deploy when TPR has no cache warmup identity", async () => {
     writeProject(undefined);
@@ -514,6 +532,22 @@ describe("deploy prerender config wiring", () => {
       expect.stringContaining("wrangler"),
       "deploy",
     ]);
+  });
+
+  it("does not silently deploy when certified TPR has no traffic", async () => {
+    writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({
+        root: tmpDir,
+        skipBuild: true,
+        experimentalTPR: true,
+        warmCdnCertify: true,
+      }),
+    ).rejects.toThrow("Cannot certify traffic-aware warming because pre-warming was skipped.");
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("tells legacy imperative cache users to migrate for TPR warming", async () => {
@@ -574,9 +608,13 @@ describe("deploy prerender config wiring", () => {
     ]);
   });
 
-  it.each([undefined, false])(
-    "falls back to a normal deploy when optional TPR warming fails (promote: %s)",
-    async (promote) => {
+  it.each([
+    { promote: undefined, certify: false },
+    { promote: false, certify: false },
+    { promote: undefined, certify: true },
+  ])(
+    "only falls back after TPR failure without certification (promote: $promote, certify: $certify)",
+    async ({ promote, certify }) => {
       writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
       writeFile(
         "node_modules/wrangler/package.json",
@@ -599,14 +637,19 @@ describe("deploy prerender config wiring", () => {
       const log = vi.spyOn(console, "log");
       const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-      await expect(
-        deploy({
-          root: tmpDir,
-          skipBuild: true,
-          experimentalTPR: true,
-          warmCdnPromote: promote,
-        }),
-      ).resolves.toBeUndefined();
+      const result = deploy({
+        root: tmpDir,
+        skipBuild: true,
+        experimentalTPR: true,
+        warmCdnPromote: promote,
+        warmCdnCertify: certify,
+      });
+      if (certify) {
+        await expect(result).rejects.toThrow("warm upload failed");
+        expect(spawn).not.toHaveBeenCalled();
+        return;
+      }
+      await expect(result).resolves.toBeUndefined();
 
       expect(log).toHaveBeenCalledWith(
         "  TPR: Skipping pre-warm (warm upload failed). Continuing with deploy.",

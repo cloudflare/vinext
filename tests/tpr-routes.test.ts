@@ -72,51 +72,63 @@ describe("TPR route resolution", () => {
     ]);
   });
 
-  it("returns hot routes without rendering or writing cache entries", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-routes-"));
-    fs.writeFileSync(
-      path.join(root, "wrangler.jsonc"),
-      JSON.stringify({ custom_domains: ["app.example.com"] }),
-    );
-    process.env.CLOUDFLARE_API_TOKEN = "token";
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : input.toString();
-      if (url.includes("/zones?")) {
-        return Response.json({ success: true, result: [{ id: "zone-id" }] });
+  it.each([false, true])(
+    "returns hot routes without rendering or writing cache entries (typed config: %s)",
+    async (typedConfig) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-routes-"));
+      fs.writeFileSync(
+        path.join(root, "wrangler.jsonc"),
+        JSON.stringify({ custom_domains: ["app.example.com"] }),
+      );
+      if (typedConfig) {
+        const output = path.join(root, ".cloudflare/output/v0/workers/default");
+        fs.mkdirSync(output, { recursive: true });
+        fs.writeFileSync(
+          path.join(output, "worker.config.json"),
+          JSON.stringify({ domains: ["app.example.com"] }),
+        );
       }
-      const body = JSON.parse(init?.body as string);
-      expect(body.query).toContain("orderBy: [count_DESC]");
-      expect(body.query).not.toContain("clientRequestHTTPHost");
-      expect(body.variables).toMatchObject({
-        zoneTag: "zone-id",
-      });
-      expect(body.variables).not.toHaveProperty("hostname");
-      return Response.json({
-        data: {
-          viewer: {
-            zones: [
-              {
-                httpRequestsAdaptiveGroups: [
-                  { count: 80, dimensions: { clientRequestPath: "/hot" } },
-                  { count: 20, dimensions: { clientRequestPath: "/cold" } },
-                ],
-              },
-            ],
+      process.env.CLOUDFLARE_API_TOKEN = "token";
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        if (url.includes("/zones?")) {
+          return Response.json({ success: true, result: [{ id: "zone-id" }] });
+        }
+        const body = JSON.parse(init?.body as string);
+        expect(body.query).toContain("orderBy: [count_DESC]");
+        expect(body.query).not.toContain("clientRequestHTTPHost");
+        expect(body.variables).toMatchObject({
+          zoneTag: "zone-id",
+        });
+        expect(body.variables).not.toHaveProperty("hostname");
+        return Response.json({
+          data: {
+            viewer: {
+              zones: [
+                {
+                  httpRequestsAdaptiveGroups: [
+                    { count: 80, dimensions: { clientRequestPath: "/hot" } },
+                    { count: 20, dimensions: { clientRequestPath: "/cold" } },
+                  ],
+                },
+              ],
+            },
           },
-        },
+        });
       });
-    });
-    vi.stubGlobal("fetch", fetchMock);
+      vi.stubGlobal("fetch", fetchMock);
 
-    await expect(resolveTPRRoutes({ root, window: 24 })).resolves.toMatchObject({
-      routes: [
-        { path: "/hot", requests: 80 },
-        { path: "/cold", requests: 20 },
-      ],
-    });
+      await expect(resolveTPRRoutes({ root, typedConfig, window: 24 })).resolves.toMatchObject({
+        targetUrl: typedConfig ? "https://app.example.com" : undefined,
+        routes: [
+          { path: "/hot", requests: 80 },
+          { path: "/cold", requests: 20 },
+        ],
+      });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fs.existsSync(path.join(root, "dist"))).toBe(false);
-    fs.rmSync(root, { recursive: true, force: true });
-  });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fs.existsSync(path.join(root, "dist"))).toBe(false);
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  );
 });

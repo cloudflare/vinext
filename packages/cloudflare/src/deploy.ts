@@ -326,12 +326,19 @@ const deployArgOptions = {
 
 export function parseDeployArgs(args: string[]) {
   const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
+  const experimentalTPR =
+    values["experimental-traffic-aware-warm-cache"] || values["experimental-tpr"];
+  const warming = values["experimental-warm-cdn-cache"] || experimentalTPR;
 
-  if (values["warm-cdn-certify"] && !values["experimental-warm-cdn-cache"]) {
-    throw new Error("--warm-cdn-certify requires --experimental-warm-cdn-cache.");
+  if (values["warm-cdn-certify"] && !warming) {
+    throw new Error(
+      "--warm-cdn-certify requires --experimental-warm-cdn-cache or --experimental-traffic-aware-warm-cache.",
+    );
   }
-  if (values["warm-cdn-target"] && !values["experimental-warm-cdn-cache"]) {
-    throw new Error("--warm-cdn-target requires --experimental-warm-cdn-cache.");
+  if (values["warm-cdn-target"] && !warming) {
+    throw new Error(
+      "--warm-cdn-target requires --experimental-warm-cdn-cache or --experimental-traffic-aware-warm-cache.",
+    );
   }
 
   function parseIntArg(name: string, raw: string | undefined): number | undefined {
@@ -443,7 +450,7 @@ export function parseDeployArgs(args: string[]) {
             values["warm-cdn-promotion-delay"],
           ),
     warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
-    experimentalTPR: values["experimental-traffic-aware-warm-cache"] || values["experimental-tpr"],
+    experimentalTPR,
     tprCoverage: parseIntArg(
       "traffic-aware-coverage",
       values["traffic-aware-coverage"] ?? values["tpr-coverage"],
@@ -2178,8 +2185,10 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function deploy(options: DeployOptions): Promise<void> {
-  if (options.warmCdnTarget !== undefined && !options.warmCdnCache) {
-    throw new Error("--warm-cdn-target requires --experimental-warm-cdn-cache.");
+  if (options.warmCdnTarget !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
+    throw new Error(
+      "--warm-cdn-target requires --experimental-warm-cdn-cache or --experimental-traffic-aware-warm-cache.",
+    );
   }
   const warmCdnTarget =
     options.warmCdnTarget === undefined ? undefined : validateCdnWarmTarget(options.warmCdnTarget);
@@ -2353,6 +2362,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
   const shouldWarmCdnCache = options.warmCdnCache || shouldWarmTpr;
+  if (options.warmCdnCertify && !shouldWarmCdnCache) {
+    throw new Error("Cannot certify traffic-aware warming because pre-warming was skipped.");
+  }
   const shouldSelectTpr = shouldWarmTpr && !options.warmCdnCache;
   const candidatePathsOnly = shouldSelectTpr && !needsCacheabilityProbeManifest;
   // Static export still needs local artifacts. Other pre-warm deploys render
@@ -2507,7 +2519,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           : undefined,
         statusSource: warmupStatusSource,
         warmCdnConcurrency: options.warmCdnConcurrency,
-        warmCdnTarget,
+        warmCdnTarget: warmCdnTarget ?? tpr?.targetUrl,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,
         warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,
@@ -2526,6 +2538,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     } catch (error) {
       if (
         options.warmCdnCache ||
+        options.warmCdnCertify ||
         (options.warmCdnPromote === false && error instanceof StagedWarmupError)
       ) {
         throw error;

@@ -40,6 +40,8 @@ export type TPROptions = {
 
 export type TPRRouteResult = {
   routes: TrafficEntry[];
+  /** Custom-domain origin from typed Build Output for staged pre-warming. */
+  targetUrl?: string;
   /** If TPR was skipped, the reason. */
   skipped?: string;
 };
@@ -298,5 +300,10 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
   }
   if (traffic.length === 0) return skip("no traffic data available (first deploy?)");
 
-  return { routes: traffic };
+  return {
+    routes: traffic,
+    // Wrangler's analytics domain may be zone_name rather than the route host.
+    // Its warmup origin continues to come from the deployed triggers.
+    targetUrl: options.typedConfig ? `https://${hostname}` : undefined,
+  };
 }

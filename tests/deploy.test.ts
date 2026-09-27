@@ -989,15 +989,34 @@ describe("parseDeployArgs", () => {
 
   it("requires CDN warming when certification is requested", () => {
     expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
-      "--warm-cdn-certify requires --experimental-warm-cdn-cache.",
+      "--warm-cdn-certify requires --experimental-warm-cdn-cache or --experimental-traffic-aware-warm-cache.",
     );
   });
 
   it("requires CDN warming when an explicit warm target is requested", () => {
     expect(() => parseDeployArgs(["--warm-cdn-target", "https://app.example.com"])).toThrow(
-      "--warm-cdn-target requires --experimental-warm-cdn-cache.",
+      "--warm-cdn-target requires --experimental-warm-cdn-cache or --experimental-traffic-aware-warm-cache.",
     );
   });
+
+  it.each(["--experimental-traffic-aware-warm-cache", "--experimental-tpr"])(
+    "allows an explicit target and certification with %s",
+    (trafficFlag) => {
+      expect(
+        parseDeployArgs([
+          trafficFlag,
+          "--warm-cdn-target",
+          "https://vinext.dev",
+          "--warm-cdn-certify",
+        ]),
+      ).toMatchObject({
+        experimentalTPR: true,
+        warmCdnCache: false,
+        warmCdnTarget: "https://vinext.dev",
+        warmCdnCertify: true,
+      });
+    },
+  );
 
   it("parses --env with space-separated value", () => {
     expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");

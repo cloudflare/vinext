@@ -364,6 +364,10 @@ npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
 
+For typed config projects, declare the custom domain with `domains: ["example.com"]` on the Worker in `cloudflare.config.ts`. The first domain in the generated Build Output is used for both analytics and staged warming. Wrangler projects retain domain selection from their configured routes and deployed triggers. Use `--warm-cdn-target https://example.com` to override the origin. Add `--warm-cdn-certify` to require reusable cache hits before promotion, or `--no-promote` to leave the warmed version at 0% traffic for verification.
+
+Use the traffic-aware flag on its own to apply the coverage and route limits. Combining it with `--experimental-warm-cdn-cache` retains full build-discovered warming.
+
 The previous `--experimental-tpr` and `--tpr-*` names remain supported as aliases.
 
 #### Custom Vite configuration
