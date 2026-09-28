@@ -478,6 +478,7 @@ export async function readAppPageCacheResponse(
     if (
       cachedValue &&
       options.hasRequestSearchParams === true &&
+      cachedValue.prerendered !== true &&
       !hasQueryInvariantRenderProof(cachedValue.renderObservation)
     ) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {

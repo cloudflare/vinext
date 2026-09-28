@@ -117,16 +117,34 @@ test("routes that were not prerendered render in the Worker", async ({ request }
   expect(secondBody.requestId).not.toBe(firstBody.requestId);
 });
 
-test("query variants of prerendered routes still render the page", async ({ request }) => {
-  const html = await request.get("/about?source=nav", { maxRedirects: 0 });
-  expect(html.status()).toBe(200);
-  expect(await html.text()).toContain("<h1>Prebuilt about page</h1>");
-  const rsc = await request.get("/about?source=nav&_rsc", {
-    headers: { RSC: "1" },
-    maxRedirects: 0,
-  });
-  expect(rsc.status()).toBe(200);
-  expect(await rsc.text()).toContain("Prebuilt about page");
+test("query variants of prerendered routes are Static Assets cache hits", async ({ request }) => {
+  for (const [pathname, heading] of [
+    ["/about", "Prebuilt about page"],
+    ["/posts/first", "Post: first"],
+  ]) {
+    const html = await request.get(`${pathname}?source=nav`, { maxRedirects: 0 });
+    expectCacheHit(html);
+    const body = await html.text();
+    expect(body).toContain(`<h1>${heading}</h1>`);
+    expect(body).toContain(buildTimeSource);
+
+    const rsc = await request.get(`${pathname}?source=nav&_rsc`, {
+      headers: { RSC: "1" },
+      maxRedirects: 0,
+    });
+    expectCacheHit(rsc);
+    const payload = await rsc.text();
+    expect(payload).toContain(heading);
+    expect(payload).toContain("build-time");
+  }
+});
+
+test("a page that reads searchParams renders each query in the Worker", async ({ request }) => {
+  for (const q of ["first", "second"]) {
+    const response = await request.get(`/search?q=${q}`, { maxRedirects: 0 });
+    expectUncached(response);
+    expect(await response.text()).toContain(`<span id="query">${q}</span>`);
+  }
 });
 
 test("packaged cache artifacts are not publicly served", async ({ request }) => {

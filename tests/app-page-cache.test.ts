@@ -776,6 +776,38 @@ describe("app page cache helpers", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
+  it("serves a prerendered entry without an observation to query-bearing requests", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {},
+      hasRequestSearchParams: true,
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry({
+          ...buildCachedAppPageValue("<h1>prerendered</h1>"),
+          prerendered: true,
+        });
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("should not render");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response?.text()).resolves.toBe("<h1>prerendered</h1>");
+  });
+
   it("returns cached HIT responses when the cache outcome recorder throws", async () => {
     let didClearRequestContext = false;
 

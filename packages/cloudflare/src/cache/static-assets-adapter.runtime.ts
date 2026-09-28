@@ -71,6 +71,7 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
         rscData: undefined,
         headers: metadata.headers,
         postponed: undefined,
+        prerendered: true,
         status: metadata.status,
       };
     } else if (metadata.kind === "rsc") {
@@ -80,6 +81,7 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
         rscData: await bodyResponse.arrayBuffer(),
         headers: undefined,
         postponed: undefined,
+        prerendered: true,
         status: undefined,
       };
     } else {
