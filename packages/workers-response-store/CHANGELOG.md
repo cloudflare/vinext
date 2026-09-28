@@ -1,5 +1,7 @@
 # @cloudflare/workers-response-store
 
+## 1.0.0
+
 ## 0.1.0-beta.2
 
 ### Features

@@ -1,5 +1,49 @@
 # vinext
 
+## 1.0.0
+
+### Features
+
+- share one cached HTML, RSC and loading-shell entry across the query strings of a static App Router page, as Next.js does, on KV, in-memory, Workers Response Store and Static Assets, and on Workers Cache for paths its deploy manifest marks static (#3462, #3463, #3465, #3490, #3531)
+- match Next.js for `useSearchParams()` and client page `searchParams` on cacheable App Router pages: server rendering shows the nearest `<Suspense>` fallback and the browser renders the real query after hydration (#3455, #3457)
+- cache App Router pages only when Next.js would treat the route as static or SSG, default them to `revalidate = false`, never store a render that used a dynamic API, and send Next.js's never-cache header on pages that can't be static (#3451, #3452, #3453, #3454, #3456, #3461, #3489, #3500)
+- **Init:** default Cloudflare projects to cf (#3504)
+- **Init:** detect css modules and auto-install compatibility workarounds (#3059)
+- **Cloudflare:** add read-only Static Assets prerender cache (#3344)
+- **CLI:** stabilize cache warming flags (#3502)
+
+### Bug Fixes
+
+#### Check
+
+- report next.config options vinext ignores or honours (#3508)
+- refresh import and library support entries (#3507)
+- stop false positives in the project structure scan (#3506)
+
+#### Cloudflare
+
+- use cf/config for typed configuration (#3535)
+- remove manual binding provisioning steps (#3529)
+- allow KV namespace autoprovisioning (#3528)
+- replace deploy prerendering with cache warming (#3340)
+- rename cdnAdapter to workersCacheCdnAdapter (#3503)
+
+#### Misc
+
+- **App Router:** keep cached export Flight URLs out of navigation (#3522)
+- pass `generateStaticParams` the parent params from a route's own layouts rather than from a sibling page (#3493)
+- keep serving the previous entry when an App Router page regeneration fails, and send the request's params and pathname on cached RSC responses (#3459, #3460)
+- **Metadata:** keep streamed icon keys opaque (#3518)
+- **Init:** tidy edits to existing Vite configs (#3515)
+- **Dev:** stabilize next-intl cold rendering and hydration (#3513)
+- **Prerender:** surface render errors in build output (#3514)
+- **Vinext:** support Worker imports during prerender and test Static Assets (#3405)
+
+### Contributors
+
+- @james-elicx
+- @NriotHrreion
+
 ## 1.0.0-beta.13
 
 ### Features

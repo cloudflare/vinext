@@ -1,5 +1,36 @@
 # @vinext/cloudflare
 
+## 1.0.0
+
+### Features
+
+- share one cached HTML, RSC and loading-shell entry across the query strings of a static App Router page, as Next.js does, on KV, in-memory, Workers Response Store and Static Assets, and on Workers Cache for paths its deploy manifest marks static (#3462, #3463, #3465, #3490, #3531)
+- match Next.js for `useSearchParams()` and client page `searchParams` on cacheable App Router pages: server rendering shows the nearest `<Suspense>` fallback and the browser renders the real query after hydration (#3455, #3457)
+- cache App Router pages only when Next.js would treat the route as static or SSG, default them to `revalidate = false`, never store a render that used a dynamic API, and send Next.js's never-cache header on pages that can't be static (#3451, #3452, #3453, #3454, #3456, #3461, #3489, #3500)
+- **Init:** default Cloudflare projects to cf (#3504)
+- **Cloudflare:** add read-only Static Assets prerender cache (#3344)
+- **CLI:** stabilize cache warming flags (#3502)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- use cf/config for typed configuration (#3535)
+- tolerate Response Store lookup outages (#3523)
+- remove manual binding provisioning steps (#3529)
+- allow KV namespace autoprovisioning (#3528)
+- replace deploy prerendering with cache warming (#3340)
+- use configured domains for traffic-aware warming (#3512)
+- rename cdnAdapter to workersCacheCdnAdapter (#3503)
+
+#### Misc
+
+- expire every KV cache entry after the adapter's `ttlSeconds`, including `revalidate = false` pages, raising values below 60 to KV's minimum, and stop expiring tag invalidation markers (#3488)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.11
 
 ### Features
