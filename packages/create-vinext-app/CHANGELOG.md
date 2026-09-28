@@ -1,19 +1,5 @@
 # create-vinext-app
 
-## 1.0.0
-
-Graduate from beta to the stable 1.0.0 release.
-
-### Features
-
-- **Init:** default Cloudflare projects to cf (#3504)
-- **Cloudflare:** add read-only Static Assets prerender cache (#3344)
-- **CLI:** stabilize cache warming flags (#3502)
-
-### Contributors
-
-- @james-elicx
-
 ## 1.0.0-beta.4
 
 ### Features

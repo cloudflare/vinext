@@ -1,9 +1,5 @@
 # @cloudflare/workers-response-store
 
-## 1.0.0
-
-Graduate from beta to the stable 1.0.0 release.
-
 ## 0.1.0-beta.2
 
 ### Features

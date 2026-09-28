@@ -1,27 +1,5 @@
 # @vinext/cloudflare
 
-## 1.0.0
-
-Graduate from beta to the stable 1.0.0 release.
-
-### Features
-
-- **Init:** default Cloudflare projects to cf (#3504)
-- **Cloudflare:** add read-only Static Assets prerender cache (#3344)
-- **CLI:** stabilize cache warming flags (#3502)
-
-### Bug Fixes
-
-#### Cloudflare
-
-- replace deploy prerendering with cache warming (#3340)
-- use configured domains for traffic-aware warming (#3512)
-- rename cdnAdapter to workersCacheCdnAdapter (#3503)
-
-### Contributors
-
-- @james-elicx
-
 ## 1.0.0-beta.11
 
 ### Features

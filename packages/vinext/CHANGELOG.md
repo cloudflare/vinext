@@ -1,31 +1,5 @@
 # vinext
 
-## 1.0.0
-
-Graduate from beta to the stable 1.0.0 release.
-
-### Features
-
-- **Init:** default Cloudflare projects to cf (#3504)
-- **Init:** detect css modules and auto-install compatibility workarounds (#3059)
-- **Cloudflare:** add read-only Static Assets prerender cache (#3344)
-- **CLI:** stabilize cache warming flags (#3502)
-
-### Bug Fixes
-
-- **Metadata:** keep streamed icon keys opaque (#3518)
-- **Init:** tidy edits to existing Vite configs (#3515)
-- **Dev:** stabilize next-intl cold rendering and hydration (#3513)
-- **Prerender:** surface render errors in build output (#3514)
-- **Vinext:** support Worker imports during prerender and test Static Assets (#3405)
-- **Cloudflare:** replace deploy prerendering with cache warming (#3340)
-- **Cloudflare:** rename cdnAdapter to workersCacheCdnAdapter (#3503)
-
-### Contributors
-
-- @james-elicx
-- @NriotHrreion
-
 ## 1.0.0-beta.13
 
 ### Features
