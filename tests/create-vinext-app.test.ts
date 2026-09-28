@@ -408,6 +408,9 @@ describe("create-vinext-app CLI", () => {
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Usage: create-vinext-app"));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--warm-cache"));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--no-warm-cache"));
+      expect(logSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("--experimental-warm-cdn-cache"),
+      );
       expect(logSpy).toHaveBeenCalledWith(
         expect.stringContaining("--legacy-wrangler-cloudflare-init"),
       );

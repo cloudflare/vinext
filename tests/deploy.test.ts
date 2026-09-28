@@ -930,7 +930,9 @@ describe("parseDeployArgs", () => {
   );
 
   it("accepts mixed spellings and validates legacy options", () => {
-    expect(parseDeployArgs(["--warm-cache", "--warm-cache-certify"]).warmCdnCertify).toBe(true);
+    expect(
+      parseDeployArgs(["--experimental-warm-cdn-cache", "--warm-cache-certify"]).warmCdnCertify,
+    ).toBe(true);
     expect(
       parseDeployArgs(["--warm-cache", "--warm-cdn-target=https://example.com"]).warmCdnTarget,
     ).toBe("https://example.com");
@@ -993,12 +995,14 @@ describe("parseDeployArgs", () => {
     const parsed = parseDeployArgs(
       spelling === "legacy"
         ? args.map((arg) =>
-            arg
-              .replace(/^--warm-cache-/, "--warm-cdn-")
-              .replace(
-                "--dangerously-promote-on-warm-cache-error",
-                "--dangerously-promote-on-cdn-warm-error",
-              ),
+            arg === "--warm-cache"
+              ? "--experimental-warm-cdn-cache"
+              : arg
+                  .replace(/^--warm-cache-/, "--warm-cdn-")
+                  .replace(
+                    "--dangerously-promote-on-warm-cache-error",
+                    "--dangerously-promote-on-cdn-warm-error",
+                  ),
           )
         : args,
     );

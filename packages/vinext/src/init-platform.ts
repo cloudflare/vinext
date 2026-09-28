@@ -147,11 +147,19 @@ export function parsePrerenderArg(args: string[]): boolean | undefined {
 }
 
 export function parseWarmCdnCacheArg(args: string[]): boolean | undefined {
-  return parseBooleanArg(
-    args,
-    "--warm-cache",
-    "--no-warm-cache",
-    '--warm-cache expects true or false when using the "--warm-cache=value" form.',
+  return (
+    parseBooleanArg(
+      args,
+      "--warm-cache",
+      "--no-warm-cache",
+      '--warm-cache expects true or false when using the "--warm-cache=value" form.',
+    ) ??
+    parseBooleanArg(
+      args,
+      "--experimental-warm-cdn-cache",
+      "--no-experimental-warm-cdn-cache",
+      '--warm-cache expects true or false when using the "--warm-cache=value" form.',
+    )
   );
 }
 
