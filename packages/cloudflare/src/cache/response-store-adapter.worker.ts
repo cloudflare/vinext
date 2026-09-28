@@ -311,8 +311,25 @@ function isCacheable(response: Response): boolean {
   );
 }
 
-function isResponseStoreMiss(response: Response): boolean {
-  return response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS";
+async function readStoredResponse(key: Request): Promise<Response | null> {
+  try {
+    const response = await responseStore.fetch(key);
+    // Redirects are valid cached responses even though Response.ok is false.
+    if (response.status >= 200 && response.status < 400) return response;
+    void response.body?.cancel().catch(() => {});
+    if (response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS") {
+      return null;
+    }
+    throw new Error(`Workers Response Store returned ${response.status}`);
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        message: "Vinext response-store response lookup failed; treating as a cache miss",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return null;
+  }
 }
 
 function publicResponse(
@@ -420,16 +437,16 @@ const handler = {
       const rscInvocation = rscSeed ? prepareInvocation(rscSeed.request, rscSeed.props) : undefined;
       const rscKey = rscInvocation ? await cacheRequest(rscInvocation) : undefined;
       const key = await cacheRequest(invocation);
-      const stored = await responseStore.fetch(key);
-      if (!isResponseStoreMiss(stored)) {
+      const stored = await readStoredResponse(key);
+      if (stored) {
         if (!rscKey) return publicResponse(stored, "HIT", props);
 
-        const storedRsc = await responseStore.fetch(rscKey);
-        if (!isResponseStoreMiss(storedRsc)) {
-          await storedRsc.body?.cancel();
+        const storedRsc = await readStoredResponse(rscKey);
+        if (storedRsc) {
+          void storedRsc.body?.cancel().catch(() => {});
           return publicResponse(stored, "HIT", props);
         }
-        await Promise.all([stored.body?.cancel(), storedRsc.body?.cancel()]);
+        void stored.body?.cancel().catch(() => {});
       }
 
       const capture: ResponseStoreInvocationCapture = rscSeed
@@ -477,10 +494,22 @@ const handler = {
 
       const [foreground, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = new Response(cacheBody, rendered);
-      await responseStore.put(key, cacheResponse, {
-        coalesce: true,
-        revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
-      });
+      try {
+        await responseStore.put(key, cacheResponse, {
+          coalesce: true,
+          revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
+        });
+      } catch (error) {
+        // Warming must confirm persistence; ordinary requests can serve the render.
+        if (isWarmup) throw error;
+        void cacheResponse.body?.cancel().catch(() => {});
+        console.warn(
+          JSON.stringify({
+            message: "Vinext response-store response fill failed; serving the rendered response",
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
 
       if (rscSeed && rscInvocation && rscKey && capture?.rscData) {
         const rscData = await capture.rscData;

@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createVinextResponseStoreHandler } from "../packages/cloudflare/src/cache/response-store-adapter.worker.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
+
+import { captureResponseStoreRscData } from "../packages/cloudflare/src/cache/response-store-data.runtime.js";
 
 const stages = vi.hoisted(() => ({ request: vi.fn(), response: vi.fn() }));
 
@@ -13,6 +15,8 @@ vi.mock("virtual:vinext-response-stage", () => ({
 }));
 
 describe("Cloudflare Response Store Worker", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   beforeEach(() => {
     stages.request.mockReset();
     stages.response.mockReset();
@@ -153,6 +157,142 @@ describe("Cloudflare Response Store Worker", () => {
       request: { headers: [], method: "GET", url: "https://example.com/miss" },
     });
   });
+
+  it.each(["throw", 500, 503, 404] as const)(
+    "renders and repopulates after a failed response lookup (%s)",
+    async (failure) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const cancel = vi.fn();
+      const failed = new Response(new ReadableStream({ cancel }), {
+        status: typeof failure === "number" ? failure : 500,
+      });
+      const fetch = vi.fn(async () => {
+        if (failure === "throw") throw new Error("metadata overloaded");
+        return failed;
+      });
+      const store = {
+        fetch,
+        getTagExpiration: vi.fn(),
+        purge: vi.fn(),
+        put: vi.fn(),
+        refresh: vi.fn(),
+      };
+      stages.response.mockResolvedValue(
+        new Response("rendered", {
+          headers: { "Cache-Control": "public, max-age=60" },
+        }),
+      );
+      const response = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/outage"),
+        {} as never,
+        { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("rendered");
+      expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+      expect(store.put).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledOnce();
+      if (failure !== "throw") expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])("handles a fill outage with warmup=%s", async (warmup) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = {
+      fetch: vi.fn().mockRejectedValue(new Error("lookup unavailable")),
+      getTagExpiration: vi.fn(),
+      purge: vi.fn(),
+      refresh: vi.fn(),
+      put: vi.fn().mockRejectedValue(new Error("fill unavailable")),
+    };
+    stages.response.mockResolvedValue(
+      new Response("rendered", {
+        headers: { "Cache-Control": "public, max-age=60" },
+      }),
+    );
+    const result = createVinextResponseStoreHandler(store).fetch(
+      new Request("https://example.com/outage", {
+        headers: warmup ? { "User-Agent": "vinext-cloudflare-cdn-warm" } : {},
+      }),
+      {} as never,
+      { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+    );
+    if (warmup) {
+      await expect(result).rejects.toThrow("fill unavailable");
+    } else {
+      const response = await result;
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("rendered");
+      expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    }
+    expect(store.put).toHaveBeenCalledOnce();
+  });
+
+  it.each([301, 302, 307, 308])("preserves a cached %s redirect", async (status) => {
+    const store = {
+      fetch: vi.fn(async () => new Response(null, { status, headers: { Location: "/target" } })),
+      getTagExpiration: vi.fn(),
+      purge: vi.fn(),
+      put: vi.fn(),
+      refresh: vi.fn(),
+    };
+    const response = await createVinextResponseStoreHandler(store).fetch(
+      new Request("https://example.com/redirect"),
+      {} as never,
+      { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+    );
+    expect(response.status).toBe(status);
+    expect(response.headers.get("Location")).toBe("/target");
+    expect(response.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it.each(["throw", 503] as const)(
+    "re-renders a warmup when its RSC lookup fails (%s)",
+    async (failure) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      stages.request.mockImplementation((request, _env, _context, dispatch) =>
+        dispatch(
+          request,
+          {
+            kind: "app-page",
+            isRscRequest: false,
+            matchKind: "request",
+            interceptionContext: null,
+            interceptionId: null,
+            mountedSlotsHeader: null,
+          },
+          { cache: "shared" },
+        ),
+      );
+      const cancel = vi.fn();
+      const fetch = vi.fn().mockResolvedValueOnce(new Response(new ReadableStream({ cancel })));
+      if (failure === "throw") fetch.mockRejectedValueOnce(new Error("metadata overloaded"));
+      else fetch.mockResolvedValueOnce(new Response("unavailable", { status: failure }));
+      const store = {
+        fetch,
+        getTagExpiration: vi.fn(),
+        purge: vi.fn(),
+        put: vi.fn(),
+        refresh: vi.fn(),
+      };
+      stages.response.mockImplementation(async () => {
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("flight").buffer));
+        return new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } });
+      });
+      const response = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/warm", {
+          headers: { "User-Agent": "vinext-cloudflare-cdn-warm" },
+        }),
+        {} as never,
+        { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+      );
+      expect(await response.text()).toBe("rendered");
+      expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(store.put).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("serializes response-stage props once on bypasses", async () => {
     const toJSON = vi.fn(() => ({ kind: "app-page" }));

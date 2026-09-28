@@ -166,6 +166,98 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  // Response Store failures are handled by the adapter, like storage read failures in
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/file-system-cache.ts
+  test.each([
+    ["response", "throw"],
+    ["response", "500"],
+    ["data", "throw"],
+    ["data", "503"],
+  ])("renders through a %s lookup outage (%s) and recovers", async (stage, failure) => {
+    const isolated = new Miniflare({
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          bindings: { CF_VERSION_METADATA: { id: crypto.randomUUID() } },
+          modules: await modules(appOutput, "index.js"),
+          name: "app",
+          serviceBindings: {
+            ASSETS: async () => new Response(null, { status: 404 }),
+            RESPONSE_STORE: { entrypoint: "FaultyResponseStore", name: "cache" },
+          },
+        },
+        {
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          durableObjects: { CACHE_METADATA: { className: "CacheMetadata", useSQLite: true } },
+          name: "cache",
+          r2Buckets: { CACHE_BODIES: crypto.randomUUID() },
+          modules: [
+            {
+              type: "ESModule",
+              path: "outage.js",
+              contents: `
+                import { ResponseStoreService, CacheMetadata, ResponseStoreBinding } from "./service.js";
+                export { CacheMetadata, ResponseStoreBinding };
+                let unavailable = true;
+                export class FaultyResponseStore extends ResponseStoreService {
+                  read(request, invocation) {
+                    const isData = new URL(request.url).hostname === "vinext-data-cache.invalid";
+                    if (unavailable && isData === ${stage === "data"}) {
+                      ${failure === "throw" ? 'throw new Error("Durable Object is overloaded. Requests queued for too long.");' : `return new Response("store unavailable", { status: ${failure} });`}
+                    }
+                    return super.read(request, invocation);
+                  }
+                  put(request, response, options, invocation) {
+                    if (unavailable && ${stage === "response"}) {
+                      throw new Error("Durable Object is overloaded. Requests queued for too long.");
+                    }
+                    return super.put(request, response, options, invocation);
+                  }
+                }
+                export default { fetch() { unavailable = false; return new Response("recovered"); } };
+              `,
+            },
+            ...(await modules(cacheOutput, "service.js")),
+          ],
+        },
+      ],
+    } satisfies MiniflareOptions);
+
+    try {
+      const url = `https://app.test/${stage === "data" ? "use-cache" : "api/now"}`;
+      const first = await isolated.dispatchFetch(url);
+      const body = await first.text();
+      assert.equal(first.status, 200, body);
+      if (stage === "data") assert.ok(htmlValue(body, "use-cache-value"));
+      else {
+        assert.ok(JSON.parse(body).renderId);
+        assert.equal(first.headers.get("x-vinext-cache"), "MISS");
+      }
+
+      await (await isolated.getWorker("cache")).fetch("https://cache.test/recover");
+      const recovered = await isolated.dispatchFetch(url);
+      const recoveredBody = await recovered.text();
+      assert.equal(recovered.status, 200, recoveredBody);
+      if (stage === "data") {
+        assert.equal(
+          htmlValue(recoveredBody, "use-cache-value"),
+          htmlValue(body, "use-cache-value"),
+        );
+      } else {
+        assert.equal(recovered.headers.get("x-vinext-cache"), "MISS");
+        const hit = await isolated.dispatchFetch(url);
+        assert.equal(hit.status, 200);
+        assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+        assert.equal(await hit.text(), recoveredBody);
+      }
+    } finally {
+      await isolated.dispose();
+    }
+  });
+
   test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
     const inline = new Miniflare({
       unsafeEphemeralDurableObjects: true,
