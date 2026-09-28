@@ -1104,19 +1104,29 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     },
   );
 
-  it("prints explicit steps to finish Cloudflare KV setup", async () => {
-    setupProject(tmpDir, { router: "app" });
-
-    const { output } = await runInit(tmpDir);
-
-    expect(output).toContain("Cloudflare setup is incomplete until you finish KV configuration:");
-    expect(output).toContain("1. Create the KV namespace:");
-    expect(output).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
-    expect(output).toContain(
-      "2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in wrangler.jsonc:",
-    );
-    expect(output).toContain('Set its "id" value, replacing "<your-kv-namespace-id>" if present.');
-  });
+  it.each([false, true])(
+    "leaves KV provisioning to Cloudflare (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
+      setupProject(tmpDir, { router: "app" });
+      const { output } = await runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "kv",
+          cdnCache: "workers-cache",
+          imageOptimization: "none",
+          legacyWrangler,
+        },
+      });
+      const config = readFile(tmpDir, legacyWrangler ? "wrangler.jsonc" : "cloudflare.config.ts");
+      if (legacyWrangler) {
+        expect(JSON.parse(config).kv_namespaces).toEqual([{ binding: "VINEXT_KV_CACHE" }]);
+      } else {
+        expect(config).toContain("VINEXT_KV_CACHE: bindings.kv()");
+      }
+      expect(config).not.toContain("<your-kv-namespace-id>");
+      expect(output).not.toContain("Cloudflare setup is incomplete");
+      expect(output).not.toContain("Copy");
+    },
+  );
 
   it("omits KV setup steps when Wrangler already has a namespace ID", async () => {
     setupProject(tmpDir, { router: "app" });
@@ -1135,21 +1145,24 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     );
     expect(output).not.toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
     expect(output).not.toContain("<your-kv-namespace-id>");
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).kv_namespaces).toEqual([
+      { binding: "VINEXT_KV_CACHE", id: "existing-id" },
+    ]);
   });
 
-  it("names wrangler.json when that is the configured Wrangler file", async () => {
+  it("adds an autoprovisioned KV binding to an existing wrangler.json", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "wrangler.json", `{ "name": "existing" }\n`);
 
     const { output } = await runInit(tmpDir);
 
-    expect(output).toContain(
-      "2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in wrangler.json:",
-    );
-    expect(output).not.toContain("entry in wrangler.jsonc:");
+    expect(JSON.parse(readFile(tmpDir, "wrangler.json")).kv_namespaces).toEqual([
+      { binding: "VINEXT_KV_CACHE" },
+    ]);
+    expect(output).not.toContain("Cloudflare setup is incomplete");
   });
 
-  it("prints KV setup steps when the binding exists without an ID", async () => {
+  it("omits KV setup steps when the binding exists without an ID", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(
       tmpDir,
@@ -1161,11 +1174,10 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
 
     const { output } = await runInit(tmpDir);
 
-    expect(output).toContain("Cloudflare setup is incomplete until you finish KV configuration:");
-    expect(output).toContain(
-      "2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in wrangler.jsonc:",
-    );
-    expect(output).toContain('Set its "id" value');
+    expect(output).not.toContain("Cloudflare setup is incomplete");
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).kv_namespaces).toEqual([
+      { binding: "VINEXT_KV_CACHE" },
+    ]);
   });
 
   it("omits KV setup steps when the data cache is disabled", async () => {

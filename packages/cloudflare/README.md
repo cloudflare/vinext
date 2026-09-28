@@ -39,7 +39,7 @@ import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 
 env: {
   // ...existing bindings
-  VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+  VINEXT_KV_CACHE: bindings.kv(),
   IMAGES: bindings.images(),
 },
 ```

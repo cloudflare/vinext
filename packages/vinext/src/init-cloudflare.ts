@@ -274,7 +274,6 @@ export function setupCloudflarePlatform(
   }
 
   const finalWranglerPath = wranglerPath ?? path.join(context.root, "wrangler.jsonc");
-  const finalWranglerFileName = path.basename(finalWranglerPath);
   if (
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
@@ -297,19 +296,6 @@ export function setupCloudflarePlatform(
       );
     }
   }
-  const finalWranglerConfig = JSON.parse(
-    stripJsonComments(fs.readFileSync(finalWranglerPath, "utf-8")),
-  ) as { kv_namespaces?: Array<{ binding?: unknown; id?: unknown }> };
-  const kvBinding = finalWranglerConfig.kv_namespaces?.find(
-    (namespace) => namespace.binding === "VINEXT_KV_CACHE",
-  );
-  const needsKvNamespaceId =
-    cloudflare.dataCache === "kv" &&
-    (!kvBinding ||
-      typeof kvBinding.id !== "string" ||
-      kvBinding.id.length === 0 ||
-      kvBinding.id === "<your-kv-namespace-id>");
-
   const nextSteps: string[] = [];
   if (
     cloudflare.cdnCache === "response-store" &&
@@ -324,15 +310,6 @@ export function setupCloudflarePlatform(
     nextSteps.push(
       "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
       "   Use the Static Assets cache to serve them, or cache warming to fill another cache.",
-    );
-  }
-  if (needsKvNamespaceId) {
-    nextSteps.push(
-      "Cloudflare setup is incomplete until you finish KV configuration:",
-      "1. Create the KV namespace:",
-      "   npx wrangler kv namespace create VINEXT_KV_CACHE",
-      `2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in ${finalWranglerFileName}:`,
-      '   Set its "id" value, replacing "<your-kv-namespace-id>" if present.',
     );
   }
 
@@ -405,13 +382,6 @@ function setupCfPlatform(
     generatedPlatformFiles.push("cloudflare.config.ts");
   }
   const nextSteps: string[] = [];
-  if (cloudflare.dataCache === "kv") {
-    nextSteps.push(
-      "Cloudflare setup is incomplete until you create a KV namespace:",
-      `   cf kv namespaces create --title=${projectInfo.projectName}-cache`,
-      'Copy its ID into VINEXT_KV_CACHE in cloudflare.config.ts (replace "<your-kv-namespace-id>").',
-    );
-  }
   if (cloudflare.cdnCache === "response-store") {
     const bucket = serviceBinding
       ? compactResourceName(`${projectInfo.projectName}-response-store`, "-cache-bodies", 63)
@@ -503,9 +473,7 @@ export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
     ...(cacheSpread ? [`...${cacheSpread}.env`] : []),
     "ASSETS: bindings.assets()",
     ...(options.imageOptimization === "cloudflare-images" ? ["IMAGES: bindings.images()"] : []),
-    ...(options.dataCache === "kv"
-      ? ['VINEXT_KV_CACHE: bindings.kv({ id: "<your-kv-namespace-id>" })']
-      : []),
+    ...(options.dataCache === "kv" ? ["VINEXT_KV_CACHE: bindings.kv()"] : []),
   ];
   return `${imports.join("\n")}
 
@@ -573,7 +541,6 @@ export function generateWranglerConfig(
     config.kv_namespaces = [
       {
         binding: "VINEXT_KV_CACHE",
-        id: "<your-kv-namespace-id>",
       },
     ];
   }
@@ -1320,7 +1287,7 @@ export function updateWranglerConfigForCloudflare(
     if (!kvProperty) {
       output = appendTopLevelJsonProperty(
         output,
-        '  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }]',
+        '  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE" }]',
       );
     } else {
       const rawValue = output.slice(kvProperty.valueStart, kvProperty.valueEnd);
@@ -1329,7 +1296,7 @@ export function updateWranglerConfigForCloudflare(
         const closing = kvProperty.valueEnd - 1;
         const content = output.slice(kvProperty.valueStart + 1, closing);
         const separator = content.trim() ? `${/,\s*$/.test(content) ? "" : ","}\n    ` : "";
-        output = `${output.slice(0, closing)}${separator}{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }${output.slice(closing)}`;
+        output = `${output.slice(0, closing)}${separator}{ "binding": "VINEXT_KV_CACHE" }${output.slice(closing)}`;
       }
     }
   }

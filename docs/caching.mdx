@@ -235,7 +235,7 @@ defineWorker({
   env: {
     // ...existing bindings
     ...cache.env,
-    VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+    VINEXT_KV_CACHE: bindings.kv(),
   },
   exports: { ...existingExports, ...cache.exports },
 });
@@ -264,11 +264,11 @@ import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 
 env: {
   // ...existing bindings
-  VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+  VINEXT_KV_CACHE: bindings.kv(),
 },
 ```
 
-Create the namespace with `cf kv namespaces create --title=my-app-cache` and replace `<your-namespace-id>` with its ID.
+Cloudflare automatically provisions the namespace on deployment. To reuse an existing namespace, pass its ID to `bindings.kv({ id: "<existing-namespace-id>" })`.
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
 

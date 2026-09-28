@@ -346,7 +346,7 @@ import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 env: {
   // ...existing bindings
   DB: bindings.d1({ name: "my-db", id: "<your-database-id>" }),
-  CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+  CACHE: bindings.kv(),
 },
 ```
 
@@ -745,7 +745,7 @@ defineWorker({
   env: {
     // ...existing bindings
     ...cache.env,
-    VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+    VINEXT_KV_CACHE: bindings.kv(),
   },
   exports: { ...existingExports, ...cache.exports },
 });

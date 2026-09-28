@@ -28,7 +28,7 @@ import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager"
 
 The initializer creates or updates `vite.config.ts` and creates `cloudflare.config.ts`, then lets you choose caching and image optimization. It installs `cf` and Cloudflare Vite plugin v2 and generates scripts for `vite dev`, `vite build`, `vite preview`, and `vinext-cloudflare deploy`. Commit the source config files; the generated Cloudflare Build Output stays gitignored.
 
-Response Store service-binding mode declares its second Worker in the typed config and builds both Workers together. Create any KV namespace or R2 bucket named in the initializer's next steps before deploying. See [Caching on Cloudflare](/docs/guides/caching) for each adapter's config.
+Response Store service-binding mode declares its second Worker in the typed config and builds both Workers together. KV namespaces are automatically provisioned on deployment. Create any R2 bucket named in the initializer's next steps before deploying. See [Caching on Cloudflare](/docs/guides/caching) for each adapter's config.
 
 For TypeScript projects, add `.cloudflare/types` to the `include` list in `tsconfig.json`. The plugin generates binding and runtime declarations there during development and builds; these files stay gitignored. Run `cf workers types` to generate them before a standalone type-check without building the app.
 

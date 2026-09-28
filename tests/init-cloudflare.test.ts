@@ -1304,8 +1304,10 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       imageOptimization: "cloudflare-images",
     });
     expect(output).toContain("// keep this comment");
-    expect(output).toContain('"binding": "OTHER"');
-    expect(output).toContain('"binding": "VINEXT_KV_CACHE"');
+    expect(JSON.parse(output.replace("// keep this comment", "")).kv_namespaces).toEqual([
+      { binding: "OTHER", id: "other" },
+      { binding: "VINEXT_KV_CACHE" },
+    ]);
     expect(output).toContain('"images": { "binding": "IMAGES" }');
     expect(
       updateWranglerConfigForCloudflare(output, {

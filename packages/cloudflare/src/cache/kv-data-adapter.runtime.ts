@@ -15,7 +15,7 @@
  *
  * Wrangler config (wrangler.jsonc):
  *
- *   { "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }] }
+ *   { "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE" }] }
  */
 
 import { Buffer } from "node:buffer";
@@ -810,7 +810,7 @@ const createKvDataCacheAdapter = ({
     throw new Error(
       `[vinext] The KV data cache adapter requires a \`${binding}\` KV namespace binding.\n` +
         `  Add it to wrangler.jsonc:\n` +
-        `    "kv_namespaces": [{ "binding": "${binding}", "id": "<your-kv-namespace-id>" }]`,
+        `    "kv_namespaces": [{ "binding": "${binding}" }]`,
     );
   }
   return new KVCacheHandler(namespace as ConstructorParameters<typeof KVCacheHandler>[0], {
