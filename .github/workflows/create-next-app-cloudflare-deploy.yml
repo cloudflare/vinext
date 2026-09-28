@@ -95,7 +95,11 @@ jobs:
                 "name: \"cna-cloudflare\",",
                 "name: " + JSON.stringify(process.env.CNA_CLOUDFLARE_WORKER) + ",\n    previewUrls: true,",
               )
-              .replace("<your-kv-namespace-id>", process.env.CNA_CLOUDFLARE_KV_NAMESPACE_ID);
+              // Reuse the CI namespace even when init emits bindings.kv().
+              .replace(
+                /VINEXT_KV_CACHE: bindings\.kv\([^)]*\)/,
+                "VINEXT_KV_CACHE: bindings.kv({ id: " + JSON.stringify(process.env.CNA_CLOUDFLARE_KV_NAMESPACE_ID) + " })",
+              );
             fs.writeFileSync(configPath, config);
           '
 
