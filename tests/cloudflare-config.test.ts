@@ -39,19 +39,19 @@ describe("typed Cloudflare cache config", () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
-  it("leaves the optional plugin peer open to minor-version prereleases", () => {
+  it("leaves the optional cf peer open to minor-version prereleases", () => {
     const pkg = JSON.parse(
       readFileSync(
         path.resolve(import.meta.dirname, "../packages/cloudflare/package.json"),
         "utf8",
       ),
     );
-    expect(pkg.peerDependencies["@cloudflare/vite-plugin"]).toBe("*");
-    expect(pkg.peerDependenciesMeta["@cloudflare/vite-plugin"].optional).toBe(true);
+    expect(pkg.peerDependencies["cf"]).toBe("*");
+    expect(pkg.peerDependenciesMeta["cf"].optional).toBe(true);
   });
 
-  it.each([undefined, "2.0.0-beta.1", "2.1.0-beta.1", "2.5.3-beta.sha-example"])(
-    "loads the consumer's optional plugin peer (%s) only when called",
+  it.each([undefined, "1.0.0-beta.1", "1.1.0-beta.1", "1.5.3-beta.sha-example"])(
+    "loads the consumer's optional cf peer (%s) only when called",
     (version) => {
       const root = mkdtempSync(path.join(tmpdir(), "vinext-config-peer-"));
       try {
@@ -66,18 +66,18 @@ describe("typed Cloudflare cache config", () => {
           path.join(root, "config.ts"),
         );
         if (version) {
-          const plugin = path.join(root, "node_modules/@cloudflare/vite-plugin");
-          mkdirSync(plugin, { recursive: true });
+          const cf = path.join(root, "node_modules/cf");
+          mkdirSync(cf, { recursive: true });
           writeFileSync(
-            path.join(plugin, "package.json"),
+            path.join(cf, "package.json"),
             JSON.stringify({
               type: "module",
               version,
-              exports: { "./experimental-config": { import: "./config.js" } },
+              exports: { "./config": { import: "./config.js" } },
             }),
           );
           writeFileSync(
-            path.join(plugin, "config.js"),
+            path.join(cf, "config.js"),
             `export const bindings = { versionMetadata: () => ({ version: ${JSON.stringify(version)} }) };
              export const exports = { worker: () => ({ version: ${JSON.stringify(version)} }) };`,
           );

@@ -1,9 +1,4 @@
-import {
-  bindings,
-  defineConfig,
-  defineWorker,
-  triggers,
-} from "@cloudflare/vite-plugin/experimental-config";
+import { bindings, defineConfig, defineWorker, triggers } from "cf/config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 const responseStore = await createWorkersResponseStoreServiceBindingConfig({

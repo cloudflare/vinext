@@ -341,7 +341,7 @@ This works because `@cloudflare/vite-plugin` runs the RSC environment in workerd
 Add bindings to your Worker's `env` in `cloudflare.config.ts`:
 
 ```ts
-import { bindings } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "cf/config";
 
 env: {
   // ...existing bindings
@@ -734,7 +734,7 @@ vinext({
 The KV data adapter reads `env[binding]` at runtime. Configure its namespace and the Workers Cache entrypoints in `cloudflare.config.ts`. Here, `existingExports` is your current Worker's `exports` object, or `{}` if it has none:
 
 ```ts
-import { bindings } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "cf/config";
 import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
 
 const cache = await createWorkersCacheConfig();

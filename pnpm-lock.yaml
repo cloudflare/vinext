@@ -1152,12 +1152,12 @@ importers:
         specifier: workspace:*
         version: link:../workers-response-store
     devDependencies:
-      '@cloudflare/vite-plugin':
-        specifier: catalog:cloudflare-vite-v2
-        version: 2.0.0-beta.sha-805ec1ff3(@types/node@25.9.2)(@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.2
+      cf:
+        specifier: catalog:cloudflare-vite-v2
+        version: 1.0.0-beta.1(@types/node@25.9.2)
       miniflare:
         specifier: 'catalog:'
         version: 5.20260730.0-alpha

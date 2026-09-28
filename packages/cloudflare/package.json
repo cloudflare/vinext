@@ -57,8 +57,8 @@
     "@cloudflare/workers-response-store": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "catalog:cloudflare-vite-v2",
     "@types/node": "catalog:",
+    "cf": "catalog:cloudflare-vite-v2",
     "miniflare": "catalog:",
     "vinext": "workspace:*",
     "vite": "catalog:",
@@ -66,11 +66,11 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "@cloudflare/vite-plugin": "*",
+    "cf": "*",
     "vinext": "workspace:^"
   },
   "peerDependenciesMeta": {
-    "@cloudflare/vite-plugin": {
+    "cf": {
       "optional": true
     }
   },

@@ -35,7 +35,7 @@ vinext({
 Add the bindings to your Worker's `env` in `cloudflare.config.ts`:
 
 ```ts
-import { bindings } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "cf/config";
 
 env: {
   // ...existing bindings
@@ -150,13 +150,13 @@ defineWorker({
 ```
 
 `worker.observability` accepts the full observability configuration supported by
-your installed Cloudflare Vite plugin, including logs and traces settings.
+your installed `cf` package, including logs and traces settings.
 The optional `accountId` is returned as `responseStore.accountId`: pass it to `defineConfig`,
 not to either Worker. It applies to both Workers in the project.
 
 The async config helpers import bindings and exports from your installed
-`@cloudflare/vite-plugin/experimental-config`. The plugin is an optional peer
-dependency of `@vinext/cloudflare`; these helpers require v2.
+`cf/config`. The `cf` package is an optional peer dependency of `@vinext/cloudflare`;
+install it when using these helpers.
 
 Add the exported auxiliary Worker to your existing Cloudflare Vite plugin options:
 

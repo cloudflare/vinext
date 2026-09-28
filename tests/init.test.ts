@@ -964,7 +964,7 @@ describe("init — basic functionality", () => {
       writeFile(
         tmpDir,
         "cloudflare.config.ts",
-        `import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
+        `import { bindings, defineConfig, defineWorker } from "cf/config";
 export default defineConfig({ worker: defineWorker({ name: "test-app", env: { ${binding}: bindings.assets() } }) });
 `,
       );

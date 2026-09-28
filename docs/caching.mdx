@@ -223,7 +223,7 @@ This setup is fast when an entry is present at the edge, but Workers Cache is di
 Use `createWorkersCacheConfig()` to configure the response entrypoints and version metadata, and add the KV binding for the data adapter:
 
 ```ts
-import { bindings } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "cf/config";
 import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
 
 const cache = await createWorkersCacheConfig();
@@ -259,7 +259,7 @@ vinext({
 Add the matching namespace to the Worker's `env` in `cloudflare.config.ts`:
 
 ```ts
-import { bindings } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "cf/config";
 
 env: {
   // ...existing bindings
@@ -295,7 +295,7 @@ Finite `revalidate` intervals do not refresh packaged responses either. Use a wr
 The private cache directory must be routed through the Worker so clients cannot fetch raw cache files directly. `vinext init --platform=cloudflare --cdn-cache=static-assets` configures this automatically. For manual setup, add the following to your existing Worker in `cloudflare.config.ts`:
 
 ```ts
-import { bindings } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings } from "cf/config";
 
 defineWorker({
   // ...existing Worker settings

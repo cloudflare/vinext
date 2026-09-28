@@ -1,4 +1,4 @@
-import type { CloudflareConfig, WorkerConfig } from "@cloudflare/vite-plugin/experimental-config";
+import type { CloudflareConfig, WorkerConfig } from "cf/config";
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
 const RESPONSE_STORE_ENTRYPOINT = "ResponseStoreService";
@@ -15,7 +15,7 @@ type ResponseStoreStorageOptions = {
 };
 
 async function createResponseStoreWorkerConfig(options: ResponseStoreStorageOptions) {
-  const { bindings, exports } = await import("@cloudflare/vite-plugin/experimental-config");
+  const { bindings, exports } = await import("cf/config");
   return {
     cache: { enabled: true as const },
     exports: {
@@ -43,7 +43,7 @@ async function createResponseStoreWorkerConfig(options: ResponseStoreStorageOpti
 export async function createWorkersResponseStoreSelfContainedConfig(
   options: ResponseStoreStorageOptions,
 ) {
-  const { bindings } = await import("@cloudflare/vite-plugin/experimental-config");
+  const { bindings } = await import("cf/config");
   const storage = await createResponseStoreWorkerConfig(options);
   return {
     ...storage,
@@ -64,7 +64,7 @@ export async function createWorkersResponseStoreServiceBindingConfig(options: {
   };
   bucket: string;
 }) {
-  const { bindings } = await import("@cloudflare/vite-plugin/experimental-config");
+  const { bindings } = await import("cf/config");
   const storage = await createResponseStoreWorkerConfig({
     worker: options.worker.name,
     bucket: options.bucket,
@@ -101,7 +101,7 @@ export async function createWorkersCacheConfig({
   if (versionMetadataBinding.length === 0) {
     throw new TypeError("versionMetadataBinding must be a non-empty string");
   }
-  const { bindings, exports } = await import("@cloudflare/vite-plugin/experimental-config");
+  const { bindings, exports } = await import("cf/config");
   return {
     cache: { enabled: false as const },
     env: {

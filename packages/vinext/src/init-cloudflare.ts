@@ -426,7 +426,7 @@ function generateTypedCloudflareConfig(
         ? "createWorkersCacheConfig"
         : undefined;
   const imports = [
-    `import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";`,
+    `import { bindings, defineConfig, defineWorker } from "cf/config";`,
     ...(helper ? [`import { ${helper} } from "@vinext/cloudflare/cache/config";`] : []),
   ];
   const responseStoreName = compactResourceName(info.projectName, "-response-store", 63);
