@@ -160,10 +160,9 @@ cloudflare({
 });
 ```
 
-Create the R2 bucket, build both Workers, and deploy the Response Store explicitly:
+Build both Workers and deploy the Response Store explicitly. `cf deploy` creates the named R2 bucket if it does not already exist:
 
 ```sh
-pnpm exec cf r2 buckets create --name=my-app-response-store-cache-bodies
 pnpm run build:vinext
 pnpm run deploy:response-store
 pnpm run deploy:vinext
@@ -199,7 +198,7 @@ defineWorker({
 });
 ```
 
-Create the named R2 bucket before the first deployment. No auxiliary Worker or separate Response Store deployment is needed in this mode.
+`cf deploy` creates the named R2 bucket if it does not already exist. No auxiliary Worker or separate Response Store deployment is needed in this mode.
 
 ## Workers Cache and KV
 

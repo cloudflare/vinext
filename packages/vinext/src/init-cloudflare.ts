@@ -382,20 +382,12 @@ function setupCfPlatform(
     generatedPlatformFiles.push("cloudflare.config.ts");
   }
   const nextSteps: string[] = [];
-  if (cloudflare.cdnCache === "response-store") {
-    const bucket = serviceBinding
-      ? compactResourceName(`${projectInfo.projectName}-response-store`, "-cache-bodies", 63)
-      : compactResourceName(projectInfo.projectName, "-response-store-cache-bodies", 63);
+  if (serviceBinding) {
     nextSteps.push(
-      `Create the Response Store R2 bucket if needed: cf r2 buckets create --name=${bucket}`,
+      "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
+      `   ${context.packageManager ?? "npm"} run deploy:response-store`,
+      "vinext-cloudflare deploy only deploys the application Worker.",
     );
-    if (serviceBinding) {
-      nextSteps.push(
-        "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
-        `   ${context.packageManager ?? "npm"} run deploy:response-store`,
-        "vinext-cloudflare deploy only deploys the application Worker.",
-      );
-    }
   }
   if (cloudflare.prerender && cloudflare.cdnCache !== "static-assets") {
     nextSteps.push(

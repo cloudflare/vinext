@@ -345,7 +345,7 @@ import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 
 env: {
   // ...existing bindings
-  DB: bindings.d1({ name: "my-db", id: "<your-database-id>" }),
+  DB: bindings.d1({ name: "my-db" }),
   CACHE: bindings.kv(),
 },
 ```

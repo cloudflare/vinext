@@ -1261,7 +1261,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     "formats the generated typed %s config",
     async (mode) => {
       setupProject(tmpDir);
-      await runInit(tmpDir, {
+      const { output } = await runInit(tmpDir, {
         install: false,
         _today: "2026-09-23",
         cloudflare: {
@@ -1272,6 +1272,8 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           imageOptimization: mode === "service-binding" ? "cloudflare-images" : "none",
         },
       });
+      expect(output).not.toContain("r2 buckets create");
+      expect(output.includes("run deploy:response-store")).toBe(mode === "service-binding");
       const config = readFile(tmpDir, "cloudflare.config.ts");
       expect(config).not.toMatch(/\n[ \t]+\n/);
       expect(config).not.toMatch(/,\n\s*\n    },/);

@@ -112,7 +112,7 @@ npx @vinext/cloudflare deploy
 `vinext-cloudflare deploy` never creates, rewrites, or deploys the Response
 Store Worker.
 
-Create the named R2 bucket before the first deployment. `create-vinext-app`
+`cf deploy` creates the named R2 bucket if it does not already exist. `create-vinext-app`
 uses `build` instead of `build:vinext`. The source config uses the shared helper:
 
 ```ts
