@@ -6,13 +6,13 @@ import { Text } from "@cloudflare/kumo/components/text";
 import {
   ArrowSquareOutIcon,
   ArrowUpRightIcon,
+  BookOpenIcon,
   CloudIcon,
   DatabaseIcon,
   FileCodeIcon,
   GaugeIcon,
   GithubLogoIcon,
   LightningIcon,
-  NewspaperIcon,
   PackageIcon,
   PlugsIcon,
   SparkleIcon,
@@ -285,14 +285,8 @@ export default function Home() {
           >
             Get vinext on GitHub
           </LinkButton>
-          <LinkButton
-            variant="secondary"
-            size="lg"
-            icon={<NewspaperIcon />}
-            href="https://blog.cloudflare.com/vinext/"
-            external
-          >
-            Read the announcement
+          <LinkButton variant="secondary" size="lg" icon={<BookOpenIcon />} href="/docs">
+            Read the docs
           </LinkButton>
         </div>
       </section>
