@@ -68,6 +68,12 @@ export type CdnResponsePolicy = {
    * rules without knowing which provider header carried it.
    */
   readCacheControl(headers: Headers): string | null;
+  /**
+   * Name the response header `readCacheControl` interpreted, or `null` when
+   * none did. Core uses it to tell which stage owns the effective policy;
+   * without it, core cannot attribute that policy to next.config.
+   */
+  readCacheControlHeaderName?(headers: Headers): string | null;
   /** Whether provider policy explicitly opts out of storage. */
   hasExplicitNonCacheablePolicy(headers: Headers, baseline?: Headers): boolean;
 };
@@ -127,6 +133,14 @@ export type CdnCacheAdapter = {
    * the completed artifact.
    */
   readonly requiresCompletedResponseAdmission?: boolean;
+
+  /**
+   * This adapter's response-stage transport keys shared App page dispatches by
+   * `VinextResponseStageDispatchOptions.cacheIdentity` when core supplies one.
+   * Core supplies it only when completed-response admission is also required,
+   * because that admission is what makes a query-free identity safe.
+   */
+  readonly responseStageCacheIdentity?: "query-free";
 
   /**
    * Optionally return a foreground page response while completed-response

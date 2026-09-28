@@ -16,6 +16,11 @@ export type NavigationRuntimeRscBootstrap = {
   searchParamsFromBrowser?: boolean;
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
+  /**
+   * The query SSR rendered client pages with, sent after the head when the
+   * render turned dynamic too late for `nav` to carry it.
+   */
+  renderedSearch?: string;
   rsc: NavigationRuntimeRscChunk[];
   /**
    * Client reuse bound in seconds resolved from the initial render's completed
@@ -188,6 +193,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   const searchParamsFromBrowser = Reflect.get(value, "searchParamsFromBrowser");
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
+  const renderedSearch = Reflect.get(value, "renderedSearch");
   const rsc = Reflect.get(value, "rsc");
   const staleTimeSeconds = Reflect.get(value, "staleTimeSeconds");
   // getNavigationRuntime() runs at bootstrap/read boundaries, not per chunk.
@@ -202,6 +208,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
     (searchParamsFromBrowser === undefined || typeof searchParamsFromBrowser === "boolean") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
+    (renderedSearch === undefined || typeof renderedSearch === "string") &&
     Array.isArray(rsc) &&
     rsc.every(isNavigationRuntimeRscChunk) &&
     isOptionalStaleTimeSeconds(staleTimeSeconds)

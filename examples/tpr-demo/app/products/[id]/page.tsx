@@ -3,6 +3,12 @@ import Link from "next/link";
 
 export const revalidate = 3600; // ISR: revalidate every hour
 
+// An empty list opts every path into on-demand ISR; without
+// generateStaticParams a dynamic-segment route renders per request.
+export function generateStaticParams() {
+  return [];
+}
+
 export default async function ProductPage({
   params,
 }: {

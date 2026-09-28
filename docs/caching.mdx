@@ -20,7 +20,7 @@ There are two main kinds of cache:
 - **Response / CDN cache:** rendered HTML, RSC payloads, and other ISR responses.
 - **Data cache:** cached `fetch` calls, `unstable_cache`, and functions marked with `"use cache"`.
 
-`revalidatePath()` and `revalidateTag()` invalidate entries in the configured cache. A route that uses request-specific data such as cookies or headers is not added to the shared response cache.
+`revalidatePath()` and `revalidateTag()` invalidate entries in the configured cache. A route that uses request-specific data such as cookies or headers is not added to the shared response cache. See [Which App Router pages are cached](#which-app-router-pages-are-cached) for the full rules.
 
 Static files and browser caching are separate from these options. Cloudflare can cache built assets without enabling a vinext cache adapter.
 
@@ -160,10 +160,9 @@ cloudflare({
 });
 ```
 
-Create the R2 bucket, build both Workers, and deploy the Response Store explicitly:
+Build both Workers and deploy the Response Store explicitly. `cf deploy` creates the named R2 bucket if it does not already exist:
 
 ```sh
-pnpm exec cf r2 buckets create --name=my-app-response-store-cache-bodies
 pnpm run build:vinext
 pnpm run deploy:response-store
 pnpm run deploy:vinext
@@ -199,7 +198,7 @@ defineWorker({
 });
 ```
 
-Create the named R2 bucket before the first deployment. No auxiliary Worker or separate Response Store deployment is needed in this mode.
+`cf deploy` creates the named R2 bucket if it does not already exist. No auxiliary Worker or separate Response Store deployment is needed in this mode.
 
 ## Workers Cache and KV
 
@@ -235,7 +234,7 @@ defineWorker({
   env: {
     // ...existing bindings
     ...cache.env,
-    VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+    VINEXT_KV_CACHE: bindings.kv(),
   },
   exports: { ...existingExports, ...cache.exports },
 });
@@ -264,13 +263,15 @@ import { bindings } from "@cloudflare/vite-plugin/experimental-config";
 
 env: {
   // ...existing bindings
-  VINEXT_KV_CACHE: bindings.kv({ id: "<your-namespace-id>" }),
+  VINEXT_KV_CACHE: bindings.kv(),
 },
 ```
 
-Create the namespace with `cf kv namespaces create --title=my-app-cache` and replace `<your-namespace-id>` with its ID.
+Cloudflare automatically provisions the namespace on deployment. To reuse an existing namespace, pass its ID to `bindings.kv({ id: "<existing-namespace-id>" })`.
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
+
+Each cached page or data entry in KV expires after the adapter's `ttlSeconds` (30 days by default, set with `kvDataAdapter({ ttlSeconds })` and raised to KV's 60-second minimum if it's between 0 and 60). This includes pages with `revalidate = false`, which are rendered again on the next request once their entry expires.
 
 ## Static Assets response cache
 
@@ -287,7 +288,7 @@ vinext({
 });
 ```
 
-This is deliberately read-only. Cache writes, `revalidatePath()`, and `revalidateTag()` do not change the packaged responses; deploying a new build replaces them. Routes that were not prerendered continue to render normally, but this adapter does not persist their responses. Configure a separate `cache.data` adapter if the app also uses cached data.
+This is deliberately read-only. Cache writes, `revalidatePath()`, and `revalidateTag()` do not change the packaged responses; deploying a new build replaces them. A prerendered page is served for every query string, as Next.js serves its static output. The prerender skips a page that reads `searchParams` or another dynamic API. Routes that were not prerendered continue to render normally, but this adapter does not persist their responses. Configure a separate `cache.data` adapter if the app also uses cached data.
 
 Finite `revalidate` intervals do not refresh packaged responses either. Use a writable response cache if those routes need runtime ISR; Static Assets always serves the build-time snapshot until the next deployment.
 
@@ -413,6 +414,33 @@ Add `--warm-cache-certify` to require reusable cache hits for every selected ent
 
 You can run `vinext init --platform=cloudflare` to configure these choices. The generated Vite and Cloudflare config files are normal source files and can be adjusted later.
 
+## Which App Router pages are cached
+
+vinext stores a rendered App Router page (ISR) when Next.js would treat its route as static or SSG:
+
+- a route without dynamic segments, or a dynamic route whose `generateStaticParams` covers its last dynamic segment, is static unless its render uses a dynamic API. Returning `[]` from `generateStaticParams` opts every path into on-demand ISR, unless `dynamicParams = false`;
+- `dynamic = "force-dynamic"`, `revalidate = 0` or an edge `runtime` makes a route dynamic. Otherwise, `dynamic = "force-static"` or `dynamic = "error"` makes it static.
+
+Other routes render on every request. Their `"use cache"` functions and cached `fetch` calls are still reused. Routes built with `cacheComponents` follow their own rules, and [Differences from Next.js](/docs/reference/differences#caching) lists the cases where vinext classifies a route differently.
+
+A static page defaults to `revalidate = false`, as in Next.js, unless a `revalidate` export, a `fetch` with a numeric `next.revalidate`, `cacheLife()` or a `"use cache"` function in its render sets a lifetime. A cached `fetch` without one, such as `cache: "force-cache"`, doesn't shorten the page's lifetime. A `revalidate = false` page is rendered again only after `revalidatePath()` or `revalidateTag()` invalidates it, or once the cache drops it.
+
+Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `cache: "no-store"` outside a cache scope, and reading `searchParams`. Under `dynamic = "force-static"` they return empty values or don't count, so the page is still stored.
+
+`useSearchParams()` in a client component doesn't make a page dynamic, and returns empty search params under `dynamic = "force-static"`. Otherwise, in production and outside `cacheComponents`, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
+
+## Query strings
+
+Next.js keeps one cache entry per static page, whatever the query string, and vinext does the same for App Router pages: `/blog/a?ref=x` and `/blog/a?utm_source=y` share the `/blog/a` entry. A render that reads the query is dynamic and isn't stored, so one visitor's query can't reach the shared entry.
+
+- **KV and in-memory:** page keys leave out the query, for App Router and Pages Router pages.
+- **Workers Response Store:** a miss renders from the full request, and the response is stored under the path without the query.
+- **Workers Cache:** a hit skips rendering (middleware and routing still run), so the key is chosen before rendering, from the cacheability manifest that a staged deploy writes (`--experimental-warm-cdn-cache`, see [Cache warming](#cache-warming)). Paths the manifest marks static share one entry across queries, and a request for one that turns dynamic at runtime can fail with a 500, like Next.js's `Page changed from static to dynamic at runtime` error. Other paths, and every path without the manifest, keep the full query in their key.
+
+With Workers Response Store and Workers Cache, some responses aren't stored under the query-free key, for example interception RSC requests and responses that a `next.config` `headers()` rule makes cacheable. Pages Router pages keep the query in their keys on these two backends.
+
+In production, most App page responses that vinext knows will not be stored send Next.js's `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, unless middleware or a `next.config` `headers()` rule sets `Cache-Control`.
+
 ## Freshness and revalidation
 
 vinext follows Next.js-style cache semantics:
@@ -422,5 +450,7 @@ vinext follows Next.js-style cache semantics:
 - An **expired** entry is not returned and must be regenerated.
 - `revalidatePath()` invalidates content associated with a path.
 - `revalidateTag()` invalidates content associated with a cache tag.
+
+With the KV or in-memory cache, when a background regeneration of an App Router page fails, the previous entry is kept and regeneration is retried later, as in Next.js.
 
 The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.

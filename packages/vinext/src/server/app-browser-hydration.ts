@@ -63,3 +63,23 @@ export function hydrateRootInTransition(options: {
 
   return root;
 }
+
+/**
+ * The pathname and query to hydrate with when the initial Flight payload is
+ * fetched instead of embedded, matching what SSR rendered: the query the
+ * server rendered (`X-Vinext-Rendered-Path-And-Search`), which a rewrite may
+ * have changed, under the public pathname `usePathname()` exposes. The
+ * header's path is the rewrite target, so it is never the pathname.
+ */
+export function resolveFetchedHydrationLocation(
+  renderedPathAndSearch: string | null,
+  location: Pick<Location, "origin" | "pathname" | "search">,
+): { pathname: string; search: string } {
+  return {
+    pathname: location.pathname,
+    search:
+      renderedPathAndSearch === null
+        ? location.search
+        : new URL(renderedPathAndSearch, location.origin).search,
+  };
+}

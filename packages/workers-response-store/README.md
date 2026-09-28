@@ -123,8 +123,11 @@ export default {
       return render(request, env, ctx);
     }
 
-    // Cache identity is pathname + query string. Use a canonical GET request
-    // with only information that is safe to share between visitors.
+    // Cache identity is the key's pathname + query string. Use a canonical GET
+    // request with only information that is safe to share between visitors.
+    // This minimal sample keeps the full query, so every query variant gets its
+    // own entry. Leave out query parameters the response doesn't depend on, so
+    // requests that differ only in them share one entry.
     const cacheRequest = new Request(request.url);
     const cached = await responseStore.fetch(cacheRequest);
     if (!isResponseStoreMiss(cached)) {
@@ -192,9 +195,10 @@ type ResponseStoreMutationResult = {
 ### Cache keys
 
 - Keys must be `GET` requests.
-- Identity is the URL pathname plus query string; scheme and host are ignored.
+- Identity is the key URL's pathname plus query string; scheme and host are ignored. The key doesn't have to be the visitor's URL.
 - Every key stores its response and read metadata together in one version-scoped R2 object by default, so fresh hits and misses do not query the metadata Durable Object. No special key format is required.
 - Build the key from trusted route and vary data. Do not include arbitrary visitor headers or other unbounded input unless it intentionally creates a distinct shared response.
+- Leave out query parameters the response doesn't depend on, so requests that differ only in them share one entry.
 
 ### Freshness and tags
 

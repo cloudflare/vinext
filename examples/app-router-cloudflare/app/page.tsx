@@ -1,5 +1,8 @@
 import { Counter } from "./components/counter";
 
+// Render on every request so the timestamp shows a fresh server render.
+export const dynamic = "force-dynamic";
+
 export default function HomePage() {
   return (
     <main>

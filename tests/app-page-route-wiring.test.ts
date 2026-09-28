@@ -1,5 +1,14 @@
-import { Fragment, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
-import { describe, expect, it } from "vite-plus/test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import {
+  Fragment,
+  createElement,
+  isValidElement,
+  type ComponentType,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
@@ -1376,6 +1385,147 @@ describe("app page route wiring helpers", () => {
     const html = await renderRouteEntry(elements, "route:/prefetch-auto/slug");
     expect(html).toContain("Nested loading");
     expect(html).not.toContain("Root loading");
+  });
+
+  it("reaches every loading-shell component in the full render", async () => {
+    // Flight serializes every prop, so it renders each element below, Suspense
+    // fallbacks included. A separate wiring instance passes the dependency
+    // barriers through, so the walk sees the elements they wrap.
+    vi.doMock("../packages/vinext/src/server/app-render-dependency.js", async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      renderAfterAppDependencies: (children: ReactNode) => children,
+      renderAppComponentWithDependencyBarrier: (
+        component: ComponentType<Record<string, unknown>>,
+        props: Record<string, unknown>,
+      ) => createElement(component, props),
+    }));
+    try {
+      const wiringSpecifier = "../packages/vinext/src/server/app-page-route-wiring.js?walk";
+      const {
+        buildAppPageElements: buildElements,
+      }: typeof import("../packages/vinext/src/server/app-page-route-wiring.js") = await import(
+        /* @vite-ignore */ wiringSpecifier
+      );
+      const RootLoading = () => createElement("p", null, "Root loading");
+      const SectionLoading = () => createElement("p", null, "Section loading");
+      const LeafLoading = () => createElement("p", null, "Leaf loading");
+      const SidebarLoading = () => createElement("p", null, "Sidebar loading");
+      const SectionLayout = (props: Record<string, unknown>): ReactNode =>
+        createElement("section", null, readChildren(props.children));
+      const userComponents = [
+        RootLayout,
+        SectionLayout,
+        RootLoading,
+        SectionLoading,
+        LeafLoading,
+        SidebarLoading,
+      ];
+      const reached = (renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) => {
+        const elements = buildElements({
+          element: createElement(PageProbe),
+          makeThenableParams(params) {
+            return Promise.resolve(params);
+          },
+          matchedParams: {},
+          resolvedMetadata: null,
+          resolvedViewport: {},
+          route: {
+            error: null,
+            errors: [null, null],
+            layoutTreePositions: [0, 1],
+            layouts: [{ default: RootLayout }, { default: SectionLayout }],
+            loading: { default: LeafLoading },
+            loadings: [
+              { default: RootLoading },
+              { default: SectionLoading },
+              { default: LeafLoading },
+            ],
+            loadingTreePositions: [0, 1, 2],
+            notFound: null,
+            notFounds: [null, null],
+            routeSegments: ["dashboard", "settings"],
+            slots: {
+              sidebar: {
+                default: null,
+                error: null,
+                layout: null,
+                layoutIndex: 0,
+                loading: null,
+                loadings: [{ default: SidebarLoading }],
+                loadingTreePositions: [0],
+                name: "sidebar",
+                ownerTreePosition: 0,
+                page: { default: SlotPage },
+                routeSegments: [],
+              },
+            },
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: "/dashboard/settings",
+          rootNotFoundModule: null,
+          ...(renderMode ? { renderMode } : {}),
+        });
+        const types = new Set<unknown>();
+        const walk = (node: unknown): void => {
+          if (Array.isArray(node)) {
+            node.forEach(walk);
+          } else if (isValidElement<Record<string, unknown>>(node)) {
+            types.add(node.type);
+            Object.values(node.props).forEach(walk);
+          }
+        };
+        Object.values(elements).forEach(walk);
+        return userComponents.filter((component) => types.has(component));
+      };
+
+      const shell = reached(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+      expect(shell).toEqual([
+        RootLayout,
+        SectionLayout,
+        RootLoading,
+        SectionLoading,
+        SidebarLoading,
+      ]);
+      // A loading boundary's dynamic API therefore makes the full render
+      // dynamic too, as in Next.js, where loading.js is part of the segment's
+      // server render.
+      expect(reached()).toEqual(expect.arrayContaining(shell));
+    } finally {
+      vi.doUnmock("../packages/vinext/src/server/app-render-dependency.js");
+    }
+  });
+
+  it("renders a server loading component in Flight when the page never suspends", async () => {
+    const script = String.raw`
+      import React from "react";
+      import { renderToReadableStream } from "./node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/server.edge.js";
+
+      const calls = [];
+      function Loading() {
+        calls.push("loading");
+        return null;
+      }
+      function Page() {
+        calls.push("page");
+        return null;
+      }
+      const stream = renderToReadableStream(
+        React.createElement(React.Suspense, { fallback: React.createElement(Loading) }, React.createElement(Page)),
+        null,
+      );
+      const reader = stream.getReader();
+      while (!(await reader.read()).done) {}
+      process.stdout.write(JSON.stringify(calls));
+    `;
+
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ["--conditions", "react-server", "--input-type=module", "-e", script],
+      { cwd: process.cwd(), env: { ...process.env, NODE_ENV: "production" }, timeout: 10_000 },
+    );
+
+    expect(JSON.parse(stdout)).toEqual(["loading", "page"]);
   });
 
   it("builds slot-only loading shells and omits unprotected parallel branches", async () => {

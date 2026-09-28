@@ -1,6 +1,7 @@
 import { Suspense, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { withUseCachePageMarker } from "vinext/shims/internal/app-page-props-cache-key";
+import { ClientPageRoot } from "vinext/shims/client-page-root";
 import {
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
@@ -52,6 +53,7 @@ import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-p
 import {
   createAppPageRenderDependency,
   invokeAppComponent,
+  isAppClientReference,
   isAppRenderSuspension,
   isReactOwnedAppComponent,
   renderAfterAppDependencies,
@@ -158,6 +160,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   renderMode?: AppRscRenderMode;
   /** Observe page `searchParams` access for cache-safety classification. */
   observePageSearchParamsAccess?: boolean;
+  /** The route is `dynamic = "force-static"`, so pages read an empty query. */
+  isForceStatic?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
@@ -262,6 +266,7 @@ export async function buildPageElements<
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
+    isForceStatic = false,
     serveStreamingMetadata,
     isProduction = process.env.NODE_ENV === "production",
   } = pageRequest;
@@ -556,7 +561,6 @@ export async function buildPageElements<
   void streamingMetadataOutlet?.catch(() => null);
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
-  const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
   const hasPageLoadingBoundary =
     resolveAppPageLoadingModuleAtOrAbove(route, pageTreePosition) !== null ||
@@ -569,6 +573,12 @@ export async function buildPageElements<
         },
         pageTreePosition,
       ) !== null);
+  // A client page reads an empty query in SSR and the browser alike when the
+  // server renders every page with one. A static export build renders each
+  // page once without a query, so a client page read must not make it dynamic,
+  // which would drop it from the export.
+  const hasEmptyClientPageSearchParams =
+    isForceStatic || (isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export");
   const pageRenderDependency =
     EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
       ? createAppPageRenderDependency()
@@ -578,13 +588,30 @@ export async function buildPageElements<
     props: Readonly<Record<string, unknown>>,
     renderDependency?: AppPageRenderDependency | null,
   ) => {
+    if (searchParams && isAppClientReference(PageComponent)) {
+      // Like Next.js's ClientPageRoot, a client page gets `searchParams` where
+      // it renders, not through Flight. Flight would call `then` on the prop
+      // while serializing it, so every client page would count as reading the
+      // query, and its RSC payload would carry it. Slot props arrive with the
+      // route's searchParams attached, so drop them here.
+      const { searchParams: _slotSearchParams, ...pageProps } = props;
+      return createElement(ClientPageRoot, {
+        Component: PageComponent,
+        pageProps,
+        ...(hasEmptyClientPageSearchParams ? { emptySearchParams: true } : {}),
+      });
+    }
+
     if (isReactOwnedAppComponent(PageComponent)) {
+      // Class components and other non-function exports, which React renders
+      // itself. A read marks the render dynamic only to keep this branch
+      // consistent with function component pages: React 19's Flight server
+      // calls any function that isn't a client reference as a function
+      // component, so an ES class page can't render in RSC at all.
       const invocationProps: Record<string, unknown> = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
-              markDynamic: hasRequestSearchParams,
-            })
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }
       return createElement(PageComponent, withUseCachePageMarker(PageComponent, invocationProps));

@@ -24,6 +24,7 @@ import {
   finalizeAppPageRscCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { queryInvariantObservationBuilders } from "./render-observation-test-helpers.js";
 import {
   applyCdnResponseHeaders,
   applyCdnResponseIdentityHeaders,
@@ -65,6 +66,8 @@ function finalizePendingDynamicRscResponse(): Response {
       },
     }),
     {
+      ...queryInvariantObservationBuilders,
+      isStaticEligible: true,
       capturedRscDataPromise: null,
       cleanPathname: "/dashboard",
       consumeDynamicUsage() {
@@ -463,6 +466,8 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/dynamic-html",
         consumeDynamicUsage() {
@@ -511,6 +516,8 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
+        isStaticEligible: true,
         bypassInterceptionContextCache: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/about",
@@ -551,6 +558,8 @@ describe("CloudflareCdnCacheAdapter", () => {
           },
         }),
         {
+          ...queryInvariantObservationBuilders,
+          isStaticEligible: true,
           capturedRscDataPromise: Promise.resolve(
             new TextEncoder().encode("slot-specific-flight").buffer,
           ),
@@ -593,6 +602,8 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(
           new TextEncoder().encode("slot-specific-flight").buffer,
         ),
@@ -633,6 +644,8 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
+        isStaticEligible: true,
         capturedRscDataPromise: null,
         cleanPathname: "/dashboard",
         consumeDynamicUsage() {

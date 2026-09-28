@@ -142,6 +142,20 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     expect(await rsc.text()).toContain("served from prerender assets");
   });
 
+  it("serves prerendered HTML and RSC to query-bearing requests as cache hits", async () => {
+    const html = await fetch(`${baseUrl}/?source=nav`);
+    expect(html.status).toBe(200);
+    expect(html.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(await html.text()).toContain("served from prerender assets");
+
+    const rsc = await fetch(`${baseUrl}/?source=nav`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(rsc.status).toBe(200);
+    expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(await rsc.text()).toContain("served from prerender assets");
+  });
+
   it("does not expose the packaged cache through public asset URLs", async () => {
     const artifacts = fs.readdirSync(path.join(root, "dist/client/_vinext/static-cache"));
     expect(artifacts).toContain("index.json");

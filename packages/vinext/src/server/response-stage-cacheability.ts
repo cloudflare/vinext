@@ -7,6 +7,8 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { VinextResponseStageDispatchOptions } from "./multi-stage.js";
 import type { WorkerCacheabilityProbeMode } from "./cacheability-request.js";
 import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
+import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
+import { VINEXT_PARAMS_HEADER, VINEXT_RENDERED_PATH_AND_SEARCH_HEADER } from "./headers.js";
 
 export type ResponseStageCacheabilityOptions = {
   buildId: string | null | undefined;
@@ -22,6 +24,12 @@ export type ResponseStageCacheabilityOptions = {
   resolvedRoutePathname?: string;
   /** Trusted representation retained when request-stage normalization changes the URL shape. */
   representation?: CacheabilityRepresentation;
+  /**
+   * The request stage recomposes `X-Vinext-Params` and
+   * `X-Vinext-Rendered-Path-And-Search` per request (App page RSC), so a
+   * shared response drops them before admission and storage.
+   */
+  recomposesRequestScopedHeaders?: boolean;
   /** Generated adapter registration, deferred until the response stage executes. */
   registerCacheAdapters(): void;
   request: Request;
@@ -68,7 +76,14 @@ export async function withResponseStageCacheability(
     );
   }
 
-  if (!cacheability) return render(context);
+  const stripsRequestScopedHeaders =
+    options.recomposesRequestScopedHeaders === true &&
+    options.cache === "shared" &&
+    !options.probeMode;
+  if (!cacheability) {
+    const rendered = await render(context);
+    return stripsRequestScopedHeaders ? withoutRequestScopedHeaders(rendered) : rendered;
+  }
   if (options.policyHeadersAppliedBeforeRender) {
     cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
   }
@@ -78,7 +93,10 @@ export async function withResponseStageCacheability(
   if (options.probeMode && options.forceDynamic && !options.policyHeaders?.length && state) {
     state.patternDynamicReason = 'dynamic = "force-dynamic"';
   }
-  const rendered = await render(context);
+  const renderedResponse = await render(context);
+  const rendered = stripsRequestScopedHeaders
+    ? withoutRequestScopedHeaders(renderedResponse)
+    : renderedResponse;
   const response = options.policyHeadersAppliedBeforeRender
     ? rendered
     : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
@@ -94,4 +112,24 @@ export async function withResponseStageCacheability(
     if (deferred) return deferred;
   }
   return complete(response);
+}
+
+function withoutRequestScopedHeaders(response: Response): Response {
+  if (
+    !response.headers.has(VINEXT_PARAMS_HEADER) &&
+    !response.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)
+  ) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete(VINEXT_PARAMS_HEADER);
+  headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
 }

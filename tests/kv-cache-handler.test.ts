@@ -639,6 +639,39 @@ describe("KVCacheHandler", () => {
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
     });
 
+    it("round-trips a revalidate = false policy through stored cacheControl", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+
+      await handler.set(
+        "static-round-trip",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity } },
+      );
+
+      const stored = JSON.parse(store.get("cache:static-round-trip")!);
+      expect(stored.cacheControl).toEqual({ revalidate: false });
+      expect(stored.revalidateAt).toBeNull();
+      expect(kv.put).toHaveBeenCalledWith("cache:static-round-trip", expect.any(String), {
+        expirationTtl: 30 * 24 * 3600,
+        metadata: { tags: [] },
+      });
+
+      // Staleness comes from the stored policy, not the KV TTL.
+      vi.setSystemTime(1_000 + 29 * 24 * 60 * 60 * 1000);
+      const hit = await handler.get("static-round-trip");
+      expect(hit?.cacheState).toBeUndefined();
+      expect(hit?.cacheControl).toEqual({ revalidate: Infinity });
+      expect(hit?.value?.kind).toBe("APP_PAGE");
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);
@@ -672,6 +705,92 @@ describe("KVCacheHandler", () => {
       expect(store.get("__tag:/revalidate-tag-test")).toMatch(/^\d+$/);
       expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
     });
+
+    it("expires a revalidate = false entry after 30 days and keeps its invalidation marker", async () => {
+      await handler.set(
+        "static-tagged",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity }, tags: ["posts"] },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:static-tagged", expect.any(String), {
+        expirationTtl: 30 * 24 * 3600,
+        metadata: { tags: ["posts"] },
+      });
+
+      // The marker has no TTL, so it outlives every entry it invalidates.
+      await handler.revalidateTag("posts");
+      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
+    });
+
+    it("gives entries without a numeric revalidate the configured TTL", async () => {
+      const ttlSeconds = 90 * 24 * 3600;
+      const longHandler = new KVCacheHandler(kv as any, { ttlSeconds });
+      // unstable_cache writes its default `revalidate: false` as a boolean.
+      await longHandler.set(
+        "unstable-tagged",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" }, revalidate: false } as any,
+        { tags: ["posts"] },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:unstable-tagged", expect.any(String), {
+        expirationTtl: ttlSeconds,
+        metadata: { tags: ["posts"] },
+      });
+
+      // KV rejects an expirationTtl below 60 seconds.
+      await new KVCacheHandler(kv as any, { ttlSeconds: 30 }).set("short-ttl", {
+        kind: "FETCH",
+        data: { headers: {}, body: "{}", url: "" },
+        revalidate: false,
+      } as any);
+      expect(kv.put).toHaveBeenLastCalledWith("cache:short-ttl", expect.any(String), {
+        expirationTtl: 60,
+        metadata: { tags: [] },
+      });
+
+      // A marker outlives entries written under any earlier ttlSeconds.
+      await new KVCacheHandler(kv as any, { ttlSeconds: 60 }).revalidateTag("posts");
+      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
+    });
+
+    it.each([
+      [90.9, 90],
+      [2 ** 31, 2_147_483_647],
+    ])(
+      "keeps ttlSeconds %s within the binding's integer range as %s",
+      async (ttlSeconds, expected) => {
+        await new KVCacheHandler(kv as any, { ttlSeconds }).set("ranged-ttl", {
+          kind: "FETCH",
+          data: { headers: {}, body: "{}", url: "" },
+          revalidate: false,
+        } as any);
+        expect(kv.put).toHaveBeenLastCalledWith("cache:ranged-ttl", expect.any(String), {
+          expirationTtl: expected,
+          metadata: { tags: [] },
+        });
+      },
+    );
+
+    it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+      "falls back to the 30-day TTL for ttlSeconds %s",
+      async (ttlSeconds) => {
+        await new KVCacheHandler(kv as any, { ttlSeconds }).set("invalid-ttl", {
+          kind: "FETCH",
+          data: { headers: {}, body: "{}", url: "" },
+          revalidate: false,
+        } as any);
+        expect(kv.put).toHaveBeenLastCalledWith("cache:invalid-ttl", expect.any(String), {
+          expirationTtl: 30 * 24 * 3600,
+          metadata: { tags: [] },
+        });
+      },
+    );
 
     it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
       const entryTime = 1000;

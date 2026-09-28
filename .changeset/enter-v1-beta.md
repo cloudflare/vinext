@@ -1,4 +1,5 @@
 ---
+"@cloudflare/workers-response-store": major
 "@vinext/cloudflare": major
 "create-vinext-app": major
 "vinext": major

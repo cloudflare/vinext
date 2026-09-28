@@ -790,6 +790,58 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     });
   });
 
+  // The request stage keeps the query of a runtime-check path's dispatch, and
+  // drops it only for a static-candidate one (app-rsc-handler.test.ts). So two
+  // requests to a runtime-check path that differ only in the query get
+  // different Workers Cache keys, and each render sees its own query.
+  it("keys runtime-check dispatches by their query and static-candidate dispatches without it", async () => {
+    const cacheFacingRequests: Request[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        cacheFacingRequests.push(request);
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request: Request, _env, _ctx, dispatch) => {
+      const url = new URL(request.url);
+      // A static-candidate path's dispatch drops the query.
+      if (url.pathname === "/static") url.search = "";
+      return dispatch(new Request(url, request), { kind: "app-page" }, { cache: "shared" });
+    });
+    stages.response.mockImplementation((request: Request) => Response.json({ url: request.url }));
+
+    const digests: Record<string, (string | null)[]> = { runtime: [], static: [] };
+    const rendered: string[] = [];
+    for (const [kind, pathname] of [
+      ["runtime", "/runtime"],
+      ["static", "/static"],
+    ] as const) {
+      for (const q of ["a", "b"]) {
+        const response = await worker.fetch(
+          new Request(`https://example.com${pathname}?q=${q}`),
+          {},
+          { exports: { VinextCachedResponse: binding } },
+        );
+        rendered.push(((await response.json()) as { url: string }).url);
+        digests[kind]!.push(
+          new URL(cacheFacingRequests.at(-1)!.url).searchParams.get("__vinext_cache_key"),
+        );
+      }
+    }
+
+    expect(digests.runtime![0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(digests.runtime![1]).toMatch(/^[0-9a-f]{64}$/);
+    expect(digests.runtime![0]).not.toBe(digests.runtime![1]);
+    expect(digests.static![0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(digests.static![0]).toBe(digests.static![1]);
+    expect(rendered).toEqual([
+      "https://example.com/runtime?q=a",
+      "https://example.com/runtime?q=b",
+      "https://example.com/static",
+      "https://example.com/static",
+    ]);
+  });
+
   it("promotes framework Vary selectors into the primary cache identity", async () => {
     const cacheFacingRequests: Request[] = [];
     const binding = vi.fn(() => ({

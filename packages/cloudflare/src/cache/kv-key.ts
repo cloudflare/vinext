@@ -14,6 +14,31 @@ const HASHED_KEY_PREFIX = "__hash:";
 
 const KV_KEY_ENCODER = new TextEncoder();
 
+/** KV rejects an expiration TTL below 60 seconds. */
+const MIN_KV_EXPIRATION_TTL_SECONDS = 60;
+
+/** The Workers KV binding types `expirationTtl` as a signed 32-bit integer. */
+const MAX_KV_EXPIRATION_TTL_SECONDS = 2_147_483_647;
+
+/** Default KV TTL for cache entries. */
+const DEFAULT_KV_EXPIRATION_TTL_SECONDS = 30 * 24 * 3600;
+
+/**
+ * The KV TTL for a configured `ttlSeconds`. A missing, non-finite or
+ * nonpositive value falls back to 30 days. Any other value is truncated to
+ * whole seconds, as the binding does, and kept within the range KV accepts.
+ */
+export function resolveKvExpirationTtlSeconds(ttlSeconds: number | undefined): number {
+  const configured =
+    typeof ttlSeconds === "number" && Number.isFinite(ttlSeconds) && ttlSeconds > 0
+      ? ttlSeconds
+      : DEFAULT_KV_EXPIRATION_TTL_SECONDS;
+  return Math.min(
+    MAX_KV_EXPIRATION_TTL_SECONDS,
+    Math.max(MIN_KV_EXPIRATION_TTL_SECONDS, Math.trunc(configured)),
+  );
+}
+
 export type KvKeySpace = {
   /** Prefix shared by every cache entry, including entries with hashed logical keys. */
   entryPrefix: string;
