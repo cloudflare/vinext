@@ -2,6 +2,7 @@
 
 import {
   createElement,
+  Fragment,
   startTransition,
   use,
   useEffect,
@@ -88,6 +89,7 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
+import { AppClientStylesheets, installAppStylesheetLoader } from "./app-browser-stylesheets.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
   resolveManifestNavigationInterceptionContext,
@@ -1746,6 +1748,7 @@ function registerServerActionCallback(): void {
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
 
+  installAppStylesheetLoader();
   if (hasServerActions) registerServerActionCallback();
   installAppNavigationFailureListeners();
   if (HAS_CLIENT_REWRITES) await preloadHybridClientRouteOwner();
@@ -1878,11 +1881,18 @@ function bootstrapHydration(
           onRecoverableError,
           onUncaughtError,
         });
-  const children = createElement(BrowserRoot, {
-    hydrationCachePublication,
-    initialElements: root,
-    initialNavigationSnapshot,
-  });
+  // Client-chunk stylesheets render after the app tree so a commit inserts the
+  // Server Component stylesheets first (see app-browser-stylesheets.ts).
+  const children = createElement(
+    Fragment,
+    null,
+    createElement(BrowserRoot, {
+      hydrationCachePublication,
+      initialElements: root,
+      initialNavigationSnapshot,
+    }),
+    createElement(AppClientStylesheets),
+  );
   const errorShellStyles = document.querySelectorAll("style[data-vinext-error-shell-style]");
   if (document.documentElement.id === "__next_error__") {
     // Next.js client/app-index.tsx uses the document id alone to select CSR
