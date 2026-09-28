@@ -1,0 +1,23 @@
+.github/workflows/bigbonk.yml
+  s_ddb5604afb19b8::t_476f5c3dac7d85 40
+.github/workflows/bonk.yml
+  s_ddb5604afb19b8::t_bfa90fdac9e6a3 40
+.github/workflows/nextjs-tracker.yml
+  s_ddb5604afb19b8::t_ade81fea4fdb3f 126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3768ecd90ae3ae2375eea395ae5133035168b993",
+  "prompts": {},
+  "sessions": {
+    "s_ddb5604afb19b8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_ddb5604afb19b8",
+        "model": "unknown"
+      },
+      "human_author": "Dan Lapid <dlapid@cloudflare.com>"
+    }
+  }
+}
