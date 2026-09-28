@@ -2205,7 +2205,9 @@ function bootstrapHydration(
             redirectDepth: redirectCount,
             requestPreviousNextUrl,
             responseOk: true,
-            responseUrl: cachedRoute.response.url,
+            // Hydration and consumed prefetch snapshots can retain the static
+            // Flight transport URL. Match the fresh-response path below.
+            responseUrl: IS_STATIC_EXPORT ? currentHref : cachedRoute.response.url,
             source: "cached",
             streamedRedirectTarget: null,
           });
