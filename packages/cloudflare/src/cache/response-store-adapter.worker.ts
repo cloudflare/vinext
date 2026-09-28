@@ -351,7 +351,7 @@ async function readStoredResponse(key: Request): Promise<Response | null> {
     }
     throw new Error(`Workers Response Store returned ${response.status}`);
   } catch (error) {
-    console.warn(
+    console.error(
       JSON.stringify({
         message: "Vinext response-store response lookup failed; treating as a cache miss",
         error: error instanceof Error ? error.message : String(error),
@@ -542,7 +542,7 @@ const handler = {
         // Warming must confirm persistence; ordinary requests can serve the render.
         if (isWarmup) throw error;
         void cacheResponse.body?.cancel().catch(() => {});
-        console.warn(
+        console.error(
           JSON.stringify({
             message: "Vinext response-store response fill failed; serving the rendered response",
             error: error instanceof Error ? error.message : String(error),

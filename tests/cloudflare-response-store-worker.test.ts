@@ -167,7 +167,7 @@ describe("Cloudflare Response Store Worker", () => {
   it.each(["throw", 500, 503, 404] as const)(
     "renders and repopulates after a failed response lookup (%s)",
     async (failure) => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
       const cancel = vi.fn();
       const failed = new Response(new ReadableStream({ cancel }), {
         status: typeof failure === "number" ? failure : 500,
@@ -197,13 +197,13 @@ describe("Cloudflare Response Store Worker", () => {
       expect(await response.text()).toBe("rendered");
       expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
       expect(store.put).toHaveBeenCalledOnce();
-      expect(warn).toHaveBeenCalledOnce();
+      expect(errorLog).toHaveBeenCalledOnce();
       if (failure !== "throw") expect(cancel).toHaveBeenCalledOnce();
     },
   );
 
   it.each([false, true])("handles a fill outage with warmup=%s", async (warmup) => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const store = {
       fetch: vi.fn().mockRejectedValue(new Error("lookup unavailable")),
       getTagExpiration: vi.fn(),
@@ -256,7 +256,7 @@ describe("Cloudflare Response Store Worker", () => {
   it.each(["throw", 503] as const)(
     "re-renders a warmup when its RSC lookup fails (%s)",
     async (failure) => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.spyOn(console, "error").mockImplementation(() => {});
       stages.request.mockImplementation((request, _env, _context, dispatch) =>
         dispatch(
           request,

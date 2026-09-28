@@ -395,7 +395,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         ...(entry.cacheControl ? { cacheControl: entry.cacheControl } : {}),
       };
     } catch (error) {
-      console.warn(
+      console.error(
         JSON.stringify({
           message: "Vinext response-store data lookup failed; treating as a cache miss",
           error: error instanceof Error ? error.message : String(error),

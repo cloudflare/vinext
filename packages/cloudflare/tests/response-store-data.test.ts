@@ -70,13 +70,13 @@ test.each(["throw", 500, 503, 404] as const)(
   async (failure) => {
     const store = new TestStore();
     const handler = new WorkersResponseStoreCacheHandler(store);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     const fetch = vi.spyOn(store, "fetch");
     if (failure === "throw") fetch.mockRejectedValueOnce(new Error("metadata overloaded"));
     else fetch.mockResolvedValueOnce(new Response("unavailable", { status: failure }));
 
     await expect(handler.get("key")).resolves.toBeNull();
-    expect(warn).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledOnce();
     await handler.set("key", null);
     await expect(handler.get("key")).resolves.toMatchObject({ value: null });
   },
@@ -84,7 +84,7 @@ test.each(["throw", 500, 503, 404] as const)(
 
 test("treats a failed cached body read as a miss", async () => {
   const store = new TestStore();
-  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(store, "fetch").mockResolvedValue(
     new Response(
       new ReadableStream({
@@ -342,7 +342,7 @@ test("does not resolve soft-tag expiration when the data entry misses", async ()
 });
 
 test("treats an eager soft-tag failure as a miss after finishing the response body", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
   let releaseBody!: () => void;
   const bodyBlocked = new Promise<void>((resolve) => {
     releaseBody = resolve;
@@ -444,7 +444,7 @@ test("does not speculate soft-tag expiration for invalid or non-ok responses", a
     status: 503,
     headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
   });
-  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
   await expect(handler.get("unavailable", { softTags: ["path"] })).resolves.toBeNull();
 
   expect(store.tagExpirationCalls).toHaveLength(0);
