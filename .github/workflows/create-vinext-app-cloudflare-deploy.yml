@@ -91,11 +91,12 @@ jobs:
         run: |
           node -e '
             const fs = require("node:fs");
-            const configPath = "wrangler.jsonc";
-            const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-            config.name = process.env.CVA_CLOUDFLARE_WORKER;
-            config.preview_urls = true;
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+            const configPath = "cloudflare.config.ts";
+            const config = fs.readFileSync(configPath, "utf8").replace(
+              "name: \"cva-cloudflare\",",
+              "name: " + JSON.stringify(process.env.CVA_CLOUDFLARE_WORKER) + ",\n    previewUrls: true,",
+            );
+            fs.writeFileSync(configPath, config);
           '
 
       - name: Build generated Cloudflare project
@@ -105,15 +106,19 @@ jobs:
       - name: Verify generated Cloudflare build output
         working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
-          test -f dist/server/wrangler.json
-          test -f wrangler.response-store.jsonc
+          test -f cloudflare.config.ts
+          test -f .cloudflare/output/v0/config.json
+          test -f .cloudflare/output/v0/workers/default/worker.config.json
+          test -f .cloudflare/output/v0/workers/cva-cloudflare-response-store/worker.config.json
+          test ! -f wrangler.jsonc
+          test ! -f wrangler.response-store.jsonc
 
       - name: Deploy generated Workers Response Store
         working-directory: ${{ runner.temp }}/cva-cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
+        run: vp run deploy:response-store
 
       - name: Deploy generated Cloudflare project
         working-directory: ${{ runner.temp }}/cva-cloudflare
