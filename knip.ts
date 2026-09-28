@@ -53,6 +53,13 @@ export default {
         "oxc-transform-react",
         // OG tests resolve these from vinext's @vercel/og install, not the root workspace.
         "@vercel/og",
+        // scripts/version.mts resolves release APIs from the pinned Changesets CLI,
+        // keeping its dependency tree authoritative instead of installing separate copies.
+        "@manypkg/get-packages",
+        "@changesets/config",
+        "@changesets/get-release-plan",
+        "@changesets/apply-release-plan",
+        "@changesets/should-skip-package",
       ],
     },
     "packages/vinext": {

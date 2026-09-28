@@ -238,12 +238,17 @@ export async function versionPackages(root: string): Promise<void> {
   // Use the APIs from the pinned CLI's dependency tree, without a second toolchain.
   const require = createRequire(import.meta.resolve("@changesets/cli/package.json"));
   const { getPackages } = require("@manypkg/get-packages");
-  const { read: readConfig } = require("@changesets/config");
+  const { parse: parseConfig } = require("@changesets/config");
   const { default: getReleasePlan } = require("@changesets/get-release-plan");
   const { default: applyReleasePlan } = require("@changesets/apply-release-plan");
   const { shouldSkipPackage } = require("@changesets/should-skip-package");
   const packages = await getPackages(root);
-  const config = await readConfig(root, packages);
+  const writtenConfig = JSON.parse(
+    readFileSync(join(packages.root.dir, ".changeset/config.json"), "utf8"),
+  );
+  const config = parseConfig(writtenConfig, packages);
+  // Match the CLI's second dependency-policy validation after expanding ignore globs.
+  parseConfig({ ...writtenConfig, ignore: config.ignore }, packages);
   const plan = await getReleasePlan(root, undefined, config);
   const skippedNames = new Set<string>();
   for (const pkg of packages.packages) {

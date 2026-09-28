@@ -98,3 +98,50 @@ it.each([false, true])(
     }
   },
 );
+
+it.each(["dependencies", "devDependencies"])(
+  "validates expanded ignore globs for %s before writing releases",
+  async (dependencyType) => {
+    const root = mkdtempSync(join(tmpdir(), "vinext-changeset-ignore-"));
+    const pkg = {
+      name: "public-package",
+      version: "1.0.0",
+      [dependencyType]: { "ignored-package": "workspace:^1.0.0" },
+    };
+    try {
+      writeFileSync(
+        join(root, "package.json"),
+        JSON.stringify({ name: "test-workspace", private: true, workspaces: ["packages/*"] }),
+      );
+      mkdirSync(join(root, ".changeset"));
+      writeFileSync(
+        join(root, ".changeset/config.json"),
+        JSON.stringify({ changelog: false, ignore: ["ignored-*"] }),
+      );
+      const changesetPath = join(root, ".changeset/public-package.md");
+      writeFileSync(changesetPath, '---\n"public-package": patch\n---\n\nPublic package fix.\n');
+      for (const manifest of [pkg, { name: "ignored-package", version: "1.0.0" }]) {
+        const dir = join(root, "packages", manifest.name);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "package.json"), JSON.stringify(manifest));
+      }
+
+      const manifestPath = join(root, "packages/public-package/package.json");
+      if (dependencyType === "dependencies") {
+        await expect(versionPackages(root)).rejects.toThrow(
+          '"public-package" depends on the skipped package "ignored-package"',
+        );
+        expect(JSON.parse(readFileSync(manifestPath, "utf8"))).toEqual(pkg);
+        expect(existsSync(changesetPath)).toBe(true);
+      } else {
+        await versionPackages(root);
+        expect(JSON.parse(readFileSync(manifestPath, "utf8"))).toEqual({
+          ...pkg,
+          version: "1.0.1",
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
