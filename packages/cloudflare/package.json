@@ -66,10 +66,14 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
+    "@cloudflare/vite-plugin": "*",
     "cf": "*",
     "vinext": "workspace:^"
   },
   "peerDependenciesMeta": {
+    "@cloudflare/vite-plugin": {
+      "optional": true
+    },
     "cf": {
       "optional": true
     }

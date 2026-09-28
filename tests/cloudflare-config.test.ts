@@ -39,16 +39,19 @@ describe("typed Cloudflare cache config", () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
-  it("leaves the optional cf peer open to minor-version prereleases", () => {
-    const pkg = JSON.parse(
-      readFileSync(
-        path.resolve(import.meta.dirname, "../packages/cloudflare/package.json"),
-        "utf8",
-      ),
-    );
-    expect(pkg.peerDependencies["cf"]).toBe("*");
-    expect(pkg.peerDependenciesMeta["cf"].optional).toBe(true);
-  });
+  it.each(["@cloudflare/vite-plugin", "cf"])(
+    "leaves the optional %s peer open to minor-version prereleases",
+    (peer) => {
+      const pkg = JSON.parse(
+        readFileSync(
+          path.resolve(import.meta.dirname, "../packages/cloudflare/package.json"),
+          "utf8",
+        ),
+      );
+      expect(pkg.peerDependencies[peer]).toBe("*");
+      expect(pkg.peerDependenciesMeta[peer].optional).toBe(true);
+    },
+  );
 
   it.each([undefined, "1.0.0-beta.1", "1.1.0-beta.1", "1.5.3-beta.sha-example"])(
     "loads the consumer's optional cf peer (%s) only when called",
