@@ -1,5 +1,6 @@
 {
   "name": "action-client-package",
+  "private": true,
   "type": "module",
   "exports": "./client.tsx"
 }
