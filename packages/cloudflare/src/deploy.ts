@@ -334,7 +334,6 @@ const deployArgOptions = {
   "traffic-aware-window": { type: "string" },
   // Backwards-compatible aliases (intentionally omitted from help).
   "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
-  "experimental-warm-cdn-cache": { type: "boolean", default: false },
   "warm-cdn-target": { type: "string" },
   "warm-cdn-concurrency": { type: "string" },
   "warm-cdn-timeout": { type: "string" },
@@ -364,7 +363,6 @@ export function parseDeployArgs(args: string[]) {
   // Prefer the current spelling when both a flag and its legacy alias are supplied.
   values["dangerously-promote-on-warm-cache-error"] ||=
     values["dangerously-promote-on-cdn-warm-error"];
-  values["warm-cache"] ||= values["experimental-warm-cdn-cache"];
   values["warm-cache-target"] ??= values["warm-cdn-target"];
   values["warm-cache-concurrency"] ??= values["warm-cdn-concurrency"];
   values["warm-cache-timeout"] ??= values["warm-cdn-timeout"];

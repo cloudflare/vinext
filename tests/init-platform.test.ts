@@ -344,11 +344,6 @@ describe("warm CDN cache init choice", () => {
     expect(parseWarmCdnCacheArg(["--no-warm-cache"])).toBe(false);
     expect(parseWarmCdnCacheArg(["--warm-cache=true"])).toBe(true);
     expect(parseWarmCdnCacheArg(["--warm-cache=false"])).toBe(false);
-    expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache"])).toBe(true);
-    expect(parseWarmCdnCacheArg(["--no-experimental-warm-cdn-cache"])).toBe(false);
-    expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache=true"])).toBe(true);
-    expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache=false"])).toBe(false);
-    expect(parseWarmCdnCacheArg(["--experimental-warm-cdn-cache", "--no-warm-cache"])).toBe(false);
   });
 
   it("rejects unsupported explicit values", () => {
