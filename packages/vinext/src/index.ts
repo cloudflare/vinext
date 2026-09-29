@@ -1612,6 +1612,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let nitroBuildDir: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
+  let canonicalMiddlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
   let clientInjectModule: string | null = null;
@@ -1724,6 +1725,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // which keeps backslashes on Windows. The shim files exist in the vinext
   // package before plugin init, so realpath is safe to evaluate eagerly.
   const canonicalize = (p: string): string => toSlash(tryRealpathSync(p) ?? p);
+  // Owned by this vinext() instance and never invalidated. Also used by the
+  // middleware export and server-only checks, which run on every module id.
   const pageTransformCanonicalPaths = new Map<string, string>();
   const canonicalizePageTransformPath = (modulePath: string): string => {
     const cached = pageTransformCanonicalPaths.get(modulePath);
@@ -2654,6 +2657,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? path.join(root, "src")
             : root;
         middlewarePath = findMiddlewareFile(root, fileMatcher, middlewareConventionDir);
+        canonicalMiddlewarePath = middlewarePath ? canonicalize(middlewarePath) : null;
         if (middlewarePath) {
           const staticMatcher = extractMiddlewareMatcherConfigValue(middlewarePath);
           if (staticMatcher !== undefined) {
@@ -7027,17 +7031,20 @@ export const loadServerActionClient = ${
     {
       name: "vinext:validate-middleware-exports",
       enforce: "pre",
-      transform(code, id) {
-        if (!middlewarePath) return null;
-        const modulePath = stripViteModuleQuery(id);
-        if (canonicalize(modulePath) !== canonicalize(middlewarePath)) return null;
-        validateMiddlewareModuleExports(
-          code,
-          modulePath,
-          middlewarePath,
-          isProxyFile(middlewarePath),
-        );
-        return null;
+      transform: {
+        filter: { id: { exclude: VIRTUAL_MODULE_ID_RE } },
+        handler(code, id) {
+          if (!middlewarePath) return null;
+          const modulePath = stripViteModuleQuery(id);
+          if (canonicalizePageTransformPath(modulePath) !== canonicalMiddlewarePath) return null;
+          validateMiddlewareModuleExports(
+            code,
+            modulePath,
+            middlewarePath,
+            isProxyFile(middlewarePath),
+          );
+          return null;
+        },
       },
     },
     // Next.js rejects `export * from "..."` when compiling Pages Router files
