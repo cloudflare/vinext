@@ -98,10 +98,6 @@ const appRscResponseStagePath = resolveEntryPath(
   "../server/app-rsc-response-stage.js",
   import.meta.url,
 );
-const appRscCombinedHandlerPath = resolveEntryPath(
-  "../server/app-rsc-combined-handler.js",
-  import.meta.url,
-);
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
@@ -762,7 +758,7 @@ ${
 ${
   responseStageOnly
     ? `import { renderAppWorkerResponseStage as __renderAppWorkerResponseStage } from ${JSON.stringify(appRscResponseStagePath)};`
-    : `import { createAppRscHandler } from ${JSON.stringify(appRscCombinedHandlerPath)};`
+    : `import { createAppRscHandler } from "vinext/server/app-rsc-combined-handler";`
 }
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
