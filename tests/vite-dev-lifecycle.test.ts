@@ -63,6 +63,34 @@ afterEach(async () => {
 });
 
 describe("Vite dev lifecycle", () => {
+  it("ignores generated .vinext files with a custom watcher cwd", async () => {
+    const root = createProject();
+    const watchCwd = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-watch-cwd-"));
+    roots.push(watchCwd);
+    server = await createServer({
+      root,
+      configFile: false,
+      plugins: [vinext()],
+      server: { middlewareMode: true, watch: { cwd: watchCwd } },
+    });
+    const changes: string[] = [];
+    server.watcher.on("all", (_event, file) => changes.push(file));
+
+    // Observe a real source change first, so a disabled or unready watcher
+    // cannot make the negative assertion below pass accidentally.
+    const probe = path.join(root, "watch-probe.txt");
+    await waitFor(() => {
+      fs.writeFileSync(probe, String(Date.now()));
+      return changes.some((file) => file.endsWith("watch-probe.txt")) || undefined;
+    });
+    const generated = path.join(root, ".vinext", "og-assets", "callback.wasm");
+    fs.mkdirSync(path.dirname(generated), { recursive: true });
+    fs.writeFileSync(generated, new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    // Allow the watcher to deliver creation events for the new directory tree.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(changes.filter((file) => file.includes(".vinext"))).toEqual([]);
+  });
+
   it("claims the configured plugin when an unused instance was constructed first", async () => {
     const root = createProject();
     fs.writeFileSync(
