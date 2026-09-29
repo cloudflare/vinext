@@ -1725,8 +1725,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // which keeps backslashes on Windows. The shim files exist in the vinext
   // package before plugin init, so realpath is safe to evaluate eagerly.
   const canonicalize = (p: string): string => toSlash(tryRealpathSync(p) ?? p);
-  // Owned by this vinext() instance and never invalidated. Also used by the
-  // middleware export and server-only checks, which run on every module id.
+  // Owned by this vinext() instance and cleared on each config resolution
+  // (an inline plugin survives server.restart()). Also used by the middleware
+  // export and server-only checks, which run on every module id.
   const pageTransformCanonicalPaths = new Map<string, string>();
   const canonicalizePageTransformPath = (modulePath: string): string => {
     const cached = pageTransformCanonicalPaths.get(modulePath);
@@ -2657,6 +2658,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? path.join(root, "src")
             : root;
         middlewarePath = findMiddlewareFile(root, fileMatcher, middlewareConventionDir);
+        // With resolve.preserveSymlinks the module id stays the logical path,
+        // so a realpath memoized before a restart can be stale.
+        pageTransformCanonicalPaths.clear();
         canonicalMiddlewarePath = middlewarePath ? canonicalize(middlewarePath) : null;
         if (middlewarePath) {
           const staticMatcher = extractMiddlewareMatcherConfigValue(middlewarePath);
