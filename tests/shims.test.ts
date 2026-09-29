@@ -491,6 +491,329 @@ describe("next/navigation shim", () => {
     }
   });
 
+  // Next.js dispatchAction appends ACTION_REFRESH while another action is
+  // pending. It does not discard that action.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
+  it("router.refresh() queues while an App Router navigation is active", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const win = {
+      location: { href: "http://localhost/current" },
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: () => {
+            calls.push("clear");
+          },
+          hasActiveAppNavigation: () => true,
+          navigate: async (_href: string, _depth: number, kind: string) => {
+            calls.push(`navigate:${kind}`);
+          },
+          queueRefresh: () => {
+            calls.push("queue");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      appRouterInstance.refresh();
+      await Promise.resolve();
+
+      expect(calls).toEqual(["queue"]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("router.refresh() still runs after a same-task hash-only push", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const location = {
+      href: "http://localhost/",
+      origin: "http://localhost",
+      pathname: "/",
+      search: "",
+      hash: "",
+    };
+    const win = {
+      location,
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: () => {
+            calls.push("clear");
+          },
+          commitHashNavigation: (href: string) => {
+            calls.push(`hash:${href}`);
+            const next = new URL(href, location.href);
+            location.href = next.href;
+            location.pathname = next.pathname;
+            location.search = next.search;
+            location.hash = next.hash;
+          },
+          hasActiveAppNavigation: () => false,
+          navigate: async (href: string, _depth: number, kind: string) => {
+            calls.push(`navigate:${kind}:${href}`);
+          },
+          queueRefresh: () => {
+            calls.push("queue");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      appRouterInstance.push("/#top", { scroll: false });
+      appRouterInstance.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(calls).toContain("hash:/#top");
+      expect(calls).not.toContain("queue");
+      expect(calls).toContain("navigate:refresh:http://localhost/#top");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("router.refresh() still runs when a hash push's transition hook starts another push", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const location = {
+      href: "http://localhost/",
+      origin: "http://localhost",
+      pathname: "/",
+      search: "",
+      hash: "",
+    };
+    const win = {
+      location,
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: () => {
+            calls.push("clear");
+          },
+          commitHashNavigation: (href: string) => {
+            calls.push(`hash:${href}`);
+            const next = new URL(href, location.href);
+            location.href = next.href;
+            location.pathname = next.pathname;
+            location.search = next.search;
+            location.hash = next.hash;
+          },
+          hasActiveAppNavigation: () => false,
+          navigate: async (href: string, _depth: number, kind: string) => {
+            calls.push(`navigate:${kind}:${href}`);
+          },
+          queueRefresh: () => {
+            calls.push("queue");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { setClientInstrumentationHooks } =
+        await import("../packages/vinext/src/client/instrumentation-client-state.js");
+      setClientInstrumentationHooks({
+        onRouterTransitionStart(href) {
+          if (!href.endsWith("#top")) return;
+          appRouterInstance.push("/#nested", { scroll: false });
+        },
+      });
+      appRouterInstance.push("/#top", { scroll: false });
+      appRouterInstance.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(calls).toContain("hash:/#nested");
+      expect(calls).toContain("hash:/#top");
+      expect(calls).not.toContain("queue");
+      expect(calls).toContain("navigate:refresh:http://localhost/#top");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("router.refresh() does not start a second fetch beside a same-task external push", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    let releaseExternal: (() => void) | undefined;
+    const externalNavigation = new Promise<void>((resolve) => {
+      releaseExternal = resolve;
+    });
+    const win = {
+      location: {
+        href: "http://localhost/current",
+        origin: "http://localhost",
+        pathname: "/current",
+        search: "",
+        hash: "",
+        assign: () => {},
+        replace: () => {},
+      },
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: () => {
+            calls.push("clear");
+          },
+          hasActiveAppNavigation: () => false,
+          navigate: async (_href: string, _depth: number, kind: string) => {
+            calls.push(`navigate:${kind}`);
+          },
+          navigateExternal: () => externalNavigation,
+          queueRefresh: () => {
+            calls.push("queue");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      appRouterInstance.push("https://other.example/out");
+      appRouterInstance.refresh();
+
+      expect(calls).toEqual(["clear"]);
+      releaseExternal?.();
+      await externalNavigation;
+      await Promise.resolve();
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("router.refresh() runs after a same-task hash-only gesture", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const location = {
+      href: "http://localhost/",
+      origin: "http://localhost",
+      pathname: "/",
+      search: "",
+      hash: "",
+    };
+    const win = {
+      location,
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: () => {
+            calls.push("clear");
+          },
+          commitHashNavigation: (href: string) => {
+            calls.push(`hash:${href}`);
+            const next = new URL(href, location.href);
+            location.href = next.href;
+            location.pathname = next.pathname;
+            location.search = next.search;
+            location.hash = next.hash;
+          },
+          hasActiveAppNavigation: () => false,
+          navigate: async (href: string, _depth: number, kind: string) => {
+            calls.push(`navigate:${kind}:${href}`);
+          },
+          queueRefresh: () => {
+            calls.push("queue");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
+      vi.resetModules();
+      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      if (!appRouterInstance.experimental_gesturePush) {
+        throw new Error("Expected experimental_gesturePush to be attached");
+      }
+      appRouterInstance.experimental_gesturePush("/#top", { scroll: false });
+      appRouterInstance.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(calls).toContain("hash:/#top");
+      expect(calls).not.toContain("queue");
+      expect(calls).toContain("navigate:refresh:http://localhost/#top");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("attaches experimental_gesturePush only when the gesture transition define is set", async () => {
     // In real builds `process.env.__NEXT_GESTURE_TRANSITION` is replaced with a
     // boolean literal by the define in packages/vinext/src/index.ts; in vitest

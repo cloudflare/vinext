@@ -175,6 +175,7 @@ export function createServerActionInitiationSnapshot<TRouterState>(options: {
 }
 
 type DiscardedServerActionRefreshScheduler = {
+  hasActiveNavigation(): boolean;
   markNavigationSettled(): void;
   markNavigationStart(): void;
   schedule(): void;
@@ -208,6 +209,9 @@ export function createDiscardedServerActionRefreshScheduler(
   }
 
   return {
+    hasActiveNavigation() {
+      return activeNavigationCount > 0;
+    },
     markNavigationSettled() {
       if (activeNavigationCount > 0) {
         activeNavigationCount -= 1;

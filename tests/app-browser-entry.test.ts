@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -1502,6 +1503,7 @@ describe("app browser entry navigation scheduling", () => {
     });
 
     scheduler.markNavigationStart();
+    expect(scheduler.hasActiveNavigation()).toBe(true);
     scheduler.schedule();
     scheduler.schedule();
     expect(runRefresh).not.toHaveBeenCalled();
@@ -1510,12 +1512,65 @@ describe("app browser entry navigation scheduling", () => {
     expect(runRefresh).not.toHaveBeenCalled();
 
     scheduler.markNavigationSettled();
+    expect(scheduler.hasActiveNavigation()).toBe(false);
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(1);
 
     scheduler.schedule();
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports no active navigation before the first start and after the last settle", () => {
+    const scheduler = createDiscardedServerActionRefreshScheduler({
+      queueTask() {},
+      runRefresh() {},
+    });
+
+    expect(scheduler.hasActiveNavigation()).toBe(false);
+    scheduler.markNavigationStart();
+    scheduler.markNavigationStart();
+    expect(scheduler.hasActiveNavigation()).toBe(true);
+    scheduler.markNavigationSettled();
+    expect(scheduler.hasActiveNavigation()).toBe(true);
+    scheduler.markNavigationSettled();
+    expect(scheduler.hasActiveNavigation()).toBe(false);
+    scheduler.markNavigationSettled();
+    expect(scheduler.hasActiveNavigation()).toBe(false);
+  });
+
+  it("runs a refresh that was queued before a navigation only after that navigation settles", () => {
+    const queued: Array<() => void> = [];
+    const runRefresh = vi.fn();
+    const scheduler = createDiscardedServerActionRefreshScheduler({
+      queueTask(callback) {
+        queued.push(callback);
+      },
+      runRefresh,
+    });
+
+    scheduler.schedule();
+    scheduler.markNavigationStart();
+    queued.shift()?.();
+    expect(scheduler.hasActiveNavigation()).toBe(true);
+    expect(runRefresh).not.toHaveBeenCalled();
+
+    scheduler.markNavigationSettled();
+    expect(scheduler.hasActiveNavigation()).toBe(false);
+    queued.shift()?.();
+    expect(runRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("always constructs the discarded-action refresh scheduler", () => {
+    const source = readFileSync(
+      new URL("../packages/vinext/src/server/app-browser-entry.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("createDiscardedServerActionRefreshScheduler(");
+    expect(source).not.toMatch(
+      /hasServerActions\s*\?\s*createDiscardedServerActionRefreshScheduler/,
+    );
   });
 
   it("does not expose a per-navigation transition override at the controller boundary", () => {

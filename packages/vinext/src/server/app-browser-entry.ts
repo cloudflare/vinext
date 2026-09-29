@@ -341,25 +341,21 @@ const browserNavigationController = createAppBrowserNavigationController({
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
 });
-const discardedServerActionRefreshScheduler = hasServerActions
-  ? createDiscardedServerActionRefreshScheduler({
-      runRefresh() {
-        clearClientNavigationCaches();
-        void getNavigationRuntime()?.functions.navigate?.(
-          window.location.href,
-          0,
-          "refresh",
-          undefined,
-          undefined,
-          true,
-        );
-      },
-    })
-  : {
-      markNavigationSettled() {},
-      markNavigationStart() {},
-      schedule() {},
-    };
+const discardedServerActionRefreshScheduler = createDiscardedServerActionRefreshScheduler({
+  runRefresh() {
+    clearClientNavigationCaches();
+    startTransition(() => {
+      void getNavigationRuntime()?.functions.navigate?.(
+        window.location.href,
+        0,
+        "refresh",
+        undefined,
+        undefined,
+        true,
+      );
+    });
+  },
+});
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
@@ -2939,7 +2935,11 @@ function bootstrapHydration(
         routeId: state.routeId,
       };
     },
+    hasActiveAppNavigation: () => discardedServerActionRefreshScheduler.hasActiveNavigation(),
     navigate: navigateRsc,
+    queueRefresh: () => {
+      discardedServerActionRefreshScheduler.schedule();
+    },
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
     claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) =>

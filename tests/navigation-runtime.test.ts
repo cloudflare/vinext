@@ -90,6 +90,34 @@ describe("navigation runtime contract", () => {
     expect(getNavigationRuntime()).toBeNull();
   });
 
+  it("accepts a runtime whose optional refresh slots are absent", () => {
+    Reflect.set(globalThis, "window", {});
+
+    registerNavigationRuntimeFunctions({});
+
+    expect(getNavigationRuntime()?.functions.hasActiveAppNavigation).toBeUndefined();
+    expect(getNavigationRuntime()?.functions.queueRefresh).toBeUndefined();
+  });
+
+  it("rejects a non-function hasActiveAppNavigation or queueRefresh slot", () => {
+    for (const functions of [
+      { hasActiveAppNavigation: "not callable" },
+      { queueRefresh: "not callable" },
+    ]) {
+      const runtimeWindow = {};
+      Reflect.set(globalThis, "window", runtimeWindow);
+      Reflect.set(runtimeWindow, NAVIGATION_RUNTIME_KEY, {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions,
+      });
+
+      expect(getNavigationRuntime()).toBeNull();
+    }
+  });
+
   it("rejects route manifests without the map-backed segment graph contract", () => {
     const runtimeWindow = {};
     Reflect.set(globalThis, "window", runtimeWindow);

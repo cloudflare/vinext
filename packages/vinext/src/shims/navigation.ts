@@ -2661,6 +2661,7 @@ export async function navigateClientSide(
     commitHashOnlyHistoryState(fullHref, earlyIntent.mode, earlyIntent.scroll);
     clearAppNavigationFailureTarget(fullHref);
     commitClientNavigationState();
+    releaseTrackedHashNavigation();
     if (earlyIntent.scroll) {
       scrollToHashTarget(earlyIntent.hash);
     }
@@ -2743,19 +2744,45 @@ export async function navigateClientSide(
 // useEffect dependency arrays, React.memo bailouts).
 // ---------------------------------------------------------------------------
 
-// `router.refresh()` can run in the same outer transition after push/replace
-// while the nested navigation transition is still being scheduled.
+// `router.refresh()` can run in the same task as push/replace/gesture. The
+// token stays until a microtask so an external or MPA navigation, which never
+// enters navigateRsc, is not replaced by a second setState. A hash-only
+// update releases the token captured for that call before push returns.
 let scheduledAppRouterNavigationCount = 0;
+const scheduledAppRouterNavigationReleases: Array<() => void> = [];
+const trackedAppRouterNavigationReleases: Array<(() => void) | undefined> = [];
 
 function trackScheduledAppRouterNavigation(): () => void {
   scheduledAppRouterNavigationCount += 1;
   let released = false;
-
-  return () => {
+  const release = () => {
     if (released) return;
     released = true;
     scheduledAppRouterNavigationCount = Math.max(0, scheduledAppRouterNavigationCount - 1);
+    const index = scheduledAppRouterNavigationReleases.indexOf(release);
+    if (index !== -1) {
+      scheduledAppRouterNavigationReleases.splice(index, 1);
+    }
   };
+  scheduledAppRouterNavigationReleases.push(release);
+  return release;
+}
+
+function runInsideTrackedAppRouterNavigation(navigate: () => void): void {
+  // Capture this call's token before navigateClientSide. onRouterTransitionStart
+  // can push another token before a hash-only return, and that return must
+  // release this call rather than the newest one.
+  const release = scheduledAppRouterNavigationReleases.at(-1);
+  trackedAppRouterNavigationReleases.push(release);
+  try {
+    navigate();
+  } finally {
+    trackedAppRouterNavigationReleases.pop();
+  }
+}
+
+function releaseTrackedHashNavigation(): void {
+  trackedAppRouterNavigationReleases.at(-1)?.();
 }
 
 function hasScheduledAppRouterNavigation(): boolean {
@@ -2787,7 +2814,9 @@ const _appRouter: AppRouterInstance = {
     const releaseNavigation = trackScheduledAppRouterNavigation();
     try {
       React.startTransition(() => {
-        void navigateClientSide(href, "push", options?.scroll !== false, true);
+        runInsideTrackedAppRouterNavigation(() => {
+          void navigateClientSide(href, "push", options?.scroll !== false, true);
+        });
       });
     } catch (error) {
       releaseNavigation();
@@ -2802,7 +2831,9 @@ const _appRouter: AppRouterInstance = {
     const releaseNavigation = trackScheduledAppRouterNavigation();
     try {
       React.startTransition(() => {
-        void navigateClientSide(href, "replace", options?.scroll !== false, true);
+        runInsideTrackedAppRouterNavigation(() => {
+          void navigateClientSide(href, "replace", options?.scroll !== false, true);
+        });
       });
     } catch (error) {
       releaseNavigation();
@@ -2820,16 +2851,24 @@ const _appRouter: AppRouterInstance = {
   },
   refresh(): void {
     if (isServer) return;
+    const runtime = getNavigationRuntime();
+    const queueRefresh = runtime?.functions.queueRefresh;
+    // navigateRsc is already fetching. Queue one refresh and let it run
+    // after that navigation settles, against the committed URL.
+    if (queueRefresh && runtime?.functions.hasActiveAppNavigation?.()) {
+      queueRefresh();
+      return;
+    }
     // Drop cached RSC payloads for every previously-visited / prefetched route
     // before re-fetching. Next.js's refresh-reducer invalidates the entire
     // segment cache (refresh-reducer.ts → invalidateSegmentCacheEntries), so
     // without this, a stale cached payload for a sibling route (e.g. a page
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
-    getNavigationRuntime()?.functions.clearNavigationCaches?.();
+    runtime?.functions.clearNavigationCaches?.();
     if (hasScheduledAppRouterNavigation()) return;
     // Re-fetch the current page's RSC stream
-    const rscNavigate = getNavigationRuntime()?.functions.navigate;
+    const rscNavigate = runtime?.functions.navigate;
     if (rscNavigate) {
       const navigate = () => {
         void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true);
@@ -3094,17 +3133,20 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
       appHref = localPath;
     }
 
-    // Track the scheduled navigation like push/replace so a `refresh()` issued
-    // in the same task skips its redundant re-fetch (see
-    // hasScheduledAppRouterNavigation() in refresh()). Unlike push/replace
-    // there is no synchronous React.startTransition dispatch here that could
-    // throw, so no try/catch unwind is needed. The un-awaited
-    // `void navigateClientSide(...)` deliberately matches push/replace's
-    // fire-and-forget shape (their try/catch only covers the synchronous
-    // startTransition throw): an RSC fetch rejection mid-gesture surfaces the
-    // same way it would for those siblings.
+    // Track the scheduled navigation like push/replace. A refresh in this task
+    // queues behind navigateRsc, or runs after a hash-only update. The token
+    // still suppresses a second fetch when this gesture does not enter
+    // navigateRsc (see refresh()). Unlike push/replace there is no synchronous
+    // React.startTransition dispatch here that could throw, so no try/catch
+    // unwind is needed. The un-awaited `void navigateClientSide(...)`
+    // deliberately matches push/replace's fire-and-forget shape (their
+    // try/catch only covers the synchronous startTransition throw): an RSC
+    // fetch rejection mid-gesture surfaces the same way it would for those
+    // siblings.
     const releaseNavigation = trackScheduledAppRouterNavigation();
-    void navigateClientSide(appHref, "push", options?.scroll !== false, false, "synchronous");
+    runInsideTrackedAppRouterNavigation(() => {
+      void navigateClientSide(appHref, "push", options?.scroll !== false, false, "synchronous");
+    });
     releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   };
 }
