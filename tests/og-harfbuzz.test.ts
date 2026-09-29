@@ -23,11 +23,16 @@ afterAll(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
 type TransformHandler = (code: string, id: string) => { code: string } | null;
 
-function createTransform(command: "build" | "serve", root: string): TransformHandler {
+function createTransform(
+  command: "build" | "serve",
+  root: string,
+  cacheDir = path.join(root, "node_modules", ".vite"),
+): TransformHandler {
   const plugin = createOgHarfbuzzPlugin();
-  (plugin.configResolved as (config: { root: string; command: string }) => void)({
+  (plugin.configResolved as (config: { root: string; command: string; cacheDir: string }) => void)({
     root,
     command,
+    cacheDir,
   });
   const { handler } = plugin.transform as { handler: TransformHandler };
   const context = {
@@ -141,7 +146,7 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     expect(callbackImports.length).toBeGreaterThan(0);
     for (const [, file] of callbackImports) {
       expect(path.dirname(file)).toBe(
-        path.join(root, ".vinext", "og-assets").replaceAll("\\", "/"),
+        path.join(root, "node_modules", ".vite", "vinext", "og-assets").replaceAll("\\", "/"),
       );
     }
     expect(fs.readdirSync(ogDistDir)).toEqual(installedFiles);
@@ -149,6 +154,29 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     const rendered = render(writeOgCopy("index.edge.js", result!.code), WORKERD_SIMULATION);
     expect(rendered.status).toBe(200);
     expect(rendered.signature).toEqual(PNG_SIGNATURE);
+  });
+
+  it("writes cold dev callback modules inside the configured Vite cache directory", () => {
+    const root = path.join(tmpRoot, "dev-project");
+    const cacheDir = path.join(tmpRoot, "custom-vite-cache");
+    const result = createTransform(
+      "serve",
+      root,
+      cacheDir,
+    )(fs.readFileSync(edgeEntry, "utf8"), edgeEntry);
+    const callbacks = [
+      ...result!.code.matchAll(/from "([^"]*harfbuzz-callback-\w+\.wasm)\?module"/g),
+    ];
+    expect(callbacks.length).toBeGreaterThan(0);
+    for (const [, file] of callbacks) {
+      // Vite ignores cacheDir in its watcher. Creating these files in the
+      // watched app root causes Cloudflare to restart during the first render.
+      expect(path.dirname(file)).toBe(
+        path.join(cacheDir, "vinext", "og-assets").replaceAll("\\", "/"),
+      );
+      expect(WebAssembly.validate(fs.readFileSync(file))).toBe(true);
+    }
+    expect(fs.existsSync(path.join(root, ".vinext", "og-assets"))).toBe(false);
   });
 
   it("tolerates cosmetic changes to the bundled glue", () => {
