@@ -34,7 +34,7 @@ import MagicString from "magic-string";
 import { parseAst, type ESTree, type Plugin } from "vite";
 import { forEachAstChild, getAstName, staticStringValue } from "./ast-utils.js";
 import { isFunctionNode } from "./ast-scope.js";
-import { magicStringTransformResult } from "./transform-result.js";
+import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
 
 const HARFBUZZ_WASM = "hb.wasm";
 
@@ -325,7 +325,7 @@ export function createOgHarfbuzzPlugin(): Plugin {
         }
 
         output.prepend(`${preamble.join("\n")}\n${INSTANTIATE_WASM}\n`);
-        return magicStringTransformResult(output);
+        return omitUnusedBuildSourcemap(this.environment, magicStringTransformResult(output));
       },
     },
   };

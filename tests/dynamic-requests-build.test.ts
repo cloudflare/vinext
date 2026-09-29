@@ -205,6 +205,37 @@ describe("App Router dynamic requests", () => {
     expect(runTransform("server", "/app/node_modules/transpiled/index.js")).toBeTruthy();
   });
 
+  it("omits sourcemaps only for builds that discard them", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const runTransform = (
+      mode: "dev" | "build",
+      sourcemap: boolean | "inline" | "hidden" = false,
+    ): { code: string; map: unknown } | null =>
+      transform.handler.call(
+        { environment: { mode, config: { consumer: "server", build: { sourcemap } } } } as never,
+        "import(request)",
+        "/app/page.tsx",
+      ) as never;
+
+    const withoutMap = runTransform("build");
+    expect(withoutMap?.map).toBeNull();
+    expect(withoutMap?.code).toContain("MODULE_NOT_FOUND");
+    // The cached result is shared across environments, so later consumers
+    // that need the sourcemap still receive it.
+    for (const result of [
+      runTransform("dev"),
+      runTransform("build", true),
+      runTransform("build", "hidden"),
+      runTransform("build", "inline"),
+    ]) {
+      expect(result?.code).toBe(withoutMap?.code);
+      expect(result?.map).toMatchObject({ version: 3, mappings: expect.any(String) });
+    }
+  });
+
   it("only rewrites fully dynamic unbound requests", () => {
     expect(
       _transformVeryDynamicRequests("export const value = getValue();", "/app/page.tsx"),

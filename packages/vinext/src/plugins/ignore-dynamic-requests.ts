@@ -14,7 +14,7 @@ import {
   unwrapExpression,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
-import { magicStringTransformResult } from "./transform-result.js";
+import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -865,7 +865,10 @@ export function createIgnoreDynamicRequestsPlugin(
         ) {
           return null;
         }
-        return cached(id, code, undefined, () => transformVeryDynamicRequests(code, id));
+        return omitUnusedBuildSourcemap(
+          this.environment,
+          cached(id, code, undefined, () => transformVeryDynamicRequests(code, id)),
+        );
       },
     },
   };

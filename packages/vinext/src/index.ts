@@ -335,6 +335,7 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
+import { omitUnusedBuildSourcemap } from "./plugins/transform-result.js";
 import { isServerEnvironment } from "./plugins/environment.js";
 import {
   claimViteCliBuildInvocation,
@@ -7214,15 +7215,18 @@ export const loadServerActionClient = ${
           const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
             replaceProcessBrowser ? processBrowser : "-"
           }`;
-          return cachedConsumerConditionTransform(id, code, variant, () =>
-            replaceConsumerEnvironmentConditions(
-              code,
-              {
-                ...(replaceTypeofWindow ? { typeofWindow } : {}),
-                ...(replaceProcessBrowser ? { processBrowser } : {}),
-                pruneUnreachableImports: scansImports,
-              },
-              id,
+          return omitUnusedBuildSourcemap(
+            this.environment,
+            cachedConsumerConditionTransform(id, code, variant, () =>
+              replaceConsumerEnvironmentConditions(
+                code,
+                {
+                  ...(replaceTypeofWindow ? { typeofWindow } : {}),
+                  ...(replaceProcessBrowser ? { processBrowser } : {}),
+                  pruneUnreachableImports: scansImports,
+                },
+                id,
+              ),
             ),
           );
         },

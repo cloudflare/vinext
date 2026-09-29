@@ -50,7 +50,7 @@ import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import { resolveHarfbuzzWasmPath } from "./og-harfbuzz.js";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
-import { magicStringTransformResult } from "./transform-result.js";
+import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
@@ -196,7 +196,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         }
 
         if (!didReplace) return null;
-        return magicStringTransformResult(s);
+        return omitUnusedBuildSourcemap(this.environment, magicStringTransformResult(s));
       },
     },
   } satisfies Plugin;
