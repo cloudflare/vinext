@@ -48,12 +48,14 @@ const UNCHANGED_REQUIRE_CALL = new RegExp(String.raw`${UNCHANGED_STRING_ARGUMENT
 const UNCHANGED_IMPORT_CALL = new RegExp(String.raw`${UNCHANGED_STRING_ARGUMENT}[,)]`, "y");
 // A call, comment (including HTML-like `<!--` and `-->`), optional call, or
 // TypeScript wrapper after `require`.
-const POSSIBLE_REQUIRE_CALLEE_FOLLOWER = /\s*(?:[(/<]|-->|\?\.|!(?!=)|as\b|satisfies\b)/y;
+// Both follower checks conservatively include HTML's `--!>` spelling too;
+// the AST parser, not this prescan, decides whether the JavaScript is valid.
+const POSSIBLE_REQUIRE_CALLEE_FOLLOWER = /\s*(?:[(/<]|--!?>|\?\.|!(?!=)|as\b|satisfies\b)/y;
 const CLOSING_PAREN_FOLLOWER = /\s*\)/y;
 // `import(...)`, `import /* comment */ (...)` (HTML-like comments included),
 // and phase imports such as `import.source(...)`. `import.meta` is the only
 // other `import.` form.
-const POSSIBLE_IMPORT_EXPRESSION_FOLLOWER = /\s*(?:[(/<]|-->|\.(?!\s*meta\b))/y;
+const POSSIBLE_IMPORT_EXPRESSION_FOLLOWER = /\s*(?:[(/<]|--!?>|\.(?!\s*meta\b))/y;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RSC_PATH =
   /[\\/]node_modules[\\/](?:\.pnpm[\\/][^/\\]+[\\/]node_modules[\\/])?@vitejs[\\/]plugin-rsc[\\/]/;

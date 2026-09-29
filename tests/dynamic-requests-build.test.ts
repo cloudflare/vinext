@@ -268,6 +268,15 @@ describe("App Router dynamic requests", () => {
     }
   });
 
+  it("defers HTML comment end variants to the AST parser", () => {
+    for (const callee of ["require", "import"]) {
+      // Unlike Annex B's `-->`, HTML's `--!>` is not valid JavaScript here.
+      const code = `require("package");\n${callee}\n--!>comment\n(request)`;
+      expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
+      expect(_transformVeryDynamicRequests(code, "/app/page.js"), code).toBeNull();
+    }
+  });
+
   it("matches Next.js environment scoping", () => {
     const transform = createIgnoreDynamicRequestsPlugin(() => [
       "transpiled",
