@@ -9,11 +9,17 @@ export type ErrorInfo = {
   error: unknown;
   reset: () => void;
   retry: () => void;
-  unstable_retry: () => void;
 };
 
-export declare function catchError<P extends object>(
+// oxlint-disable-next-line typescript/no-explicit-any -- Match Next.js's public generic constraint exactly.
+type UserProps = Record<string, any>;
+
+export declare function catchError<P extends UserProps>(
   fallback: (props: P, errorInfo: ErrorInfo) => ReactNode,
 ): ComponentType<P & { children?: ReactNode }>;
 
-export { catchError as unstable_catchError };
+// Compatibility for applications using the pre-16.3 API. Keep this out of
+// ErrorInfo so values valid in Next.js remain valid for the stable API.
+export declare function unstable_catchError<P extends UserProps>(
+  fallback: (props: P, errorInfo: ErrorInfo & { unstable_retry: () => void }) => ReactNode,
+): ComponentType<P & { children?: ReactNode }>;

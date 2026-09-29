@@ -147,11 +147,10 @@ import ErrorPage, { catchError, unstable_catchError, type ErrorInfo, type ErrorP
 interface Props { title: string }
 const Boundary = catchError((props: Props, info: ErrorInfo) => {
   info.retry();
-  info.unstable_retry();
   info.reset();
   return props.title;
 });
-const LegacyBoundary = unstable_catchError((props: Props, info: ErrorInfo) => {
+const LegacyBoundary = unstable_catchError((props: Props, info) => {
   info.unstable_retry();
   return props.title;
 });
@@ -161,8 +160,20 @@ const InferredBoundary = catchError((props: Props, info) => {
   info.retry("unexpected");
   return props.title;
 });
+// Next.js ErrorInfo can be constructed without the former unstable field.
+const info: ErrorInfo = { error: null, reset() {}, retry() {} };
+// The stable public shape must have exactly the upstream keys.
+type Assert<T extends true> = T;
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
+  (<T>() => T extends B ? 1 : 2) ? true : false;
+type UpstreamErrorInfo = { error: unknown; reset: () => void; retry: () => void };
+type UpstreamCatchError = <P extends Record<string, any>>(
+  fallback: (props: P, errorInfo: UpstreamErrorInfo) => import("react").ReactNode,
+) => import("react").ComponentType<P & { children?: import("react").ReactNode }>;
+type ErrorInfoContract = Assert<Equal<ErrorInfo, UpstreamErrorInfo>>;
+type CatchErrorContract = Assert<Equal<typeof catchError, UpstreamCatchError>>;
 const errorProps: ErrorProps = { statusCode: 500 };
-void [Boundary, LegacyBoundary, InferredBoundary, ErrorPage, errorProps];
+void [Boundary, LegacyBoundary, InferredBoundary, ErrorPage, errorProps, info];
 `,
     );
   }

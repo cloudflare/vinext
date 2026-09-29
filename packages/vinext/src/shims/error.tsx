@@ -10,6 +10,11 @@
  * public surface.
  */
 import React from "react";
+import type {
+  catchError as NextCatchError,
+  unstable_catchError as LegacyCatchError,
+  ErrorInfo,
+} from "@vinext/types/next/vinext/error";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import Head from "./head.js";
 import { isNextRouterError } from "./navigation.js";
@@ -163,21 +168,18 @@ export default ErrorComponent;
 //   - The react-server entry exports a client-only diagnostic stub.
 // ---------------------------------------------------------------------------
 
-export type ErrorInfo = {
-  error: unknown;
-  reset: () => void;
-  retry: () => void;
-  unstable_retry: () => void;
-};
+export type { ErrorInfo } from "@vinext/types/next/vinext/error";
 
-type _UserProps = object;
+type LegacyErrorInfo = ErrorInfo & { unstable_retry: () => void };
+// oxlint-disable-next-line typescript/no-explicit-any -- Match Next.js's public generic constraint exactly.
+type _UserProps = Record<string, any>;
 
 type _CatchErrorState = { thrownValue: unknown } | null;
 type _CatchErrorProps<P extends _UserProps> = {
   children?: React.ReactNode;
   fallback: React.ComponentType<{
     props: P;
-    errorInfo: ErrorInfo;
+    errorInfo: LegacyErrorInfo;
   }>;
   isPagesRouter: boolean;
   pathname: string | null;
@@ -270,7 +272,7 @@ class _CatchError<P extends _UserProps> extends React.Component<
   render(): React.ReactNode {
     if (this.state.error) {
       const Fallback = this.props.fallback;
-      const errorInfo: ErrorInfo = {
+      const errorInfo: LegacyErrorInfo = {
         error: this.state.error.thrownValue,
         reset: this.reset,
         retry: this.retry,
@@ -290,11 +292,16 @@ class _CatchError<P extends _UserProps> extends React.Component<
  * Ported from Next.js:
  *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/catch-error.tsx
  */
-export function catchError<P extends _UserProps>(
-  fallback: (props: P, errorInfo: ErrorInfo) => React.ReactNode,
+function createCatchError<P extends _UserProps>(
+  fallback: (props: P, errorInfo: LegacyErrorInfo) => React.ReactNode,
 ): React.ComponentType<P & { children?: React.ReactNode }> {
-  const Fallback = ({ props, errorInfo }: { props: P; errorInfo: ErrorInfo }): React.ReactNode =>
-    fallback(props, errorInfo);
+  const Fallback = ({
+    props,
+    errorInfo,
+  }: {
+    props: P;
+    errorInfo: LegacyErrorInfo;
+  }): React.ReactNode => fallback(props, errorInfo);
 
   Fallback.displayName = fallback.name || "CatchErrorFallback";
 
@@ -323,4 +330,5 @@ export function catchError<P extends _UserProps>(
 
 // Next.js stabilized this API in 16.3. Keep the unstable name for existing
 // vinext applications while exposing the current public name.
-export { catchError as unstable_catchError };
+export const catchError: typeof NextCatchError = createCatchError;
+export const unstable_catchError: typeof LegacyCatchError = createCatchError;

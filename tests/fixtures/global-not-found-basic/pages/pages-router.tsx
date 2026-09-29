@@ -1,15 +1,15 @@
 import { useState } from "react";
-import { unstable_catchError, type ErrorInfo } from "next/error";
+import { unstable_catchError } from "next/error";
 
 function ErrorFallback(
   { clearError }: { clearError: () => void },
-  { error, reset, unstable_retry }: ErrorInfo,
+  { error, reset, unstable_retry }: Parameters<Parameters<typeof unstable_catchError>[0]>[1],
 ) {
   const [retryError, setRetryError] = useState<string | null>(null);
 
   return (
     <>
-      <p id="pages-error-message">{error.message}</p>
+      <p id="pages-error-message">{error instanceof Error ? error.message : String(error)}</p>
       <button
         id="pages-reset"
         onClick={() => {

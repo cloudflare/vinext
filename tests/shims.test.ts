@@ -2399,7 +2399,9 @@ describe("next/error shim — catchError / unstable_catchError", () => {
         const InnerCatchError = wrapperResult!.type as unknown as new (props: object) => {
           state: { error: { thrownValue: unknown } | null };
           render(): React.ReactElement<{
-            errorInfo: import("../packages/vinext/src/shims/error.js").ErrorInfo;
+            errorInfo: import("../packages/vinext/src/shims/error.js").ErrorInfo & {
+              unstable_retry(): void;
+            };
           }>;
         };
         const instance = new InnerCatchError({
@@ -2465,7 +2467,9 @@ describe("next/error shim — catchError / unstable_catchError", () => {
       const InnerCatchError = wrapperResult!.type as unknown as new (props: object) => {
         state: { error: { thrownValue: unknown } | null };
         render(): React.ReactElement<{
-          errorInfo: import("../packages/vinext/src/shims/error.js").ErrorInfo;
+          errorInfo: import("../packages/vinext/src/shims/error.js").ErrorInfo & {
+            unstable_retry(): void;
+          };
         }>;
       };
       const instance = new InnerCatchError({
