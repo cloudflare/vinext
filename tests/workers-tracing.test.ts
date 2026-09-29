@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { createFrameworkTracer } from "../packages/vinext/src/server/framework-tracer.js";
 import {
   setFrameworkRequestRoute,
@@ -25,11 +25,13 @@ type RecordedSpan = {
   exceptions: WorkersTracingException[];
   name: string;
   parent?: string;
+  status?: { code: "error"; message?: string };
 };
 
 function fakeTracing(spans: RecordedSpan[], isTraced = true) {
   const active = new AsyncLocalStorage<{ recorded: RecordedSpan; span: WorkersTracingSpan }>();
   return {
+    getActiveSpan: () => active.getStore()?.span,
     enterSpan<T>(name: string, callback: (span: WorkersTracingSpan) => T): T {
       const recorded: RecordedSpan = {
         attributes: {},
@@ -43,6 +45,12 @@ function fakeTracing(spans: RecordedSpan[], isTraced = true) {
         recordException: (exception) => recorded.exceptions.push(exception),
         setAttribute: (key, value) => {
           recorded.attributes[key] = value;
+        },
+        setStatus: (status) => {
+          recorded.status = status;
+        },
+        updateName: (nextName) => {
+          recorded.name = nextName;
         },
       };
       return active.run({ recorded, span }, () => callback(span));
@@ -105,13 +113,17 @@ describe("Workers framework tracing integration", () => {
           "next.span_type": "BaseServer.handleRequest",
         },
         exceptions: [],
-        name: "GET /products/[id]",
+        name: "RSC GET /products/[id]",
         parent: undefined,
       },
     ]);
   });
 
-  it("keeps the request root beneath the active Worker span", async () => {
+  // Next.js propagates the matched route to the enclosing platform span:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+  // Route assertions ported from Next.js:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/otel-parent-span-propagation/otel-parent-span-propagation.test.ts
+  it("annotates the native parent and finalizes the request name and error status", async () => {
     const spans: RecordedSpan[] = [];
     const tracing = fakeTracing(spans);
     registerFrameworkTracingIntegration(createWorkersTracingIntegration(tracing));
@@ -132,7 +144,7 @@ describe("Workers framework tracing integration", () => {
 
     expect(spans).toEqual([
       {
-        attributes: {},
+        attributes: { "http.route": "/products/[id]" },
         exceptions: [],
         name: "worker.handler",
         parent: undefined,
@@ -151,8 +163,9 @@ describe("Workers framework tracing integration", () => {
           "next.span_type": "BaseServer.handleRequest",
         },
         exceptions: [],
-        name: "GET",
+        name: "GET /products/[id]",
         parent: "worker.handler",
+        status: { code: "error" },
       },
       {
         attributes: {
@@ -162,9 +175,126 @@ describe("Workers framework tracing integration", () => {
         },
         exceptions: [],
         name: "start response",
-        parent: "GET",
+        parent: "GET /products/[id]",
       },
     ]);
+  });
+
+  it("annotates the invocation root returned outside a custom span", () => {
+    const root = { isTraced: true, setAttribute: vi.fn() };
+    const tracing = {
+      ...fakeTracing([]),
+      getActiveSpan() {
+        expect(this).toBe(tracing);
+        return root;
+      },
+    };
+    const tracer = createFrameworkTracer([createWorkersTracingIntegration(tracing)]);
+
+    tracer.getActiveScopeSpan()?.setAttribute("http.route", "/");
+
+    expect(root.setAttribute).toHaveBeenCalledWith("http.route", "/");
+  });
+
+  it("uses the active async scope without leaking between concurrent requests", async () => {
+    const spans: RecordedSpan[] = [];
+    const tracer = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing(spans))]);
+    expect(tracer.getActiveScopeSpan()).toBeUndefined();
+
+    await Promise.all(
+      ["first", "second"].map((name) =>
+        tracer.trace({ type: "BaseServer.handleRequest", name }, async () => {
+          await Promise.resolve();
+          tracer.getActiveScopeSpan()?.setAttribute("request", name);
+        }),
+      ),
+    );
+
+    expect(spans.map(({ name, attributes }) => [name, attributes.request])).toEqual([
+      ["first", "first"],
+      ["second", "second"],
+    ]);
+    expect(tracer.getActiveScopeSpan()).toBeUndefined();
+  });
+
+  it.each([
+    ["string", "failed", "failed"],
+    [
+      "structured",
+      { code: "RATE_LIMITED", message: "retry later" },
+      { code: "RATE_LIMITED", message: "retry later" },
+    ],
+    ["numeric code", { code: 0 }, { code: 0 }],
+    ["name only", { name: "Unavailable" }, { name: "Unavailable" }],
+    [
+      "stack",
+      { message: "failed", stack: "application stack" },
+      { message: "failed", stack: "application stack" },
+    ],
+    ["number", 42, "42"],
+    ["null", null, "null"],
+    ["undefined", undefined, "undefined"],
+    ["unsupported object", { unrelated: true }, "[object Object]"],
+  ])(
+    "preserves %s exceptions and rethrows the original value",
+    async (_name, failure, expected) => {
+      const spans: RecordedSpan[] = [];
+      const tracer = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing(spans))]);
+
+      await expect(
+        tracer.trace({ type: "AppRender.getBodyResult" }, () => Promise.reject(failure)),
+      ).rejects.toBe(failure);
+
+      expect(spans[0]?.exceptions).toEqual([expected]);
+      expect(spans[0]?.status).toEqual({ code: "error" });
+    },
+  );
+
+  it("preserves an Error's code, name, message, and stack", () => {
+    const failure = Object.assign(new TypeError("broken"), { code: "ERR_TEST" });
+    const spans: RecordedSpan[] = [];
+    const tracer = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing(spans))]);
+
+    expect(() =>
+      tracer.trace({ type: "AppRender.getBodyResult" }, () => {
+        throw failure;
+      }),
+    ).toThrow(failure);
+
+    expect(spans[0]?.exceptions).toEqual([
+      { code: "ERR_TEST", name: "TypeError", message: "broken", stack: failure.stack },
+    ]);
+    expect(spans[0]?.status).toEqual({ code: "error", message: "broken" });
+  });
+
+  it("keeps older runtimes working without optional span APIs", async () => {
+    const attributes: Record<string, boolean | number | string> = {};
+    const tracer = createFrameworkTracer([
+      createWorkersTracingIntegration({
+        enterSpan: (_name, callback) =>
+          callback({
+            isTraced: false,
+            setAttribute: (key, value) => {
+              attributes[key] = value;
+            },
+          }),
+      }),
+    ]);
+    expect(tracer.getActiveScopeSpan()).toBeUndefined();
+    expect(
+      tracer.trace({ type: "BaseServer.handleRequest" }, (span) => {
+        span.updateName("GET /products/[id]");
+        span.setErrorStatus("failed");
+        span.recordException(new Error("failed"));
+        return 42;
+      }),
+    ).toBe(42);
+    expect(attributes["next.span_name"]).toBe("GET /products/[id]");
+    const failure = new Error("failed");
+    await expect(
+      tracer.trace({ type: "AppRender.getBodyResult" }, () => Promise.reject(failure)),
+    ).rejects.toBe(failure);
+    expect(attributes["error.type"]).toBe("Error");
   });
 
   it("records failures and still executes work when the native span is not sampled", async () => {
