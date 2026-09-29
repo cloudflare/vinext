@@ -109,6 +109,8 @@ describe("vinext:optimize-imports plugin", () => {
 
   it("skips the full import scan when no optimized package appears as a quoted source", () => {
     const hasOptimizedImport = createOptimizedImportSourceMatcher(["lucide-react"]);
+    // The prefilter can't change the result, so count calls to the expensive
+    // import regex (the only one whose source contains "import") instead.
     const testSpy = vi.spyOn(RegExp.prototype, "test");
     const importScans = () =>
       testSpy.mock.contexts.filter((re) => re instanceof RegExp && re.source.includes("import"))
