@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path, { toSlash } from "pathslash";
 import type { InlineConfig } from "vite";
 import { findViteConfigPath } from "./project.js";
@@ -121,12 +122,25 @@ export function findViteRoot(command: Command, args: string[]) {
   return { root, shouldPreflight: preflight };
 }
 
-function commandArguments(argv: string[]): { command: Command; args: string[] } | undefined {
-  const entry = toSlash(argv[1] ?? "");
-  const vite =
+function isViteEntry(entry: string): boolean {
+  return (
     entry.endsWith("/vite/bin/vite.js") ||
     entry.endsWith("/vite/node/cli.js") ||
-    entry.endsWith("/dist/vite/node/cli.js");
+    entry.endsWith("/dist/vite/node/cli.js")
+  );
+}
+
+function commandArguments(argv: string[]): { command: Command; args: string[] } | undefined {
+  const entry = toSlash(argv[1] ?? "");
+  let vite = isViteEntry(entry);
+  if (!vite && entry && path.basename(entry) !== "vp") {
+    try {
+      // npm's POSIX bin links remain in argv[1] even though Node loads their target.
+      vite = isViteEntry(toSlash(fs.realpathSync.native(entry)));
+    } catch {
+      // Non-file or missing entries are not Vite CLI invocations.
+    }
+  }
   let args = argv.slice(2);
   if (!vite) {
     if (path.basename(entry) !== "vp") return undefined;

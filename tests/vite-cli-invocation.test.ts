@@ -1,6 +1,7 @@
+import fs from "node:fs";
 import path from "node:path";
 import { toSlash } from "pathslash";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   claimViteCliBuildInvocation,
   findViteRoot,
@@ -223,7 +224,7 @@ describe("isViteCliInvocation", () => {
         "false",
         "project",
       ]),
-    ).toMatchObject({ command: "build", root: path.resolve("false"), rootArg: "false" });
+    ).toMatchObject({ command: "build", root: toSlash(path.resolve("false")), rootArg: "false" });
   });
 
   it.each(["build", "dev"] as const)("resolves %s mode after the project root", (command) => {
@@ -311,7 +312,95 @@ describe("isViteCliInvocation", () => {
         "--config",
         "second.config.ts",
       ]);
-      expect(invocation?.configFile).toBe(path.resolve(expected));
+      expect(invocation?.configFile).toBe(toSlash(path.resolve(expected)));
     }
+  });
+});
+
+describe("symlinked Vite CLI invocations", () => {
+  const entry = path.resolve("node_modules/.bin/vite");
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    "vite/bin/vite.js",
+    "vite/node/cli.js",
+    "@voidzero-dev/vite-plus-core/dist/vite/node/cli.js",
+  ])("recognizes a bin link to %s", (target) => {
+    vi.spyOn(fs.realpathSync, "native").mockReturnValue(path.resolve("node_modules", target));
+
+    expect(
+      getViteCliInvocation([
+        "node",
+        entry,
+        "--mode",
+        "staging",
+        "build",
+        "app",
+        "--config",
+        "vite.prod.ts",
+      ]),
+    ).toEqual({
+      command: "build",
+      mode: "staging",
+      root: toSlash(path.resolve("app")),
+      rootArg: "app",
+      configFile: toSlash(path.resolve("vite.prod.ts")),
+    });
+  });
+
+  it.each([{ args: [] }, { args: ["dev"] }, { args: ["serve"] }, { args: ["app"] }])(
+    "recognizes dev arguments $args",
+    ({ args }) => {
+      vi.spyOn(fs.realpathSync, "native").mockReturnValue(
+        path.resolve("node_modules/vite/bin/vite.js"),
+      );
+
+      expect(isViteCliInvocation("dev", ["node", entry, ...args])).toBe(true);
+    },
+  );
+
+  it.each(["preview", "optimize"])("does not claim %s as a dev or build command", (command) => {
+    vi.spyOn(fs.realpathSync, "native").mockReturnValue(
+      path.resolve("node_modules/vite/bin/vite.js"),
+    );
+
+    expect(getViteCliInvocation(["node", entry, command])).toBeUndefined();
+  });
+
+  it("does not recognize a bin named vite that points to another tool", () => {
+    vi.spyOn(fs.realpathSync, "native").mockReturnValue(path.resolve("tools/build.js"));
+
+    expect(getViteCliInvocation(["node", entry, "build"])).toBeUndefined();
+  });
+
+  it("ignores entries whose real path cannot be resolved", () => {
+    vi.spyOn(fs.realpathSync, "native").mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+
+    expect(getViteCliInvocation(["node", entry, "build"])).toBeUndefined();
+    expect(getViteCliInvocation([])).toBeUndefined();
+  });
+
+  it("preserves vp command parsing when its executable has a different real name", () => {
+    vi.spyOn(fs.realpathSync, "native").mockReturnValue(path.resolve("tools/vite-plus.js"));
+
+    expect(
+      getViteCliInvocation(["node", path.resolve("node_modules/.bin/vp"), "exec", "vite", "build"]),
+    ).toMatchObject({ command: "build" });
+  });
+
+  it("lets a symlinked CLI claim the build lifecycle only once", async () => {
+    vi.resetModules();
+    const { claimViteCliBuildInvocation: claim } =
+      await import("../packages/vinext/src/utils/vite-cli-invocation.js");
+    vi.spyOn(fs.realpathSync, "native").mockReturnValue(
+      path.resolve("node_modules/vite/bin/vite.js"),
+    );
+
+    expect(claim(["node", entry, "preview"])).toBe(false);
+    expect(claim(["node", entry, "build"])).toBe(true);
+    expect(claim(["node", entry, "build"])).toBe(false);
   });
 });

@@ -245,6 +245,56 @@ afterEach(() => {
 });
 
 describe("configured vinext build contract", () => {
+  // npm uses file symlinks on POSIX and command shims on Windows.
+  it.skipIf(process.platform === "win32")(
+    "runs static export through an npm script with a symlinked Vite entry",
+    () => {
+      const root = createAppProject();
+      write(root, "next.config.mjs", 'export default { output: "export", trailingSlash: true };\n');
+      // Keep the npm launcher separate from the fixture's shared node_modules.
+      const launcher = path.join(root, "npm-launcher");
+      write(
+        launcher,
+        "package.json",
+        JSON.stringify({ type: "module", scripts: { build: "vite build .." } }),
+      );
+      const viteBin = path.join(launcher, "node_modules/vite/bin/vite.js");
+      // The workspace's Vite+ CLI has no shebang; use Vite's bin entry shape.
+      write(
+        launcher,
+        "node_modules/vite/bin/vite.js",
+        `#!/usr/bin/env node
+console.log("contract:cli-entry=" + process.argv[1]);
+await import(${JSON.stringify(pathToFileURL(VITE_CLI_PATH).href)});
+`,
+      );
+      fs.chmodSync(viteBin, 0o755);
+      const binDir = path.join(launcher, "node_modules/.bin");
+      fs.mkdirSync(binDir, { recursive: true });
+      const linkedBin = path.join(binDir, "vite");
+      fs.symlinkSync("../vite/bin/vite.js", linkedBin);
+
+      const output = execFileSync("npm", ["run", "build"], {
+        cwd: launcher,
+        encoding: "utf-8",
+        timeout: 120_000,
+      });
+
+      const invokedEntry = output.match(/^contract:cli-entry=(.+)$/m)?.[1];
+      expect(invokedEntry).toMatch(/\/node_modules\/\.bin\/vite$/);
+      expect(fs.realpathSync.native(invokedEntry!)).toBe(fs.realpathSync.native(viteBin));
+      expect(output.match(/Pre-rendering all routes/g)).toHaveLength(1);
+      // Ported from Next.js: test/e2e/app-dir-export/test/utils.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir-export/test/utils.ts
+      const clientDir = path.join(root, "dist/client");
+      expect(fs.readFileSync(path.join(clientDir, "index.html"), "utf-8")).toContain("<p>app</p>");
+      expect(fs.readFileSync(path.join(clientDir, "index.txt"), "utf-8")).not.toBe("");
+      expect(fs.existsSync(path.join(clientDir, "404.html"))).toBe(true);
+      expect(fs.existsSync(path.join(clientDir, "404/index.html"))).toBe(true);
+    },
+    120_000,
+  );
+
   function expectConfiguredBuild(root: string): void {
     expect(fs.existsSync(path.join(root, "custom/server/index.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "custom/server/ssr/index.js"))).toBe(true);
