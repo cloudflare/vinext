@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { createBuilder, parseAst } from "vite";
+import { createBuilder, parseAst, resolveConfig } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
   hasExportAllCandidate as _hasExportAllCandidate,
@@ -234,6 +234,49 @@ describe("createClientManualChunks (installed layout)", () => {
     );
     expect(chunks("/app/node_modules/lodash/map.js")).toBeUndefined();
     expect(chunks("/app/src/components/Button.tsx")).toBeUndefined();
+  });
+});
+
+describe.each([false, true])("generated .vinext files (bundled dev: %s)", (bundledDev) => {
+  it.each([undefined, "**/user-cache/**", [/user-cache/, "**/other-cache/**"]])(
+    "excludes generated files from watching and preserves user ignores (%j)",
+    async (ignored) => {
+      const { default: vinext } = await import("../packages/vinext/src/index.js");
+      const config = await resolveConfig(
+        {
+          root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
+          configFile: false,
+          plugins: [vinext()],
+          experimental: { bundledDev },
+          server: { watch: { ignored, exclude: ignored, usePolling: true } },
+        },
+        "serve",
+      );
+      expect(config.server.watch?.ignored).toEqual([
+        ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
+      ]);
+      expect(config.server.watch?.exclude).toEqual([
+        ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
+      ]);
+      expect(config.server.watch?.usePolling).toBe(true);
+    },
+  );
+
+  it("preserves an explicitly disabled watcher", async () => {
+    const { default: vinext } = await import("../packages/vinext/src/index.js");
+    const config = await resolveConfig(
+      {
+        root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
+        configFile: false,
+        plugins: [vinext()],
+        experimental: { bundledDev },
+        server: { watch: null },
+      },
+      "serve",
+    );
+    expect(config.server.watch).toBeNull();
   });
 });
 
