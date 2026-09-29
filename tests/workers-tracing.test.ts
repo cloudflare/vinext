@@ -267,6 +267,24 @@ describe("Workers framework tracing integration", () => {
     expect(spans[0]?.status).toEqual({ code: "error", message: "broken" });
   });
 
+  it("does not replace the application error when reading exception metadata fails", async () => {
+    const failure = new Error("original failure");
+    Object.defineProperty(failure, "code", {
+      get() {
+        throw new Error("code lookup failed");
+      },
+    });
+    const spans: RecordedSpan[] = [];
+    const tracer = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing(spans))]);
+
+    await expect(
+      tracer.trace({ type: "AppRender.getBodyResult" }, () => Promise.reject(failure)),
+    ).rejects.toBe(failure);
+    expect(spans[0]?.exceptions).toEqual(["Unknown exception"]);
+    expect(spans[0]?.attributes["error.type"]).toBe("Error");
+    expect(spans[0]?.status).toEqual({ code: "error", message: "original failure" });
+  });
+
   it("keeps older runtimes working without optional span APIs", async () => {
     const attributes: Record<string, boolean | number | string> = {};
     const tracer = createFrameworkTracer([

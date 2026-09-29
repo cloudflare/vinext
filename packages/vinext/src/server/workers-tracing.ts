@@ -23,19 +23,24 @@ export type WorkersTracing = {
 };
 
 function normalizeException(error: unknown): WorkersTracingException {
-  if (typeof error === "string") return error;
-  if (error && typeof error === "object") {
-    const { code, name, message, stack } = error as Record<string, unknown>;
-    const details = {
-      ...(typeof name === "string" ? { name } : {}),
-      ...(typeof message === "string" ? { message } : {}),
-      ...(typeof stack === "string" ? { stack } : {}),
-    };
-    if (typeof code === "string" || typeof code === "number") return { ...details, code };
-    if (typeof name === "string") return { ...details, name };
-    if (typeof message === "string") return { ...details, message };
+  try {
+    if (typeof error === "string") return error;
+    if (error && typeof error === "object") {
+      const { code, name, message, stack } = error as Record<string, unknown>;
+      const details = {
+        ...(typeof name === "string" ? { name } : {}),
+        ...(typeof message === "string" ? { message } : {}),
+        ...(typeof stack === "string" ? { stack } : {}),
+      };
+      if (typeof code === "string" || typeof code === "number") return { ...details, code };
+      if (typeof name === "string") return { ...details, name };
+      if (typeof message === "string") return { ...details, message };
+    }
+    return String(error);
+  } catch {
+    // Exception fields and string conversions can throw. Do not replace the application error.
+    return "Unknown exception";
   }
-  return String(error);
 }
 
 export function createWorkersTracingIntegration(
