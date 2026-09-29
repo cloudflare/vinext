@@ -282,10 +282,37 @@ describe("Workers framework tracing integration", () => {
     await expect(
       tracer.trace({ type: "AppRender.getBodyResult" }, () => Promise.reject(failure)),
     ).rejects.toBe(failure);
-    expect(spans[0]?.exceptions).toEqual(["Unknown exception"]);
+    expect(spans[0]?.exceptions).toEqual([
+      { name: "Error", message: "original failure", stack: failure.stack },
+    ]);
     expect(spans[0]?.attributes["error.type"]).toBe("Error");
     expect(spans[0]?.status).toEqual({ code: "error", message: "original failure" });
   });
+
+  it.each(["code", "name", "message", "stack"])(
+    "preserves other exception fields when the %s getter throws",
+    async (field) => {
+      const fields: Record<string, string> = {
+        code: "ERR_TEST",
+        name: "TestFailure",
+        message: "original failure",
+        stack: "application stack",
+      };
+      const failure = Object.defineProperty({ ...fields }, field, {
+        get() {
+          throw new Error("metadata lookup failed");
+        },
+      });
+      const spans: RecordedSpan[] = [];
+      const tracer = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing(spans))]);
+
+      await expect(
+        tracer.trace({ type: "AppRender.getBodyResult" }, () => Promise.reject(failure)),
+      ).rejects.toBe(failure);
+      delete fields[field];
+      expect(spans[0]?.exceptions).toEqual([fields]);
+    },
+  );
 
   it("keeps older runtimes working without optional span APIs", async () => {
     const attributes: Record<string, boolean | number | string> = {};

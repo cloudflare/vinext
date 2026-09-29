@@ -22,23 +22,35 @@ export type WorkersTracing = {
   getActiveSpan?(): WorkersTracingSpan | undefined;
 };
 
-function normalizeException(error: unknown): WorkersTracingException {
+function readExceptionField(error: object, key: string): unknown {
   try {
-    if (typeof error === "string") return error;
-    if (error && typeof error === "object") {
-      const { code, name, message, stack } = error as Record<string, unknown>;
-      const details = {
-        ...(typeof name === "string" ? { name } : {}),
-        ...(typeof message === "string" ? { message } : {}),
-        ...(typeof stack === "string" ? { stack } : {}),
-      };
-      if (typeof code === "string" || typeof code === "number") return { ...details, code };
-      if (typeof name === "string") return { ...details, name };
-      if (typeof message === "string") return { ...details, message };
-    }
+    return Reflect.get(error, key);
+  } catch {
+    // A malformed accessor must not erase the other readable exception fields.
+    return undefined;
+  }
+}
+
+function normalizeException(error: unknown): WorkersTracingException {
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const code = readExceptionField(error, "code");
+    const name = readExceptionField(error, "name");
+    const message = readExceptionField(error, "message");
+    const stack = readExceptionField(error, "stack");
+    const details = {
+      ...(typeof name === "string" ? { name } : {}),
+      ...(typeof message === "string" ? { message } : {}),
+      ...(typeof stack === "string" ? { stack } : {}),
+    };
+    if (typeof code === "string" || typeof code === "number") return { ...details, code };
+    if (typeof name === "string") return { ...details, name };
+    if (typeof message === "string") return { ...details, message };
+  }
+  try {
     return String(error);
   } catch {
-    // Exception fields and string conversions can throw. Do not replace the application error.
+    // Do not replace the application error if its string conversion also throws.
     return "Unknown exception";
   }
 }
