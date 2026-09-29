@@ -47,7 +47,9 @@ export function createWorkersTracingIntegration(
   tracing: WorkersTracing,
 ): FrameworkTracingIntegration {
   const backendSpan = (span: WorkersTracingSpan): FrameworkTracingBackendSpan => ({
-    recordException: (error) => span.recordException?.(normalizeException(error)),
+    recordException: (error) => {
+      if (span.isTraced) span.recordException?.(normalizeException(error));
+    },
     setAttribute: (key, value) => span.setAttribute(key, value),
     setErrorStatus: (message) => span.setStatus?.({ code: "error", message }),
     updateName: (name) => span.updateName?.(name),

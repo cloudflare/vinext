@@ -42,7 +42,9 @@ function fakeTracing(spans: RecordedSpan[], isTraced = true) {
       spans.push(recorded);
       const span: WorkersTracingSpan = {
         isTraced,
-        recordException: (exception) => recorded.exceptions.push(exception),
+        recordException: (exception) => {
+          if (isTraced) recorded.exceptions.push(exception);
+        },
         setAttribute: (key, value) => {
           recorded.attributes[key] = value;
         },
@@ -315,12 +317,18 @@ describe("Workers framework tracing integration", () => {
     expect(attributes["error.type"]).toBe("Error");
   });
 
-  it("records failures and still executes work when the native span is not sampled", async () => {
+  it("executes unsampled work without inspecting or recording exception metadata", async () => {
     const spans: RecordedSpan[] = [];
     const tracer = createFrameworkTracer([
       createWorkersTracingIntegration(fakeTracing(spans, false)),
     ]);
-    const failure = new TypeError("broken");
+    const readMetadata = vi.fn(() => "broken");
+    const failure = Object.defineProperties(
+      {},
+      Object.fromEntries(
+        ["code", "name", "message", "stack"].map((key) => [key, { get: readMetadata }]),
+      ),
+    );
     let calls = 0;
 
     await expect(
@@ -331,10 +339,8 @@ describe("Workers framework tracing integration", () => {
     ).rejects.toBe(failure);
 
     expect(calls).toBe(1);
-    expect(spans[0]?.attributes["error.type"]).toBe("TypeError");
-    expect(spans[0]?.exceptions).toEqual([
-      expect.objectContaining({ message: "broken", name: "TypeError" }),
-    ]);
+    expect(readMetadata).not.toHaveBeenCalled();
+    expect(spans[0]?.exceptions).toEqual([]);
   });
 
   it("loads the Node tracer without evaluating cloudflare:workers", async () => {
