@@ -107,7 +107,7 @@ test("service-bound Workers Cache SWR caches its first regenerated replacement",
     delayMs: 1_000,
   });
   const initial = await read(path);
-  assert.ok(initial.headers.get("Last-Modified"));
+  assert.ok(initial.headers.get("ETag"));
   await initial.arrayBuffer();
   await new Promise((resolve) => setTimeout(resolve, 3_800));
 

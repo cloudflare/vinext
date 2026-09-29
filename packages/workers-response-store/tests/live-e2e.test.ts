@@ -11,6 +11,7 @@ type PutOptions = {
   cacheControl?: string;
   contentType?: string;
   host?: string;
+  lastModified?: string;
   purgeExisting?: boolean;
   revalidator?: Record<string, unknown>;
   tags?: string[];
@@ -26,6 +27,7 @@ async function put(path: string, body: BodyInit, options: PutOptions = {}): Prom
     "X-Response-Cache-Control": options.cacheControl ?? "public, max-age=120",
   });
   if (options.host) headers.set("X-Cache-Host", options.host);
+  if (options.lastModified) headers.set("X-Response-Last-Modified", options.lastModified);
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
   if (options.revalidator) headers.set("X-Revalidator-Args", JSON.stringify(options.revalidator));
   if (options.purgeExisting) headers.set("X-Purge-Existing", "1");
@@ -115,6 +117,23 @@ test("live put updates R2 before purging an existing edge response", async () =>
       : { ok: false, message: `edge still returned ${JSON.stringify(body)}` };
   });
   assert.equal(refill.headers.get("X-Workers-Response-Store-Revision"), "2");
+});
+
+test("live replacements with equal Last-Modified values replace the cached body", async () => {
+  const path = `/${key("equal-last-modified")}`;
+  const lastModified = "Tue, 29 Sep 2026 00:00:00 GMT";
+  await put(path, "old-body", { cacheControl: "public, max-age=2", lastModified });
+  const seed = await read(path);
+  assert.equal(await seed.text(), "old-body");
+
+  // Leave the old edge response in place so expiry must validate against R2.
+  await put(path, "new-body", { lastModified });
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  const replacement = await read(path);
+  assert.equal(await replacement.text(), "new-body");
+  assert.equal(replacement.headers.get("Last-Modified"), seed.headers.get("Last-Modified"));
+  assert.notEqual(replacement.headers.get("ETag"), seed.headers.get("ETag"));
+  assert.equal(replacement.headers.get("X-Workers-Response-Store-Revision"), "2");
 });
 
 test("live manual refresh calls the named user entrypoint and exposes only the committed revision", async () => {
@@ -320,7 +339,7 @@ test("live Workers Cache SWR caches the fresh replacement from its first revalid
     },
   });
   const initial = await read(`/${id}`);
-  assert.ok(initial.headers.get("Last-Modified"));
+  assert.ok(initial.headers.get("ETag"));
   await initial.arrayBuffer();
   await new Promise((resolve) => setTimeout(resolve, 3_800));
 

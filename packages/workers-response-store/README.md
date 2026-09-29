@@ -204,7 +204,7 @@ type ResponseStoreMutationResult = {
 
 Freshness is derived from `Cloudflare-CDN-Cache-Control`, then `CDN-Cache-Control`, then `Cache-Control`. The store preserves an incoming `Age` value and advances it while the response is stored.
 
-Stored responses include `Last-Modified`, preserving an application-provided value or using the revision's creation time. Workers Cache sends it back as `If-Modified-Since` when revalidating. If the backing response is stale, that invocation waits for regeneration and returns the committed response directly to Workers Cache, avoiding a second layer of SWR. Fresh backing responses are reused without regeneration. This header identifies revalidation, including foreground expiry; it does not identify background execution specifically.
+Stored responses preserve application-provided validators and include a revision-specific `ETag` when none is provided. A generated `Last-Modified` would conflate revisions written within the same second. Workers Cache sends validators back as `If-None-Match` or `If-Modified-Since` when revalidating. If the backing response is stale, that invocation claims regeneration and returns the committed response directly to Workers Cache, avoiding a second layer of SWR. If another invocation already holds the claim, the callback fails so Workers Cache can retain its stale response and retry. Fresh backing responses are reused without regeneration. Conditional headers identify revalidation, including foreground expiry; they do not identify background execution specifically.
 
 Set `Cache-Tag` on the response passed to `put()` to associate comma-separated purge tags. `refresh()` and `purge()` also accept pathname prefixes. Tags are matched case-insensitively for invalidation.
 

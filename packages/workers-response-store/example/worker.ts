@@ -63,6 +63,10 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   );
 
   if (cacheTags) headers.set("Cache-Tag", cacheTags);
+  for (const name of ["ETag", "Last-Modified"]) {
+    const value = request.headers.get(`X-Response-${name}`);
+    if (value) headers.set(name, value);
+  }
   if (age) headers.set("Age", age);
   if (cloudflareCacheControl) {
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
