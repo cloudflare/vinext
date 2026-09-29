@@ -25,8 +25,8 @@ import {
   shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
+import { RSC_FORM_STATE_GLOBAL } from "../packages/vinext/src/client/browser-globals.js";
 import {
-  RSC_FORM_STATE_GLOBAL,
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,

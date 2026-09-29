@@ -11,8 +11,6 @@ type HydrateRootUncaughtErrorHandler = NonNullable<HydrateRootOptions["onUncaugh
 type HydrateRootRecoverableErrorHandler = NonNullable<HydrateRootOptions["onRecoverableError"]>;
 type StartTransition = (action: () => void) => void;
 
-export { RSC_FORM_STATE_GLOBAL };
-
 type FormStateGlobal = {
   [RSC_FORM_STATE_GLOBAL]?: ReactFormState;
 };

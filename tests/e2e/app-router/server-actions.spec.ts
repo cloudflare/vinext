@@ -380,7 +380,8 @@ test.describe("useActionState", () => {
 
       await expect(page.locator("#count")).toHaveText("Count: 1");
       // A static import would load vinext source as CommonJS in this worker, and
-      // later ESM imports of the same modules in the worker would get that copy.
+      // later ESM imports of the same modules in the worker would get that copy,
+      // with named exports Node only partially detects.
       const { RSC_FORM_STATE_GLOBAL } =
         await import("../../../packages/vinext/src/client/browser-globals.js");
       const html = await page.content();
