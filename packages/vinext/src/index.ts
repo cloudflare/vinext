@@ -3367,6 +3367,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // setting it. Without the `origin` field, `preflightContinue: true`
           // would override Vite's default and allow any origin.
           server: {
+            // Generated caches and lockfiles are not HMR inputs. In particular,
+            // creating OG WASM modules here must not restart the Cloudflare Worker.
+            // Vite merges this with the user's watch options and ignored patterns.
+            watch: config.server?.watch === null ? null : { ignored: ["**/.vinext/**"] },
             cors: {
               preflightContinue: true,
               origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,

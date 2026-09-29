@@ -250,9 +250,7 @@ export function createOgHarfbuzzPlugin(): Plugin {
     name: "vinext:og-harfbuzz",
     enforce: "pre",
     configResolved(config) {
-      // Vite ignores cacheDir in its watcher. Creating these modules under the
-      // app root makes Cloudflare restart the server during the first OG render.
-      callbackModuleDir = path.join(toSlash(config.cacheDir), "vinext", "og-assets");
+      callbackModuleDir = path.join(toSlash(config.root), ".vinext", "og-assets");
       isBuild = config.command === "build";
     },
     transform: {
