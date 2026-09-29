@@ -237,7 +237,7 @@ describe("createClientManualChunks (installed layout)", () => {
   });
 });
 
-describe("generated .vinext files", () => {
+describe.each([false, true])("generated .vinext files (bundled dev: %s)", (bundledDev) => {
   it.each([undefined, "**/user-cache/**", [/user-cache/, "**/other-cache/**"]])(
     "excludes generated files from watching and preserves user ignores (%j)",
     async (ignored) => {
@@ -247,11 +247,16 @@ describe("generated .vinext files", () => {
           root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
           configFile: false,
           plugins: [vinext()],
-          server: { watch: { ignored, usePolling: true } },
+          experimental: { bundledDev },
+          server: { watch: { ignored, exclude: ignored, usePolling: true } },
         },
         "serve",
       );
       expect(config.server.watch?.ignored).toEqual([
+        ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
+      ]);
+      expect(config.server.watch?.exclude).toEqual([
         ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
         /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
       ]);
@@ -266,6 +271,7 @@ describe("generated .vinext files", () => {
         root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
         configFile: false,
         plugins: [vinext()],
+        experimental: { bundledDev },
         server: { watch: null },
       },
       "serve",

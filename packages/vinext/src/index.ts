@@ -379,6 +379,7 @@ const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
 const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
+const VINEXT_GENERATED_DIR_RE = /(?:^|[/\\])\.vinext(?:[/\\]|$)/;
 
 function scopeRscPlugin(plugin: Plugin): Plugin {
   const applyToEnvironment = plugin.applyToEnvironment;
@@ -3369,12 +3370,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           server: {
             // Generated caches and lockfiles are not HMR inputs. In particular,
             // creating OG WASM modules here must not restart the Cloudflare Worker.
-            // Unlike relative globs, this also works with a custom watch.cwd.
+            // Match independently of watch.cwd in both Chokidar and bundled dev.
             // Vite merges it with the user's watch options and ignored patterns.
             watch:
               config.server?.watch === null
                 ? null
-                : { ignored: [/(?:^|[/\\])\.vinext(?:[/\\]|$)/] },
+                : {
+                    ignored: [VINEXT_GENERATED_DIR_RE],
+                    exclude: [VINEXT_GENERATED_DIR_RE],
+                  },
             cors: {
               preflightContinue: true,
               origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
