@@ -63,7 +63,7 @@ import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
-import { isAppRenderAbortError } from "./app-rsc-errors.js";
+import { isAppRenderAbortError } from "./app-render-abort-error.js";
 import { getNextErrorDigest } from "./next-error-digest.js";
 // @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";

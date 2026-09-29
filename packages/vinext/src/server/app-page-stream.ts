@@ -10,7 +10,7 @@ import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 import { getNextErrorDigest } from "./next-error-digest.js";
-import { isAppRenderAbortError } from "./app-rsc-errors.js";
+import { isAppRenderAbortError } from "./app-render-abort-error.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 

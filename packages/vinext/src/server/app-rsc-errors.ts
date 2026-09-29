@@ -1,5 +1,6 @@
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { isAppRenderAbortError } from "./app-render-abort-error.js";
 
 type DigestError = Error & { digest?: string };
 const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
@@ -38,12 +39,6 @@ export function hasDigest(error: unknown): error is { digest: unknown } {
 
 const BAILOUT_TO_CSR_DIGEST = "BAILOUT_TO_CLIENT_SIDE_RENDERING";
 const DYNAMIC_SERVER_USAGE_DIGEST = "DYNAMIC_SERVER_USAGE";
-
-export function isAppRenderAbortError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const name = Reflect.get(error, "name");
-  return name === "AbortError" || name === "ResponseAborted";
-}
 
 /**
  * vinext's mirror of Next.js's `getDigestForWellKnownError`: returns the digest
