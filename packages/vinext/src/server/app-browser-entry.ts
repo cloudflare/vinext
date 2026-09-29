@@ -5,6 +5,7 @@ import {
   startTransition,
   use,
   useEffect,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -1332,15 +1333,13 @@ function BrowserRoot({
     throw unresolvedMpaNavigation;
   }
   const treeState = isRouterStatePromise(treeStateValue) ? use(treeStateValue) : treeStateValue;
-  // Keep the latest router state in a ref so external callers (navigate(),
-  // server actions, HMR) always read the current state. Safe: those readers
-  // run from events/effects, never from React render itself.
-  // Note: stateRef.current is written during render, not in an effect, to
-  // avoid a stale-read window between commit and layout effects. This mirrors
-  // the same render-phase ref update pattern used by Next.js's own router.
+  // This effect runs only for a committed render, and it runs before layout
+  // effects. A transition that renders and then suspends must not become the
+  // base of the next navigation.
   const stateRef = useRef(treeState);
-  // oxlint-disable-next-line react/refs -- navigation from child layout effects needs this render's state
-  stateRef.current = treeState;
+  useInsertionEffect(() => {
+    stateRef.current = treeState;
+  }, [treeState]);
 
   // Publish the stable ref object and dispatch during layout commit. This keeps
   // the module-level escape hatches aligned with React's committed tree without
@@ -1405,7 +1404,7 @@ function BrowserRoot({
 
   useLayoutEffect(() => {
     const previousMountedSlotsHeader = getMountedSlotsHeader();
-    const nextMountedSlotsHeader = getMountedSlotIdsHeader(stateRef.current.elements);
+    const nextMountedSlotsHeader = getMountedSlotIdsHeader(treeState.elements);
     setMountedSlotsHeader(nextMountedSlotsHeader);
     removeStylesheetLinksCoveredByInlineCss();
     if (previousMountedSlotsHeader === nextMountedSlotsHeader) {
