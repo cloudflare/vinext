@@ -30,6 +30,8 @@ type WriteReservation = {
   revision: number;
 };
 
+type RestoredSource = Pick<StoredEntry, "activeRevision" | "freshUntil" | "swrUntil">;
+
 type RegenerationReservation = {
   entry: StoredEntry;
   reservation?: WriteReservation;
@@ -74,6 +76,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     createdAt: number,
     expectedActiveRevision?: number,
     expectedLatestRevision?: number,
+    retryWindowRevision?: number,
   ): Promise<RegenerationReservation | null>;
   claimRevalidation(
     keyHash: string,
@@ -95,6 +98,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey?: string,
+    restoredSource?: RestoredSource,
   ): Promise<PublicationResult>;
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
@@ -701,6 +705,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       if (entry?.tombstoned || entry?.active_revision !== activeRevision) {
         return null;
       }
+      // The caller read this revision stale from R2, so a fresh entry here has
+      // been re-stored after a failed regeneration and its R2 rewrite has not
+      // landed yet. Its retry window has not ended, so nothing is claimed.
+      if (entry.fresh_until !== null && entry.fresh_until > now) return null;
 
       const storedEntry = storedEntryFromRow(entry);
       if (!storedEntry?.revalidator) return null;
@@ -868,6 +876,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     createdAt: number,
     expectedActiveRevision?: number,
     expectedLatestRevision?: number,
+    retryWindowRevision?: number,
   ): Promise<RegenerationReservation | null> {
     const result = this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -886,6 +895,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         return null;
       }
       if (!entry.revalidator) return { entry };
+      // A reader that found this revision expired in R2 while the metadata is
+      // fresh has reached a re-store whose R2 rewrite has not landed. Its
+      // retry window has not ended, so nothing is reserved.
+      if (entry.activeRevision === retryWindowRevision && entry.freshUntil > createdAt) {
+        return { entry };
+      }
 
       const revision = this.reserveRevision(keyHash, cacheKey, current);
       const objectKey = `${objectKeyPrefix}/${revision}`;
@@ -911,7 +926,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey = metadata.objectKey,
+    restoredSource?: RestoredSource,
   ): Promise<PublicationResult> {
+    const restoredRevision = restoredSource?.activeRevision;
     return this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
@@ -938,6 +955,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
+        // Only the first re-store of a source state publishes; a concurrent one
+        // finds the freshness already moved and writes nothing.
+        (restoredSource !== undefined &&
+          (current.active_revision !== restoredSource.activeRevision ||
+            current.fresh_until !== restoredSource.freshUntil ||
+            current.swr_until !== restoredSource.swrUntil)) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||
@@ -965,30 +988,44 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         };
       }
 
-      const update = this.ctx.storage.sql.exec<{ key_hash: string }>(
-        `UPDATE entries SET
-          active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
-          fresh_until = ?, swr_until = ?,
-          revalidator_id = ?, revalidator_args = ?, cache_tags = ?, tombstoned = 0
-        WHERE key_hash = ? AND latest_revision >= ?
-          AND (active_revision IS NULL OR active_revision < ?)
-        RETURNING key_hash`,
-        revision,
-        metadata.objectKey,
-        metadata.statusText,
-        JSON.stringify(metadata.responseHeaders),
-        metadata.freshUntil,
-        metadata.swrUntil,
-        metadata.revalidator?.id ?? null,
-        metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
-        JSON.stringify(metadata.cacheTags),
-        keyHash,
-        revision,
-        revision,
-      );
+      // A re-store after a failed regeneration keeps the active revision, whose
+      // R2 object it rewrites, and only moves its freshness. The metadata and
+      // R2 therefore agree on the revision whether or not that rewrite lands.
+      const update =
+        restoredRevision === undefined
+          ? this.ctx.storage.sql.exec<{ key_hash: string }>(
+              `UPDATE entries SET
+                active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
+                fresh_until = ?, swr_until = ?,
+                revalidator_id = ?, revalidator_args = ?, cache_tags = ?, tombstoned = 0
+              WHERE key_hash = ? AND latest_revision >= ?
+                AND (active_revision IS NULL OR active_revision < ?)
+              RETURNING key_hash`,
+              revision,
+              metadata.objectKey,
+              metadata.statusText,
+              JSON.stringify(metadata.responseHeaders),
+              metadata.freshUntil,
+              metadata.swrUntil,
+              metadata.revalidator?.id ?? null,
+              metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
+              JSON.stringify(metadata.cacheTags),
+              keyHash,
+              revision,
+              revision,
+            )
+          : this.ctx.storage.sql.exec<{ key_hash: string }>(
+              `UPDATE entries SET fresh_until = ?, swr_until = ?
+              WHERE key_hash = ? AND active_revision = ?
+              RETURNING key_hash`,
+              metadata.freshUntil,
+              metadata.swrUntil,
+              keyHash,
+              restoredRevision,
+            );
 
       const published = update.toArray().length === 1;
-      if (published) {
+      if (published && restoredRevision === undefined) {
         this.replaceEntryTags(keyHash, metadata.cacheTags);
       }
       this.ctx.storage.sql.exec(
@@ -1006,7 +1043,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const entry: StoredEntry = {
         keyHash,
         cacheKey: current.cache_key,
-        activeRevision: revision,
+        activeRevision: restoredRevision ?? revision,
         latestRevision: current.latest_revision,
         objectKey: metadata.objectKey,
         statusText: metadata.statusText,
@@ -1018,7 +1055,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       };
 
       return {
-        edgePurgeRequired: published && current.active_revision !== null,
+        edgePurgeRequired:
+          published && restoredRevision === undefined && current.active_revision !== null,
         entry: published ? entry : null,
         published,
       };

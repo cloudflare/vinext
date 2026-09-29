@@ -16,6 +16,7 @@ type FixtureRevalidatorOptions = {
   delayMs?: number;
   fail?: boolean;
   failOnce?: boolean;
+  failMidBody?: boolean;
 };
 
 const DEFAULT_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=60";
@@ -55,6 +56,9 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
 
   const cacheTags = request.headers.get("X-Response-Cache-Tag");
   const age = request.headers.get("X-Response-Age");
+  const date = request.headers.get("X-Response-Date");
+  const expires = request.headers.get("X-Response-Expires");
+  const lastModified = request.headers.get("X-Response-Last-Modified");
   const cloudflareCacheControl = request.headers.get("X-Response-Cloudflare-CDN-Cache-Control");
   const cdnCacheControl = request.headers.get("X-Response-CDN-Cache-Control");
   const largeHeaderBytes = Number.parseInt(
@@ -64,6 +68,9 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
 
   if (cacheTags) headers.set("Cache-Tag", cacheTags);
   if (age) headers.set("Age", age);
+  if (date) headers.set("Date", date);
+  if (expires) headers.set("Expires", expires);
+  if (lastModified) headers.set("Last-Modified", lastModified);
   if (cloudflareCacheControl) {
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
   }
@@ -171,6 +178,20 @@ const responseStoreOptions = {
 
       if (options.cacheTags?.length) {
         headers.set("Cache-Tag", options.cacheTags.join(","));
+      }
+
+      if (options.failMidBody) {
+        const encoded = new TextEncoder().encode(body);
+        return new Response(
+          new ReadableStream({
+            async pull(controller) {
+              controller.enqueue(encoded);
+              await new Promise((resolve) => setTimeout(resolve, 10));
+              controller.error(new Error("Fixture mid-body regeneration failure"));
+            },
+          }),
+          { headers },
+        );
       }
 
       return new Response(body, { headers });
