@@ -1008,6 +1008,41 @@ test("conditional and unconditional stale reads share one regeneration claim", a
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
+test("a superseded conditional revalidation never returns the old active body", async () => {
+  const path = "/conditional-lease-expiry";
+  await put(path, "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 500 },
+  });
+  const [entry] = await metadata();
+  const pending = conditionalRead(path);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+
+  // Advance the claim's clock without waiting 30 seconds or changing R2 age.
+  const stub = await metadataStub();
+  const replacement = await stub.claimRevalidation(
+    entry.keyHash,
+    entry.activeRevision,
+    entry.cacheKey,
+    `${r2Root}/${entry.keyHash}`,
+    Date.now() + 30_001,
+    30_000,
+  );
+  assert.ok(replacement);
+  await assert.rejects(pending, /revalidation is already in progress or was superseded/);
+  assert.equal((await metadata())[0].activeRevision, 1);
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+
+  await stub.releaseWrite(entry.keyHash, replacement.objectKey, replacement.claimId);
+  assert.equal(await (await conditionalRead(path)).text(), "fresh-body");
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
 test("a failed background regeneration releases its claim for a later retry", async () => {
   await put("/stale-retry", "stale-body", {
     cacheControl: "public, max-age=0, stale-while-revalidate=30",
