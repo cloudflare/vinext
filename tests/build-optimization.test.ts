@@ -253,7 +253,7 @@ describe("generated .vinext files", () => {
       );
       expect(config.server.watch?.ignored).toEqual([
         ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
-        "**/.vinext/**",
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
       ]);
       expect(config.server.watch?.usePolling).toBe(true);
     },
