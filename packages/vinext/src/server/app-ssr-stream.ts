@@ -10,7 +10,7 @@ import {
   RSC_EMBEDDED_BINARY_CHUNK,
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
-import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "./app-browser-globals.js";
+import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
 
 type RscEmbedTransform = {
   flush(): string;

@@ -1,5 +1,5 @@
 import type { hydrateRoot, ReactFormState } from "react-dom/client";
-import { RSC_FORM_STATE_GLOBAL } from "./app-browser-globals.js";
+import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
 
 type HydrateRootOptions = NonNullable<Parameters<typeof hydrateRoot>[2]>;
 type HydrateRoot = typeof hydrateRoot;

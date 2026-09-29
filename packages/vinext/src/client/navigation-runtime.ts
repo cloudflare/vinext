@@ -1,7 +1,7 @@
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
-import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../server/app-browser-globals.js";
+import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "./browser-globals.js";
 
 type NavigationRuntimeSnapshot = {
   pathname: string;
