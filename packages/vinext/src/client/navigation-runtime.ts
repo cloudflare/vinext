@@ -1,6 +1,7 @@
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
+import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../server/app-browser-globals.js";
 
 type NavigationRuntimeSnapshot = {
   pathname: string;
@@ -103,7 +104,6 @@ export type NavigationRuntime = {
   functions: NavigationRuntimeFunctions;
 };
 
-export const NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION = "vinext.navigationRuntime";
 export const NAVIGATION_RUNTIME_KEY = Symbol.for(NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION);
 
 const ROUTE_MANIFEST_SEGMENT_GRAPH_MAP_KEYS: readonly string[] = [

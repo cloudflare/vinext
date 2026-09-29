@@ -58,7 +58,7 @@ import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
 import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
-import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+import { RSC_FORM_STATE_GLOBAL } from "./app-browser-globals.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
