@@ -129,8 +129,7 @@ jobs:
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Paths outside the checkout are denied, not prompted: nobody can answer a prompt in CI.
-          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"*":"deny","/home/runner/work/**":"allow"},"edit":"deny","question":"deny","doom_loop":"deny"}}'
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"/home/runner/work/**":"allow"},"edit":"deny","question":"deny","doom_loop":"deny"}}'
         with:
           # Stop Bonk before the job's timeout-minutes so it can report the outcome itself.
           timeout: "25m"
