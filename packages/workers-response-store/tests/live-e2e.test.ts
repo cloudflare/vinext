@@ -309,10 +309,10 @@ test("live R2 path stores and refills a 10 MiB body", async () => {
   assert.equal(returned.at(-1), 97);
 });
 
-test("live SWR serves stale immediately, regenerates once, and promotes fresh R2 on a later callback", async () => {
+test("live Workers Cache SWR caches the fresh replacement from its first revalidation", async () => {
   const id = key("swr");
   await put(`/${id}`, "swr-seed", {
-    cacheControl: "public, max-age=1, stale-while-revalidate=20",
+    cacheControl: "public, max-age=3, stale-while-revalidate=20",
     revalidator: {
       body: "swr-regenerated",
       cacheControl: "public, max-age=120",
@@ -320,8 +320,9 @@ test("live SWR serves stale immediately, regenerates once, and promotes fresh R2
     },
   });
   const initial = await read(`/${id}`);
+  assert.ok(initial.headers.get("Last-Modified"));
   await initial.arrayBuffer();
-  await new Promise((resolve) => setTimeout(resolve, 1800));
+  await new Promise((resolve) => setTimeout(resolve, 3_800));
 
   const startedAt = Date.now();
   const stale = await read(`/${id}`);
@@ -329,13 +330,12 @@ test("live SWR serves stale immediately, regenerates once, and promotes fresh R2
   assert.equal(stale.headers.get("CF-Cache-Status"), "UPDATING");
   assert.ok(Date.now() - startedAt < 700, "the stale response should not await regeneration");
 
-  const fresh = await eventually(async () => {
-    const response = await read(`/${id}`);
-    const body = await response.clone().text();
-    return body === "swr-regenerated"
-      ? { ok: true, value: response }
-      : { ok: false, message: `SWR still returned ${JSON.stringify(body)}` };
-  });
+  // Do not poll the cache while regeneration finishes: a second read could
+  // otherwise hide the old double-SWR behavior by promoting R2 on another call.
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  const fresh = await read(`/${id}`);
+  assert.equal(await fresh.text(), "swr-regenerated");
+  assert.equal(fresh.headers.get("CF-Cache-Status"), "HIT");
   assert.equal(fresh.headers.get("X-Workers-Response-Store-Revision"), "2");
   assert.equal(fresh.headers.get("X-Revalidation-Reason"), "swr");
 });

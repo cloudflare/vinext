@@ -814,6 +814,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     now = Date.now(),
   ): Response {
     const headers = new Headers(entry.responseHeaders);
+    // Workers Cache echoes this as If-Modified-Since when it revalidates an
+    // existing response. Keep the value stable across reads of this revision.
+    if (!headers.has("Last-Modified")) {
+      headers.set("Last-Modified", new Date(createdAt).toUTCString());
+    }
     headers.set(AGE_BASIS_HEADER, `${createdAt}:${initialAge}`);
     headers.set("Age", String(representationAge(createdAt, initialAge, now)));
     headers.set(
@@ -1129,7 +1134,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const now = Date.now();
-    if (now < entry.swrUntil) {
+    // Workers Cache already owns stale serving for conditional revalidations
+    // (both background SWR and blocking expiry). Return its fresh replacement
+    // instead of starting another SWR cycle. A fresh R2 revision can still fill
+    // the edge immediately; unconditional reads retain the stale fast path.
+    const revalidateStale = now >= entry.freshUntil && request.headers.has("If-Modified-Since");
+    if (now < entry.swrUntil && !revalidateStale) {
       const stored = await this.readStoredResponse(entry, now, r2Read?.object);
       if (stored) {
         if (now < entry.freshUntil) {
@@ -1160,7 +1170,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const regenerated = await this.regenerateEntry(
       metadata,
       regeneration.entry,
-      now >= entry.swrUntil ? "expired" : "missing",
+      now >= entry.swrUntil ? "expired" : revalidateStale ? "swr" : "missing",
       regeneration.reservation
         ? {
             ...cacheKey,

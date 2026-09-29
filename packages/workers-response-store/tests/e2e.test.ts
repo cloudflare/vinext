@@ -110,6 +110,9 @@ beforeEach(async () => {
           CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
         },
         r2Buckets: { CACHE_BODIES: "programmatic-cache-test" },
+        serviceBindings: {
+          RESPONSE_STORE_BINDING: { name: "user-worker", entrypoint: "ResponseStoreBinding" },
+        },
         bindings: {
           CF_VERSION_METADATA: {
             id: "poc-v2",
@@ -180,6 +183,17 @@ async function read(
   if (options.host) headers.set("X-Cache-Host", options.host);
   if (options.shards) headers.set("X-Response-Store-Shards", String(options.shards));
   return worker.fetch(`https://user.test/cache${path}`, { headers });
+}
+
+// Miniflare does not run Workers Cache. Inject the header at the cache-bearing
+// entrypoint, where deployed Workers Cache adds it during revalidation.
+async function conditionalRead(path: string) {
+  const bindings = await mf.getBindings<{
+    RESPONSE_STORE_BINDING: Awaited<ReturnType<Miniflare["getWorker"]>>;
+  }>("user-worker");
+  return bindings.RESPONSE_STORE_BINDING.fetch(`https://cache-key.invalid${path}`, {
+    headers: { "If-Modified-Since": "Tue, 29 Sep 2026 00:00:00 GMT" },
+  });
 }
 
 async function refreshSelectors(options: ResponseStoreRefreshOptions, shards?: number) {
@@ -863,6 +877,50 @@ test("cache policy disables SWR when Workers Cache forbids stale serving", async
     invalidSwr.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
     /^max-age=(59|60), stale-while-revalidate=0$/,
   );
+});
+
+test("stored responses advertise a stable Last-Modified for Workers Cache revalidation", async () => {
+  const before = Math.floor(Date.now() / 1000) * 1000;
+  await put("/last-modified", "stored-body");
+  const first = await read("/last-modified");
+  const modified = first.headers.get("Last-Modified");
+  assert.ok(modified);
+  assert.ok(Date.parse(modified) >= before);
+  assert.ok(Date.parse(modified) <= Date.now());
+  const second = await read("/last-modified");
+  assert.equal(second.headers.get("Last-Modified"), modified);
+});
+
+test("Workers Cache conditional revalidation returns the committed fresh response", async () => {
+  await put("/conditional-stale", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 100 },
+  });
+
+  const response = await conditionalRead("/conditional-stale");
+  assert.equal(await response.text(), "fresh-body");
+  assert.equal(response.headers.get("X-Revalidation-Reason"), "swr");
+  assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "2");
+  assert.equal(await (await read("/conditional-stale")).text(), "fresh-body");
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("conditional reads reuse fresh backing responses without regenerating", async () => {
+  await put("/conditional-fresh", "fresh-body", { revalidator: { fail: true } });
+  const response = await conditionalRead("/conditional-fresh");
+  assert.equal(await response.text(), "fresh-body");
+  assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "1");
+});
+
+test("failed conditional revalidation does not return stale as a successful replacement", async () => {
+  await put("/conditional-failure", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "recovered", cacheControl: "public, max-age=60", failOnce: true },
+  });
+  await assert.rejects(conditionalRead("/conditional-failure"), /regeneration failure/);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+  assert.equal(await (await conditionalRead("/conditional-failure")).text(), "recovered");
 });
 
 test("stale R2 content returns immediately and deduplicates background regeneration", async () => {
