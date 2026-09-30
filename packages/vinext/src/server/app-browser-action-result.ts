@@ -176,8 +176,8 @@ export function createServerActionInitiationSnapshot<TRouterState>(options: {
 
 type DiscardedServerActionRefreshScheduler = {
   hasActiveNavigation(): boolean;
-  markNavigationSettled(): void;
-  markNavigationStart(): void;
+  markNavigationSettled(navigationId: number): void;
+  markNavigationStart(navigationId: number): void;
   schedule(): void;
 };
 
@@ -190,13 +190,13 @@ export function createDiscardedServerActionRefreshScheduler(
   options: DiscardedServerActionRefreshSchedulerOptions,
 ): DiscardedServerActionRefreshScheduler {
   const queueTask = options.queueTask ?? queueMicrotask;
-  let activeNavigationCount = 0;
+  let activeNavigationId: number | null = null;
   let flushQueued = false;
   let refreshPending = false;
 
   function flush(): void {
     flushQueued = false;
-    if (!refreshPending || activeNavigationCount > 0) return;
+    if (!refreshPending || activeNavigationId !== null) return;
 
     refreshPending = false;
     options.runRefresh();
@@ -210,16 +210,17 @@ export function createDiscardedServerActionRefreshScheduler(
 
   return {
     hasActiveNavigation() {
-      return activeNavigationCount > 0;
+      return activeNavigationId !== null;
     },
-    markNavigationSettled() {
-      if (activeNavigationCount > 0) {
-        activeNavigationCount -= 1;
-      }
+    markNavigationSettled(navigationId) {
+      if (activeNavigationId !== navigationId) return;
+      activeNavigationId = null;
       queueFlush();
     },
-    markNavigationStart() {
-      activeNavigationCount += 1;
+    markNavigationStart(navigationId) {
+      // A newer navigation supersedes the old one. Its stream may keep running,
+      // but must neither block refreshes nor settle the newer navigation.
+      activeNavigationId = navigationId;
     },
     schedule() {
       refreshPending = true;

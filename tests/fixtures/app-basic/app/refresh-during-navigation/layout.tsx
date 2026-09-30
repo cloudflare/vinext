@@ -8,6 +8,13 @@ export default function RefreshDuringNavigationLayout({ children }: { children: 
         <Link href="/refresh-during-navigation/slow" prefetch={false} data-testid="link-slow">
           Slow
         </Link>
+        <Link
+          href="/refresh-during-navigation/streaming"
+          prefetch={false}
+          data-testid="link-streaming"
+        >
+          Streaming
+        </Link>
       </nav>
       <RefreshDuringNavigationControls />
       {children}

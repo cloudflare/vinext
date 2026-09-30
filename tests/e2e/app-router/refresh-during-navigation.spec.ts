@@ -69,6 +69,34 @@ function urlWhenRequestCountReaches(
 test.describe("refresh during an App Router navigation", () => {
   test.describe.configure({ timeout: 60_000 });
 
+  // Next.js replaces the pending navigation when a newer navigation starts;
+  // only the winning action gates queued refreshes.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
+  for (const refreshBeforeLeaving of [true, false]) {
+    test(`an older stream does not block a refresh ${refreshBeforeLeaving ? "queued before" : "requested after"} leaving it`, async ({
+      page,
+    }) => {
+      const streamingRequests = trackRscRequests(page, `${START_PATH}/streaming`);
+      const startRequests = trackRscRequests(page, START_PATH);
+      await page.goto(START_URL);
+      await waitForAppRouterHydration(page);
+      await page.getByTestId("link-streaming").click();
+      await expect(page.getByTestId("stream-pending")).toBeVisible();
+      expect(streamingRequests).toHaveLength(1);
+      expect(streamingRequests[0].finished).toBe(false);
+
+      if (refreshBeforeLeaving) await page.getByTestId("refresh").click();
+      await page.getByTestId("link-start").click();
+      await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
+      // The initial visit is cached. The only subsequent start-route request
+      // must be the refresh, which should not wait for the old streaming tail.
+      if (!refreshBeforeLeaving) await page.getByTestId("refresh").click();
+      await expect.poll(() => startRequests.length, { timeout: 3_000 }).toBe(1);
+      expect(streamingRequests[0].finished).toBe(false);
+      await expect(page).toHaveURL(START_URL);
+    });
+  }
+
   test("a refresh during an open navigation refetches the committed URL", async ({ page }) => {
     const slowRequests = trackRscRequests(page, SLOW_PATH);
     const startRequests = trackRscRequests(page, START_PATH);

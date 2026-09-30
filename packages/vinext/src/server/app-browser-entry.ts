@@ -2026,7 +2026,7 @@ function bootstrapHydration(
     // Hoist navId above try so the catch and finally blocks can reference it.
     const navId = browserNavigationController.beginNavigation();
     const navigationCacheGeneration = clientNavigationCacheGeneration;
-    discardedServerActionRefreshScheduler.markNavigationStart();
+    discardedServerActionRefreshScheduler.markNavigationStart(navId);
 
     // Loop variables for inline redirect following. On a redirect, these are
     // updated and the loop continues without returning or re-entering navigateRsc,
@@ -2898,7 +2898,7 @@ function bootstrapHydration(
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
-      discardedServerActionRefreshScheduler.markNavigationSettled();
+      discardedServerActionRefreshScheduler.markNavigationSettled(navId);
     }
   };
 

@@ -1502,7 +1502,7 @@ describe("app browser entry navigation scheduling", () => {
       runRefresh,
     });
 
-    scheduler.markNavigationStart();
+    scheduler.markNavigationStart(1);
     expect(scheduler.hasActiveNavigation()).toBe(true);
     scheduler.schedule();
     scheduler.schedule();
@@ -1511,7 +1511,7 @@ describe("app browser entry navigation scheduling", () => {
     queued.shift()?.();
     expect(runRefresh).not.toHaveBeenCalled();
 
-    scheduler.markNavigationSettled();
+    scheduler.markNavigationSettled(1);
     expect(scheduler.hasActiveNavigation()).toBe(false);
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(1);
@@ -1521,22 +1521,47 @@ describe("app browser entry navigation scheduling", () => {
     expect(runRefresh).toHaveBeenCalledTimes(2);
   });
 
-  it("reports no active navigation before the first start and after the last settle", () => {
+  it("does not settle the current navigation when an older navigation finishes", () => {
     const scheduler = createDiscardedServerActionRefreshScheduler({
       queueTask() {},
       runRefresh() {},
     });
 
     expect(scheduler.hasActiveNavigation()).toBe(false);
-    scheduler.markNavigationStart();
-    scheduler.markNavigationStart();
+    scheduler.markNavigationStart(1);
+    scheduler.markNavigationStart(2);
     expect(scheduler.hasActiveNavigation()).toBe(true);
-    scheduler.markNavigationSettled();
+    scheduler.markNavigationSettled(1);
     expect(scheduler.hasActiveNavigation()).toBe(true);
-    scheduler.markNavigationSettled();
+    scheduler.markNavigationSettled(2);
     expect(scheduler.hasActiveNavigation()).toBe(false);
-    scheduler.markNavigationSettled();
+    scheduler.markNavigationSettled(2);
     expect(scheduler.hasActiveNavigation()).toBe(false);
+  });
+
+  it("flushes after the latest navigation settles while an older stream is still open", () => {
+    const queued: Array<() => void> = [];
+    const runRefresh = vi.fn();
+    const scheduler = createDiscardedServerActionRefreshScheduler({
+      queueTask(callback) {
+        queued.push(callback);
+      },
+      runRefresh,
+    });
+
+    scheduler.markNavigationStart(1);
+    scheduler.schedule();
+    scheduler.markNavigationStart(2);
+    queued.shift()?.();
+    expect(runRefresh).not.toHaveBeenCalled();
+
+    scheduler.markNavigationSettled(2);
+    expect(scheduler.hasActiveNavigation()).toBe(false);
+    queued.shift()?.();
+    expect(runRefresh).toHaveBeenCalledTimes(1);
+    scheduler.markNavigationSettled(1);
+    queued.shift()?.();
+    expect(runRefresh).toHaveBeenCalledTimes(1);
   });
 
   it("runs a refresh that was queued before a navigation only after that navigation settles", () => {
@@ -1550,12 +1575,12 @@ describe("app browser entry navigation scheduling", () => {
     });
 
     scheduler.schedule();
-    scheduler.markNavigationStart();
+    scheduler.markNavigationStart(1);
     queued.shift()?.();
     expect(scheduler.hasActiveNavigation()).toBe(true);
     expect(runRefresh).not.toHaveBeenCalled();
 
-    scheduler.markNavigationSettled();
+    scheduler.markNavigationSettled(1);
     expect(scheduler.hasActiveNavigation()).toBe(false);
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(1);
