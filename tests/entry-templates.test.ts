@@ -151,6 +151,19 @@ describe("App Router generated manifest construction", () => {
     expect(reactBootstrapIndex).toBeLessThan(browserRuntimeIndex);
   });
 
+  it("registers chunk recovery in the App browser entry chunk with a production-only entry URL", () => {
+    const code = generateBrowserEntry();
+
+    expect(code).toMatch(
+      /^import \{ registerChunkRecovery \} from "[^"]*\/client\/chunk-load-recovery\.(?:ts|js)";$/m,
+    );
+    expect(code).toContain(
+      "registerChunkRecovery({ entryUrl: import.meta.env.PROD ? import.meta.url : null });",
+    );
+    expect(code.match(/registerChunkRecovery\(/g)).toHaveLength(1);
+    expect(() => parseAst(code)).not.toThrow();
+  });
+
   it("embeds only client-safe rewrite data in the App browser entry", () => {
     const code = generateBrowserEntry([], null, [], {
       afterFiles: [
@@ -2639,7 +2652,7 @@ describe("Pages Router entry template", () => {
       );
 
       const overlayImportIndex = code.indexOf('await import("vinext/dev-error-overlay")');
-      const pageLoadIndex = code.indexOf("const pageModule = await loader()");
+      const pageLoadIndex = code.indexOf("const pageModule = await loadChunk(loader)");
       const hydrateRootIndex = code.indexOf("hydrateRoot(container, element, hydrateRootOptions)");
 
       expect(overlayImportIndex).toBeGreaterThanOrEqual(0);
@@ -2654,6 +2667,94 @@ describe("Pages Router entry template", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  describe("chunk load recovery", () => {
+    async function generateEntryWithApp(withApp: boolean): Promise<string> {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-recovery-"));
+      const pagesDir = path.join(tmpDir, "pages");
+
+      try {
+        fs.mkdirSync(pagesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(pagesDir, "index.tsx"),
+          "export default function Page() { return null; }",
+        );
+        fs.writeFileSync(
+          path.join(pagesDir, "about.tsx"),
+          "export default function About() { return null; }",
+        );
+        if (withApp) {
+          fs.writeFileSync(
+            path.join(pagesDir, "_app.tsx"),
+            "export default function App({ Component, pageProps }) { return <Component {...pageProps} />; }",
+          );
+        }
+
+        return await generateClientEntry(
+          pagesDir,
+          await resolveNextConfig({}),
+          createValidFileMatcher(),
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
+
+    it("registers chunk recovery in the entry chunk with a production-only entry URL", async () => {
+      const code = await generateEntryWithApp(true);
+
+      expect(code).toMatch(
+        /^import \{[^}]*\bregisterChunkRecovery\b[^}]*\} from "[^"]*\/client\/chunk-load-recovery\.(?:ts|js)";$/m,
+      );
+      expect(code).toContain(
+        "registerChunkRecovery({ entryUrl: import.meta.env.PROD ? import.meta.url : null });",
+      );
+      expect(code.match(/registerChunkRecovery\(/g)).toHaveLength(1);
+      expect(() => parseAst(code)).not.toThrow();
+    });
+
+    it("recovers failed initial-hydration loads of the page and _app", async () => {
+      const code = await generateEntryWithApp(true);
+
+      expect(code).toMatch(
+        /^import \{[^}]*\bloadChunk\b[^}]*\brecoverFromChunkFailure\b[^}]*\} from "[^"]*\/client\/chunk-load-recovery\.(?:ts|js)";$/m,
+      );
+      expect(code).toContain(
+        "const pageModule = await loadChunk(loader).catch(recoverFromChunkFailure);",
+      );
+      expect(code).toContain(
+        "const appModule = await loadChunk(appLoader).catch(recoverFromChunkFailure);",
+      );
+      expect(code).not.toContain("await loader()");
+      expect(code).not.toContain("await appLoader()");
+    });
+
+    it("leaves the shared page loader map unwrapped", async () => {
+      const code = await generateEntryWithApp(true);
+      const mapStart = code.indexOf("const pageLoaders = {");
+      const mapEnd = code.indexOf("\n};", mapStart);
+      const loaderMap = code.slice(mapStart, mapEnd);
+
+      expect(mapStart).toBeGreaterThanOrEqual(0);
+      expect(loaderMap).toMatch(/"\/": \(\) => import\("[^"]*pages\/index\.tsx"\)/);
+      expect(loaderMap).toMatch(/"\/about": \(\) => import\("[^"]*pages\/about\.tsx"\)/);
+      expect(loaderMap).toMatch(/"\/_error": \(\) => import\("next\/error"\)/);
+      expect(loaderMap).not.toContain("loadChunk");
+      expect(loaderMap).not.toContain("recoverFromChunkFailure");
+      expect(code).toContain("window.__VINEXT_PAGE_LOADERS__ = pageLoaders;");
+      expect(code).toMatch(/^const appLoader = \(\) => import\("[^"]*pages\/_app\.tsx"\);$/m);
+    });
+
+    it("omits the _app hydration load when the app has no _app file", async () => {
+      const code = await generateEntryWithApp(false);
+
+      expect(code).toContain("const appLoader = undefined;");
+      expect(code).not.toContain("loadChunk(appLoader)");
+      expect(code).toContain(
+        "const pageModule = await loadChunk(loader).catch(recoverFromChunkFailure);",
+      );
+    });
   });
 
   // Ported from Next.js: `reactStrictMode` wraps the client tree in

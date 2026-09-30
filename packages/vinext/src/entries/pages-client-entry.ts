@@ -115,6 +115,7 @@ export async function generateClientEntry(
   const clientRewrites = toClientRewrites(nextConfig.rewrites);
   const clientMiddlewareMatchers = compileClientMiddlewareMatchers(options.middlewareMatcher);
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
+  const chunkLoadRecoveryPath = resolveClientRuntimeModule("chunk-load-recovery");
 
   // Build a map of route pattern -> dynamic import.
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
@@ -175,6 +176,13 @@ import Router, {
   wrapWithRouterContext,
   _initializePagesRouterReadyFromNextData,
 } from "next/router";
+import {
+  loadChunk,
+  recoverFromChunkFailure,
+  registerChunkRecovery,
+} from ${JSON.stringify(chunkLoadRecoveryPath)};
+
+registerChunkRecovery({ entryUrl: import.meta.env.PROD ? import.meta.url : null });
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}
@@ -271,7 +279,7 @@ async function hydrate() {
     return;
   }
 
-  const pageModule = await loader();
+  const pageModule = await loadChunk(loader).catch(recoverFromChunkFailure);
   const PageComponent = pageModule.default;
   if (!PageComponent) {
     console.error("[vinext] Page module has no default export");
@@ -283,7 +291,7 @@ async function hydrate() {
     hasApp
       ? `
   try {
-    const appModule = await appLoader();
+    const appModule = await loadChunk(appLoader).catch(recoverFromChunkFailure);
     const AppComponent = appModule.default;
     window.__VINEXT_APP__ = AppComponent;
     element = React.createElement(AppComponent, {

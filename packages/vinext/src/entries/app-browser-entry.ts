@@ -29,12 +29,15 @@ export function generateBrowserEntry(
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
+  const chunkLoadRecoveryPath = resolveClientRuntimeModule("chunk-load-recovery");
   const prefetchRoutes = toLinkPrefetchRoutes(routes);
   const clientRewrites = toClientRewrites(rewrites);
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
 import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
+import { registerChunkRecovery } from ${JSON.stringify(chunkLoadRecoveryPath)};
 
+registerChunkRecovery({ entryUrl: import.meta.env.PROD ? import.meta.url : null });
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
 // Pages route manifest for hybrid ownership decisions. In a hybrid
 // app+pages build the user can land on an App page, so the App browser
