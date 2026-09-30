@@ -195,27 +195,31 @@ describe("OgAssetOwnership", () => {
 
     it("reuses the lookup for a repeated import until reset", async () => {
       const { projectRoot, packageRoot, modulePath } = await createLinkedDependency("memo-reset");
+      const manifestPath = path.join(packageRoot, "package.json");
       const ownership = new OgAssetOwnership();
       ownership.configure(projectRoot, []);
-      const realPackageRoot = canonical(await fs.realpath(packageRoot));
 
+      // The package does not match the dependency name yet, so the lookup
+      // finds no root.
+      await fs.writeFile(manifestPath, '{"name":"other"}');
       await Promise.all([
         ownership.recordResolvedImport("linked-og", modulePath),
         ownership.recordResolvedImport("linked-og", modulePath),
       ]);
-      expect((await ownership.resolveModuleBoundary(modulePath))?.assetRoot).toBe(realPackageRoot);
+      await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
 
-      // The package no longer matches the dependency name. Within the same
-      // pass the recorded lookup is reused.
-      await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"renamed"}');
+      // The package now matches. Within the same pass the recorded miss is
+      // reused.
+      await fs.writeFile(manifestPath, '{"name":"linked-og"}');
       await ownership.recordResolvedImport("linked-og", modulePath);
-      expect((await ownership.resolveModuleBoundary(modulePath))?.assetRoot).toBe(realPackageRoot);
+      await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
 
-      // A new pass forgets both the linked roots and the lookups.
+      // A new pass looks the import up again.
       ownership.reset();
-      await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
       await ownership.recordResolvedImport("linked-og", modulePath);
-      await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+      expect((await ownership.resolveModuleBoundary(modulePath))?.assetRoot).toBe(
+        canonical(await fs.realpath(packageRoot)),
+      );
     });
 
     it("re-adds a looked-up root after reset", async () => {
