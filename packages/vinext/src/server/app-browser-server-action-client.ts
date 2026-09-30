@@ -62,6 +62,7 @@ export type ClientServerActionDeps = {
     returnValue: ServerActionResult["returnValue"] | undefined,
     revalidation: ServerActionRevalidationKind,
     renderedPathAndSearch: string | null,
+    commitHooks?: { onCommitted?: () => void },
   ): Promise<unknown>;
   isCurrentAction?(): boolean;
   onRevalidationWithoutRender?(reason?: "document-navigation"): void;
@@ -268,7 +269,16 @@ export async function invokeClientServerAction(
 
   // A discarded action must not touch the marker the current action owns. Its
   // return value still settles below.
-  if (deps.isCurrentAction?.() !== false) {
+  const ownsMarker = deps.isCurrentAction?.() !== false;
+  // A re-rendered tree carries its own robots metadata, so the marker only
+  // clears when that tree becomes visible. Other results change no tree and
+  // write at once.
+  const rendersTree = !isServerActionResult(result) || result.root !== undefined;
+  const commitHooks =
+    ownsMarker && rendersTree
+      ? { onCommitted: () => deps.syncServerActionHttpFallbackHead(null) }
+      : undefined;
+  if (ownsMarker && !rendersTree) {
     deps.syncServerActionHttpFallbackHead(
       shouldSyncServerActionHttpFallbackHead(result) ? fetchResponse.status : null,
     );
@@ -293,6 +303,7 @@ export async function invokeClientServerAction(
         returnValue,
         revalidation,
         renderedPathAndSearch,
+        commitHooks,
       );
     }
     if (revalidation !== "none") deps.onRevalidationWithoutRender?.();
@@ -311,5 +322,6 @@ export async function invokeClientServerAction(
     undefined,
     revalidation,
     renderedPathAndSearch,
+    commitHooks,
   );
 }

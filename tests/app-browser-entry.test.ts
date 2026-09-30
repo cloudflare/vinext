@@ -4744,9 +4744,111 @@ describe("app browser navigation controller", () => {
       );
 
       expect(source).toContain("clearActionHttpFallbackHeadOnCommit(");
+      expect(source).toContain("onCommitted: commitHooks?.onCommitted");
       expect(source).not.toMatch(
         /syncServerActionHttpFallbackHead\(null\);\s*return browserNavigationController\.renderNavigationPayload/,
       );
+    });
+  });
+
+  describe("same-URL server action commit hook", () => {
+    async function renderSameUrlAction(options: { actionBase: boolean; stale?: boolean }) {
+      const onCommitted = vi.fn();
+      const { controller, detach, stateRef } = createControllerHarness();
+      const base = stateRef.current;
+      const startedNavigationId = controller.getActiveNavigationId();
+      if (options.stale) controller.beginNavigation();
+      let renderId = -1;
+      await controller.commitSameUrlNavigatePayload(
+        Promise.resolve(createResolvedElements("route:/initial", "/")),
+        base.navigationSnapshot,
+        undefined,
+        base,
+        {
+          actionBase: options.actionBase ? { state: base, committedState: base } : undefined,
+          createCommitEffect: options.actionBase
+            ? (state) =>
+                createNavigationCommitEffect(
+                  {
+                    activeRoutePaths: [],
+                    bfcacheIds: state.bfcacheIds,
+                    href: "https://example.com/initial",
+                    historyUpdateMode: undefined,
+                    navId: startedNavigationId,
+                    params: {},
+                    previousNextUrl: null,
+                    releaseSnapshot: false,
+                  },
+                  {
+                    clearNavigationFailureTarget: () => {},
+                    commitClientNavigationState: () => {},
+                    commitNavigationHistory: () => {},
+                    isCurrentNavigation: (navId) => controller.isCurrentNavigation(navId),
+                    stageClientParams: () => {},
+                  },
+                )
+            : undefined,
+          onActionReady: (state) => {
+            renderId = state.renderId;
+          },
+          onCommitted,
+          startedNavigationId,
+          targetHref: "https://example.com/initial",
+        },
+      );
+      return { controller, detach, onCommitted, renderId };
+    }
+
+    describe.each([
+      { actionBase: false, label: "a fresh action render" },
+      { actionBase: true, label: "an action render continuing an accepted result" },
+    ])("for $label", ({ actionBase }) => {
+      it("reports the commit once, and only when that render commits", async () => {
+        const { controller, detach, onCommitted, renderId } = await renderSameUrlAction({
+          actionBase,
+        });
+        try {
+          expect(renderId).toBeGreaterThan(0);
+          expect(onCommitted).not.toHaveBeenCalled();
+
+          controller.commitNavigationRender(renderId);
+
+          expect(onCommitted).toHaveBeenCalledTimes(1);
+        } finally {
+          detach();
+        }
+      });
+
+      it("never reports a render that is discarded before it commits", async () => {
+        const { controller, detach, onCommitted, renderId } = await renderSameUrlAction({
+          actionBase,
+        });
+        try {
+          controller.beginNavigation();
+          controller.discardPendingNavigation();
+          controller.commitNavigationRender(renderId);
+
+          expect(onCommitted).not.toHaveBeenCalled();
+        } finally {
+          detach();
+        }
+      });
+
+      it("never reports a render that is refused because a newer navigation owns the page", async () => {
+        const { controller, detach, onCommitted, renderId } = await renderSameUrlAction({
+          actionBase,
+          stale: true,
+        });
+        try {
+          expect(renderId).toBe(-1);
+
+          controller.commitNavigationRender(1);
+
+          expect(onCommitted).not.toHaveBeenCalled();
+        } finally {
+          detach();
+        }
+      });
     });
   });
 

@@ -724,6 +724,7 @@ describe("app browser server action client", () => {
         ),
       );
       const head = { noindex: false };
+      const commitSameUrlNavigatePayload = vi.fn();
       let currentAction: "A" | "B" | "navigation" = "A";
       const start = (name: "A" | "B") =>
         invokeClientServerAction(
@@ -738,7 +739,7 @@ describe("app browser server action client", () => {
             basePath: "",
             clearClientNavigationCaches: vi.fn(),
             clientRscCompatibilityId: null,
-            commitSameUrlNavigatePayload: vi.fn(),
+            commitSameUrlNavigatePayload,
             isCurrentAction: () => currentAction === name,
             navigationPlanner,
             performHardNavigation: vi.fn(),
@@ -757,10 +758,29 @@ describe("app browser server action client", () => {
           new Response("flight", { headers: { "content-type": "text/x-component" }, status }),
         );
       };
+      // A re-rendered tree travels with the return value, as after a revalidation.
+      const respondWithTree = (index: 0 | 1, status: number) => {
+        vi.mocked(createFromFetch).mockResolvedValueOnce({
+          root: AppElementsWire.createMetadataEntries({
+            interception: null,
+            interceptionContext: null,
+            layoutIds: [AppElementsWire.encodeLayoutId("/")],
+            rootLayoutTreePath: "/",
+            routeId: AppElementsWire.encodeRouteId("/source", null),
+            slotBindings: [],
+          }),
+          returnValue: { ok: true, data: index === 0 ? "a-value" : "b-value" },
+        });
+        fetchResolvers[index](
+          new Response("flight", { headers: { "content-type": "text/x-component" }, status }),
+        );
+      };
       return {
+        commitSameUrlNavigatePayload,
         fetchResolvers,
         head,
         respond,
+        respondWithTree,
         setCurrentAction: (name: "A" | "B" | "navigation") => {
           currentAction = name;
         },
@@ -836,6 +856,66 @@ describe("app browser server action client", () => {
       respond(1, 200);
       await secondAction;
       expect(head.noindex).toBe(false);
+    });
+
+    describe("an action that re-renders the page", () => {
+      async function showMarkerThenStartRenderingAction(status: number) {
+        const harness = createActionHarness();
+        const { fetchResolvers, head, respond, respondWithTree, setCurrentAction, start } = harness;
+
+        const first = start("A");
+        await vi.waitFor(() => expect(fetchResolvers).toHaveLength(1));
+        respond(0, 404);
+        await first;
+        expect(head.noindex).toBe(true);
+
+        setCurrentAction("B");
+        const second = start("B");
+        await vi.waitFor(() => expect(fetchResolvers).toHaveLength(2));
+        return { ...harness, respondRendered: () => respondWithTree(1, status), second };
+      }
+
+      it("leaves the marker alone until the re-rendered tree commits", async () => {
+        const { commitSameUrlNavigatePayload, head, respondRendered, second } =
+          await showMarkerThenStartRenderingAction(200);
+
+        respondRendered();
+        await second;
+
+        expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
+        expect(head.noindex).toBe(true);
+
+        const [, , , , , lifecycle] = commitSameUrlNavigatePayload.mock.calls[0];
+        lifecycle.onCommitted();
+        expect(head.noindex).toBe(false);
+      });
+
+      it("keeps the marker when a re-rendered 404 never commits and clears it when it does", async () => {
+        const { commitSameUrlNavigatePayload, head, respondRendered, second } =
+          await showMarkerThenStartRenderingAction(404);
+
+        respondRendered();
+        await second;
+        expect(head.noindex).toBe(true);
+
+        // The boundary in the committed tree carries its own robots metadata.
+        const [, , , , , lifecycle] = commitSameUrlNavigatePayload.mock.calls[0];
+        lifecycle.onCommitted();
+        expect(head.noindex).toBe(false);
+      });
+
+      it("never writes the marker for a render that belongs to a stale action", async () => {
+        const { commitSameUrlNavigatePayload, head, respondRendered, second, setCurrentAction } =
+          await showMarkerThenStartRenderingAction(200);
+
+        setCurrentAction("navigation");
+        respondRendered();
+        await second;
+
+        const [, , , , , lifecycle] = commitSameUrlNavigatePayload.mock.calls[0];
+        expect(lifecycle?.onCommitted).toBeUndefined();
+        expect(head.noindex).toBe(true);
+      });
     });
 
     it("does not install a marker from stale A when it finishes with a 404 after B", async () => {

@@ -80,6 +80,8 @@ type BrowserRouterStateRef = {
 type SameUrlServerActionLifecycleOptions = {
   actionBase?: { state: AppRouterState; committedState: AppRouterState };
   createCommitEffect?: (state: AppRouterState) => BrowserNavigationCommitEffect;
+  /** Runs once, when this action's own render becomes the visible tree. */
+  onCommitted?: () => void;
   onActionReady?: (state: AppRouterState) => void;
   scrollIntent?: AppRouterScrollIntent | null;
   onDiscardedRevalidation?: () => void;
@@ -1089,13 +1091,15 @@ export function createAppBrowserNavigationController(
           // commit effect. Without one, the same write runs only when this
           // exact render commits, so a discarded candidate never leaves
           // metadata for a tree that was never visible.
-          onCommittedState: lifecycleOptions?.actionBase
-            ? undefined
-            : () =>
-                syncHistoryStatePreviousNextUrl(
-                  approvedRevalidationCommit.previousNextUrl,
-                  approvedRevalidationCommit.action.bfcacheIds,
-                ),
+          onCommittedState: () => {
+            if (!lifecycleOptions?.actionBase) {
+              syncHistoryStatePreviousNextUrl(
+                approvedRevalidationCommit.previousNextUrl,
+                approvedRevalidationCommit.action.bfcacheIds,
+              );
+            }
+            lifecycleOptions?.onCommitted?.();
+          },
           scrollIntent: lifecycleOptions?.scrollIntent ?? null,
           onDiscardedRevalidation: () => notifyDiscardedServerActionRevalidation(lifecycleOptions),
           resolve() {},
