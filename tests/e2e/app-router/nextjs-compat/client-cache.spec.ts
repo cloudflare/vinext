@@ -710,12 +710,7 @@ test.describe("Next.js compat: client cache", () => {
 
     const requests = trackRscRequests(page);
     await openHome(page);
-    await navigateTo(page, "#client-cache-none", "2");
-    // Refresh now waits for the active navigation's body. Leave that route
-    // and return so the held tail belongs to a superseded navigation, while
-    // keeping the stale-publication race this test covers.
-    await navigateHome(page);
-    const beforeRefresh = await navigateTo(page, "#client-cache-none", "2");
+    const initial = await navigateTo(page, "#client-cache-none", "2");
 
     await page.evaluate(() => {
       const router = (window as ClientCacheTestWindow).next?.router;
@@ -724,8 +719,8 @@ test.describe("Next.js compat: client cache", () => {
     });
     await expect
       .poll(() => requestsFor(requests, `${ROOT}/2`).filter((request) => !request.partial).length)
-      .toBeGreaterThanOrEqual(3);
-    await expect.poll(() => readRandom(page)).not.toBe(beforeRefresh);
+      .toBeGreaterThanOrEqual(2);
+    await expect.poll(() => readRandom(page)).not.toBe(initial);
     const refreshed = await readRandom(page);
 
     await page.evaluate(() => {

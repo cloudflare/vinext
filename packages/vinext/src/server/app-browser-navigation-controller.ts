@@ -106,6 +106,7 @@ type BrowserNavigationPayloadOptions = {
   navId: number;
   nextElements: Promise<AppElements> | AppElements;
   onCommittedState?: (state: AppRouterState) => void;
+  onActionReady?: (state: AppRouterState) => void;
   operationLane: OperationLane;
   params: Record<string, string | string[]>;
   payloadOrigin: AppNavigationPayloadOrigin;
@@ -120,7 +121,7 @@ type BrowserNavigationPayloadOptions = {
 };
 
 type BrowserNavigationController = {
-  beginNavigation(): number;
+  beginNavigation(refreshBase?: AppRouterState): number;
   discardPendingNavigation(): void;
   getActiveNavigationId(): number;
   hasBrowserRouterState(): boolean;
@@ -207,7 +208,7 @@ export function clearHardNavigationLoopGuard(): void {
   } catch {}
 }
 
-function performHardNavigationWithLoopGuard(
+export function performHardNavigationWithLoopGuard(
   href: string,
   mode: HardNavigationMode = "assign",
 ): boolean {
@@ -294,6 +295,8 @@ export function createAppBrowserNavigationController(
   let activeNavigationId = 0;
   let pendingUserNavigationId: number | null = null;
   let pendingUserNavigationLane: OperationLane | null = null;
+  let refreshBase: AppRouterState | null = null;
+  let refreshBaseCommittedState: AppRouterState | null = null;
   let latestHmrUpdateId = 0;
   const pendingNavigationCommits = new Map<
     number,
@@ -350,7 +353,7 @@ export function createAppBrowserNavigationController(
     resolveReady?.();
   }
 
-  function beginNavigation(): number {
+  function beginNavigation(queuedRefreshBase?: AppRouterState): number {
     // User navigation owns the next visible result. Revoke any HMR payload
     // already suspended on RSC resolution so it cannot commit first and make
     // the still-current navigation look stale by advancing visible state.
@@ -358,7 +361,18 @@ export function createAppBrowserNavigationController(
     activeNavigationId += 1;
     pendingUserNavigationId = activeNavigationId;
     pendingUserNavigationLane = null;
+    refreshBase = queuedRefreshBase ?? null;
+    refreshBaseCommittedState = queuedRefreshBase ? getBrowserRouterState() : null;
     return activeNavigationId;
+  }
+
+  function getNavigationApprovalState(): AppRouterState {
+    const committedState = getBrowserRouterState();
+    // A queued refresh may continue an accepted action before React commits it.
+    // An unrelated visible commit still revokes that historical base.
+    return refreshBase && committedState === refreshBaseCommittedState
+      ? refreshBase
+      : committedState;
   }
 
   function getActiveNavigationId(): number {
@@ -598,7 +612,7 @@ export function createAppBrowserNavigationController(
 
   function dispatchApprovedVisibleCommit(
     renderId: number,
-    commit: ApprovedVisibleCommit,
+    approvedState: AppRouterState,
     pendingRouterState: PendingBrowserRouterState | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode,
   ): void {
@@ -621,9 +635,7 @@ export function createAppBrowserNavigationController(
       // the signal's layout effect remains the authority for URL and scroll
       // effects, including when the response suspends or changes the tree.
       if (pendingRouterState.settled) return;
-      const committedState = captureCandidateState(
-        applyApprovedVisibleCommit(getBrowserRouterState(), commit),
-      );
+      const committedState = captureCandidateState(approvedState);
       pendingRouterState.settled = true;
       pendingRouterState.resolve(committedState);
       if (activePendingBrowserRouterState === pendingRouterState) {
@@ -645,18 +657,14 @@ export function createAppBrowserNavigationController(
     // consolidate the two.
     if (visibleCommitMode === "synchronous") {
       flushSync(() => {
-        const committedState = captureCandidateState(
-          applyApprovedVisibleCommit(getBrowserRouterState(), commit),
-        );
+        const committedState = captureCandidateState(approvedState);
         setter(committedState);
       });
       return;
     }
 
     startTransition(() => {
-      const committedState = captureCandidateState(
-        applyApprovedVisibleCommit(getBrowserRouterState(), commit),
-      );
+      const committedState = captureCandidateState(approvedState);
       setter(committedState);
     });
   }
@@ -839,7 +847,7 @@ export function createAppBrowserNavigationController(
 
       const approval = approvePendingNavigationCommit({
         activeNavigationId,
-        currentState: getBrowserRouterState(),
+        currentState: getNavigationApprovalState(),
         pending,
         routeManifest: getRouteManifest(),
         startedNavigationId: options.navId,
@@ -881,7 +889,7 @@ export function createAppBrowserNavigationController(
       // raw response action can mark those slots default/unmatched even though
       // the reducer preserves their active content.
       const approvedVisibleState = applyApprovedVisibleCommit(
-        getBrowserRouterState(),
+        getNavigationApprovalState(),
         approvedCommit,
       );
 
@@ -903,12 +911,13 @@ export function createAppBrowserNavigationController(
       snapshotActivated = true;
       dispatchApprovedVisibleCommit(
         renderId,
-        approvedCommit,
+        approvedVisibleState,
         options.pendingRouterState,
         shouldForceSynchronousCommit(options)
           ? "synchronous"
           : (options.visibleCommitMode ?? "transition"),
       );
+      options.onActionReady?.(approvedVisibleState);
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
         // NavigationCommitSignal removes this render from the pending map

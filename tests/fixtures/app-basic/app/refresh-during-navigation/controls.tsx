@@ -1,11 +1,14 @@
 "use client";
 
-import { startTransition } from "react";
+import { startTransition, useLayoutEffect } from "react";
 import { useRouter } from "next/navigation";
 import { redirectToStart } from "./actions";
 
 export function RefreshDuringNavigationControls() {
   const router = useRouter();
+  useLayoutEffect(() => {
+    if (new URLSearchParams(window.location.search).has("refresh-on-mount")) router.refresh();
+  }, [router]);
 
   return (
     <>
@@ -22,6 +25,18 @@ export function RefreshDuringNavigationControls() {
         }}
       >
         Refresh
+      </button>
+      <button
+        type="button"
+        data-testid="refresh-twice"
+        onClick={() => {
+          startTransition(() => {
+            router.refresh();
+            router.refresh();
+          });
+        }}
+      >
+        Refresh twice
       </button>
       <button
         type="button"

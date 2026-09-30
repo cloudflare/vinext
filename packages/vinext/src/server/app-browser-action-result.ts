@@ -175,7 +175,6 @@ export function createServerActionInitiationSnapshot<TRouterState>(options: {
 }
 
 type DiscardedServerActionRefreshScheduler = {
-  shouldQueueRefresh(): boolean;
   markNavigationSettled(navigationId: number): void;
   markNavigationStart(navigationId: number): void;
   schedule(): void;
@@ -209,9 +208,6 @@ export function createDiscardedServerActionRefreshScheduler(
   }
 
   return {
-    shouldQueueRefresh() {
-      return activeNavigationId !== null || refreshPending;
-    },
     markNavigationSettled(navigationId) {
       if (activeNavigationId !== navigationId) return;
       activeNavigationId = null;

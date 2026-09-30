@@ -101,6 +101,7 @@ import {
   getPendingAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
+import { createAppBrowserRefreshQueue } from "../packages/vinext/src/server/app-browser-refresh-queue.js";
 import {
   createBfcacheSegmentIdentityMap,
   createAppOwnedHistoryState,
@@ -1504,7 +1505,6 @@ describe("app browser entry navigation scheduling", () => {
     });
 
     scheduler.markNavigationStart(1);
-    expect(scheduler.shouldQueueRefresh()).toBe(true);
     scheduler.schedule();
     scheduler.schedule();
     expect(runRefresh).not.toHaveBeenCalled();
@@ -1515,34 +1515,14 @@ describe("app browser entry navigation scheduling", () => {
     scheduler.markNavigationSettled(1);
     // A second refresh in this task must join the first refresh even though
     // navigation has settled and its queued flush has not run yet.
-    expect(scheduler.shouldQueueRefresh()).toBe(true);
     scheduler.schedule();
     expect(queued).toHaveLength(1);
     queued.shift()?.();
-    expect(scheduler.shouldQueueRefresh()).toBe(false);
     expect(runRefresh).toHaveBeenCalledTimes(1);
 
     scheduler.schedule();
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not settle the current navigation when an older navigation finishes", () => {
-    const scheduler = createDiscardedServerActionRefreshScheduler({
-      queueTask() {},
-      runRefresh() {},
-    });
-
-    expect(scheduler.shouldQueueRefresh()).toBe(false);
-    scheduler.markNavigationStart(1);
-    scheduler.markNavigationStart(2);
-    expect(scheduler.shouldQueueRefresh()).toBe(true);
-    scheduler.markNavigationSettled(1);
-    expect(scheduler.shouldQueueRefresh()).toBe(true);
-    scheduler.markNavigationSettled(2);
-    expect(scheduler.shouldQueueRefresh()).toBe(false);
-    scheduler.markNavigationSettled(2);
-    expect(scheduler.shouldQueueRefresh()).toBe(false);
   });
 
   it("flushes after the latest navigation settles while an older stream is still open", () => {
@@ -1562,7 +1542,6 @@ describe("app browser entry navigation scheduling", () => {
     expect(runRefresh).not.toHaveBeenCalled();
 
     scheduler.markNavigationSettled(2);
-    expect(scheduler.shouldQueueRefresh()).toBe(true);
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(1);
     scheduler.markNavigationSettled(1);
@@ -1583,11 +1562,9 @@ describe("app browser entry navigation scheduling", () => {
     scheduler.schedule();
     scheduler.markNavigationStart(1);
     queued.shift()?.();
-    expect(scheduler.shouldQueueRefresh()).toBe(true);
     expect(runRefresh).not.toHaveBeenCalled();
 
     scheduler.markNavigationSettled(1);
-    expect(scheduler.shouldQueueRefresh()).toBe(true);
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(1);
   });
@@ -3485,7 +3462,157 @@ describe("app browser entry state helpers", () => {
   });
 });
 
+describe("public App Router refresh queue", () => {
+  const result = (href: string) => ({
+    href,
+    state: createState(),
+    historyUpdateMode: "push" as const,
+    scrollIntent: null,
+  });
+
+  it("runs each refresh after accepted router state without waiting for a visible commit", async () => {
+    let nextId = 1;
+    const runRefresh = vi.fn(() => queue.start(++nextId));
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    queue.start(1);
+    const first = queue.refresh();
+    const second = queue.refresh();
+    await Promise.resolve();
+    expect(runRefresh).not.toHaveBeenCalled();
+    const destination = result("/destination");
+    queue.ready(1, destination);
+    await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledExactlyOnceWith(destination));
+    queue.ready(2, destination);
+    await first;
+    await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledTimes(2));
+    queue.ready(3, destination);
+    await second;
+  });
+
+  it("keeps queued refreshes behind a winning navigation and ignores stale completions", async () => {
+    const runRefresh = vi.fn(() => queue.start(3));
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    queue.start(1);
+    const refresh = queue.refresh();
+    await Promise.resolve();
+    queue.start(2);
+    queue.ready(1, result("/discarded"));
+    await Promise.resolve();
+    expect(runRefresh).not.toHaveBeenCalled();
+    const winner = result("/winner");
+    queue.ready(2, winner);
+    await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledExactlyOnceWith(winner));
+    queue.ready(1, result("/discarded"));
+    queue.ready(3, winner);
+    await refresh;
+  });
+
+  it("starts an idle refresh synchronously and preserves only queued refreshes on supersession", async () => {
+    let id = 0;
+    const runRefresh = vi.fn(() => queue.start(++id));
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    const first = queue.refresh();
+    expect(runRefresh).toHaveBeenCalledExactlyOnceWith(null);
+    const second = queue.refresh();
+    expect(runRefresh).toHaveBeenCalledTimes(1);
+    queue.start(++id);
+    await first;
+    queue.ready(1, result("/stale"));
+    expect(runRefresh).toHaveBeenCalledTimes(1);
+    const winner = result("/winner");
+    queue.ready(2, winner);
+    expect(runRefresh).toHaveBeenLastCalledWith(winner);
+    expect(runRefresh).toHaveBeenCalledTimes(2);
+    queue.ready(3, winner);
+    await second;
+  });
+
+  it("drops queued refreshes when the current action starts a document navigation", async () => {
+    const runRefresh = vi.fn(() => queue.start(2));
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    queue.start(1);
+    const first = queue.refresh();
+    const second = queue.refresh();
+    queue.stopForDocumentNavigation();
+    queue.ready(1);
+    await Promise.all([first, second, queue.refresh()]);
+    expect(runRefresh).not.toHaveBeenCalled();
+    queue.start(3);
+    queue.ready(3);
+    const next = queue.refresh();
+    expect(runRefresh).toHaveBeenCalledOnce();
+    queue.ready(2);
+    await next;
+  });
+
+  it("lets later refreshes run after a refresh fails", async () => {
+    const failure = new Error("refresh failed");
+    const runRefresh = vi.fn().mockImplementationOnce(() => {
+      throw failure;
+    });
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    const first = queue.refresh();
+    const second = queue.refresh();
+    await expect(first).rejects.toBe(failure);
+    await second;
+    expect(runRefresh).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("app browser navigation controller", () => {
+  it("publishes an action result before commit and lets refresh continue that accepted state", async () => {
+    const stateRef = { current: createState() };
+    const controller = createAppBrowserNavigationController();
+    const detach = controller.attachBrowserRouterState(vi.fn(), stateRef);
+    const onActionReady = vi.fn();
+    const options = {
+      actionType: "navigate" as const,
+      createNavigationCommitEffect: () => vi.fn(),
+      historyUpdateMode: "push" as const,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+      nextElements: createResolvedElements("route:/dashboard", "/"),
+      operationLane: "navigation" as const,
+      params: {},
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      previousNextUrl: null,
+      targetHref: "https://example.com/dashboard",
+      onActionReady,
+    };
+    try {
+      const firstId = controller.beginNavigation();
+      const firstPending = controller.beginPendingBrowserRouterState();
+      const firstRender = controller.renderNavigationPayload({
+        ...options,
+        navigationInitiationState: stateRef.current,
+        pendingRouterState: firstPending,
+        navId: firstId,
+      });
+      const acceptedState = await firstPending.promise;
+      expect(onActionReady).toHaveBeenCalledWith(acceptedState);
+      expect(controller.getBrowserRouterState()).toBe(stateRef.current);
+
+      const refreshId = controller.beginNavigation(acceptedState);
+      controller.discardPendingNavigation();
+      await expect(firstRender).resolves.toBe("no-commit");
+      const refreshPending = controller.beginPendingBrowserRouterState();
+      const refreshRender = controller.renderNavigationPayload({
+        ...options,
+        navigationInitiationState: acceptedState,
+        operationLane: "refresh",
+        pendingRouterState: refreshPending,
+        navId: refreshId,
+      });
+      const refreshedState = await refreshPending.promise;
+      expect(refreshedState.routeId).toBe("route:/dashboard");
+      expect(refreshedState.visibleCommitVersion).toBe(acceptedState.visibleCommitVersion + 1);
+      stateRef.current = refreshedState;
+      controller.commitNavigationRender(refreshedState.renderId);
+      await expect(refreshRender).resolves.toBe("committed");
+    } finally {
+      detach();
+    }
+  });
+
   it("discards a dispatched but uncommitted render and releases its snapshot", async () => {
     const committedState = createState();
     const scrollIntent = beginAppRouterScrollIntent("#old-target");

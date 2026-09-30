@@ -2665,7 +2665,7 @@ export async function navigateClientSide(
     commitHashOnlyHistoryState(fullHref, earlyIntent.mode, earlyIntent.scroll);
     clearAppNavigationFailureTarget(fullHref);
     commitClientNavigationState();
-    releaseTrackedHashNavigation();
+    releaseTrackedAppRouterNavigation();
     if (earlyIntent.scroll) {
       scrollToHashTarget(earlyIntent.hash);
     }
@@ -2706,7 +2706,7 @@ export async function navigateClientSide(
   const appNavigate = getNavigationRuntime()?.functions.navigate;
   try {
     if (appNavigate) {
-      await appNavigate(
+      const navigation = appNavigate(
         fullHref,
         0,
         "navigate",
@@ -2718,6 +2718,10 @@ export async function navigateClientSide(
         visibleCommitMode,
         earlyIntent.bypassNavigationCache,
       );
+      // The App Router runtime now owns the action, including any refresh
+      // queued behind it. Keep this task's guard only for document navigation.
+      releaseTrackedAppRouterNavigation();
+      await navigation;
     } else {
       if (mode === "replace") {
         replaceHistoryStateWithoutNotify(null, "", fullHref);
@@ -2750,8 +2754,8 @@ export async function navigateClientSide(
 
 // `router.refresh()` can run in the same task as push/replace/gesture. The
 // token stays until a microtask so an external or MPA navigation, which never
-// enters navigateRsc, is not replaced by a second setState. A hash-only
-// update releases the token captured for that call before push returns.
+// enters navigateRsc, is not replaced by a second setState. App Router and
+// hash-only updates release their own token before push returns.
 let scheduledAppRouterNavigationCount = 0;
 const scheduledAppRouterNavigationReleases: Array<() => void> = [];
 const trackedAppRouterNavigationReleases: Array<(() => void) | undefined> = [];
@@ -2785,7 +2789,7 @@ function runInsideTrackedAppRouterNavigation(navigate: () => void): void {
   }
 }
 
-function releaseTrackedHashNavigation(): void {
+function releaseTrackedAppRouterNavigation(): void {
   trackedAppRouterNavigationReleases.at(-1)?.();
 }
 
@@ -2856,11 +2860,10 @@ const _appRouter: AppRouterInstance = {
   refresh(): void {
     if (isServer) return;
     const runtime = getNavigationRuntime();
-    const queueRefresh = runtime?.functions.queueRefresh;
-    // Coalesce with an active navigation or a refresh awaiting its microtask.
-    // The queued refresh will fetch the committed URL after navigation settles.
-    if (queueRefresh && runtime?.functions.shouldQueueRefresh?.()) {
-      queueRefresh();
+    if (hasScheduledAppRouterNavigation()) return;
+    const refresh = runtime?.functions.refresh;
+    if (refresh) {
+      React.startTransition(refresh);
       return;
     }
     // Drop cached RSC payloads for every previously-visited / prefetched route
@@ -2870,7 +2873,6 @@ const _appRouter: AppRouterInstance = {
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
     runtime?.functions.clearNavigationCaches?.();
-    if (hasScheduledAppRouterNavigation()) return;
     // Re-fetch the current page's RSC stream
     const rscNavigate = runtime?.functions.navigate;
     if (rscNavigate) {

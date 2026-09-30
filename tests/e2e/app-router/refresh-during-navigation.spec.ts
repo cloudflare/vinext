@@ -7,16 +7,17 @@ const SLOW_PATH = "/refresh-during-navigation/slow";
 const START_URL = `${BASE}${START_PATH}`;
 const SLOW_URL = `${BASE}${SLOW_PATH}`;
 
-// Next.js queues ACTION_REFRESH behind a pending action and runs it after that
-// action finishes. ACTION_NAVIGATE discards the pending action. A refresh does
-// not.
+// Next.js queues ACTION_REFRESH behind a pending router action, which resolves
+// when its router-state result is available, before streamed children finish.
+// Each public refresh is a separate action. ACTION_NAVIGATE discards a pending
+// action; refresh does not.
 // packages/next/src/client/components/app-router-instance.ts dispatchAction
 // Installed copy: node_modules/next/dist/client/components/app-router-instance.js
 // lines 143-162 and publicAppRouterInstance.refresh at 355-360.
 //
 // Chrome can report net::ERR_ABORTED for a Flight response after React has
 // already applied it, while the navigation abort signal stays quiet. The
-// contract below is the destination commit, then one refetch of that URL.
+// assertions use request ordering and the final destination, independently of EOF.
 
 type TrackedRequest = {
   finished: boolean;
@@ -68,6 +69,66 @@ function urlWhenRequestCountReaches(
 
 test.describe("refresh during an App Router navigation", () => {
   test.describe.configure({ timeout: 60_000 });
+
+  test("a queued refresh cannot replace a hard navigation with the previous document", async ({
+    page,
+  }) => {
+    await page.goto(START_URL);
+    await waitForAppRouterHydration(page);
+    const startRequests = trackRscRequests(page, START_PATH);
+    let releaseDocument: (() => void) | undefined;
+    await page.route(`**${START_PATH}**`, async (route) => {
+      const request = route.request();
+      if (request.headers().rsc === "1") {
+        await route.fulfill({ contentType: "text/html", body: "<p>Document fallback</p>" });
+        return;
+      }
+      if (request.isNavigationRequest() && new URL(request.url()).pathname === SLOW_PATH) {
+        await new Promise<void>((resolve) => {
+          releaseDocument = resolve;
+        });
+      }
+      await route.continue();
+    });
+    try {
+      await page.getByTestId("push-then-refresh").click({ noWaitAfter: true });
+      await expect.poll(() => releaseDocument !== undefined).toBe(true);
+      await page.waitForTimeout(200);
+      expect(startRequests).toEqual([]);
+      releaseDocument?.();
+      await expect(page).toHaveURL(SLOW_URL);
+      await expect(page.getByTestId("slow-page")).toBeVisible();
+    } finally {
+      releaseDocument?.();
+    }
+  });
+
+  test("a child layout effect can refresh during initial hydration", async ({ page }) => {
+    const requests = trackRscRequests(page, START_PATH);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${START_URL}?refresh-on-mount=1`);
+    await waitForAppRouterHydration(page);
+    await expect.poll(() => requests.length).toBe(1);
+    await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  for (const refreshCount of [1, 2]) {
+    test(`${refreshCount} refresh calls fetch while the committed navigation still streams`, async ({
+      page,
+    }) => {
+      const requests = trackRscRequests(page, `${START_PATH}/streaming`);
+      await page.goto(START_URL);
+      await waitForAppRouterHydration(page);
+      await page.getByTestId("link-streaming").click();
+      await expect(page.getByTestId("stream-pending")).toBeVisible();
+      expect(requests[0].finished).toBe(false);
+      await page.getByTestId(refreshCount === 1 ? "refresh" : "refresh-twice").click();
+      await expect.poll(() => requests.length, { timeout: 3_000 }).toBe(1 + refreshCount);
+      expect(requests[0].finished).toBe(false);
+    });
+  }
 
   test("refresh after an action redirect does not wait for the previous stream", async ({
     page,
@@ -173,7 +234,58 @@ test.describe("refresh during an App Router navigation", () => {
     });
   }
 
-  test("a refresh during an open navigation refetches the committed URL", async ({ page }) => {
+  // ACTION_RESTORE retains queued actions behind the winning restore.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
+  test("a queued refresh waits for an uncached Back traversal", async ({ page }) => {
+    await page.goto(START_URL);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("link-slow").click();
+    await expect(page).toHaveURL(SLOW_URL);
+    await expect(page.getByTestId("slow-page")).toBeVisible();
+
+    let releaseRefresh: (() => void) | undefined;
+    let releaseTraversal: (() => void) | undefined;
+    let traversalReleased = false;
+    let refreshedBeforeTraversal = false;
+    const startRequests = trackRscRequests(page, START_PATH);
+    await page.route(`**${SLOW_PATH}*`, async (route) => {
+      await new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      await route.continue();
+    });
+    await page.route(`**${START_PATH}?*`, async (route) => {
+      if (!isAppRouterRscRequestForPath(route.request(), START_PATH)) return route.continue();
+      if (!releaseTraversal) {
+        await new Promise<void>((resolve) => {
+          releaseTraversal = resolve;
+        });
+      } else if (!traversalReleased) {
+        refreshedBeforeTraversal = true;
+      }
+      await route.continue();
+    });
+    try {
+      await page.getByTestId("refresh-twice").click();
+      await expect.poll(() => releaseRefresh !== undefined).toBe(true);
+      await page.goBack();
+      await expect.poll(() => releaseTraversal !== undefined).toBe(true);
+      // The restore has not produced any router state yet.
+      await page.waitForTimeout(200);
+      expect(startRequests).toHaveLength(1);
+      expect(refreshedBeforeTraversal).toBe(false);
+      traversalReleased = true;
+      releaseTraversal?.();
+      await expect.poll(() => startRequests.length).toBe(2);
+      await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
+      await expect(page).toHaveURL(START_URL);
+    } finally {
+      releaseTraversal?.();
+      releaseRefresh?.();
+    }
+  });
+
+  test("a refresh targets the pending destination before navigation commits", async ({ page }) => {
     const slowRequests = trackRscRequests(page, SLOW_PATH);
     const startRequests = trackRscRequests(page, START_PATH);
 
@@ -203,13 +315,10 @@ test.describe("refresh during an App Router navigation", () => {
     expect(slowRequests).toHaveLength(1);
     expect(startRequests).toEqual([]);
 
+    expect(await urlAtSecondSlowRequest).toBe(START_URL);
+    expect(navigation.finished).toBe(false);
     await expect(page).toHaveURL(SLOW_URL);
     await expect(page.getByTestId("slow-page")).toHaveText(/\d+/);
-    const firstHeading = await page.getByTestId("slow-page").textContent();
-    expect(await urlAtSecondSlowRequest).toBe(SLOW_URL);
-    await expect(page.getByTestId("slow-page")).not.toHaveText(firstHeading ?? "", {
-      timeout: 15_000,
-    });
     expect(startRequests).toEqual([]);
     expect(slowRequests).toHaveLength(2);
   });
@@ -223,17 +332,19 @@ test.describe("refresh during an App Router navigation", () => {
     await waitForAppRouterHydration(page);
     expect(slowRequests).toEqual([]);
 
+    const historyLength = await page.evaluate(() => history.length);
     const urlAtSecondSlowRequest = urlWhenRequestCountReaches(page, slowRequests, 2);
     await page.getByTestId("push-then-refresh").click();
+    expect(await urlAtSecondSlowRequest).toBe(START_URL);
+    expect(slowRequests[0].finished).toBe(false);
     await expect(page).toHaveURL(SLOW_URL);
     await expect(page.getByTestId("slow-page")).toHaveText(/\d+/);
-    const firstHeading = await page.getByTestId("slow-page").textContent();
-
-    expect(await urlAtSecondSlowRequest).toBe(SLOW_URL);
-    await expect(page.getByTestId("slow-page")).not.toHaveText(firstHeading ?? "", {
-      timeout: 15_000,
-    });
+    // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+    expect(await page.evaluate(() => history.length)).toBe(historyLength + 1);
     expect(startRequests).toEqual([]);
     expect(slowRequests).toHaveLength(2);
+    await page.goBack();
+    await expect(page).toHaveURL(START_URL);
   });
 });

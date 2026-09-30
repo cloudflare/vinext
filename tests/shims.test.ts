@@ -494,7 +494,7 @@ describe("next/navigation shim", () => {
   // Next.js dispatchAction appends ACTION_REFRESH while another action is
   // pending. It does not discard that action.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
-  it("router.refresh() queues while an App Router navigation is active", async () => {
+  it("router.refresh() dispatches every call to the App Router refresh queue", async () => {
     const previousWindow = (globalThis as any).window;
     const calls: string[] = [];
     const win = {
@@ -511,15 +511,14 @@ describe("next/navigation shim", () => {
           rsc: undefined,
         },
         functions: {
+          refresh: async () => {
+            calls.push("queue");
+          },
           clearNavigationCaches: () => {
             calls.push("clear");
           },
-          shouldQueueRefresh: () => true,
           navigate: async (_href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}`);
-          },
-          queueRefresh: () => {
-            calls.push("queue");
           },
         },
       },
@@ -530,9 +529,10 @@ describe("next/navigation shim", () => {
       vi.resetModules();
       const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
       appRouterInstance.refresh();
+      appRouterInstance.refresh();
       await Promise.resolve();
 
-      expect(calls).toEqual(["queue"]);
+      expect(calls).toEqual(["queue", "queue"]);
     } finally {
       (globalThis as any).window = previousWindow;
       vi.resetModules();
@@ -576,12 +576,8 @@ describe("next/navigation shim", () => {
             location.search = next.search;
             location.hash = next.hash;
           },
-          shouldQueueRefresh: () => false,
           navigate: async (href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}:${href}`);
-          },
-          queueRefresh: () => {
-            calls.push("queue");
           },
         },
       },
@@ -642,12 +638,8 @@ describe("next/navigation shim", () => {
             location.search = next.search;
             location.hash = next.hash;
           },
-          shouldQueueRefresh: () => false,
           navigate: async (href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}:${href}`);
-          },
-          queueRefresh: () => {
-            calls.push("queue");
           },
         },
       },
@@ -714,14 +706,10 @@ describe("next/navigation shim", () => {
           clearNavigationCaches: () => {
             calls.push("clear");
           },
-          shouldQueueRefresh: () => false,
           navigate: async (_href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}`);
           },
           navigateExternal: () => externalNavigation,
-          queueRefresh: () => {
-            calls.push("queue");
-          },
         },
       },
     };
@@ -733,7 +721,7 @@ describe("next/navigation shim", () => {
       appRouterInstance.push("https://other.example/out");
       appRouterInstance.refresh();
 
-      expect(calls).toEqual(["clear"]);
+      expect(calls).toEqual([]);
       releaseExternal?.();
       await externalNavigation;
       await Promise.resolve();
@@ -780,12 +768,8 @@ describe("next/navigation shim", () => {
             location.search = next.search;
             location.hash = next.hash;
           },
-          shouldQueueRefresh: () => false,
           navigate: async (href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}:${href}`);
-          },
-          queueRefresh: () => {
-            calls.push("queue");
           },
         },
       },

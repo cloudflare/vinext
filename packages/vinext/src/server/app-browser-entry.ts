@@ -64,7 +64,6 @@ import {
   getNavigationRuntime,
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
-  type NavigationRuntimeNavigate,
   type NavigationRuntimeVisibleCommitMode,
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
@@ -74,6 +73,7 @@ import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
   consumeAppRouterScrollIntent,
+  getPendingAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
 import { installWindowNext, setWindowNextInternalSourcePage } from "../client/window-next.js";
@@ -85,12 +85,17 @@ import {
 import {
   clearHardNavigationLoopGuard,
   createAppBrowserNavigationController,
+  performHardNavigationWithLoopGuard,
   createBasePathStrippedPathAndSearch,
   createSnapshotPathAndSearch,
   type HistoryUpdateMode,
   type NavigationPayloadOutcome,
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
+import {
+  createAppBrowserRefreshQueue,
+  type AppBrowserNavigationActionResult,
+} from "./app-browser-refresh-queue.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
@@ -339,24 +344,20 @@ const historyController = new AppBrowserHistoryController({
 const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
+  performHardNavigation: (href, mode) => {
+    const didNavigate = performHardNavigationWithLoopGuard(href, mode);
+    if (didNavigate) refreshQueue.stopForDocumentNavigation();
+    return didNavigate;
+  },
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
 });
 const discardedServerActionRefreshScheduler = createDiscardedServerActionRefreshScheduler({
   runRefresh() {
-    clearClientNavigationCaches();
-    startTransition(() => {
-      void getNavigationRuntime()?.functions.navigate?.(
-        window.location.href,
-        0,
-        "refresh",
-        undefined,
-        undefined,
-        true,
-      );
-    });
+    startTransition(() => getNavigationRuntime()?.functions.refresh?.());
   },
 });
+let refreshQueue: ReturnType<typeof createAppBrowserRefreshQueue>;
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
@@ -484,15 +485,17 @@ function beginPendingBrowserRouterState(): PendingBrowserRouterState {
   return browserNavigationController.beginPendingBrowserRouterState();
 }
 
-function beginNavigation(): number {
-  const navId = browserNavigationController.beginNavigation();
+function beginNavigation(refreshBase?: AppRouterState): number {
+  const navId = browserNavigationController.beginNavigation(refreshBase);
   browserNavigationController.discardPendingNavigation();
+  refreshQueue.start(navId);
   discardedServerActionRefreshScheduler.markNavigationStart(navId);
   return navId;
 }
 
 function finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null = null): void {
   browserNavigationController.finalizeNavigation(navId, pending);
+  refreshQueue.ready(navId);
   discardedServerActionRefreshScheduler.markNavigationSettled(navId);
 }
 
@@ -841,6 +844,16 @@ async function renderNavigationPayload(
     navId: options.navId,
     nextElements: options.payload,
     onCommittedState: options.onCommittedState,
+    onActionReady: (state) => {
+      if (options.navigationCommitKind === "detached") return;
+      refreshQueue.ready(options.navId, {
+        state,
+        href: options.targetHref,
+        historyUpdateMode: options.historyUpdateMode,
+        scrollIntent: options.scrollIntent ?? null,
+      });
+      discardedServerActionRefreshScheduler.markNavigationSettled(options.navId);
+    },
     operationLane: options.operationLane ?? "navigation",
     params: options.params,
     payloadOrigin: options.payloadOrigin,
@@ -1252,6 +1265,7 @@ function isMpaNavigationState(
 }
 
 function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
+  refreshQueue.stopForDocumentNavigation();
   // Match Next's MPA path by suspending forever, but delay the actual location
   // mutation just enough for the old tree to commit the pending transition
   // signal before unload.
@@ -1353,9 +1367,8 @@ function BrowserRoot({
 
   // Publish the stable ref object and dispatch during layout commit. This keeps
   // the module-level escape hatches aligned with React's committed tree without
-  // performing module writes during render. The navigation runtime is registered
-  // after hydrateRoot() returns; by then this layout effect has already run for
-  // the hydration commit, so getBrowserRouterState() never observes a null ref.
+  // performing module writes during render. Child layout effects can call the
+  // registered runtime first; those entry points wait for this attachment.
   useLayoutEffect(() => {
     const setAppRouterStateValue = (value: AppRouterState | Promise<AppRouterState>) => {
       setTreeStateValue(value);
@@ -2036,7 +2049,7 @@ function bootstrapHydration(
     }
   }
 
-  const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
+  const navigateRsc = async function navigateRsc(
     href: string,
     redirectDepth = 0,
     navigationKind: NavigationKind = "navigate",
@@ -2047,12 +2060,13 @@ function bootstrapHydration(
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
     initialBypassNavigationCache?: boolean,
+    refreshAction?: AppBrowserNavigationActionResult,
   ): Promise<void> {
     serverActionSupplementalRefreshCoordinator.abortAll();
     const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
-    const navId = beginNavigation();
+    const navId = beginNavigation(refreshAction?.state);
     const navigationCacheGeneration = clientNavigationCacheGeneration;
 
     // Loop variables for inline redirect following. On a redirect, these are
@@ -2116,7 +2130,7 @@ function bootstrapHydration(
       // Redirects and detached shells can change visible state before the
       // authoritative payload arrives. Keep every candidate in this navigation
       // anchored to the same pre-navigation identity base.
-      const navigationInitiationState = getBrowserRouterState();
+      const navigationInitiationState = refreshAction?.state ?? getBrowserRouterState();
       const mountedSlotsHeader = getMountedSlotIdsHeader(navigationInitiationState.elements);
 
       while (true) {
@@ -2166,7 +2180,7 @@ function bootstrapHydration(
           : [];
         const hasSupplementalRefresh =
           persistedRefreshInterceptions.length > 0 || persistedSourcePageRefreshes.length > 0;
-        if (navigationKind === "refresh") {
+        if (navigationKind === "refresh" && !refreshAction) {
           historyController.syncCurrentHistoryStatePreviousNextUrl(
             requestPreviousNextUrl,
             getBrowserRouterState().bfcacheIds,
@@ -2928,6 +2942,37 @@ function bootstrapHydration(
     }
   };
 
+  refreshQueue = createAppBrowserRefreshQueue((action) => {
+    const pendingAction =
+      action && action.state.visibleCommitVersion > getBrowserRouterState().visibleCommitVersion
+        ? action
+        : undefined;
+    // A refresh of an uncommitted push inherits its destination/history intent.
+    // Once committed, current browser history owns the URL (including native writes).
+    const href = pendingAction?.href ?? window.location.href;
+    const pendingScroll = getPendingAppRouterScrollIntent();
+    const scrollIntent =
+      pendingAction?.scrollIntent?.id === pendingScroll?.id && pendingScroll
+        ? beginAppRouterScrollIntent(pendingScroll.hash)
+        : undefined;
+    clearClientNavigationCaches();
+    startTransition(() => {
+      void navigateRsc(
+        href,
+        0,
+        "refresh",
+        pendingAction?.historyUpdateMode,
+        pendingAction?.state.previousNextUrl,
+        true,
+        undefined,
+        scrollIntent,
+        "transition",
+        undefined,
+        pendingAction,
+      );
+    });
+  });
+
   // Exposed through one typed runtime seam so next/navigation, Link, Form, and
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
@@ -2963,11 +3008,8 @@ function bootstrapHydration(
         routeId: state.routeId,
       };
     },
-    shouldQueueRefresh: () => discardedServerActionRefreshScheduler.shouldQueueRefresh(),
     navigate: navigateRsc,
-    queueRefresh: () => {
-      discardedServerActionRefreshScheduler.schedule();
-    },
+    refresh: () => refreshQueue.refresh(),
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
     claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState, url) => {
@@ -3057,7 +3099,8 @@ function bootstrapHydration(
       finalizeNavigation(snapshotNavigationId);
       return;
     }
-    finalizeNavigation(snapshotNavigationId);
+    // The network traversal takes ownership synchronously. Do not drain
+    // queued refreshes between the failed snapshot lookup and that action.
     handlePopstate(event);
   });
 
