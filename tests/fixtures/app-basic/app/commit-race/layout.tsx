@@ -4,6 +4,9 @@ export default function CommitRaceLayout({ children }: { children: React.ReactNo
   return (
     <main>
       <nav>
+        <Link href="/commit-race/start#top" prefetch={false} data-testid="link-start-hash">
+          Start hash
+        </Link>
         <Link href="/commit-race/group/a" prefetch={false} data-testid="link-group-a">
           Group A
         </Link>

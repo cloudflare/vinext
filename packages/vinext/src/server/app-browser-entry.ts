@@ -2008,9 +2008,15 @@ function bootstrapHydration(
 
   const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
 
-  function commitSameDocumentNavigation(commit: () => void): void {
+  function beginNavigation(): number {
     const navId = browserNavigationController.beginNavigation();
+    browserNavigationController.discardPendingNavigation();
     discardedServerActionRefreshScheduler.markNavigationStart(navId);
+    return navId;
+  }
+
+  function commitSameDocumentNavigation(commit: () => void): void {
+    const navId = beginNavigation();
     try {
       navigationAbortCoordinator.abortActive();
       commit();
@@ -2036,9 +2042,8 @@ function bootstrapHydration(
     const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
-    const navId = browserNavigationController.beginNavigation();
+    const navId = beginNavigation();
     const navigationCacheGeneration = clientNavigationCacheGeneration;
-    discardedServerActionRefreshScheduler.markNavigationStart(navId);
 
     // Loop variables for inline redirect following. On a redirect, these are
     // updated and the loop continues without returning or re-entering navigateRsc,
@@ -2956,8 +2961,14 @@ function bootstrapHydration(
     },
     preparePrefetchResponse: (response) =>
       decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
-    claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) =>
-      historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
+    claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState, url) => {
+      const claim = () =>
+        historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState);
+      // Next.js dispatches ACTION_RESTORE for native History API writes only
+      // when the caller supplies a URL; metadata-only writes do not navigate.
+      if (url) commitSameDocumentNavigation(claim);
+      else claim();
+    },
     commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
       historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
   });
@@ -3010,8 +3021,7 @@ function bootstrapHydration(
       });
       return;
     }
-    const snapshotNavigationId = browserNavigationController.beginNavigation();
-    discardedServerActionRefreshScheduler.markNavigationStart(snapshotNavigationId);
+    const snapshotNavigationId = beginNavigation();
     if (
       restoreHistoryStateSnapshot(
         event.state,

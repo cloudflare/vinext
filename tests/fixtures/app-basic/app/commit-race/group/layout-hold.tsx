@@ -4,6 +4,7 @@ import { use } from "react";
 
 type HoldWindow = Window & {
   __commitRaceLayoutHold?: Promise<string>;
+  __commitRaceLayoutRelease?: (value: string) => void;
 };
 
 export function LayoutHold({ mode }: { mode: "hold" | "ready" }) {
@@ -17,7 +18,9 @@ export function LayoutHold({ mode }: { mode: "hold" | "ready" }) {
 function LayoutHoldPending() {
   const holdWindow = window as HoldWindow;
   if (holdWindow.__commitRaceLayoutHold === undefined) {
-    holdWindow.__commitRaceLayoutHold = new Promise(() => {});
+    holdWindow.__commitRaceLayoutHold = new Promise((resolve) => {
+      holdWindow.__commitRaceLayoutRelease = resolve;
+    });
   }
 
   const value = use(holdWindow.__commitRaceLayoutHold);

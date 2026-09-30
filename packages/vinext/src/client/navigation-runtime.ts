@@ -89,6 +89,7 @@ export type NavigationRuntimeFunctions = {
   claimCurrentHistoryTreeSnapshot?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
+    url?: string | URL | null,
   ) => void;
   commitAppOwnedHistoryStateWrite?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,

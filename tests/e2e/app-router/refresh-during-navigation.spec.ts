@@ -95,19 +95,28 @@ test.describe("refresh during an App Router navigation", () => {
     }
   });
 
-  test("a hash push supersedes an older stream before a same-task refresh", async ({ page }) => {
-    const streamingRequests = trackRscRequests(page, `${START_PATH}/streaming`);
-    await page.goto(START_URL);
-    await waitForAppRouterHydration(page);
-    await page.getByTestId("link-streaming").click();
-    await expect(page.getByTestId("stream-pending")).toBeVisible();
-    expect(streamingRequests).toHaveLength(1);
-    expect(streamingRequests[0].finished).toBe(false);
+  for (const method of ["router", "pushState", "replaceState"] as const) {
+    test(`${method} hash navigation supersedes an older stream before refresh`, async ({
+      page,
+    }) => {
+      const streamingRequests = trackRscRequests(page, `${START_PATH}/streaming`);
+      await page.goto(START_URL);
+      await waitForAppRouterHydration(page);
+      await page.getByTestId("link-streaming").click();
+      await expect(page.getByTestId("stream-pending")).toBeVisible();
+      expect(streamingRequests).toHaveLength(1);
+      expect(streamingRequests[0].finished).toBe(false);
 
-    await page.getByTestId("hash-then-refresh").click();
-    await expect.poll(() => streamingRequests.length, { timeout: 3_000 }).toBe(2);
-    await expect(page).toHaveURL(`${BASE}${START_PATH}/streaming#top`);
-  });
+      if (method === "router") {
+        await page.getByTestId("hash-then-refresh").click();
+      } else {
+        await page.evaluate((method) => window.history[method](null, "", "#top"), method);
+        await page.getByTestId("refresh").click();
+      }
+      await expect.poll(() => streamingRequests.length, { timeout: 3_000 }).toBe(2);
+      await expect(page).toHaveURL(`${BASE}${START_PATH}/streaming#top`);
+    });
+  }
 
   // Next.js replaces the pending navigation when a newer navigation starts;
   // only the winning action gates queued refreshes.

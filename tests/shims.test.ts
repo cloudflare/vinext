@@ -1237,6 +1237,15 @@ describe("next/navigation shim", () => {
         next: true,
       });
       expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(5);
+      expect(
+        claimCurrentHistoryTreeSnapshot.mock.calls.map(([mode, , url]) => [mode, url]),
+      ).toEqual([
+        ["push", "/photo/1?filter=active"],
+        ["push", "/photo/1?filter=pending"],
+        ["replace", "/photo/1?filter=archived"],
+        ["replace", "/photo/1?filter=all"],
+        ["push", "/photo/1?filter=done"],
+      ]);
 
       // Next.js bypasses its external History API wrapper when caller data is
       // a captured App Router entry (`data?.__NA`). Vinext's traversal index is

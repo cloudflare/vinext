@@ -3351,6 +3351,7 @@ if (!isServer) {
       getNavigationRuntime()?.functions.claimCurrentHistoryTreeSnapshot?.(
         "push",
         previousHistoryState,
+        url,
       );
       if (state.suppressUrlNotifyCount === 0) {
         // A raw history.pushState (shallow routing) supersedes a pending link,
@@ -3385,6 +3386,7 @@ if (!isServer) {
       getNavigationRuntime()?.functions.claimCurrentHistoryTreeSnapshot?.(
         "replace",
         previousHistoryState,
+        url,
       );
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();

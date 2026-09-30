@@ -3480,6 +3480,51 @@ describe("app browser entry state helpers", () => {
 });
 
 describe("app browser navigation controller", () => {
+  it("discards a dispatched but uncommitted render and releases its snapshot", async () => {
+    const committedState = createState();
+    const setter = vi.fn();
+    const releaseSnapshot = vi.fn(navigationShim.commitClientNavigationState);
+    const commitEffect = vi.fn();
+    const controller = createAppBrowserNavigationController({
+      commitClientNavigationState: releaseSnapshot,
+    });
+    const detach = controller.attachBrowserRouterState(setter, { current: committedState });
+    try {
+      const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const render = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard",
+          {},
+        ),
+        nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+      const uncommitted = await pendingRouterState.promise;
+      expect(uncommitted.routeId).toBe("route:/dashboard");
+
+      controller.beginNavigation();
+      controller.discardPendingNavigation();
+      await expect(render).resolves.toBe("no-commit");
+      expect(setter).toHaveBeenLastCalledWith(committedState);
+      expect(releaseSnapshot).toHaveBeenCalledExactlyOnceWith(undefined, { releaseSnapshot: true });
+      controller.commitNavigationRender(uncommitted.renderId);
+      expect(commitEffect).not.toHaveBeenCalled();
+      expect(releaseSnapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
   it("tracks active navigation ids and clears the pending pathname only for the current navigation", () => {
     const { controller, detach } = createControllerHarness();
     const clearSpy = vi.spyOn(navigationShim, "clearPendingPathname").mockImplementation(() => {});

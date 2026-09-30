@@ -121,6 +121,7 @@ type BrowserNavigationPayloadOptions = {
 
 type BrowserNavigationController = {
   beginNavigation(): number;
+  discardPendingNavigation(): void;
   getActiveNavigationId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
@@ -365,6 +366,21 @@ export function createAppBrowserNavigationController(
 
   function getActiveNavigationId(): number {
     return activeNavigationId;
+  }
+
+  function discardPendingNavigation(): void {
+    settlePendingBrowserRouterState(activePendingBrowserRouterState);
+    settleNavigationCommits(Infinity, false);
+    clearCommittedNavigationFailureTargets(Infinity);
+    for (const renderId of pendingNavigationPrePaintEffects.keys()) {
+      pendingNavigationPrePaintEffects.delete(renderId);
+      commitClientNavigationStateImpl(undefined, { releaseSnapshot: true });
+    }
+    // An approved render may already be queued in React or suspended below
+    // BrowserRoot. Changing navigation ids alone cannot revoke that state update.
+    if (browserRouterStateRef && setBrowserRouterState) {
+      setBrowserRouterState(browserRouterStateRef.current);
+    }
   }
 
   function allocateRenderId(): number {
@@ -1038,6 +1054,7 @@ export function createAppBrowserNavigationController(
 
   return {
     beginNavigation,
+    discardPendingNavigation,
     getActiveNavigationId,
     hasBrowserRouterState,
     getBrowserRouterState,
