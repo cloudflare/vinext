@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createDevOnCaughtError,
   createOnUncaughtError,
@@ -38,6 +38,7 @@ import {
   createAppBrowserNavigationController,
   performHardNavigationWithLoopGuard,
 } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { DOCUMENT_UNLOAD_TIMEOUT_MS } from "../packages/vinext/src/client/chunk-load-recovery.js";
 import { createAppBrowserDocumentNavigation } from "../packages/vinext/src/server/app-browser-document-navigation.js";
 import { AppBrowserMpaNavigationScheduler } from "../packages/vinext/src/server/app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
@@ -3952,7 +3953,17 @@ function expectHardNavigate(decision: { kind: string }): {
   return { url: decision.url, historyMode };
 }
 
-function createDocumentNavigationHarness(currentHref: string) {
+type DocumentNavigationHarnessOptions = {
+  /** A download-attribute link reports its own kind of navigate event. */
+  downloadRequest?: string | null;
+  /** The browser fires no navigate event at all, as with a canceled Leave-site prompt. */
+  silent?: boolean;
+};
+
+function createDocumentNavigationHarness(
+  currentHref: string,
+  options: DocumentNavigationHarnessOptions = {},
+) {
   const { assign, replace, storage } = stubWindow(currentHref);
   const navigation = new EventTarget();
   const scheduledMpaNavigations: Array<() => void> = [];
@@ -3967,11 +3978,13 @@ function createDocumentNavigationHarness(currentHref: string) {
   const discardPendingNavigation = vi.fn();
   const attempts: AbortController[] = [];
   const dispatchNavigate = (url: string) => {
+    if (options.silent) return;
     const attempt = new AbortController();
     attempts.push(attempt);
     navigation.dispatchEvent(
       Object.assign(new Event("navigate"), {
         destination: { url: new URL(url, currentHref).href, sameDocument: false },
+        downloadRequest: options.downloadRequest ?? null,
         signal: attempt.signal,
       }),
     );
@@ -3981,6 +3994,7 @@ function createDocumentNavigationHarness(currentHref: string) {
   const documentNavigation = createAppBrowserDocumentNavigation({
     clearHardNavigationLoopGuard,
     discardPendingNavigation,
+    expireDocumentNavigation: (error) => queue.expireDocumentNavigation(error),
     mpaNavigationScheduler,
     performHardNavigationWithLoopGuard,
     resumeAfterDocumentNavigation: () => queue.resumeAfterDocumentNavigation(),
@@ -4099,6 +4113,209 @@ describe("app browser document navigation", () => {
       flushMpaNavigations();
 
       expect(assign.mock.calls).toEqual([["https://example.com/other#anchor"], ["/third#anchor"]]);
+    });
+  });
+
+  describe("a load that may never replace the page", () => {
+    const pageHref = "https://example.com/page";
+    const targetHref = "https://example.com/report.csv";
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each<[string, DocumentNavigationHarnessOptions]>([
+      ["fires no navigate event (a canceled Leave-site prompt)", { silent: true }],
+      ["fires a navigate event that never aborts (a 204 or an attachment)", {}],
+      ["is a download-attribute link", { downloadRequest: "" }],
+    ])("expires when the load %s", async (_name, options) => {
+      const { discardPendingNavigation, documentNavigation, queue, storage } =
+        createDocumentNavigationHarness(pageHref, options);
+      queue.start(1);
+      const heldRun = vi.fn(async () => "held");
+      const held = queue.serverAction(heldRun);
+      const heldRejection = expect(held).rejects.toBeInstanceOf(ServerActionNotSentError);
+
+      documentNavigation.performHardNavigation(targetHref);
+      const laterRun = vi.fn(async () => "later");
+      const later = queue.serverAction(laterRun);
+      vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS - 1);
+
+      expect(laterRun).not.toHaveBeenCalled();
+      expect(discardPendingNavigation).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+
+      await heldRejection;
+      await expect(later).resolves.toBe("later");
+      expect(heldRun).not.toHaveBeenCalled();
+      expect(discardPendingNavigation).toHaveBeenCalledOnce();
+      expect(storage.get(HARD_NAVIGATION_LOOP_GUARD_STORAGE_KEY)).toBe(targetHref);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("resets the multi-page scheduler on expiry so the same target can be tried again", () => {
+      const { documentNavigation, flushMpaNavigations, mpaNavigationScheduler } =
+        createDocumentNavigationHarness(pageHref, { silent: true });
+      const reset = vi.spyOn(mpaNavigationScheduler, "reset");
+
+      documentNavigation.performMpaNavigation(targetHref, "push");
+      flushMpaNavigations();
+      vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS);
+
+      expect(reset).toHaveBeenCalledOnce();
+    });
+
+    it("expires a multi-page navigation that never unloads", async () => {
+      const { documentNavigation, flushMpaNavigations, queue } = createDocumentNavigationHarness(
+        pageHref,
+        { silent: true },
+      );
+      queue.start(1);
+      const held = queue.serverAction(async () => "held");
+      const heldRejection = expect(held).rejects.toBeInstanceOf(ServerActionNotSentError);
+
+      documentNavigation.performMpaNavigation(targetHref, "push");
+      flushMpaNavigations();
+      vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS);
+
+      await heldRejection;
+    });
+
+    it("refuses one repeat of an abandoned load to the same URL, then allows another", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { assign, documentNavigation, queue } = createDocumentNavigationHarness(pageHref, {
+        silent: true,
+      });
+      queue.start(1);
+      const held = queue.serverAction(async () => "held");
+      const heldRejection = expect(held).rejects.toBeInstanceOf(ServerActionNotSentError);
+
+      expect(documentNavigation.performHardNavigation(pageHref)).toBe(true);
+      vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS);
+      await heldRejection;
+      expect(documentNavigation.performHardNavigation(pageHref)).toBe(false);
+      expect(error).toHaveBeenCalledOnce();
+      expect(documentNavigation.performHardNavigation(pageHref)).toBe(true);
+      expect(assign).toHaveBeenCalledTimes(2);
+    });
+
+    it("replays held actions, clears the loop guard and stops the timer on a confirmed cancel", async () => {
+      const { attempts, documentNavigation, queue, storage } =
+        createDocumentNavigationHarness(pageHref);
+      queue.start(1);
+      const held = queue.serverAction(async () => "held");
+
+      documentNavigation.performHardNavigation(targetHref);
+      expect(vi.getTimerCount()).toBe(1);
+      attempts[0]?.abort();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(held).resolves.toBe("held");
+      expect(storage.has(HARD_NAVIGATION_LOOP_GUARD_STORAGE_KEY)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not expire after the page begins unloading", async () => {
+      const { documentNavigation, queue } = createDocumentNavigationHarness(pageHref);
+      queue.start(1);
+      const heldRun = vi.fn(async () => "held");
+      void queue.serverAction(heldRun);
+
+      documentNavigation.performHardNavigation(targetHref);
+      documentNavigation.resetRecovery();
+
+      expect(vi.getTimerCount()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS * 2);
+
+      expect(heldRun).not.toHaveBeenCalled();
+    });
+
+    it("restarts the timer when a newer document navigation begins", async () => {
+      const { documentNavigation, queue } = createDocumentNavigationHarness(pageHref, {
+        silent: true,
+      });
+      queue.start(1);
+      const held = queue.serverAction(async () => "held");
+      const heldRejection = expect(held).rejects.toBeInstanceOf(ServerActionNotSentError);
+
+      documentNavigation.performHardNavigation(targetHref);
+      vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS - 1000);
+      documentNavigation.performHardNavigation("https://example.com/other");
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS - 1);
+
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(1);
+
+      vi.advanceTimersByTime(1);
+      await heldRejection;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    describe("outcome callbacks", () => {
+      function begin(options: DocumentNavigationHarnessOptions = {}) {
+        const harness = createDocumentNavigationHarness(pageHref, options);
+        const outcome = { onAbandoned: vi.fn(), onCanceled: vi.fn() };
+        performHardNavigationWithLoopGuard(targetHref, "assign", () =>
+          harness.documentNavigation.beforeDocumentNavigation(targetHref, outcome),
+        );
+        return { ...harness, outcome };
+      }
+
+      it("reports a confirmed cancel and never reports abandonment afterward", async () => {
+        const { attempts, outcome } = begin();
+
+        attempts[0]?.abort();
+        await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS * 2);
+
+        expect(outcome.onCanceled).toHaveBeenCalledOnce();
+        expect(outcome.onAbandoned).not.toHaveBeenCalled();
+      });
+
+      it("reports abandonment on expiry and ignores a later cancel", async () => {
+        const { attempts, outcome } = begin();
+
+        vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS);
+        attempts[0]?.abort();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(outcome.onAbandoned).toHaveBeenCalledOnce();
+        expect(outcome.onCanceled).not.toHaveBeenCalled();
+      });
+
+      it("reports nothing when the page unloads", async () => {
+        const { documentNavigation, outcome } = begin();
+
+        documentNavigation.resetRecovery();
+        await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS * 2);
+
+        expect(outcome.onCanceled).not.toHaveBeenCalled();
+        expect(outcome.onAbandoned).not.toHaveBeenCalled();
+      });
+
+      it("reports a cancel when the location change throws", () => {
+        const harness = createDocumentNavigationHarness(pageHref);
+        const outcome = { onAbandoned: vi.fn(), onCanceled: vi.fn() };
+        harness.assign.mockImplementation(() => {
+          throw new Error("blocked");
+        });
+
+        expect(() =>
+          performHardNavigationWithLoopGuard(targetHref, "assign", () =>
+            harness.documentNavigation.beforeDocumentNavigation(targetHref, outcome),
+          ),
+        ).toThrow("blocked");
+
+        expect(outcome.onCanceled).toHaveBeenCalledOnce();
+        expect(outcome.onAbandoned).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+      });
     });
   });
 

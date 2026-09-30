@@ -1,9 +1,10 @@
-import { toDocumentLoadHref } from "../client/chunk-load-recovery.js";
+import { DOCUMENT_UNLOAD_TIMEOUT_MS, toDocumentLoadHref } from "../client/chunk-load-recovery.js";
 import type { HardNavigationMode, HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 import {
   observeDocumentNavigationCancellation,
   type AppBrowserMpaNavigationWindow,
 } from "./app-browser-mpa-navigation.js";
+import { ServerActionNotSentError } from "./app-browser-refresh-queue.js";
 
 export type DocumentNavigationOutcome = {
   onCanceled(): void;
@@ -13,6 +14,7 @@ export type DocumentNavigationOutcome = {
 type AppBrowserDocumentNavigationDeps = {
   clearHardNavigationLoopGuard(): void;
   discardPendingNavigation(): void;
+  expireDocumentNavigation(error: Error): void;
   mpaNavigationScheduler: {
     navigate(
       targetWindow: AppBrowserMpaNavigationWindow,
@@ -44,24 +46,46 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
     cancel();
   }
 
-  function beforeDocumentNavigation(href: string): () => void {
+  /**
+   * Holds refreshes and Server Actions back while a document loads. A confirmed
+   * cancel replays them. A load that neither unloads the page nor reports a
+   * cancel (a 204, an attachment, a dismissed Leave-site prompt) expires after
+   * DOCUMENT_UNLOAD_TIMEOUT_MS: held Server Actions are rejected, and the loop
+   * guard stays because the load may still be in progress.
+   */
+  function beforeDocumentNavigation(href: string, outcome?: DocumentNavigationOutcome): () => void {
     const targetHref = new URL(href, window.location.href).href;
     deps.stopRefreshes();
     resetRecovery();
-    const recover = () => {
-      if (cancelRecovery !== cancelObserver) return;
+    const restore = () => {
       resetRecovery();
       deps.mpaNavigationScheduler.reset();
       deps.discardPendingNavigation();
+    };
+    const recover = () => {
+      if (cancelRecovery !== cancel) return;
+      restore();
       deps.clearHardNavigationLoopGuard();
       deps.resumeAfterDocumentNavigation();
+      outcome?.onCanceled();
+    };
+    const expire = () => {
+      if (cancelRecovery !== cancel) return;
+      restore();
+      deps.expireDocumentNavigation(new ServerActionNotSentError());
+      outcome?.onAbandoned();
     };
     const cancelObserver = observeDocumentNavigationCancellation(
       (window as Window & { navigation?: EventTarget }).navigation,
       targetHref,
       recover,
     );
-    cancelRecovery = cancelObserver;
+    const timer = setTimeout(expire, DOCUMENT_UNLOAD_TIMEOUT_MS);
+    const cancel = () => {
+      cancelObserver();
+      clearTimeout(timer);
+    };
+    cancelRecovery = cancel;
     return recover;
   }
 

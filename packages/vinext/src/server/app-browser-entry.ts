@@ -359,6 +359,10 @@ let refreshQueue: ReturnType<typeof createAppBrowserRefreshQueue>;
 const documentNavigation = createAppBrowserDocumentNavigation({
   clearHardNavigationLoopGuard,
   discardPendingNavigation: () => browserNavigationController.discardPendingNavigation(),
+  expireDocumentNavigation(error) {
+    discardedServerActionRefreshScheduler.resumeAfterDocumentRestore();
+    refreshQueue.expireDocumentNavigation(error);
+  },
   mpaNavigationScheduler: {
     navigate: (...args) => mpaNavigationScheduler.navigate(...args),
     reset: () => mpaNavigationScheduler.reset(),
