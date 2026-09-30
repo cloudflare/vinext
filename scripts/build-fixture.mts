@@ -28,6 +28,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   symlinkSync,
 } from "node:fs";
@@ -81,11 +82,15 @@ function parseCli(argv: string[]) {
  * repo root's so anything else resolves by walking up, as it does in the repo.
  */
 function prepareWorkspace(fixtureDir: string, out: string | undefined): string {
-  const base = out ? resolve(out) : mkdtempSync(join(tmpdir(), "vinext-fixture-"));
-  if (base === REPO_ROOT || base.startsWith(REPO_ROOT + sep)) {
-    throw new UsageError(`--out must be outside the repo (got ${base}).`);
+  const requested = out ? resolve(out) : mkdtempSync(join(tmpdir(), "vinext-fixture-"));
+  if (requested === REPO_ROOT || requested.startsWith(REPO_ROOT + sep)) {
+    throw new UsageError(`--out must be outside the repo (got ${requested}).`);
   }
-  mkdirSync(base, { recursive: true });
+  mkdirSync(requested, { recursive: true });
+  // Vite resolves the project root through realpath (macOS tmpdir sits behind
+  // /var -> /private/var), so printed paths use the same canonical form and
+  // callers computing root-relative paths from them match the build's.
+  const base = realpathSync(requested);
   if (readdirSync(base).length > 0) throw new UsageError(`--out directory is not empty: ${base}`);
 
   const workspace = join(base, basename(fixtureDir));
