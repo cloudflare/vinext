@@ -5533,6 +5533,10 @@ export const loadServerActionClient = ${
 
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
+          // Only the hybrid Pages handler below may attach the forwarded
+          // middleware context. The App Router trusts req.headers for it, so a
+          // client copy would otherwise replace middleware execution.
+          delete req.headers[VINEXT_MW_CTX_HEADER];
           next();
         });
 
