@@ -318,51 +318,152 @@ test.describe("refresh during an App Router navigation", () => {
 
   // ACTION_RESTORE retains queued actions behind the winning restore.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
-  test("a queued refresh waits for an uncached Back traversal", async ({ page }) => {
-    await page.goto(START_URL);
-    await waitForAppRouterHydration(page);
-    await page.getByTestId("link-slow").click();
-    await expect(page).toHaveURL(SLOW_URL);
-    await expect(page.getByTestId("slow-page")).toBeVisible();
+  for (const [startPath, savedScroll] of [
+    [START_PATH, 0],
+    ["/commit-race/start", 500],
+  ] as const) {
+    test(`a queued refresh preserves uncached Back history and scroll ${savedScroll}`, async ({
+      page,
+    }) => {
+      const startUrl = `${BASE}${startPath}`;
+      await page.goto(startUrl);
+      await waitForAppRouterHydration(page);
+      const initialHistoryIndex = await page.evaluate(() => history.state.__vinext_historyIndex);
+      await page.evaluate(
+        ({ savedScroll, slowPath }) => {
+          window.scrollTo(0, savedScroll);
+          void window.next!.router!.push(slowPath);
+        },
+        { savedScroll, slowPath: SLOW_PATH },
+      );
+      await expect(page).toHaveURL(SLOW_URL);
+      await expect(page.getByTestId("slow-page")).toBeVisible();
 
+      let releaseRefresh: (() => void) | undefined;
+      let releaseTraversal: (() => void) | undefined;
+      let traversalReleased = false;
+      let refreshedBeforeTraversal = false;
+      const startRequests = trackRscRequests(page, startPath);
+      await page.route(`**${SLOW_PATH}*`, async (route) => {
+        await new Promise<void>((resolve) => {
+          releaseRefresh = resolve;
+        });
+        await route.continue();
+      });
+      await page.route(`**${startPath}?*`, async (route) => {
+        if (!isAppRouterRscRequestForPath(route.request(), startPath)) return route.continue();
+        if (!releaseTraversal) {
+          await new Promise<void>((resolve) => {
+            releaseTraversal = resolve;
+          });
+        } else if (!traversalReleased) {
+          refreshedBeforeTraversal = true;
+        }
+        await route.continue();
+      });
+      try {
+        await page.getByTestId("refresh-twice").click();
+        await expect.poll(() => releaseRefresh !== undefined).toBe(true);
+        await page.goBack();
+        await expect.poll(() => releaseTraversal !== undefined).toBe(true);
+        // The restore has not produced any router state yet.
+        await page.waitForTimeout(200);
+        expect(startRequests).toHaveLength(1);
+        expect(refreshedBeforeTraversal).toBe(false);
+        traversalReleased = true;
+        releaseTraversal?.();
+        await expect.poll(() => startRequests.length).toBe(2);
+        await expect(page).toHaveURL(startUrl);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedScroll);
+        await page.evaluate((href) => {
+          void window.next!.router!.replace(href);
+        }, `${startUrl}?after-back=1`);
+        await expect(page).toHaveURL(`${startUrl}?after-back=1`);
+        expect(await page.evaluate(() => history.state.__vinext_historyIndex)).toBe(
+          initialHistoryIndex,
+        );
+        releaseRefresh?.();
+        await page.unroute(`**${SLOW_PATH}*`);
+        await page.goForward();
+        await expect(page).toHaveURL(SLOW_URL);
+        await page.goBack();
+        await expect(page).toHaveURL(`${startUrl}?after-back=1`);
+        expect(await page.evaluate(() => history.state.__vinext_historyIndex)).toBe(
+          initialHistoryIndex,
+        );
+      } finally {
+        releaseTraversal?.();
+        releaseRefresh?.();
+      }
+    });
+  }
+
+  test("a queued refresh preserves pending scroll from a prefetched Back commit", async ({
+    page,
+  }) => {
+    const targetPath = "/commit-race/start";
+    await page.goto(`${BASE}${targetPath}`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate((href) => {
+      history.scrollRestoration = "manual";
+      window.scrollTo(0, 500);
+      void window.next!.router!.push(href);
+    }, START_PATH);
+    await expect(page).toHaveURL(START_URL);
+    const freshResponse = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), START_PATH),
+    );
+    await page.evaluate(() => {
+      const router = window.next!.router!;
+      if ("refresh" in router) router.refresh();
+    });
+    expect(await (await freshResponse).finished()).toBeNull();
+    const prefetchResponse = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), targetPath),
+    );
+    await page.evaluate((href) => {
+      void window.next!.router!.prefetch(href);
+    }, targetPath);
+    expect(await (await prefetchResponse).finished()).toBeNull();
+    await page.waitForTimeout(250);
     let releaseRefresh: (() => void) | undefined;
-    let releaseTraversal: (() => void) | undefined;
-    let traversalReleased = false;
-    let refreshedBeforeTraversal = false;
-    const startRequests = trackRscRequests(page, START_PATH);
-    await page.route(`**${SLOW_PATH}*`, async (route) => {
+    await page.route(`**${targetPath}?*`, async (route) => {
       await new Promise<void>((resolve) => {
         releaseRefresh = resolve;
       });
       await route.continue();
     });
-    await page.route(`**${START_PATH}?*`, async (route) => {
-      if (!isAppRouterRscRequestForPath(route.request(), START_PATH)) return route.continue();
-      if (!releaseTraversal) {
-        await new Promise<void>((resolve) => {
-          releaseTraversal = resolve;
-        });
-      } else if (!traversalReleased) {
-        refreshedBeforeTraversal = true;
-      }
-      await route.continue();
-    });
     try {
-      await page.getByTestId("refresh-twice").click();
+      await page.evaluate(() => {
+        window.addEventListener(
+          "popstate",
+          () => {
+            const router = window.next!.router!;
+            if ("refresh" in router) router.refresh();
+          },
+          { once: true },
+        );
+        history.back();
+      });
       await expect.poll(() => releaseRefresh !== undefined).toBe(true);
-      await page.goBack();
-      await expect.poll(() => releaseTraversal !== undefined).toBe(true);
-      // The restore has not produced any router state yet.
-      await page.waitForTimeout(200);
-      expect(startRequests).toHaveLength(1);
-      expect(refreshedBeforeTraversal).toBe(false);
-      traversalReleased = true;
-      releaseTraversal?.();
-      await expect.poll(() => startRequests.length).toBe(2);
-      await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
-      await expect(page).toHaveURL(START_URL);
+      // The prefetched traversal already committed; its scroll work did not.
+      await expect(
+        page.getByRole("heading", { name: "Commit race start", exact: true }),
+      ).toBeVisible();
+      releaseRefresh?.();
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(500);
+      await page.unroute(`**${targetPath}?*`);
+      const idleRefresh = page.waitForResponse((response) =>
+        isAppRouterRscRequestForPath(response.request(), targetPath),
+      );
+      await page.evaluate(() => {
+        window.scrollTo(0, 200);
+        const router = window.next!.router!;
+        if ("refresh" in router) router.refresh();
+      });
+      expect(await (await idleRefresh).finished()).toBeNull();
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(200);
     } finally {
-      releaseTraversal?.();
       releaseRefresh?.();
     }
   });

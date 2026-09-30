@@ -1,5 +1,5 @@
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
-import type { AppRouterState } from "./app-browser-state.js";
+import type { HistoryTraversalIntent, AppRouterState } from "./app-browser-state.js";
 import type { HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 
 export type AppBrowserNavigationActionResult = {
@@ -7,6 +7,7 @@ export type AppBrowserNavigationActionResult = {
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
   scrollIntent: AppRouterScrollIntent | null;
+  traversalIntent: HistoryTraversalIntent | null;
 };
 
 type RefreshRequest = {

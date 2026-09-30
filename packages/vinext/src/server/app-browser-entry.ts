@@ -418,11 +418,9 @@ const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as React.ComponentType
   reset: () => void;
 }>;
 let latestRscHmrUpdateId = 0;
-// Single-slot latch tracking the navId of the most recent synchronous
-// popstate snapshot restore. activeNavigationId is strictly monotonic, so
-// shouldSkipScrollRestore can only match the most-recently restored
-// navigation. This is intentionally not a per-navigation set — a future
-// asynchronous scroll restore for an older navId is already stale.
+// Refresh preserves pending Back/Forward scroll work even after the traversal
+// tree has committed. A different navigation cancels that work.
+let scrollRestorationNavigationId = 0;
 let synchronousPopstateScrollRestoreNavigationId: number | null = null;
 
 // Vite can notify the browser about an RSC HMR update before the dev server's
@@ -491,9 +489,10 @@ function beginPendingBrowserRouterState(): PendingBrowserRouterState {
   return browserNavigationController.beginPendingBrowserRouterState();
 }
 
-function beginNavigation(refreshBase?: AppRouterState): number {
+function beginNavigation(refreshBase?: AppRouterState, preserveScrollRestoration = false): number {
   mpaNavigationScheduler.reset();
   const navId = browserNavigationController.beginNavigation(refreshBase);
+  if (!preserveScrollRestoration) scrollRestorationNavigationId = navId;
   browserNavigationController.discardPendingNavigation();
   refreshQueue.start(navId);
   discardedServerActionRefreshScheduler.markNavigationStart(navId);
@@ -858,6 +857,7 @@ async function renderNavigationPayload(
         href: options.targetHref,
         historyUpdateMode: options.historyUpdateMode,
         scrollIntent: options.scrollIntent ?? null,
+        traversalIntent: options.traversalIntent ?? null,
       });
       discardedServerActionRefreshScheduler.markNavigationSettled(options.navId);
     },
@@ -1610,7 +1610,7 @@ function restorePopstateScrollPosition(
 
   if (!(state && typeof state === "object" && "__vinext_scrollY" in state)) {
     if (window.location.hash) {
-      scrollToHashTargetOnNextFrame(window.location.hash);
+      scrollToHashTargetOnNextFrame(window.location.hash, shouldContinue);
     }
     return;
   }
@@ -2075,7 +2075,8 @@ function bootstrapHydration(
     const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
-    const navId = beginNavigation(refreshAction?.state);
+    const navId = beginNavigation(refreshAction?.state, navigationKind === "refresh");
+    const scrollRestoreId = scrollRestorationNavigationId;
     const navigationCacheGeneration = clientNavigationCacheGeneration;
 
     // Loop variables for inline redirect following. On a redirect, these are
@@ -2089,7 +2090,9 @@ function bootstrapHydration(
     const activeTraversalIntent =
       navigationKind === "traverse"
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
-        : null;
+        : navigationKind === "refresh"
+          ? (traversalIntent ?? null)
+          : null;
     const performHardNavigationForScrollIntent = (
       targetHref: string,
       mode?: "assign" | "replace",
@@ -2815,6 +2818,13 @@ function bootstrapHydration(
           visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
         });
         if (renderOutcome !== "committed") return;
+        if (navigationKind === "refresh" && activeTraversalIntent) {
+          // The traversal tree never committed, so its bounded scroll retries
+          // may have expired. Restore when its refresh finally commits.
+          restorePopstateScrollPosition(activeTraversalIntent.historyState, {
+            shouldContinue: () => scrollRestorationNavigationId === scrollRestoreId,
+          });
+        }
         if (hasSupplementalRefresh) {
           clearVisitedResponseCache();
           return;
@@ -2973,7 +2983,7 @@ function bootstrapHydration(
         pendingAction?.historyUpdateMode,
         pendingAction?.state.previousNextUrl,
         true,
-        undefined,
+        pendingAction?.traversalIntent ?? undefined,
         scrollIntent,
         "transition",
         undefined,
@@ -3039,14 +3049,10 @@ function bootstrapHydration(
   // microtask-based deferral for compatibility with non-RSC navigation.
   // See: https://github.com/vercel/next.js/discussions/41934#discussioncomment-4602607
   const handlePopstate = createPopstateRestoreHandler({
-    getActiveNavigationId: browserNavigationController.getActiveNavigationId.bind(
-      browserNavigationController,
-    ),
+    getActiveNavigationId: () => scrollRestorationNavigationId,
     getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
     getNavigate: () => getNavigationRuntime()?.functions.navigate,
-    isCurrentNavigation: browserNavigationController.isCurrentNavigation.bind(
-      browserNavigationController,
-    ),
+    isCurrentNavigation: (navId) => scrollRestorationNavigationId === navId,
     notifyAppRouterTransitionStart: (href) => {
       notifyAppRouterTransitionStart(href, "traverse");
     },
@@ -3096,8 +3102,8 @@ function bootstrapHydration(
       window.__VINEXT_RSC_PENDING__ = null;
       restoreSynchronousPopstateScrollPosition(
         {
-          getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
-          isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+          getActiveNavigationId: () => snapshotNavigationId,
+          isCurrentNavigation: (navId) => scrollRestorationNavigationId === navId,
           markScrollRestoreConsumed: (navId) => {
             synchronousPopstateScrollRestoreNavigationId = navId;
           },

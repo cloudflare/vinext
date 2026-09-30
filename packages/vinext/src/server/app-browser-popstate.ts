@@ -108,7 +108,9 @@ export function createPopstateRestoreHandler(
 
     void pendingNavigation.finally(() => {
       if (shouldRestoreScrollForNavigation() && !shouldRestoreSavedScroll) {
-        deps.restorePopstateScrollPosition(event.state);
+        deps.restorePopstateScrollPosition(event.state, {
+          shouldContinue: shouldRestoreScrollForNavigation,
+        });
       }
 
       if (deps.getPendingNavigation() === pendingNavigation) {

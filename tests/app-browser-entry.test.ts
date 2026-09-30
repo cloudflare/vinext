@@ -3508,6 +3508,7 @@ describe("public App Router refresh queue", () => {
     state: createState(),
     historyUpdateMode: "push" as const,
     scrollIntent: null,
+    traversalIntent: null,
   });
 
   it("runs each refresh after accepted router state without waiting for a visible commit", async () => {
@@ -8417,6 +8418,29 @@ describe("createPopstateRestoreHandler", () => {
 
     expect(restoreCalls).toEqual([{ __vinext_scrollY: 20 }]);
     expect(window.__VINEXT_RSC_PENDING__).toBeNull();
+  });
+
+  it("cancels deferred hash restoration when a later navigation starts", async () => {
+    stubWindow("https://example.com/feed#target");
+    let activeNavigationId = 1;
+    let shouldContinue: (() => boolean) | undefined;
+    const handler = createPopstateRestoreHandler({
+      getActiveNavigationId: () => activeNavigationId,
+      getNavigate: () => () => Promise.resolve(),
+      getPendingNavigation: () => null,
+      isCurrentNavigation: (navId) => navId === activeNavigationId,
+      notifyAppRouterTransitionStart: () => {},
+      restorePopstateScrollPosition: (_state, options) => {
+        shouldContinue = options?.shouldContinue;
+      },
+      setPendingNavigation: () => {},
+      shouldSkipScrollRestore: () => false,
+    });
+    handler({ state: null } as PopStateEvent);
+    await Promise.resolve();
+    expect(shouldContinue?.()).toBe(true);
+    activeNavigationId += 1;
+    expect(shouldContinue?.()).toBe(false);
   });
 
   it("clears __VINEXT_RSC_PENDING__ when a stale popstate navigation settles", async () => {
