@@ -10197,3 +10197,106 @@ describe("custom App optional pageProps envelope parity", () => {
     });
   }
 });
+
+describe("Pages production asset manifest reuse", () => {
+  it.each([false, true])(
+    "avoids cold and repeated metadata scans (registered manifest: %s)",
+    async (registered) => {
+      const root = await fsp.realpath(
+        await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-manifest-reuse-")),
+      );
+      try {
+        await fsp.symlink(
+          path.resolve(import.meta.dirname, "../node_modules"),
+          path.join(root, "node_modules"),
+          "junction",
+        );
+        await fsp.mkdir(path.join(root, "pages"));
+        await fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+        await fsp.writeFile(path.join(root, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+        await fsp.writeFile(
+          path.join(root, "pages", "index.tsx"),
+          `
+import "./style.css";
+export const getServerSideProps = () => ({ props: {} });
+export default function Page() { return <p>manifest reuse</p>; }
+`,
+        );
+        await fsp.writeFile(path.join(root, "pages", "style.css"), "p { color: red }");
+        await fsp.copyFile(
+          path.join(root, "pages", "index.tsx"),
+          path.join(root, "pages", "other.tsx"),
+        );
+        const builder = await createBuilder({
+          root,
+          configFile: false,
+          plugins: [vinext({ disableAppRouter: true })],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+
+        const { default: assets } = await import(
+          pathToFileURL(path.join(root, "dist/vinext-client-assets.js")).href
+        );
+        const scans = { manifest: 0, cssGraph: 0, lazyChunks: 0 };
+        const frameworkFile = Object.values(assets.ssrManifest as Record<string, string[]>)
+          .flat()
+          .find((file) => file.includes("/framework-"))!;
+        // Model a large app without making the test compile thousands of pages.
+        for (let i = 0; i < 3000; i++) {
+          assets.ssrManifest[`components/unused-${i}.tsx`] = [frameworkFile];
+          assets.cssGraph[`components/unused-${i}.tsx`] = { css: [] };
+          assets.lazyChunks.push(`_next/static/chunks/lazy-${i}.js`);
+        }
+        const instrumentManifest = (manifest: Record<string, string[]>) =>
+          new Proxy(manifest, {
+            ownKeys(target) {
+              scans.manifest++;
+              return Reflect.ownKeys(target);
+            },
+          });
+        const callerManifest = registered
+          ? null
+          : instrumentManifest(structuredClone(assets.ssrManifest));
+        assets.ssrManifest = instrumentManifest(assets.ssrManifest);
+        assets.cssGraph = new Proxy(assets.cssGraph, {
+          ownKeys(target) {
+            scans.cssGraph++;
+            return Reflect.ownKeys(target);
+          },
+        });
+        assets.lazyChunks = new Proxy(assets.lazyChunks, {
+          get(target, key, receiver) {
+            if (key === Symbol.iterator) scans.lazyChunks++;
+            return Reflect.get(target, key, receiver);
+          },
+        });
+        const entry = await import(pathToFileURL(path.join(root, "dist/server/entry.js")).href);
+        const render = async (pathname = "/") => {
+          const response = await entry.renderPage(
+            new Request(`http://localhost${pathname}`),
+            pathname,
+            callerManifest,
+          );
+          expect(response.status).toBe(200);
+          return response.text();
+        };
+        const first = await render();
+        expect(first).toContain("manifest reuse");
+        expect(first).toContain('rel="stylesheet"');
+        expect(first).toContain(frameworkFile);
+        expect(first).not.toContain("lazy-2999.js");
+        const initialScans = { ...scans };
+        expect(initialScans.manifest).toBe(registered ? 0 : 2);
+        expect(initialScans.cssGraph).toBe(0);
+        expect(initialScans.lazyChunks).toBeGreaterThan(0);
+        for (let i = 0; i < 3; i++) expect(await render()).toBe(first);
+        expect(await render("/other")).toContain("manifest reuse");
+        expect(scans).toEqual(initialScans);
+      } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+      }
+    },
+    120000,
+  );
+});

@@ -3362,7 +3362,7 @@ describe("client asset sidecar generation", () => {
     });
 
     expect(source).toBe(
-      'export default {"clientEntry":"assets/entry.js","appBootstrapPreinitModules":["/assets/framework.js"],"ssrManifest":{"pages/index.tsx":["assets/page.js"]},"lazyChunks":["assets/lazy.js"],"dynamicPreloads":{"src/widget.tsx":["assets/widget.js"]}};\n',
+      'export default {"clientEntry":"assets/entry.js","appBootstrapPreinitModules":["/assets/framework.js"],"ssrManifest":{"pages/index.tsx":["assets/page.js"]},"lazyChunks":["assets/lazy.js"],"dynamicPreloads":{"src/widget.tsx":["assets/widget.js"]},"sharedChunks":[]};\n',
     );
   });
 
