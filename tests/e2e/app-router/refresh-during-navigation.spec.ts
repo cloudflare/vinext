@@ -547,6 +547,67 @@ test.describe("refresh during an App Router navigation", () => {
     });
   }
 
+  test("canceling a queued refresh document fallback retains the Back history index", async ({
+    page,
+  }) => {
+    const startPath = "/commit-race/start";
+    await page.goto(`${BASE}${startPath}`);
+    await waitForAppRouterHydration(page);
+    const initialIndex = await page.evaluate(() => history.state.__vinext_historyIndex);
+    await page.evaluate((href) => {
+      void window.next!.router!.push(href);
+    }, SLOW_PATH);
+    await expect(page).toHaveURL(SLOW_URL);
+    let releaseRefresh: (() => void) | undefined;
+    let requests = 0;
+    let canceled = false;
+    await page.route(`**${SLOW_PATH}*`, async (route) => {
+      await new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      await route.continue();
+    });
+    await page.route(`**${startPath}?*`, async (route) => {
+      requests += 1;
+      if (requests !== 2) return route.continue();
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), "content-type": "text/html" },
+      });
+    });
+    page.once("dialog", async (dialog) => {
+      await dialog.dismiss();
+      canceled = true;
+    });
+    try {
+      await page.getByTestId("refresh-twice").click();
+      await expect.poll(() => releaseRefresh !== undefined).toBe(true);
+      await page.evaluate(() => {
+        addEventListener(
+          "beforeunload",
+          (event) => {
+            event.preventDefault();
+            event.returnValue = "";
+          },
+          { once: true },
+        );
+      });
+      await page.goBack();
+      await expect.poll(() => canceled).toBe(true);
+      await page.evaluate((href) => {
+        void window.next!.router!.replace(href);
+      }, `${startPath}?after-cancel=1`);
+      await expect(page).toHaveURL(`${BASE}${startPath}?after-cancel=1`);
+      await expect(
+        page.getByRole("heading", { name: "Commit race start", exact: true }),
+      ).toBeVisible();
+      expect(await page.evaluate(() => history.state.__vinext_historyIndex)).toBe(initialIndex);
+    } finally {
+      releaseRefresh?.();
+    }
+  });
+
   test("a queued refresh preserves pending scroll from a prefetched Back commit", async ({
     page,
   }) => {

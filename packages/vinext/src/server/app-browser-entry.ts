@@ -1847,6 +1847,9 @@ function registerServerActionCallback(): void {
         accepted && accepted.state.visibleCommitVersion > committedState.visibleCommitVersion
           ? accepted
           : undefined;
+      if (previous?.traversalIntent) {
+        historyController.commitHistoryTraversalIndex(previous.traversalIntent.targetHistoryIndex);
+      }
       const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
       const actionInitiation = createActionInitiationSnapshot(previous);
       return loadServerActionClient!()
@@ -1885,11 +1888,6 @@ function registerServerActionCallback(): void {
                 actionInitiation.navigationId,
               );
               if (!ownsNavigation) return;
-              if (previous?.traversalIntent) {
-                historyController.commitHistoryTraversalIndex(
-                  previous.traversalIntent.targetHistoryIndex,
-                );
-              }
               const navId = beginNavigation(actionInitiation.routerState);
               getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
               const hashIdx = target.href.indexOf("#");
@@ -2165,13 +2163,14 @@ function bootstrapHydration(
         : navigationKind === "refresh"
           ? (traversalIntent ?? null)
           : null;
+    // The browser already traversed, even if its tree never committed. Rebase
+    // before any soft or hard fallback, including a canceled beforeunload.
+    if (activeTraversalIntent && navigationKind === "refresh") {
+      historyController.commitHistoryTraversalIndex(activeTraversalIntent.targetHistoryIndex);
+    }
     function discardRedirectedRefreshTraversal(targetHref: string): void {
       if (navigationKind !== "refresh" || targetHref === currentHref) return;
-      if (activeTraversalIntent) {
-        // The browser already traversed, even if that tree never committed.
-        historyController.commitHistoryTraversalIndex(activeTraversalIntent.targetHistoryIndex);
-        activeTraversalIntent = null;
-      }
+      activeTraversalIntent = null;
       // A committed Back can also have deferred scroll work without an intent.
       scrollRestorationNavigationId = navId;
     }
