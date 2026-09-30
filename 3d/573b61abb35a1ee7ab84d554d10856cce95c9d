@@ -1,0 +1,19 @@
+.gitignore
+  s_207ff3125a33a0::t_5c5f82dca338d6 51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3d573b61abb35a1ee7ab84d554d10856cce95c9d",
+  "prompts": {},
+  "sessions": {
+    "s_207ff3125a33a0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a06c28e-e44f-45e5-a041-8d4c34853855",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
