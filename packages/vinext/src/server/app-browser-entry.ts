@@ -76,6 +76,12 @@ import {
   getPendingAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
+import {
+  endImmediateClientReferenceRecovery,
+  recoverFromChunkFailure,
+  setChunkRecoveryNavigator,
+  toDocumentLoadHref,
+} from "../client/chunk-load-recovery.js";
 import { installWindowNext, setWindowNextInternalSourcePage } from "../client/window-next.js";
 import {
   chunksToReadableStream,
@@ -96,6 +102,10 @@ import {
   createAppBrowserRefreshQueue,
   type AppBrowserNavigationActionResult,
 } from "./app-browser-refresh-queue.js";
+import {
+  createAppBrowserChunkRecovery,
+  createRootErrorRecovery,
+} from "./app-browser-chunk-recovery.js";
 import { createAppBrowserDocumentNavigation } from "./app-browser-document-navigation.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
@@ -375,6 +385,14 @@ const documentNavigation = createAppBrowserDocumentNavigation({
   stopRefreshes: () => stopRefreshesForDocumentNavigation(),
 });
 const resetDocumentNavigationRecovery = documentNavigation.resetRecovery;
+const chunkRecovery = createAppBrowserChunkRecovery({
+  beforeDocumentNavigation: (href, outcome) =>
+    documentNavigation.beforeDocumentNavigation(href, outcome),
+  getCurrentHref: () => window.location.href,
+  performHardNavigationWithLoopGuard,
+  toDocumentLoadHref,
+});
+const recoverFromRootError = createRootErrorRecovery(recoverFromChunkFailure);
 
 function stopRefreshesForDocumentNavigation(): void {
   refreshQueue.stopForDocumentNavigation();
@@ -509,6 +527,7 @@ function beginPendingBrowserRouterState(): PendingBrowserRouterState {
 
 function beginNavigation(refreshBase?: AppRouterState, preserveScrollRestoration = false): number {
   resetDocumentNavigationRecovery();
+  chunkRecovery.discardNavigation();
   mpaNavigationScheduler.reset();
   const navId = browserNavigationController.beginNavigation(refreshBase);
   if (!preserveScrollRestoration) scrollRestorationNavigationId = navId;
@@ -520,6 +539,7 @@ function beginNavigation(refreshBase?: AppRouterState, preserveScrollRestoration
 
 function finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null = null): void {
   browserNavigationController.finalizeNavigation(navId, pending);
+  chunkRecovery.clearNavigation(navId);
   refreshQueue.ready(navId);
   discardedServerActionRefreshScheduler.markNavigationSettled(navId);
 }
@@ -1454,6 +1474,7 @@ function BrowserRoot({
       },
     });
     browserRouterStateHasEverCommitted = true;
+    endImmediateClientReferenceRecovery();
     hydrationCachePublication.commit();
     return () => {
       hydrationCachePublication.invalidate();
@@ -1917,6 +1938,11 @@ function registerServerActionCallback(client: NonNullable<typeof serverActionCli
             // The action client checks ownership before applying redirects.
             // Action redirects bypass navigateClientSide, so reset Link here.
             const navId = beginNavigation(actionInitiation.routerState);
+            chunkRecovery.recordNavigation({
+              historyUpdateMode: target.type === "push" ? "push" : "replace",
+              href: target.href,
+              navId,
+            });
             getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
             const hashIdx = target.href.indexOf("#");
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
@@ -2083,16 +2109,19 @@ function bootstrapHydration(
   const reportUncaughtError = createOnUncaughtError();
   const onUncaughtError = (...args: Parameters<typeof reportUncaughtError>) => {
     hydrationCachePublication.fail();
+    recoverFromRootError(args[0]);
     reportUncaughtError(...args);
   };
   const onRecoverableError = createProdOnRecoverableError(() => {
     hydrationCachePublication.fail();
   });
-  const invalidateOnCaughtError = <T extends (...args: never[]) => void>(handler: T): T =>
-    ((...args: Parameters<T>) => {
+  const invalidateOnCaughtError =
+    (handler: typeof reportUncaughtError): typeof reportUncaughtError =>
+    (...args) => {
       hydrationCachePublication.fail();
+      recoverFromRootError(args[0]);
       handler(...args);
-    }) as T;
+    };
   const formState = consumeInitialFormState(getVinextBrowserGlobal());
   const hydrateRootOptions =
     import.meta.env.DEV && devErrorOverlay
@@ -2197,6 +2226,18 @@ function bootstrapHydration(
     let currentHistoryMode = historyUpdateMode;
     let currentPrevNextUrl = previousNextUrlOverride;
     let redirectCount = redirectDepth;
+    // A superseded navigation still finishes its redirect hops; only the current
+    // one owns the target that chunk-load recovery loads.
+    const recordChunkRecoveryTarget = () => {
+      if (!browserNavigationController.isCurrentNavigation(navId)) return;
+      chunkRecovery.recordNavigation({
+        historyUpdateMode:
+          navigationKind === "traverse" ? "traverse" : (currentHistoryMode ?? "replace"),
+        href: currentHref,
+        navId,
+      });
+    };
+    recordChunkRecoveryTarget();
     let detachedNavigationCommits = false;
     let activeTraversalIntent =
       navigationKind === "traverse"
@@ -2508,6 +2549,7 @@ function bootstrapHydration(
             currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
             currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
             redirectCount = cachedFetchDecision.redirect.redirectDepth;
+            recordChunkRecoveryTarget();
             continue;
           }
           // Check stale-navigation before and after createFromFetch. The pre-check
@@ -2789,6 +2831,7 @@ function bootstrapHydration(
           currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
           currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;
           redirectCount = liveFetchDecision.redirect.redirectDepth;
+          recordChunkRecoveryTarget();
           continue;
         }
 
@@ -3362,6 +3405,8 @@ function bootstrapHydration(
       void handleRscUpdate(updateId);
     });
   }
+
+  setChunkRecoveryNavigator(chunkRecovery.navigator);
 }
 
 if (typeof document !== "undefined") {

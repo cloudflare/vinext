@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DOCUMENT_UNLOAD_TIMEOUT_MS,
@@ -405,5 +406,60 @@ describe("root error recovery", () => {
     createRootErrorRecovery(recover)(error);
 
     expect(recover).toHaveBeenCalledExactlyOnceWith(error);
+  });
+});
+
+// The entry runs main() at import, so its wiring is pinned from source.
+describe("app browser entry chunk recovery wiring", () => {
+  const source = readFileSync(
+    new URL("../packages/vinext/src/server/app-browser-entry.ts", import.meta.url),
+    "utf8",
+  );
+
+  it("ends immediate client-reference recovery where the first commit is recorded", () => {
+    expect(source).toMatch(
+      /browserRouterStateHasEverCommitted = true;\s+endImmediateClientReferenceRecovery\(\);/,
+    );
+  });
+
+  it("registers the navigator once, inside bootstrapHydration", () => {
+    const registration = "setChunkRecoveryNavigator(chunkRecovery.navigator);";
+    const bootstrap = source.slice(
+      source.indexOf("function bootstrapHydration("),
+      source.indexOf('if (typeof document !== "undefined")'),
+    );
+
+    expect(source.split(registration)).toHaveLength(2);
+    expect(bootstrap).toContain(registration);
+  });
+
+  it("starts a recovery from both root error callbacks", () => {
+    expect(source).toMatch(
+      /const onUncaughtError = [^]*?recoverFromRootError\(args\[0\]\);\s+reportUncaughtError\(\.\.\.args\);/,
+    );
+    expect(source).toMatch(
+      /const invalidateOnCaughtError =[^]*?recoverFromRootError\(args\[0\]\);\s+handler\(\.\.\.args\);/,
+    );
+  });
+
+  it("clears the in-flight record when a navigation finalizes and on every new one", () => {
+    expect(source).toMatch(
+      /function beginNavigation\([^]*?chunkRecovery\.discardNavigation\(\);[^]*?\n\}/,
+    );
+    expect(source).toMatch(
+      /function finalizeNavigation\([^]*?chunkRecovery\.clearNavigation\(navId\);[^]*?\n\}/,
+    );
+  });
+
+  // Sites that render a new target record it: renderRedirectPayload, and
+  // navigateRsc for its first target and each redirect hop. Every other site
+  // finalizes at once (same-document commits, history snapshot restores, the
+  // bfcache restore) or leaves the document (navigateExternal).
+  it("accounts for every beginNavigation call site", () => {
+    const callSites = source.match(/(?<![.\w])beginNavigation\((?!refreshBase)/g) ?? [];
+
+    expect(callSites).toHaveLength(6);
+    expect(source.match(/chunkRecovery\.recordNavigation\(/g)).toHaveLength(2);
+    expect(source.match(/recordChunkRecoveryTarget\(\);/g)).toHaveLength(3);
   });
 });
