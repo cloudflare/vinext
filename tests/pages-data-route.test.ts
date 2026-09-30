@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   buildMiddlewarePrefetchSkipResponse,
+  buildNextDataPropsJsonResponse,
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
@@ -12,6 +13,46 @@ import {
 } from "../packages/vinext/src/server/pages-data-route.js";
 
 describe("pages-data-route", () => {
+  it.each([204, 205, 304])(
+    "emits no body while preserving response headers for status %i",
+    async (status) => {
+      const response = buildNextDataPropsJsonResponse(
+        { pageProps: { message: "must not be serialized" } },
+        JSON.stringify,
+        {
+          status,
+          headers: {
+            "Content-Encoding": "gzip",
+            "Content-Length": "32",
+            "Content-Type": "application/custom",
+            "Transfer-Encoding": "chunked",
+            "X-Custom": "preserved",
+          },
+        },
+      );
+
+      expect(response.status).toBe(status);
+      expect(await response.text()).toBe("");
+      expect(response.headers.get("content-encoding")).toBe("gzip");
+      expect(response.headers.get("content-length")).toBe(status === 205 ? null : "32");
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(response.headers.get("transfer-encoding")).toBe("chunked");
+      expect(response.headers.get("x-custom")).toBe("preserved");
+    },
+  );
+
+  it("still serializes props for bodyless statuses", () => {
+    expect(() =>
+      buildNextDataPropsJsonResponse(
+        {},
+        () => {
+          throw new TypeError("invalid props");
+        },
+        { status: 204 },
+      ),
+    ).toThrow("invalid props");
+  });
+
   describe("isNextDataPathname", () => {
     it("returns true for valid _next/data paths regardless of buildId", () => {
       expect(isNextDataPathname("/_next/data/abc/about.json")).toBe(true);
