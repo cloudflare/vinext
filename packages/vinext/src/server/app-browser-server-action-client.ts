@@ -23,7 +23,10 @@ import {
   createServerActionRequestUrl,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
 } from "./app-rsc-cache-busting.js";
-import { throwOnServerActionNotFound } from "./server-action-not-found.js";
+import {
+  isServerActionNotFoundResponse,
+  throwOnServerActionNotFound,
+} from "./server-action-not-found.js";
 import {
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_STATUS_HEADER,
@@ -161,8 +164,6 @@ export async function invokeClientServerAction(
     body,
   });
 
-  throwOnServerActionNotFound(fetchResponse, id);
-
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
   if (revalidation !== "none") deps.clearClientNavigationCaches();
   const canApplyNavigation = () => {
@@ -200,6 +201,7 @@ export async function invokeClientServerAction(
     compatibilityIdHeader: fetchResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
     contentTypeHeader: fetchResponse.headers.get("content-type"),
     currentHref: actionInitiation.href,
+    isServerActionNotFound: isServerActionNotFoundResponse(fetchResponse),
     origin: window.location.origin,
     responseUrl: fetchResponse.url,
   });
@@ -214,6 +216,10 @@ export async function invokeClientServerAction(
   ) {
     return undefined;
   }
+
+  // After the build check: an unknown action from a stale tab reloads, and only
+  // an action missing from the tab's own build is reported to the caller.
+  throwOnServerActionNotFound(fetchResponse, id);
 
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),

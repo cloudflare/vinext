@@ -6,6 +6,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
+  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-combined-handler.js";
@@ -83,6 +84,7 @@ import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
+import { withEnvVar } from "./env-test-helpers.js";
 
 const capturedFindPageComponentsSpans: ResolvedFrameworkSpanDescriptor[] = [];
 let captureFindPageComponentsSpans = false;
@@ -8722,16 +8724,19 @@ describe("createAppRscHandler", () => {
       handleServerActionRequest: undefined,
     });
 
-    const response = await handler(
-      new Request("https://example.test/docs/about", {
-        method: "POST",
-        headers: { "next-action": "stale-action" },
-      }),
-      null,
+    const response = await withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-handler", () =>
+      handler(
+        new Request("https://example.test/docs/about", {
+          method: "POST",
+          headers: { "next-action": "stale-action" },
+        }),
+        null,
+      ),
     );
 
     expect(response.status).toBe(404);
     expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-handler");
     expect(await response.text()).toBe("Server action not found.");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });

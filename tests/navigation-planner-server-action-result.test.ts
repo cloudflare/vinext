@@ -19,6 +19,7 @@ function createFacts(overrides: Partial<ServerActionResultFacts> = {}): ServerAc
     compatibilityIdHeader: "client-build",
     currentHref: "https://example.com/dashboard",
     isRscContentType: true,
+    isServerActionNotFound: false,
     origin: "https://example.com",
     responseUrl: "https://example.com/dashboard",
     ...overrides,
@@ -133,6 +134,74 @@ describe("navigationPlanner server-action result classification", () => {
     const decision = classify({
       isRscContentType: false,
       compatibilityIdHeader: null,
+    });
+
+    expect(decision).toMatchObject({ kind: "proceed" });
+  });
+
+  it("hard-navigates a not-found action response from a different build to the current href", () => {
+    // A stale tab's action id can vanish in a deploy. The text/plain not-found
+    // body is not RSC, yet the build mismatch must still reload the tab.
+    const decision = classify({
+      compatibilityIdHeader: "server-build",
+      currentHref: "https://example.com/dashboard?view=grid",
+      isRscContentType: false,
+      isServerActionNotFound: true,
+    });
+
+    expect(decision).toEqual({
+      kind: "hardNavigate",
+      url: "https://example.com/dashboard?view=grid",
+      clearClientNavigationCaches: false,
+      reason: "serverActionRscCompatibilityMismatch",
+      trace: decision.trace,
+    });
+    expectSingleTraceEntry(
+      decision,
+      NavigationTraceReasonCodes.serverActionRscCompatibilityMismatch,
+      { targetHref: "https://example.com/dashboard?view=grid" },
+    );
+  });
+
+  it("hard-navigates a not-found action response that carries no compatibility id", () => {
+    const decision = classify({
+      compatibilityIdHeader: null,
+      isRscContentType: false,
+      isServerActionNotFound: true,
+    });
+
+    expect(decision).toMatchObject({
+      kind: "hardNavigate",
+      reason: "serverActionRscCompatibilityMismatch",
+    });
+  });
+
+  it("proceeds for a not-found action response from the same build", () => {
+    const decision = classify({
+      compatibilityIdHeader: "client-build",
+      isRscContentType: false,
+      isServerActionNotFound: true,
+    });
+
+    expect(decision).toMatchObject({ kind: "proceed" });
+  });
+
+  it("proceeds for a not-found action response when the client has no compatibility id", () => {
+    const decision = classify({
+      clientCompatibilityId: null,
+      compatibilityIdHeader: "server-build",
+      isRscContentType: false,
+      isServerActionNotFound: true,
+    });
+
+    expect(decision).toMatchObject({ kind: "proceed" });
+  });
+
+  it("proceeds for a non-RSC response from a different build when it is not a not-found response", () => {
+    const decision = classify({
+      compatibilityIdHeader: "server-build",
+      isRscContentType: false,
+      isServerActionNotFound: false,
     });
 
     expect(decision).toMatchObject({ kind: "proceed" });

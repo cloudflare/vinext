@@ -1,3 +1,4 @@
+import { applyRscCompatibilityIdHeader } from "./app-rsc-cache-busting.js";
 import { NEXTJS_ACTION_NOT_FOUND_HEADER as SERVER_ACTION_NOT_FOUND_HEADER } from "./headers.js";
 import { UnrecognizedActionError } from "vinext/shims/unrecognized-action-error";
 
@@ -91,16 +92,18 @@ export function isServerActionNotFoundError(error: unknown, actionId: string | n
 }
 
 export function createServerActionNotFoundResponse(): Response {
-  return new Response(SERVER_ACTION_NOT_FOUND_BODY, {
-    status: 404,
-    headers: {
-      [SERVER_ACTION_NOT_FOUND_HEADER]: "1",
-      "content-type": "text/plain",
-    },
+  const headers = new Headers({
+    [SERVER_ACTION_NOT_FOUND_HEADER]: "1",
+    "content-type": "text/plain",
   });
+  // A tab opened before a deploy can name an action this build no longer has.
+  // The build id lets that tab reload instead of reporting an unknown action.
+  applyRscCompatibilityIdHeader(headers);
+
+  return new Response(SERVER_ACTION_NOT_FOUND_BODY, { status: 404, headers });
 }
 
-function isServerActionNotFoundResponse(response: Pick<Response, "headers">): boolean {
+export function isServerActionNotFoundResponse(response: Pick<Response, "headers">): boolean {
   return response.headers.get(SERVER_ACTION_NOT_FOUND_HEADER) === "1";
 }
 

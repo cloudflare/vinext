@@ -8,12 +8,15 @@ import {
   AppElementsWire,
   normalizeAppElements,
 } from "../packages/vinext/src/server/app-elements.js";
+import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   ACTION_REDIRECT_HEADER,
   ACTION_REVALIDATED_HEADER,
+  NEXTJS_ACTION_NOT_FOUND_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import { UnrecognizedActionError } from "../packages/vinext/src/shims/unrecognized-action-error.js";
 
 vi.mock("@vitejs/plugin-rsc/browser", () => ({
   createFromFetch: vi.fn(),
@@ -111,7 +114,7 @@ describe("app browser server action client", () => {
     expect(performHardNavigation).not.toHaveBeenCalled();
   });
 
-  it("uses action state captured before the lazy client loads", async () => {
+  it("uses the action state captured when the action started", async () => {
     const elements = normalizeAppElements(
       AppElementsWire.createMetadataEntries({
         interception: null,
@@ -700,6 +703,96 @@ describe("app browser server action client", () => {
     await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
     expect(returnValueArg).toBeUndefined();
     expect(revalidationArg).toBe("none");
+  });
+
+  describe("action ids the server does not recognize", () => {
+    function invokeUnknownAction(options: {
+      clientRscCompatibilityId: string | null;
+      serverCompatibilityId: string | null;
+    }) {
+      const headers = new Headers({
+        [NEXTJS_ACTION_NOT_FOUND_HEADER]: "1",
+        "content-type": "text/plain",
+      });
+      if (options.serverCompatibilityId !== null) {
+        headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, options.serverCompatibilityId);
+      }
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValue(new Response("Server action not found.", { headers, status: 404 })),
+      );
+      const performHardNavigation = vi.fn();
+      const result = invokeClientServerAction(
+        "stale-action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: options.clientRscCompatibilityId,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          performHardNavigation,
+          renderRedirectPayload: vi.fn(),
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      );
+      return { performHardNavigation, result };
+    }
+
+    it("reloads the document instead of throwing when the server build differs", async () => {
+      const { performHardNavigation, result } = invokeUnknownAction({
+        clientRscCompatibilityId: "client-build",
+        serverCompatibilityId: "server-build",
+      });
+
+      await expect(result).resolves.toBeUndefined();
+      expect(performHardNavigation).toHaveBeenCalledTimes(1);
+      expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/source", undefined);
+    });
+
+    it("reloads the document when the not-found response names no build", async () => {
+      const { performHardNavigation, result } = invokeUnknownAction({
+        clientRscCompatibilityId: "client-build",
+        serverCompatibilityId: null,
+      });
+
+      await expect(result).resolves.toBeUndefined();
+      expect(performHardNavigation).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws UnrecognizedActionError when the server build matches", async () => {
+      const { performHardNavigation, result } = invokeUnknownAction({
+        clientRscCompatibilityId: "client-build",
+        serverCompatibilityId: "client-build",
+      });
+
+      await expect(result).rejects.toBeInstanceOf(UnrecognizedActionError);
+      await expect(result).rejects.toMatchObject({
+        message: expect.stringContaining('Server Action "stale-action-id" was not found'),
+      });
+      expect(performHardNavigation).not.toHaveBeenCalled();
+    });
+
+    it("throws UnrecognizedActionError when the client has no compatibility id", async () => {
+      const { performHardNavigation, result } = invokeUnknownAction({
+        clientRscCompatibilityId: null,
+        serverCompatibilityId: "server-build",
+      });
+
+      await expect(result).rejects.toBeInstanceOf(UnrecognizedActionError);
+      expect(performHardNavigation).not.toHaveBeenCalled();
+    });
   });
 });
 

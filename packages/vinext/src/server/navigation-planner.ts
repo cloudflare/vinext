@@ -1775,6 +1775,7 @@ export type ServerActionResultFacts = {
   compatibilityIdHeader: string | null;
   currentHref: string;
   isRscContentType: boolean;
+  isServerActionNotFound: boolean;
   origin: string;
   responseUrl: string | null;
 };
@@ -1811,8 +1812,10 @@ function classifyServerActionResult(facts: ServerActionResultFacts): ServerActio
   }
 
   // Non-RSC action responses are not subject to the cache-busting compatibility
-  // check; the executor will handle them directly.
-  if (!facts.isRscContentType) {
+  // check; the executor will handle them directly. An unknown-action response
+  // is the exception: a deploy that removed the action also changed the build,
+  // so the tab reloads instead of reporting an error it cannot act on.
+  if (!facts.isRscContentType && !facts.isServerActionNotFound) {
     return {
       kind: "proceed",
       trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),

@@ -2768,23 +2768,29 @@ describe("app server action execution helpers", () => {
     const reportRequestError = vi.fn();
     const clearRequestContext = vi.fn();
 
-    const response = await handleServerActionRscRequest(
-      createRscOptions({
-        actionId: "stale-action-id",
-        clearRequestContext,
-        contentType: "multipart/form-data; boundary=VINEXTDOS",
-        decodeReply,
-        loadServerAction() {
-          return Promise.reject(new Error("[vite-rsc] invalid server reference 'stale-action-id'"));
-        },
-        readFormDataWithLimit,
-        renderToReadableStream,
-        reportRequestError,
-      }),
+    const response = await withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-stale", () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          actionId: "stale-action-id",
+          clearRequestContext,
+          contentType: "multipart/form-data; boundary=VINEXTDOS",
+          decodeReply,
+          loadServerAction() {
+            return Promise.reject(
+              new Error("[vite-rsc] invalid server reference 'stale-action-id'"),
+            );
+          },
+          readFormDataWithLimit,
+          renderToReadableStream,
+          reportRequestError,
+        }),
+      ),
     );
 
     expect(response?.status).toBe(404);
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    // The stale tab compares this id with its own to decide whether to reload.
+    expect(response?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-stale");
     expect(response?.headers.get("content-type")).toBe("text/plain");
     expect(await response?.text()).toBe("Server action not found.");
     expect(readFormDataWithLimit).not.toHaveBeenCalled();
@@ -3522,6 +3528,23 @@ describe("client recognition of unrecognized server actions", () => {
 
     expect(unstable_isUnrecognizedActionError(caught)).toBe(true);
     expect(String(caught)).toContain('Server Action "decafc0ffeebad01" was not found');
+  });
+
+  it("stamps the not-found response with the build's compatibility id", () => {
+    const response = withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-build", () =>
+      createServerActionNotFoundResponse(),
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-build");
+  });
+
+  it("omits the compatibility id header when the build has none", () => {
+    const response = withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", undefined, () =>
+      createServerActionNotFoundResponse(),
+    );
+
+    expect(response.headers.has(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe(false);
   });
 
   it("does not throw for a recognized action response", () => {

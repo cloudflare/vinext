@@ -1054,6 +1054,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "server-build",
       contentTypeHeader: "text/x-component",
       currentHref,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: currentHref,
     });
@@ -1069,6 +1070,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "server-build",
       contentTypeHeader: "text/x-component",
       currentHref,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: currentHref,
     });
@@ -1082,6 +1084,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "server-build",
       contentTypeHeader: "text/x-component",
       currentHref,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: currentHref,
     });
@@ -1096,6 +1099,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "server-build",
       contentTypeHeader: "text/plain",
       currentHref,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: currentHref,
     });
@@ -1223,6 +1227,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/current",
       isRscContentType: true,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: "https://example.com/current",
     });
@@ -1246,6 +1251,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/current",
       isRscContentType: true,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: "https://example.com/current",
     });
@@ -1265,6 +1271,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/dashboard?view=grid",
       isRscContentType: true,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: "https://example.com/dashboard?view=grid",
     });
@@ -1288,6 +1295,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: "same-build",
       currentHref: "https://example.com/current",
       isRscContentType: true,
+      isServerActionNotFound: false,
       origin: "https://example.com",
       responseUrl: "https://example.com/current",
     });
@@ -1322,6 +1330,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: redirectResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
       contentTypeHeader: redirectResponse.headers.get("content-type"),
       currentHref,
+      isServerActionNotFound: false,
       origin,
       responseUrl: currentHref,
     });
@@ -1350,6 +1359,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: weirdRedirectResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
       contentTypeHeader: weirdRedirectResponse.headers.get("content-type"),
       currentHref,
+      isServerActionNotFound: false,
       origin,
       responseUrl: currentHref,
     });
@@ -1376,6 +1386,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: noRedirectResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
       contentTypeHeader: noRedirectResponse.headers.get("content-type"),
       currentHref,
+      isServerActionNotFound: false,
       origin,
       responseUrl: currentHref,
     });
@@ -1401,6 +1412,7 @@ describe("app browser entry navigation scheduling", () => {
       compatibilityIdHeader: nonRscResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
       contentTypeHeader: nonRscResponse.headers.get("content-type"),
       currentHref,
+      isServerActionNotFound: false,
       origin,
       responseUrl: currentHref,
     });

@@ -9,7 +9,9 @@ import {
   ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createServerActionNotFoundResponse } from "../packages/vinext/src/server/server-action-not-found.js";
+import { withEnvVar } from "./env-test-helpers.js";
 import {
   MIDDLEWARE_OVERRIDE_HEADERS,
   MIDDLEWARE_REQUEST_HEADER_PREFIX,
@@ -302,8 +304,8 @@ describe("server action forwarding", () => {
   it("fails closed for unknown actions and forwarded requests that missed their owner", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const clearRequestContext = vi.fn();
-    const unknown = await forwardServerActionIfNeeded(
-      options({ actionId: "unknown#action", clearRequestContext }),
+    const unknown = await withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-forwarding", () =>
+      forwardServerActionIfNeeded(options({ actionId: "unknown#action", clearRequestContext })),
     );
     const forwarded = await forwardServerActionIfNeeded(
       options({
@@ -313,6 +315,8 @@ describe("server action forwarding", () => {
     );
 
     expect(unknown?.status).toBe(404);
+    expect(unknown?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(unknown?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-forwarding");
     expect(await forwarded?.text()).toBe("{}");
     expect(clearRequestContext).toHaveBeenCalledTimes(2);
     expect(warning).toHaveBeenCalledTimes(1);
