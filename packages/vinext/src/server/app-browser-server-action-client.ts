@@ -104,7 +104,7 @@ function resolveActionRedirectTarget(
       redirectUrl.origin !== window.location.origin ||
       (basePath !== "" && !hasBasePath(redirectUrl.pathname, basePath))
     ) {
-      performHardNavigation(actionRedirect);
+      performHardNavigation(redirectUrl.href);
       return null;
     }
     const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
