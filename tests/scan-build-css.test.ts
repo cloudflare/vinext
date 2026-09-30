@@ -87,13 +87,15 @@ describe("vinext:scan-build-css", () => {
       await fs.mkdir(appDir, { recursive: true });
       await fs.writeFile(path.join(appDir, "global.css"), ".scan-global { color: green; }\n");
       await fs.writeFile(path.join(appDir, "page.module.css"), ".title { color: blue; }\n");
+      await fs.writeFile(path.join(appDir, "inline.css"), ".scan-inline { color: red; }\n");
+      await fs.writeFile(path.join(appDir, "linked.css"), ".scan-linked { color: teal; }\n");
       await fs.writeFile(
         path.join(appDir, "layout.tsx"),
         `import "./global.css";\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (<html><body>{children}</body></html>);\n}\n`,
       );
       await fs.writeFile(
         path.join(appDir, "page.tsx"),
-        `import styles from "./page.module.css";\nexport default function Page() {\n  return <p className={styles.title}>Hello</p>;\n}\n`,
+        `import styles from "./page.module.css";\nimport inlineCss from "./inline.css?inline";\nimport linkedCssUrl from "./linked.css?url";\nexport default function Page() {\n  return (<><style>{inlineCss}</style><link rel="stylesheet" href={linkedCssUrl} /><p className={styles.title}>Hello</p></>);\n}\n`,
       );
 
       // Runs after vinext:scan-build-css (normal hook order), so it records the
@@ -120,14 +122,16 @@ describe("vinext:scan-build-css", () => {
       });
       await builder.buildApp();
 
-      const scanned = seen.filter((entry) => !entry.write);
-      const built = seen.filter((entry) => entry.write);
+      // `?url` CSS loads as JavaScript and is left alone, so only compiled stylesheets count.
+      const compiled = seen.filter((entry) => !entry.id.includes("?url"));
+      const scanned = compiled.filter((entry) => !entry.write);
+      const built = compiled.filter((entry) => entry.write);
       expect(scanned.map((entry) => path.basename(entry.id))).toEqual(
-        expect.arrayContaining(["global.css", "page.module.css"]),
+        expect.arrayContaining(["global.css", "page.module.css", "inline.css?inline"]),
       );
       expect(scanned.every((entry) => entry.code === "")).toBe(true);
       expect(built.map((entry) => path.basename(entry.id))).toEqual(
-        expect.arrayContaining(["global.css", "page.module.css"]),
+        expect.arrayContaining(["global.css", "page.module.css", "inline.css?inline"]),
       );
       expect(built.every((entry) => entry.code.includes("color:"))).toBe(true);
 
@@ -145,10 +149,21 @@ describe("vinext:scan-build-css", () => {
       expect(clientCss).toContain(".scan-global");
       const moduleClass = /\.(_title_[\w-]+)/.exec(clientCss)?.[1];
       expect(moduleClass, "CSS Module class missing from client CSS").toBeDefined();
+      const serverJs = await readAll(path.join(tmpDir, "dist", "server"), /\.[cm]?js$/);
       // The rendered page's class name comes from the real build's CSS Module exports.
-      expect(await readAll(path.join(tmpDir, "dist", "server"), /\.[cm]?js$/)).toContain(
-        moduleClass,
+      expect(serverJs).toContain(moduleClass);
+      // `?inline` CSS is compiled into the real build's JS.
+      expect(serverJs).toContain(".scan-inline");
+      // `?url` CSS is emitted as an asset and referenced by URL.
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const linkedAsset = (await fs.readdir(clientDir, { recursive: true })).find((file) =>
+        /linked\.[\w-]+\.css$/.test(file),
       );
+      expect(linkedAsset, "?url CSS asset missing from client output").toBeDefined();
+      expect(await fs.readFile(path.join(clientDir, linkedAsset!), "utf8")).toContain(
+        ".scan-linked",
+      );
+      expect(serverJs).toContain(path.basename(linkedAsset!));
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

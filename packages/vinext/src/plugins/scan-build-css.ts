@@ -8,7 +8,7 @@ const CSS_LANGS_RE = /\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|
 const SPECIAL_QUERY_RE = /[?&](?:worker|sharedworker|raw|url)\b/;
 // Plugin-owned virtual modules may use a stylesheet-looking id for other content.
 // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
-const VIRTUAL_MODULE_RE = /^\u0000/;
+const VIRTUAL_MODULE_RE = /^\0/;
 
 type RscPluginWithApi = Plugin & {
   api?: PluginApi;
