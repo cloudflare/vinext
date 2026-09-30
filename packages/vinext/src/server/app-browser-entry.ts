@@ -2190,6 +2190,7 @@ function bootstrapHydration(
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
     initialBypassNavigationCache?: boolean,
     refreshAction?: AppBrowserNavigationActionResult,
+    onDiscardedRevalidation?: () => void,
   ): Promise<void> {
     serverActionSupplementalRefreshCoordinator.abortAll();
     const navigationAbortHandle = navigationAbortCoordinator.begin();
@@ -2198,6 +2199,20 @@ function bootstrapHydration(
     const navId = beginNavigation(refreshAction?.state, navigationKind === "refresh");
     const scrollRestoreId = scrollRestorationNavigationId;
     const navigationCacheGeneration = clientNavigationCacheGeneration;
+    let revalidationTransferred = false;
+    let revalidationDiscarded = false;
+    let navigationFinished = false;
+    let shouldRetryRevalidation = false;
+    const retryDiscardedRevalidation = () => {
+      if (!shouldRetryRevalidation) return;
+      const notify = onDiscardedRevalidation;
+      onDiscardedRevalidation = undefined;
+      notify?.();
+    };
+    const discardRefreshRevalidation = () => {
+      revalidationDiscarded = true;
+      if (navigationFinished) retryDiscardedRevalidation();
+    };
 
     // Loop variables for inline redirect following. On a redirect, these are
     // updated and the loop continues without returning or re-entering navigateRsc,
@@ -2230,7 +2245,11 @@ function bootstrapHydration(
     ): boolean => {
       if (!browserNavigationController.isCurrentNavigation(navId)) return false;
       consumeAppRouterScrollIntent(scrollIntent ?? null);
+      // A current failed refresh must not endlessly retry if its reload is
+      // refused (for example, because sessionStorage is unavailable).
+      shouldRetryRevalidation = false;
       const didNavigate = browserNavigationController.performHardNavigation(targetHref, mode);
+      shouldRetryRevalidation = didNavigate;
       if (!didNavigate) {
         clearAppNavigationFailureTarget(targetHref);
         // A refused reload leaves the committed document in place. Release
@@ -2914,6 +2933,9 @@ function bootstrapHydration(
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
         let committedState: AppRouterState | null = null;
+        // Before the response arrives this navigation owns action revalidation.
+        // Once accepted, the render record carries it through inherited refreshes.
+        revalidationTransferred = true;
         const renderOutcome = await renderNavigationPayload({
           actionType: toActionType(navigationKind),
           historyUpdateMode: currentHistoryMode,
@@ -2938,6 +2960,7 @@ function bootstrapHydration(
             // it must not abort the already-visible stream.
             navigationAbortHandle.release();
           },
+          onDiscardedRevalidation: onDiscardedRevalidation ? discardRefreshRevalidation : undefined,
           operationLane: toOperationLane(navigationKind),
           params: navParams,
           payload: rscPayload,
@@ -2954,7 +2977,10 @@ function bootstrapHydration(
           // preparation-failed entries keep the ordinary transition path.
           visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
         });
-        if (renderOutcome !== "committed") return;
+        if (renderOutcome !== "committed") {
+          shouldRetryRevalidation = renderOutcome === "hard-navigate";
+          return;
+        }
         if (navigationKind === "refresh" && activeTraversalIntent) {
           // The traversal tree never committed, so its bounded scroll retries
           // may have expired. Restore when its refresh finally commits.
@@ -3094,11 +3120,14 @@ function bootstrapHydration(
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
+      navigationFinished = true;
+      shouldRetryRevalidation ||= !browserNavigationController.isCurrentNavigation(navId);
+      if (!revalidationTransferred || revalidationDiscarded) retryDiscardedRevalidation();
       finalizeNavigation(navId, pendingRouterState);
     }
   };
 
-  refreshQueue = createAppBrowserRefreshQueue((action) => {
+  refreshQueue = createAppBrowserRefreshQueue((action, revalidation) => {
     const pendingAction =
       action && action.state.visibleCommitVersion > getBrowserRouterState().visibleCommitVersion
         ? action
@@ -3125,6 +3154,7 @@ function bootstrapHydration(
         "transition",
         undefined,
         pendingAction,
+        revalidation ? () => discardedServerActionRefreshScheduler.schedule() : undefined,
       );
     });
   });

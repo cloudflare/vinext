@@ -106,6 +106,9 @@ export function observeDocumentNavigationCancellation(
         destination: { url: string; sameDocument: boolean };
         signal: AbortSignal;
       };
+      // A same-document replacement can itself be canceled and emit no
+      // popstate. Keep the owned abort queued until another router owner resets it.
+      if (observed && destination.sameDocument) return;
       // A newer navigation may abort the old event before firing its own event.
       // Invalidate the queued recovery before its microtask can dispatch actions.
       if (observed || destination.sameDocument || destination.url !== href) {

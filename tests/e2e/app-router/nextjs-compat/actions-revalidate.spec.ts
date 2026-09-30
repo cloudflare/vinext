@@ -218,9 +218,65 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   }
 
+  for (const cancelHash of [false, true]) {
+    test(`a ${cancelHash ? "canceled" : "committed"} raw hash navigation resumes actions behind a pending document navigation`, async ({
+      page,
+    }) => {
+      const path = "/nextjs-compat/action-discarding";
+      await page.goto(`${BASE}${path}`);
+      await waitForAppRouterHydration(page);
+      let posts = 0;
+      let releaseAction: (() => void) | undefined;
+      let releaseDocument: (() => void) | undefined;
+      await page.route(`**${path}*`, async (route) => {
+        if (route.request().method() === "POST" && ++posts === 1) {
+          await new Promise<void>((resolve) => {
+            releaseAction = resolve;
+          });
+        }
+        await route.continue();
+      });
+      await page.route("**/old-school", async (route) => {
+        await new Promise<void>((resolve) => {
+          releaseDocument = resolve;
+        });
+        await route.abort();
+      });
+      try {
+        await page.click("#revalidating-hard-redirect");
+        await expect.poll(() => releaseAction !== undefined).toBe(true);
+        await page.click("#slow-action");
+        await page.evaluate((cancel) => {
+          const navigation = (window as Window & { navigation: EventTarget }).navigation;
+          navigation.addEventListener("navigate", (event) => {
+            const { destination } = event as Event & {
+              destination: { sameDocument: boolean; url: string };
+            };
+            if (destination.sameDocument && cancel) event.preventDefault();
+            if (!destination.sameDocument && destination.url.endsWith("/old-school")) {
+              // Run in the surviving document while its replacement is loading.
+              setTimeout(() => {
+                window.location.hash = "resumed";
+              }, 250);
+            }
+          });
+        }, cancelHash);
+        releaseAction?.();
+        await expect.poll(() => releaseDocument !== undefined).toBe(true);
+        expect(posts).toBe(1);
+        await expect.poll(() => posts).toBe(2);
+        expect(page.url()).toBe(`${BASE}${path}${cancelHash ? "" : "#resumed"}`);
+      } finally {
+        releaseAction?.();
+        releaseDocument?.();
+        await page.unrouteAll({ behavior: "ignoreErrors" });
+      }
+    });
+  }
+
   // Next carries revalidation through discarded actions. These controls also
   // ensure a successor that inherited the accepted result needs no extra GET.
-  for (const actionKind of ["same-page", "redirect"]) {
+  for (const actionKind of ["same-page", "redirect", "rootless"]) {
     for (const successor of [
       "hash",
       "native history",
@@ -241,8 +297,22 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
         await page.evaluate((value) => {
           (window as typeof window & { __holdActionValue?: number }).__holdActionValue = value;
         }, initialValue);
+        if (actionKind === "rootless") {
+          await page.route(`**${path}*`, async (route) => {
+            if (route.request().method() !== "POST") return route.continue();
+            const response = await route.fetch();
+            await route.fulfill({
+              response,
+              headers: { ...response.headers(), "x-action-revalidated": "1" },
+            });
+          });
+        }
         await page.click(
-          actionKind === "redirect" ? "#revalidating-redirect" : "#slow-action-refresh",
+          actionKind === "redirect"
+            ? "#revalidating-redirect"
+            : actionKind === "rootless"
+              ? "#slow-action"
+              : "#slow-action-refresh",
         );
         await expect
           .poll(() =>
@@ -433,6 +503,106 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
       releaseRefresh?.();
     }
   });
+
+  for (const successor of ["hash", "native history"]) {
+    test(`rootless revalidation survives ${successor} before the refresh response`, async ({
+      page,
+    }) => {
+      const path = "/nextjs-compat/action-discarding";
+      await page.goto(`${BASE}${path}`);
+      await waitForAppRouterHydration(page);
+      const initialValue = Number(await page.locator("#discarded-action-value").textContent());
+      let releaseRefresh: (() => void) | undefined;
+      let refreshes = 0;
+      await page.route(`**${path}*`, async (route) => {
+        const request = route.request();
+        if (request.method() === "POST") {
+          const response = await route.fetch();
+          await route.fulfill({
+            response,
+            headers: { ...response.headers(), "x-action-revalidated": "1" },
+          });
+        } else {
+          if (request.headers().rsc === "1" && new URL(request.url()).pathname === path) {
+            if (++refreshes <= 2)
+              await new Promise<void>((resolve) => {
+                releaseRefresh = resolve;
+              });
+          }
+          await route.continue();
+        }
+      });
+      try {
+        await page.click("#slow-action");
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await expect.poll(() => releaseRefresh !== undefined).toBe(true);
+          await page.evaluate(
+            ({ kind, attempt }) => {
+              if (kind === "hash") void window.next!.router!.push(`#resumed-${attempt}`);
+              else window.history.pushState(null, "", `?restored=${attempt}`);
+            },
+            { kind: successor, attempt },
+          );
+          releaseRefresh?.();
+          releaseRefresh = undefined;
+        }
+        await expect(page.locator("#discarded-action-value")).toHaveText(String(initialValue + 1));
+        expect(refreshes).toBe(3);
+      } finally {
+        releaseRefresh?.();
+        await page.unrouteAll({ behavior: "wait" });
+      }
+    });
+  }
+
+  for (const failure of ["network", "payload", "blocked redirect"]) {
+    test(`a rootless action does not retry a terminal ${failure} failure without a reload guard`, async ({
+      page,
+    }) => {
+      const path = "/nextjs-compat/action-discarding";
+      await page.goto(`${BASE}${path}`);
+      await waitForAppRouterHydration(page);
+      const initialValue = await page.locator("#discarded-action-value").textContent();
+      await page.evaluate(() => {
+        Storage.prototype.setItem = () => {
+          throw new DOMException("Storage blocked", "SecurityError");
+        };
+      });
+      let refreshes = 0;
+      await page.route(`**${path}*`, async (route) => {
+        const request = route.request();
+        if (request.method() === "POST") {
+          const response = await route.fetch();
+          await route.fulfill({
+            response,
+            headers: { ...response.headers(), "x-action-revalidated": "1" },
+          });
+        } else if (request.headers().rsc === "1" && new URL(request.url()).pathname === path) {
+          refreshes++;
+          if (failure === "network") await route.abort("failed");
+          else {
+            const response = await route.fetch();
+            await route.fulfill({
+              response,
+              ...(failure === "payload"
+                ? { body: "invalid Flight" }
+                : {
+                    headers: {
+                      ...response.headers(),
+                      "x-vinext-rsc-redirect": "javascript:void(0)",
+                    },
+                  }),
+            });
+          }
+        } else await route.continue();
+      });
+      await page.click("#slow-action");
+      await expect.poll(() => refreshes).toBe(1);
+      await page.waitForTimeout(500);
+      expect(refreshes).toBe(1);
+      await expect(page.locator("#discarded-action-value")).toHaveText(initialValue!);
+    });
+  }
 
   // Ported from Next.js: test/e2e/app-dir/actions-revalidate-remount/actions-revalidate-remount.test.ts
   test("revalidating server actions preserve client state under loading.tsx", async ({ page }) => {

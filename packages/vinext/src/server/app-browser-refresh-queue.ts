@@ -16,7 +16,12 @@ type ServerAction = (
 ) => Promise<unknown>;
 
 type Request =
-  | { kind: "refresh"; resolve: () => void; reject: (error: unknown) => void }
+  | {
+      kind: "refresh";
+      revalidation?: boolean;
+      resolve: () => void;
+      reject: (error: unknown) => void;
+    }
   | {
       kind: "server-action";
       run: ServerAction;
@@ -26,7 +31,7 @@ type Request =
 
 /** Refresh and Server Actions share a FIFO, independently of React commit and Flight EOF. */
 export function createAppBrowserRefreshQueue(
-  runRefresh: (result: AppBrowserNavigationActionResult | null) => void,
+  runRefresh: (result: AppBrowserNavigationActionResult | null, revalidation?: boolean) => void,
 ) {
   let active: { id: number; ready: boolean } | null = null;
   let result: AppBrowserNavigationActionResult | null = null;
@@ -48,7 +53,7 @@ export function createAppBrowserRefreshQueue(
     let request = requests.shift();
     if (!request && needsRefresh) {
       needsRefresh = false;
-      request = { kind: "refresh", resolve() {}, reject() {} };
+      request = { kind: "refresh", revalidation: true, resolve() {}, reject() {} };
     }
     if (!request) return;
     executing = request;
@@ -56,7 +61,8 @@ export function createAppBrowserRefreshQueue(
     try {
       if (request.kind === "refresh") {
         // Idle refresh starts synchronously, before a later navigation can win.
-        runRefresh(result);
+        if (request.revalidation) runRefresh(result, true);
+        else runRefresh(result);
         if (!active || active.ready) discardExecuting();
       } else {
         void request
@@ -123,7 +129,7 @@ export function createAppBrowserRefreshQueue(
       }
       // A forwarded action has no tree. Its refresh continues this action
       // before the next queued request, while discarded actions wait for idle.
-      runRefresh(result);
+      runRefresh(result, true);
     },
     refreshWhenIdle() {
       needsRefresh = true;

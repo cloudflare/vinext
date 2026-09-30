@@ -162,11 +162,11 @@ describe("AppBrowserMpaNavigationScheduler", () => {
 
 describe("document navigation cancellation", () => {
   const href = "https://example.com/target";
-  function navigate(navigation: EventTarget, url = href) {
+  function navigate(navigation: EventTarget, url = href, sameDocument = false) {
     const controller = new AbortController();
     navigation.dispatchEvent(
       Object.assign(new Event("navigate"), {
-        destination: { url, sameDocument: false },
+        destination: { url, sameDocument },
         signal: controller.signal,
       }),
     );
@@ -200,6 +200,28 @@ describe("document navigation cancellation", () => {
       expect(recover).not.toHaveBeenCalled();
     },
   );
+
+  it("recovers an owned abort superseded by a raw hash navigation", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation).abort();
+    navigate(navigation, "https://example.com/source#resumed", true);
+    expect(recover).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it("keeps recovery invalidation when hash navigation is followed by another document", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation).abort();
+    navigate(navigation, "https://example.com/source#resumed", true);
+    navigate(navigation, "https://example.com/newer");
+    await Promise.resolve();
+    expect(recover).not.toHaveBeenCalled();
+  });
 
   it("does not claim an unrelated document navigation", async () => {
     const navigation = new EventTarget();

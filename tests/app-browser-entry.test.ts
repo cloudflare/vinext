@@ -3657,7 +3657,7 @@ describe("public App Router refresh queue", () => {
     const second = queue.serverAction(runSecond);
     response.resolve();
     await expect(first).resolves.toBe("action-value");
-    expect(runRefresh).toHaveBeenCalledExactlyOnceWith(result("/source"));
+    expect(runRefresh).toHaveBeenCalledExactlyOnceWith(result("/source"), true);
     expect(runSecond).not.toHaveBeenCalled();
     queue.ready(2, result("/refreshed"));
     await expect(second).resolves.toBe("/refreshed");
@@ -3677,7 +3677,7 @@ describe("public App Router refresh queue", () => {
     expect(runRefresh).not.toHaveBeenCalled();
     secondResponse.resolve();
     await second;
-    await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledExactlyOnceWith(null, true));
   });
 
   it.each(["canceled", "restored"])(
