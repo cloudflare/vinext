@@ -122,6 +122,25 @@ describe("App Router invalid `_next/static/*` 404", () => {
       expect(text).toBe("Not Found");
       expect(res.headers.get("content-type")).toMatch(/^text\/plain/);
 
+      // A stale tab probes its entry chunk with HEAD to learn whether its
+      // build is still deployed: a missing chunk must answer 404 and a built
+      // one 200 with a JavaScript content type, both without a body.
+      const missingHead = await fetch(`${baseUrl}/_next/static/nonexistent-chunk.js`, {
+        method: "HEAD",
+      });
+      expect(missingHead.status).toBe(404);
+      expect(await missingHead.text()).toBe("");
+
+      const chunksDir = path.join(built.outDir, "client", "_next", "static", "chunks");
+      const builtChunk = fs.readdirSync(chunksDir).find((file) => file.endsWith(".js"));
+      if (!builtChunk) throw new Error(`Expected a built JavaScript chunk in ${chunksDir}`);
+      const builtHead = await fetch(`${baseUrl}/_next/static/chunks/${builtChunk}`, {
+        method: "HEAD",
+      });
+      expect(builtHead.status).toBe(200);
+      expect(builtHead.headers.get("content-type")).toMatch(/^(?:application|text)\/javascript/);
+      expect(await builtHead.text()).toBe("");
+
       // Sanity check: an unrelated invalid path still renders the rich HTML
       // 404 — only `_next/static/*` short-circuits to plain text.
       const htmlRes = await fetch(`${baseUrl}/totally-invalid-route`);

@@ -1142,10 +1142,17 @@ describe("tryServeStatic (with StaticFileCache)", () => {
         }
 
         const headResponse = await fetch(origin + "/script.js", { method: "HEAD" });
+        expect(headResponse.status).toBe(200);
         expect(headResponse.headers.get("content-type")).toBe(
           "application/javascript; charset=utf-8",
         );
         expect(await headResponse.text()).toBe("");
+
+        // A missing chunk is not claimed, so the host answers 404 to HEAD too.
+        const missingHead = await fetch(origin + "/_next/static/chunks/missing.js", {
+          method: "HEAD",
+        });
+        expect(missingHead.status).toBe(404);
       } finally {
         await new Promise<void>((resolve, reject) => {
           server.close((error) => (error ? reject(error) : resolve()));
