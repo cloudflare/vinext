@@ -215,6 +215,7 @@ export function clearHardNavigationLoopGuard(): void {
 export function performHardNavigationWithLoopGuard(
   href: string,
   mode: HardNavigationMode = "assign",
+  beforeNavigate?: () => void | (() => void),
 ): boolean {
   const targetHref = normalizeBrowserHref(href);
   const currentHref = normalizeBrowserHref(window.location.href);
@@ -240,12 +241,20 @@ export function performHardNavigationWithLoopGuard(
   // can still make forward progress. Only same-target reloads need a persisted
   // guard because they can re-enter this exact recovery path indefinitely.
 
-  if (mode === "replace") {
-    window.location.replace(href);
-  } else {
-    window.location.assign(href);
+  let recover: void | (() => void) = undefined;
+  try {
+    recover = beforeNavigate?.();
+    if (mode === "replace") {
+      window.location.replace(href);
+    } else {
+      window.location.assign(href);
+    }
+    return true;
+  } catch (error) {
+    clearHardNavigationLoopGuard();
+    recover?.();
+    throw error;
   }
-  return true;
 }
 
 export { createSnapshotPathAndSearch };

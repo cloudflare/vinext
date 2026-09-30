@@ -106,6 +106,34 @@ test.describe("refresh during an App Router navigation", () => {
     await expect(page).toHaveURL(`${BASE}/old-school`);
   });
 
+  test("a canceled Pages navigation stays canceled after a client update", async ({ page }) => {
+    await page.goto(`${BASE}/interactive`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("button", { name: "Increment", exact: true }).click();
+    let canceled = false;
+    page.once("dialog", async (dialog) => {
+      await dialog.dismiss();
+      canceled = true;
+    });
+    await page.evaluate(() => {
+      window.addEventListener(
+        "beforeunload",
+        (event) => {
+          event.preventDefault();
+          event.returnValue = "";
+        },
+        { once: true },
+      );
+      void window.next!.router!.push("/old-school");
+    });
+    await expect.poll(() => canceled).toBe(true);
+    await page.getByRole("button", { name: "Increment", exact: true }).click();
+    // The old suspended MPA render scheduled its retry on the next frame.
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId("count")).toHaveText("Count: 2");
+    await expect(page).toHaveURL(`${BASE}/interactive`);
+  });
+
   test("a Pages navigation supersedes a navigation with a queued refresh", async ({ page }) => {
     await page.goto(START_URL);
     await waitForAppRouterHydration(page);

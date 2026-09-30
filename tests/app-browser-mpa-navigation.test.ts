@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   AppBrowserMpaNavigationScheduler,
   hasPendingAppRouterPageRedirect,
+  observeDocumentNavigationCancellation,
   type AppBrowserMpaNavigationWindow,
 } from "../packages/vinext/src/server/app-browser-mpa-navigation.js";
+
+import { performHardNavigationWithLoopGuard } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 
 function createNavigationWindow(): {
   assign: ReturnType<typeof vi.fn>;
@@ -102,6 +105,45 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     expect(replace).toHaveBeenCalledTimes(1);
   });
 
+  it("recovers when the scheduled location mutation throws", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
+    const recover = vi.fn();
+    const error = new DOMException("Navigation blocked", "SecurityError");
+    assign.mockImplementation(() => {
+      throw error;
+    });
+    scheduler.navigate(targetWindow, "https://example.com/target", "push", () => recover);
+    expect(flushNextTimeout).toThrow(error);
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the live cancellation observer when the same MPA render repeats", async () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
+    const navigation = new EventTarget();
+    const attempt = new AbortController();
+    const recover = vi.fn();
+    const href = "https://example.com/target";
+    const arm = vi.fn(() => observeDocumentNavigationCancellation(navigation, href, recover));
+    assign.mockImplementation(() =>
+      navigation.dispatchEvent(
+        Object.assign(new Event("navigate"), {
+          destination: { url: href, sameDocument: false },
+          signal: attempt.signal,
+        }),
+      ),
+    );
+    scheduler.navigate(targetWindow, href, "push", arm);
+    expect(arm).not.toHaveBeenCalled();
+    flushNextTimeout();
+    scheduler.navigate(targetWindow, href, "push", arm);
+    expect(arm).toHaveBeenCalledOnce();
+    attempt.abort();
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
   it("allows the same external navigation again after reset", () => {
     const scheduler = new AppBrowserMpaNavigationScheduler();
     const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
@@ -116,4 +158,83 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     flushNextTimeout();
     expect(assign).toHaveBeenCalledTimes(2);
   });
+});
+
+describe("document navigation cancellation", () => {
+  const href = "https://example.com/target";
+  function navigate(navigation: EventTarget, url = href) {
+    const controller = new AbortController();
+    navigation.dispatchEvent(
+      Object.assign(new Event("navigate"), {
+        destination: { url, sameDocument: false },
+        signal: controller.signal,
+      }),
+    );
+    return controller;
+  }
+
+  it("recovers only after the owned attempt aborts and the call unwinds", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    const attempt = navigate(navigation);
+    await Promise.resolve();
+    expect(recover).not.toHaveBeenCalled();
+    attempt.abort();
+    expect(recover).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it.each(["new navigation", "pagehide or router operation"])(
+    "ignores an abort superseded by %s",
+    async (superseding) => {
+      const navigation = new EventTarget();
+      const recover = vi.fn();
+      const reset = observeDocumentNavigationCancellation(navigation, href, recover);
+      const attempt = navigate(navigation);
+      attempt.abort();
+      if (superseding === "new navigation") navigate(navigation, "https://example.com/newer");
+      else reset();
+      await Promise.resolve();
+      expect(recover).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not claim an unrelated document navigation", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation, "https://example.com/unrelated").abort();
+    await Promise.resolve();
+    expect(recover).not.toHaveBeenCalled();
+  });
+});
+
+it("recovers when a guarded hard navigation throws synchronously", () => {
+  const storage = new Map<string, string>();
+  const recover = vi.fn();
+  const error = new DOMException("Navigation blocked", "SecurityError");
+  vi.stubGlobal("window", {
+    location: {
+      href: "https://example.com/source",
+      assign() {
+        throw error;
+      },
+    },
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  });
+  try {
+    expect(() =>
+      performHardNavigationWithLoopGuard("https://example.com/target", "assign", () => recover),
+    ).toThrow(error);
+    expect(recover).toHaveBeenCalledOnce();
+    expect(storage.size).toBe(0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

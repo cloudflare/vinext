@@ -34,6 +34,7 @@ export function createAppBrowserRefreshQueue(
   let executing: Request | null = null;
   let dispatching = false;
   let needsRefresh = false;
+  let documentNavigation = false;
 
   function discardExecuting(): void {
     const previous = executing;
@@ -43,7 +44,7 @@ export function createAppBrowserRefreshQueue(
   }
 
   function drain(): void {
-    if (executing || (active && !active.ready)) return;
+    if (documentNavigation || executing || (active && !active.ready)) return;
     let request = requests.shift();
     if (!request && needsRefresh) {
       needsRefresh = false;
@@ -85,6 +86,7 @@ export function createAppBrowserRefreshQueue(
 
   return {
     start(navigationId: number) {
+      documentNavigation = false;
       // Navigation/restore preempts the running entry, preserving queued work.
       // A refresh starts its own navigation synchronously inside drain().
       if (!dispatching) discardExecuting();
@@ -99,18 +101,27 @@ export function createAppBrowserRefreshQueue(
       drain();
     },
     stopForDocumentNavigation() {
+      documentNavigation = true;
       active = null;
       result = null;
       needsRefresh = false;
       discardExecuting();
       // Keep undispatched mutations dormant. A fresh router operation can
-      // resume them if the user cancels beforeunload; do not lose their callers.
+      // resume them on confirmed cancellation or a fresh router operation.
       for (const request of requests.splice(0)) {
         if (request.kind === "refresh") request.resolve();
         else requests.push(request);
       }
     },
+    resumeAfterDocumentNavigation() {
+      documentNavigation = false;
+      drain();
+    },
     refreshCurrentAction() {
+      if (documentNavigation) {
+        needsRefresh = true;
+        return;
+      }
       // A forwarded action has no tree. Its refresh continues this action
       // before the next queued request, while discarded actions wait for idle.
       runRefresh(result);
@@ -126,6 +137,7 @@ export function createAppBrowserRefreshQueue(
       });
     },
     refresh(): Promise<void> {
+      documentNavigation = false;
       return new Promise<void>((resolve, reject) => {
         requests.push({ kind: "refresh", resolve, reject });
         drain();

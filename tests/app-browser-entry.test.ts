@@ -3674,17 +3674,41 @@ describe("public App Router refresh queue", () => {
     await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledOnce());
   });
 
-  it("retains undispatched Server Actions when a document navigation is canceled", async () => {
-    const queue = createAppBrowserRefreshQueue(vi.fn());
-    queue.start(1);
-    const runAction = vi.fn(async () => 42);
-    const action = queue.serverAction(runAction);
+  it("retains rootless revalidation until document navigation recovers", async () => {
+    const response = createDeferred();
+    const runRefresh = vi.fn();
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    const action = queue.serverAction(async () => {
+      await response.promise;
+      queue.refreshCurrentAction();
+    });
     queue.stopForDocumentNavigation();
+    response.resolve();
+    await action;
+    expect(runRefresh).not.toHaveBeenCalled();
+    queue.resumeAfterDocumentNavigation();
+    expect(runRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("resumes retained Server Actions only after document navigation is canceled", async () => {
+    const response = createDeferred();
+    const queue = createAppBrowserRefreshQueue(vi.fn());
+    const first = queue.serverAction(async () => {
+      await response.promise;
+      return 1;
+    });
+    const runAction = vi.fn(async () => 42);
+    const second = queue.serverAction(runAction);
+    queue.stopForDocumentNavigation();
+    const third = queue.serverAction(runAction);
     expect(runAction).not.toHaveBeenCalled();
-    queue.start(2);
-    queue.ready(2);
-    await expect(action).resolves.toBe(42);
-    expect(runAction).toHaveBeenCalledOnce();
+    response.resolve();
+    await first;
+    expect(runAction).not.toHaveBeenCalled();
+    queue.resumeAfterDocumentNavigation();
+    await expect(second).resolves.toBe(42);
+    await expect(third).resolves.toBe(42);
+    expect(runAction).toHaveBeenCalledTimes(2);
   });
 
   it("drops queued refreshes when the current action starts a document navigation", async () => {

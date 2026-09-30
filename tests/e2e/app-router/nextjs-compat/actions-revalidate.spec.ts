@@ -139,6 +139,120 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   }
 
+  test("queued actions resume only after a hard action redirect is canceled", async ({ page }) => {
+    const path = "/nextjs-compat/action-discarding";
+    for (const cancel of [true, false]) {
+      await page.goto(`${BASE}${path}`);
+      await waitForAppRouterHydration(page);
+      let releaseDocument: (() => void) | undefined;
+      await page.route("**/old-school", async (route) => {
+        await new Promise<void>((resolve) => {
+          releaseDocument = resolve;
+        });
+        await route.continue();
+      });
+      let posts = 0;
+      let responses = 0;
+      const recordResponse = (response: import("@playwright/test").Response) => {
+        if (response.request().method() === "POST") responses++;
+      };
+      page.on("response", recordResponse);
+      let releaseAction: (() => void) | undefined;
+      await page.route(`**${path}*`, async (route) => {
+        if (route.request().method() === "POST") {
+          posts++;
+          if (posts === 1)
+            await new Promise<void>((resolve) => {
+              releaseAction = resolve;
+            });
+        }
+        await route.continue();
+      });
+      await page.evaluate(() => {
+        window.addEventListener(
+          "beforeunload",
+          (event) => {
+            event.preventDefault();
+            event.returnValue = "";
+          },
+          { once: true },
+        );
+      });
+      let dismissed = false;
+      page.once("dialog", async (dialog) => {
+        if (cancel) await dialog.dismiss();
+        else await dialog.accept();
+        dismissed = true;
+      });
+      try {
+        await page.click("#revalidating-hard-redirect");
+        await expect.poll(() => releaseAction !== undefined).toBe(true);
+        await page.click("#slow-action");
+        expect(posts).toBe(1);
+        releaseAction?.();
+        await expect.poll(() => dismissed).toBe(true);
+        if (cancel) {
+          await expect.poll(() => posts).toBe(2);
+          await expect.poll(() => responses).toBe(2);
+          await expect(page).toHaveURL(`${BASE}${path}`);
+        } else {
+          await expect.poll(() => releaseDocument !== undefined).toBe(true);
+          // A successful unload can leave the old document alive while loading.
+          await page.waitForTimeout(300);
+          expect(posts).toBe(1);
+          releaseDocument?.();
+          await expect(page).toHaveURL(`${BASE}/old-school`);
+        }
+      } finally {
+        releaseAction?.();
+        releaseDocument?.();
+        page.off("response", recordResponse);
+        await page.unrouteAll({ behavior: "wait" });
+      }
+    }
+  });
+
+  test("a canceled same-URL action reload can be retried", async ({ page }) => {
+    const path = "/nextjs-compat/action-discarding";
+    await page.goto(`${BASE}${path}`);
+    await waitForAppRouterHydration(page);
+    await page.route(`**${path}*`, async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), "x-action-redirect": path, "content-type": "text/plain" },
+      });
+    });
+    await page.evaluate(() => {
+      (window as typeof window & { __reloadMarker?: boolean }).__reloadMarker = true;
+      window.addEventListener(
+        "beforeunload",
+        (event) => {
+          event.preventDefault();
+          event.returnValue = "";
+        },
+        { once: true },
+      );
+    });
+    let canceled = false;
+    page.once("dialog", async (dialog) => {
+      await dialog.dismiss();
+      canceled = true;
+    });
+    await page.click("#revalidating-hard-redirect");
+    await expect.poll(() => canceled).toBe(true);
+    await page.click("#revalidating-hard-redirect");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as typeof window & { __reloadMarker?: boolean }).__reloadMarker,
+        ),
+      )
+      .toBeUndefined();
+    await expect(page).toHaveURL(`${BASE}${path}`);
+  });
+
   test("a forwarded rootless action refreshes before the next queued action", async ({ page }) => {
     const path = "/nextjs-compat/action-discarding";
     await page.goto(`${BASE}${path}`);

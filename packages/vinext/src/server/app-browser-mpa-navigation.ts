@@ -43,6 +43,7 @@ export class AppBrowserMpaNavigationScheduler {
     targetWindow: AppBrowserMpaNavigationWindow,
     href: string,
     historyUpdateMode: HistoryUpdateMode,
+    beforeNavigate?: () => void | (() => void),
   ): void {
     const pendingNavigation = this.#pendingNavigation;
     if (
@@ -66,10 +67,16 @@ export class AppBrowserMpaNavigationScheduler {
         return;
       }
 
-      if (historyUpdateMode === "replace") {
-        targetWindow.location.replace(href);
-      } else {
-        targetWindow.location.assign(href);
+      const recover = beforeNavigate?.();
+      try {
+        if (historyUpdateMode === "replace") {
+          targetWindow.location.replace(href);
+        } else {
+          targetWindow.location.assign(href);
+        }
+      } catch (error) {
+        recover?.();
+        throw error;
       }
     };
 
@@ -82,4 +89,43 @@ export class AppBrowserMpaNavigationScheduler {
 
     targetWindow.setTimeout(navigate, 0);
   }
+}
+
+/** Recover only a confirmed abort, never merely a slow document load. */
+export function observeDocumentNavigationCancellation(
+  navigation: EventTarget | undefined,
+  href: string,
+  onCancel: () => void,
+): () => void {
+  const observer = new AbortController();
+  let observed = false;
+  navigation?.addEventListener(
+    "navigate",
+    (event) => {
+      const { destination, signal } = event as Event & {
+        destination: { url: string; sameDocument: boolean };
+        signal: AbortSignal;
+      };
+      // A newer navigation may abort the old event before firing its own event.
+      // Invalidate the queued recovery before its microtask can dispatch actions.
+      if (observed || destination.sameDocument || destination.url !== href) {
+        observer.abort();
+        return;
+      }
+      observed = true;
+      signal.addEventListener(
+        "abort",
+        () => {
+          queueMicrotask(() => {
+            if (observer.signal.aborted) return;
+            observer.abort();
+            onCancel();
+          });
+        },
+        { once: true, signal: observer.signal },
+      );
+    },
+    { signal: observer.signal },
+  );
+  return () => observer.abort();
 }
