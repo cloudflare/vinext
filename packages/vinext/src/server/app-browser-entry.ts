@@ -346,7 +346,7 @@ const browserNavigationController = createAppBrowserNavigationController({
   getRouteManifest: getBrowserRouteManifest,
   performHardNavigation: (href, mode) => {
     const didNavigate = performHardNavigationWithLoopGuard(href, mode);
-    if (didNavigate) refreshQueue.stopForDocumentNavigation();
+    if (didNavigate) stopRefreshesForDocumentNavigation();
     return didNavigate;
   },
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
@@ -358,6 +358,12 @@ const discardedServerActionRefreshScheduler = createDiscardedServerActionRefresh
   },
 });
 let refreshQueue: ReturnType<typeof createAppBrowserRefreshQueue>;
+
+function stopRefreshesForDocumentNavigation(): void {
+  refreshQueue.stopForDocumentNavigation();
+  discardedServerActionRefreshScheduler.stopForDocumentNavigation();
+}
+
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
@@ -486,6 +492,7 @@ function beginPendingBrowserRouterState(): PendingBrowserRouterState {
 }
 
 function beginNavigation(refreshBase?: AppRouterState): number {
+  mpaNavigationScheduler.reset();
   const navId = browserNavigationController.beginNavigation(refreshBase);
   browserNavigationController.discardPendingNavigation();
   refreshQueue.start(navId);
@@ -1265,7 +1272,7 @@ function isMpaNavigationState(
 }
 
 function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
-  refreshQueue.stopForDocumentNavigation();
+  stopRefreshesForDocumentNavigation();
   // Match Next's MPA path by suspending forever, but delay the actual location
   // mutation just enough for the old tree to commit the pending transition
   // signal before unload.
@@ -1380,7 +1387,7 @@ function BrowserRoot({
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
         beginNavigation();
-        refreshQueue.stopForDocumentNavigation();
+        stopRefreshesForDocumentNavigation();
         setTreeStateValue({
           href,
           historyUpdateMode,
@@ -3229,7 +3236,7 @@ if (typeof document !== "undefined") {
     isPageUnloading = false;
     if (event.persisted) {
       mpaNavigationScheduler.reset();
-      refreshQueue?.resumeAfterDocumentRestore();
+      discardedServerActionRefreshScheduler.resumeAfterDocumentRestore();
     }
   });
   void main();

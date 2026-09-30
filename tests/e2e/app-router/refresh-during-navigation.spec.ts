@@ -70,6 +70,42 @@ function urlWhenRequestCountReaches(
 test.describe("refresh during an App Router navigation", () => {
   test.describe.configure({ timeout: 60_000 });
 
+  test("refresh still works after canceling a document navigation", async ({ page }) => {
+    await page.goto(START_URL);
+    await waitForAppRouterHydration(page);
+    // A real gesture enables the browser's beforeunload confirmation.
+    await page.getByTestId("refresh").click();
+    let dismissed = false;
+    page.once("dialog", async (dialog) => {
+      await dialog.dismiss();
+      dismissed = true;
+    });
+    await page.evaluate(() => {
+      window.addEventListener(
+        "beforeunload",
+        (event) => {
+          event.preventDefault();
+          event.returnValue = "";
+        },
+        { once: true },
+      );
+      const router = window.next?.router;
+      if (!router) throw new Error("App Router is not installed");
+      void router.push("/old-school");
+    });
+    await expect.poll(() => dismissed).toBe(true);
+    const requests = trackRscRequests(page, START_PATH);
+    await page.getByTestId("refresh").click();
+    await expect.poll(() => requests.length).toBe(1);
+    await expect(page).toHaveURL(START_URL);
+    await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
+    // A canceled MPA attempt must not suppress a later retry of the same URL.
+    await page.evaluate(() => {
+      void window.next!.router!.push("/old-school");
+    });
+    await expect(page).toHaveURL(`${BASE}/old-school`);
+  });
+
   test("a Pages navigation supersedes a navigation with a queued refresh", async ({ page }) => {
     await page.goto(START_URL);
     await waitForAppRouterHydration(page);

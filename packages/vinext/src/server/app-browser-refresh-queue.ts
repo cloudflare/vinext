@@ -26,7 +26,6 @@ export function createAppBrowserRefreshQueue(
   } | null = null;
   const requests: RefreshRequest[] = [];
   let executing: RefreshRequest | null = null;
-  let documentNavigation = false;
 
   function finishRefresh(): void {
     const completed = executing;
@@ -57,7 +56,6 @@ export function createAppBrowserRefreshQueue(
 
   return {
     start(navigationId: number) {
-      documentNavigation = false;
       // A newer navigation discards an executing refresh but keeps requests
       // still queued behind it. Its stale completion must not drain this queue.
       if (executing && executing.navigationId !== null) finishRefresh();
@@ -73,16 +71,12 @@ export function createAppBrowserRefreshQueue(
     stopForDocumentNavigation() {
       // The destination document owns the next UI. A queued refresh must not
       // refetch the old location while that document response is still pending.
-      documentNavigation = true;
+      // A later fresh request can recover if the user cancels beforeunload.
       active = null;
       finishRefresh();
       for (const request of requests.splice(0)) request.resolve();
     },
-    resumeAfterDocumentRestore() {
-      documentNavigation = false;
-    },
     refresh(): Promise<void> {
-      if (documentNavigation) return Promise.resolve();
       // Each public ACTION_REFRESH is distinct. Discarded Server Action
       // revalidations retain their separate, coalescing needsRefresh scheduler.
       return new Promise<void>((resolve, reject) => {

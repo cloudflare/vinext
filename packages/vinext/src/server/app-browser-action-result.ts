@@ -175,6 +175,8 @@ export function createServerActionInitiationSnapshot<TRouterState>(options: {
 }
 
 type DiscardedServerActionRefreshScheduler = {
+  stopForDocumentNavigation(): void;
+  resumeAfterDocumentRestore(): void;
   markNavigationSettled(navigationId: number): void;
   markNavigationStart(navigationId: number): void;
   schedule(): void;
@@ -192,6 +194,7 @@ export function createDiscardedServerActionRefreshScheduler(
   let activeNavigationId: number | null = null;
   let flushQueued = false;
   let refreshPending = false;
+  let documentNavigation = false;
 
   function flush(): void {
     flushQueued = false;
@@ -208,17 +211,27 @@ export function createDiscardedServerActionRefreshScheduler(
   }
 
   return {
+    stopForDocumentNavigation() {
+      refreshPending = false;
+      activeNavigationId = null;
+      documentNavigation = true;
+    },
+    resumeAfterDocumentRestore() {
+      documentNavigation = false;
+    },
     markNavigationSettled(navigationId) {
       if (activeNavigationId !== navigationId) return;
       activeNavigationId = null;
       queueFlush();
     },
     markNavigationStart(navigationId) {
+      documentNavigation = false;
       // A newer navigation supersedes the old one. Its stream may keep running,
       // but must neither block refreshes nor settle the newer navigation.
       activeNavigationId = navigationId;
     },
     schedule() {
+      if (documentNavigation) return;
       refreshPending = true;
       queueFlush();
     },

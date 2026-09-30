@@ -1494,6 +1494,46 @@ describe("app browser entry navigation scheduling", () => {
     expect(shouldScheduleRefreshForDiscardedServerAction("staticAndDynamic")).toBe(true);
   });
 
+  it("discards automatic refreshes queued before a document navigation", () => {
+    const queued: Array<() => void> = [];
+    const runRefresh = vi.fn();
+    const scheduler = createDiscardedServerActionRefreshScheduler({
+      queueTask: (callback) => {
+        queued.push(callback);
+      },
+      runRefresh,
+    });
+    scheduler.markNavigationStart(1);
+    scheduler.schedule();
+    scheduler.stopForDocumentNavigation();
+    scheduler.markNavigationSettled(1);
+    // A late discarded action cannot restart the old document either.
+    scheduler.schedule();
+    queued.splice(0).forEach((callback) => callback());
+    expect(runRefresh).not.toHaveBeenCalled();
+    scheduler.markNavigationStart(2);
+    scheduler.markNavigationSettled(2);
+    scheduler.schedule();
+    queued.splice(0).forEach((callback) => callback());
+    expect(runRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("resumes automatic revalidation after a BFCache document restore", () => {
+    const queued: Array<() => void> = [];
+    const runRefresh = vi.fn();
+    const scheduler = createDiscardedServerActionRefreshScheduler({
+      queueTask: (callback) => {
+        queued.push(callback);
+      },
+      runRefresh,
+    });
+    scheduler.stopForDocumentNavigation();
+    scheduler.resumeAfterDocumentRestore();
+    scheduler.schedule();
+    queued.splice(0).forEach((callback) => callback());
+    expect(runRefresh).toHaveBeenCalledOnce();
+  });
+
   it("coalesces discarded action refreshes until active navigation settles", () => {
     const queued: Array<() => void> = [];
     const runRefresh = vi.fn();
@@ -3535,27 +3575,13 @@ describe("public App Router refresh queue", () => {
     const second = queue.refresh();
     queue.stopForDocumentNavigation();
     queue.ready(1);
-    await Promise.all([first, second, queue.refresh()]);
+    await Promise.all([first, second]);
     expect(runRefresh).not.toHaveBeenCalled();
-    queue.start(3);
-    queue.ready(3);
+    // A new request may recover a document whose beforeunload was canceled.
     const next = queue.refresh();
     expect(runRefresh).toHaveBeenCalledOnce();
     queue.ready(2);
     await next;
-  });
-
-  it("allows refresh immediately after the document is restored from BFCache", async () => {
-    const runRefresh = vi.fn(() => queue.start(1));
-    const queue = createAppBrowserRefreshQueue(runRefresh);
-    queue.stopForDocumentNavigation();
-    await queue.refresh();
-    expect(runRefresh).not.toHaveBeenCalled();
-    queue.resumeAfterDocumentRestore();
-    const refresh = queue.refresh();
-    expect(runRefresh).toHaveBeenCalledOnce();
-    queue.ready(1);
-    await refresh;
   });
 
   it("lets later refreshes run after a refresh fails", async () => {
