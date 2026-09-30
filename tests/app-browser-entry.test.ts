@@ -107,7 +107,10 @@ import {
   getPendingAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
-import { createAppBrowserRefreshQueue } from "../packages/vinext/src/server/app-browser-refresh-queue.js";
+import {
+  ServerActionNotSentError,
+  createAppBrowserRefreshQueue,
+} from "../packages/vinext/src/server/app-browser-refresh-queue.js";
 import {
   createBfcacheSegmentIdentityMap,
   createAppOwnedHistoryState,
@@ -3744,6 +3747,109 @@ describe("public App Router refresh queue", () => {
     await expect(second).resolves.toBe(42);
     await expect(third).resolves.toBe(42);
     expect(runAction).toHaveBeenCalledTimes(2);
+  });
+
+  describe("when the document navigation expires", () => {
+    const notSentMessage =
+      "[vinext] This Server Action was not sent because the page began loading another document. Try again.";
+
+    it("exports an error that names itself and explains the unsent action", () => {
+      const error = new ServerActionNotSentError();
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error.name).toBe("ServerActionNotSentError");
+      expect(error.message).toBe(notSentMessage);
+    });
+
+    it("rejects actions held before the navigation and dispatches actions queued since", async () => {
+      const response = createDeferred();
+      const queue = createAppBrowserRefreshQueue(vi.fn());
+      const running = queue.serverAction(async () => {
+        await response.promise;
+        return "running";
+      });
+      const heldRun = vi.fn(async () => "held");
+      const held = queue.serverAction(heldRun);
+      queue.stopForDocumentNavigation();
+      const laterRun = vi.fn(async () => "later");
+      const later = queue.serverAction(laterRun);
+      const error = new ServerActionNotSentError();
+
+      queue.expireDocumentNavigation(error);
+      response.resolve();
+
+      await expect(held).rejects.toBe(error);
+      await expect(running).resolves.toBe("running");
+      await expect(later).resolves.toBe("later");
+      expect(heldRun).not.toHaveBeenCalled();
+      expect(laterRun).toHaveBeenCalledOnce();
+    });
+
+    it("rejects actions held across two document navigations", async () => {
+      const queue = createAppBrowserRefreshQueue(vi.fn());
+      queue.start(1);
+      const firstRun = vi.fn(async () => "first");
+      const first = queue.serverAction(firstRun);
+      queue.stopForDocumentNavigation();
+      const secondRun = vi.fn(async () => "second");
+      const second = queue.serverAction(secondRun);
+      queue.stopForDocumentNavigation();
+      const error = new ServerActionNotSentError();
+
+      queue.expireDocumentNavigation(error);
+
+      await expect(first).rejects.toBe(error);
+      await expect(second).rejects.toBe(error);
+      expect(firstRun).not.toHaveBeenCalled();
+      expect(secondRun).not.toHaveBeenCalled();
+    });
+
+    it("releases refreshes queued during the navigation", async () => {
+      const runRefresh = vi.fn(() => queue.start(2));
+      const queue = createAppBrowserRefreshQueue(runRefresh);
+      queue.stopForDocumentNavigation();
+      const refresh = queue.refresh();
+      expect(runRefresh).not.toHaveBeenCalled();
+
+      queue.expireDocumentNavigation(new ServerActionNotSentError());
+
+      expect(runRefresh).toHaveBeenCalledOnce();
+      queue.ready(2);
+      await refresh;
+    });
+
+    it("rejects nothing when no action was held", () => {
+      const queue = createAppBrowserRefreshQueue(vi.fn());
+
+      expect(() => queue.expireDocumentNavigation(new ServerActionNotSentError())).not.toThrow();
+    });
+
+    it("replays held actions ahead of later ones when the navigation is canceled instead", async () => {
+      const order: string[] = [];
+      const queue = createAppBrowserRefreshQueue(vi.fn());
+      queue.start(1);
+      const held = queue.serverAction(async () => order.push("held"));
+      queue.stopForDocumentNavigation();
+      const later = queue.serverAction(async () => order.push("later"));
+
+      queue.resumeAfterDocumentNavigation();
+      await Promise.all([held, later]);
+
+      expect(order).toEqual(["held", "later"]);
+    });
+
+    it("replays held actions when a new navigation starts instead", async () => {
+      const queue = createAppBrowserRefreshQueue(vi.fn());
+      queue.start(1);
+      const runAction = vi.fn(async () => 42);
+      const held = queue.serverAction(runAction);
+      queue.stopForDocumentNavigation();
+
+      queue.start(2);
+      queue.ready(2);
+
+      await expect(held).resolves.toBe(42);
+    });
   });
 
   it("drops queued refreshes when the current action starts a document navigation", async () => {

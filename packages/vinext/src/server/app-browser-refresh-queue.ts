@@ -29,6 +29,16 @@ type Request =
       reject: (error: unknown) => void;
     };
 
+export class ServerActionNotSentError extends Error {
+  override name = "ServerActionNotSentError";
+
+  constructor() {
+    super(
+      "[vinext] This Server Action was not sent because the page began loading another document. Try again.",
+    );
+  }
+}
+
 /** Refresh and Server Actions share a FIFO, independently of React commit and Flight EOF. */
 export function createAppBrowserRefreshQueue(
   runRefresh: (result: AppBrowserNavigationActionResult | null, revalidation?: boolean) => void,
@@ -36,6 +46,8 @@ export function createAppBrowserRefreshQueue(
   let active: { id: number; ready: boolean } | null = null;
   let result: AppBrowserNavigationActionResult | null = null;
   const requests: Request[] = [];
+  // Server Actions that were waiting when a document navigation began.
+  const dormantRequests: Request[] = [];
   let executing: Request | null = null;
   let dispatching = false;
   let needsRefresh = false;
@@ -46,6 +58,10 @@ export function createAppBrowserRefreshQueue(
     executing = null;
     // A superseded Server Action still settles its caller from its own response.
     if (previous?.kind === "refresh") previous.resolve();
+  }
+
+  function restoreDormantRequests(): void {
+    requests.unshift(...dormantRequests.splice(0));
   }
 
   function drain(): void {
@@ -93,6 +109,7 @@ export function createAppBrowserRefreshQueue(
   return {
     start(navigationId: number) {
       documentNavigation = false;
+      restoreDormantRequests();
       // Navigation/restore preempts the running entry, preserving queued work.
       // A refresh starts its own navigation synchronously inside drain().
       if (!dispatching) discardExecuting();
@@ -111,15 +128,23 @@ export function createAppBrowserRefreshQueue(
       active = null;
       result = null;
       discardExecuting();
-      // Keep undispatched mutations dormant until confirmed recovery or a new
-      // navigation. Public refresh alone is not proof that unload was canceled.
+      // Keep undispatched mutations dormant until confirmed recovery, expiry or
+      // a new navigation. Public refresh alone is not proof that unload was
+      // canceled. Requests made after this point wait in the queue proper.
       for (const request of requests.splice(0)) {
         if (request.kind === "refresh") request.resolve();
-        else requests.push(request);
+        else dormantRequests.push(request);
       }
     },
     resumeAfterDocumentNavigation() {
       documentNavigation = false;
+      restoreDormantRequests();
+      drain();
+    },
+    /** The load never replaced this document: fail held actions rather than replay a possibly slow one. */
+    expireDocumentNavigation(error: Error) {
+      documentNavigation = false;
+      for (const request of dormantRequests.splice(0)) request.reject(error);
       drain();
     },
     refreshCurrentAction() {
