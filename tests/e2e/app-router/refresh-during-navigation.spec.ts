@@ -299,7 +299,8 @@ test.describe("refresh during an App Router navigation", () => {
         }
       });
       await page.route(`**${SLOW_PATH}*`, async (route) => {
-        if (route.request().method() === "GET") {
+        // A forwarded production action can legitimately fetch this URL again.
+        if (route.request().method() === "GET" && !releaseNavigation) {
           await new Promise<void>((resolve) => {
             releaseNavigation = resolve;
           });

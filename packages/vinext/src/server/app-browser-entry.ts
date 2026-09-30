@@ -3364,6 +3364,7 @@ if (typeof document !== "undefined") {
     isPageUnloading = false;
     if (event.persisted) {
       mpaNavigationScheduler.reset();
+      browserNavigationController.discardPendingNavigation();
       discardedServerActionRefreshScheduler.resumeAfterDocumentRestore();
       refreshQueue.resumeAfterDocumentNavigation();
     }
