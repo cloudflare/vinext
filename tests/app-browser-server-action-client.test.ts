@@ -152,25 +152,27 @@ describe("app browser server action client", () => {
       new Response(null, {
         status: 303,
         headers: {
-          [ACTION_REDIRECT_HEADER]: "/target",
+          [ACTION_REDIRECT_HEADER]: "target",
           "content-type": "text/plain",
         },
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
+    const performHardNavigation = vi.fn();
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
       clearClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
-      performHardNavigation: vi.fn(),
+      performHardNavigation,
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
       syncServerActionHttpFallbackHead: vi.fn(),
     });
 
+    expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/original/target");
     expect(fetchMock).toHaveBeenCalledWith(
       "/original?tab=1",
       expect.objectContaining({ method: "POST" }),

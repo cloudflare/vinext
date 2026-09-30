@@ -3568,6 +3568,104 @@ describe("public App Router refresh queue", () => {
     await second;
   });
 
+  // Next.js: test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
+  it("serializes Server Actions and refreshes using accepted state before commit", async () => {
+    const action = createDeferred();
+    let publish: ((state: ReturnType<typeof result>) => void) | undefined;
+    const runRefresh = vi.fn(() => queue.start(2));
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    queue.start(1);
+    const first = queue.serverAction(async (previous, ready) => {
+      expect(previous?.href).toBe("/destination");
+      publish = ready;
+      return action.promise;
+    });
+    const refresh = queue.refresh();
+    const secondRun = vi.fn(async (previous) => previous?.href);
+    const second = queue.serverAction(secondRun);
+    expect(publish).toBeUndefined();
+    queue.ready(1, result("/destination"));
+    expect(publish).toBeDefined();
+    expect(runRefresh).not.toHaveBeenCalled();
+    publish!(result("/action-result"));
+    expect(runRefresh).toHaveBeenCalledExactlyOnceWith(result("/action-result"));
+    expect(secondRun).not.toHaveBeenCalled();
+    action.resolve();
+    await first;
+    expect(secondRun).not.toHaveBeenCalled();
+    queue.ready(2, result("/refreshed"));
+    await refresh;
+    await expect(second).resolves.toBe("/refreshed");
+  });
+
+  it("retains queued actions behind navigation and ignores a discarded action's completion", async () => {
+    const oldResponse = createDeferred();
+    let publishOld: ((state: ReturnType<typeof result>) => void) | undefined;
+    const queue = createAppBrowserRefreshQueue(vi.fn());
+    const first = queue.serverAction(async (_previous, publish) => {
+      publishOld = publish;
+      return oldResponse.promise;
+    });
+    const secondRun = vi.fn(async (previous) => previous?.href);
+    const second = queue.serverAction(secondRun);
+    queue.start(1);
+    publishOld!(result("/obsolete"));
+    oldResponse.resolve();
+    await first;
+    expect(secondRun).not.toHaveBeenCalled();
+    queue.ready(1, result("/winner"));
+    await expect(second).resolves.toBe("/winner");
+  });
+
+  it("releases queued refresh after a Server Action rejects", async () => {
+    const response = createDeferred();
+    const runRefresh = vi.fn();
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    const failure = new Error("action failed");
+    const first = queue.serverAction(async () => {
+      await response.promise;
+      throw failure;
+    });
+    const rejected = expect(first).rejects.toBe(failure);
+    const refresh = queue.refresh();
+    expect(runRefresh).not.toHaveBeenCalled();
+    response.resolve();
+    await rejected;
+    await refresh;
+    expect(runRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("defers automatic refresh until all queued Server Actions finish", async () => {
+    const firstResponse = createDeferred();
+    const secondResponse = createDeferred();
+    const runRefresh = vi.fn();
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    const first = queue.serverAction(() => firstResponse.promise);
+    queue.refreshWhenIdle();
+    queue.refreshWhenIdle();
+    const second = queue.serverAction(() => secondResponse.promise);
+    firstResponse.resolve();
+    await first;
+    expect(runRefresh).not.toHaveBeenCalled();
+    secondResponse.resolve();
+    await second;
+    await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledOnce());
+  });
+
+  it("retains undispatched Server Actions when a document navigation is canceled", async () => {
+    const queue = createAppBrowserRefreshQueue(vi.fn());
+    queue.start(1);
+    const runAction = vi.fn(async () => 42);
+    const action = queue.serverAction(runAction);
+    queue.stopForDocumentNavigation();
+    expect(runAction).not.toHaveBeenCalled();
+    queue.start(2);
+    queue.ready(2);
+    await expect(action).resolves.toBe(42);
+    expect(runAction).toHaveBeenCalledOnce();
+  });
+
   it("drops queued refreshes when the current action starts a document navigation", async () => {
     const runRefresh = vi.fn(() => queue.start(2));
     const queue = createAppBrowserRefreshQueue(runRefresh);

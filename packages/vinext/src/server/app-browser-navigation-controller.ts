@@ -78,6 +78,10 @@ type BrowserRouterStateRef = {
 };
 
 type SameUrlServerActionLifecycleOptions = {
+  actionBase?: { state: AppRouterState; committedState: AppRouterState };
+  createCommitEffect?: (state: AppRouterState) => BrowserNavigationCommitEffect;
+  onActionReady?: (state: AppRouterState) => void;
+  scrollIntent?: AppRouterScrollIntent | null;
   onDiscardedRevalidation?: () => void;
   revalidation?: ServerActionRevalidationKind;
   startedNavigationId?: number;
@@ -960,6 +964,11 @@ export function createAppBrowserNavigationController(
     lifecycleOptions?: SameUrlServerActionLifecycleOptions,
   ): Promise<unknown> {
     const currentState = actionInitiationState ?? getBrowserRouterState();
+    const getActionApprovalState = () => {
+      const committed = getBrowserRouterState();
+      const base = lifecycleOptions?.actionBase;
+      return base && committed === base.committedState ? base.state : committed;
+    };
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
     const {
@@ -974,7 +983,7 @@ export function createAppBrowserNavigationController(
       activeNavigationId,
       currentState,
       getActiveNavigationId: () => activeNavigationId,
-      getCurrentStateForApproval: getBrowserRouterState,
+      getCurrentStateForApproval: getActionApprovalState,
       navigationSnapshot,
       nextElements,
       renderId: allocateRenderId(),
@@ -999,7 +1008,7 @@ export function createAppBrowserNavigationController(
       // boundary, so re-check lifecycle authority before mutating visible UI.
       const latestApproval = approvePendingNavigationCommit({
         activeNavigationId,
-        currentState: getBrowserRouterState(),
+        currentState: getActionApprovalState(),
         pending,
         routeManifest: getRouteManifest(),
         startedNavigationId,
@@ -1015,13 +1024,21 @@ export function createAppBrowserNavigationController(
 
       if (latestApproval.approvedCommit) {
         const approvedRevalidationCommit = latestApproval.approvedCommit;
-        startTransition(() => {
-          dispatchSynchronousVisibleCommit(approvedRevalidationCommit);
-        });
-        syncHistoryStatePreviousNextUrl(
-          approvedRevalidationCommit.previousNextUrl,
-          approvedRevalidationCommit.action.bfcacheIds,
+        const state = applyApprovedVisibleCommit(
+          getActionApprovalState(),
+          approvedRevalidationCommit,
         );
+        const effect = lifecycleOptions?.createCommitEffect?.(state);
+        if (effect) queuePrePaintNavigationEffect(state.renderId, effect);
+        claimAppRouterScrollIntentForCommit(lifecycleOptions?.scrollIntent, state.renderId);
+        startTransition(() => getBrowserRouterStateSetter()(state));
+        if (!lifecycleOptions?.actionBase) {
+          syncHistoryStatePreviousNextUrl(
+            approvedRevalidationCommit.previousNextUrl,
+            approvedRevalidationCommit.action.bfcacheIds,
+          );
+        }
+        lifecycleOptions?.onActionReady?.(state);
       } else {
         notifyDiscardedServerActionRevalidation(lifecycleOptions);
       }

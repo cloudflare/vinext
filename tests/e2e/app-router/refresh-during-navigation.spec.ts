@@ -212,6 +212,97 @@ test.describe("refresh during an App Router navigation", () => {
     });
   }
 
+  // Next.js: test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions-discarded-navigation-revert/actions-discarded-navigation-revert.test.ts
+  for (const redirects of [false, true]) {
+    test(`refresh waits for a held Server Action (redirect: ${redirects})`, async ({ page }) => {
+      const actionPath = redirects ? SLOW_PATH : "/nextjs-compat/action-refresh-no-rerender";
+      await page.goto(`${BASE}${actionPath}`);
+      await waitForAppRouterHydration(page);
+      const oldValue = redirects ? null : await page.locator("#flag-value").textContent();
+      let releaseAction: (() => void) | undefined;
+      const refreshPaths: string[] = [];
+      page.on("request", (request) => {
+        if (request.method() === "GET" && request.headers().rsc === "1") {
+          refreshPaths.push(new URL(request.url()).pathname);
+        }
+      });
+      await page.route(`**${actionPath}*`, async (route) => {
+        if (route.request().method() === "POST") {
+          await new Promise<void>((resolve) => {
+            releaseAction = resolve;
+          });
+        }
+        await route.continue();
+      });
+      try {
+        await page
+          .locator(redirects ? '[data-testid="action-redirect"]' : "#action-refresh-from-server")
+          .click();
+        await expect.poll(() => releaseAction !== undefined).toBe(true);
+        await page.evaluate(() => {
+          const router = window.next!.router!;
+          if ("refresh" in router) router.refresh();
+        });
+        await page.waitForTimeout(200);
+        expect(refreshPaths).toEqual([]);
+        releaseAction?.();
+        await expect(page).toHaveURL(`${BASE}${redirects ? START_PATH : actionPath}`);
+        await expect.poll(() => refreshPaths).toEqual([redirects ? START_PATH : actionPath]);
+        if (!redirects) await expect(page.locator("#flag-value")).not.toHaveText(oldValue!);
+      } finally {
+        releaseAction?.();
+      }
+    });
+  }
+
+  for (const redirects of [false, true]) {
+    test(`a queued Server Action uses the accepted destination (redirect: ${redirects})`, async ({
+      page,
+    }) => {
+      const originalPath = redirects ? START_PATH : "/nextjs-compat/action-refresh-no-rerender";
+      await page.goto(`${BASE}${originalPath}`);
+      await waitForAppRouterHydration(page);
+      let releaseNavigation: (() => void) | undefined;
+      const posts: { pathname: string; visible: string }[] = [];
+      page.on("request", (request) => {
+        if (request.method() === "POST") {
+          posts.push({ pathname: new URL(request.url()).pathname, visible: page.url() });
+        }
+      });
+      await page.route(`**${SLOW_PATH}*`, async (route) => {
+        if (route.request().method() === "GET") {
+          await new Promise<void>((resolve) => {
+            releaseNavigation = resolve;
+          });
+        }
+        await route.continue();
+      });
+      try {
+        await page.evaluate((href) => {
+          void window.next!.router!.push(href);
+        }, SLOW_PATH);
+        await expect.poll(() => releaseNavigation !== undefined).toBe(true);
+        await page
+          .locator(redirects ? '[data-testid="action-redirect"]' : "#action-refresh-from-server")
+          .click();
+        await page.waitForTimeout(200);
+        expect(posts).toEqual([]);
+        releaseNavigation?.();
+        await expect.poll(() => posts.length).toBe(1);
+        expect(posts[0].pathname).toBe(SLOW_PATH);
+        await expect(page).toHaveURL(redirects ? START_URL : SLOW_URL);
+        await expect(page.getByTestId(redirects ? "refresh-nav-start" : "slow-page")).toBeVisible();
+        if (!redirects) {
+          await page.goBack();
+          await expect(page).toHaveURL(`${BASE}${originalPath}`);
+        }
+      } finally {
+        releaseNavigation?.();
+      }
+    });
+  }
+
   test("refresh after an action redirect does not wait for the previous stream", async ({
     page,
   }) => {
@@ -394,6 +485,64 @@ test.describe("refresh during an App Router navigation", () => {
       } finally {
         releaseTraversal?.();
         releaseRefresh?.();
+      }
+    });
+  }
+
+  for (const redirectType of ["push", "replace"] as const) {
+    test(`a refresh redirect after Back uses the redirected ${redirectType} history entry`, async ({
+      page,
+    }) => {
+      const startPath = "/commit-race/start";
+      const targetPath = "/nextjs-compat/hash-popstate-scroll/plain";
+      await page.goto(`${BASE}${startPath}`);
+      await waitForAppRouterHydration(page);
+      const initialIndex = await page.evaluate(() => history.state.__vinext_historyIndex);
+      await page.evaluate((href) => {
+        history.scrollRestoration = "manual";
+        scrollTo(0, 500);
+        void window.next!.router!.push(href);
+      }, SLOW_PATH);
+      await expect(page).toHaveURL(SLOW_URL);
+      let releaseAction: (() => void) | undefined;
+      let backRequests = 0;
+      await page.route(`**${SLOW_PATH}*`, async (route) => {
+        await new Promise<void>((resolve) => {
+          releaseAction = resolve;
+        });
+        await route.continue();
+      });
+      await page.route(`**${startPath}?*`, async (route) => {
+        backRequests += 1;
+        if (backRequests !== 2) return route.continue();
+        const response = await route.fetch();
+        await route.fulfill({
+          response,
+          headers: {
+            ...response.headers(),
+            "x-vinext-rsc-redirect": targetPath,
+            "x-vinext-rsc-redirect-type": redirectType,
+          },
+        });
+      });
+      try {
+        await page.getByTestId("refresh-twice").click();
+        await expect.poll(() => releaseAction !== undefined).toBe(true);
+        await page.goBack();
+        await expect(page).toHaveURL(`${BASE}${targetPath}`);
+        expect(backRequests).toBe(2);
+        const index = await page.evaluate(() => history.state.__vinext_historyIndex);
+        if (redirectType === "push") expect(index).toBeGreaterThan(initialIndex);
+        else expect(index).toBe(initialIndex);
+        await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
+        releaseAction?.();
+        await page.unroute(`**${SLOW_PATH}*`);
+        if (redirectType === "push") {
+          await page.goBack();
+          await expect(page).toHaveURL(`${BASE}${startPath}`);
+        }
+      } finally {
+        releaseAction?.();
       }
     });
   }

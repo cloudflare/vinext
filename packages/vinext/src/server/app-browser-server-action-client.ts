@@ -78,6 +78,7 @@ export type ClientServerActionDeps = {
 function resolveActionRedirectTarget(
   response: Response,
   basePath: string,
+  actionHref: string,
   performHardNavigation: ClientServerActionDeps["performHardNavigation"],
 ): ActionRedirectTarget | null {
   const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
@@ -91,9 +92,9 @@ function resolveActionRedirectTarget(
   try {
     let redirectUrl: URL;
     if (actionRedirect.startsWith("/") || /^[a-z]+:/i.test(actionRedirect)) {
-      redirectUrl = new URL(actionRedirect, window.location.href);
+      redirectUrl = new URL(actionRedirect, actionHref);
     } else {
-      const baseParsed = new URL(window.location.href);
+      const baseParsed = new URL(actionHref);
       let baseDir = baseParsed.pathname;
       if (!baseDir.endsWith("/")) baseDir += "/";
       redirectUrl = new URL(actionRedirect, `${baseParsed.origin}${baseDir}${baseParsed.search}`);
@@ -170,6 +171,7 @@ export async function invokeClientServerAction(
   const actionRedirectTarget = resolveActionRedirectTarget(
     fetchResponse,
     deps.basePath,
+    actionInitiation.href,
     (url, historyMode) => deps.performHardNavigation(url, historyMode),
   );
   if (hasActionRedirect && !actionRedirectTarget) return undefined;

@@ -354,7 +354,7 @@ const browserNavigationController = createAppBrowserNavigationController({
 });
 const discardedServerActionRefreshScheduler = createDiscardedServerActionRefreshScheduler({
   runRefresh() {
-    startTransition(() => getNavigationRuntime()?.functions.refresh?.());
+    startTransition(() => refreshQueue.refreshWhenIdle());
   },
 });
 let refreshQueue: ReturnType<typeof createAppBrowserRefreshQueue>;
@@ -754,10 +754,11 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
   await Promise.allSettled(learning);
 }
 
-function createActionInitiationSnapshot() {
-  const routerState = getBrowserRouterState();
+function createActionInitiationSnapshot(action?: AppBrowserNavigationActionResult) {
+  const routerState = action?.state ?? getBrowserRouterState();
   return createServerActionInitiationSnapshot({
-    href: window.location.href,
+    href: action?.href ?? window.location.href,
+    origin: window.location.origin,
     navigationId: browserNavigationController.getActiveNavigationId(),
     routerState,
   });
@@ -774,6 +775,7 @@ function createNavigationCommitEffect(options: {
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
+  releaseSnapshot?: boolean;
 }): (deferNotifications?: boolean) => void {
   const {
     activeRoutePaths,
@@ -808,7 +810,10 @@ function createNavigationCommitEffect(options: {
 
     // URL has been updated; the recovery hard-nav target is no longer needed.
     clearAppNavigationFailureTarget(href);
-    commitClientNavigationState(navId, { deferNotifications });
+    commitClientNavigationState(navId, {
+      deferNotifications,
+      releaseSnapshot: options.releaseSnapshot,
+    });
   };
 }
 
@@ -881,6 +886,11 @@ async function commitSameUrlNavigatePayload(
   returnValue?: ServerActionResult["returnValue"],
   revalidation: ServerActionRevalidationKind = "none",
   renderedPathAndSearch: string | null = null,
+  queueLifecycle?: {
+    previous?: AppBrowserNavigationActionResult;
+    committedState: AppRouterState;
+    publish: (result: AppBrowserNavigationActionResult) => void;
+  },
 ): Promise<unknown> {
   let shouldRetrySupplementalRefresh = false;
   let supplementalHandle: ReturnType<
@@ -971,6 +981,32 @@ async function commitSameUrlNavigatePayload(
       returnValue,
       actionInitiation.routerState,
       {
+        actionBase: queueLifecycle?.previous
+          ? { state: queueLifecycle.previous.state, committedState: queueLifecycle.committedState }
+          : undefined,
+        createCommitEffect: queueLifecycle?.previous
+          ? (state) =>
+              createNavigationCommitEffect({
+                activeRoutePaths: resolveActiveRoutePaths(state.slotBindings),
+                bfcacheIds: state.bfcacheIds,
+                href: actionInitiation.href,
+                historyUpdateMode: queueLifecycle.previous!.historyUpdateMode,
+                navId: actionInitiation.navigationId,
+                params: state.navigationSnapshot.params,
+                previousNextUrl: state.previousNextUrl,
+                targetHistoryIndex: queueLifecycle.previous!.traversalIntent?.targetHistoryIndex,
+                releaseSnapshot: false,
+              })
+          : undefined,
+        scrollIntent: queueLifecycle?.previous?.scrollIntent,
+        onActionReady: (state) =>
+          queueLifecycle?.publish({
+            state,
+            href: actionInitiation.href,
+            historyUpdateMode: queueLifecycle.previous?.historyUpdateMode,
+            scrollIntent: queueLifecycle.previous?.scrollIntent ?? null,
+            traversalIntent: queueLifecycle.previous?.traversalIntent ?? null,
+          }),
         onDiscardedRevalidation() {
           discardedServerActionRefreshScheduler.schedule();
         },
@@ -1804,68 +1840,104 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 }
 
 function registerServerActionCallback(): void {
-  setServerCallback((id, args) => {
-    const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
-    const actionInitiation = createActionInitiationSnapshot();
-    return loadServerActionClient!()
-      .then(({ invokeClientServerAction }) =>
-        invokeClientServerAction(id, args, actionInitiation, {
-          basePath: __basePath,
-          clearClientNavigationCaches,
-          clientRscCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
-          commitSameUrlNavigatePayload,
-          navigationPlanner,
-          performHardNavigation: (url, historyMode) =>
-            browserNavigationController.performHardNavigation(url, historyMode),
-          renderRedirectPayload(elements, target, actionInitiation, revalidation) {
-            // Action redirects bypass navigateClientSide. Reset the previous
-            // link's pending indicator when this action still owns navigation;
-            // a stale action must not clear a newer link's pending state.
-            const ownsNavigation = browserNavigationController.isCurrentNavigation(
-              actionInitiation.navigationId,
-            );
-            if (!ownsNavigation) return;
-            const navId = beginNavigation();
-            getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
-            const hashIdx = target.href.indexOf("#");
-            const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
-            const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
-            if (target.type === "push") saveScrollPosition();
-            void renderNavigationPayload({
-              actionType: target.type === "push" ? "navigate" : "replace",
-              historyUpdateMode: target.type === "push" ? "push" : "replace",
-              navigationInitiationState: actionInitiation.routerState,
-              navigationSnapshot: createClientNavigationRenderSnapshot(
-                target.href,
-                actionInitiation.routerState.navigationSnapshot.params,
-                target.renderedPathAndSearch,
+  setServerCallback((id, args) =>
+    refreshQueue.serverAction((accepted, publish) => {
+      const committedState = getBrowserRouterState();
+      const previous =
+        accepted && accepted.state.visibleCommitVersion > committedState.visibleCommitVersion
+          ? accepted
+          : undefined;
+      const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
+      const actionInitiation = createActionInitiationSnapshot(previous);
+      return loadServerActionClient!()
+        .then(({ invokeClientServerAction }) =>
+          invokeClientServerAction(id, args, actionInitiation, {
+            basePath: __basePath,
+            clearClientNavigationCaches,
+            clientRscCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+            commitSameUrlNavigatePayload: (
+              elements,
+              initiation,
+              returnValue,
+              revalidation,
+              rendered,
+            ) =>
+              commitSameUrlNavigatePayload(
+                elements,
+                initiation,
+                returnValue,
+                revalidation,
+                rendered,
+                {
+                  previous,
+                  committedState,
+                  publish,
+                },
               ),
-              navId,
-              operationLane: resolveServerActionOperationLane(revalidation),
-              params: {},
-              payload: Promise.resolve(elements),
-              payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
-              pendingRouterState: null,
-              previousNextUrl: null,
-              scrollIntent: actionScrollIntent,
-              targetHref: target.href,
-            })
-              .catch(() => {
-                if (browserNavigationController.isCurrentNavigation(navId)) {
-                  browserNavigationController.performHardNavigation(target.href);
-                }
+            navigationPlanner,
+            performHardNavigation: (url, historyMode) =>
+              browserNavigationController.performHardNavigation(url, historyMode),
+            renderRedirectPayload(elements, target, actionInitiation, revalidation) {
+              // Action redirects bypass navigateClientSide. Reset the previous
+              // link's pending indicator when this action still owns navigation;
+              // a stale action must not clear a newer link's pending state.
+              const ownsNavigation = browserNavigationController.isCurrentNavigation(
+                actionInitiation.navigationId,
+              );
+              if (!ownsNavigation) return;
+              if (previous?.traversalIntent) {
+                historyController.commitHistoryTraversalIndex(
+                  previous.traversalIntent.targetHistoryIndex,
+                );
+              }
+              const navId = beginNavigation(actionInitiation.routerState);
+              getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
+              const hashIdx = target.href.indexOf("#");
+              const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
+              const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
+              if (target.type === "push") saveScrollPosition();
+              void renderNavigationPayload({
+                actionType: target.type === "push" ? "navigate" : "replace",
+                historyUpdateMode: target.type === "push" ? "push" : "replace",
+                navigationInitiationState: actionInitiation.routerState,
+                navigationSnapshot: createClientNavigationRenderSnapshot(
+                  target.href,
+                  actionInitiation.routerState.navigationSnapshot.params,
+                  target.renderedPathAndSearch,
+                ),
+                navId,
+                operationLane: resolveServerActionOperationLane(revalidation),
+                params: {},
+                payload: Promise.resolve(elements),
+                payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+                pendingRouterState: null,
+                previousNextUrl: null,
+                scrollIntent: actionScrollIntent,
+                targetHref: target.href,
               })
-              .finally(() => {
-                finalizeNavigation(navId);
-              });
-          },
-          syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
-            historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
-          syncServerActionHttpFallbackHead,
-        }),
-      )
-      .finally(releaseCacheInvalidationGuard);
-  });
+                .catch(() => {
+                  if (browserNavigationController.isCurrentNavigation(navId)) {
+                    browserNavigationController.performHardNavigation(target.href);
+                  }
+                })
+                .finally(() => {
+                  finalizeNavigation(navId);
+                });
+            },
+            syncCurrentHistoryState: (previousNextUrl, bfcacheIds) => {
+              if (!previous) {
+                historyController.syncCurrentHistoryStatePreviousNextUrl(
+                  previousNextUrl,
+                  bfcacheIds,
+                );
+              }
+            },
+            syncServerActionHttpFallbackHead,
+          }),
+        )
+        .finally(releaseCacheInvalidationGuard);
+    }),
+  );
 }
 
 async function main(): Promise<void> {
@@ -2087,12 +2159,22 @@ function bootstrapHydration(
     let currentPrevNextUrl = previousNextUrlOverride;
     let redirectCount = redirectDepth;
     let detachedNavigationCommits = false;
-    const activeTraversalIntent =
+    let activeTraversalIntent =
       navigationKind === "traverse"
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
         : navigationKind === "refresh"
           ? (traversalIntent ?? null)
           : null;
+    function discardRedirectedRefreshTraversal(targetHref: string): void {
+      if (navigationKind !== "refresh" || targetHref === currentHref) return;
+      if (activeTraversalIntent) {
+        // The browser already traversed, even if that tree never committed.
+        historyController.commitHistoryTraversalIndex(activeTraversalIntent.targetHistoryIndex);
+        activeTraversalIntent = null;
+      }
+      // A committed Back can also have deferred scroll work without an intent.
+      scrollRestorationNavigationId = navId;
+    }
     const performHardNavigationForScrollIntent = (
       targetHref: string,
       mode?: "assign" | "replace",
@@ -2373,6 +2455,7 @@ function bootstrapHydration(
             if (navigationKind === "traverse") {
               restoredBfcacheIds = null;
             }
+            discardRedirectedRefreshTraversal(cachedFetchDecision.redirect.href);
             currentHref = cachedFetchDecision.redirect.href;
             currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
             currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
@@ -2653,6 +2736,7 @@ function bootstrapHydration(
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
           }
+          discardRedirectedRefreshTraversal(liveFetchDecision.redirect.href);
           currentHref = liveFetchDecision.redirect.href;
           currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
           currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;
