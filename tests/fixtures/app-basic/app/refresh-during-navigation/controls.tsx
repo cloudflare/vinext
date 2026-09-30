@@ -19,6 +19,16 @@ export function RefreshDuringNavigationControls() {
       </button>
       <button
         type="button"
+        data-testid="hash-then-refresh"
+        onClick={() => {
+          router.push("#top", { scroll: false });
+          router.refresh();
+        }}
+      >
+        Hash then refresh
+      </button>
+      <button
+        type="button"
         data-testid="push-then-refresh"
         onClick={() => {
           startTransition(() => {

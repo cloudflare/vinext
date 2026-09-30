@@ -69,6 +69,46 @@ function urlWhenRequestCountReaches(
 test.describe("refresh during an App Router navigation", () => {
   test.describe.configure({ timeout: 60_000 });
 
+  test("a same-document Back supersedes a pending navigation before refresh", async ({ page }) => {
+    let releaseNavigation: (() => void) | undefined;
+    await page.route(`**${SLOW_PATH}*`, async (route) => {
+      await new Promise<void>((resolve) => {
+        releaseNavigation = resolve;
+      });
+      await route.continue();
+    });
+    const startRequests = trackRscRequests(page, START_PATH);
+    await page.goto(START_URL);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => window.history.pushState(null, "", "#top"));
+
+    try {
+      await page.getByTestId("link-slow").click({ noWaitAfter: true });
+      await expect.poll(() => releaseNavigation !== undefined).toBe(true);
+      await page.goBack();
+      await expect(page).toHaveURL(START_URL);
+      await page.getByTestId("refresh").click();
+      await expect.poll(() => startRequests.length, { timeout: 3_000 }).toBe(1);
+      await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
+    } finally {
+      releaseNavigation?.();
+    }
+  });
+
+  test("a hash push supersedes an older stream before a same-task refresh", async ({ page }) => {
+    const streamingRequests = trackRscRequests(page, `${START_PATH}/streaming`);
+    await page.goto(START_URL);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("link-streaming").click();
+    await expect(page.getByTestId("stream-pending")).toBeVisible();
+    expect(streamingRequests).toHaveLength(1);
+    expect(streamingRequests[0].finished).toBe(false);
+
+    await page.getByTestId("hash-then-refresh").click();
+    await expect.poll(() => streamingRequests.length, { timeout: 3_000 }).toBe(2);
+    await expect(page).toHaveURL(`${BASE}${START_PATH}/streaming#top`);
+  });
+
   // Next.js replaces the pending navigation when a newer navigation starts;
   // only the winning action gates queued refreshes.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts

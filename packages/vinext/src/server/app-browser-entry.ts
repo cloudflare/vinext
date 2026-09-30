@@ -2008,6 +2008,18 @@ function bootstrapHydration(
 
   const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
 
+  function commitSameDocumentNavigation(commit: () => void): void {
+    const navId = browserNavigationController.beginNavigation();
+    discardedServerActionRefreshScheduler.markNavigationStart(navId);
+    try {
+      navigationAbortCoordinator.abortActive();
+      commit();
+    } finally {
+      browserNavigationController.finalizeNavigation(navId, null);
+      discardedServerActionRefreshScheduler.markNavigationSettled(navId);
+    }
+  }
+
   const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
     href: string,
     redirectDepth = 0,
@@ -2907,7 +2919,9 @@ function bootstrapHydration(
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
-      historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+      commitSameDocumentNavigation(() =>
+        historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+      ),
     getPrefetchRouterState: () => {
       if (!browserNavigationController.hasBrowserRouterState()) {
         if (initialPrefetchRouterState) return initialPrefetchRouterState;
@@ -2988,10 +3002,12 @@ function bootstrapHydration(
         isSameAppRouteTarget: isSameAppRoutePopstateTarget(href),
       })
     ) {
-      notifyAppRouterTransitionStart(href, "traverse");
-      historyController.commitTraversalIndexFromHistoryState(event.state);
-      commitClientNavigationState();
-      restorePopstateScrollPosition(event.state);
+      commitSameDocumentNavigation(() => {
+        notifyAppRouterTransitionStart(href, "traverse");
+        historyController.commitTraversalIndexFromHistoryState(event.state);
+        commitClientNavigationState();
+        restorePopstateScrollPosition(event.state);
+      });
       return;
     }
     const snapshotNavigationId = browserNavigationController.beginNavigation();
