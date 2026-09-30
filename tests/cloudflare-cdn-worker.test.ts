@@ -279,12 +279,9 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       dispatch(request, { kind: "app-route" }, { cache: "bypass" }),
     );
     stages.response.mockResolvedValue(Response.error());
-    const stageResponses: Response[] = [];
     const binding = vi.fn(({ props }: { props: unknown }) => ({
-      async fetch(request: Request) {
-        const response = await createUncachedEntrypoint(props).fetch(request);
-        stageResponses.push(response);
-        return response;
+      fetch(request: Request) {
+        return createUncachedEntrypoint(props).fetch(request);
       },
     }));
 
@@ -296,9 +293,8 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
     expect(response.status).toBe(503);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(stageResponses).toHaveLength(1);
-    expect(stageResponses[0]!.status).toBe(503);
-    expect(stageResponses[0]!.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
+    expect(binding).not.toHaveBeenCalled();
+    expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
@@ -565,6 +561,17 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     await expect(response.text()).resolves.toBe("rendered");
     expect(cachedBinding).toHaveBeenCalledWith({ props: {} });
     expect(purge).toHaveBeenCalledWith({ tags: ["updated-tag"] });
+
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route" }, { cache: "bypass" }),
+    );
+    const inlineResponse = await worker.fetch(
+      new Request("https://example.com/action", { method: "POST" }),
+      {},
+      { exports: { VinextCachedResponse: cachedBinding } },
+    );
+    await expect(inlineResponse.text()).resolves.toBe("rendered");
+    expect(purge).toHaveBeenCalledTimes(2);
   });
 
   it("rejects unversioned cache intent when an expected identity is present", async () => {
@@ -1329,37 +1336,62 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response.mock.calls.map(([request]) => request.method)).toEqual(["GET", "HEAD"]);
   });
 
-  it("renders bypass work through the uncached entrypoint", async () => {
+  it.each(["GET", "HEAD", "POST"])("renders %s bypass work in the gateway", async (method) => {
+    // No Next.js test port applies: ctx.exports is a Cloudflare transport detail.
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
     const rendered = new Response("private");
     const cachedBinding = vi.fn();
-    const uncachedBinding = vi.fn(({ props }: { props: unknown }) => ({
-      fetch(request: Request) {
-        return createUncachedEntrypoint(props).fetch(request);
-      },
-    }));
+    const uncachedBinding = vi.fn();
+    const stageRequest = new Request("https://example.com/render", {
+      method,
+      headers: { Authorization: "Bearer private", Cookie: "session=private" },
+      ...(method === "POST" ? { body: "action body" } : {}),
+    });
+    const props = { route: "/private" };
+    const env = { binding: "value" };
+    const waitUntil = vi.fn();
     stages.response.mockResolvedValue(rendered);
     stages.request.mockImplementation((_request, _env, _ctx, dispatch) =>
-      dispatch(
-        new Request("https://example.com/render"),
-        { route: "/private" },
-        { cache: "bypass" },
-      ),
+      dispatch(stageRequest, props, { cache: "bypass" }),
     );
 
-    const result = await worker.fetch(
-      new Request("https://example.com/private"),
-      {},
-      {
-        exports: {
-          VinextCachedResponse: cachedBinding,
-          VinextUncachedResponse: uncachedBinding,
-        },
+    const result = await worker.fetch(new Request("https://example.com/private"), env, {
+      waitUntil,
+      exports: {
+        VinextCachedResponse: cachedBinding,
+        VinextUncachedResponse: uncachedBinding,
       },
-    );
+    });
 
     expect(result).toBe(rendered);
+    expect(result.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
     expect(cachedBinding).not.toHaveBeenCalled();
-    expect(uncachedBinding).toHaveBeenCalledOnce();
+    expect(uncachedBinding).not.toHaveBeenCalled();
+    expect(stages.response).toHaveBeenCalledOnce();
+    expect(stages.response).toHaveBeenCalledWith(
+      stageRequest,
+      env,
+      expect.objectContaining({ hostRuntime: "worker", waitUntil: expect.any(Function) }),
+      props,
+      expect.any(Function),
+      { cache: "bypass" },
+    );
+    expect(stages.response.mock.calls[0]![0]).toBe(stageRequest);
+    const pending = Promise.resolve();
+    stages.response.mock.calls[0]![2].waitUntil(pending);
+    expect(waitUntil).toHaveBeenCalledWith(pending);
+    await expect(stageRequest.text()).resolves.toBe(method === "POST" ? "action body" : "");
+  });
+
+  it("renders bypass work without response entrypoint bindings", async () => {
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "bypass" }),
+    );
+    stages.response.mockResolvedValue(new Response("private"));
+
+    const response = await worker.fetch(new Request("https://example.com/private"), {}, {});
+
+    await expect(response.text()).resolves.toBe("private");
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
