@@ -19,6 +19,10 @@ Development, bundling, and production builds run on Vite 8 instead of the Next.j
 
 Cloudflare Workers is the primary native target. Standalone Node output and Nitro adapters cover other hosts. Next.js route config values such as `runtime` and `preferredRegion` don't choose where code runs, because runtime placement belongs to the selected deployment adapter. Outside `cacheComponents`, `runtime = "edge"` still opts an App Router page out of ISR, as it does in Next.js.
 
+A tab opened before a deploy keeps running the previous build. On Vercel, Next.js sends that tab's requests to its original deployment (skew protection), and its App Router shows an error when a script fails to load. Without skew protection, a completed deploy removes the old build's scripts, so vinext recovers instead. When the user is waiting on a script that fails to load, vinext checks whether the page's own entry script is still on the server. If the build was replaced, it loads the current version of the page. Background work such as a `<Link>` prefetch never reloads the page, and each tab reloads this way at most twice in 10 minutes. See [Tabs open during a deploy](/docs/deploying/cloudflare#tabs-open-during-a-deploy).
+
+Apps with Server Actions load the action client with the page, as Next.js does. After a deploy, an action a stale tab sends still reaches the new server. An action defined at the top level of a module runs, then the page reloads. An inline `"use server"` function that closes over values doesn't run, because each build encrypts those values with its own key, and the page reloads without running it.
+
 ## Caching
 
 These differences apply to builds without `cacheComponents`, which follow their own caching rules.

@@ -484,6 +484,15 @@ This repo currently resolves `vite` to `@voidzero-dev/vite-plus-core`, which bun
 
 Performance changes must preserve dev/production parity and all supported runtimes. A smaller dev module graph is not a win if it causes stale source-checkout code, changes RSC conditions, or breaks Cloudflare/Nitro bundling.
 
+### Lazy Browser Chunks Need a Recovery Path
+
+A tab opened before a deploy requests chunks the deploy removed, and browsers can cache a failed module fetch for the life of the document. Every lazily loaded browser chunk therefore goes through `packages/vinext/src/client/chunk-load-recovery.ts`.
+
+- Loaders (`loadChunk`, `loadClientReference`) retry once and record the failure. They never navigate.
+- Only foreground callers (`loadChunk(...).catch(recoverFromChunkFailure)`) and React's root error callbacks decide to load a new document. Background work, such as prefetch decoding, must never navigate.
+- The App Router's navigator and in-flight target live in `server/app-browser-chunk-recovery.ts`, and document loads go through `server/app-browser-document-navigation.ts`.
+- `tests/app-router-production-build.test.ts` fails when a new lazy vinext runtime chunk appears without an entry in its recovery inventory.
+
 ### Virtual Module Resolution Quirks
 
 - **Build-time root prefix:** Vite prefixes virtual module IDs with the project root path when resolving SSR build entries. The `resolveId` hook must handle both `virtual:vinext-server-entry` and `<root>/virtual:vinext-server-entry`.

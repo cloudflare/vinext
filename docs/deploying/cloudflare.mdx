@@ -72,6 +72,14 @@ pnpm run deploy:vinext
 
 To prefill configured caches before promoting a new Worker version, see [Cache warming](/docs/guides/caching#cache-warming).
 
+## Tabs open during a deploy
+
+A tab opened before a deploy moves to the new build the first time it needs a script the deploy removed. Only a failure the user is waiting on triggers this; background prefetching never does. [Differences from Next.js](/docs/reference/differences#deployment) explains why vinext reloads.
+
+- During a gradual deployment, each request from one tab can reach either version, including its script requests. Turn on [version affinity](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/version-affinity/) so a tab stays on one version.
+- With an `assetPrefix` on another origin, the asset host must send CORS headers on every response, 404s included, and your Content Security Policy's `connect-src` must allow it. Without both, vinext can't tell whether the build was replaced, so it leaves the page as it is.
+- If you added a `vite:preloadError` listener that reloads the page after a deploy ([#3604](https://github.com/cloudflare/vinext/issues/3604)), you can remove it. vinext leaves recovery to any listener that calls `preventDefault()`. Keep your own check only for dynamic `import()` calls you await in event handlers, which vinext can't see.
+
 ## Use Workers bindings
 
 Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in the Worker's `env` object in `cloudflare.config.ts`.
