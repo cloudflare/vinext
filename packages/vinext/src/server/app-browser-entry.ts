@@ -2228,10 +2228,14 @@ function bootstrapHydration(
       targetHref: string,
       mode?: "assign" | "replace",
     ): boolean => {
+      if (!browserNavigationController.isCurrentNavigation(navId)) return false;
       consumeAppRouterScrollIntent(scrollIntent ?? null);
       const didNavigate = browserNavigationController.performHardNavigation(targetHref, mode);
       if (!didNavigate) {
         clearAppNavigationFailureTarget(targetHref);
+        // A refused reload leaves the committed document in place. Release
+        // any inherited action revalidation instead of stranding its render.
+        browserNavigationController.discardPendingNavigation();
       }
       return didNavigate;
     };

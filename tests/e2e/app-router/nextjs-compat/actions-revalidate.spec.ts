@@ -228,6 +228,8 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
       "next action",
       "refresh then hash",
       "canceled document",
+      "refused reload",
+      "failed reload",
     ]) {
       test(`accepted ${actionKind} revalidation survives ${successor} before React commit`, async ({
         page,
@@ -259,6 +261,31 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
           )
             refreshes.push(request.url());
         });
+        if (successor.endsWith("reload")) {
+          let intercepted = false;
+          await page.route(`**${path}*`, async (route) => {
+            const request = route.request();
+            if (
+              !intercepted &&
+              request.method() === "GET" &&
+              request.headers().rsc === "1" &&
+              new URL(request.url()).pathname === path
+            ) {
+              intercepted = true;
+              if (successor === "failed reload") await route.abort("failed");
+              else await route.fulfill({ contentType: "text/html", body: "Document fallback" });
+            } else await route.continue();
+          });
+          await page.evaluate(() => {
+            window.sessionStorage.setItem(
+              "__vinext_hard_navigation_target__",
+              window.location.href,
+            );
+            (
+              window as typeof window & { __refusedReloadDocument?: boolean }
+            ).__refusedReloadDocument = true;
+          });
+        }
         if (successor === "refresh then hash") {
           await page.evaluate(() => {
             (window as typeof window & { __heldActionRender?: boolean }).__heldActionRender = false;
@@ -295,7 +322,7 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
           if (kind === "hash" || kind === "refresh then hash") void router.push("#resumed");
           if (kind === "canceled document") void router.push("/old-school");
           if (kind === "native history") window.history.pushState(null, "", "?restored=1");
-          if (kind === "refresh") {
+          if (kind === "refresh" || kind.endsWith("reload")) {
             if (!("refresh" in router)) throw new Error("Expected the App Router");
             router.refresh();
           }
@@ -306,8 +333,21 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
         );
         await page.waitForTimeout(300);
         expect(refreshes).toHaveLength(
-          successor === "next action" ? 0 : successor === "refresh then hash" ? 2 : 1,
+          successor === "next action"
+            ? 0
+            : successor === "refresh then hash" || successor.endsWith("reload")
+              ? 2
+              : 1,
         );
+        if (successor.endsWith("reload")) {
+          expect(
+            await page.evaluate(
+              () =>
+                (window as typeof window & { __refusedReloadDocument?: boolean })
+                  .__refusedReloadDocument,
+            ),
+          ).toBe(true);
+        }
       });
     }
   }
