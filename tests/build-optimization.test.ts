@@ -3477,7 +3477,12 @@ describe("stripServerExports", () => {
     expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
   });
 
-  it("cheaply identifies export-all syntax without matching multiplication", () => {
+  it("cheaply identifies export-all syntax without matching multiplication", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((p: any) => p.name === "vinext:validate-page-exports") as any;
+    const codeFilter = plugin?.transform?.filter?.code;
+    expect(codeFilter).toBe(_EXPORT_ALL_CANDIDATE_FILTER);
+
     for (const code of [
       `export * from './other-page';`,
       `export\n*\nfrom './other-page';`,
@@ -3485,9 +3490,11 @@ describe("stripServerExports", () => {
       `export // comment\n* from './other-page';`,
     ]) {
       expect(_hasExportAllCandidate(code)).toBe(true);
-      expect(_EXPORT_ALL_CANDIDATE_FILTER.test(code)).toBe(true);
+      expect(codeFilter.test(code)).toBe(true);
     }
-    expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
+    const multiplication = `export const area = width * height;`;
+    expect(_hasExportAllCandidate(multiplication)).toBe(false);
+    expect(codeFilter.test(multiplication)).toBe(false);
   });
 
   it("rejects export-all declarations in page modules", () => {
