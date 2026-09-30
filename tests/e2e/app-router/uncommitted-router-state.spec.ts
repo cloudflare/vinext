@@ -3,6 +3,20 @@ import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
+for (const method of ["pushState", "replaceState"] as const) {
+  test(`child layout ${method} cancels the committing navigation's scroll`, async ({ page }) => {
+    await page.goto(`${BASE}/commit-race/start`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId(`link-layout-${method}`).click();
+    await expect(page.locator("h1")).toHaveText("Layout navigation");
+    await expect(page).toHaveURL(`${BASE}/commit-race/layout-navigation?history=${method}#ready`);
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    );
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(500);
+  });
+}
+
 test("child layout navigation uses the just-committed URL", async ({ page }) => {
   const insertionErrors: string[] = [];
   page.on("console", (message) => {

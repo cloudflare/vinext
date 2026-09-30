@@ -72,6 +72,7 @@ import { retryScrollTo, scrollToHashTargetOnNextFrame } from "vinext/shims/hash-
 import { AppRouterScrollCommitProvider } from "vinext/shims/app-router-scroll";
 import {
   beginAppRouterScrollIntent,
+  clearAppRouterScrollIntent,
   consumeAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
@@ -2023,6 +2024,9 @@ function bootstrapHydration(
   const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
 
   function commitSameDocumentNavigation(commit: () => void): void {
+    // A child layout effect may supersede a render whose commit record was
+    // already settled, while its scroll target still has deferred work.
+    clearAppRouterScrollIntent();
     const navId = beginNavigation();
     try {
       navigationAbortCoordinator.abortActive();

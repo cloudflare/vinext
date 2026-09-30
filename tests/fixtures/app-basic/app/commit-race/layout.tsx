@@ -11,6 +11,16 @@ export default function CommitRaceLayout({ children }: { children: React.ReactNo
         >
           Layout navigation
         </Link>
+        {["pushState", "replaceState"].map((method) => (
+          <Link
+            key={method}
+            href={`/commit-race/layout-navigation?history=${method}`}
+            prefetch={false}
+            data-testid={`link-layout-${method}`}
+          >
+            Layout {method}
+          </Link>
+        ))}
         <Link href="/commit-race/start#top" prefetch={false} data-testid="link-start-hash">
           Start hash
         </Link>
