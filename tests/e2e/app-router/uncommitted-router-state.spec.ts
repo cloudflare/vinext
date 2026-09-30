@@ -3,6 +3,21 @@ import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
+test("child layout navigation uses the just-committed URL", async ({ page }) => {
+  const insertionErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" && message.text().includes("useInsertionEffect")) {
+      insertionErrors.push(message.text());
+    }
+  });
+  await page.goto(`${BASE}/commit-race/start`);
+  await waitForAppRouterHydration(page);
+  await page.getByTestId("link-layout-navigation").click();
+  await expect(page.locator("h1")).toHaveText("Layout navigation");
+  await expect(page).toHaveURL(`${BASE}/commit-race/layout-navigation#ready`);
+  expect(insertionErrors).toEqual([]);
+});
+
 for (const navigation of ["hash", "back", "pushState", "replaceState"] as const) {
   test(`${navigation} discards a suspended render without a refresh`, async ({ page }) => {
     await page.goto(`${BASE}/commit-race/start`);
@@ -13,7 +28,12 @@ for (const navigation of ["hash", "back", "pushState", "replaceState"] as const)
 
     if (navigation === "hash") await page.getByTestId("link-start-hash").click();
     else if (navigation === "back") await page.goBack();
-    else await page.evaluate((method) => window.history[method](null, "", "#top"), navigation);
+    else {
+      await page.evaluate((method) => {
+        window.scrollTo(0, 500);
+        window.history[method](null, "", "#top");
+      }, navigation);
+    }
 
     await page.evaluate(async () => {
       const holdWindow = window as Window & {
@@ -28,6 +48,9 @@ for (const navigation of ["hash", "back", "pushState", "replaceState"] as const)
     });
     await expect(page.locator("h1")).toHaveText("Commit race start");
     await expect(page.getByTestId("group-a")).toHaveCount(0);
+    if (navigation === "pushState" || navigation === "replaceState") {
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(500);
+    }
     await expect(page).toHaveURL(`${BASE}/commit-race/start${navigation === "back" ? "" : "#top"}`);
   });
 }
@@ -36,8 +59,8 @@ for (const navigation of ["hash", "back", "pushState", "replaceState"] as const)
 // next one. Group A suspends in its layout before commit. Group B's payload
 // renders that same layout as ready. Preserving the uncommitted Group A layout
 // keeps the page on the start route. Publication is a useInsertionEffect so a
-// child useLayoutEffect that navigates still sees this commit. This spec does
-// not mount that child.
+// child useLayoutEffect that navigates still sees this commit. That case is
+// covered separately above.
 // https://github.com/cloudflare/vinext/issues/3543
 test("a suspended navigation does not seed the next commit", async ({ page }) => {
   await page.goto(`${BASE}/commit-race/start`);

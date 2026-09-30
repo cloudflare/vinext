@@ -2,12 +2,18 @@
 
 import { startTransition } from "react";
 import { useRouter } from "next/navigation";
+import { redirectToStart } from "./actions";
 
 export function RefreshDuringNavigationControls() {
   const router = useRouter();
 
   return (
     <>
+      <form action={redirectToStart}>
+        <button type="submit" data-testid="action-redirect">
+          Redirect to start
+        </button>
+      </form>
       <button
         type="button"
         data-testid="refresh"

@@ -60,7 +60,7 @@ export type PendingBrowserRouterState = {
 export type NavigationPayloadOutcome = "committed" | "no-commit" | "hard-navigate";
 type HardNavigationMode = "assign" | "replace";
 
-type BrowserNavigationCommitEffect = () => void;
+type BrowserNavigationCommitEffect = (deferNotifications?: boolean) => void;
 
 type BrowserNavigationCommitEffectFactory = (options: {
   activeRoutePaths: readonly string[];
@@ -156,15 +156,11 @@ type BrowserNavigationController = {
     navigationSnapshot: ClientNavigationRenderSnapshot | Promise<ClientNavigationRenderSnapshot>,
   ): Promise<void>;
   /**
-   * Force-drain the queued pre-paint effect for the given renderId without
-   * waiting for NavigationCommitSignal to commit. Used by the dev recovery
-   * boundary in app-browser-entry.ts: when a render error replaces
-   * NavigationCommitSignal with the boundary's null fallback, its
-   * useLayoutEffect never fires, so the URL update for the in-flight
-   * navigation would otherwise be lost.
+   * Publish a pending URL effect during dev error recovery when the normal
+   * browser-root commit has not drained it.
    */
   drainPrePaintEffects(renderId: number): void;
-  commitNavigationRender(renderId: number): void;
+  commitNavigationRender(renderId: number, deferNotifications?: boolean): void;
   clearCommittedNavigationFailureTargets(renderId: number): void;
   NavigationCommitSignal(
     this: void,
@@ -304,6 +300,7 @@ export function createAppBrowserNavigationController(
     {
       committedState: AppRouterState | null;
       onCommittedState?: (state: AppRouterState) => void;
+      scrollIntent: AppRouterScrollIntent | null;
       resolve: (committed: boolean) => void;
     }
   >();
@@ -370,6 +367,9 @@ export function createAppBrowserNavigationController(
 
   function discardPendingNavigation(): void {
     settlePendingBrowserRouterState(activePendingBrowserRouterState);
+    for (const pending of pendingNavigationCommits.values()) {
+      consumeAppRouterScrollIntent(pending.scrollIntent);
+    }
     settleNavigationCommits(Infinity, false);
     clearCommittedNavigationFailureTargets(Infinity);
     for (const renderId of pendingNavigationPrePaintEffects.keys()) {
@@ -469,7 +469,7 @@ export function createAppBrowserNavigationController(
    * Invariant: each superseded navigation gets a commitClientNavigationState()
    * to balance the activateNavigationSnapshot() from its renderNavigationPayload call.
    */
-  function drainPrePaintEffects(upToRenderId: number): void {
+  function drainPrePaintEffects(upToRenderId: number, deferNotifications = false): void {
     for (const [id, effect] of pendingNavigationPrePaintEffects) {
       if (id > upToRenderId) {
         continue;
@@ -477,17 +477,20 @@ export function createAppBrowserNavigationController(
 
       pendingNavigationPrePaintEffects.delete(id);
       if (id === upToRenderId) {
-        effect();
+        effect(deferNotifications);
       } else {
         // Superseded navigations still need to balance the snapshot counter.
-        commitClientNavigationStateImpl(undefined, { releaseSnapshot: true });
+        commitClientNavigationStateImpl(undefined, {
+          releaseSnapshot: true,
+          ...(deferNotifications ? { deferNotifications: true } : {}),
+        });
       }
     }
   }
 
   /**
    * Settle all pending navigation renders through the supplied renderId. Only
-   * the exact render whose layout effect ran is a successful commit; older
+   * the exact render whose insertion effect ran is a successful commit; older
    * superseded renders and cleanup-only settlements resolve as no-commit.
    */
   function settleNavigationCommits(renderId: number, committed: boolean): void {
@@ -505,8 +508,8 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  function commitNavigationRender(renderId: number): void {
-    drainPrePaintEffects(renderId);
+  function commitNavigationRender(renderId: number, deferNotifications = false): void {
+    drainPrePaintEffects(renderId, deferNotifications);
     settleNavigationCommits(renderId, true);
   }
 
@@ -582,16 +585,13 @@ export function createAppBrowserNavigationController(
       clearCommittedNavigationFailureTargets(renderId);
     }, [renderId]);
 
-    useLayoutEffect(() => {
-      commitNavigationRender(renderId);
-
-      return () => {
-        // Settle pending renders without publishing their candidate state when
-        // React unmounts this component before its layout effect commits (for
-        // example, when an error boundary replaces the navigation subtree).
+    useLayoutEffect(
+      () => () => {
+        // Unmounted pending renders must not publish their candidate state.
         settleNavigationCommits(renderId, false);
-      };
-    }, [renderId]);
+      },
+      [renderId],
+    );
 
     return children;
   }
@@ -803,6 +803,7 @@ export function createAppBrowserNavigationController(
       pendingNavigationCommits.set(renderId, {
         committedState: null,
         onCommittedState: options.onCommittedState,
+        scrollIntent: options.scrollIntent ?? null,
         resolve,
       });
     });

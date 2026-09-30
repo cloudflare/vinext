@@ -483,6 +483,18 @@ function beginPendingBrowserRouterState(): PendingBrowserRouterState {
   return browserNavigationController.beginPendingBrowserRouterState();
 }
 
+function beginNavigation(): number {
+  const navId = browserNavigationController.beginNavigation();
+  browserNavigationController.discardPendingNavigation();
+  discardedServerActionRefreshScheduler.markNavigationStart(navId);
+  return navId;
+}
+
+function finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null = null): void {
+  browserNavigationController.finalizeNavigation(navId, pending);
+  discardedServerActionRefreshScheduler.markNavigationSettled(navId);
+}
+
 function applyClientParams(params: Record<string, string | string[]>): void {
   latestClientParams = params;
   setClientParams(params);
@@ -752,7 +764,7 @@ function createNavigationCommitEffect(options: {
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
-}): () => void {
+}): (deferNotifications?: boolean) => void {
   const {
     activeRoutePaths,
     bfcacheIds,
@@ -764,13 +776,13 @@ function createNavigationCommitEffect(options: {
     targetHistoryIndex,
   } = options;
 
-  return () => {
+  return (deferNotifications = false) => {
     // Only update URL if this is still the active navigation.
     // A newer navigation would have superseded this navigation id.
     if (!browserNavigationController.isCurrentNavigation(navId)) {
       // This transition was superseded before commit; balance the active
       // snapshot counter without clearing pendingPathname ownership.
-      commitClientNavigationState(undefined, { releaseSnapshot: true });
+      commitClientNavigationState(undefined, { releaseSnapshot: true, deferNotifications });
       return;
     }
 
@@ -786,7 +798,7 @@ function createNavigationCommitEffect(options: {
 
     // URL has been updated; the recovery hard-nav target is no longer needed.
     clearAppNavigationFailureTarget(href);
-    commitClientNavigationState(navId);
+    commitClientNavigationState(navId, { deferNotifications });
   };
 }
 
@@ -1335,6 +1347,7 @@ function BrowserRoot({
   const stateRef = useRef(treeState);
   useInsertionEffect(() => {
     stateRef.current = treeState;
+    browserNavigationController.commitNavigationRender(treeState.renderId, true);
   }, [treeState]);
 
   // Publish the stable ref object and dispatch during layout commit. This keeps
@@ -1383,13 +1396,8 @@ function BrowserRoot({
     window.__NEXT_HYDRATED_CB?.();
   }, [hydrationCachePublication]);
 
-  // This effect snapshots treeState against the controller's current traversal
-  // index but only depends on [treeState]. The ordering works because the
-  // traversal-index commit runs inside the navigation commit effect (before
-  // setTreeStateValue fires), so the index is already current when this layout
-  // effect runs for the new treeState. If the commit ordering ever changes, the
-  // snapshot index may not match the traversed history entry, causing
-  // resolveRestore to read the wrong index on back.
+  // The insertion effect above publishes this tree's URL and traversal index
+  // before layout effects snapshot the committed state for history restores.
   useLayoutEffect(() => {
     historyController.rememberHistoryStateSnapshot(treeState);
   }, [treeState]);
@@ -1463,11 +1471,8 @@ function BrowserRoot({
   // reset key — without a full page reload. The dev overlay (a separate
   // React root) shows the error itself.
   //
-  // onCatch drains the pending pre-paint effect for the failed render so
-  // the URL update bound to that navigation still runs. Without this, a
-  // soft-nav whose target throws would leave the browser on the previous
-  // URL, hiding which route is broken and mis-targeting the next HMR
-  // payload (which fetches RSC for window.location.pathname).
+  // onCatch also drains any remaining URL effect so recovery and HMR target
+  // the failing route even if its normal commit did not finish.
   //
   // This file is .ts, not .tsx — children are passed positionally to satisfy
   // both the createElement overload and eslint's no-children-prop rule.
@@ -1793,9 +1798,12 @@ function registerServerActionCallback(): void {
             // Action redirects bypass navigateClientSide. Reset the previous
             // link's pending indicator when this action still owns navigation;
             // a stale action must not clear a newer link's pending state.
-            if (browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)) {
-              getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
-            }
+            const ownsNavigation = browserNavigationController.isCurrentNavigation(
+              actionInitiation.navigationId,
+            );
+            if (!ownsNavigation) return;
+            const navId = beginNavigation();
+            getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
             const hashIdx = target.href.indexOf("#");
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
@@ -1809,7 +1817,7 @@ function registerServerActionCallback(): void {
                 actionInitiation.routerState.navigationSnapshot.params,
                 target.renderedPathAndSearch,
               ),
-              navId: actionInitiation.navigationId,
+              navId,
               operationLane: resolveServerActionOperationLane(revalidation),
               params: {},
               payload: Promise.resolve(elements),
@@ -1818,9 +1826,15 @@ function registerServerActionCallback(): void {
               previousNextUrl: null,
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
-            }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
-            });
+            })
+              .catch(() => {
+                if (browserNavigationController.isCurrentNavigation(navId)) {
+                  browserNavigationController.performHardNavigation(target.href);
+                }
+              })
+              .finally(() => {
+                finalizeNavigation(navId);
+              });
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
             historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
@@ -2008,21 +2022,13 @@ function bootstrapHydration(
 
   const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
 
-  function beginNavigation(): number {
-    const navId = browserNavigationController.beginNavigation();
-    browserNavigationController.discardPendingNavigation();
-    discardedServerActionRefreshScheduler.markNavigationStart(navId);
-    return navId;
-  }
-
   function commitSameDocumentNavigation(commit: () => void): void {
     const navId = beginNavigation();
     try {
       navigationAbortCoordinator.abortActive();
       commit();
     } finally {
-      browserNavigationController.finalizeNavigation(navId, null);
-      discardedServerActionRefreshScheduler.markNavigationSettled(navId);
+      finalizeNavigation(navId);
     }
   }
 
@@ -2914,8 +2920,7 @@ function bootstrapHydration(
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
-      browserNavigationController.finalizeNavigation(navId, pendingRouterState);
-      discardedServerActionRefreshScheduler.markNavigationSettled(navId);
+      finalizeNavigation(navId, pendingRouterState);
     }
   };
 
@@ -3045,12 +3050,10 @@ function bootstrapHydration(
         },
         event.state,
       );
-      browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
-      discardedServerActionRefreshScheduler.markNavigationSettled(snapshotNavigationId);
+      finalizeNavigation(snapshotNavigationId);
       return;
     }
-    browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
-    discardedServerActionRefreshScheduler.markNavigationSettled(snapshotNavigationId);
+    finalizeNavigation(snapshotNavigationId);
     handlePopstate(event);
   });
 

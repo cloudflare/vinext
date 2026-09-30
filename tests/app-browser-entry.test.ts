@@ -98,6 +98,7 @@ import {
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
+  getPendingAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
@@ -3482,6 +3483,7 @@ describe("app browser entry state helpers", () => {
 describe("app browser navigation controller", () => {
   it("discards a dispatched but uncommitted render and releases its snapshot", async () => {
     const committedState = createState();
+    const scrollIntent = beginAppRouterScrollIntent("#old-target");
     const setter = vi.fn();
     const releaseSnapshot = vi.fn(navigationShim.commitClientNavigationState);
     const commitEffect = vi.fn();
@@ -3507,6 +3509,7 @@ describe("app browser navigation controller", () => {
         pendingRouterState,
         previousNextUrl: null,
         targetHref: "https://example.com/dashboard",
+        scrollIntent,
         navId,
       });
       const uncommitted = await pendingRouterState.promise;
@@ -3514,6 +3517,7 @@ describe("app browser navigation controller", () => {
 
       controller.beginNavigation();
       controller.discardPendingNavigation();
+      expect(getPendingAppRouterScrollIntent()).toBeNull();
       await expect(render).resolves.toBe("no-commit");
       expect(setter).toHaveBeenLastCalledWith(committedState);
       expect(releaseSnapshot).toHaveBeenCalledExactlyOnceWith(undefined, { releaseSnapshot: true });

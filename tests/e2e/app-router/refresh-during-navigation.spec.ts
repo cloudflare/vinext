@@ -69,6 +69,24 @@ function urlWhenRequestCountReaches(
 test.describe("refresh during an App Router navigation", () => {
   test.describe.configure({ timeout: 60_000 });
 
+  test("refresh after an action redirect does not wait for the previous stream", async ({
+    page,
+  }) => {
+    const streamingRequests = trackRscRequests(page, `${START_PATH}/streaming`);
+    const startRequests = trackRscRequests(page, START_PATH);
+    await page.goto(START_URL);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("link-streaming").click();
+    await expect(page.getByTestId("stream-pending")).toBeVisible();
+    expect(streamingRequests[0].finished).toBe(false);
+    await page.getByTestId("action-redirect").click();
+    await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
+    await expect(page).toHaveURL(START_URL);
+    expect(streamingRequests[0].finished).toBe(false);
+    await page.getByTestId("refresh").click();
+    await expect.poll(() => startRequests.length, { timeout: 3_000 }).toBe(1);
+  });
+
   test("a same-document Back supersedes a pending navigation before refresh", async ({ page }) => {
     let releaseNavigation: (() => void) | undefined;
     await page.route(`**${SLOW_PATH}*`, async (route) => {

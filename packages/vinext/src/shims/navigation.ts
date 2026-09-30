@@ -1797,6 +1797,7 @@ type ClientNavigationState = {
 
 type CommitClientNavigationStateOptions = {
   releaseSnapshot?: boolean;
+  deferNotifications?: boolean;
 };
 
 type ClientNavigationGlobal = typeof globalThis & {
@@ -2383,7 +2384,10 @@ export function commitClientNavigationState(
   }
 
   if (shouldNotify) {
-    notifyNavigationListeners();
+    // Insertion effects publish URL state before child layout effects, but
+    // must not synchronously schedule React updates through store subscribers.
+    if (options?.deferNotifications) queueMicrotask(notifyNavigationListeners);
+    else notifyNavigationListeners();
   }
 }
 
