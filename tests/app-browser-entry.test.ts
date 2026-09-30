@@ -3674,21 +3674,29 @@ describe("public App Router refresh queue", () => {
     await vi.waitFor(() => expect(runRefresh).toHaveBeenCalledOnce());
   });
 
-  it("retains rootless revalidation until document navigation recovers", async () => {
-    const response = createDeferred();
-    const runRefresh = vi.fn();
-    const queue = createAppBrowserRefreshQueue(runRefresh);
-    const action = queue.serverAction(async () => {
-      await response.promise;
-      queue.refreshCurrentAction();
-    });
-    queue.stopForDocumentNavigation();
-    response.resolve();
-    await action;
-    expect(runRefresh).not.toHaveBeenCalled();
-    queue.resumeAfterDocumentNavigation();
-    expect(runRefresh).toHaveBeenCalledOnce();
-  });
+  it.each(["canceled", "restored"])(
+    "retains rootless revalidation until document navigation is %s",
+    async (recovery) => {
+      const response = createDeferred();
+      const runRefresh = vi.fn();
+      const queue = createAppBrowserRefreshQueue(runRefresh);
+      const action = queue.serverAction(async () => {
+        await response.promise;
+        queue.refreshCurrentAction();
+      });
+      queue.stopForDocumentNavigation();
+      response.resolve();
+      await action;
+      expect(runRefresh).not.toHaveBeenCalled();
+      if (recovery === "restored") {
+        queue.start(2);
+        queue.ready(2);
+      } else {
+        queue.resumeAfterDocumentNavigation();
+      }
+      expect(runRefresh).toHaveBeenCalledOnce();
+    },
+  );
 
   it("resumes retained Server Actions only after document navigation is canceled", async () => {
     const response = createDeferred();

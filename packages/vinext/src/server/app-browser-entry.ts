@@ -395,6 +395,7 @@ function stopRefreshesForDocumentNavigation(): void {
 }
 
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
+const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
 
@@ -2151,8 +2152,6 @@ function bootstrapHydration(
   }
   markInitialAppRouterBootstrapHydrated();
 
-  const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
-
   function commitSameDocumentNavigation(commit: () => void): void {
     // A child layout effect may supersede a render whose commit record was
     // already settled, while its scroll target still has deferred work.
@@ -3363,10 +3362,11 @@ if (typeof document !== "undefined") {
   window.addEventListener("pageshow", (event) => {
     isPageUnloading = false;
     if (event.persisted) {
-      mpaNavigationScheduler.reset();
-      browserNavigationController.discardPendingNavigation();
-      discardedServerActionRefreshScheduler.resumeAfterDocumentRestore();
-      refreshQueue.resumeAfterDocumentNavigation();
+      // Like Next's ACTION_RESTORE, replace pending navigation authority and
+      // accepted state while preserving queued actions for the restored tree.
+      const navId = beginNavigation();
+      navigationAbortCoordinator.abortActive();
+      finalizeNavigation(navId);
     }
   });
   void main();
