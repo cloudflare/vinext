@@ -5,7 +5,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createBuilder, parseAst, type ESTree } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { forEachAstChild } from "../packages/vinext/src/plugins/ast-utils.js";
@@ -16,7 +16,16 @@ import {
   replaceConsumerEnvironmentConditions,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
-import { supportsNativeTypeofWindowFolding } from "../packages/vinext/src/utils/vite-version.js";
+import {
+  assertSupportedViteVersion,
+  supportsNativeTypeofWindowFolding,
+} from "../packages/vinext/src/utils/vite-version.js";
+
+vi.mock("../packages/vinext/src/utils/vite-version.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../packages/vinext/src/utils/vite-version.js")>();
+  return { ...actual, assertSupportedViteVersion: vi.fn(actual.assertSupportedViteVersion) };
+});
 
 const temporaryDirectories: string[] = [];
 
@@ -207,63 +216,77 @@ describe("typeof window compilation", () => {
     ).not.toBe(cachedServerResult);
   });
 
-  it("skips the scan fold for modules without dynamic imports or import.meta", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-scan-gate-"));
-    temporaryDirectories.push(root);
-    const builder = await createBuilder({
-      root,
-      configFile: false,
-      logLevel: "silent",
-      plugins: [vinext({ react: false, rsc: false })],
-    });
-    const plugin = builder.config.plugins.find(
-      (candidate) => candidate.name === "vinext:typeof-window-scan",
-    );
-    if (!plugin?.transform || typeof plugin.transform === "function") {
-      throw new Error("vinext:typeof-window-scan transform hook not found");
-    }
+  it.each([true, false])(
+    "skips the scan fold for modules without dynamic imports or import.meta only with native folding (%s)",
+    async (nativeFolding) => {
+      vi.mocked(assertSupportedViteVersion).mockReturnValueOnce({
+        supportsNativeTypeofWindowFolding: nativeFolding,
+      });
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-scan-gate-"));
+      temporaryDirectories.push(root);
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext({ react: false, rsc: false })],
+      });
+      const plugin = builder.config.plugins.find(
+        (candidate) => candidate.name === "vinext:typeof-window-scan",
+      );
+      if (!plugin?.transform || typeof plugin.transform === "function") {
+        throw new Error("vinext:typeof-window-scan transform hook not found");
+      }
 
-    const transform = plugin.transform.handler;
-    const context = {
-      environment: {
-        config: {
-          build: { write: false },
-          cacheDir: path.join(root, ".vite"),
-          consumer: "server",
+      const transform = plugin.transform.handler;
+      const context = {
+        environment: {
+          config: {
+            build: { write: false },
+            cacheDir: path.join(root, ".vite"),
+            consumer: "server",
+          },
         },
-      },
-    };
-    const appPageId = path.join(root, "app/page.js");
+      };
+      const appPageId = path.join(root, "app/page.js");
 
-    expect(
-      await transform.call(
-        context as never,
-        `import helper from "helper"; if (typeof window !== "undefined") helper()`,
-        appPageId,
-      ),
-    ).toBeNull();
-    expect(
-      await transform.call(
-        context as never,
-        `if (process.browser) console.log(import.meta.url)`,
-        appPageId,
-      ),
-    ).toBeNull();
-    expect(
-      await transform.call(
-        context as never,
-        `if (process.browser) import.meta.glob("./browser/*.js")`,
-        appPageId,
-      ),
-    ).toMatchObject({ code: expect.not.stringContaining("import.meta.glob") });
-    expect(
-      await transform.call(
-        context as never,
-        `if (typeof window !== "undefined") import.source("./browser.wasm")`,
-        appPageId,
-      ),
-    ).toMatchObject({ code: expect.not.stringContaining("browser.wasm") });
-  });
+      expect(
+        await transform.call(
+          context as never,
+          `import helper from "helper"; if (typeof window !== "undefined") helper()`,
+          appPageId,
+        ),
+      ).toEqual(
+        nativeFolding
+          ? null
+          : expect.objectContaining({ code: expect.not.stringContaining("helper()") }),
+      );
+      expect(
+        await transform.call(
+          context as never,
+          `if (process.browser) console.log(import.meta.url)`,
+          appPageId,
+        ),
+      ).toEqual(
+        nativeFolding
+          ? null
+          : expect.objectContaining({ code: expect.not.stringContaining("console") }),
+      );
+      expect(
+        await transform.call(
+          context as never,
+          `if (process.browser) import.meta.glob("./browser/*.js")`,
+          appPageId,
+        ),
+      ).toMatchObject({ code: expect.not.stringContaining("import.meta.glob") });
+      expect(
+        await transform.call(
+          context as never,
+          `if (typeof window !== "undefined") import.source("./browser.wasm")`,
+          appPageId,
+        ),
+      ).toMatchObject({ code: expect.not.stringContaining("browser.wasm") });
+    },
+  );
 
   it("only folds references to the global window binding", () => {
     const source = `

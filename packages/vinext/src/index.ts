@@ -7310,8 +7310,11 @@ export const loadServerActionClient = ${
         handler(code, id) {
           const scansImports = this.environment.config.build.write === false;
           // Scans keep only import specifiers, which folding can change only by
-          // pruning a dynamic or phase import, or import.meta.glob.
-          if (scansImports && !mayFoldChangeScannedImports(code)) return null;
+          // pruning a dynamic or phase import, or import.meta.glob. Only skip
+          // the fold when native define folding still covers write-less builds
+          // that are not plugin-RSC scans.
+          const skipsUnobservableFold = scansImports && useNativeTypeofWindowFolding;
+          if (skipsUnobservableFold && !mayFoldChangeScannedImports(code)) return null;
           const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
           const replaceProcessBrowser = scansImports;
           if (!replaceTypeofWindow && !replaceProcessBrowser) return null;
@@ -7332,7 +7335,7 @@ export const loadServerActionClient = ${
                   ...(replaceTypeofWindow ? { typeofWindow } : {}),
                   ...(replaceProcessBrowser ? { processBrowser } : {}),
                   pruneUnreachableImports: scansImports,
-                  onlyIfScannedImportsChange: scansImports,
+                  onlyIfScannedImportsChange: skipsUnobservableFold,
                 },
                 id,
               ),
