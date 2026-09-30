@@ -7327,7 +7327,7 @@ export const loadServerActionClient = ${
           const processBrowser = this.environment.config.consumer === "client";
           const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
             replaceProcessBrowser ? processBrowser : "-"
-          }`;
+          }:${skipsUnobservableFold ? "gated" : "full"}`;
           return omitUnusedBuildSourcemap(
             this.environment,
             cachedConsumerConditionTransform(id, code, variant, () =>

@@ -284,16 +284,23 @@ describe("typeof window compilation", () => {
         ),
       ).toMatchObject({ code: expect.not.stringContaining("browser.wasm") });
 
-      // Vite's define transform skips unbundled client environments.
+      // Vite's define transform skips unbundled client environments, and a
+      // gated result cached by a bundled client must not be reused there.
+      const clientConfig = { ...environmentConfig, consumer: "client" };
+      const bundledClientContext = { environment: { config: clientConfig } };
       const unbundledClientContext = {
-        environment: { config: { ...environmentConfig, consumer: "client", isBundled: false } },
+        environment: { config: { ...clientConfig, isBundled: false } },
       };
+      const serverOnlySource = `if (!process.browser) { serverOnly(); console.log(import.meta.url) }`;
       expect(
-        await transform.call(
-          unbundledClientContext as never,
-          `if (!process.browser) serverOnly()`,
-          appPageId,
-        ),
+        await transform.call(bundledClientContext as never, serverOnlySource, appPageId),
+      ).toEqual(
+        nativeFolding
+          ? null
+          : expect.objectContaining({ code: expect.not.stringContaining("serverOnly") }),
+      );
+      expect(
+        await transform.call(unbundledClientContext as never, serverOnlySource, appPageId),
       ).toMatchObject({ code: expect.not.stringContaining("serverOnly") });
     },
   );
@@ -405,7 +412,6 @@ const truthy = value || typeof window === "undefined";`;
     const unobservable = [
       `if (typeof window !== "undefined") browserOnly()`,
       `import helper from "helper"; if (process.browser) helper()`,
-      `if (typeof window !== "undefined") import(browserModule)`,
       `if (typeof window !== "undefined") console.log(import.meta.url, import.meta.env.MODE)`,
       `const label = "héllo 😀"; if (process.browser) console.log(label, import.meta.url)`,
     ];
@@ -431,6 +437,7 @@ const truthy = value || typeof window === "undefined";`;
       `if (typeof window !== "undefined") import./* phase */ source("./browser.wasm")`,
       `import(typeof window)`,
       `import.source(typeof window)`,
+      `if (typeof window === "undefined") import(typeof/* comment */window)`,
     ];
     for (const source of observable) {
       const folded = replaceConsumerEnvironmentConditions(source, scan);

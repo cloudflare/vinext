@@ -238,9 +238,8 @@ export function mayFoldChangeScannedImports(code: string): boolean {
 }
 
 /**
- * Whether folding may change a scanned import: a dynamic or phase import with a
- * static specifier or a foldable request, or an `import.meta` expression other
- * than a `.url`/`.env` read. Reads the parser's native module record, so no
+ * Whether folding may change a scanned import: any dynamic or phase import, or
+ * an `import.meta` expression other than a `.url`/`.env` read. Reads the parser's native module record, so no
  * ESTree is materialized.
  */
 function moduleRecordHasScannedFoldTargets(
@@ -251,13 +250,9 @@ function moduleRecordHasScannedFoldTargets(
   // The module record omits TypeScript `import("x")` types, which the scan's
   // lexer still sees when no earlier plugin stripped them.
   if ((lang === "ts" || lang === "tsx") && DYNAMIC_IMPORT_PRESCAN.test(code)) return true;
-  for (const dynamicImport of module.dynamicImports) {
-    const { start, end } = dynamicImport.moduleRequest;
-    const quote = code[start];
-    if (quote === '"' || quote === "'" || quote === "`") return true;
-    // Folding can turn a request such as `import(typeof window)` into a literal.
-    if (consumerEnvironmentConditionFilter.test(code.slice(start, end))) return true;
-  }
+  // Any dynamic or phase import counts: besides static specifiers, folding can
+  // turn a request such as `import(typeof window)` into a literal.
+  if (module.dynamicImports.length > 0) return true;
   for (const importMeta of module.importMetas) {
     NON_IMPORTING_IMPORT_META_RE.lastIndex = importMeta.end;
     if (!NON_IMPORTING_IMPORT_META_RE.test(code)) return true;
