@@ -33,7 +33,13 @@ import {
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
-import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import {
+  clearHardNavigationLoopGuard,
+  createAppBrowserNavigationController,
+  performHardNavigationWithLoopGuard,
+} from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { createAppBrowserDocumentNavigation } from "../packages/vinext/src/server/app-browser-document-navigation.js";
+import { AppBrowserMpaNavigationScheduler } from "../packages/vinext/src/server/app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
 import {
   peekSettledPrefetchResponseForNavigation,
@@ -3794,6 +3800,87 @@ describe("public App Router refresh queue", () => {
     await expect(first).rejects.toBe(failure);
     await second;
     expect(runRefresh).toHaveBeenCalledTimes(2);
+  });
+});
+
+const HARD_NAVIGATION_LOOP_GUARD_STORAGE_KEY = "__vinext_hard_navigation_target__";
+
+function createDocumentNavigationHarness(currentHref: string) {
+  const { assign, replace, storage } = stubWindow(currentHref);
+  const navigation = new EventTarget();
+  Object.assign(window, { navigation });
+  const queue = createAppBrowserRefreshQueue(vi.fn());
+  const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
+  const discardPendingNavigation = vi.fn();
+  const attempts: AbortController[] = [];
+  const dispatchNavigate = (url: string) => {
+    const attempt = new AbortController();
+    attempts.push(attempt);
+    navigation.dispatchEvent(
+      Object.assign(new Event("navigate"), {
+        destination: { url: new URL(url, currentHref).href, sameDocument: false },
+        signal: attempt.signal,
+      }),
+    );
+  };
+  assign.mockImplementation(dispatchNavigate);
+  replace.mockImplementation(dispatchNavigate);
+  const documentNavigation = createAppBrowserDocumentNavigation({
+    clearHardNavigationLoopGuard,
+    discardPendingNavigation,
+    mpaNavigationScheduler,
+    performHardNavigationWithLoopGuard,
+    resumeAfterDocumentNavigation: () => queue.resumeAfterDocumentNavigation(),
+    stopRefreshes: () => queue.stopForDocumentNavigation(),
+  });
+
+  return {
+    assign,
+    attempts,
+    discardPendingNavigation,
+    documentNavigation,
+    mpaNavigationScheduler,
+    queue,
+    replace,
+    storage,
+  };
+}
+
+describe("app browser document navigation", () => {
+  it("replays held Server Actions and clears the loop guard when the load is canceled", async () => {
+    const { assign, attempts, documentNavigation, discardPendingNavigation, queue, storage } =
+      createDocumentNavigationHarness("https://example.com/page");
+    queue.start(1);
+    const runAction = vi.fn(async () => 42);
+    const action = queue.serverAction(runAction);
+
+    expect(documentNavigation.performHardNavigation("https://example.com/other")).toBe(true);
+    expect(assign).toHaveBeenCalledExactlyOnceWith("https://example.com/other");
+    expect(storage.get(HARD_NAVIGATION_LOOP_GUARD_STORAGE_KEY)).toBe("https://example.com/other");
+    expect(runAction).not.toHaveBeenCalled();
+
+    attempts[0]?.abort();
+    await Promise.resolve();
+
+    await expect(action).resolves.toBe(42);
+    expect(discardPendingNavigation).toHaveBeenCalledOnce();
+    expect(storage.has(HARD_NAVIGATION_LOOP_GUARD_STORAGE_KEY)).toBe(false);
+  });
+
+  it("stops watching for a cancel after the recovery is reset", async () => {
+    const { attempts, documentNavigation, queue } = createDocumentNavigationHarness(
+      "https://example.com/page",
+    );
+    queue.start(1);
+    const runAction = vi.fn(async () => 42);
+    void queue.serverAction(runAction);
+
+    documentNavigation.performHardNavigation("https://example.com/other");
+    documentNavigation.resetRecovery();
+    attempts[0]?.abort();
+    await Promise.resolve();
+
+    expect(runAction).not.toHaveBeenCalled();
   });
 });
 

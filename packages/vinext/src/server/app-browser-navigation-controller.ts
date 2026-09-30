@@ -58,7 +58,7 @@ export type PendingBrowserRouterState = {
   settled: boolean;
 };
 export type NavigationPayloadOutcome = "committed" | "no-commit" | "hard-navigate";
-type HardNavigationMode = "assign" | "replace";
+export type HardNavigationMode = "assign" | "replace";
 
 type BrowserNavigationCommitEffect = (deferNotifications?: boolean) => void;
 

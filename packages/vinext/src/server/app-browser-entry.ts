@@ -96,10 +96,8 @@ import {
   createAppBrowserRefreshQueue,
   type AppBrowserNavigationActionResult,
 } from "./app-browser-refresh-queue.js";
-import {
-  AppBrowserMpaNavigationScheduler,
-  observeDocumentNavigationCancellation,
-} from "./app-browser-mpa-navigation.js";
+import { createAppBrowserDocumentNavigation } from "./app-browser-document-navigation.js";
+import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
   resolveManifestNavigationInterceptionContext,
@@ -347,8 +345,7 @@ const historyController = new AppBrowserHistoryController({
 const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
-  performHardNavigation: (href, mode) =>
-    performHardNavigationWithLoopGuard(href, mode, () => beforeDocumentNavigation(href)),
+  performHardNavigation: (href, mode) => documentNavigation.performHardNavigation(href, mode),
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
 });
@@ -359,35 +356,21 @@ const discardedServerActionRefreshScheduler = createDiscardedServerActionRefresh
 });
 let refreshQueue: ReturnType<typeof createAppBrowserRefreshQueue>;
 
-let cancelDocumentNavigationRecovery = () => {};
-
-function resetDocumentNavigationRecovery(): void {
-  const cancel = cancelDocumentNavigationRecovery;
-  cancelDocumentNavigationRecovery = () => {};
-  cancel();
-}
-
-function beforeDocumentNavigation(href: string): () => void {
-  const targetHref = new URL(href, window.location.href).href;
-  stopRefreshesForDocumentNavigation();
-  resetDocumentNavigationRecovery();
-  const recover = () => {
-    if (cancelDocumentNavigationRecovery !== cancelObserver) return;
-    resetDocumentNavigationRecovery();
-    mpaNavigationScheduler.reset();
-    browserNavigationController.discardPendingNavigation();
-    clearHardNavigationLoopGuard();
+const documentNavigation = createAppBrowserDocumentNavigation({
+  clearHardNavigationLoopGuard,
+  discardPendingNavigation: () => browserNavigationController.discardPendingNavigation(),
+  mpaNavigationScheduler: {
+    navigate: (...args) => mpaNavigationScheduler.navigate(...args),
+    reset: () => mpaNavigationScheduler.reset(),
+  },
+  performHardNavigationWithLoopGuard,
+  resumeAfterDocumentNavigation() {
     discardedServerActionRefreshScheduler.resumeAfterDocumentRestore();
     refreshQueue.resumeAfterDocumentNavigation();
-  };
-  const cancelObserver = observeDocumentNavigationCancellation(
-    (window as Window & { navigation?: EventTarget }).navigation,
-    targetHref,
-    recover,
-  );
-  cancelDocumentNavigationRecovery = cancelObserver;
-  return recover;
-}
+  },
+  stopRefreshes: () => stopRefreshesForDocumentNavigation(),
+});
+const resetDocumentNavigationRecovery = documentNavigation.resetRecovery;
 
 function stopRefreshesForDocumentNavigation(): void {
   refreshQueue.stopForDocumentNavigation();
@@ -1345,13 +1328,7 @@ function isMpaNavigationState(
 }
 
 function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
-  stopRefreshesForDocumentNavigation();
-  // Match Next's MPA path by suspending forever, but delay the actual location
-  // mutation just enough for the old tree to commit the pending transition
-  // signal before unload.
-  mpaNavigationScheduler.navigate(window, href, historyUpdateMode, () =>
-    beforeDocumentNavigation(href),
-  );
+  documentNavigation.performMpaNavigation(href, historyUpdateMode);
 }
 
 function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
