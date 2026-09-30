@@ -48,6 +48,7 @@ reports/
 
 # Next.js reference clone (for searching source/tests)
 .nextjs-ref/
+.nextjs-ref*
 
 # OS / editor
 .DS_Store
