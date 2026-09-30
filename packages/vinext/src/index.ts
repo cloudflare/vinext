@@ -323,6 +323,7 @@ import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import {
   consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
+  mayReplaceConsumerEnvironmentConditions,
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
@@ -344,7 +345,9 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
-import { omitUnusedBuildSourcemap } from "./plugins/transform-result.js";
+import { runPureTransform, type PureTransformOutput } from "./plugins/transform-offload.js";
+import { buildDiscardsSourcemap, omitUnusedBuildSourcemap } from "./plugins/transform-result.js";
+import { mapMaybePromise } from "./utils/promise.js";
 import { isServerEnvironment } from "./plugins/environment.js";
 import {
   claimViteCliBuildInvocation,
@@ -2136,10 +2139,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   };
 
-  const cachedConsumerConditionTransform = createTransformCache<
-    string,
-    ReturnType<typeof replaceConsumerEnvironmentConditions>
-  >();
+  const cachedConsumerConditionTransform = createTransformCache<string, PureTransformOutput>();
   // `vinext:jsx-in-js` passes fixed options and no tsconfig, so its output
   // depends only on the id and source. Share it across environments and the
   // scan and build passes.
@@ -7329,19 +7329,25 @@ export const loadServerActionClient = ${
           const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
             replaceProcessBrowser ? processBrowser : "-"
           }`;
-          return omitUnusedBuildSourcemap(
-            this.environment,
+          const replacements = {
+            ...(replaceTypeofWindow ? { typeofWindow } : {}),
+            ...(replaceProcessBrowser ? { processBrowser } : {}),
+            pruneUnreachableImports: scansImports,
+          };
+          // Gate on the main thread so only modules that will be parsed can
+          // be sent to a worker.
+          if (!mayReplaceConsumerEnvironmentConditions(code, replacements)) return null;
+          const environment = this.environment;
+          return mapMaybePromise(
             cachedConsumerConditionTransform(id, code, variant, () =>
-              replaceConsumerEnvironmentConditions(
-                code,
-                {
-                  ...(replaceTypeofWindow ? { typeofWindow } : {}),
-                  ...(replaceProcessBrowser ? { processBrowser } : {}),
-                  pruneUnreachableImports: scansImports,
-                },
-                id,
+              runPureTransform(
+                "typeof-window",
+                replaceConsumerEnvironmentConditions,
+                [code, replacements, id],
+                { sourcemap: !buildDiscardsSourcemap(environment) },
               ),
             ),
+            (result) => omitUnusedBuildSourcemap(environment, result),
           );
         },
       },

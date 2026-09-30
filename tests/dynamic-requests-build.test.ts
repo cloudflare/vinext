@@ -8,8 +8,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   _mayContainVeryDynamicRequest,
-  _transformVeryDynamicRequests,
   createIgnoreDynamicRequestsPlugin,
+  transformVeryDynamicRequests,
 } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
@@ -157,7 +157,7 @@ describe("App Router dynamic requests", () => {
   });
 
   it("transforms escaped require identifiers", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       String.raw`const request = getRequest(); requ\u0069re(request);`,
       "/app/page.tsx",
     );
@@ -178,7 +178,7 @@ describe("App Router dynamic requests", () => {
       "Require(request); REQUIRE(request);",
     ]) {
       expect(_mayContainVeryDynamicRequest(code), code).toBe(false);
-      expect(_transformVeryDynamicRequests(code, "/app/page.ts"), code).toBeNull();
+      expect(transformVeryDynamicRequests(code, "/app/page.ts"), code).toBeNull();
     }
   });
 
@@ -192,7 +192,7 @@ describe("App Router dynamic requests", () => {
     try {
       const pluginSpecifier = "../packages/vinext/src/plugins/ignore-dynamic-requests.js?parse";
       const {
-        _transformVeryDynamicRequests: transform,
+        transformVeryDynamicRequests: transform,
       }: typeof import("../packages/vinext/src/plugins/ignore-dynamic-requests.js") = await import(
         /* @vite-ignore */ pluginSpecifier
       );
@@ -242,7 +242,7 @@ describe("App Router dynamic requests", () => {
       "const url = import.meta.url; import(request);",
     ]) {
       expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
-      expect(_transformVeryDynamicRequests(code, "/app/page.ts"), code).not.toBeNull();
+      expect(transformVeryDynamicRequests(code, "/app/page.ts"), code).not.toBeNull();
     }
 
     // Annex B HTML-like comments between the callee and the call.
@@ -254,7 +254,7 @@ describe("App Router dynamic requests", () => {
       `require("package");\nimport\n-->comment\n(request)`,
     ]) {
       expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
-      expect(_transformVeryDynamicRequests(code, "/app/page.js"), code).not.toBeNull();
+      expect(transformVeryDynamicRequests(code, "/app/page.js"), code).not.toBeNull();
     }
 
     // Left unchanged by the AST pass, but the prescan conservatively keeps them.
@@ -273,7 +273,7 @@ describe("App Router dynamic requests", () => {
       // Unlike Annex B's `-->`, HTML's `--!>` is not valid JavaScript here.
       const code = `require("package");\n${callee}\n--!>comment\n(request)`;
       expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
-      expect(_transformVeryDynamicRequests(code, "/app/page.js"), code).toBeNull();
+      expect(transformVeryDynamicRequests(code, "/app/page.js"), code).toBeNull();
     }
   });
 
@@ -352,10 +352,10 @@ describe("App Router dynamic requests", () => {
 
   it("only rewrites fully dynamic unbound requests", () => {
     expect(
-      _transformVeryDynamicRequests("export const value = getValue();", "/app/page.tsx"),
+      transformVeryDynamicRequests("export const value = getValue();", "/app/page.tsx"),
     ).toBeNull();
 
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const request = getRequest();
 require(request);
 import(request);
@@ -374,7 +374,7 @@ function local(require) { require(request); }
 
   it("parses JavaScript module extensions as JSX before rewriting dynamic requests", () => {
     for (const extension of [".js", ".jsx", ".mjs", ".cjs"]) {
-      const transformed = _transformVeryDynamicRequests(
+      const transformed = transformVeryDynamicRequests(
         `const element = <main>{children}</main>;
 const request = getRequest();
 require(request);
@@ -389,7 +389,7 @@ require(request);
 
   it("preserves static literals and partly-static template requests", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `require("package"); import("./module.js"); import(\`./dir/\${name}.js\`);`,
         "/app/page.tsx",
       ),
@@ -398,7 +398,7 @@ require(request);
 
   it("resolves constant identifier bindings and simple aliases", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `const request = "./module.js";
 const alias = request;
 require(request);
@@ -416,7 +416,7 @@ import(alias);
     }
     aliases.push("import(request1999);");
 
-    const transformed = _transformVeryDynamicRequests(aliases.join("\n"), "/app/page.tsx")?.code;
+    const transformed = transformVeryDynamicRequests(aliases.join("\n"), "/app/page.tsx")?.code;
     expect(transformed).toContain("Cannot find module as expression is too dynamic");
   });
 
@@ -427,12 +427,12 @@ import(alias);
     }
     aliases.push("import(request1498);");
 
-    expect(_transformVeryDynamicRequests(aliases.join("\n"), "/app/page.tsx")).toBeNull();
+    expect(transformVeryDynamicRequests(aliases.join("\n"), "/app/page.tsx")).toBeNull();
   });
 
   it("resolves constant aliases in their declaration scope", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `const prefix = "./";
 const request = prefix + "module.js";
 {
@@ -447,7 +447,7 @@ const request = prefix + "module.js";
 
   it("tracks shadowed constant bindings by identity", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `const prefix = "./";
 const request = prefix + "module.js";
 {
@@ -462,7 +462,7 @@ const request = prefix + "module.js";
 
   it("resolves constant bindings in template interpolations", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `const part = "module";
 const alias = part;
 require(\`${"${part}"}\`);
@@ -474,7 +474,7 @@ import(\`${"${alias}"}\`);
   });
 
   it("rewrites requests without significant static path parts", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `require("/"); import(\`\${name}\`);`,
       "/app/page.tsx",
     )?.code;
@@ -483,7 +483,7 @@ import(\`${"${alias}"}\`);
 
   it("preserves empty strings and conditional static alternatives", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `require(""); import(unknown ? "./a" : "./b");`,
         "/app/page.tsx",
       ),
@@ -491,7 +491,7 @@ import(\`${"${alias}"}\`);
   });
 
   it("resolves constant aliases in conditional and nullish predicates", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const enabled = true;
 const enabledAlias = enabled;
 const missing = undefined;
@@ -505,7 +505,7 @@ require(missing ?? request);
   });
 
   it("matches Turbopack constants for unshadowed numeric globals", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const notANumber = NaN;
 const infinity = Infinity;
 import(NaN);
@@ -533,7 +533,7 @@ function shadowed(NaN, Infinity) {
 
   it("resolves constant bindings that shadow global constants", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `const undefined = "./undefined";
 const NaN = "./nan";
 const Infinity = "./infinity";
@@ -546,7 +546,7 @@ require(Infinity);`,
   });
 
   it("resolves constant string predicates", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const zero = 0;
 const empty = "";
 import(\`\` ? "./fallback" : request);
@@ -566,7 +566,7 @@ require(("enabled" + "") ? request : "./fallback");`,
   });
 
   it("matches constant template and unary request patterns", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `require(\`/\`);
 import(void 0);
 require(void /pattern/);
@@ -590,7 +590,7 @@ require(+1);`,
   });
 
   it("does not evaluate side effects in void request expressions", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `let calls = 0;
 function sideEffect() { calls += 1; }
 try { require(void sideEffect()); } catch {}
@@ -604,19 +604,19 @@ try { require(void sideEffect()); } catch {}
 
   it("resolves constant expressions in template interpolations", () => {
     expect(
-      _transformVeryDynamicRequests("require(`${42}`); import(`${!0}`);", "/app/page.tsx"),
+      transformVeryDynamicRequests("require(`${42}`); import(`${!0}`);", "/app/page.tsx"),
     ).toBeNull();
   });
 
   it("preserves bounded String.raw templates", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         String.raw`require(String.raw\`./dir/\${request}.js\`); import(String.raw\`\x2f\${request}\`);`,
         "/app/page.tsx",
       ),
     ).toBeNull();
 
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       "require(String.raw`${request}`); import(String.raw`/${request}`); import(String['raw']`./dir/${request}.js`);",
       "/app/page.tsx",
     )?.code;
@@ -624,7 +624,7 @@ try { require(void sideEffect()); } catch {}
   });
 
   it("treats side-effecting sequence requests as fully dynamic", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `require((0, "./module.js"));
 import((sideEffect(), "./module.js"));`,
       "/app/page.tsx",
@@ -637,7 +637,7 @@ import((sideEffect(), "./module.js"));`,
 
   it("matches Turbopack side-effect analysis for sequence prefixes", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `require((String.raw\`./dir/\${request}\`, "./module.js"));
 import((import.meta.url, "./module.js"));
 require(({ value: request }, "./module.js"));
@@ -646,7 +646,7 @@ import(({ ...source }, "./module.js"));`,
       ),
     ).toBeNull();
 
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `require(({ get value() { return request; } }, "./module.js"));
 import(({ method() { return request; } }, "./module.js"));
 require((tag\`./dir/\${request}\`, "./module.js"));`,
@@ -661,7 +661,7 @@ require((tag\`./dir/\${request}\`, "./module.js"));`,
 
   it("preserves dynamic requests with statically bounded string concatenation", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `const prefix = "./dir/";
 const concat = "concat";
 const templateConcat = \`concat\`;
@@ -682,7 +682,7 @@ require((condition ? "./a/" : "./b/").concat(request));
       ),
     ).toBeNull();
 
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `require("".concat(request)); import("/".concat(request));`,
       "/app/page.tsx",
     )?.code;
@@ -691,7 +691,7 @@ require((condition ? "./a/" : "./b/").concat(request));
   });
 
   it("does not treat numeric addition as a statically bounded request", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const number = 1;
 const prefix = "./dir/";
 require(number + request);
@@ -712,7 +712,7 @@ import(1 + prefix + request);
 
   it("preserves require calls shadowed by loop-header bindings", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `for (const require of loaders) require(request);
 for (let require; condition; ) require(request);
 `,
@@ -723,7 +723,7 @@ for (let require; condition; ) require(request);
 
   it("resolves constant initializers in loop headers", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `for (const request = "./module"; condition; ) require(request);
 `,
         "/app/page.tsx",
@@ -732,7 +732,7 @@ for (let require; condition; ) require(request);
   });
 
   it("rewrites comment-separated dynamic request calls", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `require/* comment */(request); import/* comment */(request);`,
       "/app/page.tsx",
     )?.code;
@@ -741,7 +741,7 @@ for (let require; condition; ) require(request);
   });
 
   it("preserves explicit dynamic request ignore comments", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const request = getRequest();
 require(/* webpackIgnore: true */ request);
 import(/* turbopackIgnore: true */ request);
@@ -759,7 +759,7 @@ require(${"/* unrelated */".repeat(10_000)} /* webpackIgnore: true */ request);
   });
 
   it("preserves Vite-ignored dynamic imports", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const request = getRequest();
 import(/* @vite-ignore */ request);
 require(/* @vite-ignore */ request);
@@ -773,7 +773,7 @@ require(/* @vite-ignore */ request);
   });
 
   it("honors the last explicit dynamic request ignore value at runtime", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `const request = getRequest();
 const loaded = [];
 loaded.push(require(/* webpackIgnore: false */ /* turbopackIgnore: true */ request));
@@ -795,7 +795,7 @@ try { require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request); }
 
   it("preserves require calls shadowed by switch, class, and static block bindings", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `switch (value) {
   case 1:
     let require;
@@ -817,7 +817,7 @@ class StaticLoader {
   });
 
   it("keeps switch-case bindings out of the discriminant scope", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `switch (require(request)) {
   case require(request):
     let require;
@@ -831,7 +831,7 @@ class StaticLoader {
   });
 
   it("tracks TypeScript value bindings without treating type-only imports as values", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `import type { require as TypeOnlyRequire } from "types";
 import { type require } from "types";
 require(request);
@@ -858,7 +858,7 @@ require(request);
 
   it("preserves require calls shadowed by TypeScript parameter properties", () => {
     expect(
-      _transformVeryDynamicRequests(
+      transformVeryDynamicRequests(
         `class Loader {
   constructor(private require: (request: string) => unknown) {
     require(request);
@@ -870,7 +870,7 @@ require(request);
   });
 
   it("preserves require calls shadowed inside TypeScript namespaces", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `namespace Loader {
   const require = load;
   require(request);
@@ -889,7 +889,7 @@ require(request);
   });
 
   it("contains var bindings within class static blocks", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `class StaticLoader {
   static {
     if (condition) {
@@ -908,7 +908,7 @@ require(request);
   });
 
   it("excludes function body bindings from default parameter initializers", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `function withConst(value = require(request)) {
   const require = load;
   return require(value);
@@ -930,7 +930,7 @@ function withDeclaration(value = require(request)) {
   });
 
   it("rewrites fully dynamic requests in dependency modules", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `export function load(request) { require(request); return import(request); }`,
       "/app/node_modules/dynamic-request-dependency/index.js",
     )?.code;
@@ -939,7 +939,7 @@ function withDeclaration(value = require(request)) {
 
   it("resolves static require requests encoded with String.fromCharCode", () => {
     // Regression for the downstream patch in nodejs/nodejs.org@30ca20133337398e6707bb2cb21df450d6d9da04.
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       "const loaded = require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));",
       "/app/load.js",
     )?.code;
@@ -949,7 +949,7 @@ function withDeclaration(value = require(request)) {
   });
 
   it("does not evaluate shadowed or non-literal String.fromCharCode calls", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       `function load(String) {
   return require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));
 }
@@ -962,7 +962,7 @@ require(String.fromCharCode(...codeUnits));`,
   });
 
   it("matches literal require handling for empty and root character-code requests", () => {
-    const transformed = _transformVeryDynamicRequests(
+    const transformed = transformVeryDynamicRequests(
       "require(String.fromCharCode()); require(String.fromCharCode(47));",
       "/app/load.js",
     )?.code;

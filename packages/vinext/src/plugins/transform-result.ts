@@ -32,6 +32,11 @@ export function magicStringTransformResult(
   };
 }
 
+/** Whether a build environment discards transform sourcemaps. */
+export function buildDiscardsSourcemap(environment: SourcemapEnvironment | undefined): boolean {
+  return environment?.mode === "build" && environment.config?.build?.sourcemap === false;
+}
+
 /**
  * Drop the sourcemap from a transform result when the build environment
  * discards it, mirroring Vite's own transforms
@@ -42,9 +47,7 @@ export function omitUnusedBuildSourcemap(
   environment: SourcemapEnvironment | undefined,
   result: MagicStringTransformResult | null,
 ): { code: string; map: MagicStringTransformResult["map"] | null } | null {
-  if (!result || environment?.mode !== "build" || environment.config?.build?.sourcemap !== false) {
-    return result;
-  }
+  if (!result || !buildDiscardsSourcemap(environment)) return result;
   // Read only `code`: spreading the result would generate the lazy map.
   return { code: result.code, map: null };
 }

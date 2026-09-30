@@ -215,17 +215,28 @@ export function replaceTypeofWindow(code: string, replacement: WindowType, id = 
   return replaceConsumerEnvironmentConditions(code, { typeofWindow: replacement }, id);
 }
 
-export function replaceConsumerEnvironmentConditions(
+/**
+ * Pre-parse gate for `replaceConsumerEnvironmentConditions`: `false` means it
+ * returns `null` without parsing.
+ */
+export function mayReplaceConsumerEnvironmentConditions(
   code: string,
   replacements: ConsumerEnvironmentReplacements,
-  id = "file.js",
-) {
+): boolean {
   const mayContainTypeofWindow =
     replacements.typeofWindow !== undefined && /typeof\s+window/.test(code);
   const mayContainProcessBrowser =
     replacements.processBrowser !== undefined &&
     ((/\bprocess\b/.test(code) && /\bbrowser\b/.test(code)) || sourceEscapePattern.test(code));
-  if (!mayContainTypeofWindow && !mayContainProcessBrowser) return null;
+  return mayContainTypeofWindow || mayContainProcessBrowser;
+}
+
+export function replaceConsumerEnvironmentConditions(
+  code: string,
+  replacements: ConsumerEnvironmentReplacements,
+  id = "file.js",
+) {
+  if (!mayReplaceConsumerEnvironmentConditions(code, replacements)) return null;
 
   const extension = path.extname(stripViteModuleQuery(id));
   const lang =

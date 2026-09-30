@@ -14,7 +14,12 @@ import {
   unwrapExpression,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
-import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
+import { runPureTransform, type PureTransformOutput } from "./transform-offload.js";
+import {
+  buildDiscardsSourcemap,
+  magicStringTransformResult,
+  omitUnusedBuildSourcemap,
+} from "./transform-result.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -25,6 +30,7 @@ import {
   type AstScope,
 } from "./ast-scope.js";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { mapMaybePromise } from "../utils/promise.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const REQUIRE_PRESCAN =
@@ -772,16 +778,24 @@ function mayContainVeryDynamicRequest(code: string): boolean {
   return false;
 }
 
-function transformVeryDynamicRequests(code: string, id: string) {
-  // Pre-parse gate. `require` stays a broad substring check (it also covers
-  // aliasing and comment-separated `require/* … */(`), but the `import` side is
-  // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
-  // bare `import` (static ESM) otherwise matched ~every module, so this plugin
-  // parsed the whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
-  if (!REQUIRE_PRESCAN.test(code) && !mayContainDynamicImport(code)) return null;
+/**
+ * Pre-parse gate for `transformVeryDynamicRequests`: `false` means the
+ * transform returns `null` without parsing.
+ */
+function mayTransformVeryDynamicRequests(code: string): boolean {
+  // `require` stays a broad substring check (it also covers aliasing and
+  // comment-separated `require/* … */(`), but the `import` side is narrowed to
+  // dynamic-call syntax via the shared `mayContainDynamicImport`: bare `import`
+  // (static ESM) otherwise matched ~every module, so this plugin parsed the
+  // whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
+  if (!REQUIRE_PRESCAN.test(code) && !mayContainDynamicImport(code)) return false;
   // Most modules that pass that gate only contain `require("literal")`,
   // `__require`, or static imports, which this transform never changes.
-  if (!mayContainVeryDynamicRequest(code)) return null;
+  return mayContainVeryDynamicRequest(code);
+}
+
+export function transformVeryDynamicRequests(code: string, id: string) {
+  if (!mayTransformVeryDynamicRequests(code)) return null;
 
   const lang = scriptParserLanguage(id) ?? "js";
   let ast: ReturnType<typeof parseAst>;
@@ -912,7 +926,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
 export function createIgnoreDynamicRequestsPlugin(
   getTranspiledPackages: () => readonly string[] = () => [],
 ): Plugin {
-  const cached = createTransformCache<undefined, ReturnType<typeof transformVeryDynamicRequests>>();
+  const cached = createTransformCache<undefined, PureTransformOutput>();
 
   return {
     name: "vinext:ignore-dynamic-requests",
@@ -944,9 +958,17 @@ export function createIgnoreDynamicRequestsPlugin(
         ) {
           return null;
         }
-        return omitUnusedBuildSourcemap(
-          this.environment,
-          cached(id, code, undefined, () => transformVeryDynamicRequests(code, id)),
+        // Gate on the main thread so only modules that will be parsed can be
+        // sent to a worker.
+        if (!mayTransformVeryDynamicRequests(code)) return null;
+        const environment = this.environment;
+        return mapMaybePromise(
+          cached(id, code, undefined, () =>
+            runPureTransform("ignore-dynamic-requests", transformVeryDynamicRequests, [code, id], {
+              sourcemap: !buildDiscardsSourcemap(environment),
+            }),
+          ),
+          (result) => omitUnusedBuildSourcemap(environment, result),
         );
       },
     },
@@ -966,5 +988,4 @@ function shouldTransformVeryDynamicRequests(
   );
 }
 
-export const _transformVeryDynamicRequests = transformVeryDynamicRequests;
 export const _mayContainVeryDynamicRequest = mayContainVeryDynamicRequest;

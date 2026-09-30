@@ -26,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from "../utils/path.js";
+import { mapMaybePromise } from "../utils/promise.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
@@ -34,7 +35,9 @@ import {
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
 } from "./ast-utils.js";
+import { runPureTransform } from "./transform-offload.js";
 import {
+  buildDiscardsSourcemap,
   magicStringTransformResult,
   omitUnusedBuildSourcemap,
   type MagicStringTransformResult,
@@ -210,13 +213,22 @@ export function createImportMetaUrlPlugin(options: {
                   : emittedModuleIdentity.cjsGlobalInitializers
                 : undefined;
             if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
-              return omitUnusedBuildSourcemap(
-                this.environment,
-                rewriteModuleIdentity(code, {
-                  id: dependency.canonicalId,
-                  importMetaUrlReplacement,
-                  cjsGlobalInitializers,
-                }),
+              const environment = this.environment;
+              return mapMaybePromise(
+                runPureTransform(
+                  "import-meta-url",
+                  rewriteModuleIdentity,
+                  [
+                    code,
+                    {
+                      id: dependency.canonicalId,
+                      importMetaUrlReplacement,
+                      cjsGlobalInitializers,
+                    },
+                  ],
+                  { sourcemap: !buildDiscardsSourcemap(environment) },
+                ),
+                (result) => omitUnusedBuildSourcemap(environment, result),
               );
             }
           }
@@ -305,16 +317,24 @@ export function createImportMetaUrlPlugin(options: {
         if (!mayContainSourceIdentityToken(code)) return null;
         const dependency = dependencyModule(id);
         if (!dependency) return null;
-        return rewriteModuleIdentity(code, {
-          id: dependency.canonicalId,
-          importMetaUrlReplacement: mayContainImportMetaUrl(code)
-            ? emittedModuleIdentity.importMetaUrlInitializer
-            : undefined,
-          cjsGlobalInitializers:
-            dependency.isCommonJs && mayContainServerCjsGlobal(code)
-              ? emittedModuleIdentity.cjsGlobalInitializers
-              : undefined,
-        });
+        return runPureTransform(
+          "import-meta-url",
+          rewriteModuleIdentity,
+          [
+            code,
+            {
+              id: dependency.canonicalId,
+              importMetaUrlReplacement: mayContainImportMetaUrl(code)
+                ? emittedModuleIdentity.importMetaUrlInitializer
+                : undefined,
+              cjsGlobalInitializers:
+                dependency.isCommonJs && mayContainServerCjsGlobal(code)
+                  ? emittedModuleIdentity.cjsGlobalInitializers
+                  : undefined,
+            },
+          ],
+          { sourcemap: true },
+        );
       },
     },
     renderChunk: {
@@ -515,7 +535,7 @@ function finalizeEmittedModuleIdentity(
   return magicStringTransformResult(output);
 }
 
-function rewriteModuleIdentity(
+export function rewriteModuleIdentity(
   code: string,
   options: {
     id: string;
