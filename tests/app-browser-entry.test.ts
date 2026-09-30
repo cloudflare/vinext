@@ -4931,11 +4931,58 @@ describe("app browser navigation controller", () => {
       expect(assign).not.toHaveBeenCalled();
       expect(stateRef.current.routeId).toBe("route:/photos/42");
       expect(stateRef.current.previousNextUrl).toBeNull();
+      expect(syncHistoryStatePreviousNextUrl).not.toHaveBeenCalled();
+
+      controller.commitNavigationRender(stateRef.current.renderId);
+
       expect(syncHistoryStatePreviousNextUrl).toHaveBeenCalledTimes(1);
       expect(syncHistoryStatePreviousNextUrl).toHaveBeenCalledWith(
         null,
         stateRef.current.bfcacheIds,
       );
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not write history metadata for an accepted same-URL server action discarded before commit", async () => {
+    const interception = createInterceptionProof("/feed", "/photos/42");
+    const initialState = createState({
+      interception,
+      interceptionContext: "/feed",
+      previousNextUrl: "/feed",
+      rootLayoutTreePath: "/",
+      routeId: "route:/feed",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/42", {}),
+    });
+    const syncHistoryStatePreviousNextUrl = vi.fn();
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      syncHistoryStatePreviousNextUrl,
+    });
+    stubWindow("https://example.com/photos/42");
+    const nextElements = Promise.resolve(
+      createResolvedElements("route:/photos/42", "/", null, {
+        "page:/photos/42": React.createElement("main", null, "photo page"),
+      }),
+    );
+
+    try {
+      await controller.commitSameUrlNavigatePayload(
+        nextElements,
+        stateRef.current.navigationSnapshot,
+        undefined,
+        stateRef.current,
+        { targetHref: "https://example.com/photos/42" },
+      );
+      const acceptedState = stateRef.current;
+      expect(acceptedState.previousNextUrl).toBeNull();
+
+      // A hash or native-history navigation takes over while the accepted render is suspended.
+      controller.beginNavigation();
+      controller.discardPendingNavigation(initialState);
+      controller.commitNavigationRender(acceptedState.renderId);
+
+      expect(syncHistoryStatePreviousNextUrl).not.toHaveBeenCalled();
     } finally {
       detach();
     }

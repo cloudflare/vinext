@@ -1075,17 +1075,22 @@ export function createAppBrowserNavigationController(
         claimAppRouterScrollIntentForCommit(lifecycleOptions?.scrollIntent, state.renderId);
         pendingNavigationCommits.set(state.renderId, {
           committedState: state,
+          // The inherited actionBase path writes history metadata from its
+          // commit effect. Without one, the same write runs only when this
+          // exact render commits, so a discarded candidate never leaves
+          // metadata for a tree that was never visible.
+          onCommittedState: lifecycleOptions?.actionBase
+            ? undefined
+            : () =>
+                syncHistoryStatePreviousNextUrl(
+                  approvedRevalidationCommit.previousNextUrl,
+                  approvedRevalidationCommit.action.bfcacheIds,
+                ),
           scrollIntent: lifecycleOptions?.scrollIntent ?? null,
           onDiscardedRevalidation: () => notifyDiscardedServerActionRevalidation(lifecycleOptions),
           resolve() {},
         });
         startTransition(() => getBrowserRouterStateSetter()(state));
-        if (!lifecycleOptions?.actionBase) {
-          syncHistoryStatePreviousNextUrl(
-            approvedRevalidationCommit.previousNextUrl,
-            approvedRevalidationCommit.action.bfcacheIds,
-          );
-        }
         lifecycleOptions?.onActionReady?.(state);
       } else {
         notifyDiscardedServerActionRevalidation(lifecycleOptions);
