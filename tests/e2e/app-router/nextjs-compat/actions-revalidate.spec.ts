@@ -220,48 +220,28 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
 
   // Next carries revalidation through discarded actions. These controls also
   // ensure a successor that inherited the accepted result needs no extra GET.
-  for (const successor of [
-    "hash",
-    "native history",
-    "refresh",
-    "next action",
-    "refresh then hash",
-    "canceled document",
-  ]) {
-    test(`accepted revalidation survives ${successor} before React commit`, async ({ page }) => {
-      const path = "/nextjs-compat/action-discarding";
-      await page.goto(`${BASE}${path}`);
-      await waitForAppRouterHydration(page);
-      const initialValue = Number(await page.locator("#discarded-action-value").textContent());
-      await page.evaluate((value) => {
-        (window as typeof window & { __holdActionValue?: number }).__holdActionValue = value;
-      }, initialValue);
-      await page.click("#slow-action-refresh");
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () => (window as typeof window & { __heldActionRender?: boolean }).__heldActionRender,
-          ),
-        )
-        .toBe(true);
-      await expect(page.locator("#discarded-action-value")).toHaveText(String(initialValue));
-      const refreshes: string[] = [];
-      page.on("request", (request) => {
-        if (
-          request.method() === "GET" &&
-          request.headers().rsc === "1" &&
-          new URL(request.url()).pathname === path
-        )
-          refreshes.push(request.url());
-      });
-      if (successor === "refresh then hash") {
-        await page.evaluate(() => {
-          (window as typeof window & { __heldActionRender?: boolean }).__heldActionRender = false;
-          const router = window.next!.router!;
-          if (!("refresh" in router)) throw new Error("Expected the App Router");
-          router.refresh();
-        });
-        await expect.poll(() => refreshes.length).toBe(1);
+  for (const actionKind of ["same-page", "redirect"]) {
+    for (const successor of [
+      "hash",
+      "native history",
+      "refresh",
+      "next action",
+      "refresh then hash",
+      "canceled document",
+    ]) {
+      test(`accepted ${actionKind} revalidation survives ${successor} before React commit`, async ({
+        page,
+      }) => {
+        const path = "/nextjs-compat/action-discarding";
+        await page.goto(`${BASE}${path}`);
+        await waitForAppRouterHydration(page);
+        const initialValue = Number(await page.locator("#discarded-action-value").textContent());
+        await page.evaluate((value) => {
+          (window as typeof window & { __holdActionValue?: number }).__holdActionValue = value;
+        }, initialValue);
+        await page.click(
+          actionKind === "redirect" ? "#revalidating-redirect" : "#slow-action-refresh",
+        );
         await expect
           .poll(() =>
             page.evaluate(
@@ -269,40 +249,67 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
             ),
           )
           .toBe(true);
-      }
-      if (successor === "canceled document") {
-        page.once("dialog", (dialog) => dialog.dismiss());
-        await page.evaluate(() =>
-          window.addEventListener(
-            "beforeunload",
-            (event) => {
-              event.preventDefault();
-              event.returnValue = "";
-            },
-            { once: true },
-          ),
-        );
-      }
-      await page.evaluate((kind) => {
-        delete (window as typeof window & { __holdActionValue?: number }).__holdActionValue;
-        const router = window.next!.router!;
-        if (kind === "hash" || kind === "refresh then hash") void router.push("#resumed");
-        if (kind === "canceled document") void router.push("/old-school");
-        if (kind === "native history") window.history.pushState(null, "", "?restored=1");
-        if (kind === "refresh") {
-          if (!("refresh" in router)) throw new Error("Expected the App Router");
-          router.refresh();
+        await expect(page.locator("#discarded-action-value")).toHaveText(String(initialValue));
+        const refreshes: string[] = [];
+        page.on("request", (request) => {
+          if (
+            request.method() === "GET" &&
+            request.headers().rsc === "1" &&
+            new URL(request.url()).pathname === path
+          )
+            refreshes.push(request.url());
+        });
+        if (successor === "refresh then hash") {
+          await page.evaluate(() => {
+            (window as typeof window & { __heldActionRender?: boolean }).__heldActionRender = false;
+            const router = window.next!.router!;
+            if (!("refresh" in router)) throw new Error("Expected the App Router");
+            router.refresh();
+          });
+          await expect.poll(() => refreshes.length).toBe(1);
+          await expect
+            .poll(() =>
+              page.evaluate(
+                () =>
+                  (window as typeof window & { __heldActionRender?: boolean }).__heldActionRender,
+              ),
+            )
+            .toBe(true);
         }
-      }, successor);
-      if (successor === "next action") await page.click("#slow-action-refresh");
-      await expect(page.locator("#discarded-action-value")).toHaveText(
-        String(initialValue + (successor === "next action" ? 2 : 1)),
-      );
-      await page.waitForTimeout(300);
-      expect(refreshes).toHaveLength(
-        successor === "next action" ? 0 : successor === "refresh then hash" ? 2 : 1,
-      );
-    });
+        if (successor === "canceled document") {
+          page.once("dialog", (dialog) => dialog.dismiss());
+          await page.evaluate(() =>
+            window.addEventListener(
+              "beforeunload",
+              (event) => {
+                event.preventDefault();
+                event.returnValue = "";
+              },
+              { once: true },
+            ),
+          );
+        }
+        await page.evaluate((kind) => {
+          delete (window as typeof window & { __holdActionValue?: number }).__holdActionValue;
+          const router = window.next!.router!;
+          if (kind === "hash" || kind === "refresh then hash") void router.push("#resumed");
+          if (kind === "canceled document") void router.push("/old-school");
+          if (kind === "native history") window.history.pushState(null, "", "?restored=1");
+          if (kind === "refresh") {
+            if (!("refresh" in router)) throw new Error("Expected the App Router");
+            router.refresh();
+          }
+        }, successor);
+        if (successor === "next action") await page.click("#slow-action-refresh");
+        await expect(page.locator("#discarded-action-value")).toHaveText(
+          String(initialValue + (successor === "next action" ? 2 : 1)),
+        );
+        await page.waitForTimeout(300);
+        expect(refreshes).toHaveLength(
+          successor === "next action" ? 0 : successor === "refresh then hash" ? 2 : 1,
+        );
+      });
+    }
   }
 
   test("a canceled same-URL action reload can be retried", async ({ page }) => {

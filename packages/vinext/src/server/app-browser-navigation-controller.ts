@@ -111,6 +111,7 @@ type BrowserNavigationPayloadOptions = {
   navId: number;
   nextElements: Promise<AppElements> | AppElements;
   onCommittedState?: (state: AppRouterState) => void;
+  onDiscardedRevalidation?: () => void;
   onActionReady?: (state: AppRouterState) => void;
   operationLane: OperationLane;
   params: Record<string, string | string[]>;
@@ -555,6 +556,15 @@ export function createAppBrowserNavigationController(
     settleNavigationCommits(renderId, true);
   }
 
+  function discardNavigationCommit(renderId: number): void {
+    const pending = pendingNavigationCommits.get(renderId);
+    pendingNavigationCommits.delete(renderId);
+    // A newer navigation may already have discarded this record while its
+    // payload was pending. Only its current owner can notify revalidation.
+    pending?.resolve(false);
+    pending?.onDiscardedRevalidation?.();
+  }
+
   function clearCommittedNavigationFailureTargets(renderId: number): void {
     for (const [pendingId, targetHref] of pendingNavigationFailureTargets) {
       if (pendingId > renderId) {
@@ -833,12 +843,11 @@ export function createAppBrowserNavigationController(
     if (failureTarget) {
       pendingNavigationFailureTargets.set(renderId, failureTarget);
     }
-    let resolveCommitted: ((committed: boolean) => void) | undefined;
     const committed = new Promise<boolean>((resolve) => {
-      resolveCommitted = resolve;
       pendingNavigationCommits.set(renderId, {
         committedState: null,
         onCommittedState: options.onCommittedState,
+        onDiscardedRevalidation: options.onDiscardedRevalidation,
         scrollIntent: options.scrollIntent ?? null,
         resolve,
       });
@@ -888,8 +897,7 @@ export function createAppBrowserNavigationController(
         if (failureTarget) {
           clearAppNavigationFailureTarget(failureTarget);
         }
-        pendingNavigationCommits.delete(renderId);
-        resolveCommitted?.(false);
+        discardNavigationCommit(renderId);
         consumeAppRouterScrollIntent(options.scrollIntent ?? null);
         return "no-commit";
       }
@@ -897,7 +905,7 @@ export function createAppBrowserNavigationController(
       if (approval.decision.disposition === "hard-navigate") {
         settlePendingBrowserRouterState(options.pendingRouterState);
         pendingNavigationFailureTargets.delete(renderId);
-        pendingNavigationCommits.delete(renderId);
+        discardNavigationCommit(renderId);
         consumeAppRouterScrollIntent(options.scrollIntent ?? null);
         if (performHardNavigation(options.targetHref)) {
           return "hard-navigate";
@@ -968,12 +976,11 @@ export function createAppBrowserNavigationController(
     } catch (error) {
       pendingNavigationFailureTargets.delete(renderId);
       pendingNavigationPrePaintEffects.delete(renderId);
-      pendingNavigationCommits.delete(renderId);
+      discardNavigationCommit(renderId);
       if (snapshotActivated) {
         commitClientNavigationStateImpl(options.navId);
       }
       settlePendingBrowserRouterState(options.pendingRouterState);
-      resolveCommitted?.(false);
       throw error;
     }
 

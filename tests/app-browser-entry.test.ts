@@ -3957,6 +3957,7 @@ describe("app browser navigation controller", () => {
   it("reads RouteManifest lazily after generated browser globals are assigned", async () => {
     let routeManifest: RouteManifest | null = null;
     const performHardNavigation = vi.fn(() => true);
+    const onDiscardedRevalidation = vi.fn();
     const { controller, detach, stateRef } = createControllerHarness(
       createState({
         layoutIds: ["layout:/stale"],
@@ -3988,6 +3989,7 @@ describe("app browser navigation controller", () => {
           {},
         ),
         nextElements,
+        onDiscardedRevalidation,
         operationLane: "navigation",
         params: {},
         pendingRouterState,
@@ -4013,11 +4015,59 @@ describe("app browser navigation controller", () => {
       await expect(result).resolves.toBe("hard-navigate");
       await expect(pendingRouterState.promise).resolves.toBe(stateRef.current);
       expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/marketing");
+      expect(onDiscardedRevalidation).toHaveBeenCalledOnce();
       expect(stateRef.current.routeId).toBe("route:/app");
     } finally {
       detach();
     }
   });
+
+  it.each(["stale", "discarded then resolved", "discarded then rejected", "rejected"])(
+    "retains redirect revalidation once when its payload is %s",
+    async (outcome) => {
+      const { controller, detach, stateRef } = createControllerHarness();
+      stubWindow("https://example.com/");
+      const onDiscardedRevalidation = vi.fn();
+      let resolve!: (elements: AppElements) => void;
+      let reject!: (error: Error) => void;
+      const nextElements = new Promise<AppElements>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      try {
+        const navId = controller.beginNavigation();
+        const result = renderCurrentStateNavigationPayload(controller, {
+          payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+          actionType: "navigate",
+          createNavigationCommitEffect: () => () => {},
+          historyUpdateMode: "push",
+          navigationSnapshot: stateRef.current.navigationSnapshot,
+          nextElements,
+          onDiscardedRevalidation,
+          operationLane: "refresh",
+          params: {},
+          pendingRouterState: null,
+          previousNextUrl: null,
+          targetHref: "https://example.com/destination",
+          navId,
+        });
+        if (outcome !== "rejected") controller.beginNavigation();
+        if (outcome.startsWith("discarded")) controller.discardPendingNavigation();
+        if (outcome.endsWith("rejected")) {
+          const failure = new Error("Flight failed");
+          const assertion = expect(result).rejects.toBe(failure);
+          reject(failure);
+          await assertion;
+        } else {
+          resolve(createResolvedElements("route:/destination", "/"));
+          await expect(result).resolves.toBe("no-commit");
+        }
+        expect(onDiscardedRevalidation).toHaveBeenCalledOnce();
+      } finally {
+        detach();
+      }
+    },
+  );
 
   it("settles the previous pending browser-router promise when a newer pending state begins", async () => {
     const { controller, detach, stateRef } = createControllerHarness();

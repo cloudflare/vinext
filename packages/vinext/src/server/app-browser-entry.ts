@@ -858,6 +858,7 @@ type RenderNavigationPayloadOptions = {
   navigationSnapshot: ClientNavigationRenderSnapshot;
   navId: number;
   onCommittedState?: (state: AppRouterState) => void;
+  onDiscardedRevalidation?: () => void;
   operationLane?: OperationLane;
   params: Record<string, string | string[]>;
   payload: Promise<AppElements> | AppElements;
@@ -887,6 +888,7 @@ async function renderNavigationPayload(
     navId: options.navId,
     nextElements: options.payload,
     onCommittedState: options.onCommittedState,
+    onDiscardedRevalidation: options.onDiscardedRevalidation,
     onActionReady: (state) => {
       if (options.navigationCommitKind === "detached") return;
       refreshQueue.ready(options.navId, {
@@ -1951,6 +1953,10 @@ function registerServerActionCallback(): void {
                 ),
                 navId,
                 operationLane: resolveServerActionOperationLane(revalidation),
+                onDiscardedRevalidation:
+                  revalidation === "none"
+                    ? undefined
+                    : () => discardedServerActionRefreshScheduler.schedule(),
                 params: {},
                 payload: Promise.resolve(elements),
                 payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
