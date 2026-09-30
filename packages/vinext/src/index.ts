@@ -2139,6 +2139,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     string,
     ReturnType<typeof replaceConsumerEnvironmentConditions>
   >();
+  // `vinext:jsx-in-js` passes fixed options and no tsconfig, so its output
+  // depends only on the id and source. Share it across environments and the
+  // scan and build passes.
+  const cachedJsxInJsTransform = createTransformCache<
+    undefined,
+    Promise<{ code: string; map: Awaited<ReturnType<typeof transformWithOxc>>["map"] }>
+  >();
 
   // vite-plugin-commonjs calls its user filter synchronously, before its first
   // async boundary, but the filter itself receives only an id. Bridge the
@@ -2394,15 +2401,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
           }
 
-          const result = await transformWithOxc(code, id, {
-            lang: "jsx",
-            jsx: { runtime: "automatic" as const },
-            sourcemap: true,
+          return cachedJsxInJsTransform(id, code, undefined, async () => {
+            const result = await transformWithOxc(code, id, {
+              lang: "jsx",
+              jsx: { runtime: "automatic" as const },
+              sourcemap: true,
+            });
+            return {
+              code: result.code,
+              map: result.map,
+            };
           });
-          return {
-            code: result.code,
-            map: result.map,
-          };
         },
       },
     } satisfies Plugin,

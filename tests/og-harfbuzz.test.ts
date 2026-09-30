@@ -197,6 +197,25 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     expect(result!.code).toContain("t.instantiateWasm");
   });
 
+  it("patches each bundle once per build and recomputes in dev", () => {
+    const root = path.join(tmpRoot, "cached-project");
+    const code = fs.readFileSync(edgeEntry, "utf8");
+    const build = createTransform("build", root);
+    const first = build(code, edgeEntry);
+    expect(first).not.toBeNull();
+    // Scan and build passes feed the same source through the same plugin.
+    expect(build(code, edgeEntry)).toBe(first);
+
+    const changed = build(`${code}\n// changed`, edgeEntry);
+    expect(changed).not.toBe(first);
+    expect(changed!.code).toContain("// changed");
+
+    const dev = createTransform("serve", root);
+    const devResult = dev(code, edgeEntry);
+    expect(dev(code, edgeEntry)).not.toBe(devResult);
+    expect(dev(code, edgeEntry)!.code).toBe(devResult!.code);
+  });
+
   it("fails the build when the HarfBuzz factory no longer matches", () => {
     const code = fs
       .readFileSync(nodeEntry, "utf8")
