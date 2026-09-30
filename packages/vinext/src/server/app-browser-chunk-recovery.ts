@@ -1,6 +1,9 @@
-import type { ChunkRecoveryNavigator } from "../client/chunk-load-recovery.js";
+import { toDocumentLoadHref, type ChunkRecoveryNavigator } from "../client/chunk-load-recovery.js";
 import type { DocumentNavigationOutcome } from "./app-browser-document-navigation.js";
-import type { HardNavigationMode, HistoryUpdateMode } from "./app-browser-navigation-controller.js";
+import {
+  performHardNavigationWithLoopGuard,
+  type HistoryUpdateMode,
+} from "./app-browser-navigation-controller.js";
 
 export type InFlightNavigation = {
   navId: number;
@@ -10,13 +13,6 @@ export type InFlightNavigation = {
 
 type AppBrowserChunkRecoveryDeps = {
   beforeDocumentNavigation(href: string, outcome: DocumentNavigationOutcome): () => void;
-  getCurrentHref(): string;
-  performHardNavigationWithLoopGuard(
-    href: string,
-    mode: HardNavigationMode,
-    beforeNavigate?: () => void | (() => void),
-  ): boolean;
-  toDocumentLoadHref(target: string): string;
 };
 
 /**
@@ -26,22 +22,19 @@ type AppBrowserChunkRecoveryDeps = {
 export function createAppBrowserChunkRecovery(deps: AppBrowserChunkRecoveryDeps) {
   let inFlight: InFlightNavigation | null = null;
 
-  function resolveMode(navigation: InFlightNavigation, targetHref: string): HardNavigationMode {
-    if (navigation.historyUpdateMode !== "push") return "replace";
-    // The URL commits before the render that fails, and assigning it again
-    // would duplicate the history entry.
-    const currentHref = deps.getCurrentHref();
-    return new URL(targetHref, currentHref).href === new URL(currentHref).href
-      ? "replace"
-      : "assign";
-  }
-
   const navigator: ChunkRecoveryNavigator = (outcome) => {
-    const targetHref = inFlight?.href ?? deps.getCurrentHref();
-    const mode = inFlight ? resolveMode(inFlight, targetHref) : "replace";
-    const loadHref = deps.toDocumentLoadHref(targetHref);
+    const currentHref = window.location.href;
+    const targetHref = inFlight?.href ?? currentHref;
+    // The URL of a push navigation commits before the render that fails, and
+    // assigning it again would duplicate the history entry.
+    const mode =
+      inFlight?.historyUpdateMode === "push" &&
+      new URL(targetHref, currentHref).href !== new URL(currentHref).href
+        ? "assign"
+        : "replace";
+    const loadHref = toDocumentLoadHref(targetHref);
 
-    return deps.performHardNavigationWithLoopGuard(loadHref, mode, () =>
+    return performHardNavigationWithLoopGuard(loadHref, mode, () =>
       deps.beforeDocumentNavigation(loadHref, outcome),
     );
   };

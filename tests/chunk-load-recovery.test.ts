@@ -9,10 +9,8 @@ const ENTRY = "https://app.test/assets/index-abc123.js";
 const PAGE = "https://app.test/page?x=1";
 const MINUTE = 60_000;
 
-const WARN_REPLACED =
-  "[vinext] This page's build is no longer on the server. Loading the current version.";
-const WARN_PINNED =
-  "[vinext] A script failed to load and this browser will not retry it. Reloading the page.";
+const WARN_REPLACED = "[vinext] This page's build was replaced. Loading the current version.";
+const WARN_PINNED = "[vinext] A script failed to load and will not be retried. Reloading the page.";
 
 class FakeStorage {
   readonly data = new Map<string, string>();
@@ -811,7 +809,7 @@ describe("claim", () => {
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
     expect(console.error).toHaveBeenCalledTimes(1);
     expect(vi.mocked(console.error).mock.calls[0][0]).toBe(
-      "[vinext] A script failed to load and the page could not be reloaded automatically, so it was left as is. Reloading the page by hand should fix it. If the problem persists, check the deploy for missing built assets.",
+      "[vinext] A script failed to load and the page was left as is. Reload it by hand, and if the problem persists, check the deploy for missing built assets.",
     );
   });
 
@@ -887,6 +885,27 @@ describe("claim", () => {
 
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
     expect(readClaims(ctx)).toEqual([recent, { at: now, entryUrl: ENTRY, verdict: "replaced" }]);
+  });
+
+  it.each([
+    ["text that is not JSON", "not json", []],
+    ["JSON that is not a list", '{"at":1}', []],
+    ["JSON null", "null", []],
+    [
+      "a list with entries that are not records",
+      JSON.stringify([null, 5, "x", [1], { at: "soon" }]),
+      [],
+    ],
+  ])("treats a stored list of %s as empty", async (_name, stored, kept) => {
+    const ctx = await setup();
+    ctx.storage.data.set(STORAGE_KEY, stored);
+    const now = Date.now();
+
+    void ctx.mod.recoverFromChunkFailure(deployFailure(ctx)).catch(() => undefined);
+    await flush();
+
+    expect(ctx.navigator).toHaveBeenCalledTimes(1);
+    expect(readClaims(ctx)).toEqual([...kept, { at: now, entryUrl: ENTRY, verdict: "replaced" }]);
   });
 
   it.each<[string, (ctx: Context) => void]>([

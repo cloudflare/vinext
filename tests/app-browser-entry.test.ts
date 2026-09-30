@@ -34,7 +34,6 @@ import {
   resolveFetchedHydrationLocation,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import {
-  clearHardNavigationLoopGuard,
   createAppBrowserNavigationController,
   performHardNavigationWithLoopGuard,
 } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
@@ -3997,11 +3996,9 @@ function createDocumentNavigationHarness(
   assign.mockImplementation(dispatchNavigate);
   replace.mockImplementation(dispatchNavigate);
   const documentNavigation = createAppBrowserDocumentNavigation({
-    clearHardNavigationLoopGuard,
     discardPendingNavigation,
     expireDocumentNavigation: (error) => queue.expireDocumentNavigation(error),
     mpaNavigationScheduler,
-    performHardNavigationWithLoopGuard,
     resumeAfterDocumentNavigation: () => queue.resumeAfterDocumentNavigation(),
     stopRefreshes: () => queue.stopForDocumentNavigation(),
   });

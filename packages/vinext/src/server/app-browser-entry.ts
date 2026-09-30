@@ -80,7 +80,6 @@ import {
   endImmediateClientReferenceRecovery,
   recoverFromChunkFailure,
   setChunkRecoveryNavigator,
-  toDocumentLoadHref,
 } from "../client/chunk-load-recovery.js";
 import { installWindowNext, setWindowNextInternalSourcePage } from "../client/window-next.js";
 import {
@@ -91,7 +90,6 @@ import {
 import {
   clearHardNavigationLoopGuard,
   createAppBrowserNavigationController,
-  performHardNavigationWithLoopGuard,
   createBasePathStrippedPathAndSearch,
   createSnapshotPathAndSearch,
   type HistoryUpdateMode,
@@ -374,18 +372,14 @@ const discardedServerActionRefreshScheduler = createDiscardedServerActionRefresh
 });
 let refreshQueue: ReturnType<typeof createAppBrowserRefreshQueue>;
 
+const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const documentNavigation = createAppBrowserDocumentNavigation({
-  clearHardNavigationLoopGuard,
   discardPendingNavigation: () => browserNavigationController.discardPendingNavigation(),
   expireDocumentNavigation(error) {
     discardedServerActionRefreshScheduler.resumeAfterDocumentRestore();
     refreshQueue.expireDocumentNavigation(error);
   },
-  mpaNavigationScheduler: {
-    navigate: (...args) => mpaNavigationScheduler.navigate(...args),
-    reset: () => mpaNavigationScheduler.reset(),
-  },
-  performHardNavigationWithLoopGuard,
+  mpaNavigationScheduler,
   resumeAfterDocumentNavigation() {
     discardedServerActionRefreshScheduler.resumeAfterDocumentRestore();
     refreshQueue.resumeAfterDocumentNavigation();
@@ -394,11 +388,7 @@ const documentNavigation = createAppBrowserDocumentNavigation({
 });
 const resetDocumentNavigationRecovery = documentNavigation.resetRecovery;
 const chunkRecovery = createAppBrowserChunkRecovery({
-  beforeDocumentNavigation: (href, outcome) =>
-    documentNavigation.beforeDocumentNavigation(href, outcome),
-  getCurrentHref: () => window.location.href,
-  performHardNavigationWithLoopGuard,
-  toDocumentLoadHref,
+  beforeDocumentNavigation: documentNavigation.beforeDocumentNavigation,
 });
 const recoverFromRootError = createRootErrorRecovery(recoverFromChunkFailure);
 
@@ -439,7 +429,6 @@ let clientNavigationCacheGeneration = 0;
 // torn down by a render error" (full reload to recover).
 let browserRouterStateHasEverCommitted = false;
 let initialPrefetchRouterState: { pathAndSearch: string; routeId: string } | null = null;
-const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
 const RSC_HMR_SETTLE_DELAY_MS = 150;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as React.ComponentType<{

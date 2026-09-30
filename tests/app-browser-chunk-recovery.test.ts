@@ -1,9 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import {
-  DOCUMENT_UNLOAD_TIMEOUT_MS,
-  toDocumentLoadHref,
-} from "../packages/vinext/src/client/chunk-load-recovery.js";
+import { DOCUMENT_UNLOAD_TIMEOUT_MS } from "../packages/vinext/src/client/chunk-load-recovery.js";
 import {
   createAppBrowserChunkRecovery,
   createRootErrorRecovery,
@@ -11,10 +8,6 @@ import {
 } from "../packages/vinext/src/server/app-browser-chunk-recovery.js";
 import { createAppBrowserDocumentNavigation } from "../packages/vinext/src/server/app-browser-document-navigation.js";
 import { createProdOnCaughtError } from "../packages/vinext/src/server/app-browser-error.js";
-import {
-  clearHardNavigationLoopGuard,
-  performHardNavigationWithLoopGuard,
-} from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 
 const STATE_KEY = Symbol.for("vinext.chunk-recovery");
 const LOOP_GUARD_KEY = "__vinext_hard_navigation_target__";
@@ -65,19 +58,14 @@ function createHarness(currentHref: string, options: { silent?: boolean } = {}) 
   const expireDocumentNavigation = vi.fn();
   const resumeAfterDocumentNavigation = vi.fn();
   const documentNavigation = createAppBrowserDocumentNavigation({
-    clearHardNavigationLoopGuard,
     discardPendingNavigation: vi.fn(),
     expireDocumentNavigation,
     mpaNavigationScheduler: { navigate: vi.fn(), reset: vi.fn() },
-    performHardNavigationWithLoopGuard,
     resumeAfterDocumentNavigation,
     stopRefreshes: vi.fn(),
   });
   const recovery = createAppBrowserChunkRecovery({
     beforeDocumentNavigation: documentNavigation.beforeDocumentNavigation,
-    getCurrentHref: () => window.location.href,
-    performHardNavigationWithLoopGuard,
-    toDocumentLoadHref,
   });
   const outcome = { onAbandoned: vi.fn(), onCanceled: vi.fn() } satisfies Outcome;
 

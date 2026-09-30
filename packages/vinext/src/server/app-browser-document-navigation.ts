@@ -1,5 +1,10 @@
 import { DOCUMENT_UNLOAD_TIMEOUT_MS, toDocumentLoadHref } from "../client/chunk-load-recovery.js";
-import type { HardNavigationMode, HistoryUpdateMode } from "./app-browser-navigation-controller.js";
+import {
+  clearHardNavigationLoopGuard,
+  performHardNavigationWithLoopGuard,
+  type HardNavigationMode,
+  type HistoryUpdateMode,
+} from "./app-browser-navigation-controller.js";
 import {
   observeDocumentNavigationCancellation,
   type AppBrowserMpaNavigationWindow,
@@ -12,7 +17,6 @@ export type DocumentNavigationOutcome = {
 };
 
 type AppBrowserDocumentNavigationDeps = {
-  clearHardNavigationLoopGuard(): void;
   discardPendingNavigation(): void;
   expireDocumentNavigation(error: Error): void;
   mpaNavigationScheduler: {
@@ -24,11 +28,6 @@ type AppBrowserDocumentNavigationDeps = {
     ): void;
     reset(): void;
   };
-  performHardNavigationWithLoopGuard(
-    href: string,
-    mode: HardNavigationMode | undefined,
-    beforeNavigate?: () => void | (() => void),
-  ): boolean;
   resumeAfterDocumentNavigation(): void;
   stopRefreshes(): void;
 };
@@ -65,7 +64,7 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
     const recover = () => {
       if (cancelRecovery !== cancel) return;
       restore();
-      deps.clearHardNavigationLoopGuard();
+      clearHardNavigationLoopGuard();
       deps.resumeAfterDocumentNavigation();
       outcome?.onCanceled();
     };
@@ -94,7 +93,7 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
     performHardNavigation(href: string, mode?: HardNavigationMode): boolean {
       // A fragment-only change scrolls instead of loading a document.
       const loadHref = toDocumentLoadHref(href);
-      return deps.performHardNavigationWithLoopGuard(loadHref, mode, () =>
+      return performHardNavigationWithLoopGuard(loadHref, mode, () =>
         beforeDocumentNavigation(loadHref),
       );
     },

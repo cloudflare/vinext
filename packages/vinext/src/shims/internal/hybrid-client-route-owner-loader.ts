@@ -7,7 +7,7 @@ let pendingLoad: Promise<HybridClientRouteOwnerModule | null> | null = null;
 let loadFailure: { error: unknown } | null = null;
 
 const LOAD_FAILED_MESSAGE =
-  "[vinext] Could not load the script that decides which router owns a link, so navigation will load full pages instead. This usually means the site was updated while this page was open; reloading the page fixes it.";
+  "[vinext] Could not load the link routing script, so links will load full pages. The site was probably updated; reload the page.";
 
 export function getLoadedHybridClientRouteOwner(): HybridClientRouteOwnerModule | null {
   return loadedModule;

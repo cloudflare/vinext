@@ -12,10 +12,7 @@ export type ChunkRecoveryNavigator = (outcome: {
   onAbandoned(): void; // no unload within DOCUMENT_UNLOAD_TIMEOUT_MS; the claim stays spent
 }) => boolean; // false: refused, nothing started
 
-type Policy = "retry" | "deploy";
-type BuildStatus = "replaced" | "live" | "unavailable";
 type ClaimRecord = { entryUrl: string | null; verdict: ChunkFailureVerdict; at: number };
-type Recovery = { errors: Set<object>; promise: Promise<never> };
 type NavigateEvent = Event & {
   destination: { sameDocument: boolean };
   downloadRequest: string | null;
@@ -36,8 +33,11 @@ type State = {
   navigator: ChunkRecoveryNavigator | null;
   onPageshow: Set<(persisted: boolean) => void>;
   pending: { at: number; signal: AbortSignal } | null;
-  recovery: Recovery | null;
-  registry: WeakMap<object, Policy>;
+  recovery: { errors: Set<object>; promise: Promise<never> } | null;
+  // A failed loader that retried and failed again with a new error maps to true
+  // (recovers once a live probe shows the browser pinned the failure). Any other
+  // recorded failure maps to false (recovers only from a replaced build).
+  registry: WeakMap<object, boolean>;
   unloading: boolean;
 };
 
@@ -45,14 +45,11 @@ const STATE_KEY = Symbol.for("vinext.chunk-recovery");
 const HANDLED_MESSAGE =
   "[vinext] A vite:preloadError listener handled this script failure, so vinext did not recover.";
 const REFUSED_MESSAGE =
-  "[vinext] A script failed to load and the page could not be reloaded automatically, so it was left as is. Reloading the page by hand should fix it. If the problem persists, check the deploy for missing built assets.";
+  "[vinext] A script failed to load and the page was left as is. Reload it by hand, and if the problem persists, check the deploy for missing built assets.";
 const WARNINGS: Record<ChunkFailureVerdict, string> = {
-  pinned:
-    "[vinext] A script failed to load and this browser will not retry it. Reloading the page.",
-  replaced: "[vinext] This page's build is no longer on the server. Loading the current version.",
+  pinned: "[vinext] A script failed to load and will not be retried. Reloading the page.",
+  replaced: "[vinext] This page's build was replaced. Loading the current version.",
 };
-const SCRIPT_CONTENT_TYPE = /(?:java|ecma)script/i;
-const REPLACED_STATUSES = new Set([401, 403, 404, 410]);
 
 function getState(): State {
   const host = globalThis as typeof globalThis & { [STATE_KEY]?: State };
@@ -70,11 +67,11 @@ function getState(): State {
 }
 
 function isObject(value: unknown): value is object {
-  return (typeof value === "object" && value !== null) || typeof value === "function";
+  return Object(value) === value;
 }
 
-function remember(state: State, error: unknown, policy: Policy): void {
-  if (isObject(error)) state.registry.set(error, policy);
+function remember(state: State, error: unknown, retried: boolean): void {
+  if (isObject(error)) state.registry.set(error, retried);
 }
 
 function forget(state: State, error: unknown): void {
@@ -93,8 +90,8 @@ function resumeWhenShown(state: State): Promise<void> {
   });
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function getNavigation(): NavigationApi | undefined {
+  return (window as typeof window & { navigation?: NavigationApi }).navigation;
 }
 
 export function registerChunkRecovery(options: { entryUrl: string | null }): void {
@@ -111,16 +108,13 @@ export function registerChunkRecovery(options: { entryUrl: string | null }): voi
     state.pending = null;
     for (const notify of state.onPageshow) notify((event as PageTransitionEvent).persisted);
   });
-  (window as typeof window & { navigation?: NavigationApi }).navigation?.addEventListener(
-    "navigate",
-    (event) => {
-      if (event.destination.sameDocument || event.downloadRequest !== null) return;
-      state.pending = { at: Date.now(), signal: event.signal };
-    },
-  );
+  getNavigation()?.addEventListener("navigate", (event) => {
+    if (event.destination.sameDocument || event.downloadRequest !== null) return;
+    state.pending = { at: Date.now(), signal: event.signal };
+  });
   window.addEventListener("vite:preloadError", (event) => {
     const payload = (event as Event & { payload?: unknown }).payload;
-    if (isObject(payload) && !state.registry.has(payload)) state.registry.set(payload, "deploy");
+    if (isObject(payload) && !state.registry.has(payload)) state.registry.set(payload, false);
   });
 }
 
@@ -150,7 +144,9 @@ export async function loadChunk<T>(
   if (!failed) throw new Error(HANDLED_MESSAGE);
 
   const state = getState();
-  await sleep(CHUNK_RETRY_DELAY_MIN_MS + Math.random() * CHUNK_RETRY_DELAY_SPREAD_MS);
+  await new Promise((resolve) =>
+    setTimeout(resolve, CHUNK_RETRY_DELAY_MIN_MS + Math.random() * CHUNK_RETRY_DELAY_SPREAD_MS),
+  );
   await resumeWhenShown(state);
 
   if (state.recovery) {
@@ -161,7 +157,7 @@ export async function loadChunk<T>(
   }
 
   if (options.retry === false) {
-    remember(state, failure, "deploy");
+    remember(state, failure, false);
     throw failure;
   }
 
@@ -170,7 +166,7 @@ export async function loadChunk<T>(
   } catch (error) {
     await resumeWhenShown(state);
     if (error === failure) forget(state, error);
-    else remember(state, error, "retry");
+    else remember(state, error, true);
     throw error;
   }
 }
@@ -209,11 +205,11 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
   await resumeWhenShown(state);
 
   const verdict: ChunkFailureVerdict | null =
-    status === "replaced"
-      ? "replaced"
-      : status === "live" && [...errors].some((joined) => state.registry.get(joined) === "retry")
+    status === "live"
+      ? [...errors].some((joined) => state.registry.get(joined))
         ? "pinned"
-        : null;
+        : null
+      : status;
   if (verdict === null) throw error;
 
   await settlePendingNavigation(state);
@@ -227,12 +223,12 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
 
   return new Promise<never>((_, reject) => {
     let done = false;
-    const finish = (keepClaim: boolean) => {
+    const finish = (keepClaim: boolean, deregister = true) => {
       if (done) return;
       done = true;
       state.onPageshow.delete(onShown);
       if (!keepClaim) release(record);
-      for (const joined of errors) state.registry.delete(joined);
+      if (deregister) for (const joined of errors) state.registry.delete(joined);
       reject(error);
     };
     const onShown = (persisted: boolean) => {
@@ -244,38 +240,33 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
       onAbandoned: () => finish(true),
       onCanceled: () => finish(false),
     });
-    if (!started) {
-      done = true;
-      state.onPageshow.delete(onShown);
-      release(record);
+    if (started) {
+      console.warn(WARNINGS[verdict]);
+    } else {
       console.error(REFUSED_MESSAGE);
-      reject(error);
-      return;
+      finish(false, false);
     }
-
-    console.warn(WARNINGS[verdict]);
   });
 }
 
-async function probeBuild(entryUrl: string | null): Promise<BuildStatus> {
-  if (entryUrl === null) return "unavailable";
+async function probeBuild(entryUrl: string | null): Promise<"replaced" | "live" | null> {
+  if (entryUrl === null) return null;
 
   try {
-    const response = await fetch(entryUrl, {
+    const { headers, status, type } = await fetch(entryUrl, {
       cache: "no-store",
       credentials: "same-origin",
       method: "HEAD",
       redirect: "manual",
       signal: AbortSignal.timeout(BUILD_PROBE_TIMEOUT_MS),
     });
-    const { status, type } = response;
-    if (type === "opaqueredirect" || REPLACED_STATUSES.has(status)) return "replaced";
-    if (status < 200 || status > 299) return "unavailable";
+    if (type === "opaqueredirect" || [401, 403, 404, 410].includes(status)) return "replaced";
+    if (status < 200 || status > 299) return null;
 
-    const contentType = response.headers.get("content-type");
-    return contentType !== null && !SCRIPT_CONTENT_TYPE.test(contentType) ? "replaced" : "live";
+    const contentType = headers.get("content-type");
+    return contentType !== null && !/(?:java|ecma)script/i.test(contentType) ? "replaced" : "live";
   } catch {
-    return "unavailable";
+    return null;
   }
 }
 
@@ -299,19 +290,14 @@ async function settlePendingNavigation(state: State): Promise<void> {
 }
 
 function readClaims(storage: Storage, now: number): ClaimRecord[] {
-  let records: unknown;
   try {
-    records = JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY) ?? "[]");
+    const records: ClaimRecord[] = JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY) ?? "[]");
+    return records.filter(
+      (record) => typeof record?.at === "number" && now - record.at < CHUNK_RECOVERY_WINDOW_MS,
+    );
   } catch {
     return [];
   }
-  if (!Array.isArray(records)) return [];
-  return records.filter(
-    (record: ClaimRecord | null) =>
-      isObject(record) &&
-      typeof record.at === "number" &&
-      now - record.at < CHUNK_RECOVERY_WINDOW_MS,
-  );
 }
 
 function claim(entryUrl: string | null, verdict: ChunkFailureVerdict): ClaimRecord | null {
@@ -348,14 +334,18 @@ function release(record: ClaimRecord): void {
 const defaultNavigator: ChunkRecoveryNavigator = (outcome) => {
   const { location } = window;
   const listening = new AbortController();
-  const timer = setTimeout(() => {
+  const { signal } = listening;
+  const stop = () => {
+    clearTimeout(timer);
     listening.abort();
+  };
+  const timer = setTimeout(() => {
+    stop();
     outcome.onAbandoned();
   }, DOCUMENT_UNLOAD_TIMEOUT_MS);
-  const navigation = (window as typeof window & { navigation?: NavigationApi }).navigation;
   let captured = false;
 
-  navigation?.addEventListener(
+  getNavigation()?.addEventListener(
     "navigate",
     (event) => {
       if (captured || event.destination.sameDocument) return;
@@ -363,23 +353,15 @@ const defaultNavigator: ChunkRecoveryNavigator = (outcome) => {
       event.signal.addEventListener(
         "abort",
         () => {
-          clearTimeout(timer);
-          listening.abort();
+          stop();
           outcome.onCanceled();
         },
-        { signal: listening.signal },
+        { signal },
       );
     },
-    { signal: listening.signal },
+    { signal },
   );
-  window.addEventListener(
-    "pagehide",
-    () => {
-      clearTimeout(timer);
-      listening.abort();
-    },
-    { signal: listening.signal },
-  );
+  window.addEventListener("pagehide", stop, { signal });
 
   location.replace(toDocumentLoadHref(location.href));
   if (!captured) listening.abort();
@@ -387,8 +369,6 @@ const defaultNavigator: ChunkRecoveryNavigator = (outcome) => {
 };
 
 export function toDocumentLoadHref(target: string): string {
-  const resolved = new URL(target, window.location.href).href;
-  const withoutFragment = (href: string) => href.split("#", 1)[0];
-  const current = withoutFragment(window.location.href);
-  return withoutFragment(resolved) === current ? current : target;
+  const current = window.location.href.split("#", 1)[0];
+  return new URL(target, window.location.href).href.split("#", 1)[0] === current ? current : target;
 }
