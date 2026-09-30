@@ -104,10 +104,9 @@ export function createAppBrowserRefreshQueue(
       documentNavigation = true;
       active = null;
       result = null;
-      needsRefresh = false;
       discardExecuting();
-      // Keep undispatched mutations dormant. A fresh router operation can
-      // resume them on confirmed cancellation or a fresh router operation.
+      // Keep undispatched mutations dormant until confirmed recovery or a new
+      // navigation. Public refresh alone is not proof that unload was canceled.
       for (const request of requests.splice(0)) {
         if (request.kind === "refresh") request.resolve();
         else requests.push(request);
@@ -137,7 +136,6 @@ export function createAppBrowserRefreshQueue(
       });
     },
     refresh(): Promise<void> {
-      documentNavigation = false;
       return new Promise<void>((resolve, reject) => {
         requests.push({ kind: "refresh", resolve, reject });
         drain();

@@ -525,7 +525,7 @@ function beginNavigation(refreshBase?: AppRouterState, preserveScrollRestoration
   mpaNavigationScheduler.reset();
   const navId = browserNavigationController.beginNavigation(refreshBase);
   if (!preserveScrollRestoration) scrollRestorationNavigationId = navId;
-  browserNavigationController.discardPendingNavigation();
+  browserNavigationController.discardPendingNavigation(refreshBase);
   refreshQueue.start(navId);
   discardedServerActionRefreshScheduler.markNavigationStart(navId);
   return navId;
@@ -1041,6 +1041,9 @@ async function commitSameUrlNavigatePayload(
           }),
         onDiscardedRevalidation() {
           discardedServerActionRefreshScheduler.schedule();
+        },
+        onDocumentNavigationRevalidation() {
+          refreshQueue.refreshWhenIdle();
         },
         revalidation,
         startedNavigationId: actionInitiation.navigationId,
@@ -1914,8 +1917,12 @@ function registerServerActionCallback(): void {
               ),
             isCurrentAction: () =>
               browserNavigationController.isCurrentNavigation(actionInitiation.navigationId),
-            onRevalidationWithoutRender() {
-              if (browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)) {
+            onRevalidationWithoutRender(reason) {
+              if (reason === "document-navigation") {
+                refreshQueue.refreshWhenIdle();
+              } else if (
+                browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
+              ) {
                 refreshQueue.refreshCurrentAction();
               } else {
                 discardedServerActionRefreshScheduler.schedule();

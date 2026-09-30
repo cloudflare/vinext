@@ -61,7 +61,7 @@ export type ClientServerActionDeps = {
     renderedPathAndSearch: string | null,
   ): Promise<unknown>;
   isCurrentAction?(): boolean;
-  onRevalidationWithoutRender?(): void;
+  onRevalidationWithoutRender?(reason?: "document-navigation"): void;
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
   renderRedirectPayload(
@@ -86,8 +86,8 @@ function resolveActionRedirectTarget(
   const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
   if (!actionRedirect) return null;
 
+  let redirectUrl: URL;
   try {
-    let redirectUrl: URL;
     if (actionRedirect.startsWith("/") || /^[a-z]+:/i.test(actionRedirect)) {
       redirectUrl = new URL(actionRedirect, actionHref);
     } else {
@@ -96,28 +96,27 @@ function resolveActionRedirectTarget(
       if (!baseDir.endsWith("/")) baseDir += "/";
       redirectUrl = new URL(actionRedirect, `${baseParsed.origin}${baseDir}${baseParsed.search}`);
     }
-
-    if (
-      redirectUrl.origin !== window.location.origin ||
-      (basePath !== "" && !hasBasePath(redirectUrl.pathname, basePath))
-    ) {
-      performHardNavigation(redirectUrl.href);
-      return null;
-    }
-    const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
-    return {
-      href: redirectUrl.href,
-      type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
-      status: statusHeader ? parseInt(statusHeader, 10) : 307,
-      // The target's own render, which a rewrite may give another query.
-      renderedPathAndSearch: parseRenderedPathAndSearchHeader(
-        response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
-      ),
-    };
   } catch {
     performHardNavigation(actionRedirect);
     return null;
   }
+  if (
+    redirectUrl.origin !== window.location.origin ||
+    (basePath !== "" && !hasBasePath(redirectUrl.pathname, basePath))
+  ) {
+    performHardNavigation(redirectUrl.href);
+    return null;
+  }
+  const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
+  return {
+    href: redirectUrl.href,
+    type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
+    status: statusHeader ? parseInt(statusHeader, 10) : 307,
+    // The target's own render, which a rewrite may give another query.
+    renderedPathAndSearch: parseRenderedPathAndSearchHeader(
+      response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+    ),
+  };
 }
 
 class ServerActionRedirectError extends Error {
@@ -172,7 +171,12 @@ export async function invokeClientServerAction(
     return false;
   };
   const performHardNavigation: ClientServerActionDeps["performHardNavigation"] = (url, mode) => {
-    if (canApplyNavigation()) deps.performHardNavigation(url, mode);
+    if (!canApplyNavigation()) return;
+    try {
+      deps.performHardNavigation(url, mode);
+    } finally {
+      if (revalidation !== "none") deps.onRevalidationWithoutRender?.("document-navigation");
+    }
   };
 
   const hasActionRedirect = fetchResponse.headers.has(ACTION_REDIRECT_HEADER);

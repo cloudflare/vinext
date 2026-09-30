@@ -83,6 +83,7 @@ type SameUrlServerActionLifecycleOptions = {
   onActionReady?: (state: AppRouterState) => void;
   scrollIntent?: AppRouterScrollIntent | null;
   onDiscardedRevalidation?: () => void;
+  onDocumentNavigationRevalidation?: () => void;
   revalidation?: ServerActionRevalidationKind;
   startedNavigationId?: number;
   targetHref?: string;
@@ -126,7 +127,7 @@ type BrowserNavigationPayloadOptions = {
 
 type BrowserNavigationController = {
   beginNavigation(refreshBase?: AppRouterState): number;
-  discardPendingNavigation(): void;
+  discardPendingNavigation(retainedState?: AppRouterState): void;
   getActiveNavigationId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
@@ -316,6 +317,7 @@ export function createAppBrowserNavigationController(
     {
       committedState: AppRouterState | null;
       onCommittedState?: (state: AppRouterState) => void;
+      onDiscardedRevalidation?: () => void;
       scrollIntent: AppRouterScrollIntent | null;
       resolve: (committed: boolean) => void;
     }
@@ -392,12 +394,12 @@ export function createAppBrowserNavigationController(
     return activeNavigationId;
   }
 
-  function discardPendingNavigation(): void {
+  function discardPendingNavigation(retainedState?: AppRouterState): void {
     settlePendingBrowserRouterState(activePendingBrowserRouterState);
     for (const pending of pendingNavigationCommits.values()) {
       consumeAppRouterScrollIntent(pending.scrollIntent);
     }
-    settleNavigationCommits(Infinity, false);
+    settleNavigationCommits(Infinity, false, retainedState?.renderId);
     clearCommittedNavigationFailureTargets(Infinity);
     for (const renderId of pendingNavigationPrePaintEffects.keys()) {
       pendingNavigationPrePaintEffects.delete(renderId);
@@ -520,16 +522,29 @@ export function createAppBrowserNavigationController(
    * the exact render whose insertion effect ran is a successful commit; older
    * superseded renders and cleanup-only settlements resolve as no-commit.
    */
-  function settleNavigationCommits(renderId: number, committed: boolean): void {
+  function settleNavigationCommits(
+    renderId: number,
+    committed: boolean,
+    retainedRenderId = -1,
+  ): void {
     for (const [pendingId, pendingCommit] of pendingNavigationCommits) {
       if (pendingId > renderId) {
         continue;
       }
 
-      pendingNavigationCommits.delete(pendingId);
+      const retainsRevalidation =
+        !committed && pendingId <= retainedRenderId && pendingCommit.onDiscardedRevalidation;
+      // An inheriting refresh can itself be discarded. Keep the obligation
+      // until a successful commit, or a rollback that no longer retains it.
+      if (!retainsRevalidation) pendingNavigationCommits.delete(pendingId);
       const didCommit = committed && pendingId === renderId;
       if (didCommit && pendingCommit.committedState !== null) {
         pendingCommit.onCommittedState?.(pendingCommit.committedState);
+      }
+      // A fresh server commit or an inherited accepted result already carries
+      // the action's data. Explicit rollback to older visible state does not.
+      if (!committed && pendingId > retainedRenderId) {
+        pendingCommit.onDiscardedRevalidation?.();
       }
       pendingCommit.resolve(didCommit);
     }
@@ -980,6 +995,17 @@ export function createAppBrowserNavigationController(
     };
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
+    const hardNavigate = () => {
+      try {
+        performHardNavigation(targetHref);
+      } finally {
+        if (
+          shouldScheduleRefreshForDiscardedServerAction(lifecycleOptions?.revalidation ?? "none")
+        ) {
+          lifecycleOptions?.onDocumentNavigationRevalidation?.();
+        }
+      }
+    };
     const {
       approvedCommit,
       decision,
@@ -1008,7 +1034,7 @@ export function createAppBrowserNavigationController(
       // Same-URL action hard navigations do not expose a navigation outcome to
       // callers. If the loop guard blocks, the degraded state is still the
       // existing return contract: no visible commit and no action value.
-      performHardNavigation(targetHref);
+      hardNavigate();
       return undefined;
     }
 
@@ -1027,7 +1053,7 @@ export function createAppBrowserNavigationController(
       if (latestApproval.decision.disposition === "hard-navigate") {
         // See the same-URL hard-navigation note above. The guard result is
         // deliberately not surfaced through the server-action return channel.
-        performHardNavigation(targetHref);
+        hardNavigate();
         return undefined;
       }
 
@@ -1040,6 +1066,12 @@ export function createAppBrowserNavigationController(
         const effect = lifecycleOptions?.createCommitEffect?.(state);
         if (effect) queuePrePaintNavigationEffect(state.renderId, effect);
         claimAppRouterScrollIntentForCommit(lifecycleOptions?.scrollIntent, state.renderId);
+        pendingNavigationCommits.set(state.renderId, {
+          committedState: state,
+          scrollIntent: lifecycleOptions?.scrollIntent ?? null,
+          onDiscardedRevalidation: () => notifyDiscardedServerActionRevalidation(lifecycleOptions),
+          resolve() {},
+        });
         startTransition(() => getBrowserRouterStateSetter()(state));
         if (!lifecycleOptions?.actionBase) {
           syncHistoryStatePreviousNextUrl(

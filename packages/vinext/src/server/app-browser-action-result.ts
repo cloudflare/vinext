@@ -198,7 +198,7 @@ export function createDiscardedServerActionRefreshScheduler(
 
   function flush(): void {
     flushQueued = false;
-    if (!refreshPending || activeNavigationId !== null) return;
+    if (documentNavigation || !refreshPending || activeNavigationId !== null) return;
 
     refreshPending = false;
     options.runRefresh();
@@ -212,12 +212,12 @@ export function createDiscardedServerActionRefreshScheduler(
 
   return {
     stopForDocumentNavigation() {
-      refreshPending = false;
       activeNavigationId = null;
       documentNavigation = true;
     },
     resumeAfterDocumentRestore() {
       documentNavigation = false;
+      if (refreshPending) queueFlush();
     },
     markNavigationSettled(navigationId) {
       if (activeNavigationId !== navigationId) return;
@@ -231,7 +231,6 @@ export function createDiscardedServerActionRefreshScheduler(
       activeNavigationId = navigationId;
     },
     schedule() {
-      if (documentNavigation) return;
       refreshPending = true;
       queueFlush();
     },

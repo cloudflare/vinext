@@ -329,6 +329,60 @@ describe("app browser server action client", () => {
     });
   }
 
+  for (const target of ["/pages", "https://other.example/pages"]) {
+    it.each([false, true])(
+      `retains current ${target} redirect revalidation when location throws=%s`,
+      async (throws) => {
+        vi.stubGlobal("window", {
+          location: { href: "https://example.com/source", origin: "https://example.com" },
+        });
+        vi.stubGlobal(
+          "fetch",
+          vi.fn().mockResolvedValue(
+            new Response("document", {
+              headers: {
+                "content-type": "text/plain",
+                [ACTION_REDIRECT_HEADER]: target,
+                [ACTION_REVALIDATED_HEADER]: "1",
+              },
+            }),
+          ),
+        );
+        const failure = new Error("Location failed");
+        const performHardNavigation = vi.fn(() => {
+          if (throws) throw failure;
+        });
+        const onRevalidationWithoutRender = vi.fn();
+        const result = invokeClientServerAction(
+          "action-id",
+          [],
+          createServerActionInitiationSnapshot({
+            href: "https://example.com/source",
+            navigationId: 1,
+            routerState: createActionTestRouterState(),
+          }),
+          {
+            basePath: "",
+            clearClientNavigationCaches: vi.fn(),
+            clientRscCompatibilityId: null,
+            commitSameUrlNavigatePayload: vi.fn(),
+            navigationPlanner,
+            isCurrentAction: () => true,
+            onRevalidationWithoutRender,
+            performHardNavigation,
+            renderRedirectPayload: vi.fn(),
+            syncCurrentHistoryState: vi.fn(),
+            syncServerActionHttpFallbackHead: vi.fn(),
+          },
+        );
+        if (throws) await expect(result).rejects.toBe(failure);
+        else await result;
+        expect(performHardNavigation).toHaveBeenCalledOnce();
+        expect(onRevalidationWithoutRender).toHaveBeenCalledExactlyOnceWith("document-navigation");
+      },
+    );
+  }
+
   for (const current of [false, true]) {
     it.each([true, false])(
       `refreshes a revalidated rootless action with current=${current}, ok=%s`,
