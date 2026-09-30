@@ -39,9 +39,10 @@ export const consumerEnvironmentConditionFilter = new RegExp(
 // static import declarations cannot sit inside a foldable branch. Folding can
 // therefore only change the scanned graph by pruning a dynamic `import()`, a
 // phase import (`import.source()` / `import.defer()`), or an `import.meta`
-// expression such as `import.meta.glob(...)`.
+// expression such as `import.meta.glob(...)`. Only those follow `import.`, so
+// the dot alone admits them, including when a comment precedes the property.
 const SCANNED_IMPORT_FOLD_PRESCAN = new RegExp(
-  String.raw`${DYNAMIC_IMPORT_PRESCAN.source}|\bimport\s*\.\s*(?:meta|source|defer)\b`,
+  String.raw`${DYNAMIC_IMPORT_PRESCAN.source}|\bimport\s*\.`,
 );
 // `import.meta.url` and `import.meta.env` reads never name another module.
 const NON_IMPORTING_IMPORT_META_RE = /\s*\.\s*(?:url|env)\b/y;

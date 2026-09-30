@@ -418,6 +418,7 @@ const truthy = value || typeof window === "undefined";`;
       `const label = "héllo 😀"; if (typeof window !== "undefined") import("after-unicode")`,
       `if (typeof window !== "undefined") import.source("./browser.wasm")`,
       `if (process.browser) import.defer("./browser.js")`,
+      `if (typeof window !== "undefined") import./* phase */ source("./browser.wasm")`,
     ];
     for (const source of observable) {
       const folded = replaceConsumerEnvironmentConditions(source, scan);
@@ -435,6 +436,7 @@ const truthy = value || typeof window === "undefined";`;
     expect(mayFoldChangeScannedImports(`import . meta . glob("./*.js")`)).toBe(true);
     expect(mayFoldChangeScannedImports(`import.source("./module.wasm")`)).toBe(true);
     expect(mayFoldChangeScannedImports(`import . defer("./module.js")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import./**/source("./module.wasm")`)).toBe(true);
     expect(
       mayFoldChangeScannedImports(
         `import helper from "helper"; export * from "shared"; if (typeof window !== "undefined") helper()`,
