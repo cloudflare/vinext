@@ -322,6 +322,7 @@ import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import {
   consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
+  mayFoldChangeScannedImports,
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
@@ -7308,6 +7309,9 @@ export const loadServerActionClient = ${
         filter: { code: consumerEnvironmentConditionFilter },
         handler(code, id) {
           const scansImports = this.environment.config.build.write === false;
+          // Scans keep only import specifiers, which folding can change only by
+          // pruning a dynamic import or import.meta.glob.
+          if (scansImports && !mayFoldChangeScannedImports(code)) return null;
           const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
           const replaceProcessBrowser = scansImports;
           if (!replaceTypeofWindow && !replaceProcessBrowser) return null;
@@ -7328,6 +7332,7 @@ export const loadServerActionClient = ${
                   ...(replaceTypeofWindow ? { typeofWindow } : {}),
                   ...(replaceProcessBrowser ? { processBrowser } : {}),
                   pruneUnreachableImports: scansImports,
+                  onlyIfScannedImportsChange: scansImports,
                 },
                 id,
               ),
