@@ -188,8 +188,10 @@ const projectServers = {
     testMatch: ["**/cloudflare-sentry-app/**/*.spec.ts"],
     use: { baseURL: "http://localhost:4193" },
     server: {
+      // Exercise the built Worker through Miniflare without Wrangler's extra
+      // development proxy, which can exit when a browser connection resets.
       command:
-        "NEXT_PUBLIC_VINEXT_TEST_SENTRY_DSN=http://public@localhost:4193/1 npx vp build && npx wrangler dev --port 4193",
+        "NEXT_PUBLIC_VINEXT_TEST_SENTRY_DSN=http://public@localhost:4193/1 npx vp build && npx vp preview --port 4193",
       cwd: "./tests/fixtures/cf-sentry-app",
       port: 4193,
       reuseExistingServer: !process.env.CI,
