@@ -491,7 +491,7 @@ A tab opened before a deploy requests chunks the deploy removed, and browsers ca
 - Loaders (`loadChunk`, `loadClientReference`) retry once and record the failure. They never navigate.
 - Only foreground callers (`loadChunk(...).catch(recoverFromChunkFailure)`) and React's root error callbacks decide to load a new document. Background work, such as prefetch decoding, must never navigate.
 - The App Router's navigator and in-flight target live in `server/app-browser-chunk-recovery.ts`, and document loads go through `server/app-browser-document-navigation.ts`.
-- `tests/app-router-production-build.test.ts` fails when a new lazy vinext runtime chunk appears without an entry in its recovery inventory.
+- `tests/app-router-production-build.test.ts` fails when a new lazy vinext runtime chunk appears without an entry in the recovery inventory, `tests/lazy-runtime-chunk-recovery.ts`.
 
 ### Virtual Module Resolution Quirks
 
