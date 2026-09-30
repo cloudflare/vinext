@@ -218,14 +218,26 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   }
 
-  for (const cancelHash of [false, true]) {
-    test(`a ${cancelHash ? "canceled" : "committed"} raw hash navigation resumes actions behind a pending document navigation`, async ({
+  for (const hashOutcome of [
+    "committed",
+    "canceled",
+    "document-canceled",
+    "document-intercepted",
+    "initial-replacement",
+    "initial-hash",
+  ]) {
+    test(`a ${hashOutcome} raw hash navigation resumes actions behind a pending document navigation`, async ({
       page,
     }) => {
       const path = "/nextjs-compat/action-discarding";
       await page.goto(`${BASE}${path}`);
       await waitForAppRouterHydration(page);
       let posts = 0;
+      let responses = 0;
+      const recordResponse = (response: import("@playwright/test").Response) => {
+        if (isAppRouterServerActionRequestForPath(response.request(), path)) responses++;
+      };
+      page.on("response", recordResponse);
       let releaseAction: (() => void) | undefined;
       let releaseDocument: (() => void) | undefined;
       await page.route(`**${path}*`, async (route) => {
@@ -246,29 +258,54 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
         await page.click("#revalidating-hard-redirect");
         await expect.poll(() => releaseAction !== undefined).toBe(true);
         await page.click("#slow-action");
-        await page.evaluate((cancel) => {
+        await page.evaluate((outcome) => {
           const navigation = (window as Window & { navigation: EventTarget }).navigation;
           navigation.addEventListener("navigate", (event) => {
             const { destination } = event as Event & {
               destination: { sameDocument: boolean; url: string };
+              intercept(): void;
             };
-            if (destination.sameDocument && cancel) event.preventDefault();
+            if (destination.sameDocument && outcome !== "committed") {
+              event.preventDefault();
+              if (outcome.startsWith("document-")) window.location.assign("?replacement=1");
+            }
+            if (destination.url.endsWith("?replacement=1")) {
+              if (outcome === "document-canceled" || outcome === "initial-replacement")
+                event.preventDefault();
+              else (event as Event & { intercept(): void }).intercept();
+            }
             if (!destination.sameDocument && destination.url.endsWith("/old-school")) {
+              if (outcome === "initial-replacement") {
+                window.location.assign("?replacement=1");
+                return;
+              }
+              if (outcome === "initial-hash") {
+                window.location.hash = "resumed";
+                return;
+              }
               // Run in the surviving document while its replacement is loading.
               setTimeout(() => {
                 window.location.hash = "resumed";
               }, 250);
             }
           });
-        }, cancelHash);
+        }, hashOutcome);
         releaseAction?.();
-        await expect.poll(() => releaseDocument !== undefined).toBe(true);
-        expect(posts).toBe(1);
+        if (!hashOutcome.startsWith("initial-")) {
+          await expect.poll(() => releaseDocument !== undefined).toBe(true);
+          expect(posts).toBe(1);
+        }
         await expect.poll(() => posts).toBe(2);
-        expect(page.url()).toBe(`${BASE}${path}${cancelHash ? "" : "#resumed"}`);
+        // The mutation shares a server counter with later cases. Finish it
+        // before tearing down this document so it cannot leak into the next test.
+        await expect.poll(() => responses).toBe(2);
+        expect(page.url()).toBe(
+          `${BASE}${path}${hashOutcome === "committed" ? "#resumed" : hashOutcome === "document-intercepted" ? "?replacement=1" : ""}`,
+        );
       } finally {
         releaseAction?.();
         releaseDocument?.();
+        page.off("response", recordResponse);
         await page.unrouteAll({ behavior: "ignoreErrors" });
       }
     });

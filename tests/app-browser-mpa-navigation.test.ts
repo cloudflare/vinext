@@ -162,8 +162,12 @@ describe("AppBrowserMpaNavigationScheduler", () => {
 
 describe("document navigation cancellation", () => {
   const href = "https://example.com/target";
-  function navigate(navigation: EventTarget, url = href, sameDocument = false) {
-    const controller = new AbortController();
+  function navigate(
+    navigation: EventTarget,
+    url = href,
+    sameDocument = false,
+    controller = new AbortController(),
+  ) {
     navigation.dispatchEvent(
       Object.assign(new Event("navigate"), {
         destination: { url, sameDocument },
@@ -221,6 +225,85 @@ describe("document navigation cancellation", () => {
     navigate(navigation, "https://example.com/newer");
     await Promise.resolve();
     expect(recover).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("recovers when a replacement document aborts (hash=%s)", async (hash) => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation).abort();
+    if (hash) navigate(navigation, "https://example.com/source#resumed", true);
+    const replacement = navigate(navigation, "https://example.com/replacement");
+    await Promise.resolve();
+    expect(recover).not.toHaveBeenCalled();
+    replacement.abort();
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it("recovers when an owned replacement finishes in the surviving document", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation).abort();
+    navigate(navigation, "https://example.com/intercepted");
+    navigation.dispatchEvent(new Event("navigatesuccess"));
+    expect(recover).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it("does not re-adopt an aborted outer document event after nested navigation", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    const outer = new AbortController();
+    let latest: AbortController | undefined;
+    navigation.addEventListener("navigate", (event) => {
+      if ((event as Event & { destination: { url: string } }).destination.url.endsWith("/outer")) {
+        outer.abort();
+        latest = navigate(navigation, "https://example.com/latest");
+      }
+    });
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation).abort();
+    navigate(navigation, "https://example.com/outer", false, outer);
+    await Promise.resolve();
+    expect(recover).not.toHaveBeenCalled();
+    latest!.abort();
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it("retains a replacement started before the initial event reaches the observer", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    const initial = new AbortController();
+    navigation.addEventListener("navigate", (event) => {
+      if ((event as Event & { destination: { url: string } }).destination.url === href) {
+        initial.abort();
+        navigate(navigation, "https://example.com/replacement").abort();
+      }
+    });
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation, href, false, initial);
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it("recovers an initial document replaced by a canceled hash before observation", async () => {
+    const navigation = new EventTarget();
+    const recover = vi.fn();
+    const initial = new AbortController();
+    navigation.addEventListener("navigate", (event) => {
+      if ((event as Event & { destination: { url: string } }).destination.url === href) {
+        initial.abort();
+        navigate(navigation, "https://example.com/source#canceled", true).abort();
+      }
+    });
+    observeDocumentNavigationCancellation(navigation, href, recover);
+    navigate(navigation, href, false, initial);
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledOnce();
   });
 
   it("does not claim an unrelated document navigation", async () => {

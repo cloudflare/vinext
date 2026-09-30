@@ -91,14 +91,15 @@ export class AppBrowserMpaNavigationScheduler {
   }
 }
 
-/** Recover only a confirmed abort, never merely a slow document load. */
+/** Recover an owned abort or completion in the surviving document, never a slow load. */
 export function observeDocumentNavigationCancellation(
   navigation: EventTarget | undefined,
   href: string,
   onCancel: () => void,
 ): () => void {
   const observer = new AbortController();
-  let observed = false;
+  let observedSignal: AbortSignal | undefined;
+  let observedInitialNavigation = false;
   navigation?.addEventListener(
     "navigate",
     (event) => {
@@ -106,27 +107,31 @@ export function observeDocumentNavigationCancellation(
         destination: { url: string; sameDocument: boolean };
         signal: AbortSignal;
       };
-      // A same-document replacement can itself be canceled and emit no
-      // popstate. Keep the owned abort queued until another router owner resets it.
-      if (observed && destination.sameDocument) return;
-      // A newer navigation may abort the old event before firing its own event.
-      // Invalidate the queued recovery before its microtask can dispatch actions.
-      if (observed || destination.sameDocument || destination.url !== href) {
-        observer.abort();
-        return;
-      }
-      observed = true;
-      signal.addEventListener(
-        "abort",
-        () => {
-          queueMicrotask(() => {
-            if (observer.signal.aborted) return;
-            observer.abort();
-            onCancel();
-          });
-        },
-        { once: true, signal: observer.signal },
-      );
+      // A replacement can reach this listener before the original event does.
+      // Stage its signal, but only recover once our original dispatch is seen.
+      if (!destination.sameDocument && destination.url === href) observedInitialNavigation = true;
+      // Never let an aborted outer event overwrite its live nested replacement.
+      if (destination.sameDocument) return;
+      if (signal.aborted && (observedSignal || destination.url !== href)) return;
+      observedSignal = signal;
+      const recover = () => {
+        queueMicrotask(() => {
+          if (!observedInitialNavigation || observer.signal.aborted || observedSignal !== signal)
+            return;
+          observer.abort();
+          onCancel();
+        });
+      };
+      // Initial dispatch may have been replaced by a canceled hash before it
+      // reached us. Its aborted signal is the fallback when no newer one exists.
+      if (signal.aborted) recover();
+      else signal.addEventListener("abort", recover, { once: true, signal: observer.signal });
+      // An intercepted document navigation can finish without abort or unload.
+      // Capture this attempt: an earlier success listener may start a newer one.
+      navigation?.addEventListener("navigatesuccess", recover, {
+        once: true,
+        signal: observer.signal,
+      });
     },
     { signal: observer.signal },
   );
