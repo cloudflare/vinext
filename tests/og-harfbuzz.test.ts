@@ -21,7 +21,12 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-og-harfbuzz-"));
 
 afterAll(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
-type TransformHandler = (code: string, id: string) => { code: string } | null;
+type BuildEnvironment = { mode: "build"; config: { build: { sourcemap: boolean } } };
+type TransformHandler = (
+  code: string,
+  id: string,
+  environment?: BuildEnvironment,
+) => { code: string; map?: unknown } | null;
 
 function createTransform(command: "build" | "serve", root: string): TransformHandler {
   const plugin = createOgHarfbuzzPlugin();
@@ -30,12 +35,10 @@ function createTransform(command: "build" | "serve", root: string): TransformHan
     command,
   });
   const { handler } = plugin.transform as { handler: TransformHandler };
-  const context = {
-    error(message: string): never {
-      throw new Error(message);
-    },
+  const error = (message: string): never => {
+    throw new Error(message);
   };
-  return (code, id) => handler.call(context, code, id);
+  return (code, id, environment) => handler.call({ environment, error }, code, id);
 }
 
 let copyCount = 0;
@@ -214,6 +217,24 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     const devResult = dev(code, edgeEntry);
     expect(dev(code, edgeEntry)).not.toBe(devResult);
     expect(dev(code, edgeEntry)!.code).toBe(devResult!.code);
+  });
+
+  it("omits the sourcemap per environment when the patch is shared", () => {
+    const code = fs.readFileSync(edgeEntry, "utf8");
+    const build = createTransform("build", path.join(tmpRoot, "sourcemap-project"));
+    const environment = (sourcemap: boolean): BuildEnvironment => ({
+      mode: "build",
+      config: { build: { sourcemap } },
+    });
+
+    const withMap = build(code, edgeEntry, environment(true));
+    const withoutMap = build(code, edgeEntry, environment(false));
+    expect(withoutMap!.map).toBeNull();
+    expect(withoutMap!.code).toBe(withMap!.code);
+    // The environment without sourcemaps must not strip the shared result.
+    const again = build(code, edgeEntry, environment(true));
+    expect(again).toBe(withMap);
+    expect(again!.map).toBeTruthy();
   });
 
   it("fails the build when the HarfBuzz factory no longer matches", () => {

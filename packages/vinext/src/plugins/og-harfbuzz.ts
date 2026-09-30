@@ -349,8 +349,10 @@ export function createOgHarfbuzzPlugin(): Plugin {
             this.error(message),
           );
         // Every scan and build pass (and every server environment) feeds the
-        // same bundle through this patch; parse it once per build. Dev keeps
-        // recomputing so a removed callback module is rewritten.
+        // same bundle through this patch; parse it once per build. The
+        // resolved hb.wasm and the written callback modules are stable for the
+        // build. Dev keeps recomputing so a removed callback module is
+        // rewritten.
         return omitUnusedBuildSourcemap(
           this.environment,
           isBuild ? cached(id, code, callbackModuleDir, patch) : patch(),
