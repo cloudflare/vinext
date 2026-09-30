@@ -20,6 +20,7 @@
  * - dynamic(() => import('./Component'), { ssr: false })
  */
 import React, { type ComponentType } from "react";
+import { loadChunk, recoverFromChunkFailure } from "../client/chunk-load-recovery.js";
 import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
 import type {
   DynamicOptions,
@@ -97,9 +98,16 @@ function normalizeDynamicOptions<P>(
   };
 }
 
+// User loaders are not retried (a data-fetching loader must not run twice), so
+// they recover only from a replaced build.
+function loadComponentModule<P>(loader: LoaderFn<P>): LoaderComponent<P> {
+  if (isServer) return loader();
+  return loadChunk(loader, { retry: false }).catch(recoverFromChunkFailure);
+}
+
 function createLazyComponent<P>(loader: LoaderFn<P>) {
   return React.lazy(async () => {
-    const mod = await loader();
+    const mod = await loadComponentModule(loader);
     if (hasDefaultExport(mod)) return mod;
     return { default: mod };
   });

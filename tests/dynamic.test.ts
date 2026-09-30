@@ -6,7 +6,7 @@
  * SSR rendering, ssr:false behavior, loading components, error
  * boundaries, displayName assignment, and flushPreloads().
  */
-import { describe, it, expect } from "vite-plus/test";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -253,5 +253,100 @@ describe("next/dynamic RSC async component path (React.lazy unavailable)", () =>
     } finally {
       React.lazy = originalLazy;
     }
+  });
+});
+
+// ─── Browser: lazy chunk failures ───────────────────────────────────────
+
+describe("next/dynamic in the browser when a chunk cannot load", () => {
+  type ChunkRecovery = typeof import("../packages/vinext/src/client/chunk-load-recovery.js");
+  let recovery: ChunkRecovery;
+  let browserDynamic: typeof dynamic;
+  let navigator: ReturnType<
+    typeof vi.fn<Parameters<ChunkRecovery["setChunkRecoveryNavigator"]>[0]>
+  >;
+  let fetchEntry: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    const storage = new Map<string, string>();
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    // isServer is decided when the module loads, so window must exist first.
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      sessionStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => void storage.set(key, value),
+      },
+    });
+    vi.resetModules();
+    recovery = await import("../packages/vinext/src/client/chunk-load-recovery.js");
+    browserDynamic = (await import("../packages/vinext/src/shims/dynamic.js")).default;
+
+    navigator = vi.fn((outcome) => {
+      queueMicrotask(() => outcome.onCanceled());
+      return true;
+    });
+    fetchEntry = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetchEntry);
+    recovery.registerChunkRecovery({ entryUrl: "/assets/index-new.js" });
+    recovery.setChunkRecoveryNavigator(navigator);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  async function renderBrowserDynamic(loader: () => Promise<{ default: React.ComponentType }>) {
+    const errors: unknown[] = [];
+    const Dynamic = browserDynamic(loader);
+    const stream = await renderToReadableStream(React.createElement(Dynamic), {
+      onError: (error) => void errors.push(error),
+    });
+    const ready = stream.allReady.catch(() => {});
+    await vi.advanceTimersByTimeAsync(2_000);
+    await ready;
+    return { errors, html: await new Response(stream).text() };
+  }
+
+  it("renders the component without probing the build or recovering", async () => {
+    const { errors, html } = await renderBrowserDynamic(async () => ({ default: Hello }));
+
+    expect(html).toContain("Hello from dynamic");
+    expect(errors).toEqual([]);
+    expect(fetchEntry).not.toHaveBeenCalled();
+    expect(navigator).not.toHaveBeenCalled();
+  });
+
+  it("loads the document once when the build was replaced, without rerunning the loader", async () => {
+    const failure = new TypeError("Failed to fetch dynamically imported module");
+    const loader = vi.fn(async (): Promise<{ default: React.ComponentType }> => {
+      throw failure;
+    });
+
+    const { errors } = await renderBrowserDynamic(loader);
+
+    expect(loader).toHaveBeenCalledOnce();
+    expect(fetchEntry).toHaveBeenCalledOnce();
+    expect(navigator).toHaveBeenCalledOnce();
+    // The navigator reported a canceled load, so the original error reaches the boundary.
+    expect(errors).toEqual([failure]);
+  });
+
+  it("surfaces the error, without reloading or rerunning the loader, when the build is still live", async () => {
+    fetchEntry.mockResolvedValue(
+      new Response(null, { headers: { "content-type": "text/javascript" }, status: 200 }),
+    );
+    const failure = new TypeError("Failed to fetch dynamically imported module");
+    const loader = vi.fn(async (): Promise<{ default: React.ComponentType }> => {
+      throw failure;
+    });
+
+    const { errors } = await renderBrowserDynamic(loader);
+
+    expect(loader).toHaveBeenCalledOnce();
+    expect(navigator).not.toHaveBeenCalled();
+    expect(errors).toEqual([failure]);
   });
 });
