@@ -72,8 +72,13 @@ test.describe("refresh during an App Router navigation", () => {
   // Next.js replaces the pending navigation when a newer navigation starts;
   // only the winning action gates queued refreshes.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
-  for (const refreshBeforeLeaving of [true, false]) {
-    test(`an older stream does not block a refresh ${refreshBeforeLeaving ? "queued before" : "requested after"} leaving it`, async ({
+  for (const [restore, refreshBeforeLeaving] of [
+    ["link", true],
+    ["link", false],
+    ["back", true],
+    ["back", false],
+  ] as const) {
+    test(`an older stream does not block a refresh ${refreshBeforeLeaving ? "queued before" : "requested after"} leaving it via ${restore}`, async ({
       page,
     }) => {
       const streamingRequests = trackRscRequests(page, `${START_PATH}/streaming`);
@@ -86,7 +91,11 @@ test.describe("refresh during an App Router navigation", () => {
       expect(streamingRequests[0].finished).toBe(false);
 
       if (refreshBeforeLeaving) await page.getByTestId("refresh").click();
-      await page.getByTestId("link-start").click();
+      if (restore === "back") {
+        await page.goBack();
+      } else {
+        await page.getByTestId("link-start").click();
+      }
       await expect(page.getByTestId("refresh-nav-start")).toBeVisible();
       // The initial visit is cached. The only subsequent start-route request
       // must be the refresh, which should not wait for the old streaming tail.

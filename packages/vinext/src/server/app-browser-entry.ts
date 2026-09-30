@@ -2995,6 +2995,7 @@ function bootstrapHydration(
       return;
     }
     const snapshotNavigationId = browserNavigationController.beginNavigation();
+    discardedServerActionRefreshScheduler.markNavigationStart(snapshotNavigationId);
     if (
       restoreHistoryStateSnapshot(
         event.state,
@@ -3019,9 +3020,11 @@ function bootstrapHydration(
         event.state,
       );
       browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
+      discardedServerActionRefreshScheduler.markNavigationSettled(snapshotNavigationId);
       return;
     }
     browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
+    discardedServerActionRefreshScheduler.markNavigationSettled(snapshotNavigationId);
     handlePopstate(event);
   });
 
