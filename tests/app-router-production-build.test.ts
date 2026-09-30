@@ -2,11 +2,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createBuilder } from "vite";
+import { toSlash } from "pathslash";
+import { createBuilder, type Plugin } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  PAGES_FIXTURE_DIR,
+  createIsolatedFixture,
+  testCacheDir,
+} from "./helpers.js";
+import { LAZY_RUNTIME_CHUNK_RECOVERY } from "./lazy-runtime-chunk-recovery.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
@@ -17,6 +24,98 @@ type ClientManifestEntry = {
   name?: string;
   src?: string;
 };
+
+const VINEXT_RUNTIME_MODULE =
+  /(?:^|\/)(?:packages\/vinext\/(?:src|dist)|node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?vinext\/dist)\/(.+?)(?:\.[cm]?[jt]sx?)?$/;
+
+/** `shims/link` for any module id or manifest `src` inside vinext's runtime source or dist; null elsewhere. */
+function toVinextRuntimeModule(id: string): string | null {
+  const match = VINEXT_RUNTIME_MODULE.exec(toSlash(id.split("?", 1)[0] ?? ""));
+  return match?.[1] ?? null;
+}
+
+type LazyRuntimeChunk = { file: string; modules: string[] };
+
+type ClientChunkGraph = {
+  /** Vinext runtime modules inside chunks that a browser entry loads statically. */
+  eagerModules: Set<string>;
+  /** Vinext runtime chunks reachable only through dynamic imports. */
+  lazyRuntimeChunks: LazyRuntimeChunk[];
+};
+
+/**
+ * Builds a fixture for production and walks `.vite/manifest.json` from every
+ * browser entry along static `imports`. A chunk the walk misses loads through a
+ * dynamic import. A manifest entry with a `src` is the target of that import;
+ * a shared chunk has no `src`, so the test plugin records its module ids.
+ */
+async function buildClientChunkGraph(
+  fixtureDir: string,
+  cacheDir: string | undefined,
+): Promise<ClientChunkGraph> {
+  const moduleIdsByFile = new Map<string, string[]>();
+  const captureClientModules: Plugin = {
+    name: "test:capture-client-chunk-modules",
+    applyToEnvironment: (environment) => environment.name === "client",
+    generateBundle(_options, bundle) {
+      for (const item of Object.values(bundle)) {
+        if (item.type === "chunk") moduleIdsByFile.set(item.fileName, [...item.moduleIds]);
+      }
+    },
+  };
+  const builder = await createBuilder({
+    root: fixtureDir,
+    cacheDir,
+    configFile: false,
+    plugins: [vinext({ appDir: fixtureDir }), captureClientModules],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(fixtureDir, "dist", "client", ".vite", "manifest.json"), "utf-8"),
+  ) as Record<string, ClientManifestEntry>;
+  const eagerKeys = new Set<string>();
+  const visitEagerImports = (key: string): void => {
+    if (eagerKeys.has(key)) return;
+    eagerKeys.add(key);
+    for (const importedKey of manifest[key]?.imports ?? []) visitEagerImports(importedKey);
+  };
+  for (const [key, entry] of Object.entries(manifest)) {
+    if (entry.isEntry === true) visitEagerImports(key);
+  }
+
+  const eagerModules = new Set<string>();
+  const lazyRuntimeChunks = new Map<string, LazyRuntimeChunk>();
+  for (const [key, entry] of Object.entries(manifest)) {
+    const file = entry.file;
+    if (typeof file !== "string") continue;
+    const moduleIds = moduleIdsByFile.get(file) ?? [];
+    if (eagerKeys.has(key)) {
+      for (const id of moduleIds) {
+        const module = toVinextRuntimeModule(id);
+        if (module) eagerModules.add(module);
+      }
+      continue;
+    }
+    const candidateIds = entry.src === undefined ? moduleIds : [entry.src];
+    const modules = candidateIds.flatMap((id) => toVinextRuntimeModule(id) ?? []);
+    if (modules.length > 0) lazyRuntimeChunks.set(file, { file, modules });
+  }
+  return { eagerModules, lazyRuntimeChunks: [...lazyRuntimeChunks.values()] };
+}
+
+function findUnrecoveredLazyRuntimeChunks(chunks: readonly LazyRuntimeChunk[]): string[] {
+  const listed = new Set(LAZY_RUNTIME_CHUNK_RECOVERY.map((entry) => entry.module));
+  return chunks
+    .filter((chunk) => !chunk.modules.some((module) => listed.has(module)))
+    .map(
+      (chunk) =>
+        `Lazy vinext runtime chunk ${chunk.file} (module: ${chunk.modules.join(", ")}) has no recovery path. ` +
+        "Load it through the chunk recovery helpers or a caller that falls back to a document navigation, " +
+        "then list the module with that recovery in tests/lazy-runtime-chunk-recovery.ts.",
+    );
+}
 
 function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
   return typeof value === "function";
@@ -772,4 +871,101 @@ export default async function OpenGraphImage() {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 120000);
+});
+
+describe("lazy vinext runtime chunks in production client builds", () => {
+  const cleanupDirs: string[] = [];
+  let appGraph: ClientChunkGraph;
+  let pagesGraph: ClientChunkGraph;
+
+  beforeAll(async () => {
+    const appFixtureDir = await createIsolatedFixture(
+      APP_FIXTURE_DIR,
+      "vinext-lazy-runtime-app-",
+      undefined,
+      path.join(APP_FIXTURE_DIR, "node_modules"),
+    );
+
+    // The pages-basic fixture has no `next` of its own; its pages import
+    // `next/dist/compiled/...`, which resolves from the workspace root.
+    const pagesNodeModules = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-lazy-runtime-modules-"));
+    const fixtureNodeModules = path.join(PAGES_FIXTURE_DIR, "node_modules");
+    for (const entry of fs.readdirSync(fixtureNodeModules)) {
+      fs.symlinkSync(path.join(fixtureNodeModules, entry), path.join(pagesNodeModules, entry));
+    }
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules/next"),
+      path.join(pagesNodeModules, "next"),
+    );
+    const pagesFixtureDir = await createIsolatedFixture(
+      PAGES_FIXTURE_DIR,
+      "vinext-lazy-runtime-pages-",
+      undefined,
+      pagesNodeModules,
+    );
+    cleanupDirs.push(appFixtureDir, pagesFixtureDir, pagesNodeModules);
+
+    appGraph = await buildClientChunkGraph(appFixtureDir, testCacheDir(appFixtureDir));
+    pagesGraph = await buildClientChunkGraph(pagesFixtureDir, testCacheDir(pagesFixtureDir));
+  }, 240000);
+
+  afterAll(() => {
+    for (const dir of cleanupDirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("lists each recovery module once, with a recovery path", () => {
+    const modules = LAZY_RUNTIME_CHUNK_RECOVERY.map((entry) => entry.module);
+    expect(modules).toEqual([...new Set(modules)]);
+    for (const entry of LAZY_RUNTIME_CHUNK_RECOVERY) {
+      expect(entry.recovery.trim(), entry.module).not.toBe("");
+    }
+  });
+
+  it("names a recovery path for every lazy vinext runtime chunk in the hybrid app fixture", () => {
+    // Known positives: the predicate must match real chunks before an empty
+    // result can count as a pass.
+    const lazyModules = appGraph.lazyRuntimeChunks.flatMap((chunk) => chunk.modules);
+    expect(lazyModules).toEqual(
+      expect.arrayContaining([
+        "shims/link",
+        "shims/layout-segment-context",
+        "shims/internal/hybrid-client-route-owner",
+      ]),
+    );
+
+    // The Server Action client loads with the entry, never on demand.
+    expect(appGraph.eagerModules).toContain("server/app-browser-server-action-client");
+    expect(lazyModules).not.toContain("server/app-browser-server-action-client");
+
+    expect(findUnrecoveredLazyRuntimeChunks(appGraph.lazyRuntimeChunks)).toEqual([]);
+  });
+
+  it("names a recovery path for every lazy vinext runtime chunk in the Pages fixture", () => {
+    const lazyModules = pagesGraph.lazyRuntimeChunks.flatMap((chunk) => chunk.modules);
+    expect(lazyModules).toEqual(
+      expect.arrayContaining([
+        "shims/router",
+        "shims/navigation",
+        "shims/error",
+        "shims/internal/hybrid-client-route-owner",
+      ]),
+    );
+
+    expect(findUnrecoveredLazyRuntimeChunks(pagesGraph.lazyRuntimeChunks)).toEqual([]);
+  });
+
+  it("reports the module of a lazy runtime chunk that has no listed recovery", () => {
+    const listedModule = LAZY_RUNTIME_CHUNK_RECOVERY[0]?.module ?? "";
+    expect(listedModule).not.toBe("");
+    expect(
+      findUnrecoveredLazyRuntimeChunks([
+        { file: "_next/static/chunks/brand-new-A1b2C3.js", modules: ["shims/brand-new"] },
+        { file: "_next/static/chunks/listed-A1b2C3.js", modules: [listedModule] },
+      ]),
+    ).toEqual([
+      "Lazy vinext runtime chunk _next/static/chunks/brand-new-A1b2C3.js (module: shims/brand-new) has no recovery path. " +
+        "Load it through the chunk recovery helpers or a caller that falls back to a document navigation, " +
+        "then list the module with that recovery in tests/lazy-runtime-chunk-recovery.ts.",
+    ]);
+  });
 });
