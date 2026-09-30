@@ -225,8 +225,9 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     "document-intercepted",
     "initial-replacement",
     "initial-hash",
+    "download",
   ]) {
-    test(`a ${hashOutcome} raw hash navigation resumes actions behind a pending document navigation`, async ({
+    test(`a ${hashOutcome} native navigation resumes actions behind a pending document navigation`, async ({
       page,
     }) => {
       const path = "/nextjs-compat/action-discarding";
@@ -285,7 +286,14 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
               }
               // Run in the surviving document while its replacement is loading.
               setTimeout(() => {
-                window.location.hash = "resumed";
+                if (outcome === "download") {
+                  const link = document.createElement("a");
+                  link.href = "data:text/plain,download";
+                  link.download = "";
+                  document.body.append(link);
+                  link.click();
+                  link.remove();
+                } else window.location.hash = "resumed";
               }, 250);
             }
           });

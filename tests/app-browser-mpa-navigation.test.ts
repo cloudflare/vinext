@@ -306,6 +306,25 @@ describe("document navigation cancellation", () => {
     expect(recover).toHaveBeenCalledOnce();
   });
 
+  it.each(["file.txt", ""])(
+    "recovers when a download replaces the document (%j)",
+    async (downloadRequest) => {
+      const navigation = new EventTarget();
+      const recover = vi.fn();
+      observeDocumentNavigationCancellation(navigation, href, recover);
+      navigate(navigation).abort();
+      navigation.dispatchEvent(
+        Object.assign(new Event("navigate"), {
+          destination: { url: "https://example.com/download", sameDocument: false },
+          signal: new AbortController().signal,
+          downloadRequest,
+        }),
+      );
+      await Promise.resolve();
+      expect(recover).toHaveBeenCalledOnce();
+    },
+  );
+
   it("does not claim an unrelated document navigation", async () => {
     const navigation = new EventTarget();
     const recover = vi.fn();

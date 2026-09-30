@@ -103,10 +103,14 @@ export function observeDocumentNavigationCancellation(
   navigation?.addEventListener(
     "navigate",
     (event) => {
-      const { destination, signal } = event as Event & {
+      const { destination, downloadRequest, signal } = event as Event & {
         destination: { url: string; sameDocument: boolean };
+        downloadRequest?: string | null;
         signal: AbortSignal;
       };
+      // Downloads abort the document attempt but emit no terminal event of
+      // their own. Keep the document's confirmed abort, including download="".
+      if (downloadRequest != null) return;
       // A replacement can reach this listener before the original event does.
       // Stage its signal, but only recover once our original dispatch is seen.
       if (!destination.sameDocument && destination.url === href) observedInitialNavigation = true;
