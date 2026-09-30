@@ -239,7 +239,7 @@ import {
   type NavigationReuseFacts,
   type VisitedResponseCacheCandidateFacts,
 } from "./navigation-planner.js";
-import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
+import { serverActionClient } from "virtual:vinext-app-capabilities";
 
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
@@ -1879,7 +1879,7 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
   }
 }
 
-function registerServerActionCallback(): void {
+function registerServerActionCallback(client: NonNullable<typeof serverActionClient>): void {
   setServerCallback((id, args) =>
     refreshQueue.serverAction((accepted, publish) => {
       const committedState = getBrowserRouterState();
@@ -1892,99 +1892,94 @@ function registerServerActionCallback(): void {
       }
       const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
       const actionInitiation = createActionInitiationSnapshot(previous);
-      return loadServerActionClient!()
-        .then(({ invokeClientServerAction }) =>
-          invokeClientServerAction(id, args, actionInitiation, {
-            basePath: __basePath,
-            clearClientNavigationCaches,
-            clientRscCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
-            commitSameUrlNavigatePayload: (
+      return client
+        .invokeClientServerAction(id, args, actionInitiation, {
+          basePath: __basePath,
+          clearClientNavigationCaches,
+          clientRscCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+          commitSameUrlNavigatePayload: (
+            elements,
+            initiation,
+            returnValue,
+            revalidation,
+            rendered,
+          ) =>
+            commitSameUrlNavigatePayload(
               elements,
               initiation,
               returnValue,
               revalidation,
               rendered,
-            ) =>
-              commitSameUrlNavigatePayload(
-                elements,
-                initiation,
-                returnValue,
-                revalidation,
-                rendered,
-                {
-                  previous,
-                  committedState,
-                  publish,
-                },
+              {
+                previous,
+                committedState,
+                publish,
+              },
+            ),
+          isCurrentAction: () =>
+            browserNavigationController.isCurrentNavigation(actionInitiation.navigationId),
+          onRevalidationWithoutRender(reason) {
+            if (reason === "document-navigation") {
+              refreshQueue.refreshWhenIdle();
+            } else if (
+              browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
+            ) {
+              refreshQueue.refreshCurrentAction();
+            } else {
+              discardedServerActionRefreshScheduler.schedule();
+            }
+          },
+          navigationPlanner,
+          performHardNavigation: (url, historyMode) =>
+            browserNavigationController.performHardNavigation(url, historyMode),
+          renderRedirectPayload(elements, target, actionInitiation, revalidation) {
+            // The action client checks ownership before applying redirects.
+            // Action redirects bypass navigateClientSide, so reset Link here.
+            const navId = beginNavigation(actionInitiation.routerState);
+            getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
+            const hashIdx = target.href.indexOf("#");
+            const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
+            const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
+            if (target.type === "push") saveScrollPosition();
+            void renderNavigationPayload({
+              actionType: target.type === "push" ? "navigate" : "replace",
+              historyUpdateMode: target.type === "push" ? "push" : "replace",
+              navigationInitiationState: actionInitiation.routerState,
+              navigationSnapshot: createClientNavigationRenderSnapshot(
+                target.href,
+                actionInitiation.routerState.navigationSnapshot.params,
+                target.renderedPathAndSearch,
               ),
-            isCurrentAction: () =>
-              browserNavigationController.isCurrentNavigation(actionInitiation.navigationId),
-            onRevalidationWithoutRender(reason) {
-              if (reason === "document-navigation") {
-                refreshQueue.refreshWhenIdle();
-              } else if (
-                browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
-              ) {
-                refreshQueue.refreshCurrentAction();
-              } else {
-                discardedServerActionRefreshScheduler.schedule();
-              }
-            },
-            navigationPlanner,
-            performHardNavigation: (url, historyMode) =>
-              browserNavigationController.performHardNavigation(url, historyMode),
-            renderRedirectPayload(elements, target, actionInitiation, revalidation) {
-              // The action client checks ownership before applying redirects.
-              // Action redirects bypass navigateClientSide, so reset Link here.
-              const navId = beginNavigation(actionInitiation.routerState);
-              getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
-              const hashIdx = target.href.indexOf("#");
-              const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
-              const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
-              if (target.type === "push") saveScrollPosition();
-              void renderNavigationPayload({
-                actionType: target.type === "push" ? "navigate" : "replace",
-                historyUpdateMode: target.type === "push" ? "push" : "replace",
-                navigationInitiationState: actionInitiation.routerState,
-                navigationSnapshot: createClientNavigationRenderSnapshot(
-                  target.href,
-                  actionInitiation.routerState.navigationSnapshot.params,
-                  target.renderedPathAndSearch,
-                ),
-                navId,
-                operationLane: resolveServerActionOperationLane(revalidation),
-                onDiscardedRevalidation:
-                  revalidation === "none"
-                    ? undefined
-                    : () => discardedServerActionRefreshScheduler.schedule(),
-                params: {},
-                payload: Promise.resolve(elements),
-                payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
-                pendingRouterState: null,
-                previousNextUrl: null,
-                scrollIntent: actionScrollIntent,
-                targetHref: target.href,
+              navId,
+              operationLane: resolveServerActionOperationLane(revalidation),
+              onDiscardedRevalidation:
+                revalidation === "none"
+                  ? undefined
+                  : () => discardedServerActionRefreshScheduler.schedule(),
+              params: {},
+              payload: Promise.resolve(elements),
+              payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+              pendingRouterState: null,
+              previousNextUrl: null,
+              scrollIntent: actionScrollIntent,
+              targetHref: target.href,
+            })
+              .catch(() => {
+                if (browserNavigationController.isCurrentNavigation(navId)) {
+                  browserNavigationController.performHardNavigation(target.href);
+                }
               })
-                .catch(() => {
-                  if (browserNavigationController.isCurrentNavigation(navId)) {
-                    browserNavigationController.performHardNavigation(target.href);
-                  }
-                })
-                .finally(() => {
-                  finalizeNavigation(navId);
-                });
-            },
-            syncCurrentHistoryState: (previousNextUrl, bfcacheIds) => {
-              if (!previous) {
-                historyController.syncCurrentHistoryStatePreviousNextUrl(
-                  previousNextUrl,
-                  bfcacheIds,
-                );
-              }
-            },
-            syncServerActionHttpFallbackHead,
-          }),
-        )
+              .finally(() => {
+                finalizeNavigation(navId);
+              });
+          },
+          syncCurrentHistoryState: (previousNextUrl, bfcacheIds) => {
+            if (!previous) {
+              historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds);
+            }
+          },
+          syncServerActionHttpFallbackHead,
+        })
         .finally(releaseCacheInvalidationGuard);
     }),
   );
@@ -1993,7 +1988,7 @@ function registerServerActionCallback(): void {
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
 
-  if (hasServerActions) registerServerActionCallback();
+  if (serverActionClient) registerServerActionCallback(serverActionClient);
   installAppNavigationFailureListeners();
   if (HAS_CLIENT_REWRITES) await preloadHybridClientRouteOwner();
 

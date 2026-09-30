@@ -11,6 +11,7 @@ import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
 type ClientManifestEntry = {
+  file?: string;
   imports?: string[];
   isEntry?: boolean;
   name?: string;
@@ -135,7 +136,6 @@ describe("App Router Production build", () => {
     });
     expect(browserEntryKey).toBeDefined();
     expect(linkEntryKey).toBeDefined();
-    expect(serverActionClientKey).toBeDefined();
 
     const eagerKeys = new Set<string>();
     const visitEagerImports = (key: string): void => {
@@ -147,6 +147,18 @@ describe("App Router Production build", () => {
     };
     if (browserEntryKey) visitEagerImports(browserEntryKey);
     expect(linkEntryKey ? eagerKeys.has(linkEntryKey) : true).toBe(false);
+
+    // A stale tab must reach the current server when a Server Action runs, so
+    // an app with actions loads the action client with the entry, not on demand.
+    // The bundler may fold the client into the entry chunk (no manifest key of
+    // its own) or emit a static chunk; either way no lazy chunk may hold it.
+    expect(serverActionClientKey ? eagerKeys.has(serverActionClientKey) : true).toBe(true);
+    const eagerJs = [...eagerKeys]
+      .map((key) => clientManifest[key]?.file)
+      .filter((file): file is string => typeof file === "string")
+      .map((file) => fs.readFileSync(path.join(outDir, "client", file), "utf-8"))
+      .join("\n");
+    expect(eagerJs).toContain("UnrecognizedActionError");
 
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");

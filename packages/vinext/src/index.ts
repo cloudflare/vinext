@@ -4966,14 +4966,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
             const hasServerActions = await resolveHasServerActions(this.environment.config);
-            return `
-export const hasServerActions = ${JSON.stringify(hasServerActions)};
-export const loadServerActionClient = ${
-              hasServerActions
-                ? `() => import(${JSON.stringify(_appBrowserServerActionClientPath)})`
-                : "null"
-            };
-`;
+            return hasServerActions
+              ? `
+import * as serverActionClient from ${JSON.stringify(_appBrowserServerActionClientPath)};
+export { serverActionClient };
+`
+              : "export const serverActionClient = null;\n";
           }
           if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
             return generateGoogleFontsVirtualModule(id, _fontGoogleShimPath);
