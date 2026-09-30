@@ -1,3 +1,4 @@
+import { toDocumentLoadHref } from "../client/chunk-load-recovery.js";
 import type { HardNavigationMode, HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 import {
   observeDocumentNavigationCancellation,
@@ -67,17 +68,20 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
   return {
     beforeDocumentNavigation,
     performHardNavigation(href: string, mode?: HardNavigationMode): boolean {
-      return deps.performHardNavigationWithLoopGuard(href, mode, () =>
-        beforeDocumentNavigation(href),
+      // A fragment-only change scrolls instead of loading a document.
+      const loadHref = toDocumentLoadHref(href);
+      return deps.performHardNavigationWithLoopGuard(loadHref, mode, () =>
+        beforeDocumentNavigation(loadHref),
       );
     },
     performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
       deps.stopRefreshes();
+      const loadHref = toDocumentLoadHref(href);
       // Match Next's MPA path by suspending forever, but delay the actual location
       // mutation just enough for the old tree to commit the pending transition
       // signal before unload.
-      deps.mpaNavigationScheduler.navigate(window, href, historyUpdateMode, () =>
-        beforeDocumentNavigation(href),
+      deps.mpaNavigationScheduler.navigate(window, loadHref, historyUpdateMode, () =>
+        beforeDocumentNavigation(loadHref),
       );
     },
     resetRecovery,

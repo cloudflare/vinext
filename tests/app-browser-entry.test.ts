@@ -160,7 +160,10 @@ import {
   NavigationTraceTransactionCodes,
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
-import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import {
+  navigationPlanner,
+  type RscFetchResultFacts,
+} from "../packages/vinext/src/server/navigation-planner.js";
 import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
@@ -3805,10 +3808,54 @@ describe("public App Router refresh queue", () => {
 
 const HARD_NAVIGATION_LOOP_GUARD_STORAGE_KEY = "__vinext_hard_navigation_target__";
 
+function createRscFetchFacts(overrides: Partial<RscFetchResultFacts>): RscFetchResultFacts {
+  return {
+    clientCompatibilityId: "client-build",
+    compatibilityIdHeader: "server-build",
+    currentHref: "/dashboard",
+    effectiveHistoryUpdateMode: "replace",
+    hasBody: true,
+    isRscContentType: true,
+    origin: "https://example.com",
+    redirectDepth: 0,
+    requestPreviousNextUrl: null,
+    responseOk: true,
+    responseUrl: "https://example.com/dashboard.rsc?_rsc=abc",
+    source: "live",
+    streamedRedirectTarget: null,
+    ...overrides,
+  };
+}
+
+function expectHardNavigate(decision: { kind: string }): {
+  url: string;
+  historyMode?: "assign" | "replace";
+} {
+  if (
+    decision.kind !== "hardNavigate" ||
+    !("url" in decision) ||
+    typeof decision.url !== "string"
+  ) {
+    throw new Error(`Expected a hard navigation decision, got ${decision.kind}`);
+  }
+  const historyMode =
+    "historyMode" in decision &&
+    (decision.historyMode === "assign" || decision.historyMode === "replace")
+      ? decision.historyMode
+      : undefined;
+  return { url: decision.url, historyMode };
+}
+
 function createDocumentNavigationHarness(currentHref: string) {
   const { assign, replace, storage } = stubWindow(currentHref);
   const navigation = new EventTarget();
-  Object.assign(window, { navigation });
+  const scheduledMpaNavigations: Array<() => void> = [];
+  Object.assign(window, {
+    navigation,
+    setTimeout(callback: () => void) {
+      scheduledMpaNavigations.push(callback);
+    },
+  });
   const queue = createAppBrowserRefreshQueue(vi.fn());
   const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
   const discardPendingNavigation = vi.fn();
@@ -3840,6 +3887,9 @@ function createDocumentNavigationHarness(currentHref: string) {
     discardPendingNavigation,
     documentNavigation,
     mpaNavigationScheduler,
+    flushMpaNavigations: () => {
+      for (const navigate of scheduledMpaNavigations.splice(0)) navigate();
+    },
     queue,
     replace,
     storage,
@@ -3865,6 +3915,85 @@ describe("app browser document navigation", () => {
     await expect(action).resolves.toBe(42);
     expect(discardPendingNavigation).toHaveBeenCalledOnce();
     expect(storage.has(HARD_NAVIGATION_LOOP_GUARD_STORAGE_KEY)).toBe(false);
+  });
+
+  describe("same-page targets with a fragment", () => {
+    const currentHref = "https://example.com/dashboard#section";
+    const documentUrl = "https://example.com/dashboard";
+    const planner = { origin: "https://example.com", compatibilityIdHeader: "server-build" };
+
+    // Each decision keeps the hash, which a location change alone would only scroll to.
+    const decisions: Array<[string, () => { url: string; historyMode?: "assign" | "replace" }]> = [
+      [
+        "action compatibility reload",
+        () =>
+          expectHardNavigate(
+            navigationPlanner.classifyServerActionResult({
+              actionRedirectHref: null,
+              actionRedirectType: "replace",
+              clientCompatibilityId: "client-build",
+              compatibilityIdHeader: planner.compatibilityIdHeader,
+              currentHref,
+              isRscContentType: true,
+              isServerActionNotFound: false,
+              origin: planner.origin,
+              responseUrl: currentHref,
+            }),
+          ),
+      ],
+      [
+        "navigation and refresh compatibility reload",
+        () =>
+          expectHardNavigate(
+            navigationPlanner.classifyRscFetchResult(createRscFetchFacts({ currentHref })),
+          ),
+      ],
+      [
+        "invalid payload fallback",
+        () =>
+          expectHardNavigate(
+            navigationPlanner.classifyRscFetchResult(
+              createRscFetchFacts({ currentHref, isRscContentType: false }),
+            ),
+          ),
+      ],
+      [
+        "RSC network error fallback",
+        () => expectHardNavigate(navigationPlanner.classifyRscNavigationError({ currentHref })),
+      ],
+      ["action redirect render fallback", () => ({ url: "https://example.com/dashboard#anchor" })],
+    ];
+
+    it.each(decisions)("loads the document without the fragment for the %s", (_name, decide) => {
+      const { assign, replace, documentNavigation } = createDocumentNavigationHarness(currentHref);
+      const decision = decide();
+      expect(decision.url).toContain("#");
+
+      documentNavigation.performHardNavigation(decision.url, decision.historyMode);
+
+      expect([...assign.mock.calls, ...replace.mock.calls]).toEqual([[documentUrl]]);
+    });
+
+    it("loads the document without the fragment for a multi-page navigation", () => {
+      const { assign, documentNavigation, flushMpaNavigations } =
+        createDocumentNavigationHarness(currentHref);
+
+      documentNavigation.performMpaNavigation("/dashboard#anchor", "push");
+      flushMpaNavigations();
+
+      expect(assign).toHaveBeenCalledExactlyOnceWith(documentUrl);
+    });
+
+    it("keeps the fragment for a target on a different page", () => {
+      const { assign, documentNavigation, flushMpaNavigations } =
+        createDocumentNavigationHarness(currentHref);
+
+      documentNavigation.performHardNavigation("https://example.com/other#anchor");
+      documentNavigation.performMpaNavigation("/third#anchor", "push");
+      flushMpaNavigations();
+
+      expect(assign.mock.calls).toEqual([["https://example.com/other#anchor"], ["/third#anchor"]]);
+    });
   });
 
   it("stops watching for a cancel after the recovery is reset", async () => {
