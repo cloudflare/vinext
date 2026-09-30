@@ -37,10 +37,11 @@ export const consumerEnvironmentConditionFilter = new RegExp(
 
 // An import-scan build reduces every module to its import specifiers, and
 // static import declarations cannot sit inside a foldable branch. Folding can
-// therefore only change the scanned graph by pruning a dynamic `import()` or an
-// `import.meta` expression such as `import.meta.glob(...)`.
+// therefore only change the scanned graph by pruning a dynamic `import()`, a
+// phase import (`import.source()` / `import.defer()`), or an `import.meta`
+// expression such as `import.meta.glob(...)`.
 const SCANNED_IMPORT_FOLD_PRESCAN = new RegExp(
-  String.raw`${DYNAMIC_IMPORT_PRESCAN.source}|\bimport\s*\.\s*meta\b`,
+  String.raw`${DYNAMIC_IMPORT_PRESCAN.source}|\bimport\s*\.\s*(?:meta|source|defer)\b`,
 );
 // `import.meta.url` and `import.meta.env` reads never name another module.
 const NON_IMPORTING_IMPORT_META_RE = /\s*\.\s*(?:url|env)\b/y;
@@ -229,18 +230,18 @@ function evaluateConsumerCondition(
 
 /**
  * Cheap pre-parse gate for import-scan builds. Over-inclusive by design; the
- * parser's module record in {@link foldMayChangeScannedImports} is exact.
+ * parser's module record in {@link moduleRecordHasScannedFoldTargets} is exact.
  */
 export function mayFoldChangeScannedImports(code: string): boolean {
   return SCANNED_IMPORT_FOLD_PRESCAN.test(code);
 }
 
 /**
- * Whether folding may prune a scanned import: a dynamic import with a static
- * specifier, or an `import.meta` expression other than a `.url`/`.env` read.
+ * Whether folding may prune a scanned import: a dynamic or phase import with a
+ * static specifier, or an `import.meta` expression other than a `.url`/`.env` read.
  * Reads the parser's native module record, so no ESTree is materialized.
  */
-function foldMayChangeScannedImports(
+function moduleRecordHasScannedFoldTargets(
   code: string,
   module: ReturnType<typeof parseSync>["module"],
 ): boolean {
@@ -284,7 +285,7 @@ export function replaceConsumerEnvironmentConditions(
   if (parsed.errors.length > 0) return null;
   if (
     replacements.onlyIfScannedImportsChange &&
-    !foldMayChangeScannedImports(code, parsed.module)
+    !moduleRecordHasScannedFoldTargets(code, parsed.module)
   ) {
     return null;
   }

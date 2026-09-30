@@ -7310,7 +7310,7 @@ export const loadServerActionClient = ${
         handler(code, id) {
           const scansImports = this.environment.config.build.write === false;
           // Scans keep only import specifiers, which folding can change only by
-          // pruning a dynamic import or import.meta.glob.
+          // pruning a dynamic or phase import, or import.meta.glob.
           if (scansImports && !mayFoldChangeScannedImports(code)) return null;
           const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
           const replaceProcessBrowser = scansImports;

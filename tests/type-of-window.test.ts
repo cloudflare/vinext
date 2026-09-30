@@ -256,6 +256,13 @@ describe("typeof window compilation", () => {
         appPageId,
       ),
     ).toMatchObject({ code: expect.not.stringContaining("import.meta.glob") });
+    expect(
+      await transform.call(
+        context as never,
+        `if (typeof window !== "undefined") import.source("./browser.wasm")`,
+        appPageId,
+      ),
+    ).toMatchObject({ code: expect.not.stringContaining("browser.wasm") });
   });
 
   it("only folds references to the global window binding", () => {
@@ -386,6 +393,8 @@ const truthy = value || typeof window === "undefined";`;
       `if (typeof window !== "undefined") import.meta.glob("./browser/*.js")`,
       `console.log(import.meta.url); if (process.browser) import.meta.glob("./browser/*.js")`,
       `const label = "héllo 😀"; if (typeof window !== "undefined") import("after-unicode")`,
+      `if (typeof window !== "undefined") import.source("./browser.wasm")`,
+      `if (process.browser) import.defer("./browser.js")`,
     ];
     for (const source of observable) {
       const folded = replaceConsumerEnvironmentConditions(source, scan);
@@ -396,11 +405,13 @@ const truthy = value || typeof window === "undefined";`;
     }
   });
 
-  it("prefilters import-scan folds to dynamic import and import.meta syntax", () => {
+  it("prefilters import-scan folds to dynamic, phase import and import.meta syntax", () => {
     expect(mayFoldChangeScannedImports(`import("browser-only")`)).toBe(true);
     expect(mayFoldChangeScannedImports(`import /* chunk */ ("browser-only")`)).toBe(true);
     expect(mayFoldChangeScannedImports(`import.meta.glob("./*.js")`)).toBe(true);
     expect(mayFoldChangeScannedImports(`import . meta . glob("./*.js")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import.source("./module.wasm")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import . defer("./module.js")`)).toBe(true);
     expect(
       mayFoldChangeScannedImports(
         `import helper from "helper"; export * from "shared"; if (typeof window !== "undefined") helper()`,
