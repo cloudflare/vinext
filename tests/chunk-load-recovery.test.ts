@@ -631,6 +631,26 @@ describe("recovery decision", () => {
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
   });
 
+  it("pins the verdict when any error joined before the live probe answered is `retry`", async () => {
+    const ctx = await setup();
+    const retry = await retryFailure(ctx);
+    const deploy = deployFailure(ctx);
+    let answer: (value: Response) => void = () => undefined;
+    ctx.fetch.mockReturnValue(new Promise<Response>((resolve) => (answer = resolve)));
+
+    const first = track(ctx.mod.recoverFromChunkFailure(deploy));
+    const second = track(ctx.mod.recoverFromChunkFailure(retry));
+    await flush();
+    answer(response(200, "text/javascript"));
+    await flush();
+
+    expect(ctx.fetch).toHaveBeenCalledTimes(1);
+    expect(ctx.navigator).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(WARN_PINNED);
+    expect([first.status, second.status]).toEqual(["pending", "pending"]);
+  });
+
   it("keeps a rejecting decision pending while the document is unloading", async () => {
     const ctx = await setup();
     const error = deployFailure(ctx);
@@ -1070,6 +1090,43 @@ describe("default navigator", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(result.status).toBe("pending");
+  });
+
+  it("leaves no navigate listener attached when replace fired no navigate event", async () => {
+    const ctx = await setup({ navigator: false });
+    const listen = vi.spyOn(ctx.navigation, "addEventListener");
+    const error = deployFailure(ctx);
+    const result = track(ctx.mod.recoverFromChunkFailure(error));
+    await flush();
+
+    const defaultListeners = listen.mock.calls.filter(([type]) => type === "navigate");
+    expect(defaultListeners).toHaveLength(1);
+    const options = defaultListeners[0][2] as { signal: AbortSignal };
+    expect(options.signal.aborted).toBe(true);
+    expect(ctx.replace.mock.calls).toEqual([[PAGE]]);
+
+    ctx.navigate().abort();
+    await flush();
+    expect(result.status).toBe("pending");
+  });
+
+  it("keeps the navigate listener attached until the captured navigation ends", async () => {
+    const ctx = await setup({ navigator: false });
+    const listen = vi.spyOn(ctx.navigation, "addEventListener");
+    const controller = new AbortController();
+    causeNavigate(ctx, controller);
+    const result = track(ctx.mod.recoverFromChunkFailure(deployFailure(ctx)));
+    await flush();
+
+    const options = listen.mock.calls.find(([type]) => type === "navigate")?.[2] as {
+      signal: AbortSignal;
+    };
+    expect(options.signal.aborted).toBe(false);
+    controller.abort();
+    await flush();
+
+    expect(options.signal.aborted).toBe(true);
+    expect(result.status).toBe("rejected");
   });
 
   it("ignores a navigate event that fires after replace returned", async () => {

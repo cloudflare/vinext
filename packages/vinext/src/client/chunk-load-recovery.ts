@@ -22,7 +22,11 @@ type NavigateEvent = Event & {
   signal: AbortSignal;
 };
 type NavigationApi = {
-  addEventListener(type: "navigate", listener: (event: NavigateEvent) => void): void;
+  addEventListener(
+    type: "navigate",
+    listener: (event: NavigateEvent) => void,
+    options?: { signal?: AbortSignal },
+  ): void;
 };
 
 type State = {
@@ -207,7 +211,7 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
   const verdict: ChunkFailureVerdict | null =
     status === "replaced"
       ? "replaced"
-      : status === "live" && state.registry.get(error) === "retry"
+      : status === "live" && [...errors].some((joined) => state.registry.get(joined) === "retry")
         ? "pinned"
         : null;
   if (verdict === null) throw error;
@@ -349,21 +353,25 @@ const defaultNavigator: ChunkRecoveryNavigator = (outcome) => {
     outcome.onAbandoned();
   }, DOCUMENT_UNLOAD_TIMEOUT_MS);
   const navigation = (window as typeof window & { navigation?: NavigationApi }).navigation;
-  let capturing = true;
+  let captured = false;
 
-  navigation?.addEventListener("navigate", (event) => {
-    if (!capturing || event.destination.sameDocument) return;
-    capturing = false;
-    event.signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        listening.abort();
-        outcome.onCanceled();
-      },
-      { signal: listening.signal },
-    );
-  });
+  navigation?.addEventListener(
+    "navigate",
+    (event) => {
+      if (captured || event.destination.sameDocument) return;
+      captured = true;
+      event.signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          listening.abort();
+          outcome.onCanceled();
+        },
+        { signal: listening.signal },
+      );
+    },
+    { signal: listening.signal },
+  );
   window.addEventListener(
     "pagehide",
     () => {
@@ -374,7 +382,7 @@ const defaultNavigator: ChunkRecoveryNavigator = (outcome) => {
   );
 
   location.replace(toDocumentLoadHref(location.href));
-  capturing = false;
+  if (!captured) listening.abort();
   return true;
 };
 
