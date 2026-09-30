@@ -70,8 +70,12 @@ function runProbe(root: string): Promise<{ errors: string[] }> {
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
+    // Kill a stalled dev server before the test timeout so it cannot outlive
+    // the test; the close handler then rejects with its output.
+    const timer = setTimeout(() => child.kill("SIGKILL"), 50_000);
     child.on("error", reject);
     child.on("close", (code) => {
+      clearTimeout(timer);
       const line = stdout.split("\n").find((entry) => entry.startsWith("probe:"));
       if (code !== 0 || !line) {
         reject(new Error(`probe exited with ${code}\n${stdout}\n${stderr}`));
