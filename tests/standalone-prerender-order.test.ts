@@ -35,12 +35,17 @@ const { createBuildLifecyclePlugins } = await import("../packages/vinext/src/bui
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
 // (`if (config.output === 'standalone') { await writeStandaloneDirectory(..., staticPages, ...) }`)
 
-function finalizeWith(options: { output?: string; prerenderAll?: boolean }): Promise<void> {
+function finalizeWith(options: {
+  output?: string;
+  prerenderAll?: boolean;
+  prerenderConfig?: BuildLifecycleContext["prerenderConfig"];
+}): Promise<void> {
   const builder = { environments: {} } as unknown as ViteBuilder;
   const context = {
     root: process.cwd(),
     nextConfig: { output: options.output },
     prerenderAll: options.prerenderAll,
+    prerenderConfig: options.prerenderConfig,
   } as unknown as BuildLifecycleContext;
   const plugins = createBuildLifecyclePlugins({
     createContext: () => context,
@@ -71,12 +76,12 @@ describe("standalone build lifecycle ordering", () => {
       return { standaloneDir: path.join(process.cwd(), "dist", "standalone") };
     });
 
-    await finalizeWith({ output: "standalone", prerenderAll: true });
+    await finalizeWith({ output: "standalone", prerenderConfig: { routes: "*" } });
 
     expect(order).toEqual(["prerender", "standalone"]);
   });
 
-  it("emits standalone output for --prerender-all instead of skipping it", async () => {
+  it("emits standalone output when the lifecycle prerenderAll flag is set", async () => {
     runPrerender.mockClear();
     emitStandaloneOutput.mockClear();
     runPrerender.mockImplementationOnce(async () => null);
