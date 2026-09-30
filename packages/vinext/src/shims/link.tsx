@@ -71,6 +71,11 @@ import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-
 import { normalizeRouterHref, resolvePagesRouterHref } from "./internal/normalize-router-href.js";
 import { formatUrlObject, formatUrlObjectWithValidation } from "./internal/format-url-object.js";
 import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
+import { loadChunk } from "../client/chunk-load-recovery.js";
+import {
+  getLoadedHybridClientRouteOwner,
+  loadHybridClientRouteOwner,
+} from "./internal/hybrid-client-route-owner-loader.js";
 
 type NavigateEvent = {
   url: URL;
@@ -84,26 +89,31 @@ const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 type NavigationModule = typeof import("./navigation.js");
-type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
 
 let loadedNavigationModule: NavigationModule | null = null;
 let navigationModulePromise: Promise<NavigationModule> | null = null;
-let loadedHybridClientRouteOwnerModule: HybridClientRouteOwnerModule | null = null;
-let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
 
+/** Memoizes success only: a failed load is forgotten so the next click or prefetch tries again. */
 function loadNavigationModule(): Promise<NavigationModule> {
-  return (navigationModulePromise ??= import("./navigation.js").then((module) => {
-    loadedNavigationModule = module;
-    return module;
-  }));
+  navigationModulePromise ??= loadChunk(() => import("./navigation.js")).then(
+    (module) => {
+      loadedNavigationModule = module;
+      return module;
+    },
+    (error: unknown) => {
+      navigationModulePromise = null;
+      throw error;
+    },
+  );
+  return navigationModulePromise;
 }
 
-function loadHybridClientRouteOwnerModule(): Promise<HybridClientRouteOwnerModule> {
-  return (hybridClientRouteOwnerModulePromise ??=
-    import("./internal/hybrid-client-route-owner.js").then((module) => {
-      loadedHybridClientRouteOwnerModule = module;
-      return module;
-    }));
+function navigateByDocument(href: string, replace: boolean): void {
+  if (replace) {
+    window.location.replace(href);
+  } else {
+    window.location.assign(href);
+  }
 }
 
 export type LinkProps<_RouteInferType = unknown> = {
@@ -253,15 +263,6 @@ function resolvePagesLinkNavigationHref(href: string, locale: string | false | u
   );
 }
 
-function applyPagesNavigationFallback(href: string, replace: boolean): void {
-  if (replace) {
-    window.history.replaceState({}, "", href);
-  } else {
-    window.history.pushState({}, "", href);
-  }
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
 export function resolveLinkPrefetchMode(
   prefetchProp: LinkProps["prefetch"],
   isDangerous: boolean,
@@ -377,8 +378,10 @@ function prefetchUrl(
           import("./internal/app-prefetch-rsc-request.js"),
           import("../server/app-rsc-render-mode.js"),
           import("../server/headers.js"),
-          HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES ? loadHybridClientRouteOwnerModule() : null,
+          HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES ? loadHybridClientRouteOwner() : null,
         ]);
+        // Without the rewrite-aware owner module, prefetching could warm the wrong router.
+        if ((HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES) && hybridRouteOwner === null) return;
         // A pointer-intent prefetch and its click navigation can start in the
         // same event turn. If navigation won the module-loading race, do not
         // begin a second request after it consumes an equivalent cached route.
@@ -1325,28 +1328,31 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // is no RSC stream to suspend on, so the soft-navigation bookkeeping
     // (`setPending`, `setLinkForCurrentNavigation`) would be a no-op at best
     // and a stale `useLinkStatus` indicator at worst.
-    const hybridOwnerModule =
-      HAS_PAGES_ROUTER && hasAppNavigationRuntime
-        ? (loadedHybridClientRouteOwnerModule ?? (await loadHybridClientRouteOwnerModule()))
-        : null;
-    const hybridOwner = hybridOwnerModule?.resolveHybridClientRouteOwner(navigateHref, __basePath);
-    if (
-      HAS_PAGES_ROUTER &&
-      hasAppNavigationRuntime &&
-      ["pages", "document"].includes(hybridOwner ?? "")
-    ) {
-      if (replace) {
-        window.location.replace(absoluteFullHref);
-      } else {
-        window.location.assign(absoluteFullHref);
+    if (HAS_PAGES_ROUTER && hasAppNavigationRuntime) {
+      let hybridOwnerModule = getLoadedHybridClientRouteOwner();
+      hybridOwnerModule ??= await loadHybridClientRouteOwner();
+      // Without the owner module the router cannot be told, so the server decides.
+      const hybridOwner = hybridOwnerModule
+        ? hybridOwnerModule.resolveHybridClientRouteOwner(navigateHref, __basePath)
+        : "document";
+      if (hybridOwner === "pages" || hybridOwner === "document") {
+        navigateByDocument(absoluteFullHref, replace);
+        return;
       }
-      return;
     }
 
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (hasAppNavigationRuntime) {
-      const { navigateClientSide } = loadedNavigationModule ?? (await loadNavigationModule());
+      let navigationModule = loadedNavigationModule;
+      try {
+        navigationModule ??= await loadNavigationModule();
+      } catch {
+        // The user asked to go there: a document load reaches the current build.
+        navigateByDocument(absoluteFullHref, replace);
+        return;
+      }
+      const { navigateClientSide } = navigationModule;
       const setter = setPendingRef.current;
       // Register this link as the one driving the current navigation. This
       // resets any previously-pending link (e.g. a different link clicked
@@ -1381,12 +1387,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           locale,
           interpolateDynamicRoute: resolvedHref.startsWith("?"),
         },
-        fallback: () => applyPagesNavigationFallback(absoluteFullHref, replace),
+        fallback: () => navigateByDocument(absoluteFullHref, replace),
       });
-    } else if (replace) {
-      window.location.replace(absoluteFullHref);
     } else {
-      window.location.assign(absoluteFullHref);
+      navigateByDocument(absoluteFullHref, replace);
     }
   };
 

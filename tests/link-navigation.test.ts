@@ -1449,6 +1449,194 @@ describe("Pages Router Link onClick semantics", () => {
   });
 });
 
+describe("Link when a lazily loaded chunk cannot load", () => {
+  const NAVIGATION_MODULE = "../packages/vinext/src/shims/navigation.js";
+  const OWNER_MODULE = "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
+  const ROUTER_MODULE = "../packages/vinext/src/shims/router.js";
+  let consoleError: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // loadChunk waits 200-600 ms before its one retry.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.doUnmock(NAVIGATION_MODULE);
+    vi.doUnmock(OWNER_MODULE);
+    vi.doUnmock(ROUTER_MODULE);
+    vi.useRealTimers();
+  });
+
+  /** Makes every import of the module fail until `state.available` is set. */
+  function breakChunk(specifier: string): {
+    attempts: ReturnType<typeof vi.fn>;
+    state: { available: boolean };
+  } {
+    const attempts = vi.fn();
+    const state = { available: false };
+    vi.doMock(specifier, async (importOriginal) => {
+      attempts();
+      if (!state.available) throw new TypeError("Failed to fetch dynamically imported module");
+      return importOriginal();
+    });
+    return { attempts, state };
+  }
+
+  function createLocation() {
+    return {
+      assign: vi.fn(),
+      href: "https://example.com/current",
+      origin: "https://example.com",
+      pathname: "/current",
+      replace: vi.fn(),
+      search: "",
+    };
+  }
+
+  async function clickAndSettle(onClick: NonNullable<CapturedAnchorProps["onClick"]>) {
+    const event = {
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
+    const clicking = onClick(event);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await clicking;
+    return event;
+  }
+
+  it.each([
+    { method: "assign" as const, replace: false },
+    { method: "replace" as const, replace: true },
+  ])(
+    "loads the target as a document when the navigation chunk cannot load (replace=$replace)",
+    async ({ method, replace }) => {
+      breakChunk(NAVIGATION_MODULE);
+      const location = createLocation();
+      const result = await renderIsolatedLink({
+        href: "/target",
+        nodeEnv: "production",
+        props: { prefetch: false, replace },
+        windowOverrides: { location },
+      });
+
+      try {
+        const event = await clickAndSettle(result.capturedAnchorProps.onClick!);
+
+        expect(event.defaultPrevented).toBe(true);
+        expect(location[method]).toHaveBeenCalledExactlyOnceWith("/target");
+        expect(location[method === "assign" ? "replace" : "assign"]).not.toHaveBeenCalled();
+        expect(result.navigate).not.toHaveBeenCalled();
+      } finally {
+        result.restoreNodeEnv();
+      }
+    },
+  );
+
+  it("tries the navigation chunk again on the next click", async () => {
+    const { state } = breakChunk(NAVIGATION_MODULE);
+    const location = createLocation();
+    const result = await renderIsolatedLink({
+      href: "/target",
+      nodeEnv: "production",
+      // The scroll fallback of the real navigation module needs a document.
+      props: { prefetch: false, scroll: false },
+      windowOverrides: { location },
+    });
+
+    try {
+      const onClick = result.capturedAnchorProps.onClick!;
+      await clickAndSettle(onClick);
+      expect(location.assign).toHaveBeenCalledOnce();
+
+      state.available = true;
+      await clickAndSettle(onClick);
+
+      expect(location.assign).toHaveBeenCalledOnce();
+      expect(result.navigate).toHaveBeenCalledOnce();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("loads the target as a document when the route owner chunk cannot load", async () => {
+    breakChunk(OWNER_MODULE);
+    const location = createLocation();
+    const result = await renderIsolatedLink({
+      href: "/target",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: { location },
+    });
+
+    try {
+      await clickAndSettle(result.capturedAnchorProps.onClick!);
+
+      expect(location.assign).toHaveBeenCalledExactlyOnceWith("/target");
+      expect(result.navigate).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledOnce();
+      expect(consoleError.mock.calls[0]?.[0]).toMatch(/^\[vinext\] Could not load/);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("loads the target as a document when the Pages Router chunk cannot load", async () => {
+    // Earlier describes stub this boundary and never unmock it.
+    vi.doUnmock("../packages/vinext/src/client/pages-router-link-navigation.js");
+    vi.doUnmock("next/router");
+    breakChunk(ROUTER_MODULE);
+    const location = createLocation();
+    const pushState = vi.fn();
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/target",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: { history: { pushState, replaceState: vi.fn() }, location },
+    });
+
+    try {
+      await clickAndSettle(result.capturedAnchorProps.onClick!);
+
+      expect(location.assign).toHaveBeenCalledExactlyOnceWith("/target");
+      expect(pushState).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps prefetching quiet when the navigation chunk cannot load, and tries again on the next prefetch", async () => {
+    const { attempts } = breakChunk(NAVIGATION_MODULE);
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const attemptsAfterFirstPrefetch = attempts.mock.calls.length;
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] RSC prefetch setup error:",
+        expect.anything(),
+      );
+      expect(attempts.mock.calls.length).toBeGreaterThan(attemptsAfterFirstPrefetch);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+});
+
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
