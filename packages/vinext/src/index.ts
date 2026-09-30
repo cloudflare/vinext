@@ -7312,8 +7312,10 @@ export const loadServerActionClient = ${
           // Scans keep only import specifiers, which folding can change only by
           // pruning a dynamic or phase import, or import.meta.glob. Only skip
           // the fold when native define folding still covers write-less builds
-          // that are not plugin-RSC scans.
-          const skipsUnobservableFold = scansImports && useNativeTypeofWindowFolding;
+          // that are not plugin-RSC scans; Vite's define transform does not
+          // run for unbundled client environments.
+          const skipsUnobservableFold =
+            scansImports && useNativeTypeofWindowFolding && this.environment.config.isBundled;
           if (skipsUnobservableFold && !mayFoldChangeScannedImports(code)) return null;
           const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
           const replaceProcessBrowser = scansImports;

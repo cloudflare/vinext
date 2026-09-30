@@ -238,17 +238,25 @@ export function mayFoldChangeScannedImports(code: string): boolean {
 }
 
 /**
- * Whether folding may prune a scanned import: a dynamic or phase import with a
- * static specifier, or an `import.meta` expression other than a `.url`/`.env` read.
- * Reads the parser's native module record, so no ESTree is materialized.
+ * Whether folding may change a scanned import: a dynamic or phase import with a
+ * static specifier or a foldable request, or an `import.meta` expression other
+ * than a `.url`/`.env` read. Reads the parser's native module record, so no
+ * ESTree is materialized.
  */
 function moduleRecordHasScannedFoldTargets(
   code: string,
   module: ReturnType<typeof parseSync>["module"],
+  lang: "js" | "jsx" | "ts" | "tsx",
 ): boolean {
+  // The module record omits TypeScript `import("x")` types, which the scan's
+  // lexer still sees when no earlier plugin stripped them.
+  if ((lang === "ts" || lang === "tsx") && DYNAMIC_IMPORT_PRESCAN.test(code)) return true;
   for (const dynamicImport of module.dynamicImports) {
-    const quote = code[dynamicImport.moduleRequest.start];
+    const { start, end } = dynamicImport.moduleRequest;
+    const quote = code[start];
     if (quote === '"' || quote === "'" || quote === "`") return true;
+    // Folding can turn a request such as `import(typeof window)` into a literal.
+    if (consumerEnvironmentConditionFilter.test(code.slice(start, end))) return true;
   }
   for (const importMeta of module.importMetas) {
     NON_IMPORTING_IMPORT_META_RE.lastIndex = importMeta.end;
@@ -286,7 +294,7 @@ export function replaceConsumerEnvironmentConditions(
   if (parsed.errors.length > 0) return null;
   if (
     replacements.onlyIfScannedImportsChange &&
-    !moduleRecordHasScannedFoldTargets(code, parsed.module)
+    !moduleRecordHasScannedFoldTargets(code, parsed.module, lang)
   ) {
     return null;
   }

@@ -238,15 +238,13 @@ describe("typeof window compilation", () => {
       }
 
       const transform = plugin.transform.handler;
-      const context = {
-        environment: {
-          config: {
-            build: { write: false },
-            cacheDir: path.join(root, ".vite"),
-            consumer: "server",
-          },
-        },
+      const environmentConfig = {
+        build: { write: false },
+        cacheDir: path.join(root, ".vite"),
+        consumer: "server",
+        isBundled: true,
       };
+      const context = { environment: { config: environmentConfig } };
       const appPageId = path.join(root, "app/page.js");
 
       expect(
@@ -285,6 +283,18 @@ describe("typeof window compilation", () => {
           appPageId,
         ),
       ).toMatchObject({ code: expect.not.stringContaining("browser.wasm") });
+
+      // Vite's define transform skips unbundled client environments.
+      const unbundledClientContext = {
+        environment: { config: { ...environmentConfig, consumer: "client", isBundled: false } },
+      };
+      expect(
+        await transform.call(
+          unbundledClientContext as never,
+          `if (!process.browser) serverOnly()`,
+          appPageId,
+        ),
+      ).toMatchObject({ code: expect.not.stringContaining("serverOnly") });
     },
   );
 
@@ -419,6 +429,8 @@ const truthy = value || typeof window === "undefined";`;
       `if (typeof window !== "undefined") import.source("./browser.wasm")`,
       `if (process.browser) import.defer("./browser.js")`,
       `if (typeof window !== "undefined") import./* phase */ source("./browser.wasm")`,
+      `import(typeof window)`,
+      `import.source(typeof window)`,
     ];
     for (const source of observable) {
       const folded = replaceConsumerEnvironmentConditions(source, scan);
@@ -427,6 +439,19 @@ const truthy = value || typeof window === "undefined";`;
         replaceConsumerEnvironmentConditions(source, { ...scan, onlyIfScannedImportsChange: true }),
       ).toEqual(folded);
     }
+
+    // Unstripped TypeScript import types are absent from the module record but
+    // visible to plugin-rsc's scan lexer.
+    const typeImport = `if (process.browser) { type T = import("browser-only").T }`;
+    const foldedTypeImport = replaceConsumerEnvironmentConditions(typeImport, scan, "file.cts");
+    expect(foldedTypeImport?.code).not.toContain("browser-only");
+    expect(
+      replaceConsumerEnvironmentConditions(
+        typeImport,
+        { ...scan, onlyIfScannedImportsChange: true },
+        "file.cts",
+      ),
+    ).toEqual(foldedTypeImport);
   });
 
   it("prefilters import-scan folds to dynamic, phase import and import.meta syntax", () => {
