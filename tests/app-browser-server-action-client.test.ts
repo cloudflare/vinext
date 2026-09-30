@@ -705,6 +705,103 @@ describe("app browser server action client", () => {
     expect(revalidationArg).toBe("none");
   });
 
+  describe("HTTP fallback head with overlapping actions", () => {
+    // Navigation discards slow action A, so queued action B owns the page.
+    // Only B may set or clear the action 404 noindex marker; A still settles
+    // its own caller.
+    async function startOverlappingActions() {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      const fetchResolvers: Array<(response: Response) => void> = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise<Response>((resolve) => {
+              fetchResolvers.push(resolve);
+            }),
+        ),
+      );
+      const head = { noindex: false };
+      let currentAction: "A" | "B" = "A";
+      const start = (name: "A" | "B") =>
+        invokeClientServerAction(
+          "action-id",
+          [],
+          createServerActionInitiationSnapshot({
+            href: "https://example.com/source",
+            navigationId: 1,
+            routerState: createActionTestRouterState(),
+          }),
+          {
+            basePath: "",
+            clearClientNavigationCaches: vi.fn(),
+            clientRscCompatibilityId: null,
+            commitSameUrlNavigatePayload: vi.fn(),
+            isCurrentAction: () => currentAction === name,
+            navigationPlanner,
+            performHardNavigation: vi.fn(),
+            renderRedirectPayload: vi.fn(),
+            syncCurrentHistoryState: vi.fn(),
+            syncServerActionHttpFallbackHead: (status) => {
+              head.noindex = status === 404;
+            },
+          },
+        );
+      const actionA = start("A");
+      currentAction = "B";
+      const actionB = start("B");
+      // The request goes out after the arguments are encoded.
+      await vi.waitFor(() => expect(fetchResolvers).toHaveLength(2));
+      const respond = (index: 0 | 1, status: number) => {
+        vi.mocked(createFromFetch).mockResolvedValueOnce({
+          returnValue: { ok: true, data: index === 0 ? "a-value" : "b-value" },
+        });
+        fetchResolvers[index](
+          new Response("flight", { headers: { "content-type": "text/x-component" }, status }),
+        );
+      };
+      return { actionA, actionB, head, respond };
+    }
+
+    it("keeps the marker B installed when stale A finishes with a non-404 payload", async () => {
+      const { actionA, actionB, head, respond } = await startOverlappingActions();
+
+      respond(1, 404);
+      await expect(actionB).resolves.toBe("b-value");
+      expect(head.noindex).toBe(true);
+
+      respond(0, 200);
+      await expect(actionA).resolves.toBe("a-value");
+      expect(head.noindex).toBe(true);
+    });
+
+    it("does not install a marker from stale A when it finishes with a 404 first", async () => {
+      const { actionA, actionB, head, respond } = await startOverlappingActions();
+
+      respond(0, 404);
+      await expect(actionA).resolves.toBe("a-value");
+      expect(head.noindex).toBe(false);
+
+      respond(1, 200);
+      await expect(actionB).resolves.toBe("b-value");
+      expect(head.noindex).toBe(false);
+    });
+
+    it("does not install a marker from stale A when it finishes with a 404 after B", async () => {
+      const { actionA, actionB, head, respond } = await startOverlappingActions();
+
+      respond(1, 200);
+      await expect(actionB).resolves.toBe("b-value");
+      expect(head.noindex).toBe(false);
+
+      respond(0, 404);
+      await expect(actionA).resolves.toBe("a-value");
+      expect(head.noindex).toBe(false);
+    });
+  });
+
   describe("action ids the server does not recognize", () => {
     function invokeUnknownAction(options: {
       clientRscCompatibilityId: string | null;

@@ -267,9 +267,13 @@ export async function invokeClientServerAction(
     return undefined;
   }
 
-  deps.syncServerActionHttpFallbackHead(
-    shouldSyncServerActionHttpFallbackHead(result) ? fetchResponse.status : null,
-  );
+  // A discarded action must not touch the marker the current action owns. Its
+  // return value still settles below.
+  if (deps.isCurrentAction?.() !== false) {
+    deps.syncServerActionHttpFallbackHead(
+      shouldSyncServerActionHttpFallbackHead(result) ? fetchResponse.status : null,
+    );
+  }
   // A rewrite on the POST can re-render the page with another query.
   const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
     fetchResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
