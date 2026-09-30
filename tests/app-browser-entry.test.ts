@@ -38,6 +38,10 @@ import {
   createAppBrowserNavigationController,
   performHardNavigationWithLoopGuard,
 } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import {
+  createNavigationCommitEffect,
+  type NavigationCommitEffectOptions,
+} from "../packages/vinext/src/server/app-browser-navigation-commit-effect.js";
 import { clearActionHttpFallbackHeadOnCommit } from "../packages/vinext/src/server/app-browser-action-http-fallback-head.js";
 import { DOCUMENT_UNLOAD_TIMEOUT_MS } from "../packages/vinext/src/client/chunk-load-recovery.js";
 import { createAppBrowserDocumentNavigation } from "../packages/vinext/src/server/app-browser-document-navigation.js";
@@ -4439,89 +4443,316 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("tracks active navigation ids and clears the pending pathname only for the current navigation", () => {
-    const { controller, detach } = createControllerHarness();
-    const clearSpy = vi.spyOn(navigationShim, "clearPendingPathname").mockImplementation(() => {});
+  describe("navigation snapshot ownership", () => {
+    // Stands in for the shim's counter: a release needs an explicit opt-in or a
+    // navigation id, and clamps at zero.
+    function createSnapshotOwnershipHarness() {
+      let active = 0;
+      const release = vi.fn((navId?: number, options?: { releaseSnapshot?: boolean }) => {
+        if ((options?.releaseSnapshot ?? navId !== undefined) && active > 0) active -= 1;
+      });
+      vi.spyOn(navigationShim, "activateNavigationSnapshot").mockImplementation(() => {
+        active += 1;
+      });
+      const { controller, detach, stateRef } = createControllerHarness(createState(), {
+        commitClientNavigationState: release,
+      });
+      const createEffect = (options: NavigationCommitEffectOptions) =>
+        createNavigationCommitEffect(options, {
+          clearNavigationFailureTarget: () => {},
+          commitClientNavigationState: release,
+          commitNavigationHistory: () => {},
+          isCurrentNavigation: (navId) => controller.isCurrentNavigation(navId),
+          stageClientParams: () => {},
+        });
 
-    describe("action 404 noindex marker lifetime", () => {
-      async function renderNavigationWithMarkerClear() {
-        const clearHead = vi.fn();
-        const innerCommitted = vi.fn();
-        const { controller, detach } = createControllerHarness();
+      async function navigate(page: string) {
+        const href = `https://example.com${page}`;
         const navId = controller.beginNavigation();
         const pendingRouterState = controller.beginPendingBrowserRouterState();
-        const outcome = renderCurrentStateNavigationPayload(controller, {
+        void renderCurrentStateNavigationPayload(controller, {
           actionType: "navigate",
-          createNavigationCommitEffect: () => () => {},
+          createNavigationCommitEffect: createEffect,
           historyUpdateMode: "push",
-          navigationSnapshot: createClientNavigationRenderSnapshot(
-            "https://example.com/dashboard",
-            {},
-          ),
-          nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
-          onCommittedState: clearActionHttpFallbackHeadOnCommit(clearHead, innerCommitted),
+          navigationSnapshot: createClientNavigationRenderSnapshot(href, {}),
+          nextElements: Promise.resolve(createResolvedElements(`route:${page}`, "/")),
           operationLane: "navigation",
           params: {},
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           pendingRouterState,
           previousNextUrl: null,
-          targetHref: "https://example.com/dashboard",
+          targetHref: href,
           navId,
         });
         const state = await pendingRouterState.promise;
-        return { clearHead, controller, detach, innerCommitted, outcome, state };
+        return state.renderId;
       }
 
-      it("keeps the marker while the navigation is dispatched but not committed", async () => {
-        const { clearHead, detach } = await renderNavigationWithMarkerClear();
-        try {
-          expect(clearHead).not.toHaveBeenCalled();
-        } finally {
-          detach();
-        }
-      });
-
-      it("clears the marker and forwards the committed state when the navigation commits", async () => {
-        const { clearHead, controller, detach, innerCommitted, outcome, state } =
-          await renderNavigationWithMarkerClear();
-        try {
-          controller.commitNavigationRender(state.renderId);
-
-          await expect(outcome).resolves.toBe("committed");
-          expect(clearHead).toHaveBeenCalledTimes(1);
-          expect(innerCommitted).toHaveBeenCalledExactlyOnceWith(state);
-        } finally {
-          detach();
-        }
-      });
-
-      it("keeps the marker when the navigation is discarded before it commits", async () => {
-        const { clearHead, controller, detach, innerCommitted, outcome } =
-          await renderNavigationWithMarkerClear();
-        try {
-          controller.beginNavigation();
-          controller.discardPendingNavigation();
-
-          await expect(outcome).resolves.toBe("no-commit");
-          expect(clearHead).not.toHaveBeenCalled();
-          expect(innerCommitted).not.toHaveBeenCalled();
-        } finally {
-          detach();
-        }
-      });
-
-      it("clears the marker only when a navigation commits, not when it starts", () => {
-        const source = readFileSync(
-          new URL("../packages/vinext/src/server/app-browser-entry.ts", import.meta.url),
-          "utf8",
+      // The same-URL action path queues its effect without activating a snapshot.
+      async function queueServerActionRender() {
+        const navId = controller.getActiveNavigationId();
+        const base = stateRef.current;
+        let renderId = -1;
+        await controller.commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/initial", "/")),
+          base.navigationSnapshot,
+          undefined,
+          base,
+          {
+            actionBase: { state: base, committedState: base },
+            createCommitEffect: (state) => {
+              renderId = state.renderId;
+              return createEffect({
+                activeRoutePaths: [],
+                bfcacheIds: state.bfcacheIds,
+                href: "https://example.com/initial",
+                historyUpdateMode: undefined,
+                navId,
+                params: {},
+                previousNextUrl: null,
+                releaseSnapshot: false,
+              });
+            },
+            startedNavigationId: navId,
+            targetHref: "https://example.com/initial",
+          },
         );
+        return renderId;
+      }
 
-        expect(source).toContain("clearActionHttpFallbackHeadOnCommit(");
-        expect(source).not.toMatch(
-          /syncServerActionHttpFallbackHead\(null\);\s*return browserNavigationController\.renderNavigationPayload/,
-        );
+      return {
+        active: () => active,
+        controller,
+        detach,
+        navigate,
+        queueServerActionRender,
+        release,
+      };
+    }
+
+    it("balances the counter across two plain navigations", async () => {
+      const harness = createSnapshotOwnershipHarness();
+      try {
+        const first = await harness.navigate("/a");
+        const second = await harness.navigate("/b");
+        expect(harness.active()).toBe(2);
+
+        harness.controller.commitNavigationRender(first);
+        expect(harness.active()).toBe(1);
+
+        harness.controller.commitNavigationRender(second);
+        expect(harness.active()).toBe(0);
+      } finally {
+        harness.detach();
+      }
+    });
+
+    it("keeps a pending navigation's snapshot when a server action effect drains with an older batch", async () => {
+      const harness = createSnapshotOwnershipHarness();
+      try {
+        expect(await harness.queueServerActionRender()).toBeGreaterThan(0);
+        expect(harness.active()).toBe(0);
+
+        const first = await harness.navigate("/a");
+        const second = await harness.navigate("/b");
+        expect(harness.active()).toBe(2);
+
+        // React batches the action render with /a and commits /a; /b is still pending.
+        harness.controller.commitNavigationRender(first);
+        expect(harness.active()).toBe(1);
+
+        harness.controller.commitNavigationRender(second);
+        expect(harness.active()).toBe(0);
+      } finally {
+        harness.detach();
+      }
+    });
+
+    it("keeps a pending navigation's snapshot when an older server action render commits on its own", async () => {
+      const harness = createSnapshotOwnershipHarness();
+      try {
+        const actionRenderId = await harness.queueServerActionRender();
+        const pending = await harness.navigate("/a");
+        expect(harness.active()).toBe(1);
+
+        harness.controller.commitNavigationRender(actionRenderId);
+        expect(harness.active()).toBe(1);
+
+        harness.controller.commitNavigationRender(pending);
+        expect(harness.active()).toBe(0);
+      } finally {
+        harness.detach();
+      }
+    });
+
+    it("releases only the snapshots that navigations activated when pending work is discarded", async () => {
+      const harness = createSnapshotOwnershipHarness();
+      try {
+        await harness.queueServerActionRender();
+        await harness.navigate("/a");
+        expect(harness.active()).toBe(1);
+
+        harness.controller.discardPendingNavigation();
+
+        expect(harness.release).toHaveBeenCalledExactlyOnceWith(undefined, {
+          releaseSnapshot: true,
+        });
+        expect(harness.active()).toBe(0);
+      } finally {
+        harness.detach();
+      }
+    });
+  });
+
+  describe("navigation commit effect", () => {
+    function createEffectHarness(options: Partial<NavigationCommitEffectOptions> = {}) {
+      let current = true;
+      const deps = {
+        clearNavigationFailureTarget: vi.fn(),
+        commitClientNavigationState: vi.fn(),
+        commitNavigationHistory: vi.fn(),
+        isCurrentNavigation: () => current,
+        stageClientParams: vi.fn(),
+      };
+      const effect = createNavigationCommitEffect(
+        {
+          activeRoutePaths: [],
+          bfcacheIds: {},
+          href: "https://example.com/next",
+          historyUpdateMode: "push",
+          navId: 4,
+          params: {},
+          previousNextUrl: null,
+          ...options,
+        },
+        deps,
+      );
+      return { deps, effect, supersede: () => (current = false) };
+    }
+
+    it("writes history and commits client state for the current navigation", () => {
+      const { deps, effect } = createEffectHarness({ releaseSnapshot: false });
+
+      effect(true);
+
+      expect(deps.commitNavigationHistory).toHaveBeenCalledTimes(1);
+      expect(deps.clearNavigationFailureTarget).toHaveBeenCalledWith("https://example.com/next");
+      expect(deps.commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(4, {
+        deferNotifications: true,
+        releaseSnapshot: false,
       });
     });
+
+    it("releases the snapshot of a superseded navigation without touching history", () => {
+      const { deps, effect, supersede } = createEffectHarness();
+      supersede();
+
+      effect(true);
+
+      expect(deps.commitNavigationHistory).not.toHaveBeenCalled();
+      expect(deps.commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
+        deferNotifications: true,
+        releaseSnapshot: true,
+      });
+    });
+
+    it("keeps the counter untouched when a superseded effect never activated a snapshot", () => {
+      const { deps, effect, supersede } = createEffectHarness({ releaseSnapshot: false });
+      supersede();
+
+      effect();
+
+      expect(deps.commitNavigationHistory).not.toHaveBeenCalled();
+      expect(deps.commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
+        deferNotifications: false,
+        releaseSnapshot: false,
+      });
+    });
+  });
+
+  describe("action 404 noindex marker lifetime", () => {
+    async function renderNavigationWithMarkerClear() {
+      const clearHead = vi.fn();
+      const innerCommitted = vi.fn();
+      const { controller, detach } = createControllerHarness();
+      const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const outcome = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard",
+          {},
+        ),
+        nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
+        onCommittedState: clearActionHttpFallbackHeadOnCommit(clearHead, innerCommitted),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+      const state = await pendingRouterState.promise;
+      return { clearHead, controller, detach, innerCommitted, outcome, state };
+    }
+
+    it("keeps the marker while the navigation is dispatched but not committed", async () => {
+      const { clearHead, detach } = await renderNavigationWithMarkerClear();
+      try {
+        expect(clearHead).not.toHaveBeenCalled();
+      } finally {
+        detach();
+      }
+    });
+
+    it("clears the marker and forwards the committed state when the navigation commits", async () => {
+      const { clearHead, controller, detach, innerCommitted, outcome, state } =
+        await renderNavigationWithMarkerClear();
+      try {
+        controller.commitNavigationRender(state.renderId);
+
+        await expect(outcome).resolves.toBe("committed");
+        expect(clearHead).toHaveBeenCalledTimes(1);
+        expect(innerCommitted).toHaveBeenCalledExactlyOnceWith(state);
+      } finally {
+        detach();
+      }
+    });
+
+    it("keeps the marker when the navigation is discarded before it commits", async () => {
+      const { clearHead, controller, detach, innerCommitted, outcome } =
+        await renderNavigationWithMarkerClear();
+      try {
+        controller.beginNavigation();
+        controller.discardPendingNavigation();
+
+        await expect(outcome).resolves.toBe("no-commit");
+        expect(clearHead).not.toHaveBeenCalled();
+        expect(innerCommitted).not.toHaveBeenCalled();
+      } finally {
+        detach();
+      }
+    });
+
+    it("clears the marker only when a navigation commits, not when it starts", () => {
+      const source = readFileSync(
+        new URL("../packages/vinext/src/server/app-browser-entry.ts", import.meta.url),
+        "utf8",
+      );
+
+      expect(source).toContain("clearActionHttpFallbackHeadOnCommit(");
+      expect(source).not.toMatch(
+        /syncServerActionHttpFallbackHead\(null\);\s*return browserNavigationController\.renderNavigationPayload/,
+      );
+    });
+  });
+
+  it("tracks active navigation ids and clears the pending pathname only for the current navigation", () => {
+    const { controller, detach } = createControllerHarness();
+    const clearSpy = vi.spyOn(navigationShim, "clearPendingPathname").mockImplementation(() => {});
 
     try {
       const firstNavId = controller.beginNavigation();

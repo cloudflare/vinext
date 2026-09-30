@@ -111,6 +111,10 @@ import {
   syncServerActionHttpFallbackHead,
 } from "./app-browser-action-http-fallback-head.js";
 import { createAppBrowserDocumentNavigation } from "./app-browser-document-navigation.js";
+import {
+  createNavigationCommitEffect as createNavigationCommitEffectWithDeps,
+  type NavigationCommitEffectOptions,
+} from "./app-browser-navigation-commit-effect.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
@@ -794,55 +798,17 @@ function createActionInitiationSnapshot(action?: AppBrowserNavigationActionResul
 
 type ActionInitiationSnapshot = ReturnType<typeof createActionInitiationSnapshot>;
 
-function createNavigationCommitEffect(options: {
-  activeRoutePaths: readonly string[];
-  bfcacheIds: Readonly<Record<string, string>>;
-  href: string;
-  historyUpdateMode: HistoryUpdateMode | undefined;
-  navId: number;
-  params: Record<string, string | string[]>;
-  previousNextUrl: string | null;
-  targetHistoryIndex?: number | null;
-  releaseSnapshot?: boolean;
-}): (deferNotifications?: boolean) => void {
-  const {
-    activeRoutePaths,
-    bfcacheIds,
-    href,
-    historyUpdateMode,
-    navId,
-    params,
-    previousNextUrl,
-    targetHistoryIndex,
-  } = options;
-
-  return (deferNotifications = false) => {
-    // Only update URL if this is still the active navigation.
-    // A newer navigation would have superseded this navigation id.
-    if (!browserNavigationController.isCurrentNavigation(navId)) {
-      // This transition was superseded before commit; balance the active
-      // snapshot counter without clearing pendingPathname ownership.
-      commitClientNavigationState(undefined, { releaseSnapshot: true, deferNotifications });
-      return;
-    }
-
-    historyController.commitNavigationHistory({
-      activeRoutePaths,
-      bfcacheIds,
-      href,
-      historyUpdateMode,
-      previousNextUrl,
-      stageClientParams: () => stageClientParams(params),
-      targetHistoryIndex,
-    });
-
-    // URL has been updated; the recovery hard-nav target is no longer needed.
-    clearAppNavigationFailureTarget(href);
-    commitClientNavigationState(navId, {
-      deferNotifications,
-      releaseSnapshot: options.releaseSnapshot,
-    });
-  };
+function createNavigationCommitEffect(
+  options: NavigationCommitEffectOptions,
+): (deferNotifications?: boolean) => void {
+  return createNavigationCommitEffectWithDeps(options, {
+    clearNavigationFailureTarget: clearAppNavigationFailureTarget,
+    commitClientNavigationState,
+    commitNavigationHistory: (historyOptions) =>
+      historyController.commitNavigationHistory(historyOptions),
+    isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+    stageClientParams,
+  });
 }
 
 type RenderNavigationPayloadOptions = {

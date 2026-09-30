@@ -324,7 +324,10 @@ export function createAppBrowserNavigationController(
     }
   >();
   const pendingNavigationFailureTargets = new Map<number, URL>();
-  const pendingNavigationPrePaintEffects = new Map<number, BrowserNavigationCommitEffect>();
+  const pendingNavigationPrePaintEffects = new Map<
+    number,
+    { effect: BrowserNavigationCommitEffect; ownsSnapshot: boolean }
+  >();
 
   let setBrowserRouterState: Dispatch<AppRouterState | Promise<AppRouterState>> | null = null;
   let browserRouterStateRef: BrowserRouterStateRef | null = null;
@@ -402,9 +405,9 @@ export function createAppBrowserNavigationController(
     }
     settleNavigationCommits(Infinity, false, retainedState?.renderId);
     clearCommittedNavigationFailureTargets(Infinity);
-    for (const renderId of pendingNavigationPrePaintEffects.keys()) {
+    for (const [renderId, { ownsSnapshot }] of pendingNavigationPrePaintEffects) {
       pendingNavigationPrePaintEffects.delete(renderId);
-      commitClientNavigationStateImpl(undefined, { releaseSnapshot: true });
+      if (ownsSnapshot) commitClientNavigationStateImpl(undefined, { releaseSnapshot: true });
     }
     // An approved render may already be queued in React or suspended below
     // BrowserRoot. Changing navigation ids alone cannot revoke that state update.
@@ -481,11 +484,15 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
+  function queuePrePaintNavigationEffect(
+    renderId: number,
+    effect: (() => void) | null,
+    ownsSnapshot: boolean,
+  ): void {
     if (!effect) {
       return;
     }
-    pendingNavigationPrePaintEffects.set(renderId, effect);
+    pendingNavigationPrePaintEffects.set(renderId, { effect, ownsSnapshot });
   }
 
   /**
@@ -496,11 +503,13 @@ export function createAppBrowserNavigationController(
    * <= the committed renderId here, the winning transition cleans up after
    * any superseded ones, keeping the counter balanced.
    *
-   * Invariant: each superseded navigation gets a commitClientNavigationState()
-   * to balance the activateNavigationSnapshot() from its renderNavigationPayload call.
+   * Invariant: each superseded navigation that activated a snapshot gets a
+   * commitClientNavigationState() to balance the activateNavigationSnapshot()
+   * from its renderNavigationPayload call. Effects queued without an activation
+   * (the same-URL server action path) release nothing.
    */
   function drainPrePaintEffects(upToRenderId: number, deferNotifications = false): void {
-    for (const [id, effect] of pendingNavigationPrePaintEffects) {
+    for (const [id, { effect, ownsSnapshot }] of pendingNavigationPrePaintEffects) {
       if (id > upToRenderId) {
         continue;
       }
@@ -508,7 +517,7 @@ export function createAppBrowserNavigationController(
       pendingNavigationPrePaintEffects.delete(id);
       if (id === upToRenderId) {
         effect(deferNotifications);
-      } else {
+      } else if (ownsSnapshot) {
         // Superseded navigations still need to balance the snapshot counter.
         commitClientNavigationStateImpl(undefined, {
           releaseSnapshot: true,
@@ -941,6 +950,7 @@ export function createAppBrowserNavigationController(
           previousNextUrl: approvedCommit.previousNextUrl,
           targetHistoryIndex: options.targetHistoryIndex,
         }),
+        true,
       );
       claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId);
       activateNavigationSnapshot();
@@ -1071,7 +1081,7 @@ export function createAppBrowserNavigationController(
           approvedRevalidationCommit,
         );
         const effect = lifecycleOptions?.createCommitEffect?.(state);
-        if (effect) queuePrePaintNavigationEffect(state.renderId, effect);
+        if (effect) queuePrePaintNavigationEffect(state.renderId, effect, false);
         claimAppRouterScrollIntentForCommit(lifecycleOptions?.scrollIntent, state.renderId);
         pendingNavigationCommits.set(state.renderId, {
           committedState: state,

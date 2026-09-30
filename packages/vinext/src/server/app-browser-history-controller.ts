@@ -64,7 +64,7 @@ type RestoreHistorySnapshotOptions = {
   approveVisibleRestore: (candidate: RestorableSnapshotCandidate) => boolean;
 };
 
-type CommitNavigationHistoryOptions = {
+export type CommitNavigationHistoryOptions = {
   activeRoutePaths: readonly string[];
   bfcacheIds: BfcacheIdMap;
   href: string;
