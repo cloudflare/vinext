@@ -1,0 +1,5 @@
+{
+  "name": "stale-build-recovery-fixture",
+  "private": true,
+  "type": "module"
+}
