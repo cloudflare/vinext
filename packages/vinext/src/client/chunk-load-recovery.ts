@@ -45,10 +45,10 @@ const STATE_KEY = Symbol.for("vinext.chunk-recovery");
 const HANDLED_MESSAGE =
   "[vinext] A vite:preloadError listener handled this script failure, so vinext did not recover.";
 const REFUSED_MESSAGE =
-  "[vinext] A script failed to load and the page was left as is. Reload it by hand, and if the problem persists, check the deploy for missing built assets.";
+  "[vinext] A script failed to load. Reload the page by hand; if that fails, check the deploy for missing built assets.";
 const WARNINGS: Record<ChunkFailureVerdict, string> = {
   pinned: "[vinext] A script failed to load and will not be retried. Reloading the page.",
-  replaced: "[vinext] This page's build was replaced. Loading the current version.",
+  replaced: "[vinext] This page's build was replaced. Reloading the page.",
 };
 
 function getState(): State {

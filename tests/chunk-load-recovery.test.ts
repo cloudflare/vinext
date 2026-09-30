@@ -9,7 +9,7 @@ const ENTRY = "https://app.test/assets/index-abc123.js";
 const PAGE = "https://app.test/page?x=1";
 const MINUTE = 60_000;
 
-const WARN_REPLACED = "[vinext] This page's build was replaced. Loading the current version.";
+const WARN_REPLACED = "[vinext] This page's build was replaced. Reloading the page.";
 const WARN_PINNED = "[vinext] A script failed to load and will not be retried. Reloading the page.";
 
 class FakeStorage {
@@ -809,7 +809,7 @@ describe("claim", () => {
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
     expect(console.error).toHaveBeenCalledTimes(1);
     expect(vi.mocked(console.error).mock.calls[0][0]).toBe(
-      "[vinext] A script failed to load and the page was left as is. Reload it by hand, and if the problem persists, check the deploy for missing built assets.",
+      "[vinext] A script failed to load. Reload the page by hand; if that fails, check the deploy for missing built assets.",
     );
   });
 
