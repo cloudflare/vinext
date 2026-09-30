@@ -33,6 +33,7 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  isRscCompatibilityIdCompatible,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -1514,13 +1515,9 @@ export function prefetchRscResponse(
       if (response.ok) {
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
-        const previousSize = getPrefetchCacheEntrySize(entry);
-        entry.snapshot = snapshot;
-        entry.size = snapshot.buffer.byteLength;
-        adjustPrefetchCacheByteSize(cache, entry.size - previousSize);
-        entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
+        const expiresAt = resolvePrefetchedRscResponseExpiresAt(
           entry.timestamp,
-          entry.snapshot,
+          snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
           // A search-agnostic PPR shell contains no query-dependent dynamic
           // data and is never navigation-consumable. Keep it on the prefetch
@@ -1531,6 +1528,21 @@ export function prefetchRscResponse(
             : (behavior.dynamicStaleTime ??
                 (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
         );
+        if (!isRscCompatibilityIdCompatible(snapshot.compatibilityIdHeader)) {
+          // A payload from another build names client modules the deployed
+          // server may have removed, and decoding it would import them. Keep
+          // only the freshness window, so the same href is not fetched again;
+          // the snapshot is dropped so neither navigation reuse nor optimistic
+          // template learning decodes it. A click fetches its own response and
+          // reaches the compatibility decision with that one.
+          entry.expiresAt = expiresAt;
+          return;
+        }
+        const previousSize = getPrefetchCacheEntrySize(entry);
+        entry.snapshot = snapshot;
+        entry.size = snapshot.buffer.byteLength;
+        adjustPrefetchCacheByteSize(cache, entry.size - previousSize);
+        entry.expiresAt = expiresAt;
         if (behavior.prepareSnapshot) {
           try {
             const preparedElements = await behavior.prepareSnapshot(snapshot);

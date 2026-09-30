@@ -2744,3 +2744,112 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().size).toBe(3);
   });
 });
+
+describe("prefetch of a response from another build", () => {
+  const CLIENT_BUILD = "client-build";
+
+  function flightResponse(compatibilityId: string | null): Response {
+    return new Response("flight", {
+      headers: {
+        "content-type": "text/x-component",
+        ...(compatibilityId === null
+          ? {}
+          : { [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: compatibilityId }),
+      },
+    });
+  }
+
+  async function prefetchDirectly(
+    rscUrl: string,
+    compatibilityId: string | null,
+    prepareSnapshot: () => Promise<never>,
+  ): Promise<PrefetchCacheEntry | undefined> {
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(flightResponse(compatibilityId)),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    const entry = getPrefetchCache().get(rscUrl);
+    await entry?.pending;
+    return entry;
+  }
+
+  it("decodes a response whose build matches the client", async () => {
+    vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", CLIENT_BUILD);
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    const entry = await prefetchDirectly("/same-build?_rsc=a", CLIENT_BUILD, prepareSnapshot);
+
+    expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+    expect(entry?.outcome).toBe("cache-seeded");
+    expect(entry?.snapshot).toBeDefined();
+  });
+
+  it.each([
+    ["a different build id", "server-build"],
+    ["no build id", null],
+  ])("does not decode a response with %s", async (_name, compatibilityId) => {
+    vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", CLIENT_BUILD);
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    const entry = await prefetchDirectly("/stale-build?_rsc=a", compatibilityId, prepareSnapshot);
+
+    expect(prepareSnapshot).not.toHaveBeenCalled();
+    // Template learning reads only settled entries that hold a snapshot
+    // (`isSettledPrefetchCacheEntry` in app-browser-entry.ts); this one is neither.
+    expect(entry?.snapshot).toBeUndefined();
+    expect(entry?.outcome).not.toBe("cache-seeded");
+  });
+
+  it("keeps a snapshot-free entry so the same href is not fetched again", async () => {
+    vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", CLIENT_BUILD);
+    const rscUrl = "/stale-build?_rsc=a";
+
+    await prefetchDirectly(
+      rscUrl,
+      "server-build",
+      vi.fn(async () => ({}) as never),
+    );
+
+    expect(hasPrefetchCacheEntryForNavigation(rscUrl, null, null)).toBe(true);
+  });
+
+  it("hands a click nothing to reuse, so the click fetches and decides on its own", async () => {
+    vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", CLIENT_BUILD);
+    const rscUrl = "/stale-build?_rsc=a";
+
+    await prefetchDirectly(
+      rscUrl,
+      "server-build",
+      vi.fn(async () => ({}) as never),
+    );
+
+    expect(peekPrefetchResponseForNavigation(rscUrl, null, null)).toBeNull();
+    expect(await consumePrefetchResponseForNavigation(rscUrl, null, null)).toBeNull();
+  });
+
+  it("router.prefetch neither decodes the response nor fetches the href twice", async () => {
+    vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", CLIENT_BUILD);
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      flightResponse("server-build"),
+    );
+    const preparePrefetchResponse = vi.fn(async () => ({}));
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { preparePrefetchResponse },
+    };
+
+    appRouterInstance.prefetch("/dashboard", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    await settlePrefetchSetup();
+    appRouterInstance.prefetch("/dashboard", { kind: "full" });
+    await settlePrefetchSetup();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(preparePrefetchResponse).not.toHaveBeenCalled();
+  });
+});
