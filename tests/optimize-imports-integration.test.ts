@@ -21,7 +21,7 @@ function linkWorkspaceDependencies(
   const target = path.join(root, "node_modules");
   fs.mkdirSync(target, { recursive: true });
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-    if (entry.name === ".vite") continue;
+    if (entry.name === ".vite" || entry.name === ".pnpm") continue;
     const sourceEntry = path.join(source, entry.name);
     fs.symlinkSync(
       sourceEntry,
@@ -95,7 +95,7 @@ function createPlugins(root: string, transformed?: Map<string, string>): Plugin[
   return plugins;
 }
 
-describe("optimizePackageImports extensionless re-exports", () => {
+describe("optimizePackageImports integration", () => {
   let root = "";
   let server: ViteDevServer | null = null;
 
@@ -105,6 +105,202 @@ describe("optimizePackageImports extensionless re-exports", () => {
     if (root) fs.rmSync(root, { recursive: true, force: true });
     root = "";
   });
+
+  // Related Next.js coverage: optimized imports must preserve client boundaries.
+  // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/barrel-optimization/basic/index.test.ts
+  it.each([false, true])(
+    "resolves a pnpm cross-package barrel in dev and production (app copy: %s)",
+    async (appCopy) => {
+      root = createFixture();
+      const modules = path.join(root, "node_modules");
+      const barrelModules = path.join(modules, ".pnpm", "radix-ui@1.0.0", "node_modules");
+      const barrel = path.join(barrelModules, "radix-ui");
+      const slot = path.join(
+        modules,
+        ".pnpm",
+        "slot@1.0.0",
+        "node_modules",
+        "@radix-ui",
+        "react-slot",
+      );
+      fs.mkdirSync(barrel, { recursive: true });
+      fs.mkdirSync(slot, { recursive: true });
+      fs.mkdirSync(path.join(barrelModules, "@radix-ui"), { recursive: true });
+      fs.symlinkSync(barrel, path.join(modules, "radix-ui"), "junction");
+      fs.symlinkSync(slot, path.join(barrelModules, "@radix-ui", "react-slot"), "junction");
+      for (const [dir, name] of [
+        [barrel, "radix-ui"],
+        [slot, "@radix-ui/react-slot"],
+      ]) {
+        fs.writeFileSync(
+          path.join(dir, "package.json"),
+          JSON.stringify({ name, type: "module", main: "./index.js" }),
+        );
+      }
+      fs.writeFileSync(
+        path.join(barrel, "index.js"),
+        `export * as Slot from "@radix-ui/react-slot";
+export { condition } from "@radix-ui/conditional";`,
+      );
+      const conditional = path.join(barrelModules, "@radix-ui", "conditional");
+      fs.mkdirSync(conditional, { recursive: true });
+      fs.writeFileSync(
+        path.join(conditional, "package.json"),
+        JSON.stringify({
+          name: "@radix-ui/conditional",
+          type: "module",
+          exports: { ".": { "react-server": "./rsc.js", default: "./ssr.js" } },
+        }),
+      );
+      for (const environment of ["rsc", "ssr"]) {
+        fs.writeFileSync(
+          path.join(conditional, `${environment}.js`),
+          `export const condition = "${environment}-condition";`,
+        );
+      }
+      fs.writeFileSync(
+        path.join(slot, "index.js"),
+        `"use client";
+import { createElement } from "react";
+export function Root({ children }) { return createElement("span", null, children); }`,
+      );
+      fs.writeFileSync(
+        path.join(root, "app", "client.tsx"),
+        `"use client";
+import { Slot, condition } from "radix-ui";
+export default function Client() { return <Slot.Root>slot-client {condition}</Slot.Root>; }`,
+      );
+      if (appCopy) {
+        const direct = path.join(modules, "@radix-ui", "react-slot");
+        fs.mkdirSync(direct, { recursive: true });
+        fs.writeFileSync(
+          path.join(direct, "package.json"),
+          JSON.stringify({ name: "@radix-ui/react-slot", type: "module", main: "./index.js" }),
+        );
+        fs.writeFileSync(
+          path.join(direct, "index.js"),
+          `export const version = "app-slot-version";`,
+        );
+        fs.writeFileSync(
+          path.join(modules, "custom-icons", "index.js"),
+          `export { version } from "@radix-ui/react-slot";`,
+        );
+      }
+      fs.writeFileSync(
+        path.join(root, "app", "page.tsx"),
+        `import { Slot, condition } from "radix-ui";
+${appCopy ? 'import { version } from "@radix-ui/react-slot"; import { version as otherVersion } from "custom-icons";' : 'const version = "no-app-copy", otherVersion = version;'}
+import Client from "./client";
+export default function Page() { return <main><Slot.Root>slot-server</Slot.Root><Client /><p>{condition}</p><p>{version === otherVersion ? version : "wrong-package-version"}</p></main>; }`,
+      );
+
+      let resolves = 0;
+      const plugins = [
+        {
+          name: "bound-barrel-resolution",
+          enforce: "pre",
+          resolveId(source) {
+            if (source.startsWith("@radix-ui/") && ++resolves > 100) {
+              throw new Error("Cross-package barrel resolution did not converge");
+            }
+          },
+        } satisfies Plugin,
+        ...createPlugins(root),
+      ];
+      server = await createServer({
+        root,
+        configFile: false,
+        plugins,
+        server: { port: 0 },
+        logLevel: "silent",
+      });
+      await server.listen();
+      const address = server.httpServer!.address();
+      if (!address || typeof address !== "object") throw new Error("Missing dev server address");
+      const devResponse = await fetch(`http://localhost:${address.port}/`);
+      expect(devResponse.status).toBe(200);
+      const devHtml = await devResponse.text();
+      expect(devHtml).toContain("slot-server");
+      expect(devHtml).toContain("slot-client");
+      expect(devHtml).toContain("rsc-condition");
+      expect(devHtml).toContain("ssr-condition");
+      expect(devHtml).toContain(appCopy ? "app-slot-version" : "no-app-copy");
+      await server.close();
+      server = null;
+
+      const builder = await createBuilder({ root, configFile: false, plugins, logLevel: "silent" });
+      await builder.buildApp();
+      const built = (await import(
+        pathToFileURL(path.join(root, "dist", "server", "index.js")).href
+      )) as { default: BuiltHandler };
+      const response = await built.default(new Request("http://localhost/"));
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain("slot-server");
+      expect(html).toContain("slot-client");
+      expect(html).toContain("rsc-condition");
+      expect(html).toContain("ssr-condition");
+      expect(html).toContain(appCopy ? "app-slot-version" : "no-app-copy");
+    },
+    120000,
+  );
+
+  it("preserves virtual sub-package resolutions in dev and production", async () => {
+    root = createFixture();
+    fs.writeFileSync(
+      path.join(root, "node_modules", "custom-icons", "index.js"),
+      `export { Button } from "custom-virtual-button";
+export { Unused } from "./unused.js";`,
+    );
+    fs.writeFileSync(
+      path.join(root, "node_modules", "custom-icons", "unused.js"),
+      `import * as React from "react"; export const Unused = React.createContext(null);`,
+    );
+    const virtualButton: Plugin = {
+      name: "virtual-button",
+      resolveId(source) {
+        if (source === "custom-virtual-button") return "\0virtual-button";
+      },
+      load(id) {
+        if (id === "\0virtual-button") {
+          return `export function Button({ label }) { return "virtual-button-" + label; }`;
+        }
+      },
+    };
+    server = await createServer({
+      root,
+      configFile: false,
+      plugins: [...createPlugins(root), virtualButton],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer!.address();
+    if (!address || typeof address !== "object") throw new Error("Missing dev server address");
+    const devResponse = await fetch(`http://localhost:${address.port}/`);
+    expect(devResponse.status).toBe(200);
+    const devHtml = await devResponse.text();
+    expect(devHtml).toContain("virtual-button-server");
+    expect(devHtml).toContain("virtual-button-client");
+    await server.close();
+    server = null;
+
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [...createPlugins(root), virtualButton],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+    const built = (await import(
+      pathToFileURL(path.join(root, "dist", "server", "index.js")).href
+    )) as { default: BuiltHandler };
+    const response = await built.default(new Request("http://localhost/"));
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("virtual-button-server");
+    expect(html).toContain("virtual-button-client");
+  }, 120000);
 
   it("lets Vite resolve extensionless optimized targets in RSC, SSR, and production", async () => {
     root = createFixture();

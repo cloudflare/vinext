@@ -519,6 +519,15 @@ const projectServers = {
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
     },
+    additionalServers: [
+      {
+        command: "npx vp dev --port 4216",
+        cwd: "./tests/fixtures/cf-app-basic",
+        port: 4216,
+        reuseExistingServer: !process.env.CI,
+        timeout: 60_000,
+      },
+    ],
   },
   "web-worker-vinext": {
     testDir: "./tests/e2e/web-worker",
