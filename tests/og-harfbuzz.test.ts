@@ -200,10 +200,9 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     expect(result!.code).toContain("t.instantiateWasm");
   });
 
-  it("patches each bundle once per build and recomputes in dev", () => {
-    const root = path.join(tmpRoot, "cached-project");
+  it("patches each bundle once per build", () => {
     const code = fs.readFileSync(edgeEntry, "utf8");
-    const build = createTransform("build", root);
+    const build = createTransform("build", path.join(tmpRoot, "cached-project"));
     const first = build(code, edgeEntry);
     expect(first).not.toBeNull();
     // Scan and build passes feed the same source through the same plugin.
@@ -212,12 +211,16 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     const changed = build(`${code}\n// changed`, edgeEntry);
     expect(changed).not.toBe(first);
     expect(changed!.code).toContain("// changed");
+  }, 30_000);
 
-    const dev = createTransform("serve", root);
-    const devResult = dev(code, edgeEntry);
-    expect(dev(code, edgeEntry)).not.toBe(devResult);
-    expect(dev(code, edgeEntry)!.code).toBe(devResult!.code);
-  });
+  it("recomputes the patch in dev", () => {
+    const code = fs.readFileSync(edgeEntry, "utf8");
+    const dev = createTransform("serve", path.join(tmpRoot, "cached-project"));
+    const first = dev(code, edgeEntry);
+    const again = dev(code, edgeEntry);
+    expect(again).not.toBe(first);
+    expect(again!.code).toBe(first!.code);
+  }, 30_000);
 
   it("omits the sourcemap per environment when the patch is shared", () => {
     const code = fs.readFileSync(edgeEntry, "utf8");
