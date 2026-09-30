@@ -194,6 +194,7 @@ When fixing a bug in any of these files, check whether the same bug exists in th
 ### Debugging
 
 - **Dev server logs**: Run `npx vite dev` in a fixture directory
+- **Production build of a fixture**: `node scripts/build-fixture.mts <fixture-dir> [--out <dir>] [--json]` builds it from source into a temp directory and prints the output path (see the header of the script)
 - **RSC streaming issues**: Context is often cleared before stream consumption — check AsyncLocalStorage usage
 - **Module resolution**: Vite has separate module instances for RSC/SSR/client environments
 
