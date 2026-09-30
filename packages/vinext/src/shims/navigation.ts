@@ -105,32 +105,41 @@ import {
   releaseAppPrefetchFetchSlot,
   scheduleAppPrefetchFetch,
 } from "./internal/app-prefetch-fetch-queue.js";
+import {
+  getHybridClientRouteOwnerLoadFailure,
+  getLoadedHybridClientRouteOwner,
+  loadHybridClientRouteOwner,
+} from "./internal/hybrid-client-route-owner-loader.js";
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
-type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
-let hybridClientRouteOwnerModule: HybridClientRouteOwnerModule | null = null;
-let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
 
-/** Load rewrite-aware hybrid route ownership before navigation becomes interactive. */
-export async function preloadHybridClientRouteOwner(): Promise<void> {
-  if (hybridClientRouteOwnerModule) return;
-  hybridClientRouteOwnerModulePromise ??= import("./internal/hybrid-client-route-owner.js");
-  hybridClientRouteOwnerModule = await hybridClientRouteOwnerModulePromise;
+/**
+ * Load rewrite-aware hybrid route ownership before navigation becomes
+ * interactive. Resolves to the failure when the chunk cannot be loaded.
+ */
+export async function preloadHybridClientRouteOwner(): Promise<{ error: unknown } | null> {
+  if (await loadHybridClientRouteOwner()) return null;
+  return getHybridClientRouteOwnerLoadFailure();
 }
 
 export function resolveLoadedHybridClientRewriteHref(
   href: string,
   basePath: string,
 ): string | null {
-  return hybridClientRouteOwnerModule?.resolveHybridClientRewriteHref(href, basePath) ?? null;
+  return getLoadedHybridClientRouteOwner()?.resolveHybridClientRewriteHref(href, basePath) ?? null;
 }
 
 function resolveHybridClientRouteOwner(href: string): HybridClientOwner | null {
   if (!HAS_PAGES_ROUTER) return null;
-  return hybridClientRouteOwnerModule
-    ? hybridClientRouteOwnerModule.resolveHybridClientRouteOwner(href, __basePath)
-    : resolveDirectHybridClientRouteOwner(href, __basePath);
+
+  const ownerModule = getLoadedHybridClientRouteOwner();
+  if (ownerModule) return ownerModule.resolveHybridClientRouteOwner(href, __basePath);
+  // The direct resolver ignores client rewrites, so it could send a rewritten
+  // URL to the wrong router. Without the rewrite-aware module, the server
+  // decides.
+  if (getHybridClientRouteOwnerLoadFailure()) return "document";
+  return resolveDirectHybridClientRouteOwner(href, __basePath);
 }
 
 export {

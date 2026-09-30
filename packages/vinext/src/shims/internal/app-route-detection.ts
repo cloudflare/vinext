@@ -37,6 +37,7 @@
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { stripBasePath, removeTrailingSlash } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
+import { loadHybridClientRouteOwner } from "./hybrid-client-route-owner-loader.js";
 import { getPagesRouterComponentsMap } from "./pages-router-components.js";
 
 declare global {
@@ -89,8 +90,8 @@ export async function markAppRouteDetectedOnPrefetch(
 ): Promise<void> {
   if (typeof window === "undefined") return;
   if (!window.__VINEXT_LINK_PREFETCH_ROUTES__?.length) return;
-  const { resolveHybridClientRouteOwner } = await import("./hybrid-client-route-owner.js");
-  if (resolveHybridClientRouteOwner(href, basePath) !== "app") return;
+  const ownerModule = await loadHybridClientRouteOwner();
+  if (ownerModule?.resolveHybridClientRouteOwner(href, basePath) !== "app") return;
 
   const rawPathname = resolveSameOriginPathname(href, basePath);
   if (rawPathname === null) return;

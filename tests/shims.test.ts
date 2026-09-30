@@ -19938,6 +19938,40 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("hard-navigates to the requested URL when the default error page cannot load after a development notFound", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, pushState, render } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(buildDevNotFoundHtml("/gssp-not-found"), {
+          status: 404,
+        }),
+    );
+    vi.doMock("next/error", () => {
+      throw new TypeError("Failed to fetch dynamically imported module");
+    });
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/gssp-not-found?hiding=true")).resolves.toBe(false);
+
+      expect(hrefAssignments).toEqual(["/gssp-not-found?hiding=true"]);
+      expect(render).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("next/error");
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("does not commit a development notFound route after a newer navigation wins", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -21296,6 +21330,55 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("hard-navigates to the requested URL when the default error page cannot load after a middleware SSG notFound", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, pushState, render } = createNavWindow();
+    const pageLoader = vi.fn(async () => ({ default: () => null }));
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_PATTERNS__: ["/ssg/[slug]"],
+      // No "/_error" loader: the router falls back to the lazily loaded next/error.
+      __VINEXT_PAGE_LOADERS__: { "/ssg/[slug]": pageLoader },
+      __VINEXT_PAGES_SSG_PATTERNS__: ["/ssg/[slug]"],
+      __VINEXT_PAGES_SSP_PATTERNS__: [],
+    });
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response('{"notFound":true}', { status: 404 }));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("next/error", () => {
+      throw new TypeError("Failed to fetch dynamically imported module");
+    });
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/ssg/not-found-1")).resolves.toBe(false);
+
+      expect(hrefAssignments).toEqual(["/ssg/not-found-1"]);
+      expect(pageLoader).not.toHaveBeenCalled();
+      expect(render).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("Page loader threw during navigation"),
+        expect.anything(),
+      );
+    } finally {
+      consoleError.mockRestore();
+      vi.doUnmock("next/error");
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("preserves the origin for same-host double-slash middleware data redirects", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -21834,6 +21917,56 @@ describe("Pages Router concurrent navigation", () => {
         (globalThis as any).window = previousWindow;
       }
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("hard-navigates to the requested URL when the hybrid route owner chunk cannot load", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, pushState, render } = createNavWindow();
+    Object.assign(win, {
+      __VINEXT_CLIENT_REWRITES__: {
+        afterFiles: [],
+        beforeFiles: [{ destination: "/elsewhere", source: "/rewritten" }],
+        fallback: [],
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["app-page"] },
+      ],
+    });
+    (globalThis as any).window = win;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    // The same chunk the Router loads to check which router owns the URL.
+    vi.doMock("../packages/vinext/src/shims/internal/hybrid-client-route-owner.js", () => {
+      throw new TypeError("Failed to fetch dynamically imported module");
+    });
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      let outcome: unknown = "pending";
+      void Router.push("/some-page").then(
+        (value) => (outcome = value),
+        (error: unknown) => (outcome = error),
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      // A document navigation never settles the push, and the Pages client
+      // cannot render the page, so nothing may be committed or published.
+      expect(outcome).toBe("pending");
+      expect(win.location.assign).toHaveBeenCalledExactlyOnceWith("/some-page");
+      expect(render).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledOnce();
+      expect(consoleError.mock.calls[0]?.[0]).toMatch(/^\[vinext\] Could not load/);
+    } finally {
+      consoleError.mockRestore();
+      vi.doUnmock("../packages/vinext/src/shims/internal/hybrid-client-route-owner.js");
+      vi.useRealTimers();
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
     }
   });
 
@@ -24982,6 +25115,69 @@ describe("Pages Router _next/data client navigation", () => {
       vi.resetModules();
     }
   });
+
+  it.each([
+    {
+      label: "config redirect matcher",
+      chunk: "../packages/vinext/src/config/config-matchers.js",
+      configure: (win: any) => {
+        win.__VINEXT_CLIENT_REDIRECTS__ = [
+          { source: "/redirect-1", destination: "/somewhere/else", permanent: false },
+        ];
+        return "/redirect-1";
+      },
+    },
+    {
+      label: "config rewrite matcher",
+      chunk: "../packages/vinext/src/client/client-rewrite-matcher.js",
+      configure: (win: any) => {
+        win.__VINEXT_CLIENT_REWRITES__ = {
+          beforeFiles: [
+            { source: "/conditional", destination: "/private", has: [{ type: "query", key: "a" }] },
+          ],
+          afterFiles: [],
+          fallback: [],
+        };
+        return "/conditional";
+      },
+    },
+  ])(
+    "hard-navigates to the requested URL when the $label cannot load",
+    async ({ chunk, configure }) => {
+      const previousWindow = (globalThis as any).window;
+      const originalFetch = globalThis.fetch;
+      const pageLoader = vi.fn(async () => makePageModule("page"));
+      const { win, pushState } = createDataNavWindow({
+        loaders: { "/": vi.fn(async () => makePageModule("home")), "/[id]": pageLoader },
+        ssgPatterns: [],
+        sspPatterns: [],
+      });
+      const hrefAssignments = trackHrefAssignmentsLocal(win);
+      const requested = configure(win);
+      (globalThis as any).window = win;
+      globalThis.fetch = vi.fn(async () => new Response("{}")) as any;
+      vi.doMock(chunk, () => {
+        throw new TypeError("Failed to fetch dynamically imported module");
+      });
+      vi.resetModules();
+
+      try {
+        const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+        await expect(Router.push(requested)).resolves.toBe(false);
+
+        expect(hrefAssignments).toEqual([requested]);
+        expect(pageLoader).not.toHaveBeenCalled();
+        expect(pushState).not.toHaveBeenCalled();
+      } finally {
+        vi.doUnmock(chunk);
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        globalThis.fetch = originalFetch;
+        vi.resetModules();
+      }
+    },
+  );
 
   it("preserves the visible pathname for query-only beforeFiles rewrite navigations", async () => {
     const previousWindow = (globalThis as any).window;

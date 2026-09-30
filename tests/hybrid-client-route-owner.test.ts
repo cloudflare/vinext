@@ -17,7 +17,7 @@
  * end with `+`, and optional catch-alls end with `*`. See
  * `routing/route-trie.ts`.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
@@ -444,5 +444,104 @@ describe("resolveHybridClientRouteOwner", () => {
     // matching the server's normalisation.
     expect(resolveHybridClientRouteOwner("/base/pages-dir/foobar", "/base")).toBe("pages");
     expect(resolveHybridClientRouteOwner("/base/a", "/base")).toBe("app");
+  });
+});
+
+describe("loadHybridClientRouteOwner", () => {
+  type Loader =
+    typeof import("../packages/vinext/src/shims/internal/hybrid-client-route-owner-loader.js");
+  const OWNER_MODULE = "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
+  let chunkAvailable: boolean;
+  let loader: Loader;
+  let consoleError: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    chunkAvailable = true;
+    vi.useFakeTimers();
+    vi.resetModules();
+    vi.doMock(OWNER_MODULE, async (importOriginal) => {
+      if (!chunkAvailable) throw new TypeError("Failed to fetch dynamically imported module");
+      return importOriginal();
+    });
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    loader =
+      await import("../packages/vinext/src/shims/internal/hybrid-client-route-owner-loader.js");
+  });
+
+  afterEach(() => {
+    vi.doUnmock(OWNER_MODULE);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // loadChunk waits 200-600 ms and retries once before it gives up.
+  async function settle<T>(pending: Promise<T>): Promise<T> {
+    await vi.advanceTimersByTimeAsync(1_000);
+    return pending;
+  }
+
+  it("resolves the route owner module and keeps it", async () => {
+    const owner = await loader.loadHybridClientRouteOwner();
+
+    expect(typeof owner?.resolveHybridClientRouteOwner).toBe("function");
+    expect(loader.getLoadedHybridClientRouteOwner()).toBe(owner);
+    expect(loader.getHybridClientRouteOwnerLoadFailure()).toBeNull();
+    expect(await loader.loadHybridClientRouteOwner()).toBe(owner);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("resolves null and explains the failure once when the chunk is gone", async () => {
+    chunkAvailable = false;
+
+    const [first, second] = await settle(
+      Promise.all([loader.loadHybridClientRouteOwner(), loader.loadHybridClientRouteOwner()]),
+    );
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    expect(loader.getLoadedHybridClientRouteOwner()).toBeNull();
+    // Vitest wraps the mock factory's error; the wrapper keeps the original as `cause`.
+    const failure = loader.getHybridClientRouteOwnerLoadFailure()?.error as Error;
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.cause).toEqual(new TypeError("Failed to fetch dynamically imported module"));
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    expect(consoleError.mock.calls[0]?.[0]).toMatch(/^\[vinext\] Could not load/);
+  });
+
+  it("does not remember a failure, so a later call loads the chunk", async () => {
+    chunkAvailable = false;
+    expect(await settle(loader.loadHybridClientRouteOwner())).toBeNull();
+
+    chunkAvailable = true;
+    const owner = await loader.loadHybridClientRouteOwner();
+
+    expect(typeof owner?.resolveHybridClientRouteOwner).toBe("function");
+    expect(loader.getLoadedHybridClientRouteOwner()).toBe(owner);
+    expect(loader.getHybridClientRouteOwnerLoadFailure()).toBeNull();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+  });
+
+  describe("prefetch marking", () => {
+    async function markPrefetchedApp(): Promise<Record<string, unknown>> {
+      installWindow({ app: [appRoute(["a"], false)], pages: [] });
+      const detection =
+        await import("../packages/vinext/src/shims/internal/app-route-detection.js");
+      // The map lives on a Symbol.for global, so it survives module resets.
+      const components = detection.getPagesRouterComponentsMap();
+      for (const key of Object.keys(components)) delete components[key];
+      await settle(detection.markAppRouteDetectedOnPrefetch("/a", ""));
+      return { ...components };
+    }
+
+    it("marks an App route once the owner module loads", async () => {
+      expect(await markPrefetchedApp()).toEqual({ "/a": { __appRouter: true } });
+    });
+
+    it("skips marking, without throwing, when the owner chunk cannot load", async () => {
+      chunkAvailable = false;
+
+      expect(await markPrefetchedApp()).toEqual({});
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    });
   });
 });

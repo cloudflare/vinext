@@ -736,6 +736,29 @@ describe("Form Pages Router soft navigation", () => {
     });
   }
 
+  for (const replace of [false, true]) {
+    it(`hard-navigates with location.${replace ? "replace" : "assign"} when the Pages Router chunk cannot load`, async () => {
+      vi.doMock("../packages/vinext/src/shims/router.js", () => {
+        throw new TypeError("Failed to fetch dynamically imported module");
+      });
+      const { assign, replace: replaceLocation, pushState, replaceState } = installPagesGlobals();
+      const { onSubmit } = renderClientForm({ action: "/results", replace });
+      const event = createSubmitEvent({ entries: [["q", "react"]] });
+
+      void onSubmit(event);
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(replace ? replaceLocation : assign).toHaveBeenCalledWith(
+          "http://localhost:3000/results?q=react",
+        ),
+      );
+      expect(replace ? assign : replaceLocation).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+    });
+  }
+
   it("does not call preventDefault when submitter overrides method to POST", async () => {
     // POST forms (e.g. server actions) must not be intercepted by the Form's
     // navigation logic — React's own form-action handling owns them.

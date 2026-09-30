@@ -19,6 +19,7 @@ import {
 import { flushSync } from "react-dom";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
+import { recoverFromChunkFailure } from "../client/chunk-load-recovery.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   __basePath,
@@ -1997,7 +1998,12 @@ async function main(): Promise<void> {
 
   if (serverActionClient) registerServerActionCallback(serverActionClient);
   installAppNavigationFailureListeners();
-  if (HAS_CLIENT_REWRITES) await preloadHybridClientRouteOwner();
+  if (HAS_CLIENT_REWRITES) {
+    const ownerLoadFailure = await preloadHybridClientRouteOwner();
+    // A refused or canceled recovery leaves hydration to continue; navigation
+    // then answers "document" for every link.
+    if (ownerLoadFailure) await recoverFromChunkFailure(ownerLoadFailure.error).catch(() => {});
+  }
 
   let devErrorOverlay: DevErrorOverlayModule | null = null;
   if (import.meta.env.DEV) {

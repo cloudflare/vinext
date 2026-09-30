@@ -54,7 +54,11 @@ import {
   fetchStaticPagesData,
   getPagesStaticDataCache,
 } from "./internal/pages-data-fetch-dedup.js";
-import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
+import {
+  resolveDirectHybridClientRouteOwner,
+  type HybridClientOwner,
+} from "./internal/hybrid-client-route-owner-direct.js";
+import { loadHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-loader.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -3739,13 +3743,16 @@ async function performNavigation(
     (rewrites.beforeFiles.length > 0 ||
       rewrites.afterFiles.length > 0 ||
       rewrites.fallback.length > 0);
-  const hybridOwner =
-    hasClientRewrites && hasClientAppRouteManifest()
-      ? (await import("./internal/hybrid-client-route-owner.js")).resolveHybridClientRouteOwner(
-          resolved,
-          __basePath,
-        )
-      : resolveDirectHybridClientRouteOwner(resolved, __basePath);
+  let hybridOwner: HybridClientOwner | null;
+  if (hasClientRewrites && hasClientAppRouteManifest()) {
+    const ownerModule = await loadHybridClientRouteOwner();
+    // Without the rewrite-aware resolver the server decides.
+    hybridOwner = ownerModule
+      ? ownerModule.resolveHybridClientRouteOwner(resolved, __basePath)
+      : "document";
+  } else {
+    hybridOwner = resolveDirectHybridClientRouteOwner(resolved, __basePath);
+  }
   if (["app", "document"].includes(hybridOwner ?? "")) {
     if (mode === "push") window.location.assign(redirectBrowserHref ?? full);
     else window.location.replace(redirectBrowserHref ?? full);

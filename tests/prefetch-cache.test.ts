@@ -26,6 +26,7 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import type { ChunkRecoveryNavigator } from "../packages/vinext/src/client/chunk-load-recovery.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
@@ -2851,5 +2852,91 @@ describe("prefetch of a response from another build", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(preparePrefetchResponse).not.toHaveBeenCalled();
+  });
+});
+
+describe("navigation when the hybrid route owner chunk cannot load", () => {
+  const OWNER_MODULE = "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
+  let nav: Navigation;
+  let consoleError: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    // loadChunk waits 200-600 ms before its one retry.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    vi.doMock(OWNER_MODULE, () => {
+      throw new TypeError("Failed to fetch dynamically imported module");
+    });
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.resetModules();
+    nav = await import("../packages/vinext/src/shims/navigation.js");
+  });
+
+  afterEach(() => {
+    vi.doUnmock(OWNER_MODULE);
+    vi.useRealTimers();
+  });
+
+  async function preloadFailingOwner() {
+    const preload = nav.preloadHybridClientRouteOwner();
+    await vi.advanceTimersByTimeAsync(1_000);
+    return preload;
+  }
+
+  it("reports the failure from the preload instead of rejecting", async () => {
+    await expect(preloadFailingOwner()).resolves.toEqual({ error: expect.any(Error) });
+  });
+
+  it("reports a failure that chunk recovery acts on, which is how hydration starts a reload", async () => {
+    const recovery = await import("../packages/vinext/src/client/chunk-load-recovery.js");
+    const storage = new Map<string, string>();
+    Object.assign((globalThis as any).window, {
+      sessionStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => void storage.set(key, value),
+      },
+    });
+    (globalThis as any).fetch = vi.fn(async () => new Response(null, { status: 404 }));
+    const navigator = vi.fn<ChunkRecoveryNavigator>(() => true);
+    recovery.registerChunkRecovery({ entryUrl: "/assets/index-new.js" });
+    recovery.setChunkRecoveryNavigator(navigator);
+
+    const failure = await preloadFailingOwner();
+    const recovering = recovery.recoverFromChunkFailure(failure?.error);
+    const outcome = recovering.catch((error: unknown) => error);
+
+    await vi.waitFor(() => expect(navigator).toHaveBeenCalledOnce());
+    navigator.mock.calls[0]?.[0].onCanceled();
+
+    await expect(outcome).resolves.toBe(failure?.error);
+  });
+
+  it("answers document for router.push, not the rewrite-blind direct resolver", async () => {
+    const navigate = vi.fn(async (_href: string) => {});
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+    await preloadFailingOwner();
+    const assign = vi.fn();
+    (globalThis as any).window.location.assign = assign;
+
+    void nav.navigateClientSide("/rewritten-away", "push", true);
+
+    expect(assign).toHaveBeenCalledExactlyOnceWith("/rewritten-away");
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("makes router.prefetch stop quietly", async () => {
+    const fetch = vi.fn();
+    (globalThis as any).fetch = fetch;
+
+    nav.appRouterInstance.prefetch("/dashboard");
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalledWith(
+      "[vinext] RSC prefetch setup error:",
+      expect.anything(),
+    );
   });
 });
