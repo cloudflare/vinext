@@ -362,12 +362,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Upload deploy debug logs
+      - name: Upload deploy debug logs and browser traces
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deploy-debug-${{ strategy.job-index }}
-          path: reports/nextjs-deploy-debug/
+          path: |
+            reports/nextjs-deploy-debug/
+            next.js/test/traces/
+          # e2e-deploy.sh and e2e-cleanup.sh preserve .vinext-deploy-*.log files.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 
