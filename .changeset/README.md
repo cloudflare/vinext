@@ -83,11 +83,11 @@ places the commit under **Performance**:
 "vinext": patch
 ---
 
-perf: avoid repeated Pages SSR asset manifest scans (#3599)
+perf(pages): avoid repeated SSR asset manifest scans (#3599)
 ```
 
-The prefix selects the category and the description becomes the changelog entry
-(without the prefix or scope). Other prefixes, breaking subjects, and non-patch
+The type selects the category, the optional scope selects the changelog area,
+and the description becomes the entry text. Other prefixes, breaking subjects, and non-patch
 frontmatter keep the body literal and use the table above.
 Plain-text and empty bodies keep their existing behavior.
 

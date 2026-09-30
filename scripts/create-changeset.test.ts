@@ -375,27 +375,31 @@ describe("loadOverrides", () => {
     expect(loadOverrides(join(dir, "does-not-exist"))).toEqual([]);
   });
 
-  it("classifies a patch override as performance from its conventional body", () => {
+  it.each(["", "(pages)"])("classifies a patch override with scope %s", (scope) => {
     writeFileSync(
       join(dir, "abc1234.md"),
-      '---\n"vinext": patch\n---\n\nperf: avoid repeated Pages SSR asset manifest scans (#3599)',
+      `---\n"vinext": patch\n---\n\nperf${scope}: avoid repeated SSR asset manifest scans (#3599)`,
     );
     const [overridden] = applyOverrides(
       [
         {
           sha: "abc1234",
-          subject: "fix(pages): avoid repeated SSR asset manifest scans (#3599)",
+          subject: "fix(old-scope): avoid repeated SSR asset manifest scans (#3599)",
           body: "",
           files: ["packages/vinext/src/server/pages-asset-tags.ts"],
         },
       ],
       loadOverrides(dir),
     );
-    expect(overridden.subject).toBe("perf: avoid repeated Pages SSR asset manifest scans (#3599)");
+    expect(overridden.subject).toBe(
+      `perf${scope}: avoid repeated SSR asset manifest scans (#3599)`,
+    );
     expect(parseBumpFromSubject(overridden.subject)).toBe("patch");
     const changelog = groupedChangelogBody([overridden]);
     expect(changelog).toContain("### Performance");
-    expect(changelog).toContain("- avoid repeated Pages SSR asset manifest scans (#3599)");
+    expect(changelog).toContain(
+      `- ${scope ? "**Pages:** " : ""}avoid repeated SSR asset manifest scans (#3599)`,
+    );
     expect(changelog).not.toContain("### Bug Fixes");
   });
 
