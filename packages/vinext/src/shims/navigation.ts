@@ -2857,9 +2857,9 @@ const _appRouter: AppRouterInstance = {
     if (isServer) return;
     const runtime = getNavigationRuntime();
     const queueRefresh = runtime?.functions.queueRefresh;
-    // navigateRsc is already fetching. Queue one refresh and let it run
-    // after that navigation settles, against the committed URL.
-    if (queueRefresh && runtime?.functions.hasActiveAppNavigation?.()) {
+    // Coalesce with an active navigation or a refresh awaiting its microtask.
+    // The queued refresh will fetch the committed URL after navigation settles.
+    if (queueRefresh && runtime?.functions.shouldQueueRefresh?.()) {
       queueRefresh();
       return;
     }

@@ -2963,7 +2963,7 @@ function bootstrapHydration(
         routeId: state.routeId,
       };
     },
-    hasActiveAppNavigation: () => discardedServerActionRefreshScheduler.hasActiveNavigation(),
+    shouldQueueRefresh: () => discardedServerActionRefreshScheduler.shouldQueueRefresh(),
     navigate: navigateRsc,
     queueRefresh: () => {
       discardedServerActionRefreshScheduler.schedule();

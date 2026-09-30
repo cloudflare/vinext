@@ -514,7 +514,7 @@ describe("next/navigation shim", () => {
           clearNavigationCaches: () => {
             calls.push("clear");
           },
-          hasActiveAppNavigation: () => true,
+          shouldQueueRefresh: () => true,
           navigate: async (_href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}`);
           },
@@ -576,7 +576,7 @@ describe("next/navigation shim", () => {
             location.search = next.search;
             location.hash = next.hash;
           },
-          hasActiveAppNavigation: () => false,
+          shouldQueueRefresh: () => false,
           navigate: async (href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}:${href}`);
           },
@@ -642,7 +642,7 @@ describe("next/navigation shim", () => {
             location.search = next.search;
             location.hash = next.hash;
           },
-          hasActiveAppNavigation: () => false,
+          shouldQueueRefresh: () => false,
           navigate: async (href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}:${href}`);
           },
@@ -714,7 +714,7 @@ describe("next/navigation shim", () => {
           clearNavigationCaches: () => {
             calls.push("clear");
           },
-          hasActiveAppNavigation: () => false,
+          shouldQueueRefresh: () => false,
           navigate: async (_href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}`);
           },
@@ -780,7 +780,7 @@ describe("next/navigation shim", () => {
             location.search = next.search;
             location.hash = next.hash;
           },
-          hasActiveAppNavigation: () => false,
+          shouldQueueRefresh: () => false,
           navigate: async (href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}:${href}`);
           },

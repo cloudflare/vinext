@@ -1504,7 +1504,7 @@ describe("app browser entry navigation scheduling", () => {
     });
 
     scheduler.markNavigationStart(1);
-    expect(scheduler.hasActiveNavigation()).toBe(true);
+    expect(scheduler.shouldQueueRefresh()).toBe(true);
     scheduler.schedule();
     scheduler.schedule();
     expect(runRefresh).not.toHaveBeenCalled();
@@ -1513,8 +1513,13 @@ describe("app browser entry navigation scheduling", () => {
     expect(runRefresh).not.toHaveBeenCalled();
 
     scheduler.markNavigationSettled(1);
-    expect(scheduler.hasActiveNavigation()).toBe(false);
+    // A second refresh in this task must join the first refresh even though
+    // navigation has settled and its queued flush has not run yet.
+    expect(scheduler.shouldQueueRefresh()).toBe(true);
+    scheduler.schedule();
+    expect(queued).toHaveLength(1);
     queued.shift()?.();
+    expect(scheduler.shouldQueueRefresh()).toBe(false);
     expect(runRefresh).toHaveBeenCalledTimes(1);
 
     scheduler.schedule();
@@ -1528,16 +1533,16 @@ describe("app browser entry navigation scheduling", () => {
       runRefresh() {},
     });
 
-    expect(scheduler.hasActiveNavigation()).toBe(false);
+    expect(scheduler.shouldQueueRefresh()).toBe(false);
     scheduler.markNavigationStart(1);
     scheduler.markNavigationStart(2);
-    expect(scheduler.hasActiveNavigation()).toBe(true);
+    expect(scheduler.shouldQueueRefresh()).toBe(true);
     scheduler.markNavigationSettled(1);
-    expect(scheduler.hasActiveNavigation()).toBe(true);
+    expect(scheduler.shouldQueueRefresh()).toBe(true);
     scheduler.markNavigationSettled(2);
-    expect(scheduler.hasActiveNavigation()).toBe(false);
+    expect(scheduler.shouldQueueRefresh()).toBe(false);
     scheduler.markNavigationSettled(2);
-    expect(scheduler.hasActiveNavigation()).toBe(false);
+    expect(scheduler.shouldQueueRefresh()).toBe(false);
   });
 
   it("flushes after the latest navigation settles while an older stream is still open", () => {
@@ -1557,7 +1562,7 @@ describe("app browser entry navigation scheduling", () => {
     expect(runRefresh).not.toHaveBeenCalled();
 
     scheduler.markNavigationSettled(2);
-    expect(scheduler.hasActiveNavigation()).toBe(false);
+    expect(scheduler.shouldQueueRefresh()).toBe(true);
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(1);
     scheduler.markNavigationSettled(1);
@@ -1578,11 +1583,11 @@ describe("app browser entry navigation scheduling", () => {
     scheduler.schedule();
     scheduler.markNavigationStart(1);
     queued.shift()?.();
-    expect(scheduler.hasActiveNavigation()).toBe(true);
+    expect(scheduler.shouldQueueRefresh()).toBe(true);
     expect(runRefresh).not.toHaveBeenCalled();
 
     scheduler.markNavigationSettled(1);
-    expect(scheduler.hasActiveNavigation()).toBe(false);
+    expect(scheduler.shouldQueueRefresh()).toBe(true);
     queued.shift()?.();
     expect(runRefresh).toHaveBeenCalledTimes(1);
   });

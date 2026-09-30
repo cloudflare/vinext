@@ -95,13 +95,13 @@ describe("navigation runtime contract", () => {
 
     registerNavigationRuntimeFunctions({});
 
-    expect(getNavigationRuntime()?.functions.hasActiveAppNavigation).toBeUndefined();
+    expect(getNavigationRuntime()?.functions.shouldQueueRefresh).toBeUndefined();
     expect(getNavigationRuntime()?.functions.queueRefresh).toBeUndefined();
   });
 
-  it("rejects a non-function hasActiveAppNavigation or queueRefresh slot", () => {
+  it("rejects a non-function shouldQueueRefresh or queueRefresh slot", () => {
     for (const functions of [
-      { hasActiveAppNavigation: "not callable" },
+      { shouldQueueRefresh: "not callable" },
       { queueRefresh: "not callable" },
     ]) {
       const runtimeWindow = {};

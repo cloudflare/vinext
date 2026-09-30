@@ -73,7 +73,7 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
-  hasActiveAppNavigation?: () => boolean;
+  shouldQueueRefresh?: () => boolean;
   queueRefresh?: () => void;
   getPrefetchRouterState?: () => NavigationRuntimePrefetchRouterState | null;
   /**
@@ -146,7 +146,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "hasActiveAppNavigation")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "shouldQueueRefresh")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "queueRefresh")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRouterState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
