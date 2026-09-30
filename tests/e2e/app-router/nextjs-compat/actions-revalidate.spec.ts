@@ -103,6 +103,83 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   });
 
+  // Next preserves didRevalidate even when a redirecting action is discarded.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/server-action-reducer.ts
+  for (const kind of ["redirect", "hard-redirect"]) {
+    test(`a discarded revalidating ${kind} refreshes the winning navigation`, async ({ page }) => {
+      const path = "/nextjs-compat/action-discarding";
+      await page.goto(`${BASE}${path}`);
+      await waitForAppRouterHydration(page);
+      const initialValue = await page.locator("#discarded-action-value").textContent();
+      let releaseAction: (() => void) | undefined;
+      await page.route(`**${path}*`, async (route) => {
+        if (route.request().method() === "POST") {
+          await new Promise<void>((resolve) => {
+            releaseAction = resolve;
+          });
+        }
+        await route.continue();
+      });
+      try {
+        const response = waitForActionDiscardingResponse(page);
+        await page.click(`#revalidating-${kind}`);
+        await expect.poll(() => releaseAction !== undefined).toBe(true);
+        await page.click("#navigate-discard-destination");
+        await expect(page.locator("#discard-destination")).toBeVisible();
+        await expect(page.locator("#discarded-action-value")).toHaveText(initialValue!);
+        releaseAction?.();
+        await response;
+        await expect(page.locator("#discarded-action-value")).not.toHaveText(initialValue!, {
+          timeout: 10_000,
+        });
+        await expect(page).toHaveURL(`${BASE}${path}/destination`);
+      } finally {
+        releaseAction?.();
+      }
+    });
+  }
+
+  test("a forwarded rootless action refreshes before the next queued action", async ({ page }) => {
+    const path = "/nextjs-compat/action-discarding";
+    await page.goto(`${BASE}${path}`);
+    await waitForAppRouterHydration(page);
+    const initialValue = Number(await page.locator("#discarded-action-value").textContent());
+    let posts = 0;
+    let releaseRefresh: (() => void) | undefined;
+    let heldRefresh = false;
+    await page.route(`**${path}*`, async (route) => {
+      if (route.request().method() === "POST") {
+        posts++;
+        const response = await route.fetch();
+        // Forwarded actions return their value and revalidation header without
+        // a page tree, since the action worker does not own the caller's page.
+        await route.fulfill({
+          response,
+          headers: { ...response.headers(), "x-action-revalidated": "1" },
+        });
+      } else {
+        if (!heldRefresh && route.request().headers().rsc === "1") {
+          heldRefresh = true;
+          await new Promise<void>((resolve) => {
+            releaseRefresh = resolve;
+          });
+        }
+        await route.continue();
+      }
+    });
+    try {
+      await page.click("#slow-action");
+      await page.click("#slow-action");
+      await expect.poll(() => releaseRefresh !== undefined).toBe(true);
+      expect(posts).toBe(1);
+      releaseRefresh?.();
+      await expect.poll(() => posts).toBe(2);
+      await expect(page.locator("#discarded-action-value")).toHaveText(String(initialValue + 2));
+    } finally {
+      releaseRefresh?.();
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/actions-revalidate-remount/actions-revalidate-remount.test.ts
   test("revalidating server actions preserve client state under loading.tsx", async ({ page }) => {
     const loadingLogs: string[] = [];

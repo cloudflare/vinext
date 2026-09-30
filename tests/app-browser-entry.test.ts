@@ -3636,6 +3636,27 @@ describe("public App Router refresh queue", () => {
     expect(runRefresh).toHaveBeenCalledOnce();
   });
 
+  it("refreshes a rootless current action before advancing queued work", async () => {
+    const response = createDeferred();
+    const runRefresh = vi.fn(() => queue.start(2));
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    queue.start(1);
+    queue.ready(1, result("/source"));
+    const first = queue.serverAction(async () => {
+      await response.promise;
+      queue.refreshCurrentAction();
+      return "action-value";
+    });
+    const runSecond = vi.fn(async (previous) => previous?.href);
+    const second = queue.serverAction(runSecond);
+    response.resolve();
+    await expect(first).resolves.toBe("action-value");
+    expect(runRefresh).toHaveBeenCalledExactlyOnceWith(result("/source"));
+    expect(runSecond).not.toHaveBeenCalled();
+    queue.ready(2, result("/refreshed"));
+    await expect(second).resolves.toBe("/refreshed");
+  });
+
   it("defers automatic refresh until all queued Server Actions finish", async () => {
     const firstResponse = createDeferred();
     const secondResponse = createDeferred();

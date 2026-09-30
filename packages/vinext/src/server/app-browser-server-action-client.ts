@@ -60,6 +60,8 @@ export type ClientServerActionDeps = {
     revalidation: ServerActionRevalidationKind,
     renderedPathAndSearch: string | null,
   ): Promise<unknown>;
+  isCurrentAction?(): boolean;
+  onRevalidationWithoutRender?(): void;
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
   renderRedirectPayload(
@@ -83,11 +85,6 @@ function resolveActionRedirectTarget(
 ): ActionRedirectTarget | null {
   const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
   if (!actionRedirect) return null;
-
-  if (isDangerousScheme(actionRedirect)) {
-    console.error(DANGEROUS_URL_BLOCK_MESSAGE);
-    return null;
-  }
 
   try {
     let redirectUrl: URL;
@@ -167,12 +164,28 @@ export async function invokeClientServerAction(
 
   throwOnServerActionNotFound(fetchResponse, id);
 
+  const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+  if (revalidation !== "none") deps.clearClientNavigationCaches();
+  const canApplyNavigation = () => {
+    if (deps.isCurrentAction?.() !== false) return true;
+    if (revalidation !== "none") deps.onRevalidationWithoutRender?.();
+    return false;
+  };
+  const performHardNavigation: ClientServerActionDeps["performHardNavigation"] = (url, mode) => {
+    if (canApplyNavigation()) deps.performHardNavigation(url, mode);
+  };
+
   const hasActionRedirect = fetchResponse.headers.has(ACTION_REDIRECT_HEADER);
+  if (isDangerousScheme(fetchResponse.headers.get(ACTION_REDIRECT_HEADER) ?? "")) {
+    console.error(DANGEROUS_URL_BLOCK_MESSAGE);
+    if (revalidation !== "none") deps.onRevalidationWithoutRender?.();
+    return undefined;
+  }
   const actionRedirectTarget = resolveActionRedirectTarget(
     fetchResponse,
     deps.basePath,
     actionInitiation.href,
-    (url, historyMode) => deps.performHardNavigation(url, historyMode),
+    performHardNavigation,
   );
   if (hasActionRedirect && !actionRedirectTarget) return undefined;
 
@@ -192,21 +205,19 @@ export async function invokeClientServerAction(
     applyServerActionResultDecision(
       actionResultDecision,
       () => deps.clearClientNavigationCaches(),
-      (url, historyMode) => deps.performHardNavigation(url, historyMode),
+      performHardNavigation,
     )
   ) {
     return undefined;
   }
 
-  const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  if (revalidation !== "none") deps.clearClientNavigationCaches();
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,
   );
   if (invalidResponseError) throw invalidResponseError;
   if (actionRedirectTarget && !fetchResponseIsRsc) {
-    deps.performHardNavigation(actionRedirectTarget.href);
+    performHardNavigation(actionRedirectTarget.href);
     return undefined;
   }
 
@@ -232,15 +243,17 @@ export async function invokeClientServerAction(
   if (actionRedirectTarget) {
     const redirectRoot = isServerActionResult(result) ? result.root : result;
     if (redirectRoot !== undefined) {
-      deps.renderRedirectPayload(
-        AppElementsWire.decode(redirectRoot),
-        actionRedirectTarget,
-        actionInitiation,
-        revalidation,
-      );
+      if (canApplyNavigation()) {
+        deps.renderRedirectPayload(
+          AppElementsWire.decode(redirectRoot),
+          actionRedirectTarget,
+          actionInitiation,
+          revalidation,
+        );
+      }
       throw new ServerActionRedirectError(actionRedirectTarget);
     }
-    deps.performHardNavigation(actionRedirectTarget.href);
+    performHardNavigation(actionRedirectTarget.href);
     return undefined;
   }
 
@@ -269,6 +282,7 @@ export async function invokeClientServerAction(
         renderedPathAndSearch,
       );
     }
+    if (revalidation !== "none") deps.onRevalidationWithoutRender?.();
     if (result.returnValue) {
       if (!result.returnValue.ok) {
         throw normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);

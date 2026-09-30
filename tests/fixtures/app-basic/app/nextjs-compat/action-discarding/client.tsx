@@ -1,6 +1,6 @@
 "use client";
 
-import { slowAction, slowActionWithRefresh } from "./actions";
+import { revalidatingRedirect, slowAction, slowActionWithRefresh } from "./actions";
 
 export function ActionDiscardingClient() {
   return (
@@ -13,6 +13,12 @@ export function ActionDiscardingClient() {
         }}
       >
         Slow action
+      </button>
+      <button id="revalidating-redirect" onClick={() => revalidatingRedirect()}>
+        Revalidate and redirect
+      </button>
+      <button id="revalidating-hard-redirect" onClick={() => revalidatingRedirect("/old-school")}>
+        Revalidate and redirect to Pages
       </button>
       <button
         id="slow-action-refresh"

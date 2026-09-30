@@ -1877,17 +1877,21 @@ function registerServerActionCallback(): void {
                   publish,
                 },
               ),
+            isCurrentAction: () =>
+              browserNavigationController.isCurrentNavigation(actionInitiation.navigationId),
+            onRevalidationWithoutRender() {
+              if (browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)) {
+                refreshQueue.refreshCurrentAction();
+              } else {
+                discardedServerActionRefreshScheduler.schedule();
+              }
+            },
             navigationPlanner,
             performHardNavigation: (url, historyMode) =>
               browserNavigationController.performHardNavigation(url, historyMode),
             renderRedirectPayload(elements, target, actionInitiation, revalidation) {
-              // Action redirects bypass navigateClientSide. Reset the previous
-              // link's pending indicator when this action still owns navigation;
-              // a stale action must not clear a newer link's pending state.
-              const ownsNavigation = browserNavigationController.isCurrentNavigation(
-                actionInitiation.navigationId,
-              );
-              if (!ownsNavigation) return;
+              // The action client checks ownership before applying redirects.
+              // Action redirects bypass navigateClientSide, so reset Link here.
               const navId = beginNavigation(actionInitiation.routerState);
               getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
               const hashIdx = target.href.indexOf("#");

@@ -1,6 +1,7 @@
 "use server";
 
-import { refresh } from "next/cache";
+import { refresh, revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { incrementValue } from "./state";
 
 function wait(ms: number): Promise<void> {
@@ -17,4 +18,12 @@ export async function slowActionWithRefresh(): Promise<number> {
   const value = incrementValue();
   refresh();
   return value;
+}
+
+export async function revalidatingRedirect(
+  target = "/nextjs-compat/action-discarding",
+): Promise<never> {
+  incrementValue();
+  revalidatePath("/nextjs-compat/action-discarding", "layout");
+  redirect(target);
 }

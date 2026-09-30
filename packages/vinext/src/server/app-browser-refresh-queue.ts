@@ -110,6 +110,11 @@ export function createAppBrowserRefreshQueue(
         else requests.push(request);
       }
     },
+    refreshCurrentAction() {
+      // A forwarded action has no tree. Its refresh continues this action
+      // before the next queued request, while discarded actions wait for idle.
+      runRefresh(result);
+    },
     refreshWhenIdle() {
       needsRefresh = true;
       drain();

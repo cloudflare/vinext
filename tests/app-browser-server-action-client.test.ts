@@ -24,6 +24,7 @@ vi.mock("@vitejs/plugin-rsc/browser", () => ({
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  vi.mocked(createFromFetch).mockReset();
 });
 
 describe("app browser server action client", () => {
@@ -172,7 +173,10 @@ describe("app browser server action client", () => {
       syncServerActionHttpFallbackHead: vi.fn(),
     });
 
-    expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/original/target");
+    expect(performHardNavigation).toHaveBeenCalledWith(
+      "https://example.com/original/target",
+      undefined,
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "/original?tab=1",
       expect.objectContaining({ method: "POST" }),
@@ -258,6 +262,122 @@ describe("app browser server action client", () => {
       expect(renderRedirectPayload).not.toHaveBeenCalled();
     },
   );
+
+  // Next discards every navigation effect from a superseded action, retaining
+  // revalidation until the queue drains, including MPA and rootless results.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
+  for (const revalidated of [false, true]) {
+    it.each([
+      "external",
+      "outside basePath",
+      "malformed",
+      "blocked",
+      "compatibility",
+      "non-RSC",
+      "rootless",
+    ])(`discards a stale %s redirect and preserves revalidation=${revalidated}`, async (kind) => {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/newer", origin: "https://example.com" },
+      });
+      const headers = new Headers({
+        "content-type": kind === "non-RSC" ? "text/plain" : "text/x-component",
+        [ACTION_REDIRECT_HEADER]:
+          kind === "external"
+            ? "https://other.example/target"
+            : kind === "malformed"
+              ? "http://["
+              : kind === "blocked"
+                ? "javascript:alert(1)"
+                : "/target",
+      });
+      if (revalidated) headers.set(ACTION_REVALIDATED_HEADER, "1");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("flight", { headers })));
+      // The rootless case loses ownership during decoding, after headers arrive.
+      let current = kind === "rootless";
+      vi.mocked(createFromFetch).mockImplementationOnce(async () => {
+        current = false;
+        return { returnValue: { ok: true, data: null } };
+      });
+      const performHardNavigation = vi.fn();
+      const clearClientNavigationCaches = vi.fn();
+      const onRevalidationWithoutRender = vi.fn();
+      await invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/base/source",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        {
+          basePath: kind === "outside basePath" ? "/base" : "",
+          clearClientNavigationCaches,
+          clientRscCompatibilityId: kind === "compatibility" ? "client-build" : null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          isCurrentAction: () => current,
+          onRevalidationWithoutRender,
+          performHardNavigation,
+          renderRedirectPayload: vi.fn(),
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      );
+      expect(performHardNavigation).not.toHaveBeenCalled();
+      if (revalidated) expect(clearClientNavigationCaches).toHaveBeenCalled();
+      expect(onRevalidationWithoutRender).toHaveBeenCalledTimes(revalidated ? 1 : 0);
+    });
+  }
+
+  for (const current of [false, true]) {
+    it.each([true, false])(
+      `refreshes a revalidated rootless action with current=${current}, ok=%s`,
+      async (ok) => {
+        vi.stubGlobal("window", {
+          location: { href: "https://example.com/source", origin: "https://example.com" },
+        });
+        vi.stubGlobal(
+          "fetch",
+          vi.fn().mockResolvedValue(
+            new Response("flight", {
+              headers: { "content-type": "text/x-component", [ACTION_REVALIDATED_HEADER]: "1" },
+            }),
+          ),
+        );
+        vi.mocked(createFromFetch).mockResolvedValueOnce({
+          returnValue: { ok, data: "action-result" },
+        });
+        const onRevalidationWithoutRender = vi.fn();
+        const commitSameUrlNavigatePayload = vi.fn();
+        const result = invokeClientServerAction(
+          "action-id",
+          [],
+          createServerActionInitiationSnapshot({
+            href: "https://example.com/source",
+            navigationId: 1,
+            routerState: createActionTestRouterState(),
+          }),
+          {
+            basePath: "",
+            clearClientNavigationCaches: vi.fn(),
+            clientRscCompatibilityId: null,
+            commitSameUrlNavigatePayload,
+            navigationPlanner,
+            isCurrentAction: () => current,
+            onRevalidationWithoutRender,
+            performHardNavigation: vi.fn(),
+            renderRedirectPayload: vi.fn(),
+            syncCurrentHistoryState: vi.fn(),
+            syncServerActionHttpFallbackHead: vi.fn(),
+          },
+        );
+        if (ok) await expect(result).resolves.toBe("action-result");
+        else await expect(result).rejects.toBe("action-result");
+        expect(onRevalidationWithoutRender).toHaveBeenCalledTimes(1);
+        expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      },
+    );
+  }
 
   // Next.js parity contract: a fetch action that neither revalidates nor
   // redirects gets an empty Flight payload — the client resolves the action
