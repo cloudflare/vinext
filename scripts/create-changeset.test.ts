@@ -26,6 +26,7 @@ import {
   shaFromChangesetFilename,
   TYPE_BUMP,
 } from "./create-changeset.mts";
+import { groupedChangelogBody } from "./version.mts";
 
 describe("parseBumpFromSubject", () => {
   it("maps feat → minor", () => {
@@ -372,6 +373,39 @@ describe("loadOverrides", () => {
 
   it("returns [] when the directory is absent", () => {
     expect(loadOverrides(join(dir, "does-not-exist"))).toEqual([]);
+  });
+
+  it("classifies a patch override as performance from its conventional body", () => {
+    writeFileSync(
+      join(dir, "abc1234.md"),
+      '---\n"vinext": patch\n---\n\nperf: avoid repeated Pages SSR asset manifest scans (#3599)',
+    );
+    const [overridden] = applyOverrides(
+      [
+        {
+          sha: "abc1234",
+          subject: "fix(pages): avoid repeated SSR asset manifest scans (#3599)",
+          body: "",
+          files: ["packages/vinext/src/server/pages-asset-tags.ts"],
+        },
+      ],
+      loadOverrides(dir),
+    );
+    expect(overridden.subject).toBe("perf: avoid repeated Pages SSR asset manifest scans (#3599)");
+    expect(parseBumpFromSubject(overridden.subject)).toBe("patch");
+    const changelog = groupedChangelogBody([overridden]);
+    expect(changelog).toContain("### Performance");
+    expect(changelog).toContain("- avoid repeated Pages SSR asset manifest scans (#3599)");
+    expect(changelog).not.toContain("### Bug Fixes");
+  });
+
+  it.each([
+    ["patch", "feat: add a feature", "fix"],
+    ["patch", "perf!: break an API", "fix"],
+    ["minor", "perf: make it faster", "feat"],
+  ])("keeps the %s bump authoritative for %s", (bump, message, type) => {
+    writeFileSync(join(dir, "abc1234.md"), `---\n"vinext": ${bump}\n---\n\n${message}`);
+    expect(loadOverrides(dir)).toEqual([{ commit: "abc1234", type, message }]);
   });
 
   it("derives overrides (type + message) from SHA-named changesets, ignoring everything else", () => {

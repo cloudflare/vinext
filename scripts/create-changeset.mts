@@ -395,7 +395,9 @@ function firstCommit(): string {
  *
  * The changeset body *also overrides the commit's changelog message*: when the
  * body is non-empty it becomes the entry text for that commit (rendered as a
- * plain bullet, replacing the commit subject's description). An empty body keeps
+ * plain bullet, replacing the commit subject's description). A Conventional
+ * Commit body can select a patch category (`fix`, `perf`, or `revert`) without
+ * changing the declared bump. An empty body keeps
  * the original subject description and just reclassifies the type.
  */
 export type CommitOverride = {
@@ -519,7 +521,8 @@ export function applyOverrides(commits: Commit[], overrides: CommitOverride[]): 
 /**
  * Discover per-commit overrides from SHA-named changeset files in `.changeset/`.
  * Each `<sha>.md` reclassifies commit `<sha>` to the conventional type implied by
- * its frontmatter bump; a package-less one suppresses the commit (`chore`).
+ * its frontmatter bump, or a compatible patch-type body. A package-less
+ * one suppresses the commit (`chore`).
  * Returns [] when the directory is absent. CI glue.
  */
 export function loadOverrides(dir: string = CHANGESET_DIR): CommitOverride[] {
@@ -531,12 +534,19 @@ export function loadOverrides(dir: string = CHANGESET_DIR): CommitOverride[] {
     if (!commit) continue;
     const md = readFileSync(join(dir, entry.name), "utf8");
     const bump = changesetFrontmatterBump(md);
-    const { type, breaking } = bump ? bumpToOverride(bump) : { type: "chore", breaking: false }; // package-less changeset → suppress
-    const message = changesetBodyMessage(md);
+    const override = bump ? bumpToOverride(bump) : { type: "chore", breaking: false };
+    let message = changesetBodyMessage(md);
+    // A non-breaking patch-type body can distinguish fix/perf/revert without
+    // changing the frontmatter's semver bump.
+    const parts = message ? conventionalParts(message) : null;
+    if (bump === "patch" && parts && !parts.breaking && TYPE_BUMP[parts.type] === "patch") {
+      override.type = parts.type;
+      message = parts.description;
+    }
     overrides.push({
       commit,
-      type,
-      ...(breaking ? { breaking: true } : {}),
+      type: override.type,
+      ...(override.breaking ? { breaking: true } : {}),
       ...(message ? { message } : {}),
     });
   }
