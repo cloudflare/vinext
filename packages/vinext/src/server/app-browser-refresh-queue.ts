@@ -78,6 +78,9 @@ export function createAppBrowserRefreshQueue(
       finishRefresh();
       for (const request of requests.splice(0)) request.resolve();
     },
+    resumeAfterDocumentRestore() {
+      documentNavigation = false;
+    },
     refresh(): Promise<void> {
       if (documentNavigation) return Promise.resolve();
       // Each public ACTION_REFRESH is distinct. Discarded Server Action

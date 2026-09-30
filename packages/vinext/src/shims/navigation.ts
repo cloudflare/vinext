@@ -2520,11 +2520,16 @@ function restoreScrollPosition(state: unknown): void {
 }
 
 /**
- * Hard-navigate to a URL via `window.location`, preserving push/replace
+ * Request a document navigation, preserving push/replace
  * semantics. Used for URLs the App Router cannot serve (Pages-owned
  * targets in a hybrid build) and for catch-all RSC failures.
  */
 function hardNavigateTo(fullHref: string, mode: "push" | "replace"): void {
+  const navigateExternal = getNavigationRuntime()?.functions.navigateExternal;
+  if (navigateExternal) {
+    void navigateExternal(fullHref, mode);
+    return;
+  }
   if (mode === "replace") {
     window.location.replace(fullHref);
   } else {

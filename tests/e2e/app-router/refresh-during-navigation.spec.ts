@@ -70,6 +70,52 @@ function urlWhenRequestCountReaches(
 test.describe("refresh during an App Router navigation", () => {
   test.describe.configure({ timeout: 60_000 });
 
+  test("a Pages navigation supersedes a navigation with a queued refresh", async ({ page }) => {
+    await page.goto(START_URL);
+    await waitForAppRouterHydration(page);
+    const slowRequests = trackRscRequests(page, SLOW_PATH);
+    const documents: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest()) documents.push(new URL(request.url()).pathname);
+    });
+    let releaseNavigation: (() => void) | undefined;
+    let releaseDocument: (() => void) | undefined;
+    await page.route(`**${SLOW_PATH}*`, async (route) => {
+      if (route.request().headers().rsc === "1" && !releaseNavigation) {
+        await new Promise<void>((resolve) => {
+          releaseNavigation = resolve;
+        });
+      }
+      await route.continue();
+    });
+    await page.route("**/old-school", async (route) => {
+      await new Promise<void>((resolve) => {
+        releaseDocument = resolve;
+      });
+      await route.continue();
+    });
+    try {
+      await page.getByTestId("push-then-refresh").click();
+      await expect.poll(() => releaseNavigation !== undefined).toBe(true);
+      await page.evaluate(() => {
+        const router = window.next?.router;
+        if (!router) throw new Error("App Router is not installed");
+        void router.push("/old-school");
+      });
+      await expect.poll(() => releaseDocument !== undefined).toBe(true);
+      releaseNavigation?.();
+      // Give the old root enough time to resolve while the document is held.
+      await page.waitForTimeout(2500);
+      expect(slowRequests).toHaveLength(1);
+      expect(documents).toEqual(["/old-school"]);
+      releaseDocument?.();
+      await expect(page).toHaveURL(`${BASE}/old-school`);
+    } finally {
+      releaseNavigation?.();
+      releaseDocument?.();
+    }
+  });
+
   test("a queued refresh cannot replace a hard navigation with the previous document", async ({
     page,
   }) => {

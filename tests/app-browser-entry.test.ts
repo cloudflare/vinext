@@ -3545,6 +3545,19 @@ describe("public App Router refresh queue", () => {
     await next;
   });
 
+  it("allows refresh immediately after the document is restored from BFCache", async () => {
+    const runRefresh = vi.fn(() => queue.start(1));
+    const queue = createAppBrowserRefreshQueue(runRefresh);
+    queue.stopForDocumentNavigation();
+    await queue.refresh();
+    expect(runRefresh).not.toHaveBeenCalled();
+    queue.resumeAfterDocumentRestore();
+    const refresh = queue.refresh();
+    expect(runRefresh).toHaveBeenCalledOnce();
+    queue.ready(1);
+    await refresh;
+  });
+
   it("lets later refreshes run after a refresh fails", async () => {
     const failure = new Error("refresh failed");
     const runRefresh = vi.fn().mockImplementationOnce(() => {

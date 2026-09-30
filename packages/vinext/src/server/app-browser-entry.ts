@@ -1379,6 +1379,8 @@ function BrowserRoot({
     );
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
+        beginNavigation();
+        refreshQueue.stopForDocumentNavigation();
         setTreeStateValue({
           href,
           historyUpdateMode,
@@ -3227,6 +3229,7 @@ if (typeof document !== "undefined") {
     isPageUnloading = false;
     if (event.persisted) {
       mpaNavigationScheduler.reset();
+      refreshQueue?.resumeAfterDocumentRestore();
     }
   });
   void main();
