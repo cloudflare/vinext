@@ -38,6 +38,7 @@ import {
   createAppBrowserNavigationController,
   performHardNavigationWithLoopGuard,
 } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { clearActionHttpFallbackHeadOnCommit } from "../packages/vinext/src/server/app-browser-action-http-fallback-head.js";
 import { DOCUMENT_UNLOAD_TIMEOUT_MS } from "../packages/vinext/src/client/chunk-load-recovery.js";
 import { createAppBrowserDocumentNavigation } from "../packages/vinext/src/server/app-browser-document-navigation.js";
 import { AppBrowserMpaNavigationScheduler } from "../packages/vinext/src/server/app-browser-mpa-navigation.js";
@@ -4441,6 +4442,86 @@ describe("app browser navigation controller", () => {
   it("tracks active navigation ids and clears the pending pathname only for the current navigation", () => {
     const { controller, detach } = createControllerHarness();
     const clearSpy = vi.spyOn(navigationShim, "clearPendingPathname").mockImplementation(() => {});
+
+    describe("action 404 noindex marker lifetime", () => {
+      async function renderNavigationWithMarkerClear() {
+        const clearHead = vi.fn();
+        const innerCommitted = vi.fn();
+        const { controller, detach } = createControllerHarness();
+        const navId = controller.beginNavigation();
+        const pendingRouterState = controller.beginPendingBrowserRouterState();
+        const outcome = renderCurrentStateNavigationPayload(controller, {
+          actionType: "navigate",
+          createNavigationCommitEffect: () => () => {},
+          historyUpdateMode: "push",
+          navigationSnapshot: createClientNavigationRenderSnapshot(
+            "https://example.com/dashboard",
+            {},
+          ),
+          nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
+          onCommittedState: clearActionHttpFallbackHeadOnCommit(clearHead, innerCommitted),
+          operationLane: "navigation",
+          params: {},
+          payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+          pendingRouterState,
+          previousNextUrl: null,
+          targetHref: "https://example.com/dashboard",
+          navId,
+        });
+        const state = await pendingRouterState.promise;
+        return { clearHead, controller, detach, innerCommitted, outcome, state };
+      }
+
+      it("keeps the marker while the navigation is dispatched but not committed", async () => {
+        const { clearHead, detach } = await renderNavigationWithMarkerClear();
+        try {
+          expect(clearHead).not.toHaveBeenCalled();
+        } finally {
+          detach();
+        }
+      });
+
+      it("clears the marker and forwards the committed state when the navigation commits", async () => {
+        const { clearHead, controller, detach, innerCommitted, outcome, state } =
+          await renderNavigationWithMarkerClear();
+        try {
+          controller.commitNavigationRender(state.renderId);
+
+          await expect(outcome).resolves.toBe("committed");
+          expect(clearHead).toHaveBeenCalledTimes(1);
+          expect(innerCommitted).toHaveBeenCalledExactlyOnceWith(state);
+        } finally {
+          detach();
+        }
+      });
+
+      it("keeps the marker when the navigation is discarded before it commits", async () => {
+        const { clearHead, controller, detach, innerCommitted, outcome } =
+          await renderNavigationWithMarkerClear();
+        try {
+          controller.beginNavigation();
+          controller.discardPendingNavigation();
+
+          await expect(outcome).resolves.toBe("no-commit");
+          expect(clearHead).not.toHaveBeenCalled();
+          expect(innerCommitted).not.toHaveBeenCalled();
+        } finally {
+          detach();
+        }
+      });
+
+      it("clears the marker only when a navigation commits, not when it starts", () => {
+        const source = readFileSync(
+          new URL("../packages/vinext/src/server/app-browser-entry.ts", import.meta.url),
+          "utf8",
+        );
+
+        expect(source).toContain("clearActionHttpFallbackHeadOnCommit(");
+        expect(source).not.toMatch(
+          /syncServerActionHttpFallbackHead\(null\);\s*return browserNavigationController\.renderNavigationPayload/,
+        );
+      });
+    });
 
     try {
       const firstNavId = controller.beginNavigation();

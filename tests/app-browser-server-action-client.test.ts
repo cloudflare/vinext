@@ -709,7 +709,7 @@ describe("app browser server action client", () => {
     // Navigation discards slow action A, so queued action B owns the page.
     // Only B may set or clear the action 404 noindex marker; A still settles
     // its own caller.
-    async function startOverlappingActions() {
+    function createActionHarness() {
       vi.stubGlobal("window", {
         location: { href: "https://example.com/source", origin: "https://example.com" },
       });
@@ -724,7 +724,7 @@ describe("app browser server action client", () => {
         ),
       );
       const head = { noindex: false };
-      let currentAction: "A" | "B" = "A";
+      let currentAction: "A" | "B" | "navigation" = "A";
       const start = (name: "A" | "B") =>
         invokeClientServerAction(
           "action-id",
@@ -749,11 +749,6 @@ describe("app browser server action client", () => {
             },
           },
         );
-      const actionA = start("A");
-      currentAction = "B";
-      const actionB = start("B");
-      // The request goes out after the arguments are encoded.
-      await vi.waitFor(() => expect(fetchResolvers).toHaveLength(2));
       const respond = (index: 0 | 1, status: number) => {
         vi.mocked(createFromFetch).mockResolvedValueOnce({
           returnValue: { ok: true, data: index === 0 ? "a-value" : "b-value" },
@@ -762,6 +757,24 @@ describe("app browser server action client", () => {
           new Response("flight", { headers: { "content-type": "text/x-component" }, status }),
         );
       };
+      return {
+        fetchResolvers,
+        head,
+        respond,
+        setCurrentAction: (name: "A" | "B" | "navigation") => {
+          currentAction = name;
+        },
+        start,
+      };
+    }
+
+    async function startOverlappingActions() {
+      const { fetchResolvers, head, respond, setCurrentAction, start } = createActionHarness();
+      const actionA = start("A");
+      setCurrentAction("B");
+      const actionB = start("B");
+      // The request goes out after the arguments are encoded.
+      await vi.waitFor(() => expect(fetchResolvers).toHaveLength(2));
       return { actionA, actionB, head, respond };
     }
 
@@ -786,6 +799,42 @@ describe("app browser server action client", () => {
 
       respond(1, 200);
       await expect(actionB).resolves.toBe("b-value");
+      expect(head.noindex).toBe(false);
+    });
+
+    it("keeps the marker of a visible 404 tree when a later action stops being current before it finishes", async () => {
+      const { fetchResolvers, head, respond, setCurrentAction, start } = createActionHarness();
+
+      const firstAction = start("A");
+      await vi.waitFor(() => expect(fetchResolvers).toHaveLength(1));
+      respond(0, 404);
+      await expect(firstAction).resolves.toBe("a-value");
+      expect(head.noindex).toBe(true);
+
+      setCurrentAction("B");
+      const secondAction = start("B");
+      await vi.waitFor(() => expect(fetchResolvers).toHaveLength(2));
+      // A navigation begins, so B no longer owns the page and its sync is skipped.
+      setCurrentAction("navigation");
+      respond(1, 200);
+      await expect(secondAction).resolves.toBe("b-value");
+      expect(head.noindex).toBe(true);
+    });
+
+    it("clears the marker of a visible 404 tree when a later current action finishes with a non-404 payload", async () => {
+      const { fetchResolvers, head, respond, setCurrentAction, start } = createActionHarness();
+
+      const firstAction = start("A");
+      await vi.waitFor(() => expect(fetchResolvers).toHaveLength(1));
+      respond(0, 404);
+      await firstAction;
+      expect(head.noindex).toBe(true);
+
+      setCurrentAction("B");
+      const secondAction = start("B");
+      await vi.waitFor(() => expect(fetchResolvers).toHaveLength(2));
+      respond(1, 200);
+      await secondAction;
       expect(head.noindex).toBe(false);
     });
 

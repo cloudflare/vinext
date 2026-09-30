@@ -106,6 +106,10 @@ import {
   createAppBrowserChunkRecovery,
   createRootErrorRecovery,
 } from "./app-browser-chunk-recovery.js";
+import {
+  clearActionHttpFallbackHeadOnCommit,
+  syncServerActionHttpFallbackHead,
+} from "./app-browser-action-http-fallback-head.js";
 import { createAppBrowserDocumentNavigation } from "./app-browser-document-navigation.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
@@ -402,21 +406,6 @@ function stopRefreshesForDocumentNavigation(): void {
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
-const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
-
-function syncServerActionHttpFallbackHead(status: number | null): void {
-  document.head
-    .querySelectorAll(`meta[${ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR}="robots"]`)
-    .forEach((node) => node.remove());
-
-  if (status !== 404) return;
-
-  const robots = document.createElement("meta");
-  robots.name = "robots";
-  robots.content = "noindex";
-  robots.setAttribute(ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR, "robots");
-  document.head.appendChild(robots);
-}
 const BfcacheIdMapContext = getBfcacheIdMapContext();
 
 // Parses a URI-encoded JSON value carried in a response header (e.g.
@@ -883,7 +872,6 @@ type RenderNavigationPayloadOptions = {
 async function renderNavigationPayload(
   options: RenderNavigationPayloadOptions,
 ): Promise<NavigationPayloadOutcome> {
-  syncServerActionHttpFallbackHead(null);
   return browserNavigationController.renderNavigationPayload({
     actionType: options.actionType ?? "navigate",
     createNavigationCommitEffect,
@@ -894,7 +882,10 @@ async function renderNavigationPayload(
     navigationSnapshot: options.navigationSnapshot,
     navId: options.navId,
     nextElements: options.payload,
-    onCommittedState: options.onCommittedState,
+    onCommittedState: clearActionHttpFallbackHeadOnCommit(
+      () => syncServerActionHttpFallbackHead(null),
+      options.onCommittedState,
+    ),
     onDiscardedRevalidation: options.onDiscardedRevalidation,
     onActionReady: (state) => {
       if (options.navigationCommitKind === "detached") return;

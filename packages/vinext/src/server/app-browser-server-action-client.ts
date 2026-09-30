@@ -141,7 +141,6 @@ export async function invokeClientServerAction(
   actionInitiation: ClientServerActionInitiation,
   deps: ClientServerActionDeps,
 ): Promise<unknown> {
-  deps.syncServerActionHttpFallbackHead(null);
   const temporaryReferences = createTemporaryReferenceSet();
   deps.syncCurrentHistoryState(
     actionInitiation.routerState.previousNextUrl,
