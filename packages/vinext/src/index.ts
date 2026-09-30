@@ -303,6 +303,7 @@ import {
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
 import {
+  EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate,
   stripServerExports,
   validatePageExports,
@@ -7164,7 +7165,7 @@ export const loadServerActionClient = ${
       transform: {
         filter: {
           id: { exclude: VIRTUAL_MODULE_ID_RE },
-          code: /\bexport\b[\s\S]*\*/,
+          code: EXPORT_ALL_CANDIDATE_FILTER,
         },
         handler(code, id) {
           if (this.environment?.name !== "client") return null;

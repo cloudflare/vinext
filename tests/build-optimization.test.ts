@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import { createBuilder, createLogger, mergeConfig, parseAst, resolveConfig } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
+  EXPORT_ALL_CANDIDATE_FILTER as _EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
   stripServerExports as _stripServerExportsImpl,
@@ -3477,10 +3478,15 @@ describe("stripServerExports", () => {
   });
 
   it("cheaply identifies export-all syntax without matching multiplication", () => {
-    expect(_hasExportAllCandidate(`export * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export\n*\nfrom './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export /* comment */ * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export // comment\n* from './other-page';`)).toBe(true);
+    for (const code of [
+      `export * from './other-page';`,
+      `export\n*\nfrom './other-page';`,
+      `export /* comment */ * from './other-page';`,
+      `export // comment\n* from './other-page';`,
+    ]) {
+      expect(_hasExportAllCandidate(code)).toBe(true);
+      expect(_EXPORT_ALL_CANDIDATE_FILTER.test(code)).toBe(true);
+    }
     expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
   });
 
