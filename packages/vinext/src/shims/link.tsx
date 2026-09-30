@@ -710,9 +710,7 @@ function prefetchUrl(
           document.head.appendChild(link);
         }
       }
-    })().catch((error) => {
-      console.error("[vinext] RSC prefetch setup error:", error);
-    });
+    })().catch(logPrefetchSetupError);
   };
 
   if (priority === "high" || hasAppNavigationRuntime()) {
@@ -722,6 +720,10 @@ function prefetchUrl(
 
   const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
   schedule(runPrefetch);
+}
+
+function logPrefetchSetupError(error: unknown): void {
+  console.error("[vinext] RSC prefetch setup error:", error);
 }
 
 async function promotePrefetchEntriesForNavigation(href: string): Promise<void> {
@@ -1166,7 +1168,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (instance) {
         instance.mode = "full-after-shell";
       }
-      void promotePrefetchEntriesForNavigation(normalizedHref);
+      promotePrefetchEntriesForNavigation(normalizedHref).catch(logPrefetchSetupError);
     }
     prefetchUrl(
       normalizedHref,

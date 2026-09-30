@@ -1635,6 +1635,45 @@ describe("Link when a lazily loaded chunk cannot load", () => {
       result.restoreNodeEnv();
     }
   });
+
+  it("logs a failed prefetch promotion on hover instead of leaving an unhandled rejection", async () => {
+    breakChunk(NAVIGATION_MODULE);
+    const location = createLocation();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+      windowOverrides: { location },
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Node reports an unhandled rejection after the microtask queue drains.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(unhandled).toEqual([]);
+      // One log from the intent prefetch itself, one from the promotion.
+      // Vitest wraps the factory's TypeError in an Error that carries it as `cause`.
+      const loadFailure = expect.objectContaining({ cause: expect.any(TypeError) });
+      expect(consoleError.mock.calls).toEqual([
+        ["[vinext] RSC prefetch setup error:", loadFailure],
+        ["[vinext] RSC prefetch setup error:", loadFailure],
+      ]);
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.navigate).not.toHaveBeenCalled();
+      expect(location.assign).not.toHaveBeenCalled();
+      expect(location.replace).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      result.restoreNodeEnv();
+    }
+  });
 });
 
 async function renderIsolatedLink(options: {
