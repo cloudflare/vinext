@@ -16,16 +16,20 @@ const APP_PREFETCH_RECOVERY =
   "App prefetch path: Link logs the failure and never navigates for it; a click that needs the module falls back to a document navigation to the link's URL";
 const CLIENT_REFERENCE_RECOVERY =
   "Client component loader: a failure before the App Router's first commit loads a new document at once; a later failure is recorded and recovers when React reports the render error through the root error callbacks";
+const BUNDLED_RECOVERY =
+  "Bundled into the lazy chunk of a listed module, so a failed load recovers with that chunk";
 const PAGES_NAVIGATION_RECOVERY =
   "Pages navigation: a failed import ends in a document navigation to the requested URL";
 
 export const LAZY_RUNTIME_CHUNK_RECOVERY: readonly LazyRuntimeChunkRecovery[] = [
   { module: "client/client-rewrite-matcher", recovery: PAGES_NAVIGATION_RECOVERY },
+  { module: "client/pages-router-link-navigation", recovery: BUNDLED_RECOVERY },
   { module: "config/config-matchers", recovery: PAGES_NAVIGATION_RECOVERY },
   { module: "server/app-elements", recovery: APP_PREFETCH_RECOVERY },
   { module: "server/app-rsc-cache-busting", recovery: APP_PREFETCH_RECOVERY },
   { module: "server/app-rsc-render-mode", recovery: APP_PREFETCH_RECOVERY },
   { module: "server/headers", recovery: APP_PREFETCH_RECOVERY },
+  { module: "server/pages-client-assets", recovery: BUNDLED_RECOVERY },
   { module: "shims/dynamic", recovery: CLIENT_REFERENCE_RECOVERY },
   { module: "shims/dynamic-preload-chunks", recovery: CLIENT_REFERENCE_RECOVERY },
   { module: "shims/error", recovery: PAGES_NAVIGATION_RECOVERY },

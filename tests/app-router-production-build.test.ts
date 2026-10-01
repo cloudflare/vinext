@@ -107,14 +107,26 @@ async function buildClientChunkGraph(
 
 function findUnrecoveredLazyRuntimeChunks(chunks: readonly LazyRuntimeChunk[]): string[] {
   const listed = new Set(LAZY_RUNTIME_CHUNK_RECOVERY.map((entry) => entry.module));
-  return chunks
-    .filter((chunk) => !chunk.modules.some((module) => listed.has(module)))
-    .map(
-      (chunk) =>
-        `Lazy vinext runtime chunk ${chunk.file} (module: ${chunk.modules.join(", ")}) has no recovery path. ` +
+  return chunks.flatMap((chunk) => {
+    const unlisted = chunk.modules.filter((module) => !listed.has(module));
+    if (unlisted.length === 0) return [];
+    return [
+      `Lazy vinext runtime chunk ${chunk.file} (module: ${unlisted.join(", ")}) has no recovery path. ` +
         "Load it through the chunk recovery helpers or a caller that falls back to a document navigation, " +
         "then list the module with that recovery in tests/lazy-runtime-chunk-recovery.ts.",
-    );
+    ];
+  });
+}
+
+function findUnusedRecoveryEntries(graphs: readonly ClientChunkGraph[]): string[] {
+  const lazyModules = new Set(
+    graphs.flatMap((graph) => graph.lazyRuntimeChunks.flatMap((chunk) => chunk.modules)),
+  );
+  return LAZY_RUNTIME_CHUNK_RECOVERY.filter((entry) => !lazyModules.has(entry.module)).map(
+    (entry) =>
+      `tests/lazy-runtime-chunk-recovery.ts lists ${entry.module}, which is not lazy in any built client graph. ` +
+      "Remove the entry, or build a fixture where the module is lazy.",
+  );
 }
 
 function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
@@ -984,6 +996,9 @@ describe("lazy vinext runtime chunks in production client builds", () => {
     expect(appGraph.eagerModules).toContain("server/app-browser-server-action-client");
     expect(lazyModules).not.toContain("server/app-browser-server-action-client");
 
+    // The App entry imports next/navigation statically; it is lazy only in Pages documents.
+    expect(lazyModules).not.toContain("shims/navigation");
+
     expect(findUnrecoveredLazyRuntimeChunks(appGraph.lazyRuntimeChunks)).toEqual([]);
   });
 
@@ -999,6 +1014,10 @@ describe("lazy vinext runtime chunks in production client builds", () => {
     );
 
     expect(findUnrecoveredLazyRuntimeChunks(pagesGraph.lazyRuntimeChunks)).toEqual([]);
+  });
+
+  it("lists no recovery module that is lazy in neither built graph", () => {
+    expect(findUnusedRecoveryEntries([appGraph, pagesGraph])).toEqual([]);
   });
 
   it("finds the hybrid route owner in a build that has a Pages Router and client rewrites", () => {
@@ -1023,5 +1042,41 @@ describe("lazy vinext runtime chunks in production client builds", () => {
         "Load it through the chunk recovery helpers or a caller that falls back to a document navigation, " +
         "then list the module with that recovery in tests/lazy-runtime-chunk-recovery.ts.",
     ]);
+  });
+
+  it("reports the unlisted module of a chunk that also holds a listed one", () => {
+    const listedModule = LAZY_RUNTIME_CHUNK_RECOVERY[0]?.module ?? "";
+    expect(listedModule).not.toBe("");
+    expect(
+      findUnrecoveredLazyRuntimeChunks([
+        {
+          file: "_next/static/chunks/shared-A1b2C3.js",
+          modules: [listedModule, "shims/brand-new"],
+        },
+      ]),
+    ).toEqual([
+      "Lazy vinext runtime chunk _next/static/chunks/shared-A1b2C3.js (module: shims/brand-new) has no recovery path. " +
+        "Load it through the chunk recovery helpers or a caller that falls back to a document navigation, " +
+        "then list the module with that recovery in tests/lazy-runtime-chunk-recovery.ts.",
+    ]);
+  });
+
+  it("reports a listed recovery module that no built graph holds lazily", () => {
+    const [first, second, ...unused] = LAZY_RUNTIME_CHUNK_RECOVERY;
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(unused.length).toBeGreaterThan(0);
+    const lazyIn = (module: string): ClientChunkGraph => ({
+      eagerModules: new Set(),
+      lazyRuntimeChunks: [{ file: `_next/static/chunks/${module}-A1b2C3.js`, modules: [module] }],
+    });
+
+    expect(findUnusedRecoveryEntries([lazyIn(first.module), lazyIn(second.module)])).toEqual(
+      unused.map(
+        (entry) =>
+          `tests/lazy-runtime-chunk-recovery.ts lists ${entry.module}, which is not lazy in any built client graph. ` +
+          "Remove the entry, or build a fixture where the module is lazy.",
+      ),
+    );
   });
 });
