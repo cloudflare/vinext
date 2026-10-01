@@ -1152,7 +1152,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (instance) {
         instance.mode = "full-after-shell";
       }
-      promotePrefetchEntriesForNavigation(normalizedHref).catch(logPrefetchSetupError);
+      promotePrefetchEntriesForNavigation(normalizedHref).catch(() => {});
     }
     prefetchUrl(
       normalizedHref,

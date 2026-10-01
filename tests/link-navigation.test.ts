@@ -1663,11 +1663,10 @@ describe("Link when a lazily loaded chunk cannot load", () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(unhandled).toEqual([]);
-      // One log from the intent prefetch itself, one from the promotion.
+      // The intent prefetch reports the failure; the promotion fails for the same reason and stays quiet.
       // Vitest wraps the factory's TypeError in an Error that carries it as `cause`.
       const loadFailure = expect.objectContaining({ cause: expect.any(TypeError) });
       expect(consoleError.mock.calls).toEqual([
-        ["[vinext] RSC prefetch setup error:", loadFailure],
         ["[vinext] RSC prefetch setup error:", loadFailure],
       ]);
       expect(result.fetch).not.toHaveBeenCalled();
