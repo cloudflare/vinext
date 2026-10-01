@@ -161,6 +161,7 @@ async function expectServing(label: SiteLabel): Promise<void> {
   await expect
     .poll(
       async () => {
+        if (running?.server.failure) throw running.server.failure;
         try {
           const html = await (await fetch(`${origin}/`)).text();
           return html.includes(entryPath) && html.includes(`Version ${version}`);
