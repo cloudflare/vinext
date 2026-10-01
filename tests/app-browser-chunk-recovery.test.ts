@@ -318,6 +318,112 @@ describe("app browser chunk recovery navigator", () => {
   });
 });
 
+describe("a superseded recovery navigation", () => {
+  async function setup() {
+    vi.resetModules();
+    Reflect.deleteProperty(globalThis, STATE_KEY);
+    const storage = new Map<string, string>();
+    const replace = vi.fn();
+    vi.stubGlobal(
+      "window",
+      Object.assign(new EventTarget(), {
+        history: { state: null },
+        location: { assign: vi.fn(), href: PAGE, origin: "https://example.com", replace },
+        navigation: new EventTarget(),
+        sessionStorage: {
+          getItem: (key: string) => storage.get(key) ?? null,
+          removeItem: (key: string) => storage.delete(key),
+          setItem: (key: string, value: string) => storage.set(key, value),
+        },
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 404 })),
+    );
+
+    const primitive = await import("../packages/vinext/src/client/chunk-load-recovery.js");
+    const documentNavigation = createAppBrowserDocumentNavigation({
+      discardPendingNavigation: vi.fn(),
+      expireDocumentNavigation: vi.fn(),
+      mpaNavigationScheduler: { navigate: vi.fn(), reset: vi.fn() },
+      resumeAfterDocumentNavigation: vi.fn(),
+      stopRefreshes: vi.fn(),
+    });
+    const recovery = createAppBrowserChunkRecovery({
+      beforeDocumentNavigation: documentNavigation.beforeDocumentNavigation,
+    });
+    primitive.registerChunkRecovery({ entryUrl: "https://example.com/assets/index-abc123.js" });
+    primitive.setChunkRecoveryNavigator(recovery.navigator);
+    return { documentNavigation, primitive, recovery, replace, storage };
+  }
+
+  async function failLoad(primitive: Awaited<ReturnType<typeof setup>>["primitive"]) {
+    const error = new Error("Failed to fetch dynamically imported module");
+    const settled = primitive
+      .loadChunk(() => Promise.reject(error), { retry: false })
+      .catch((reason: unknown) => reason);
+    await vi.advanceTimersByTimeAsync(
+      primitive.CHUNK_RETRY_DELAY_MIN_MS + primitive.CHUNK_RETRY_DELAY_SPREAD_MS,
+    );
+    expect(await settled).toBe(error);
+    return error;
+  }
+
+  it.each([
+    [
+      "a client navigation",
+      (nav: ReturnType<typeof createAppBrowserDocumentNavigation>) => nav.resetRecovery(),
+    ],
+    [
+      "a newer document navigation",
+      (nav: ReturnType<typeof createAppBrowserDocumentNavigation>) =>
+        nav.performHardNavigation("https://example.com/newer"),
+    ],
+  ])("settles the recovery and later chunk failures after %s", async (_name, supersede) => {
+    const { documentNavigation, primitive, replace } = await setup();
+    const firstError = await failLoad(primitive);
+    let rejection: unknown = null;
+    primitive.recoverFromChunkFailure(firstError).catch((reason: unknown) => {
+      rejection = reason;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(replace).toHaveBeenCalledOnce();
+    expect(rejection).toBeNull();
+
+    supersede(documentNavigation);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(rejection).toBe(firstError);
+
+    const laterError = new Error("Failed to fetch dynamically imported module again");
+    const later = primitive
+      .loadChunk(() => Promise.reject(laterError), { retry: false })
+      .catch((reason: unknown) => reason);
+    await vi.advanceTimersByTimeAsync(
+      primitive.CHUNK_RETRY_DELAY_MIN_MS + primitive.CHUNK_RETRY_DELAY_SPREAD_MS,
+    );
+
+    expect(await later).toBe(laterError);
+  });
+
+  it("keeps the claim spent so the same build is not reloaded again", async () => {
+    const { documentNavigation, primitive, replace, storage } = await setup();
+    const firstError = await failLoad(primitive);
+    primitive.recoverFromChunkFailure(firstError).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    documentNavigation.resetRecovery();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const laterError = await failLoad(primitive);
+    primitive.recoverFromChunkFailure(laterError).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(JSON.parse(storage.get(primitive.CHUNK_RECOVERY_STORAGE_KEY) ?? "[]")).toHaveLength(1);
+    expect(replace).toHaveBeenCalledOnce();
+  });
+});
+
 describe("root error recovery", () => {
   async function setup() {
     vi.resetModules();
@@ -408,6 +514,14 @@ describe("app browser entry chunk recovery wiring", () => {
     expect(source).toMatch(
       /browserRouterStateHasEverCommitted = true;\s+endImmediateClientReferenceRecovery\(\);/,
     );
+  });
+
+  it("resets the recovery silently on pagehide and abandons it when a navigation begins", () => {
+    expect(source).toMatch(
+      /addEventListener\("pagehide", \(\) => \{\s+resetDocumentNavigationRecoveryOnPageHide\(\);/,
+    );
+    expect(source).toMatch(/function beginNavigation\([^]*?resetDocumentNavigationRecovery\(\);/);
+    expect(source.match(/resetDocumentNavigationRecovery\(\);/g)).toHaveLength(1);
   });
 
   it("registers the navigator once, inside bootstrapHydration", () => {

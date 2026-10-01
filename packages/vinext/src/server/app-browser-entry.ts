@@ -387,6 +387,7 @@ const documentNavigation = createAppBrowserDocumentNavigation({
   stopRefreshes: () => stopRefreshesForDocumentNavigation(),
 });
 const resetDocumentNavigationRecovery = documentNavigation.resetRecovery;
+const resetDocumentNavigationRecoveryOnPageHide = documentNavigation.resetRecoveryOnPageHide;
 const chunkRecovery = createAppBrowserChunkRecovery({
   beforeDocumentNavigation: documentNavigation.beforeDocumentNavigation,
 });
@@ -3375,7 +3376,7 @@ if (typeof document !== "undefined") {
   installWindowNext({ appDir: true, router: appRouterInstance });
 
   window.addEventListener("pagehide", () => {
-    resetDocumentNavigationRecovery();
+    resetDocumentNavigationRecoveryOnPageHide();
     isPageUnloading = true;
   });
   // Reset on pageshow so a bfcache-restored document does not resume with

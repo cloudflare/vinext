@@ -38,11 +38,19 @@ type AppBrowserDocumentNavigationDeps = {
  */
 export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavigationDeps) {
   let cancelRecovery = () => {};
+  let pendingOutcome: DocumentNavigationOutcome | undefined;
 
-  function resetRecovery(): void {
+  function resetRecoveryOnPageHide(): void {
     const cancel = cancelRecovery;
     cancelRecovery = () => {};
+    pendingOutcome = undefined;
     cancel();
+  }
+
+  function resetRecovery(): void {
+    const outcome = pendingOutcome;
+    resetRecoveryOnPageHide();
+    outcome?.onAbandoned();
   }
 
   /**
@@ -57,7 +65,7 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
     deps.stopRefreshes();
     resetRecovery();
     const restore = () => {
-      resetRecovery();
+      resetRecoveryOnPageHide();
       deps.mpaNavigationScheduler.reset();
       deps.discardPendingNavigation();
     };
@@ -85,6 +93,7 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
       clearTimeout(timer);
     };
     cancelRecovery = cancel;
+    pendingOutcome = outcome;
     return recover;
   }
 
@@ -108,5 +117,6 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
       );
     },
     resetRecovery,
+    resetRecoveryOnPageHide,
   };
 }

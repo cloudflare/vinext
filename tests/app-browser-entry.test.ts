@@ -4229,7 +4229,7 @@ describe("app browser document navigation", () => {
       void queue.serverAction(heldRun);
 
       documentNavigation.performHardNavigation(targetHref);
-      documentNavigation.resetRecovery();
+      documentNavigation.resetRecoveryOnPageHide();
 
       expect(vi.getTimerCount()).toBe(0);
 
@@ -4294,11 +4294,74 @@ describe("app browser document navigation", () => {
       it("reports nothing when the page unloads", async () => {
         const { documentNavigation, outcome } = begin();
 
-        documentNavigation.resetRecovery();
+        documentNavigation.resetRecoveryOnPageHide();
         await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS * 2);
 
         expect(outcome.onCanceled).not.toHaveBeenCalled();
         expect(outcome.onAbandoned).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it("reports abandonment once when a client navigation resets the recovery", async () => {
+        const { attempts, documentNavigation, outcome } = begin();
+
+        documentNavigation.resetRecovery();
+        documentNavigation.resetRecovery();
+        expect(outcome.onAbandoned).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+
+        attempts[0]?.abort();
+        await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS * 2);
+
+        expect(outcome.onAbandoned).toHaveBeenCalledOnce();
+        expect(outcome.onCanceled).not.toHaveBeenCalled();
+      });
+
+      it("reports abandonment for a document navigation that a newer one supersedes", async () => {
+        const { attempts, documentNavigation, outcome } = begin();
+        const second = { onAbandoned: vi.fn(), onCanceled: vi.fn() };
+
+        performHardNavigationWithLoopGuard("https://example.com/other", "assign", () =>
+          documentNavigation.beforeDocumentNavigation("https://example.com/other", second),
+        );
+
+        expect(outcome.onAbandoned).toHaveBeenCalledOnce();
+        expect(second.onAbandoned).not.toHaveBeenCalled();
+        expect(second.onCanceled).not.toHaveBeenCalled();
+
+        attempts[0]?.abort();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(second.onCanceled).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS);
+        expect(second.onAbandoned).toHaveBeenCalledOnce();
+        expect(outcome.onAbandoned).toHaveBeenCalledOnce();
+        expect(outcome.onCanceled).not.toHaveBeenCalled();
+      });
+
+      it("reports abandonment when a plain hard navigation supersedes the recovery", () => {
+        const { documentNavigation, outcome } = begin();
+
+        documentNavigation.performHardNavigation("https://example.com/other");
+
+        expect(outcome.onAbandoned).toHaveBeenCalledOnce();
+        expect(outcome.onCanceled).not.toHaveBeenCalled();
+      });
+
+      it("reports the superseding navigation's own cancel", async () => {
+        const { attempts, documentNavigation, outcome } = begin();
+        const second = { onAbandoned: vi.fn(), onCanceled: vi.fn() };
+
+        performHardNavigationWithLoopGuard("https://example.com/other", "assign", () =>
+          documentNavigation.beforeDocumentNavigation("https://example.com/other", second),
+        );
+        attempts[1]?.abort();
+        await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS * 2);
+
+        expect(second.onCanceled).toHaveBeenCalledOnce();
+        expect(second.onAbandoned).not.toHaveBeenCalled();
+        expect(outcome.onAbandoned).toHaveBeenCalledOnce();
+        expect(outcome.onCanceled).not.toHaveBeenCalled();
       });
 
       it("reports a cancel when the location change throws", () => {
