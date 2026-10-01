@@ -1,7 +1,7 @@
 /**
  * Prefetch cache eviction tests.
  *
- * Verifies that storePrefetchResponse() sweeps expired entries before
+ * Verifies that prefetchRscResponse() sweeps expired entries before
  * falling back to FIFO eviction, preventing expired entries from wasting
  * cache slots on link-heavy pages.
  *
@@ -29,7 +29,6 @@ import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-c
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
-let storePrefetchResponse: Navigation["storePrefetchResponse"];
 let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
@@ -70,7 +69,6 @@ beforeEach(async () => {
   };
   vi.resetModules();
   const nav = await import("../packages/vinext/src/shims/navigation.js");
-  storePrefetchResponse = nav.storePrefetchResponse;
   consumePrefetchResponse = nav.consumePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
@@ -611,8 +609,8 @@ describe("prefetch cache eviction", () => {
   });
 
   it("allows separate interception-context entries for the same RSC URL", () => {
-    storePrefetchResponse("/photos/42.rsc", new Response("feed"), "/feed");
-    storePrefetchResponse("/photos/42.rsc", new Response("gallery"), "/gallery");
+    prefetchRscResponse("/photos/42.rsc", Promise.resolve(new Response("feed")), "/feed");
+    prefetchRscResponse("/photos/42.rsc", Promise.resolve(new Response("gallery")), "/gallery");
 
     const feedKey = AppElementsWire.encodeCacheKey("/photos/42.rsc", "/feed");
     const galleryKey = AppElementsWire.encodeCacheKey("/photos/42.rsc", "/gallery");
@@ -2233,7 +2231,7 @@ describe("prefetch cache eviction", () => {
       url: largeRscUrl,
     });
 
-    storePrefetchResponse(largeRscUrl, new Response("x"));
+    prefetchRscResponse(largeRscUrl, Promise.resolve(new Response("x")));
     await waitForPrefetchSetup(
       () =>
         getPrefetchCache().get(largeRscUrl)?.outcome === "cache-seeded" &&
