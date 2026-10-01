@@ -4760,7 +4760,7 @@ describe("app browser navigation controller", () => {
       );
 
       expect(source).toContain("clearActionHttpFallbackHeadOnCommit(");
-      expect(source).toContain("onCommitted: commitHooks?.onCommitted");
+      expect(source).toContain("onCommitted: () => syncServerActionHttpFallbackHead(null)");
       expect(source).not.toMatch(
         /syncServerActionHttpFallbackHead\(null\);\s*return browserNavigationController\.renderNavigationPayload/,
       );

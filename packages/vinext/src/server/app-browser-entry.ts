@@ -871,7 +871,6 @@ async function commitSameUrlNavigatePayload(
     committedState: AppRouterState;
     publish: (result: AppBrowserNavigationActionResult) => void;
   },
-  commitHooks?: { onCommitted?: () => void },
 ): Promise<unknown> {
   let shouldRetrySupplementalRefresh = false;
   let supplementalHandle: ReturnType<
@@ -979,7 +978,7 @@ async function commitSameUrlNavigatePayload(
               })
           : undefined,
         scrollIntent: queueLifecycle?.previous?.scrollIntent,
-        onCommitted: commitHooks?.onCommitted,
+        onCommitted: () => syncServerActionHttpFallbackHead(null),
         onActionReady: (state) =>
           queueLifecycle?.publish({
             state,
@@ -1846,7 +1845,6 @@ function registerServerActionCallback(client: NonNullable<typeof serverActionCli
             returnValue,
             revalidation,
             rendered,
-            commitHooks,
           ) =>
             commitSameUrlNavigatePayload(
               elements,
@@ -1859,7 +1857,6 @@ function registerServerActionCallback(client: NonNullable<typeof serverActionCli
                 committedState,
                 publish,
               },
-              commitHooks,
             ),
           isCurrentAction: () =>
             browserNavigationController.isCurrentNavigation(actionInitiation.navigationId),

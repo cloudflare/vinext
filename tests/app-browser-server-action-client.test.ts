@@ -1024,34 +1024,21 @@ describe("app browser server action client", () => {
         return { ...harness, respondRendered: () => respondWithTree(1, status), second };
       }
 
-      it("leaves the marker alone until the re-rendered tree commits", async () => {
-        const { commitSameUrlNavigatePayload, head, respondRendered, second } =
-          await showMarkerThenStartRenderingAction(200);
+      // The entry clears the marker when the re-rendered tree commits, because
+      // the committed tree carries its own robots metadata.
+      it.each([200, 404])(
+        "leaves the marker alone for a re-rendered tree with status %i",
+        async (status) => {
+          const { commitSameUrlNavigatePayload, head, respondRendered, second } =
+            await showMarkerThenStartRenderingAction(status);
 
-        respondRendered();
-        await second;
+          respondRendered();
+          await second;
 
-        expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
-        expect(head.noindex).toBe(true);
-
-        const [, , , , , lifecycle] = commitSameUrlNavigatePayload.mock.calls[0];
-        lifecycle.onCommitted();
-        expect(head.noindex).toBe(false);
-      });
-
-      it("keeps the marker when a re-rendered 404 never commits and clears it when it does", async () => {
-        const { commitSameUrlNavigatePayload, head, respondRendered, second } =
-          await showMarkerThenStartRenderingAction(404);
-
-        respondRendered();
-        await second;
-        expect(head.noindex).toBe(true);
-
-        // The boundary in the committed tree carries its own robots metadata.
-        const [, , , , , lifecycle] = commitSameUrlNavigatePayload.mock.calls[0];
-        lifecycle.onCommitted();
-        expect(head.noindex).toBe(false);
-      });
+          expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
+          expect(head.noindex).toBe(true);
+        },
+      );
 
       it("never writes the marker for a render that belongs to a stale action", async () => {
         const { commitSameUrlNavigatePayload, head, respondRendered, second, setCurrentAction } =
@@ -1061,8 +1048,7 @@ describe("app browser server action client", () => {
         respondRendered();
         await second;
 
-        const [, , , , , lifecycle] = commitSameUrlNavigatePayload.mock.calls[0];
-        expect(lifecycle?.onCommitted).toBeUndefined();
+        expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
         expect(head.noindex).toBe(true);
       });
     });
