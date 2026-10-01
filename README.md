@@ -193,6 +193,8 @@ The migration is non-destructive -- your existing Next.js setup continues to wor
 
 vinext targets Vite 8, which defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. If you bring custom Vite config or plugins from an older setup, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency breaks because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
 
+Production client JS and CSS use hash-only file names (by default `_next/static/chunks/[hash].js` and `_next/static/css/[hash].css`) so component and source file names don't appear in public asset URLs. To use different names, set `entryFileNames`, `chunkFileNames` or `assetFileNames` in `build.rolldownOptions.output` (or `environments.client.build.rolldownOptions.output`), keeping them under the client assets directory: `_next/static/` by default, or `<prefix>/_next/static/` with a path-based `assetPrefix` such as `/cdn` (e.g. `chunkFileNames: "cdn/_next/static/chunks/[name]-[hash].js"`).
+
 ```bash
 npm run dev:vinext    # Start the vinext dev server (port 3001)
 npm run build:vinext  # Build production output with vinext

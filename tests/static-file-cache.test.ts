@@ -156,6 +156,21 @@ describe("StaticFileCache", () => {
     expect(entry!.etag).toBe('W/"abc123"');
   });
 
+  it("uses the whole hash-only basename for managed chunk and CSS etags", async () => {
+    // Rolldown's base64url hash can contain `-`; the name-hash split would
+    // otherwise see a too-short suffix and fall back to mtime.
+    await writeFile(clientDir, "_next/static/chunks/Dq-Zc3R4.js", "export {};");
+    await writeFile(clientDir, "cdn/_next/static/css/Ab_Cd9-f.css", "body{}");
+    await writeFile(clientDir, "_next/static/Dq-Zc3R4.js", "export {};");
+
+    const cache = await StaticFileCache.create(clientDir);
+
+    expect(cache.lookup("/_next/static/chunks/Dq-Zc3R4.js")!.etag).toBe('W/"Dq-Zc3R4"');
+    expect(cache.lookup("/cdn/_next/static/css/Ab_Cd9-f.css")!.etag).toBe('W/"Ab_Cd9-f"');
+    // Outside the managed chunks/css directories the hash-only form isn't trusted.
+    expect(cache.lookup("/_next/static/Dq-Zc3R4.js")!.etag).toMatch(/^W\/"\d+-\d+"$/);
+  });
+
   it("generates stable weak etag for dot-delimited managed image hashes", async () => {
     await writeFile(clientDir, "_next/static/media/photo.0123abcd.png", "image bytes");
 

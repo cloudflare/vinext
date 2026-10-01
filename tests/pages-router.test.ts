@@ -38,6 +38,8 @@ const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps 
 
 type ClientBuildManifestEntry = {
   file?: string;
+  name?: string;
+  isEntry?: boolean;
   css?: string[];
   assets?: string[];
 };
@@ -5759,13 +5761,22 @@ export const config = { matcher: ["/protected"] };
 
     // Client bundle should be code-split: framework (React/ReactDOM) in its
     // own chunk, vinext runtime in another, and the entry bootstrap should be
-    // small (not a monolithic bundle containing all vendor code).
-    const frameworkChunk = jsFiles.find((f: string) => f.startsWith("framework-"));
-    const vinextChunk = jsFiles.find((f: string) => f.startsWith("vinext-"));
-    const entryChunk = jsFiles.find((f: string) => f.includes("vinext-client-entry"));
+    // small (not a monolithic bundle containing all vendor code). Chunk names
+    // live in the build manifest; emitted file names are hash-only.
+    const chunkFileByName = (name: string) => {
+      const file = Object.values(buildManifest).find((entry) => entry.name === name)?.file;
+      return file ? path.basename(file) : undefined;
+    };
+    const frameworkChunk = chunkFileByName("framework");
+    const vinextChunk = chunkFileByName("vinext");
+    const entryChunk = Object.values(buildManifest).find((entry) => entry.isEntry)?.file;
     expect(frameworkChunk).toBeDefined();
     expect(vinextChunk).toBeDefined();
     expect(entryChunk).toBeDefined();
+    for (const file of [frameworkChunk, vinextChunk, entryChunk]) {
+      expect(jsFiles).toContain(path.basename(file!));
+      expect(path.basename(file!)).toMatch(/^[\w-]{8}\.js$/);
+    }
 
     // The entry chunk should stay small: it contains the hydration bootstrap
     // and this fixture's generated route table, but not the React framework.
@@ -5773,7 +5784,7 @@ export const config = { matcher: ["/protected"] };
     // parity routes, so allow their generated route-table entries while
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
-      const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
+      const entrySize = fs.statSync(path.join(assetsDir, path.basename(entryChunk))).size;
       expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
     }
 
@@ -10250,9 +10261,15 @@ export default function Page() { return <p>manifest reuse</p>; }
           pathToFileURL(path.join(root, "dist/vinext-client-assets.js")).href
         );
         const scans = { manifest: 0, cssGraph: 0, lazyChunks: 0 };
-        const frameworkFile = Object.values(assets.ssrManifest as Record<string, string[]>)
-          .flat()
-          .find((file) => file.includes("/framework-"))!;
+        const clientBuildManifest = JSON.parse(
+          await fsp.readFile(path.join(root, "dist/client/.vite/manifest.json"), "utf-8"),
+        ) as Record<string, ClientBuildManifestEntry>;
+        const frameworkFile = Object.values(clientBuildManifest).find(
+          (chunk) => chunk.name === "framework",
+        )!.file!;
+        const vinextRuntimeFile = Object.values(clientBuildManifest).find(
+          (chunk) => chunk.name === "vinext",
+        )!.file!;
         // Model a large app without making the test compile thousands of pages.
         for (let i = 0; i < 3000; i++) {
           assets.ssrManifest[`components/unused-${i}.tsx`] = [frameworkFile];
@@ -10296,6 +10313,9 @@ export default function Page() { return <p>manifest reuse</p>; }
         expect(first).toContain("manifest reuse");
         expect(first).toContain('rel="stylesheet"');
         expect(first).toContain(frameworkFile);
+        // Hash-only names carry no chunk name; shared chunks still get tags
+        // through the registered build list, even for a caller's manifest copy.
+        expect(first).toContain(`src="/${vinextRuntimeFile}"`);
         expect(first).not.toContain("lazy-2999.js");
         const initialScans = { ...scans };
         // A caller-supplied manifest is indexed once for page lookups; shared

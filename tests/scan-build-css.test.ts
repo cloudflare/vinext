@@ -156,9 +156,18 @@ describe("vinext:scan-build-css", () => {
       expect(serverJs).toContain(".scan-inline");
       // `?url` CSS is emitted as an asset and referenced by URL.
       const clientDir = path.join(tmpDir, "dist", "client");
-      const linkedAsset = (await fs.readdir(clientDir, { recursive: true })).find((file) =>
-        /linked\.[\w-]+\.css$/.test(file),
+      // Client CSS file names are hash-only (`css/[hash].css`), so find the
+      // `?url` asset by content.
+      const cssFiles = (await fs.readdir(clientDir, { recursive: true })).filter((file) =>
+        file.endsWith(".css"),
       );
+      let linkedAsset: string | undefined;
+      for (const file of cssFiles) {
+        if ((await fs.readFile(path.join(clientDir, file), "utf8")).includes(".scan-linked")) {
+          linkedAsset = file;
+          break;
+        }
+      }
       expect(linkedAsset, "?url CSS asset missing from client output").toBeDefined();
       expect(await fs.readFile(path.join(clientDir, linkedAsset!), "utf8")).toContain(
         ".scan-linked",

@@ -24,10 +24,11 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "web-vitals",
 ]);
 
-// Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
-// fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
-// that layout so migrated apps keep stable, Next-shaped asset URLs.
-const NEXT_CLIENT_CSS_ASSET_FILE_NAMES = "css/[name].[hash:8][extname]";
+// Next.js emits CSS under `static/css/` as `[contenthash].css` and CSS url()
+// dependencies (images, fonts, …) under `static/media/` as
+// `[name].[hash:8][ext]`. Mirror that layout so migrated apps keep stable,
+// Next-shaped asset URLs, and CSS URLs never expose source file names.
+const NEXT_CLIENT_CSS_ASSET_FILE_NAMES = "css/[hash][extname]";
 const NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES = "media/[name].[hash:8][extname]";
 
 function joinAssetFileNamePattern(assetsDir: string, pattern: string): string {
@@ -172,11 +173,19 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
   };
 }
 
+/**
+ * Client JS is emitted as hash-only `<assetsDir>/chunks/[hash].js`. Rolldown
+ * names a chunk after its first module, so `[name]` would publish component
+ * and source file names in public asset URLs. Next.js doesn't put component
+ * names in production chunk URLs either: webpack names split chunks by
+ * deterministic numeric id. Users can opt back into `[name]` through their own
+ * Vite config; see createClientOutputFileNameDefaults.
+ */
 function createClientFileNameConfig(assetsDir: string) {
   const chunksDir = `${assetsDir}/chunks`;
   return {
-    entryFileNames: `${chunksDir}/[name]-[hash].js`,
-    chunkFileNames: `${chunksDir}/[name]-[hash].js`,
+    entryFileNames: `${chunksDir}/[hash].js`,
+    chunkFileNames: `${chunksDir}/[hash].js`,
   };
 }
 

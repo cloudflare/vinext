@@ -792,12 +792,13 @@ export default async function OpenGraphImage() {
       // (cdn/_next/static/...) because assetPrefix is a path prefix.
       const pagesEntryPath = clientEntryManifest.pagesClientEntry;
       expect(pagesEntryPath.startsWith("cdn/_next/static/")).toBe(true);
-      expect(pagesEntryPath).toContain("vinext-client-entry");
+      expect(pagesEntryPath).toMatch(/^cdn\/_next\/static\/chunks\/[\w-]{8}\.js$/);
 
       // The App browser entry should also be under the assetPrefix path
       const appEntryPath = clientEntryManifest.appBrowserEntry;
       expect(appEntryPath.startsWith("cdn/_next/static/")).toBe(true);
-      expect(appEntryPath).toContain("index-");
+      expect(appEntryPath).toMatch(/^cdn\/_next\/static\/chunks\/[\w-]{8}\.js$/);
+      expect(appEntryPath).not.toBe(pagesEntryPath);
 
       // Import the RSC handler and verify the baked constants
       const rscEntryPath = path.join(tmpDir, "dist", "server", "index.js");
