@@ -1983,6 +1983,57 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("commits URL and params without notifying until the next commit", async () => {
+    const previousWindow = globalThis.window;
+    const location = {
+      href: "http://localhost/before",
+      origin: "http://localhost",
+      pathname: "/before",
+      search: "",
+    };
+    (globalThis as any).window = {
+      addEventListener() {},
+      dispatchEvent() {
+        return true;
+      },
+      history: {
+        pushState() {},
+        replaceState() {},
+      },
+      location,
+      removeEventListener() {},
+    };
+
+    try {
+      vi.resetModules();
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const state = navigation.getClientNavigationState();
+      if (!state) throw new Error("Expected client navigation state");
+      const listener = vi.fn();
+      state.listeners.add(listener);
+
+      Object.assign(location, {
+        href: "http://localhost/restored?tab=1",
+        pathname: "/restored",
+        search: "?tab=1",
+      });
+      navigation.replaceClientParamsWithoutNotify({ id: "restored" });
+      navigation.commitClientNavigationState(undefined, { releaseSnapshot: false, notify: false });
+
+      expect(navigation.getClientParams()).toEqual({ id: "restored" });
+      expect(state.cachedPathname).toBe("/restored");
+      expect(state.cachedSearch).toBe("?tab=1");
+      expect(listener).not.toHaveBeenCalled();
+
+      navigation.commitClientNavigationState(7, { releaseSnapshot: false });
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   it("useUntrackedPathname returns Pages Router pathname when no App context is set", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");

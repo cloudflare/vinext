@@ -1797,6 +1797,11 @@ type ClientNavigationState = {
 
 type CommitClientNavigationStateOptions = {
   releaseSnapshot?: boolean;
+  /**
+   * `false` commits the URL and params for a synchronous render without
+   * notifying subscribers; the next commit notifies them.
+   */
+  notify?: boolean;
 };
 
 type ClientNavigationGlobal = typeof globalThis & {
@@ -2376,11 +2381,16 @@ export function commitClientNavigationState(
     state.pendingPathnameNavId = null;
   }
   const shouldNotify = urlChanged || state.hasPendingNavigationUpdate;
-  state.hasPendingNavigationUpdate = false;
 
   if (urlChanged || paramsChanged) {
     clearClientHydrationContext();
   }
+
+  if (options?.notify === false) {
+    state.hasPendingNavigationUpdate = shouldNotify;
+    return;
+  }
+  state.hasPendingNavigationUpdate = false;
 
   if (shouldNotify) {
     notifyNavigationListeners();

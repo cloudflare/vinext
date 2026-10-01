@@ -732,6 +732,12 @@ export function createAppBrowserNavigationController(
     }
 
     options.beforeCommit?.();
+    // The restored tree renders synchronously, before the caller's
+    // commitClientNavigationState() notifies subscribers. Commit the browser
+    // URL and the params staged by beforeCommit first, so that render reads
+    // them instead of the previous route's. For a copied pushState entry this
+    // pairs the browser's URL with the copied tree's params.
+    commitClientNavigationStateImpl(undefined, { releaseSnapshot: false, notify: false });
     dispatchSynchronousVisibleCommit(approval.approvedCommit);
     return true;
   }
