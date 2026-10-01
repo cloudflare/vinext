@@ -95,7 +95,7 @@ export async function navigatePagesRouterLinkWithFallback({
   fallback,
 }: {
   router?: PagesRouterLinkRuntime;
-  loadRouter: () => Promise<PagesRouterLinkRuntime | undefined>;
+  loadRouter: () => Promise<PagesRouterLinkRuntime>;
   navigation: PagesRouterLinkNavigation;
   fallback: () => void;
 }): Promise<void> {
@@ -107,10 +107,6 @@ export async function navigatePagesRouterLinkWithFallback({
       fallback();
       return;
     }
-  }
-  if (!pagesRouter) {
-    fallback();
-    return;
   }
 
   await navigatePagesRouterLink(pagesRouter, navigation);

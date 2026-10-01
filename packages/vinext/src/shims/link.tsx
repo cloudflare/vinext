@@ -1371,7 +1371,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       const pagesRouter = Router && "reload" in Router ? Router : undefined;
       await navigatePagesRouterLinkWithFallback({
         router: pagesRouter,
-        loadRouter: async () => (await import("next/router")).default,
+        loadRouter: async () => (await import("./router.js")).default,
         navigation: {
           href: pagesHrefForLink,
           as: pagesAsForLink,

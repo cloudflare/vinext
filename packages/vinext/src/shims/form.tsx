@@ -437,15 +437,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     } else {
       // Pages Router: delegate to the Router singleton so navigation flows
       // through `performNavigation` (route events, HTML fetch, scroll
-      // handling). Mirrors what `<Link>` does at link.tsx:619-623.
+      // handling). Mirrors the Pages Router branch of `<Link>`'s click handler.
       // Keep the shared guard synchronous so React receives the error; the
       // async import fallback below must never turn it into history navigation.
       assertSafeNavigationUrl(url);
       void (async () => {
-        let Router: (typeof import("./router.js"))["default"];
         try {
-          const routerModule = await import("./router.js");
-          Router = routerModule.default;
+          const { default: Router } = await import("./router.js");
           if (replace) {
             await Router.replace(url, undefined, { scroll });
           } else {

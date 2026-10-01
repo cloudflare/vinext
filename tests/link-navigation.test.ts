@@ -1133,10 +1133,12 @@ describe("Pages Router Link onClick semantics", () => {
         },
       }),
     );
-    // The handler still tries `await import("next/router")` before calling
+    // The handler still tries `await import("./router.js")` before calling
     // navigatePagesRouterLink. Stub it so the import resolves cleanly (the
     // returned Router is never used because we mocked the navigation boundary).
-    vi.doMock("next/router", () => ({ default: { push() {}, replace() {} } }));
+    vi.doMock("../packages/vinext/src/shims/router.js", () => ({
+      default: { push() {}, replace() {} },
+    }));
 
     const pushState = vi.fn();
     const replaceState = vi.fn();
