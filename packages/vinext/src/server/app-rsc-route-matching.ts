@@ -158,18 +158,6 @@ function appRscPathnameParts(pathname: string, isNormalized = false): string[] {
     : splitPathnameForRouteMatch(normalizedPathname);
 }
 
-function appRscInterceptionSourcePathnameParts(pathname: string): string[] {
-  const pathOnly = pathname.split("?")[0];
-  const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
-  return splitPathSegments(normalizedPathname).map((segment) => {
-    try {
-      return decodeURIComponent(segment);
-    } catch {
-      return segment;
-    }
-  });
-}
-
 function isAppRouteHandlerRoute(route: AppRscRouteForMatching): boolean {
   // Generated manifests retain the lazy loader before the first request and
   // hydrate routeHandler afterwards. Classification must not change when that
@@ -209,6 +197,15 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   );
   const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
 
+  function matchRequestParts(
+    rawParts: string[],
+  ): { route: Route; params: AppRscRouteParams } | null {
+    const result = trieMatchRaw(routeTrie, rawParts);
+    if (!result) return null;
+    normalizeMatchedParamsForRoute(result);
+    return result;
+  }
+
   return {
     hasInterceptionId(interceptionId) {
       return interceptionIds.has(interceptionId);
@@ -222,10 +219,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       return result;
     },
     matchRequestRoute(url) {
-      const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, true));
-      if (!result) return null;
-      normalizeMatchedParamsForRoute(result);
-      return result;
+      return matchRequestParts(appRscPathnameParts(url, true));
     },
     findIntercept(pathname, sourcePathname = null, interceptionId = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the
@@ -236,8 +230,12 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       if (sourcePathname === null) return null;
 
       const urlParts = appRscPathnameParts(pathname, true);
-      const sourceParts = appRscInterceptionSourcePathnameParts(sourcePathname);
-      const matchedSourceRoute = trieMatchRaw(routeTrie, sourceParts);
+      // Match the source like a direct request to it (`matchRequestRoute`):
+      // static segments compare against the raw, still-encoded path, as the
+      // Next-Url header regex does. Decoding first would let `/%66eed` claim
+      // the static `/feed` source, which a direct request to it cannot reach.
+      const sourceParts = appRscPathnameParts(sourcePathname, true);
+      const matchedSourceRoute = matchRequestParts(sourceParts);
 
       for (const entry of interceptLookup) {
         if (interceptionId !== null && entry.interceptionId !== interceptionId) continue;
@@ -287,6 +285,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
                 entry.sourceMatchPatternParts !== null,
               )
             : null;
+        if (!concreteSourceRoute && matchedSourceParams) {
+          canonicalizeAppPageParams(matchedSourceParams);
+        }
 
         // Secondary gate (from #1249): when the entry has no
         // `sourceMatchPatternParts` declared (older manifest shapes), reject

@@ -30,7 +30,7 @@ import {
   getRscRenderModeCacheVariant,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
-import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-identity.js";
+import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 import type { RenderObservation } from "./cache-proof.js";
 import { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER } from "../utils/protocol-headers.js";
 export { normalizeMountedSlotsHeader };
@@ -391,7 +391,10 @@ export function appIsrHtmlKey(pathname: string): string {
 }
 
 function normalizeInterceptionContextForCacheKey(interceptionContext: string): string | null {
-  return normalizeAppPageInterceptionProofPathname(interceptionContext);
+  // Key on the raw context. The source is matched on its raw segments, so two
+  // spellings that decode alike (`/feed` and `/%66eed`) can render different
+  // source trees and must not share an entry.
+  return isInterceptionMatchedUrlPath(interceptionContext) ? interceptionContext : null;
 }
 
 /**

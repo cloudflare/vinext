@@ -110,12 +110,28 @@ describe.each([
     ["the locale root, sent as its matched pathname", "/en", "root", "/en"],
     ["an already-prefixed source", "/en/feed", "feed", "/en/feed"],
     ["an unprefixed source below the locale root", "/feed", "feed", "/en/feed"],
-    // The rewritten source is already percent-encoded, like the raw context.
-    ["an unprefixed encoded static source", "/caf%C3%A9", "cafe", "/en/café"],
+    // Dynamic params stay encoded as in the URL, as in Next.js. The proof
+    // names the matched pathname decoded once, like the client's route id.
     ["an unprefixed encoded dynamic source", "/tags/caf%C3%A9", "tag", "/en/tags/café"],
+    // What the client sends from its re-encoded matched pathname.
+    ["a prefixed encoded dynamic source", "/en/tags/caf%C3%A9", "tag", "/en/tags/café"],
+    ["an unprefixed encoded-slash dynamic source", "/tags/a%2Fb", "tag", "/en/tags/a%2Fb"],
+    ["an unprefixed encoded-percent dynamic source", "/tags/%2561", "tag", "/en/tags/%61"],
+    ["an unprefixed double-encoded dynamic source", "/tags/%252561", "tag", "/en/tags/%2561"],
+    ["an unprefixed literal-percent dynamic source", "/tags/100%25", "tag", "/en/tags/100%"],
+    // Params are canonical, as in Next.js: an escaped ASCII character renders
+    // unescaped (Next.js renders `tag` "a" here and sends `Next-Url: /en/tags/a`).
+    ["an unprefixed escaped-ASCII dynamic source", "/tags/%61", "tag", "/en/tags/a", "a"],
+    ["an escaped-ASCII source as the client sends it", "/en/tags/a", "tag", "/en/tags/a"],
   ])(
     "intercepts from %s (%s)",
-    async (_label, source, sourcePage, sourceMatchedUrl) => {
+    async (
+      _label,
+      source,
+      sourcePage,
+      sourceMatchedUrl,
+      tag = source.slice(source.lastIndexOf("/") + 1),
+    ) => {
       if (!server) throw new Error("Interception fixture server did not start");
       const { body, ...result } = await fetchSoftNavigation(server.baseUrl, source);
       expect(result).toEqual({
@@ -127,7 +143,20 @@ describe.each([
       // The client accepts an intercepted payload only when its proof names
       // the source it is showing: the matched (rewritten) source pathname.
       expect(body).toContain(`"sourceMatchedUrl":"${sourceMatchedUrl}"`);
+      if (sourcePage === "tag") {
+        // The source renders with the params a direct request to it gets.
+        expect(body).toContain(`tag=${tag};`);
+      }
     },
     30_000,
   );
+
+  // Static segments match the raw path, as in Next.js, so the rewritten
+  // `/en/caf%C3%A9` does not reach the `café` folder; Next.js serves no page
+  // there either. The source cannot be authorized, so it fails closed.
+  it("does not intercept from an encoded alias of a static source", async () => {
+    if (!server) throw new Error("Interception fixture server did not start");
+    const { body: _body, ...result } = await fetchSoftNavigation(server.baseUrl, "/caf%C3%A9");
+    expect(result).toEqual({ status: 404, modal: false, fullPage: false, source: [] });
+  });
 });

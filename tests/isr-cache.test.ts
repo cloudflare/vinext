@@ -310,15 +310,16 @@ describe("App Router ISR cache key primitives", () => {
     expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
   });
 
-  it("normalizes source context before keying intercepted RSC variants", () => {
+  // The source is matched on its raw segments, so `/%66eed` does not reach a
+  // static `/feed` source and the two can render different source trees.
+  it("keys intercepted RSC variants by the raw source context", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    const encoded = appIsrRscKey("/photos/café", "modal", undefined, "/caf%C3%A9");
-    const decoded = appIsrRscKey("/photos/café", "modal", undefined, "/café");
-    const duplicateSlash = appIsrRscKey("/photos/café", "modal", undefined, "/café//");
+    const encoded = appIsrRscKey("/photos/1", "modal", undefined, "/%66eed");
+    const plain = appIsrRscKey("/photos/1", "modal", undefined, "/feed");
 
-    expect(encoded).toBe(decoded);
-    expect(duplicateSlash).toBe(decoded);
+    expect(encoded).not.toBe(plain);
+    expect(appIsrRscKey("/photos/1", "modal", undefined, "/feed")).toBe(plain);
   });
 
   it("ignores invalid source context before keying intercepted RSC variants", () => {
