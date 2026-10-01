@@ -106,12 +106,12 @@ import {
 import {
   getHybridClientRouteOwnerLoadFailure,
   getLoadedHybridClientRouteOwner,
-  HAS_CLIENT_REWRITES,
   loadHybridClientRouteOwner,
   resolveHybridClientRouteOwnerOrDocument,
 } from "./internal/hybrid-client-route-owner-loader.js";
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 /**
  * Load rewrite-aware hybrid route ownership before navigation becomes

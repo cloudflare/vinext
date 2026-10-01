@@ -6,8 +6,9 @@ import {
 
 type HybridClientRouteOwnerModule = typeof import("./hybrid-client-route-owner.js");
 
-/** False when the build has no client rewrites, so the direct resolver is exact. */
-export const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+// Each module reads this define itself: an imported constant does not fold, so
+// the bundler would keep owner-loading code in builds without client rewrites.
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 let loadedModule: HybridClientRouteOwnerModule | null = null;
 let pendingLoad: Promise<HybridClientRouteOwnerModule | null> | null = null;

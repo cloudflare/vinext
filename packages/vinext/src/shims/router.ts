@@ -59,7 +59,6 @@ import {
   type HybridClientOwner,
 } from "./internal/hybrid-client-route-owner-direct.js";
 import {
-  HAS_CLIENT_REWRITES,
   loadHybridClientRouteOwner,
   resolveHybridClientRouteOwnerOrDocument,
 } from "./internal/hybrid-client-route-owner-loader.js";
@@ -114,6 +113,7 @@ import type { ClientRewrite } from "../client/client-rewrites.js";
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 /** experimental.scrollRestoration from next.config.js, injected by the plugin at build time */
 const __scrollRestoration: boolean = process.env.__NEXT_SCROLL_RESTORATION === "true";
 

@@ -75,7 +75,6 @@ import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js
 import { loadChunk } from "../client/chunk-load-recovery.js";
 import {
   getLoadedHybridClientRouteOwner,
-  HAS_CLIENT_REWRITES,
   loadHybridClientRouteOwner,
   resolveHybridClientRouteOwnerOrDocument,
 } from "./internal/hybrid-client-route-owner-loader.js";
@@ -89,6 +88,7 @@ type NavigateEvent = {
 };
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 type NavigationModule = typeof import("./navigation.js");
 

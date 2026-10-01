@@ -38,11 +38,12 @@ import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { stripBasePath, removeTrailingSlash } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import {
-  HAS_CLIENT_REWRITES,
   loadHybridClientRouteOwner,
   resolveHybridClientRouteOwnerOrDocument,
 } from "./hybrid-client-route-owner-loader.js";
 import { getPagesRouterComponentsMap } from "./pages-router-components.js";
+
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 declare global {
   // oxlint-disable-next-line typescript-eslint/consistent-type-definitions

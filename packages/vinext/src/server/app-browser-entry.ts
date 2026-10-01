@@ -108,7 +108,6 @@ import {
   clearActionHttpFallbackHeadOnCommit,
   syncServerActionHttpFallbackHead,
 } from "./app-browser-action-http-fallback-head.js";
-import { HAS_CLIENT_REWRITES } from "vinext/shims/internal/hybrid-client-route-owner-loader";
 import { createAppBrowserDocumentNavigation } from "./app-browser-document-navigation.js";
 import {
   createNavigationCommitEffect as createNavigationCommitEffectWithDeps,
@@ -294,6 +293,7 @@ const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const IS_STATIC_EXPORT =
   process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export";
 const CLIENT_DEPLOYMENT_VERSION = process.env.__VINEXT_BUILD_ID ?? null;
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 // Static asset hosts cannot attach vinext's compatibility header to `.txt`
 // files. The artifact and client bundle are emitted atomically by one build,
 // so export mode validates the deployment version embedded in the Flight
