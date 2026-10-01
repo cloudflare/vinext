@@ -270,12 +270,31 @@ export function requiresResponseCloseTracking(ctx: UnifiedRequestContext): boole
   );
 }
 
+// Keyed by the body stream rather than the Response so the mark survives the
+// `new Response(response.body, init)` rebuilds the request stage applies to
+// rewrite headers. A body piped through another transform is a new stream and
+// loses the mark.
+const responseStageBodies = new WeakSet<ReadableStream<Uint8Array>>();
+
+/**
+ * Mark a response returned by a response-stage dispatch. Its body is either
+ * replayed from a response cache or produced by a render running under its own
+ * request context, which tracks that render's `after()` work itself, so
+ * nothing pulled from it can register `after()` work in the dispatching
+ * request's context.
+ */
+export function markResponseStageBody(response: Response): void {
+  if (response.body) responseStageBodies.add(response.body);
+}
+
 /**
  * Wrap a response so deferred `after()` callbacks start on stream completion
- * or cancellation. Skipped only when the body is marked fully buffered (see
- * `markFullyBufferedBody`) and nothing is currently registered — that lets
+ * or cancellation. Skipped when nothing is currently registered and the body
+ * is either marked fully buffered (see `markFullyBufferedBody`), which lets
  * the runtime send it with an accurate `Content-Length` instead of chunked
- * transfer encoding.
+ * transfer encoding, or came from a response-stage dispatch (see
+ * `markResponseStageBody`), which spares every dispatched response,
+ * including cache replays, a passthrough stream.
  */
 export function closeAfterResponseWithBody(
   response: Response,
@@ -290,6 +309,14 @@ export function closeAfterResponseWithBody(
   }
 
   if (isFullyBufferedBody(response) && !requiresResponseCloseTracking(ctx)) {
+    return response;
+  }
+
+  if (responseStageBodies.has(response.body) && !requiresResponseCloseTracking(ctx)) {
+    // As with an empty body, no work in this context waits on the body, so
+    // resolve the after-lifecycle now rather than leave a later registration
+    // waiting on a close nothing observes.
+    queueMicrotask(() => void closeAfterResponse(ctx));
     return response;
   }
 

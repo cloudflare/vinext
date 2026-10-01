@@ -33,7 +33,7 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
-import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import { after, type NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
   isMetadataRouteRequestPath,
@@ -41,6 +41,10 @@ import {
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  getRequestContext,
+  type UnifiedRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
@@ -537,6 +541,86 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedRouteHandler).toHaveBeenCalledWith(
       expect.objectContaining({ bypassInterceptionContextCache: true, cleanPathname: "/about" }),
     );
+  });
+
+  it("resolves the after() lifecycle without waiting on a response-stage body when nothing is registered", async () => {
+    let releaseBody!: () => void;
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    let requestContext: UnifiedRequestContext | undefined;
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () => {
+      requestContext = getRequestContext();
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            await bodyGate;
+            controller.enqueue(new TextEncoder().encode("cached page"));
+            controller.close();
+          },
+        }),
+      );
+    });
+    const handler = createHandler();
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    // No passthrough observes the body, so the lifecycle closes before the
+    // still-gated body has produced anything.
+    expect(response.headers.get("x-test-header")).toBe("applied");
+    await vi.waitFor(() => expect(requestContext?.afterContext.responseClosed).toBe(true));
+    releaseBody();
+    await expect(response.text()).resolves.toBe("cached page");
+  });
+
+  it("runs middleware after() work once a response-stage body closes", async () => {
+    let releaseBody!: () => void;
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    let requestContext: UnifiedRequestContext | undefined;
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () => {
+      requestContext = getRequestContext();
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            await bodyGate;
+            controller.enqueue(new TextEncoder().encode("cached page"));
+            controller.close();
+          },
+        }),
+      );
+    });
+    let called = false;
+    const handler = createHandler({
+      async runMiddleware({ cleanPathname }) {
+        after(() => {
+          called = true;
+        });
+        return { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(requestContext?.afterContext.responseClosed).toBe(false);
+    expect(called).toBe(false);
+
+    releaseBody();
+    await expect(response.text()).resolves.toBe("cached page");
+    await vi.waitFor(() => expect(called).toBe(true));
   });
 
   it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {
@@ -1918,6 +2002,45 @@ describe("createAppRscHandler", () => {
       ["Cache-Control", "s-maxage=60"],
     ]);
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+  });
+
+  it("resolves the after() lifecycle without waiting on a hybrid Pages response-stage body", async () => {
+    let releaseBody!: () => void;
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    let requestContext: UnifiedRequestContext | undefined;
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () => {
+      requestContext = getRequestContext();
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            await bodyGate;
+            controller.enqueue(new TextEncoder().encode("pages-stage"));
+            controller.close();
+          },
+        }),
+      );
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page") ?? null,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/pages"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({ kind: "hybrid-pages" });
+    await vi.waitFor(() => expect(requestContext?.afterContext.responseClosed).toBe(true));
+    releaseBody();
+    await expect(response.text()).resolves.toBe("pages-stage");
   });
 
   it("transports matched config cache policy to a hybrid Pages response stage", async () => {

@@ -49,6 +49,7 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  markResponseStageBody,
   preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
@@ -1266,6 +1267,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             stageProps,
             cacheIdentity ? { cache, cacheIdentity } : { cache },
           );
+          markResponseStageBody(response);
           if (stageRequest.method.toUpperCase() === "HEAD" && response.body) {
             await response.body.cancel();
             response = new Response(null, {
@@ -1980,6 +1982,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             },
             { cache },
           );
+          markResponseStageBody(response);
           const policyOwner =
             resourceKind === "page"
               ? consumePagesResponseStagePolicyOwner(response)

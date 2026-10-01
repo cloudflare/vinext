@@ -4970,6 +4970,224 @@ describe("next/server shim", () => {
     await Promise.all(waitUntilCalls);
   });
 
+  it("returns a response-stage body unchanged when no after() work is registered", async () => {
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markResponseStageBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("replayed"));
+        controller.close();
+      },
+    });
+    const dispatched = new Response(body);
+    markResponseStageBody(dispatched);
+    // The request stage rebuilds the dispatched response to rewrite headers.
+    const original = new Response(dispatched.body, {
+      status: 201,
+      headers: { "x-custom": "value" },
+    });
+
+    const response = await runWithRequestContext(requestContext, () =>
+      closeAfterResponseWithBody(original, requestContext),
+    );
+
+    // Same object, not rebuilt through a TransformStream.
+    expect(response).toBe(original);
+    expect(response.body).toBe(body);
+    expect(response.status).toBe(201);
+    expect(response.headers.get("x-custom")).toBe("value");
+    await vi.waitFor(() => expect(requestContext.afterContext.responseClosed).toBe(true));
+    expect(await response.text()).toBe("replayed");
+  });
+
+  it("runs a late after() call in the dispatching context once a response-stage body is returned unwrapped", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      bindRequestContext,
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markResponseStageBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      executionContext: {
+        waitUntil(promise: Promise<unknown>) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+    const original = new Response("replayed");
+    markResponseStageBody(original);
+    let response!: Response;
+    let registerLate!: () => void;
+    let called = false;
+
+    await runWithRequestContext(requestContext, () => {
+      response = closeAfterResponseWithBody(original, requestContext);
+      registerLate = bindRequestContext(() => {
+        after(() => {
+          called = true;
+        });
+      });
+    });
+    expect(response).toBe(original);
+
+    // Nothing observes the unwrapped body closing, so a callback registered
+    // afterwards must still run (and keep the invocation alive) rather than
+    // wait forever on a close that never arrives.
+    await Promise.resolve();
+    registerLate();
+    await vi.waitFor(() => expect(called).toBe(true));
+    expect(waitUntilCalls).toHaveLength(1);
+    await waitUntilCalls[0];
+  });
+
+  it("still wraps a response-stage body when after() is registered before dispatch", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markResponseStageBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const original = new Response("replayed");
+    markResponseStageBody(original);
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(() => {
+        called = true;
+      });
+      response = closeAfterResponseWithBody(original, requestContext);
+    });
+
+    expect(response).not.toBe(original);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+
+    expect(await response.text()).toBe("replayed");
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("still wraps a response-stage body while an after(promise) is pending", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markResponseStageBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    let releasePromise!: () => void;
+    const promiseGate = new Promise<void>((resolve) => {
+      releasePromise = resolve;
+    });
+    const original = new Response("replayed");
+    markResponseStageBody(original);
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, () => {
+      after(
+        (async () => {
+          await promiseGate;
+          after(() => {
+            called = true;
+          });
+        })(),
+      );
+      response = closeAfterResponseWithBody(original, requestContext);
+    });
+
+    expect(response).not.toBe(original);
+    releasePromise();
+    await vi.waitFor(() => expect(requestContext.afterContext.callbacks).toHaveLength(1));
+    expect(called).toBe(false);
+
+    expect(await response.text()).toBe("replayed");
+    await vi.waitFor(() => expect(called).toBe(true));
+  });
+
+  it("wraps a response-stage body the request stage pipes through its own transform", async () => {
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markResponseStageBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const dispatched = new Response("replayed");
+    markResponseStageBody(dispatched);
+    const original = new Response(dispatched.body!.pipeThrough(new TransformStream()));
+
+    const response = await runWithRequestContext(requestContext, () =>
+      closeAfterResponseWithBody(original, requestContext),
+    );
+
+    expect(response).not.toBe(original);
+    expect(await response.text()).toBe("replayed");
+  });
+
+  it("leaves after() work registered lazily by an in-process response-stage render to that render's context", async () => {
+    // In-process dispatches (the response-store adapter, an uncached CDN
+    // response stage) render under their own request context, which wraps its
+    // own body. after() calls made while that body streams belong to the
+    // response stage, so the dispatching context need not observe the close.
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      closeAfterResponseWithBody,
+      createRequestContext,
+      markResponseStageBody,
+      runWithRequestContext,
+    } = await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext();
+    const responseStageContext = createRequestContext();
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let called = false;
+    let response!: Response;
+
+    await runWithRequestContext(requestContext, async () => {
+      const dispatched = await runWithRequestContext(responseStageContext, () => {
+        const body = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            await streamGate;
+            after(() => {
+              called = true;
+            });
+            controller.enqueue(new TextEncoder().encode("rendered"));
+            controller.close();
+          },
+        });
+        return closeAfterResponseWithBody(new Response(body), responseStageContext);
+      });
+      markResponseStageBody(dispatched);
+      response = closeAfterResponseWithBody(dispatched, requestContext);
+      expect(response).toBe(dispatched);
+    });
+
+    releaseStream();
+    await vi.waitFor(() => expect(responseStageContext.afterContext.callbacks).toHaveLength(1));
+    expect(called).toBe(false);
+    expect(requestContext.afterContext.callbacks).toHaveLength(0);
+
+    expect(await response.text()).toBe("rendered");
+    await vi.waitFor(() => expect(called).toBe(true));
+    await responseStageContext.afterContext.completion;
+    expect(requestContext.afterContext.completion).toBeNull();
+  });
+
   it("wraps an unmarked response even with no after() work registered yet", async () => {
     // No fully-buffered marker (e.g. a hand-written Route Handler returning
     // new Response(stream), or a page render whose Suspense-wrapped async
