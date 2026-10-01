@@ -513,6 +513,20 @@ export function filterInternalHeaders(headers: Headers): Headers {
   return filtered;
 }
 
+/**
+ * Whether `headers` carries any header that `filterInternalHeaders` strips.
+ *
+ * Entry points use this to skip the Headers copy and Request clone for the
+ * common request that has nothing to strip. Matching stays case-insensitive
+ * like `filterInternalHeaders`, so both always agree on what is internal.
+ */
+export function hasInternalHeaders(headers: Headers): boolean {
+  for (const key of headers.keys()) {
+    if (STRIPPED_INTERNAL_HEADERS.has(key.toLowerCase())) return true;
+  }
+  return false;
+}
+
 function getRequestCf(request: Request): unknown {
   const cf = Reflect.get(request, "cf");
   return cf === undefined ? undefined : cf;

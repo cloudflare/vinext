@@ -49,6 +49,7 @@ import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-uti
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
+  hasInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
 import {
@@ -245,8 +246,15 @@ async function handleRequest(
 
   // Strip internal headers from inbound requests before any handler or
   // middleware sees them. Must happen before the RSC handler runs.
-  // Builds a new Headers — Request.headers is immutable in Workers.
-  {
+  // Builds a new Headers — Request.headers is immutable in Workers. Most
+  // requests carry nothing to strip, so skip the copy and clone for them. The
+  // prerender secret is not in the stripped set, so a request carrying it must
+  // still be filtered to drop it.
+  if (
+    ctx.isInternalPagesRevalidation ||
+    request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) ||
+    hasInternalHeaders(request.headers)
+  ) {
     // Only prod-server's `createNodeExecutionContext` sets `hostRuntime: "node"`,
     // and it runs after `nodeToWebRequest` verified the payload against the build
     // secret, so that payload is trusted and must survive filtering. A request

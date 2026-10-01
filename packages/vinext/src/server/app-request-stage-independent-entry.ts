@@ -25,6 +25,7 @@ import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-uti
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
+  hasInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
 import {
@@ -157,21 +158,32 @@ async function handleRequest(
     request.headers,
     __prerenderSecret,
   );
-  const filteredHeaders = ctx.isInternalPagesRevalidation
-    ? new Headers(request.headers)
-    : filterInternalHeaders(request.headers);
-  filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
-  filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
-  if (readinessResponse?.status === 204) {
-    const expectedWorkerVersion = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
-    if (expectedWorkerVersion) {
-      // The request stage already authenticated the build capability. Preserve
-      // only the version assertion needed by the independently hosted response
-      // stage; the prerender secret remains confined to this gateway.
-      filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
+  // Most requests carry nothing to strip, so skip the Headers copy and Request
+  // clone for them. The prerender secret is not in the stripped set, so a
+  // request carrying it must still be filtered to drop it. The expected worker
+  // version is itself an internal header, so a request that needs it
+  // re-attached always takes the filtering path.
+  if (
+    ctx.isInternalPagesRevalidation ||
+    request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) ||
+    hasInternalHeaders(request.headers)
+  ) {
+    const filteredHeaders = ctx.isInternalPagesRevalidation
+      ? new Headers(request.headers)
+      : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+    if (readinessResponse?.status === 204) {
+      const expectedWorkerVersion = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
+      if (expectedWorkerVersion) {
+        // The request stage already authenticated the build capability. Preserve
+        // only the version assertion needed by the independently hosted response
+        // stage; the prerender secret remains confined to this gateway.
+        filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
+      }
     }
+    request = cloneRequestWithHeaders(request, filteredHeaders);
   }
-  request = cloneRequestWithHeaders(request, filteredHeaders);
 
   let responseStageDispatched = false;
   const trackedDispatchResponseStage: DispatchAppWorkerResponseStage = (

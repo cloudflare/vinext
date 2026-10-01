@@ -433,6 +433,88 @@ describe("App Router Production server worker entry compatibility", () => {
     }
   });
 
+  it.each([
+    {
+      entryPath: "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+      name: "independent request stage",
+    },
+    { entryPath: "../packages/vinext/src/server/app-router-entry.ts", name: "app router entry" },
+  ])(
+    "$name forwards clean requests as-is and strips spoofed internal headers",
+    async ({ entryPath }) => {
+      // No Next.js test port applies: these Worker entries and headers are vinext-specific.
+      const capturedRequests: Request[] = [];
+      Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
+        capturedRequests.push(request);
+      });
+      let server: Awaited<ReturnType<typeof createServer>> | undefined;
+      try {
+        server = await createServer({
+          appType: "custom",
+          configFile: false,
+          logLevel: "silent",
+          plugins: [workerEntryVirtualModules()],
+          resolve: {
+            alias: {
+              "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+            },
+          },
+          server: { middlewareMode: true },
+        });
+        const entry = (await server.ssrLoadModule(
+          path.resolve(import.meta.dirname, entryPath),
+        )) as {
+          default?: { fetch(request: Request, env: unknown, ctx: unknown): Promise<Response> };
+          handleRequestStage?(
+            request: Request,
+            env: unknown,
+            ctx: unknown,
+            dispatchResponseStage: () => Promise<Response>,
+          ): Promise<Response>;
+        };
+        const handle = (request: Request) =>
+          entry.handleRequestStage
+            ? entry.handleRequestStage(request, undefined, { waitUntil() {} }, async () => {
+                throw new Error("unused");
+              })
+            : entry.default!.fetch(request, undefined, { waitUntil() {} });
+
+        const clean = new Request("https://example.com/page", {
+          headers: { accept: "text/html", cookie: "session=abc" },
+        });
+        const spoofed = new Request("https://example.com/page", {
+          headers: {
+            accept: "text/html",
+            "X-Matched-Path": "/admin",
+            "X-Middleware-Rewrite": "https://example.com/admin",
+            "X-Vinext-Prerender-Secret": "guess",
+            "X-Vinext-Revalidate-Host": "evil.example",
+          },
+        });
+
+        // The secret is not in the stripped header set, so it alone must still
+        // take the filtering path instead of being forwarded as-is.
+        const secretOnly = new Request("https://example.com/page", {
+          headers: { accept: "text/html", [VINEXT_PRERENDER_SECRET_HEADER]: "guess" },
+        });
+
+        expect(await (await handle(clean)).text()).toBe("ok");
+        expect(await (await handle(spoofed)).text()).toBe("ok");
+        expect(await (await handle(secretOnly)).text()).toBe("ok");
+
+        expect(capturedRequests).toHaveLength(3);
+        expect(capturedRequests[0]).toBe(clean);
+        expect(capturedRequests[1]).not.toBe(spoofed);
+        expect([...capturedRequests[1].headers.keys()]).toEqual(["accept"]);
+        expect(capturedRequests[2]).not.toBe(secretOnly);
+        expect([...capturedRequests[2].headers.keys()]).toEqual(["accept"]);
+      } finally {
+        await server?.close();
+        Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+      }
+    },
+  );
+
   it("restores prerender route params only for the server-owned Node context", async () => {
     // No Next.js test port applies: these headers and this Worker boundary are vinext-specific.
     const capturedRequests: Request[] = [];

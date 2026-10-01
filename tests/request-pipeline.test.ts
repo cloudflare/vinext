@@ -7,6 +7,7 @@ import {
   createStaticFileSignal,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
+  hasInternalHeaders,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   hasBasePath,
@@ -1082,6 +1083,39 @@ describe("filterInternalHeaders", () => {
     const headers = new Headers();
     const result = filterInternalHeaders(headers);
     expect([...result.keys()]).toEqual([]);
+  });
+});
+
+describe("hasInternalHeaders", () => {
+  it("is false when nothing would be stripped", () => {
+    expect(hasInternalHeaders(new Headers())).toBe(false);
+    expect(
+      hasInternalHeaders(
+        new Headers({
+          accept: "text/html",
+          cookie: "session=abc",
+          "x-vinext-prerender-secret": "not-stripped-by-the-filter",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([...INTERNAL_HEADERS, ...VINEXT_INTERNAL_HEADERS])(
+    "detects %s in any casing, matching filterInternalHeaders",
+    (name) => {
+      const headers = new Headers({ accept: "text/html", [name.toUpperCase()]: "forged" });
+      expect(hasInternalHeaders(headers)).toBe(true);
+      expect(filterInternalHeaders(headers).has(name)).toBe(false);
+    },
+  );
+
+  it("matches mixed-case keys from Headers-like adapters case-insensitively", () => {
+    // Kept case-insensitive to match filterInternalHeaders for non-native
+    // Headers-like inputs.
+    const headers = {
+      keys: () => ["Accept", "X-Middleware-Rewrite"][Symbol.iterator](),
+    } as unknown as Headers;
+    expect(hasInternalHeaders(headers)).toBe(true);
   });
 });
 

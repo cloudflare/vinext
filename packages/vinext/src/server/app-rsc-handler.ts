@@ -80,7 +80,11 @@ import {
   markAppRscResponseConfigHeadersApplied,
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
-import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
+import {
+  buildNextDataNotFoundResponse,
+  isNextDataPathname,
+  normalizePagesDataRequest,
+} from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import {
   badRequestResponse,
@@ -122,6 +126,7 @@ import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
+  hasInternalHeaders,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
 } from "./request-pipeline.js";
@@ -2601,24 +2606,26 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // from req.headers on ingress, the Worker and production entries filter it,
     // and filterInternalHeaders drops the copy still present in rawHeaders.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
-    const pagesDataUrl = new URL(rawRequest.url);
-    const pagesDataInScope =
-      !options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath);
-    if (pagesDataInScope) {
-      pagesDataUrl.pathname = stripBasePath(pagesDataUrl.pathname, options.basePath);
+    // Only a basePath-relative /_next/data/...json path can normalize to a
+    // Pages data request, so other requests skip building the candidate.
+    let pagesDataCandidate: Request | null = null;
+    if (options.renderPagesFallback) {
+      const pagesDataUrl = new URL(rawRequest.url);
+      if (!options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath)) {
+        pagesDataUrl.pathname = stripBasePath(pagesDataUrl.pathname, options.basePath);
+        if (isNextDataPathname(pagesDataUrl.pathname)) {
+          pagesDataCandidate = cloneRequestWithUrl(rawRequest, pagesDataUrl.toString());
+        }
+      }
     }
-    const pagesDataCandidate = pagesDataInScope
-      ? cloneRequestWithUrl(rawRequest, pagesDataUrl.toString())
+    const pagesDataNormalization = pagesDataCandidate
+      ? normalizePagesDataRequest(
+          pagesDataCandidate,
+          options.buildId,
+          "",
+          typeof options.runMiddleware === "function" && options.trailingSlash,
+        )
       : null;
-    const pagesDataNormalization =
-      options.renderPagesFallback && pagesDataCandidate
-        ? normalizePagesDataRequest(
-            pagesDataCandidate,
-            options.buildId,
-            "",
-            typeof options.runMiddleware === "function" && options.trailingSlash,
-          )
-        : null;
     if (pagesDataNormalization?.notFoundResponse) {
       return pagesDataNormalization.notFoundResponse;
     }
@@ -2649,24 +2656,41 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
           : null;
     const prerenderRouteParamsPayload = trustedPrerenderState?.routeParams ?? null;
     const isTrustedSpeculativePrerender = trustedPrerenderState?.speculative === true;
-    const filteredHeaders = executionContext?.isInternalPagesRevalidation
-      ? new Headers(rawRequest.headers)
-      : filterInternalHeaders(rawRequest.headers);
-    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
-    if (isForwardedActionContext(ctx)) {
-      filteredHeaders.set("x-action-forwarded", "1");
-    }
-    if (mwCtx !== null) {
-      filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
-    }
+    const isForwardedAction = isForwardedActionContext(ctx);
     const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
       prerenderRouteParamsPayload,
     );
-    if (prerenderRouteParamsHeader !== null) {
-      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
-    }
-    if (isTrustedSpeculativePrerender) {
-      filteredHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
+    // The Worker and Node entries have usually filtered this request already.
+    // Reuse it when there is nothing to strip or inject instead of copying the
+    // headers and cloning it a second time. Adapter Request wrappers (srvx's
+    // dev-server NodeRequest reads .get() from the live Node headers but
+    // iterates rawHeaders) are still normalized into a plain Request.
+    let filteredHeaders: Headers | null = null;
+    if (
+      executionContext?.isInternalPagesRevalidation ||
+      isForwardedAction ||
+      mwCtx !== null ||
+      prerenderRouteParamsHeader !== null ||
+      isTrustedSpeculativePrerender ||
+      Object.getPrototypeOf(rawRequest) !== Request.prototype ||
+      hasInternalHeaders(rawRequest.headers)
+    ) {
+      filteredHeaders = executionContext?.isInternalPagesRevalidation
+        ? new Headers(rawRequest.headers)
+        : filterInternalHeaders(rawRequest.headers);
+      filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+      if (isForwardedAction) {
+        filteredHeaders.set("x-action-forwarded", "1");
+      }
+      if (mwCtx !== null) {
+        filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
+      }
+      if (prerenderRouteParamsHeader !== null) {
+        filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+      }
+      if (isTrustedSpeculativePrerender) {
+        filteredHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
+      }
     }
     let appRequest = rawRequest;
     if (pagesDataNormalization?.isDataReq) {
@@ -2674,9 +2698,13 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       appRequestUrl.pathname = addBasePathToPathname(appRequestUrl.pathname, options.basePath);
       appRequest = cloneRequestWithUrl(pagesDataCandidate!, appRequestUrl.toString());
     }
-    const request = cloneRequestWithHeaders(appRequest, filteredHeaders);
+    const request = filteredHeaders
+      ? cloneRequestWithHeaders(appRequest, filteredHeaders)
+      : appRequest;
     const pagesDataRequest = pagesDataNormalization?.isDataReq
-      ? cloneRequestWithHeaders(pagesDataCandidate!, filteredHeaders)
+      ? filteredHeaders
+        ? cloneRequestWithHeaders(pagesDataCandidate!, filteredHeaders)
+        : pagesDataCandidate
       : null;
 
     const headersContext = headersContextFromRequest(request, {

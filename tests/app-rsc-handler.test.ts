@@ -30,9 +30,15 @@ import {
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import {
+  INTERNAL_HEADERS,
+  VINEXT_INTERNAL_HEADERS,
+} from "../packages/vinext/src/server/request-pipeline.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
@@ -7851,6 +7857,179 @@ describe("createAppRscHandler", () => {
         pagesDataRequest: expect.any(Request),
       }),
     );
+  });
+
+  it("reuses an incoming request that has no internal headers to strip", async () => {
+    let dispatchedRequest: Request | undefined;
+    const handler = createHandler({
+      dispatchMatchedPage: async (options) => {
+        dispatchedRequest = options.request;
+        return new Response("page");
+      },
+      renderPagesFallback: async () => null,
+    });
+    const request = new Request("https://example.test/docs/about", {
+      headers: { accept: "text/html", cookie: "session=abc" },
+    });
+
+    const response = await handler(request, null);
+
+    expect(await response.text()).toBe("page");
+    expect(dispatchedRequest).toBe(request);
+  });
+
+  it("marks a clean forwarded Server Action request as forwarded", async () => {
+    // The forwarded request carries no internal headers, so the forwarding
+    // context alone must still route it through header injection.
+    let dispatchedRequest: Request | undefined;
+    const handler = createHandler({
+      dispatchMatchedPage: async (options) => {
+        dispatchedRequest = options.request;
+        return new Response("page");
+      },
+    });
+    const request = new Request("https://example.test/docs/about", {
+      headers: { accept: "text/html" },
+    });
+
+    const response = await handler(request, { actionForwarded: true, waitUntil() {} });
+
+    expect(await response.text()).toBe("page");
+    expect(dispatchedRequest).not.toBe(request);
+    expect(dispatchedRequest!.headers.get("x-action-forwarded")).toBe("1");
+  });
+
+  // The independent request stage strips these headers before handing the
+  // validated state over explicitly, so each must still reach the dispatch.
+  it.each([
+    {
+      name: "route params",
+      state: {
+        routeParams: { routePattern: "/docs/[slug]", params: { slug: "about" } },
+        speculative: false,
+      },
+      expectedHeaders: {
+        [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: encodeURIComponent(
+          JSON.stringify({ routePattern: "/docs/[slug]", params: { slug: "about" } }),
+        ),
+        [VINEXT_PRERENDER_SPECULATIVE_HEADER]: null,
+      },
+    },
+    {
+      name: "speculative flag",
+      state: { routeParams: null, speculative: true },
+      expectedHeaders: {
+        [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: null,
+        [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "1",
+      },
+    },
+  ])(
+    "re-attaches transported prerender $name to a clean request",
+    async ({ state, expectedHeaders }) => {
+      let dispatchedRequest: Request | undefined;
+      const handler = createHandler({
+        dispatchMatchedPage: async (options) => {
+          dispatchedRequest = options.request;
+          return new Response("page");
+        },
+      });
+      const request = new Request("https://example.test/docs/about", {
+        headers: { accept: "text/html" },
+      });
+
+      const response = await handler(request, null, false, undefined, null, state);
+
+      expect(await response.text()).toBe("page");
+      expect(dispatchedRequest).not.toBe(request);
+      for (const [name, value] of Object.entries(expectedHeaders)) {
+        expect(dispatchedRequest!.headers.get(name)).toBe(value);
+      }
+    },
+  );
+
+  it("still normalizes Request subclasses such as runtime adapter wrappers", async () => {
+    // srvx's dev-server NodeRequest reads .get() from live Node headers while
+    // iterating rawHeaders, so it must not be passed through as-is.
+    class AdapterRequest extends Request {}
+    let dispatchedRequest: Request | undefined;
+    const handler = createHandler({
+      dispatchMatchedPage: async (options) => {
+        dispatchedRequest = options.request;
+        return new Response("page");
+      },
+    });
+    const request = new AdapterRequest("https://example.test/docs/about", {
+      headers: { accept: "text/html" },
+    });
+
+    const response = await handler(request, null);
+
+    expect(await response.text()).toBe("page");
+    expect(dispatchedRequest).not.toBe(request);
+    expect(Object.getPrototypeOf(dispatchedRequest)).toBe(Request.prototype);
+    expect(dispatchedRequest!.headers.get("accept")).toBe("text/html");
+  });
+
+  // The forwarded middleware context is read with .get() before filtering and
+  // re-attached by design; its ingress stripping is covered by the entries.
+  it.each(
+    [...INTERNAL_HEADERS, ...VINEXT_INTERNAL_HEADERS].filter(
+      (name) => name !== VINEXT_MW_CTX_HEADER,
+    ),
+  )("still strips a spoofed %s header before dispatch", async (name) => {
+    let dispatchedRequest: Request | undefined;
+    const handler = createHandler({
+      dispatchMatchedPage: async (options) => {
+        dispatchedRequest = options.request;
+        return new Response("page");
+      },
+    });
+    const request = new Request("https://example.test/docs/about", {
+      headers: { accept: "text/html", [name.toUpperCase()]: "forged" },
+    });
+
+    const response = await handler(request, null);
+
+    expect(await response.text()).toBe("page");
+    expect(dispatchedRequest).toBeDefined();
+    expect(dispatchedRequest).not.toBe(request);
+    expect(dispatchedRequest!.headers.has(name)).toBe(false);
+    expect(dispatchedRequest!.headers.get("accept")).toBe("text/html");
+  });
+
+  it("only builds the Pages data candidate for basePath /_next/data paths", async () => {
+    const NativeRequest = globalThis.Request;
+    const constructedUrls: string[] = [];
+    // Count Request constructions without changing Request.prototype, so the
+    // handler still recognizes the incoming request as a plain Request.
+    globalThis.Request = new Proxy(NativeRequest, {
+      construct(target, args: ConstructorParameters<typeof Request>) {
+        const [input] = args;
+        constructedUrls.push(input instanceof NativeRequest ? input.url : String(input));
+        return new target(...args);
+      },
+    });
+    try {
+      const renderPagesFallback = vi.fn(async () => new Response("pages-data"));
+      const handler = createHandler({ matchRoute: () => null, renderPagesFallback });
+      const pageRequest = new NativeRequest("https://example.test/docs/missing");
+      const dataRequest = new NativeRequest(
+        "https://example.test/docs/_next/data/build-id/missing.json",
+      );
+
+      constructedUrls.length = 0;
+      await handler(pageRequest, null);
+      expect(constructedUrls).not.toContain("https://example.test/missing");
+
+      constructedUrls.length = 0;
+      expect(await (await handler(dataRequest, null)).text()).toBe("pages-data");
+      expect(constructedUrls).toContain("https://example.test/_next/data/build-id/missing.json");
+      expect(renderPagesFallback).toHaveBeenLastCalledWith(
+        expect.objectContaining({ pagesDataRequest: expect.any(NativeRequest) }),
+      );
+    } finally {
+      globalThis.Request = NativeRequest;
+    }
   });
 
   it("does not expose forged data headers to App Router middleware", async () => {
