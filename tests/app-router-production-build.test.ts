@@ -132,6 +132,46 @@ function readAllJs(dir: string): string {
   return out;
 }
 
+const HYBRID_ROUTE_OWNER_CHUNK_NAME = "hybrid-client-route-owner";
+const HYBRID_ROUTE_OWNER_LOADER_MESSAGE = "Could not load the link routing script";
+
+/**
+ * Client files that carry the hybrid route owner: a manifest entry or emitted
+ * file named for it, or any `.js` file holding the loader's console message.
+ */
+function findHybridRouteOwnerTraces(clientDir: string): string[] {
+  const traces = new Set<string>();
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8"),
+  ) as Record<string, ClientManifestEntry>;
+  for (const [key, entry] of Object.entries(manifest)) {
+    const labels = [key, entry.file, entry.src, entry.name];
+    if (labels.some((label) => label?.includes(HYBRID_ROUTE_OWNER_CHUNK_NAME))) {
+      traces.add(`manifest entry ${key}`);
+    }
+  }
+
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+        continue;
+      }
+      const relative = toSlash(path.relative(clientDir, full));
+      if (entry.name.includes(HYBRID_ROUTE_OWNER_CHUNK_NAME)) traces.add(`file ${relative}`);
+      if (
+        entry.name.endsWith(".js") &&
+        fs.readFileSync(full, "utf-8").includes(HYBRID_ROUTE_OWNER_LOADER_MESSAGE)
+      ) {
+        traces.add(`loader message in ${relative}`);
+      }
+    }
+  };
+  visit(clientDir);
+  return [...traces].sort();
+}
+
 describe("App Router Production build", () => {
   let fixtureDir: string;
   let outDir: string;
@@ -289,7 +329,7 @@ describe("App Router Production build", () => {
     expect(fs.existsSync(path.join(outDir, "server", "prerendered-routes"))).toBe(false);
   }, 30000);
 
-  it("omits the browser server-action client when the app has no server actions", async () => {
+  it("omits the browser server-action client and the hybrid route owner from an App-only build without client rewrites", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-action-free-client-"));
 
     try {
@@ -326,6 +366,11 @@ describe("App Router Production build", () => {
       const manifest = fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8");
       expect(manifest).not.toContain("app-browser-server-action-client");
       expect(readAllJs(clientDir)).not.toContain("UnrecognizedActionError");
+
+      // This fixture has no pages/ directory and no next.config, so the
+      // __VINEXT_HAS_PAGES_ROUTER and __VINEXT_HAS_CLIENT_REWRITES defines are
+      // both "false" and every module that reads them must fold the owner out.
+      expect(findHybridRouteOwnerTraces(clientDir)).toEqual([]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -875,6 +920,7 @@ export default async function OpenGraphImage() {
 
 describe("lazy vinext runtime chunks in production client builds", () => {
   const cleanupDirs: string[] = [];
+  let appClientDir: string;
   let appGraph: ClientChunkGraph;
   let pagesGraph: ClientChunkGraph;
 
@@ -905,6 +951,7 @@ describe("lazy vinext runtime chunks in production client builds", () => {
     );
     cleanupDirs.push(appFixtureDir, pagesFixtureDir, pagesNodeModules);
 
+    appClientDir = path.join(appFixtureDir, "dist", "client");
     appGraph = await buildClientChunkGraph(appFixtureDir, testCacheDir(appFixtureDir));
     pagesGraph = await buildClientChunkGraph(pagesFixtureDir, testCacheDir(pagesFixtureDir));
   }, 240000);
@@ -952,6 +999,15 @@ describe("lazy vinext runtime chunks in production client builds", () => {
     );
 
     expect(findUnrecoveredLazyRuntimeChunks(pagesGraph.lazyRuntimeChunks)).toEqual([]);
+  });
+
+  it("finds the hybrid route owner in a build that has a Pages Router and client rewrites", () => {
+    // Positive control for the App-only guardrail above: the same predicate
+    // must see the chunk and the loader message where the owner is needed.
+    const traces = findHybridRouteOwnerTraces(appClientDir);
+    expect(traces.some((trace) => trace.startsWith("manifest entry "))).toBe(true);
+    expect(traces.some((trace) => trace.startsWith("file "))).toBe(true);
+    expect(traces.some((trace) => trace.startsWith("loader message in "))).toBe(true);
   });
 
   it("reports the module of a lazy runtime chunk that has no listed recovery", () => {
