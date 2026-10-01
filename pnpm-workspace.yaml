@@ -12,6 +12,7 @@ packages:
   - examples/*
   - tests/fixtures/*
   - "!tests/fixtures/global-not-found-not-present"
+  - "!tests/fixtures/stale-build-recovery"
   - tests/fixtures/ecosystem/*
   - tests/e2e/sentry-nextjs-16-static/fixture
   - benchmarks/vinext
