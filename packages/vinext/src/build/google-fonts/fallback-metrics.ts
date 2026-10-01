@@ -7,7 +7,7 @@
 import { escapeCSSString } from "vinext/shims/font-utils";
 import rawFallbackMetrics from "./fallback-metrics-data.json" with { type: "json" };
 
-type AdjustFontFallback = {
+export type AdjustFontFallback = {
   fallbackFont: string;
   ascentOverride: string;
   descentOverride: string;
