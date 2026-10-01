@@ -25,6 +25,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.resetModules();
   delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.pagesRouter.components")];
   delete (globalThis as { window?: unknown }).window;
@@ -107,6 +108,8 @@ function installFakeBrowserGlobals(
 
 describe("Pages Router records app routes as detected on prefetch", () => {
   beforeEach(() => {
+    // The fake window carries no client rewrites, so the build constant is false.
+    vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
     vi.resetModules();
   });
 
