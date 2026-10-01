@@ -226,18 +226,14 @@ export function performHardNavigationWithLoopGuard(
 
   if (readHardNavigationLoopGuard() === targetHref && currentHref === targetHref) {
     clearHardNavigationLoopGuard();
-    console.error(
-      `[vinext] Prevented repeated hard navigation to ${targetHref}; ` +
-        "leaving the current document in place to avoid a reload loop.",
-    );
+    console.error(`[vinext] Stopped a repeated reload of ${targetHref}. Reload the page manually.`);
     return false;
   }
 
   const guardPersisted = writeHardNavigationLoopGuard(targetHref);
   if (!guardPersisted && currentHref === targetHref) {
     console.error(
-      `[vinext] Hard navigation to ${targetHref} requires a reload-loop guard, ` +
-        "but sessionStorage is unavailable; leaving the current document in place.",
+      `[vinext] Did not reload ${targetHref}: sessionStorage is unavailable. Enable it, or reload the page manually.`,
     );
     return false;
   }

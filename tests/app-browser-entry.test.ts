@@ -4242,7 +4242,9 @@ describe("app browser document navigation", () => {
       vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS);
       await heldRejection;
       expect(documentNavigation.performHardNavigation(pageHref)).toBe(false);
-      expect(error).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledExactlyOnceWith(
+        `[vinext] Stopped a repeated reload of ${pageHref}. Reload the page manually.`,
+      );
       expect(documentNavigation.performHardNavigation(pageHref)).toBe(true);
       expect(assign).toHaveBeenCalledTimes(2);
     });
