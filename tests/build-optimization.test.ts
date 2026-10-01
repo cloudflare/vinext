@@ -1491,6 +1491,118 @@ describe("process.env.NODE_ENV define", () => {
   }, 15000);
 });
 
+describe("process.env.__VINEXT_HAS_PAGES_ROUTER define", () => {
+  const appFiles = {
+    "app/layout.tsx": `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    "app/page.tsx": `export default function Home() { return <h1>Home</h1>; }`,
+  };
+  const contentOnlyPagesFiles = {
+    "pages/en/index.md": "# Home",
+    "pages/en/learn/intro.mdx": "# Intro",
+  };
+
+  async function resolveHasPagesRouterDefine(
+    files: Record<string, string>,
+    command: "build" | "serve",
+    nextConfig = "export default {};",
+  ): Promise<unknown> {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const mainPlugin = vinext().find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    ) as any;
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-has-pages-router-"));
+    try {
+      const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+      await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+      await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), nextConfig);
+      for (const [file, content] of Object.entries(files)) {
+        await fsp.mkdir(path.dirname(path.join(tmpDir, file)), { recursive: true });
+        await fsp.writeFile(path.join(tmpDir, file), content);
+      }
+      const result = await mainPlugin.config({ root: tmpDir, build: {}, plugins: [] }, { command });
+      return result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"];
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  it("is false for App Router builds whose pages/ has no page files", async () => {
+    await expect(
+      resolveHasPagesRouterDefine({ ...appFiles, ...contentOnlyPagesFiles }, "build"),
+    ).resolves.toBe('"false"');
+  }, 15000);
+
+  it.each([
+    ["a nested page", "pages/en/about.tsx"],
+    ["an API route", "pages/api/hello.ts"],
+    ["_app", "pages/_app.tsx"],
+    ["_document", "pages/_document.jsx"],
+    ["_error", "pages/_error.js"],
+  ])(
+    "is true for App Router builds whose pages/ has %s",
+    async (_name, file) => {
+      await expect(
+        resolveHasPagesRouterDefine(
+          { ...appFiles, ...contentOnlyPagesFiles, [file]: "export default function Page() {}" },
+          "build",
+        ),
+      ).resolves.toBe('"true"');
+    },
+    15000,
+  );
+
+  it("counts files matching custom pageExtensions as page files", async () => {
+    await expect(
+      resolveHasPagesRouterDefine(
+        { ...appFiles, ...contentOnlyPagesFiles },
+        "build",
+        `export default { pageExtensions: ["tsx", "mdx"] };`,
+      ),
+    ).resolves.toBe('"true"');
+  }, 15000);
+
+  it.each([
+    [
+      "an external rewrite",
+      `{ source: "/docs/:path*", destination: "https://docs.example.com/:path*" }`,
+    ],
+    [
+      "a server-evaluated rewrite",
+      `{ source: "/:path*", has: [{ type: "cookie", key: "beta" }], destination: "/beta/:path*" }`,
+    ],
+  ])(
+    "keeps the pages/ directory check for App Router builds with %s",
+    async (_name, rewrite) => {
+      await expect(
+        resolveHasPagesRouterDefine(
+          { ...appFiles, ...contentOnlyPagesFiles },
+          "build",
+          `export default { async rewrites() { return [${rewrite}]; } };`,
+        ),
+      ).resolves.toBe('"true"');
+    },
+    15000,
+  );
+
+  it("keeps the pages/ directory check in dev", async () => {
+    await expect(
+      resolveHasPagesRouterDefine({ ...appFiles, ...contentOnlyPagesFiles }, "serve"),
+    ).resolves.toBe('"true"');
+  }, 15000);
+
+  it("keeps the pages/ directory check for Pages Router builds without app/", async () => {
+    await expect(resolveHasPagesRouterDefine(contentOnlyPagesFiles, "build")).resolves.toBe(
+      '"true"',
+    );
+  }, 15000);
+
+  it("is false for App Router builds without pages/", async () => {
+    await expect(resolveHasPagesRouterDefine(appFiles, "build")).resolves.toBe('"false"');
+  }, 15000);
+});
+
 // ─── Treeshake config applied to Vite builds ──────────────────────────────────
 
 // Ported from Next.js: test/unit/next-babel-loader-prod.test.ts

@@ -531,6 +531,50 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
+  it("does not auto-prefetch App route handlers", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/en/blog",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        { canPrefetchLoadingShell: false, patternParts: [":locale", "blog"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          documentOnly: true,
+          patternParts: [":locale", "feed", ":feed"],
+          isDynamic: true,
+        },
+        {
+          canPrefetchLoadingShell: false,
+          documentOnly: true,
+          patternParts: ["rss.xml"],
+          isDynamic: false,
+        },
+      ],
+    };
+
+    try {
+      expect(resolveAutoAppRoutePrefetch("/en/blog").shouldPrefetch).toBe(true);
+      expect(resolveAutoAppRoutePrefetch("/en/feed/blog.xml")).toEqual({
+        cacheForNavigation: false,
+        dynamicStaleTime: "verbatim",
+        fallbackTtl: "static",
+        prefetchShellFirst: false,
+        shouldPrefetch: false,
+      });
+      expect(resolveAutoAppRoutePrefetch("/rss.xml").shouldPrefetch).toBe(false);
+      expect(canAutoPrefetchFullAppRoute("/rss.xml")).toBe(false);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
   it("keeps root-param loading routes shell-only without Cache Components", () => {
     const originalWindow = globalThis.window;
     vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
