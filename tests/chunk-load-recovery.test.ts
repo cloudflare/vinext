@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite-plus/test";
+import {
+  BUILD_PROBE_TIMEOUT_MS,
+  CHUNK_RECOVERY_WINDOW_MS,
+  CHUNK_RETRY_DELAY_MIN_MS,
+  CHUNK_RETRY_DELAY_SPREAD_MS,
+  DOCUMENT_UNLOAD_TIMEOUT_MS,
+} from "../packages/vinext/src/client/chunk-load-recovery.js";
 
 type Recovery = typeof import("../packages/vinext/src/client/chunk-load-recovery.js");
 type Outcome = { onAbandoned(): void; onCanceled(): void };
@@ -8,6 +15,7 @@ const STATE_KEY = Symbol.for("vinext.chunk-recovery");
 const ENTRY = "https://app.test/assets/index-abc123.js";
 const PAGE = "https://app.test/page?x=1";
 const MINUTE = 60_000;
+const RETRY_SETTLED_MS = CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS;
 
 const WARN_REPLACED = "[vinext] This page's build was replaced. Reloading the page.";
 const WARN_PINNED = "[vinext] A script failed to load. Reloading the page.";
@@ -160,7 +168,7 @@ async function retryFailure(ctx: Context): Promise<Error> {
     .mockRejectedValueOnce(new Error("first attempt"))
     .mockRejectedValueOnce(second);
   const settled = ctx.mod.loadChunk(load).catch((error: unknown) => error);
-  await vi.advanceTimersByTimeAsync(600);
+  await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
   expect(await settled).toBe(second);
   return second;
 }
@@ -227,7 +235,7 @@ describe("registration", () => {
     const error = new Error("user loader");
     const load = vi.fn().mockRejectedValue(error);
     const result = ctx.mod.loadChunk(load, { retry: false }).catch(() => undefined);
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
     await result;
 
     await expect(ctx.mod.recoverFromChunkFailure(error)).rejects.toBe(error);
@@ -243,7 +251,7 @@ describe("registration", () => {
     const error = new Error("failed before the entry registered");
     const load = vi.fn().mockRejectedValue(error);
     const result = ctx.mod.loadChunk(load, { retry: false }).catch(() => undefined);
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
     await result;
     ctx.mod.registerChunkRecovery({ entryUrl: ENTRY });
 
@@ -345,7 +353,7 @@ describe("loadChunk", () => {
     const other = new Error("other");
     const load = vi.fn().mockRejectedValue(other);
     const result = track(ctx.mod.loadChunk(load));
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
     expect(result.status).toBe("pending");
 
     ctx.outcome().onCanceled();
@@ -363,7 +371,7 @@ describe("loadChunk", () => {
     const load = vi.fn().mockRejectedValueOnce(new Error("first")).mockResolvedValueOnce("second");
 
     const result = ctx.mod.loadChunk(load);
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
 
     await expect(result).resolves.toBe("second");
     expect(ctx.fetch).not.toHaveBeenCalled();
@@ -378,7 +386,7 @@ describe("loadChunk", () => {
     });
 
     const result = track(ctx.mod.loadChunk(load));
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
 
     expect(result).toEqual({ reason: evaluationError, status: "rejected" });
     expect(load).toHaveBeenCalledTimes(2);
@@ -404,7 +412,7 @@ describe("loadChunk", () => {
     const load = vi.fn().mockRejectedValue(error);
 
     const result = track(ctx.mod.loadChunk(load, { retry: false }));
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
     expect(result).toEqual({ reason: error, status: "rejected" });
     expect(load).toHaveBeenCalledTimes(1);
 
@@ -424,7 +432,7 @@ describe("loadChunk", () => {
     const load = vi.fn().mockRejectedValue("boom");
 
     const result = track(ctx.mod.loadChunk(load));
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
 
     expect(result).toEqual({ reason: "boom", status: "rejected" });
     expect(load).toHaveBeenCalledTimes(2);
@@ -469,7 +477,7 @@ describe("failure registry", () => {
     });
 
     const result = ctx.mod.loadChunk(load).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
     expect(await result).toBe(second);
 
     ctx.fetch.mockResolvedValue(response(200, "text/javascript"));
@@ -489,7 +497,9 @@ describe("build probe", () => {
     ["200 text/javascript", () => response(200, "text/javascript"), "pinned"],
     ["200 application/javascript", () => response(200, "application/javascript"), "pinned"],
     ["200 with no content-type", () => response(200), "pinned"],
+    ["204", () => response(204), "pinned"],
     ["200 text/html", () => response(200, "text/html; charset=utf-8"), "replaced"],
+    ["200 application/json", () => response(200, "application/json"), "replaced"],
     ["401", () => response(401), "replaced"],
     ["403", () => response(403), "replaced"],
     ["404", () => response(404), "replaced"],
@@ -550,7 +560,7 @@ describe("build probe", () => {
     await flush();
 
     expect(result).toEqual({ reason: error, status: "rejected" });
-    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(BUILD_PROBE_TIMEOUT_MS);
     expect(ctx.fetch.mock.calls).toEqual([
       [
         ENTRY,
@@ -705,7 +715,7 @@ describe("recovery decision", () => {
       ctx.navigate();
 
       await recoverDuringNavigation(ctx);
-      await vi.advanceTimersByTimeAsync(9_999);
+      await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS - 1);
       expect(ctx.navigator).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
 
@@ -763,7 +773,7 @@ describe("recovery decision", () => {
     it("stops waiting for a record older than the unload timeout", async () => {
       const ctx = await setup();
       ctx.navigate();
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS);
 
       await recoverDuringNavigation(ctx);
 
@@ -833,7 +843,7 @@ describe("claim", () => {
     ctx.outcome().onAbandoned();
     await flush();
 
-    await vi.advanceTimersByTimeAsync(10 * MINUTE + 1);
+    await vi.advanceTimersByTimeAsync(CHUNK_RECOVERY_WINDOW_MS + 1);
     const now = Date.now();
     void ctx.mod.recoverFromChunkFailure(deployFailure(ctx)).catch(() => undefined);
     await flush();
@@ -889,7 +899,7 @@ describe("claim", () => {
     const recentKey = claimKey("pinned", "https://app.test/recent.js");
     ctx.storage.data.set(
       STORAGE_KEY,
-      JSON.stringify({ [oldKey]: now - 10 * MINUTE - 1, [recentKey]: now - MINUTE }),
+      JSON.stringify({ [oldKey]: now - CHUNK_RECOVERY_WINDOW_MS - 1, [recentKey]: now - MINUTE }),
     );
 
     void ctx.mod.recoverFromChunkFailure(deployFailure(ctx)).catch(() => undefined);
@@ -1095,7 +1105,7 @@ describe("default navigator", () => {
 
   it("reports onCanceled when the navigate event it caused aborts", async () => {
     const { controller, ctx, error, result } = await start();
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS / 2);
     expect(result.status).toBe("pending");
 
     controller.abort();
@@ -1108,7 +1118,7 @@ describe("default navigator", () => {
   it("reports onAbandoned after the unload timeout", async () => {
     const { ctx, error, result } = await start();
     const claimedAt = Date.now();
-    await vi.advanceTimersByTimeAsync(9_999);
+    await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS - 1);
     expect(result.status).toBe("pending");
     await vi.advanceTimersByTimeAsync(1);
 
@@ -1128,7 +1138,7 @@ describe("default navigator", () => {
     const { ctx, error, result } = await start();
     const claimedAt = Date.now();
     pagehide(ctx);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS / 2);
     expect(result.status).toBe("pending");
 
     pageshow(ctx);
@@ -1147,7 +1157,7 @@ describe("default navigator", () => {
     expect(ctx.replace.mock.calls).toEqual([[PAGE]]);
 
     ctx.navigate().abort();
-    await vi.advanceTimersByTimeAsync(9_999);
+    await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS - 1);
     expect(result.status).toBe("pending");
     await vi.advanceTimersByTimeAsync(1);
 
@@ -1167,6 +1177,24 @@ describe("default navigator", () => {
 
     expect(result).toEqual({ reason: error, status: "rejected" });
     expect(readClaims(ctx)).toEqual({});
+  });
+
+  it("reports onAbandoned after the unload timeout when the browser has no Navigation API", async () => {
+    const ctx = await setup({ navigator: false, register: false });
+    Reflect.deleteProperty(ctx.win, "navigation");
+    ctx.mod.registerChunkRecovery({ entryUrl: ENTRY });
+    const error = deployFailure(ctx);
+
+    const result = track(ctx.mod.recoverFromChunkFailure(error));
+    await flush();
+    const claimedAt = Date.now();
+    expect(ctx.replace.mock.calls).toEqual([[PAGE]]);
+    await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS - 1);
+    expect(result.status).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(result).toEqual({ reason: error, status: "rejected" });
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: claimedAt });
   });
 
   it("ignores a navigate event that fires after replace returned", async () => {
@@ -1228,7 +1256,7 @@ describe("loadClientReference", () => {
       .mockRejectedValueOnce(new Error("second"));
 
     const result = track(ctx.mod.loadClientReference(load));
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
 
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
     expect(result.status).toBe("pending");
@@ -1242,7 +1270,7 @@ describe("loadClientReference", () => {
     const load = vi.fn().mockRejectedValueOnce(new Error("first")).mockRejectedValueOnce(second);
 
     const result = track(ctx.mod.loadClientReference(load));
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(RETRY_SETTLED_MS);
 
     expect(result).toEqual({ reason: second, status: "rejected" });
     expect(ctx.navigator).not.toHaveBeenCalled();
@@ -1273,6 +1301,10 @@ describe("toDocumentLoadHref", () => {
     ["a different path", "https://app.test/other#a", "https://app.test/other#a"],
     ["a different query", "https://app.test/page?x=2#a", "https://app.test/page?x=2#a"],
     ["a different path with no fragment", "https://app.test/other", "https://app.test/other"],
+    ["a relative URL for the same page", "/page?x=1#section", "https://app.test/page?x=1"],
+    ["a relative URL with a bare #", "/page?x=1#", "https://app.test/page?x=1"],
+    ["a relative URL for a different path", "/other#a", "/other#a"],
+    ["a relative URL for a different query", "/page?x=2#a", "/page?x=2#a"],
   ])("handles %s", async (_name, target, expected) => {
     const ctx = await setup();
 
