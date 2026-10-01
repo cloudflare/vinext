@@ -90,7 +90,10 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
-import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
+import {
+  createLiveNavigationFetch,
+  shouldRecoverSamePathSearchCommitOnResponseCompletion,
+} from "./app-browser-navigation-response.js";
 import {
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
@@ -2446,6 +2449,26 @@ function bootstrapHydration(
           }
         }
 
+        const liveNavigationFetch = createLiveNavigationFetch(() => {
+          // Produce the client reuse manifest only once prefetch paths did not
+          // satisfy the navigation and a real request is required. Computed
+          // from the nav-start router state so it matches the snapshot the
+          // request would have carried if produced earlier.
+          if (navigationKind === "navigate") {
+            const clientReuseManifestHeader =
+              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
+            if (clientReuseManifestHeader !== null) {
+              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+            }
+          }
+          return fetch(rscUrl, {
+            headers: requestHeaders,
+            credentials: "include",
+            priority: "auto",
+            signal: navigationAbortHandle.signal,
+          });
+        });
+
         // The optimistic shell is intentionally not gated by
         // `shouldBypassNavigationCache`. A same-page search change can still
         // render an optimistic shell from cached route templates before the
@@ -2453,6 +2476,11 @@ function bootstrapHydration(
         // that is always superseded by the authoritative fetch — the same as
         // cross-route navigations — so it never persists stale page content.
         if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
+          // The optimistic shell never satisfies the navigation, so the live
+          // request below always follows it. Issue it before learning
+          // templates (which decodes settled prefetches) so it is in flight
+          // meanwhile. A superseding navigation aborts it via the abort handle.
+          liveNavigationFetch.start();
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
             mountedSlotsHeader,
@@ -2522,23 +2550,7 @@ function bootstrapHydration(
         }
 
         if (!navResponse) {
-          // Produce the client reuse manifest only now that prefetch/optimistic
-          // paths did not satisfy the navigation and a real request is required.
-          // Computed from the nav-start router state so it matches the snapshot
-          // the request would have carried if produced earlier.
-          if (navigationKind === "navigate") {
-            const clientReuseManifestHeader =
-              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
-            if (clientReuseManifestHeader !== null) {
-              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
-            }
-          }
-          navResponse = await fetch(rscUrl, {
-            headers: requestHeaders,
-            credentials: "include",
-            priority: "auto",
-            signal: navigationAbortHandle.signal,
-          });
+          navResponse = await liveNavigationFetch.take();
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
