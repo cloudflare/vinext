@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   NAVIGATION_RUNTIME_KEY,
   getNavigationRuntime,
   hasAppNavigationRuntime,
+  navigateDocument,
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
   type NavigationRuntime,
@@ -163,4 +164,49 @@ describe("navigation runtime contract", () => {
 
     expect(getNavigationRuntime()).toBeNull();
   });
+});
+
+describe("navigateDocument", () => {
+  function installWindow() {
+    const assign = vi.fn();
+    const replace = vi.fn();
+    Reflect.set(globalThis, "window", { location: { assign, replace } });
+    return { assign, replace };
+  }
+
+  it.each([
+    { location: "assign" as const, mode: "push" as const },
+    { location: "replace" as const, mode: "replace" as const },
+  ])("loads the document with location.$location for $mode when no runtime is installed", (c) => {
+    const locations = installWindow();
+
+    navigateDocument("/target", c.mode);
+
+    expect(locations[c.location]).toHaveBeenCalledExactlyOnceWith("/target");
+    expect(locations[c.location === "assign" ? "replace" : "assign"]).not.toHaveBeenCalled();
+  });
+
+  it("loads the document with location when the runtime has no external navigation slot", () => {
+    const locations = installWindow();
+    registerNavigationRuntimeFunctions({ navigate: () => Promise.resolve() });
+
+    navigateDocument("/target", "push");
+
+    expect(locations.assign).toHaveBeenCalledExactlyOnceWith("/target");
+  });
+
+  it.each(["push", "replace"] as const)(
+    "hands a %s document load to the runtime's external navigation",
+    (mode) => {
+      const locations = installWindow();
+      const navigateExternal = vi.fn(() => new Promise<void>(() => {}));
+      registerNavigationRuntimeFunctions({ navigateExternal });
+
+      navigateDocument("/target", mode);
+
+      expect(navigateExternal).toHaveBeenCalledExactlyOnceWith("/target", mode);
+      expect(locations.assign).not.toHaveBeenCalled();
+      expect(locations.replace).not.toHaveBeenCalled();
+    },
+  );
 });

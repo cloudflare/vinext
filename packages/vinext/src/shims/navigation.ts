@@ -15,6 +15,7 @@ import type { Params } from "@vinext/types/next/upstream/dist/server/request/par
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
+  navigateDocument,
   type NavigationRuntimeVisibleCommitMode,
 } from "../client/navigation-runtime.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
@@ -2532,24 +2533,6 @@ function restoreScrollPosition(state: unknown): void {
 }
 
 /**
- * Request a document navigation, preserving push/replace
- * semantics. Used for URLs the App Router cannot serve (Pages-owned
- * targets in a hybrid build) and for catch-all RSC failures.
- */
-function hardNavigateTo(fullHref: string, mode: "push" | "replace"): void {
-  const navigateExternal = getNavigationRuntime()?.functions.navigateExternal;
-  if (navigateExternal) {
-    void navigateExternal(fullHref, mode);
-    return;
-  }
-  if (mode === "replace") {
-    window.location.replace(fullHref);
-  } else {
-    window.location.assign(fullHref);
-  }
-}
-
-/**
  * Reset any link still showing a `useLinkStatus()` pending state that did not
  * initiate the navigation now starting (e.g. a programmatic router.push, a form
  * submit, or a raw history update). A <Link> click registers itself first, so
@@ -2617,7 +2600,7 @@ export async function navigateClientSide(
         return;
       }
 
-      hardNavigateTo(href, mode);
+      navigateDocument(href, mode);
       await new Promise<void>(() => {});
       return;
     }
@@ -2645,7 +2628,7 @@ export async function navigateClientSide(
     if (mode === "push") {
       saveScrollPosition();
     }
-    hardNavigateTo(fullHref, mode);
+    navigateDocument(fullHref, mode);
     await new Promise<void>(() => {});
     return;
   }
@@ -2699,7 +2682,7 @@ export async function navigateClientSide(
       return;
     }
 
-    hardNavigateTo(fullHref, mode);
+    navigateDocument(fullHref, mode);
     await new Promise<void>(() => {});
     return;
   }

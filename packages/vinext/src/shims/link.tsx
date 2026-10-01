@@ -23,6 +23,7 @@ import type { UrlObject } from "node:url";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
+  navigateDocument,
   registerNavigationRuntimeFunctions,
 } from "../client/navigation-runtime.js";
 import { isDangerousScheme, reportBlockedDangerousNavigation } from "./url-safety.js";
@@ -107,14 +108,6 @@ function loadNavigationModule(): Promise<NavigationModule> {
     },
   );
   return navigationModulePromise;
-}
-
-function navigateByDocument(href: string, replace: boolean): void {
-  if (replace) {
-    window.location.replace(href);
-  } else {
-    window.location.assign(href);
-  }
 }
 
 export type LinkProps<_RouteInferType = unknown> = {
@@ -1336,7 +1329,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }
       const hybridOwner = resolveHybridClientRouteOwnerOrDocument(navigateHref, __basePath);
       if (hybridOwner === "pages" || hybridOwner === "document") {
-        navigateByDocument(absoluteFullHref, replace);
+        navigateDocument(absoluteFullHref, replace ? "replace" : "push");
         return;
       }
     }
@@ -1349,7 +1342,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         navigationModule ??= await loadNavigationModule();
       } catch {
         // The user asked to go there: a document load reaches the current build.
-        navigateByDocument(absoluteFullHref, replace);
+        navigateDocument(absoluteFullHref, replace ? "replace" : "push");
         return;
       }
       const { navigateClientSide } = navigationModule;
@@ -1387,10 +1380,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           locale,
           interpolateDynamicRoute: resolvedHref.startsWith("?"),
         },
-        fallback: () => navigateByDocument(absoluteFullHref, replace),
+        fallback: () => navigateDocument(absoluteFullHref, replace ? "replace" : "push"),
       });
     } else {
-      navigateByDocument(absoluteFullHref, replace);
+      navigateDocument(absoluteFullHref, replace ? "replace" : "push");
     }
   };
 

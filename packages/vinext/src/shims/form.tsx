@@ -27,7 +27,7 @@ import {
   type FormHTMLAttributes,
   type ForwardedRef,
 } from "react";
-import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
+import { hasAppNavigationRuntime, navigateDocument } from "../client/navigation-runtime.js";
 import { useMergedRef } from "./use-merged-ref.js";
 import {
   getMountedSlotsHeader,
@@ -455,11 +455,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
           // If the Pages Router cannot load or initialize navigation, use a
           // real document navigation rather than publishing a stale URL via
           // history alone.
-          if (replace) {
-            window.location.replace(url);
-          } else {
-            window.location.assign(url);
-          }
+          navigateDocument(url, replace ? "replace" : "push");
         }
       })();
     }

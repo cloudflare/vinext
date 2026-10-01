@@ -365,6 +365,24 @@ function ensureNavigationRuntimeRscBootstrapForRuntime(
   return rscBootstrap;
 }
 
+/**
+ * Loads `href` as a document. With the App Router installed, its runtime owns
+ * the load so held refreshes and Server Actions are managed; otherwise the
+ * location changes directly.
+ */
+export function navigateDocument(href: string, mode: "push" | "replace"): void {
+  const navigateExternal = getNavigationRuntime()?.functions.navigateExternal;
+  if (navigateExternal) {
+    void navigateExternal(href, mode);
+    return;
+  }
+  if (mode === "replace") {
+    window.location.replace(href);
+  } else {
+    window.location.assign(href);
+  }
+}
+
 export function hasAppNavigationRuntime(): boolean {
   return typeof getNavigationRuntime()?.functions.navigate === "function";
 }

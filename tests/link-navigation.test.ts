@@ -88,6 +88,7 @@ const linkPrefetchRoutes = [
 function createTestNavigationRuntime(
   navigate: unknown,
   routeManifest: RouteManifest | null = null,
+  navigateExternal?: unknown,
 ) {
   return {
     bootstrap: {
@@ -100,6 +101,7 @@ function createTestNavigationRuntime(
         routeId: "route:/current",
       }),
       navigate,
+      ...(navigateExternal === undefined ? {} : { navigateExternal }),
     },
   };
 }
@@ -1506,8 +1508,16 @@ describe("Link when a lazily loaded chunk cannot load", () => {
         this.defaultPrevented = true;
       },
     };
-    const clicking = onClick(event);
-    await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
+    let done = false;
+    const clicking = Promise.resolve(onClick(event)).finally(() => {
+      done = true;
+    });
+    // A cold module load can reject after the first advance, so the retry timer
+    // may not exist yet; keep advancing until the click settles.
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
+      expect(done).toBe(true);
+    });
     await clicking;
     return event;
   }
@@ -1533,6 +1543,38 @@ describe("Link when a lazily loaded chunk cannot load", () => {
         expect(event.defaultPrevented).toBe(true);
         expect(location[method]).toHaveBeenCalledExactlyOnceWith("/target");
         expect(location[method === "assign" ? "replace" : "assign"]).not.toHaveBeenCalled();
+        expect(result.navigate).not.toHaveBeenCalled();
+      } finally {
+        result.restoreNodeEnv();
+      }
+    },
+  );
+
+  it.each([
+    { chunk: "navigation", module: NAVIGATION_MODULE, mode: "push" as const, replace: false },
+    { chunk: "navigation", module: NAVIGATION_MODULE, mode: "replace" as const, replace: true },
+    { chunk: "route owner", module: OWNER_MODULE, mode: "push" as const, replace: false },
+    { chunk: "route owner", module: OWNER_MODULE, mode: "replace" as const, replace: true },
+  ])(
+    "hands the $mode document load to the App Router runtime when the $chunk chunk cannot load",
+    async ({ module, mode, replace }) => {
+      breakChunk(module);
+      const location = createLocation();
+      const navigateExternal = vi.fn(async () => {});
+      const result = await renderIsolatedLink({
+        href: "/target",
+        navigateExternal,
+        nodeEnv: "production",
+        props: { prefetch: false, replace },
+        windowOverrides: { location },
+      });
+
+      try {
+        await clickAndSettle(result.capturedAnchorProps.onClick!);
+
+        expect(navigateExternal).toHaveBeenCalledExactlyOnceWith("/target", mode);
+        expect(location.assign).not.toHaveBeenCalled();
+        expect(location.replace).not.toHaveBeenCalled();
         expect(result.navigate).not.toHaveBeenCalled();
       } finally {
         result.restoreNodeEnv();
@@ -1724,6 +1766,7 @@ describe("Link when a lazily loaded chunk cannot load", () => {
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
+  navigateExternal?: unknown;
   nodeEnv: string;
   props?: Record<string, unknown>;
   requireRef?: boolean;
@@ -1767,7 +1810,11 @@ async function renderIsolatedLink(options: {
   const navigationRuntime =
     options.appNavigation === false
       ? undefined
-      : createTestNavigationRuntime(navigate, options.routeManifest ?? null);
+      : createTestNavigationRuntime(
+          navigate,
+          options.routeManifest ?? null,
+          options.navigateExternal,
+        );
 
   vi.stubGlobal("fetch", fetch);
   vi.stubGlobal("document", {
