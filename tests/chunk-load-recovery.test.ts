@@ -10,7 +10,7 @@ const PAGE = "https://app.test/page?x=1";
 const MINUTE = 60_000;
 
 const WARN_REPLACED = "[vinext] This page's build was replaced. Reloading the page.";
-const WARN_PINNED = "[vinext] A script failed to load and will not be retried. Reloading the page.";
+const WARN_PINNED = "[vinext] A script failed to load. Reloading the page.";
 
 class FakeStorage {
   readonly data = new Map<string, string>();
@@ -281,7 +281,7 @@ describe("loadChunk", () => {
 
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toBe(
-      "[vinext] A vite:preloadError listener handled this script failure, so vinext did not recover.",
+      "[vinext] A vite:preloadError listener handled this script failure.",
     );
     expect(load).toHaveBeenCalledTimes(1);
     await expect(ctx.mod.recoverFromChunkFailure(caught)).rejects.toBe(caught);
@@ -822,7 +822,7 @@ describe("claim", () => {
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
     expect(console.error).toHaveBeenCalledTimes(1);
     expect(vi.mocked(console.error).mock.calls[0][0]).toBe(
-      "[vinext] A script failed to load. Reload the page by hand; if that fails, check the deploy for missing built assets.",
+      "[vinext] A script failed to load. Reload the page; if that fails, check the deploy for missing assets.",
     );
   });
 
