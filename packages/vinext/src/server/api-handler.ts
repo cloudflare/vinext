@@ -209,11 +209,12 @@ function createEdgeApiRequest(
   // Keep this in sync with pages-api-route.ts: preserve the visible incoming
   // pathname while replacing only the resolved query and dynamic params.
   // Dev runs after Vite has stripped its configured basePath, so reconstruct
-  // it here; prod/Workers do this earlier in pages-request-pipeline.ts using
-  // the adapter's hadBasePath state before calling pages-api-route.ts.
+  // it here unless the request arrived outside basePath; prod/Workers do this
+  // earlier in pages-request-pipeline.ts using the adapter's hadBasePath state
+  // before calling pages-api-route.ts.
   const requestUrl = new URL(req.url ?? url, `${proto}://${host}`);
   const basePath = nextConfig?.basePath;
-  if (basePath && !hasBasePath(requestUrl.pathname, basePath)) {
+  if (basePath && !req.__vinextOutsideBasePath && !hasBasePath(requestUrl.pathname, basePath)) {
     requestUrl.pathname = `${basePath}${requestUrl.pathname}`;
   }
   const query = mergeRouteParamsIntoQuery(parseQueryString(url), params);

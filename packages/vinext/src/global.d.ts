@@ -491,6 +491,12 @@ declare module "node:http" {
     __vinextMiddlewareStatus?: number;
     /** Encoded request URL captured before Vite normalizes the pathname. */
     __vinextOriginalEncodedUrl?: string;
+    /**
+     * Set in dev when the request is outside `basePath`. Vite's base
+     * middleware would reject it; vinext routes it instead, applying only
+     * `basePath: false` rules (see `server/dev-base-path.ts`).
+     */
+    __vinextOutsideBasePath?: boolean;
   }
 }
 

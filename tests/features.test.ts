@@ -2033,13 +2033,11 @@ export default function Home() {
     expect(html).toContain("BasePath Home");
   });
 
-  it("GET /app (without trailing slash) returns 404 — Vite base requires trailing slash", async () => {
-    // With Vite's base set to /app/, a bare /app request doesn't match the
-    // base and Vite returns 404. This matches how Vite handles base paths.
-    // Users would typically configure a reverse proxy or Vite's server.origin
-    // to redirect /app → /app/ in production.
+  it("GET /app (without trailing slash) serves the index page", async () => {
+    // Vite's base is /app/, but Next.js serves the index at the bare basePath
+    // without a redirect, so vinext maps /app onto the base root in dev.
     const res = await fetch(`${bpBaseUrl}/app`, { redirect: "manual" });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
   });
 
   it("GET /app/about serves the about page", async () => {
@@ -2278,6 +2276,19 @@ describe("basePath + trailingSlash interaction", () => {
     expect(res.status).toBe(308);
     const location = res.headers.get("location");
     expect(location).toBe("/app/about/");
+  });
+
+  // Next.js adds a built-in basePath -> basePath + "/" redirect for
+  // trailingSlash: true (load-custom-routes.ts).
+  it("GET /app redirects to /app/ with trailingSlash:true", async () => {
+    for (const [pathname, expected] of [
+      ["/app", "/app/"],
+      ["/app?x=1", "/app/?x=1"],
+    ]) {
+      const res = await fetch(`${tsBaseUrl}${pathname}`, { redirect: "manual" });
+      expect(res.status, pathname).toBe(308);
+      expect(res.headers.get("location"), pathname).toBe(expected);
+    }
   });
 
   it("GET /app/about/ serves the about page with trailingSlash:true", async () => {
