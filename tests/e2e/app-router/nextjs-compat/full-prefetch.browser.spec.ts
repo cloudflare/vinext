@@ -70,6 +70,8 @@ export default function HomePage() {
     <Link href="/target" id="full-prefetch-link" prefetch={true}>Target</Link>
     <Link href="/settled-target" id="settled-prefetch-link" prefetch={true}>Settled target</Link>
     <Link href="/no-prefetch-target" id="no-prefetch-link" prefetch={false}>No prefetch target</Link>
+    <Link href="#later" id="hash-link">Later</Link>
+    <Link href="#start" id="hash-start-link">Start</Link>
   </>;
 }
 `,
@@ -246,7 +248,7 @@ test("explicit full prefetch returns page content and shares its pending request
   }
 });
 
-test("only a settled prepared prefetch commits in the initiating click task", async ({ page }) => {
+test("a settled prepared prefetch commits after the initiating click's frame", async ({ page }) => {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-settled-prefetch-"));
   let server: Server | undefined;
 
@@ -286,12 +288,103 @@ test("only a settled prepared prefetch commits in the initiating click task", as
     // Preparation is CPU-local once the full response body settles.
     await page.waitForTimeout(50);
 
+    let settledTargetRequestsAfterClick = 0;
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/settled-target" && url.searchParams.has("_rsc")) {
+        settledTargetRequestsAfterClick += 1;
+      }
+    });
+    // The prepared commit renders synchronously, so it waits for the click's
+    // frame to paint instead of charging the destination render to the
+    // interaction (INP). It still lands by the following frame, without a
+    // network round trip.
     expect(
-      await page.evaluate(() => {
+      await page.evaluate(async () => {
         document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
-        return document.querySelector("#settled-target-content")?.textContent ?? null;
+        const inClickTask = document.querySelector("#settled-target-content")?.textContent ?? null;
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        return {
+          afterNextFrame: document.querySelector("#settled-target-content")?.textContent ?? null,
+          inClickTask,
+        };
       }),
-    ).toBe("Settled prefetch page content");
+    ).toEqual({ afterNextFrame: "Settled prefetch page content", inClickTask: null });
+    expect(settledTargetRequestsAfterClick).toBe(0);
+
+    // A hash-only navigation during that frame is newer intent. It starts no
+    // RSC navigation, so the prepared commit must notice the URL change itself.
+    const resettledFullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/settled-target" &&
+        url.searchParams.has("_rsc") &&
+        response.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await (await resettledFullResponse).finished();
+    await page.waitForTimeout(50);
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
+      document.querySelector<HTMLElement>("#hash-link")?.click();
+    });
+    await page.waitForTimeout(250);
+    const urlAfterHashNavigation = new URL(page.url());
+    expect(`${urlAfterHashNavigation.pathname}${urlAfterHashNavigation.hash}`).toBe("/#later");
+    await expect(page.locator("#settled-target-content")).toHaveCount(0);
+
+    // Hash-only navigations that return to the URL seen before the frame are
+    // still newer intent, so URL equality alone cannot decide the commit.
+    const roundTripFullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/settled-target" &&
+        url.searchParams.has("_rsc") &&
+        response.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await (await roundTripFullResponse).finished();
+    await page.waitForTimeout(50);
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>("#hash-start-link")?.click();
+      document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
+      document.querySelector<HTMLElement>("#hash-link")?.click();
+      document.querySelector<HTMLElement>("#hash-start-link")?.click();
+    });
+    await page.waitForTimeout(250);
+    const urlAfterHashRoundTrip = new URL(page.url());
+    expect(`${urlAfterHashRoundTrip.pathname}${urlAfterHashRoundTrip.hash}`).toBe("/#start");
+    await expect(page.locator("#settled-target-content")).toHaveCount(0);
+
+    // A raw pushState adds a history entry even when a replaceState restores
+    // the starting URL, so it also supersedes the prepared commit.
+    const rawHistoryFullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/settled-target" &&
+        url.searchParams.has("_rsc") &&
+        response.request().headers()["next-router-prefetch"] === undefined
+      );
+    });
+    await page.goto(baseUrl);
+    await waitForAppRouterHydration(page);
+    await (await rawHistoryFullResponse).finished();
+    await page.waitForTimeout(50);
+    await page.evaluate(() => {
+      document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
+      window.history.pushState(null, "", "#later");
+      window.history.replaceState(null, "", "/");
+    });
+    await page.waitForTimeout(250);
+    const urlAfterRawHistoryWrites = new URL(page.url());
+    expect(`${urlAfterRawHistoryWrites.pathname}${urlAfterRawHistoryWrites.hash}`).toBe("/");
+    await expect(page.locator("#settled-target-content")).toHaveCount(0);
 
     await page.goto(baseUrl);
     await waitForAppRouterHydration(page);
