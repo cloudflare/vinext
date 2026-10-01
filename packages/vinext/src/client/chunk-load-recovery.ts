@@ -31,7 +31,6 @@ type State = {
   immediate: boolean;
   listening: boolean;
   navigator: ChunkRecoveryNavigator | null;
-  onPageshow: Set<(persisted: boolean) => void>;
   pending: { at: number; signal: AbortSignal } | null;
   recovery: { errors: Set<object>; promise: Promise<never> } | null;
   // A failed loader that retried and failed again with a new error maps to true
@@ -58,7 +57,6 @@ function getState(): State {
     immediate: true,
     listening: false,
     navigator: null,
-    onPageshow: new Set(),
     pending: null,
     recovery: null,
     registry: new WeakMap(),
@@ -81,13 +79,9 @@ function forget(state: State, error: unknown): void {
 // A discarded document never settles; a bfcache-restored one resumes at pageshow.
 function resumeWhenShown(state: State): Promise<void> {
   if (!state.unloading) return Promise.resolve();
-  return new Promise((resolve) => {
-    const resume = () => {
-      state.onPageshow.delete(resume);
-      resolve();
-    };
-    state.onPageshow.add(resume);
-  });
+  return new Promise((resolve) =>
+    window.addEventListener("pageshow", () => resolve(), { once: true }),
+  );
 }
 
 function getNavigation(): NavigationApi | undefined {
@@ -103,10 +97,9 @@ export function registerChunkRecovery(options: { entryUrl: string | null }): voi
   window.addEventListener("pagehide", () => {
     state.unloading = true;
   });
-  window.addEventListener("pageshow", (event) => {
+  window.addEventListener("pageshow", () => {
     state.unloading = false;
     state.pending = null;
-    for (const notify of state.onPageshow) notify((event as PageTransitionEvent).persisted);
   });
   getNavigation()?.addEventListener("navigate", (event) => {
     if (event.destination.sameDocument || event.downloadRequest !== null) return;
@@ -224,18 +217,22 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
 
   return new Promise<never>((_, reject) => {
     let done = false;
+    const listening = new AbortController();
     const finish = (keepClaim: boolean, deregister = true) => {
       if (done) return;
       done = true;
-      state.onPageshow.delete(onShown);
+      listening.abort();
       if (!keepClaim) release(claimKey);
       if (deregister) for (const joined of errors) state.registry.delete(joined);
       reject(error);
     };
-    const onShown = (persisted: boolean) => {
-      if (persisted) finish(true);
-    };
-    state.onPageshow.add(onShown);
+    window.addEventListener(
+      "pageshow",
+      (event) => {
+        if (event.persisted) finish(true);
+      },
+      { signal: listening.signal },
+    );
 
     const started = (state.navigator ?? defaultNavigator)({
       onAbandoned: () => finish(true),
@@ -271,21 +268,17 @@ async function probeBuild(entryUrl: string | null): Promise<"replaced" | "live" 
   }
 }
 
-function waitForNavigation(
-  state: State,
-  signal: AbortSignal | undefined,
-  ms: number,
-): Promise<void> {
+function waitForNavigation(signal: AbortSignal | undefined, ms: number): Promise<void> {
   return new Promise((resolve) => {
+    const listening = new AbortController();
     const resume = () => {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", resume);
-      state.onPageshow.delete(resume);
+      listening.abort();
       resolve();
     };
     const timer = setTimeout(resume, ms);
-    signal?.addEventListener("abort", resume);
-    state.onPageshow.add(resume);
+    signal?.addEventListener("abort", resume, { signal: listening.signal });
+    window.addEventListener("pageshow", resume, { signal: listening.signal });
   });
 }
 
@@ -293,7 +286,7 @@ async function settlePendingNavigation(state: State): Promise<void> {
   const pending = state.pending;
   if (pending === null || pending.signal.aborted) return;
   const remaining = DOCUMENT_UNLOAD_TIMEOUT_MS - (Date.now() - pending.at);
-  if (remaining > 0) await waitForNavigation(state, pending.signal, remaining);
+  if (remaining > 0) await waitForNavigation(pending.signal, remaining);
 }
 
 function readClaims(storage: Storage, now: number): Claims {
@@ -352,7 +345,7 @@ const defaultNavigator: ChunkRecoveryNavigator = (outcome) => {
     else outcome.onAbandoned();
   };
   if (signal?.aborted) settle();
-  else void waitForNavigation(state, signal, DOCUMENT_UNLOAD_TIMEOUT_MS).then(settle);
+  else void waitForNavigation(signal, DOCUMENT_UNLOAD_TIMEOUT_MS).then(settle);
   return true;
 };
 

@@ -1124,6 +1124,20 @@ describe("default navigator", () => {
     expect(result.status).toBe("pending");
   });
 
+  it("reports onAbandoned when the page is shown again after pagehide", async () => {
+    const { ctx, error, result } = await start();
+    const claimedAt = Date.now();
+    pagehide(ctx);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(result.status).toBe("pending");
+
+    pageshow(ctx);
+    await flush();
+
+    expect(result).toEqual({ reason: error, status: "rejected" });
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: claimedAt });
+  });
+
   it("reports onAbandoned after the unload timeout when replace fired no navigate event", async () => {
     const ctx = await setup({ navigator: false });
     const error = deployFailure(ctx);
