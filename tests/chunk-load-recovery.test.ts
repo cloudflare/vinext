@@ -965,7 +965,7 @@ describe("settling", () => {
     await expect(ctx.mod.recoverFromChunkFailure(error)).rejects.toBe(error);
 
     expect(readClaims(ctx)).toEqual({});
-    expect(console.error).toHaveBeenCalledTimes(1);
+    expect(console.error).not.toHaveBeenCalled();
     expect(console.warn).not.toHaveBeenCalled();
   });
 

@@ -238,12 +238,8 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
       onAbandoned: () => finish(true),
       onCanceled: () => finish(false),
     });
-    if (started) {
-      console.warn(WARNINGS[verdict]);
-    } else {
-      console.error(REFUSED_MESSAGE);
-      finish(false, false);
-    }
+    if (started) console.warn(WARNINGS[verdict]);
+    else finish(false, false);
   });
 }
 
