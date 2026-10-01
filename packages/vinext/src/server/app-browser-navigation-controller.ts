@@ -60,7 +60,10 @@ export type PendingBrowserRouterState = {
 export type NavigationPayloadOutcome = "committed" | "no-commit" | "hard-navigate";
 export type HardNavigationMode = "assign" | "replace";
 
-type BrowserNavigationCommitEffect = (deferNotifications?: boolean) => void;
+type BrowserNavigationCommitEffect = (
+  deferNotifications: boolean,
+  releaseSnapshot: boolean,
+) => void;
 
 type BrowserNavigationCommitEffectFactory = (options: {
   activeRoutePaths: readonly string[];
@@ -484,7 +487,7 @@ export function createAppBrowserNavigationController(
 
   function queuePrePaintNavigationEffect(
     renderId: number,
-    effect: (() => void) | null,
+    effect: BrowserNavigationCommitEffect | null,
     ownsSnapshot: boolean,
   ): void {
     if (!effect) {
@@ -514,7 +517,7 @@ export function createAppBrowserNavigationController(
 
       pendingNavigationPrePaintEffects.delete(id);
       if (id === upToRenderId) {
-        effect(deferNotifications);
+        effect(deferNotifications, ownsSnapshot);
       } else if (ownsSnapshot) {
         // Superseded navigations still need to balance the snapshot counter.
         commitClientNavigationStateImpl(undefined, {

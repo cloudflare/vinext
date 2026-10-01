@@ -4605,7 +4605,6 @@ describe("app browser navigation controller", () => {
                 navId,
                 params: {},
                 previousNextUrl: null,
-                releaseSnapshot: false,
               });
             },
             startedNavigationId: navId,
@@ -4726,9 +4725,9 @@ describe("app browser navigation controller", () => {
     }
 
     it("writes history and commits client state for the current navigation", () => {
-      const { deps, effect } = createEffectHarness({ releaseSnapshot: false });
+      const { deps, effect } = createEffectHarness();
 
-      effect(true);
+      effect(true, false);
 
       expect(deps.commitNavigationHistory).toHaveBeenCalledTimes(1);
       expect(deps.clearNavigationFailureTarget).toHaveBeenCalledWith("https://example.com/next");
@@ -4738,11 +4737,22 @@ describe("app browser navigation controller", () => {
       });
     });
 
+    it("commits the current navigation with the snapshot ownership the caller passes", () => {
+      const { deps, effect } = createEffectHarness();
+
+      effect(false, true);
+
+      expect(deps.commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(4, {
+        deferNotifications: false,
+        releaseSnapshot: true,
+      });
+    });
+
     it("releases the snapshot of a superseded navigation without touching history", () => {
       const { deps, effect, supersede } = createEffectHarness();
       supersede();
 
-      effect(true);
+      effect(true, true);
 
       expect(deps.commitNavigationHistory).not.toHaveBeenCalled();
       expect(deps.commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
@@ -4752,10 +4762,10 @@ describe("app browser navigation controller", () => {
     });
 
     it("keeps the counter untouched when a superseded effect never activated a snapshot", () => {
-      const { deps, effect, supersede } = createEffectHarness({ releaseSnapshot: false });
+      const { deps, effect, supersede } = createEffectHarness();
       supersede();
 
-      effect();
+      effect(false, false);
 
       expect(deps.commitNavigationHistory).not.toHaveBeenCalled();
       expect(deps.commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
@@ -4872,7 +4882,6 @@ describe("app browser navigation controller", () => {
                     navId: startedNavigationId,
                     params: {},
                     previousNextUrl: null,
-                    releaseSnapshot: false,
                   },
                   {
                     clearNavigationFailureTarget: () => {},

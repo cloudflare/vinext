@@ -22,20 +22,19 @@ export type NavigationCommitEffectOptions = {
   navId: number;
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
-  /** False when the effect's render never activated a navigation snapshot. */
-  releaseSnapshot?: boolean;
   targetHistoryIndex?: number | null;
 };
 
 /**
  * Builds the pre-paint effect that writes history and commits client navigation
- * state for one render. A superseded effect still balances the snapshot
- * counter, but only when its render activated a snapshot.
+ * state for one render. The caller passes whether the render activated a
+ * navigation snapshot, so a superseded effect balances the snapshot counter
+ * only when it should.
  */
 export function createNavigationCommitEffect(
   options: NavigationCommitEffectOptions,
   deps: NavigationCommitEffectDeps,
-): (deferNotifications?: boolean) => void {
+): (deferNotifications: boolean, releaseSnapshot: boolean) => void {
   const {
     activeRoutePaths,
     bfcacheIds,
@@ -44,18 +43,14 @@ export function createNavigationCommitEffect(
     navId,
     params,
     previousNextUrl,
-    releaseSnapshot,
     targetHistoryIndex,
   } = options;
 
-  return (deferNotifications = false) => {
+  return (deferNotifications, releaseSnapshot) => {
     if (!deps.isCurrentNavigation(navId)) {
       // Superseded before commit: balance the active snapshot counter without
       // clearing pendingPathname ownership.
-      deps.commitClientNavigationState(undefined, {
-        deferNotifications,
-        releaseSnapshot: releaseSnapshot !== false,
-      });
+      deps.commitClientNavigationState(undefined, { deferNotifications, releaseSnapshot });
       return;
     }
 

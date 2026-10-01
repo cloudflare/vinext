@@ -790,7 +790,7 @@ type ActionInitiationSnapshot = ReturnType<typeof createActionInitiationSnapshot
 
 function createNavigationCommitEffect(
   options: NavigationCommitEffectOptions,
-): (deferNotifications?: boolean) => void {
+): ReturnType<typeof createNavigationCommitEffectWithDeps> {
   return createNavigationCommitEffectWithDeps(options, {
     clearNavigationFailureTarget: clearAppNavigationFailureTarget,
     commitClientNavigationState,
@@ -984,7 +984,6 @@ async function commitSameUrlNavigatePayload(
                 params: state.navigationSnapshot.params,
                 previousNextUrl: state.previousNextUrl,
                 targetHistoryIndex: queueLifecycle.previous!.traversalIntent?.targetHistoryIndex,
-                releaseSnapshot: false,
               })
           : undefined,
         scrollIntent: queueLifecycle?.previous?.scrollIntent,
