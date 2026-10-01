@@ -13,9 +13,9 @@ export type LazyRuntimeChunkRecovery = {
 };
 
 const APP_PREFETCH_RECOVERY =
-  "App prefetch path: Link logs the failure and never navigates for it; a click loads through the AR-4 navigation loader, which falls back to a document navigation";
+  "App prefetch path: Link logs the failure and never navigates for it; a click that needs the module falls back to a document navigation to the link's URL";
 const CLIENT_REFERENCE_RECOVERY =
-  "AR-2 client-reference loader: a hydration failure recovers at once, a later failure recovers through the root error callbacks";
+  "Client component loader: a failure before the App Router's first commit loads a new document at once; a later failure is recorded and recovers when React reports the render error through the root error callbacks";
 const PAGES_NAVIGATION_RECOVERY =
   "Pages navigation: a failed import ends in a document navigation to the requested URL";
 
@@ -45,14 +45,14 @@ export const LAZY_RUNTIME_CHUNK_RECOVERY: readonly LazyRuntimeChunkRecovery[] = 
   {
     module: "shims/internal/hybrid-client-route-owner",
     recovery:
-      "AR-3 shared loader: a failed load resolves to null and every caller navigates by document",
+      "Shared route owner loader: a failed load resolves to null and every caller navigates by document",
   },
   { module: "shims/layout-segment-context", recovery: CLIENT_REFERENCE_RECOVERY },
   { module: "shims/link", recovery: CLIENT_REFERENCE_RECOVERY },
   {
     module: "shims/navigation",
     recovery:
-      "AR-4 navigation loader: a click falls back to a document navigation, a prefetch logs the failure and never navigates",
+      "Lazy only in Pages documents, where Link never loads it (the App entry imports it statically)",
   },
   {
     module: "shims/router",
