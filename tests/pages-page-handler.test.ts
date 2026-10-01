@@ -458,6 +458,44 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(body).toHaveProperty("pageProps");
   });
 
+  // Ported from Next.js:
+  // packages/next/src/server/lib/match-next-data-pathname.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/match-next-data-pathname.test.ts
+  //
+  // Next.js matches this route with `{ sensitive: true }` (vercel/next.js#99481).
+  // This is the response-level half of that contract: the handler is shared by
+  // the dev server, the Node production server and the Worker entry, so a case
+  // variant must land on the ordinary page-matching path — 404 HTML, never a
+  // `_next/data` JSON envelope, even when the buildId segment is correct.
+  it("does not serve a case-variant data URL as a JSON envelope", async () => {
+    const matchedUrls: string[] = [];
+    const routes = [makeRoute("/about")];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: routes,
+        matchRoute: (url, r) => {
+          matchedUrls.push(url);
+          const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+
+    for (const dataUrl of [
+      "/_NEXT/data/test-build-id/about.json",
+      "/_next/DATA/test-build-id/about.json",
+      "/_NeXt/DaTa/test-build-id/about.json",
+    ]) {
+      matchedUrls.length = 0;
+      const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).not.toContain("application/json");
+      // Routed as an ordinary pathname, not normalized to the page path.
+      expect(matchedUrls).toEqual([dataUrl]);
+    }
+  });
+
   it("preserves staged Set-Cookie values separately on Pages data responses", async () => {
     const stagedHeaders = new Headers();
     stagedHeaders.append("Set-Cookie", "middleware=one; Path=/");
