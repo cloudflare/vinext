@@ -101,14 +101,36 @@ function prepareWorkspace(fixtureDir: string, out: string | undefined): string {
   symlinkSync(join(REPO_ROOT, "node_modules"), join(base, "node_modules"), "dir");
 
   const fixtureModules = join(fixtureDir, "node_modules");
+  const workspaceModules = join(workspace, "node_modules");
+  mkdirSync(workspaceModules);
   if (existsSync(fixtureModules)) {
-    mkdirSync(join(workspace, "node_modules"));
     for (const name of readdirSync(fixtureModules)) {
       if (name === ".bin" || name === ".vite") continue;
-      symlinkSync(join(fixtureModules, name), join(workspace, "node_modules", name));
+      symlinkSync(join(fixtureModules, name), join(workspaceModules, name));
     }
   }
+  linkLocalPackages(workspace, workspaceModules);
   return workspace;
+}
+
+/**
+ * Fixtures can ship a package as a direct subdirectory (a folder with its own
+ * package.json) that app code imports by name. Link each one into node_modules
+ * under its package name unless the fixture's node_modules already provides it.
+ */
+function linkLocalPackages(workspace: string, workspaceModules: string): void {
+  for (const entry of readdirSync(workspace, { withFileTypes: true })) {
+    const manifestPath = join(workspace, entry.name, "package.json");
+    if (!entry.isDirectory() || entry.name === "node_modules" || !existsSync(manifestPath))
+      continue;
+
+    const { name } = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: string };
+    if (!name) continue;
+    const linkPath = join(workspaceModules, name);
+    if (existsSync(linkPath)) continue;
+    mkdirSync(dirname(linkPath), { recursive: true });
+    symlinkSync(join(workspace, entry.name), linkPath, "dir");
+  }
 }
 
 async function buildWithVinextSource(workspace: string) {
@@ -129,12 +151,17 @@ async function buildWithVinextSource(workspace: string) {
   });
   try {
     const { default: vinext } = (await runner.import(join(VINEXT_SRC, "index.ts"))) as {
-      default: (options: { appDir: string }) => PluginOption;
+      default: () => PluginOption;
     };
+    // Without `appDir`, vinext detects app/ and pages/ (or src/app and
+    // src/pages) from the working directory when the plugin is created, as it
+    // does under `vite build` run inside the project. An explicit `appDir`
+    // would pin the base directory to the project root and skip the src/ layout.
+    process.chdir(workspace);
     const builder = await createBuilder({
       root: workspace,
       configFile: false,
-      plugins: [vinext({ appDir: workspace })],
+      plugins: [vinext()],
       logLevel: "info",
     });
     await builder.buildApp();
