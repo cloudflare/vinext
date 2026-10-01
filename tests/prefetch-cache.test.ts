@@ -2776,13 +2776,14 @@ describe("prefetch of a response from another build", () => {
     rscUrl: string,
     compatibilityId: string | null,
     prepareSnapshot: () => Promise<never>,
+    options?: { onInvalidate: () => void },
   ): Promise<PrefetchCacheEntry | undefined> {
     prefetchRscResponse(
       rscUrl,
       Promise.resolve(flightResponse(compatibilityId)),
       null,
       null,
-      undefined,
+      options,
       { prepareSnapshot },
     );
     const entry = getPrefetchCache().get(rscUrl);
@@ -2814,7 +2815,31 @@ describe("prefetch of a response from another build", () => {
     // Template learning reads only settled entries that hold a snapshot
     // (`isSettledPrefetchCacheEntry` in app-browser-entry.ts); this one is neither.
     expect(entry?.snapshot).toBeUndefined();
-    expect(entry?.outcome).not.toBe("cache-seeded");
+    expect(entry?.outcome).toEqual("declined");
+  });
+
+  it("invalidates the entry when its freshness window ends, like any settled entry", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", CLIENT_BUILD);
+      const rscUrl = "/stale-build?_rsc=a";
+      const onInvalidate = vi.fn();
+
+      await prefetchDirectly(
+        rscUrl,
+        "server-build",
+        vi.fn(async () => ({}) as never),
+        { onInvalidate },
+      );
+      expect(onInvalidate).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(PREFETCH_CACHE_TTL + 1_000);
+
+      expect(onInvalidate).toHaveBeenCalledOnce();
+      expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a snapshot-free entry so the same href is not fetched again", async () => {

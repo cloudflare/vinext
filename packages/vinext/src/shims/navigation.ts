@@ -346,7 +346,7 @@ export type PrefetchCacheEntry = {
   mountedSlotsHeader?: string | null;
   onInvalidateCallbacks?: Set<() => void>;
   optimisticRouteShell?: boolean;
-  outcome: "pending" | "cache-seeded";
+  outcome: "pending" | "cache-seeded" | "declined";
   snapshot?: CachedRscResponse;
   cacheKeys?: Set<string>;
   /** The queue-scheduled request, so a consuming navigation can promote it. */
@@ -1084,7 +1084,7 @@ function attachPrefetchInvalidationToEntry(
 ): void {
   if (onInvalidate === undefined) return;
   addPrefetchInvalidationCallback(entry, onInvalidate);
-  if (entry.outcome === "cache-seeded") {
+  if (entry.outcome !== "pending") {
     schedulePrefetchInvalidation(cacheKey, entry);
   }
 }
@@ -1537,6 +1537,7 @@ export function prefetchRscResponse(
           // template learning decodes it. A click fetches its own response and
           // reaches the compatibility decision with that one.
           entry.expiresAt = expiresAt;
+          entry.outcome = "declined";
           return;
         }
         const previousSize = getPrefetchCacheEntrySize(entry);
@@ -1569,10 +1570,8 @@ export function prefetchRscResponse(
       entry.pending = undefined;
       // Nothing left to promote, and holding it would pin the settled Response.
       entry.fetchPromise = undefined;
-      if (entry.snapshot) {
-        entry.outcome = "cache-seeded";
-        schedulePrefetchInvalidation(cacheKey, entry);
-      }
+      if (entry.snapshot) entry.outcome = "cache-seeded";
+      if (entry.outcome !== "pending") schedulePrefetchInvalidation(cacheKey, entry);
     });
 
   // Insert the new entry before evicting. FIFO evicts from the front of the
