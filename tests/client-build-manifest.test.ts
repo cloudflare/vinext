@@ -135,6 +135,60 @@ describe("client build manifest helpers", () => {
     );
   });
 
+  it("finds hash-only client entries by manifest source and chunk name", async () => {
+    const manifestPath = path.join(clientDir, ".vite", "manifest.json");
+    await fsp.writeFile(
+      manifestPath,
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/chunks/Cq1x9Ab2.js",
+          name: "index",
+          src: "virtual:vinext-app-browser-entry",
+          isEntry: true,
+        },
+        "entry-b": {
+          file: "_next/static/chunks/Df3k8Lm0.js",
+          name: "vinext-client-entry",
+          isEntry: true,
+        },
+      }),
+    );
+
+    const manifest = readClientBuildManifest(manifestPath)!;
+
+    expect(manifest["virtual:vinext-app-browser-entry"]).toMatchObject({
+      name: "index",
+      src: "virtual:vinext-app-browser-entry",
+    });
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/chunks/Df3k8Lm0.js",
+    );
+    expect(
+      findClientEntryFileFromManifest({ app: manifest["virtual:vinext-app-browser-entry"] }, "/"),
+    ).toBe("_next/static/chunks/Cq1x9Ab2.js");
+  });
+
+  it("prefers any entry's manifest identity over another entry's file name", () => {
+    const manifest = {
+      "virtual:vinext-app-browser-entry": {
+        file: "_next/static/chunks/vinext-client-entry/index-Cq1x9Ab2.js",
+        name: "index",
+        src: "virtual:vinext-app-browser-entry",
+        isEntry: true,
+      },
+      "virtual:vinext-client-entry": {
+        file: "_next/static/chunks/vinext-client-entry/index-Df3k8Lm0.js",
+        name: "index",
+        src: "virtual:vinext-client-entry",
+        isEntry: true,
+      },
+    };
+
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/chunks/vinext-client-entry/index-Df3k8Lm0.js",
+    );
+  });
+
   it("reads vinext's entry manifest for hashed client entry names", async () => {
     await fsp.writeFile(
       path.join(clientDir, VINEXT_CLIENT_ENTRY_MANIFEST),
@@ -422,6 +476,42 @@ describe("computeClientRuntimeMetadata", () => {
         LazyComponent: ["_next/static/lazy-ghi789.js", "_next/static/lazy-jkl012.css"],
       },
     });
+  });
+
+  it("collects shared Pages chunks by chunk name for hash-only file names", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-client-entry": {
+          file: "_next/static/chunks/Df3k8Lm0.js",
+          name: "vinext-client-entry",
+          src: "virtual:vinext-client-entry",
+          isEntry: true,
+          imports: ["_framework.js", "_vinext.js"],
+        },
+        "_framework.js": { file: "_next/static/chunks/Fr4m3w0k.js", name: "framework" },
+        "_vinext.js": {
+          file: "_next/static/chunks/V1n3xt00.js",
+          name: "vinext",
+          css: ["_next/static/css/V1n3xt00.css"],
+        },
+        "pages/about.tsx": { file: "_next/static/chunks/Ab0ut000.js", name: "about" },
+      }),
+    );
+
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/docs/",
+      assetPrefix: "",
+      includeClientEntry: "pages-client-entry",
+    });
+
+    expect(result.clientEntryFile).toBe("docs/_next/static/chunks/Df3k8Lm0.js");
+    expect(result.sharedChunks).toEqual([
+      "docs/_next/static/chunks/Df3k8Lm0.js",
+      "docs/_next/static/chunks/Fr4m3w0k.js",
+      "docs/_next/static/chunks/V1n3xt00.js",
+    ]);
   });
 
   it("computes App Router bootstrap module preinitialization from the browser entry imports", async () => {

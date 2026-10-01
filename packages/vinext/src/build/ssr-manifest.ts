@@ -1,10 +1,18 @@
 import fs from "node:fs";
 import path, { toSlash } from "pathslash";
-import { collapseDuplicateBase, manifestFileWithBase } from "../utils/manifest-paths.js";
+import {
+  collapseDuplicateBase,
+  isSharedClientChunkName,
+  manifestFileWithBase,
+  SSR_MANIFEST_SHARED_CHUNKS_KEY,
+} from "../utils/manifest-paths.js";
 
 export type BundleBackfillChunk = {
   type: "chunk";
   fileName: string;
+  name?: string;
+  isEntry?: boolean;
+  facadeModuleId?: string | null;
   imports?: string[];
   modules?: Record<string, unknown>;
   viteMetadata?: {
@@ -98,6 +106,7 @@ export function augmentSsrManifestFromBundle(
   base = "/",
 ): Record<string, string[]> {
   const nextManifest = {} as Record<string, Set<string>>;
+  const sharedChunkFiles = new Set<string>();
 
   for (const [key, files] of Object.entries(ssrManifest)) {
     const normalizedKey = normalizeManifestModuleId(key, root);
@@ -110,6 +119,13 @@ export function augmentSsrManifestFromBundle(
   for (const item of Object.values(bundle)) {
     if (item.type !== "chunk") continue;
     const chunk = item as BundleBackfillChunk;
+
+    if (
+      chunk.fileName.endsWith(".js") &&
+      isSharedClientChunkName(chunk.name, chunk.isEntry ? chunk.facadeModuleId : null)
+    ) {
+      sharedChunkFiles.add(manifestFileWithBase(chunk.fileName, base));
+    }
 
     const files = new Set<string>();
     files.add(manifestFileWithBase(chunk.fileName, base));
@@ -132,6 +148,10 @@ export function augmentSsrManifestFromBundle(
         nextManifest[key].add(file);
       }
     }
+  }
+
+  if (sharedChunkFiles.size > 0) {
+    nextManifest[SSR_MANIFEST_SHARED_CHUNKS_KEY] = sharedChunkFiles;
   }
 
   return Object.fromEntries(
