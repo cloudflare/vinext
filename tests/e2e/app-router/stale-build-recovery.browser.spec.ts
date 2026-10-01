@@ -3,7 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { createBuilder } from "vite";
 import { waitForAppRouterHydration, waitForHydration } from "../helpers";
 import {
@@ -448,6 +448,21 @@ async function detectModuleRefetch(
   return { ...outcomes, requests };
 }
 
+let refetchDetection: Promise<boolean> | undefined;
+
+/** Runs the engine probe once per worker, on its own page, because the answer depends only on the browser. */
+function engineRefetchesFailedModules(context: BrowserContext): Promise<boolean> {
+  refetchDetection ??= (async () => {
+    const detection = await context.newPage();
+    try {
+      return (await detectModuleRefetch(detection)).second === "ok";
+    } finally {
+      await detection.close();
+    }
+  })();
+  return refetchDetection;
+}
+
 test.describe("engine detection", () => {
   test("a failed module import is either kept or fetched again, and the probe can tell", async ({
     browser,
@@ -800,10 +815,7 @@ test.describe("a live build with a chunk that fails to load", () => {
     context,
     page,
   }) => {
-    const detection = await context.newPage();
-    const { second } = await detectModuleRefetch(detection);
-    await detection.close();
-    const refetches = second === "ok";
+    const refetches = await engineRefetchesFailedModules(context);
 
     const tab = await openTab(page, "/");
     cutNextResponses(await findChunkPath("A", { marker: "CLIENT_WIDGET_MARKER" }));
@@ -823,11 +835,9 @@ test.describe("a live build with a chunk that fails to load", () => {
     context,
     page,
   }) => {
-    const detection = await context.newPage();
-    const { second } = await detectModuleRefetch(detection);
-    await detection.close();
+    const refetches = await engineRefetchesFailedModules(context);
     test.fixme(
-      second !== "ok" && browserName === "webkit",
+      !refetches && browserName === "webkit",
       "WebKit serves the failed module again after location.replace to the same URL; see the T5 report",
     );
 
