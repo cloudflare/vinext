@@ -35,21 +35,6 @@ export function isServerActionResult<TRoot>(
   return !!value && typeof value === "object" && ("returnValue" in value || "root" in value);
 }
 
-export function shouldClearClientNavigationCachesForServerActionResult<TRoot>(
-  result: AppBrowserServerActionResult<TRoot> | TRoot,
-  revalidation: ServerActionRevalidationKind = "none",
-): boolean {
-  if (revalidation !== "none") {
-    return true;
-  }
-
-  if (!isServerActionResult<TRoot>(result)) {
-    return true;
-  }
-
-  return result.root !== undefined;
-}
-
 export function parseServerActionRevalidationHeader(
   headers: Pick<Headers, "get">,
 ): ServerActionRevalidationKind {
@@ -90,14 +75,6 @@ function createServerActionHttpFallbackError(status: number): (Error & { digest:
 
 export function normalizeServerActionThrownValue(data: unknown, responseStatus: number): unknown {
   return createServerActionHttpFallbackError(responseStatus) ?? data;
-}
-
-export function shouldSyncServerActionHttpFallbackHead<TRoot>(
-  result: AppBrowserServerActionResult<TRoot> | TRoot,
-): boolean {
-  if (!isServerActionResult<TRoot>(result) || result.root !== undefined) return false;
-
-  return result.returnValue?.ok !== false;
 }
 
 export async function readInvalidServerActionResponseError(

@@ -22,8 +22,6 @@ import {
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
   resolveServerActionOperationLane,
-  shouldClearClientNavigationCachesForServerActionResult,
-  shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
 import { RSC_FORM_STATE_GLOBAL } from "../packages/vinext/src/client/browser-globals.js";
@@ -1179,23 +1177,6 @@ describe("app browser entry navigation scheduling", () => {
     }
   });
 
-  it("lets thrown action HTTP fallbacks own their boundary robots metadata", () => {
-    expect(
-      shouldSyncServerActionHttpFallbackHead({
-        returnValue: { ok: false, data: new Error("sanitized") },
-      }),
-    ).toBe(false);
-    expect(shouldSyncServerActionHttpFallbackHead({ returnValue: { ok: true, data: null } })).toBe(
-      true,
-    );
-    expect(
-      shouldSyncServerActionHttpFallbackHead({
-        root: { __route: "/current" },
-        returnValue: { ok: false, data: new Error("sanitized") },
-      }),
-    ).toBe(false);
-  });
-
   it("preserves ordinary server action errors for 500 responses", () => {
     const error = new Error("sanitized action failure");
 
@@ -1449,41 +1430,6 @@ describe("app browser entry navigation scheduling", () => {
     expect(snapshot.navigationId).toBe(42);
     expect(snapshot.path).toBe("/a?tab=1");
     expect(snapshot.routerState).toBe(routerState);
-  });
-
-  it("keeps client navigation caches for no-root server action results", () => {
-    expect(
-      shouldClearClientNavigationCachesForServerActionResult({
-        returnValue: { ok: true, data: "action-result" },
-      }),
-    ).toBe(false);
-    expect(
-      shouldClearClientNavigationCachesForServerActionResult({
-        root: createResolvedElements("route:/settings", "/"),
-        returnValue: { ok: true, data: "action-result" },
-      }),
-    ).toBe(true);
-    expect(
-      shouldClearClientNavigationCachesForServerActionResult(
-        createResolvedElements("route:/settings", "/"),
-      ),
-    ).toBe(true);
-    expect(
-      shouldClearClientNavigationCachesForServerActionResult(
-        {
-          returnValue: { ok: true, data: "action-result" },
-        },
-        "staticAndDynamic",
-      ),
-    ).toBe(true);
-    expect(
-      shouldClearClientNavigationCachesForServerActionResult(
-        {
-          returnValue: { ok: true, data: "action-result" },
-        },
-        "dynamicOnly",
-      ),
-    ).toBe(true);
   });
 
   it("schedules discarded action refreshes only for revalidated actions", () => {

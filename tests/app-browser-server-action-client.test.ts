@@ -11,6 +11,7 @@ import {
 import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   ACTION_REDIRECT_HEADER,
+  ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REVALIDATED_HEADER,
   NEXTJS_ACTION_NOT_FOUND_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
@@ -112,6 +113,57 @@ describe("app browser server action client", () => {
       "none",
     );
     expect(performHardNavigation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["303", 303],
+    ["307", 307],
+    [null, 307],
+    ["", 307],
+    ["see-other", 307],
+  ])("reports redirect status header %j as status %i", async (statusHeader, expectedStatus) => {
+    const headers = new Headers({
+      [ACTION_REDIRECT_HEADER]: "/target",
+      "content-type": "text/x-component",
+    });
+    if (statusHeader !== null) headers.set(ACTION_REDIRECT_STATUS_HEADER, statusHeader);
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("flight", { headers })));
+    vi.mocked(createFromFetch).mockResolvedValueOnce(
+      AppElementsWire.createMetadataEntries({
+        interception: null,
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/")],
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/target", null),
+        slotBindings: [],
+      }),
+    );
+
+    await expect(
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          performHardNavigation: vi.fn(),
+          renderRedirectPayload: vi.fn(),
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ digest: `NEXT_REDIRECT;push;/target;${expectedStatus};` });
   });
 
   it("uses the action state captured when the action started", async () => {
@@ -486,6 +538,103 @@ describe("app browser server action client", () => {
     expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
   });
+
+  it("clears client navigation caches when an unrevalidated action returns a tree", async () => {
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response("flight", { headers: { "content-type": "text/x-component" } }),
+        ),
+    );
+    vi.mocked(createFromFetch).mockResolvedValueOnce({
+      root: AppElementsWire.createMetadataEntries({
+        interception: null,
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/")],
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/source", null),
+        slotBindings: [],
+      }),
+      returnValue: { ok: true, data: "action-result" },
+    });
+    const clearClientNavigationCaches = vi.fn();
+
+    await invokeClientServerAction(
+      "action-id",
+      [],
+      createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      }),
+      {
+        basePath: "",
+        clearClientNavigationCaches,
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      },
+    );
+
+    expect(clearClientNavigationCaches).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { ok: true, expectedStatus: 404 },
+    { ok: false, expectedStatus: null },
+  ])(
+    "syncs the 404 marker for a tree-less result only when the action did not throw (ok=$ok)",
+    async ({ ok, expectedStatus }) => {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response("flight", {
+            headers: { "content-type": "text/x-component" },
+            status: 404,
+          }),
+        ),
+      );
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok, data: new Error("action boom") },
+      });
+      const syncServerActionHttpFallbackHead = vi.fn();
+
+      await invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          performHardNavigation: vi.fn(),
+          renderRedirectPayload: vi.fn(),
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead,
+        },
+      ).catch(() => undefined);
+
+      expect(syncServerActionHttpFallbackHead).toHaveBeenCalledExactlyOnceWith(expectedStatus);
+    },
+  );
 
   it("throws the action error without committing when the action failed", async () => {
     const routerState = createActionTestRouterState();

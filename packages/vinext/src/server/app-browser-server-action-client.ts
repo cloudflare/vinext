@@ -11,8 +11,6 @@ import {
   normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
-  shouldClearClientNavigationCachesForServerActionResult,
-  shouldSyncServerActionHttpFallbackHead,
   type AppBrowserServerActionResult,
   type ServerActionRevalidationKind,
 } from "./app-browser-action-result.js";
@@ -111,11 +109,11 @@ function resolveActionRedirectTarget(
     performHardNavigation(redirectUrl.href);
     return null;
   }
-  const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
+  const status = parseInt(response.headers.get(ACTION_REDIRECT_STATUS_HEADER) ?? "", 10);
   return {
     href: redirectUrl.href,
     type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
-    status: statusHeader ? parseInt(statusHeader, 10) : 307,
+    status: Number.isNaN(status) ? 307 : status,
     // The target's own render, which a rewrite may give another query.
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
       response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
@@ -241,10 +239,8 @@ export async function invokeClientServerAction(
     Promise.resolve(flightResponse),
     { temporaryReferences },
   );
-  if (
-    revalidation === "none" &&
-    shouldClearClientNavigationCachesForServerActionResult(result, revalidation)
-  ) {
+  const rendersTree = !isServerActionResult(result) || result.root !== undefined;
+  if (revalidation === "none" && rendersTree) {
     deps.clearClientNavigationCaches();
   }
 
@@ -271,14 +267,15 @@ export async function invokeClientServerAction(
   // A re-rendered tree carries its own robots metadata, so the marker only
   // clears when that tree becomes visible. Other results change no tree and
   // write at once.
-  const rendersTree = !isServerActionResult(result) || result.root !== undefined;
   const commitHooks =
     ownsMarker && rendersTree
       ? { onCommitted: () => deps.syncServerActionHttpFallbackHead(null) }
       : undefined;
   if (ownsMarker && !rendersTree) {
     deps.syncServerActionHttpFallbackHead(
-      shouldSyncServerActionHttpFallbackHead(result) ? fetchResponse.status : null,
+      isServerActionResult(result) && result.returnValue?.ok !== false
+        ? fetchResponse.status
+        : null,
     );
   }
   // A rewrite on the POST can re-render the page with another query.
