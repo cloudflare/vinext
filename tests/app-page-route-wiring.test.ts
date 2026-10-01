@@ -607,6 +607,18 @@ describe("app page route wiring helpers", () => {
     expect(body).toContain("<title>generated page</title>");
   });
 
+  it("renders generated metadata in the head without a User-Agent when the configured rule matches it", async () => {
+    // `htmlLimitedBots: /.*/` disables streaming metadata. Cache regenerations
+    // send no User-Agent, and their output is served to every visitor.
+    const html = await buildGeneratedMetadataRouteHtml("", ".*");
+    const head = readDocumentSection(html, "head");
+    const body = readDocumentSection(html, "body");
+
+    expect(head).toContain("<title>generated page</title>");
+    expect(head).toContain('rel="canonical" href="https://example.com/generated"');
+    expect(body).not.toContain("<title>generated page</title>");
+  });
+
   it("renders generated metadata in the head for default html-limited bots", async () => {
     // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts

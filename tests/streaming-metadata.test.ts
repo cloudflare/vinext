@@ -34,4 +34,15 @@ describe("streaming metadata bot matching", () => {
     // A user-provided htmlLimitedBots config still replaces the default list.
     expect(shouldServeStreamingMetadata("meta-externalagent/1.1", "Minibot")).toBe(true);
   });
+
+  it("applies a configured html-limited rule to requests without a User-Agent", () => {
+    // Deliberate divergence from Next.js, which always streams metadata when the
+    // User-Agent is empty. Cache regenerations (the Workers Response Store's
+    // replayed requests) send none, and `htmlLimitedBots: /.*/` must cover them.
+    expect(shouldServeStreamingMetadata("", ".*")).toBe(false);
+    expect(shouldServeStreamingMetadata("", "Minibot")).toBe(true);
+    // Without a configured rule, an empty User-Agent still streams.
+    expect(shouldServeStreamingMetadata("", undefined)).toBe(true);
+    expect(shouldServeStreamingMetadata("", "")).toBe(true);
+  });
 });
