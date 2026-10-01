@@ -88,6 +88,8 @@ type BrowserNavigationControllerDeps = {
   basePath?: string;
   commitClientNavigationState?: typeof commitClientNavigationState;
   performHardNavigation?: (href: string, mode?: HardNavigationMode) => boolean;
+  /** Called once a hard navigation has started a document load. */
+  onHardNavigation?: () => void;
   getRouteManifest?: () => RouteManifest | null;
   syncHistoryStatePreviousNextUrl?: (
     previousNextUrl: string | null,
@@ -120,11 +122,15 @@ type BrowserNavigationPayloadOptions = {
 };
 
 type BrowserNavigationController = {
-  beginNavigation(): number;
+  beginNavigation(options?: { refresh?: boolean }): number;
   getActiveNavigationId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
+  isLatestNonRefreshNavigation(navId: number): boolean;
+  /** A refresh that commits a redirect, or a Server Action redirect that commits
+   * under a refresh's id, leaves the page, like a navigation. */
+  markNonRefreshNavigation(navId: number): void;
   performHardNavigation(href: string, mode?: HardNavigationMode): boolean;
   waitForBrowserRouterStateReady(): Promise<void>;
   attachBrowserRouterState(
@@ -277,7 +283,20 @@ export function createAppBrowserNavigationController(
   const basePath = deps.basePath ?? "";
   const commitClientNavigationStateImpl =
     deps.commitClientNavigationState ?? commitClientNavigationState;
-  const performHardNavigation = deps.performHardNavigation ?? performHardNavigationWithLoopGuard;
+  const performHardNavigationImpl =
+    deps.performHardNavigation ?? performHardNavigationWithLoopGuard;
+  const performHardNavigation = (
+    ...args: Parameters<typeof performHardNavigationImpl>
+  ): boolean => {
+    const didNavigate = performHardNavigationImpl(...args);
+    if (didNavigate) {
+      // The page is leaving, so a scroll restore still running for an earlier
+      // navigation stops, even when a refresh started the load.
+      latestNonRefreshNavigationId = activeNavigationId;
+      deps.onHardNavigation?.();
+    }
+    return didNavigate;
+  };
   const getRouteManifest = deps.getRouteManifest ?? (() => null);
   const syncHistoryStatePreviousNextUrl = deps.syncHistoryStatePreviousNextUrl ?? (() => {});
 
@@ -295,6 +314,7 @@ export function createAppBrowserNavigationController(
   // and causing hooks to prefer stale snapshot values indefinitely.
   let nextNavigationRenderId = 0;
   let activeNavigationId = 0;
+  let latestNonRefreshNavigationId = 0;
   let pendingUserNavigationId: number | null = null;
   let pendingUserNavigationLane: OperationLane | null = null;
   let latestHmrUpdateId = 0;
@@ -352,12 +372,15 @@ export function createAppBrowserNavigationController(
     resolveReady?.();
   }
 
-  function beginNavigation(): number {
+  function beginNavigation(options?: { refresh?: boolean }): number {
     // User navigation owns the next visible result. Revoke any HMR payload
     // already suspended on RSC resolution so it cannot commit first and make
     // the still-current navigation look stale by advancing visible state.
     latestHmrUpdateId += 1;
     activeNavigationId += 1;
+    if (!options?.refresh) {
+      latestNonRefreshNavigationId = activeNavigationId;
+    }
     pendingUserNavigationId = activeNavigationId;
     pendingUserNavigationLane = null;
     return activeNavigationId;
@@ -378,6 +401,25 @@ export function createAppBrowserNavigationController(
 
   function isCurrentNavigation(navId: number): boolean {
     return navId === activeNavigationId;
+  }
+
+  /**
+   * Whether navId is the latest navigation that is not a refresh. A refresh
+   * keeps the scroll position (Next.js refreshes with
+   * ScrollBehavior.NoScroll), so it does not supersede scroll work such as a
+   * back/forward navigation's scroll restoration.
+   */
+  function isLatestNonRefreshNavigation(navId: number): boolean {
+    return navId === latestNonRefreshNavigationId;
+  }
+
+  function markNonRefreshNavigation(navId: number): void {
+    // Ids only grow, so this never takes over from a newer navigation that is
+    // not a refresh; a newer refresh (one started on mount, say) does not
+    // count.
+    if (navId > latestNonRefreshNavigationId) {
+      latestNonRefreshNavigationId = navId;
+    }
   }
 
   function beginPendingBrowserRouterState(): PendingBrowserRouterState {
@@ -1042,6 +1084,8 @@ export function createAppBrowserNavigationController(
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
+    isLatestNonRefreshNavigation,
+    markNonRefreshNavigation,
     performHardNavigation,
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,

@@ -73,6 +73,8 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
+  /** router.refresh(): runs now, or once the navigation in flight settles. */
+  refresh?: () => void;
   getPrefetchRouterState?: () => NavigationRuntimePrefetchRouterState | null;
   /**
    * Called at the start of every App Router navigation so the <Link> shim can
@@ -143,6 +145,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "refresh")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRouterState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&

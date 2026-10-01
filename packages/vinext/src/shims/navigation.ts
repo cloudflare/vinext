@@ -2820,22 +2820,20 @@ const _appRouter: AppRouterInstance = {
   },
   refresh(): void {
     if (isServer) return;
-    // Drop cached RSC payloads for every previously-visited / prefetched route
-    // before re-fetching. Next.js's refresh-reducer invalidates the entire
+    const functions = getNavigationRuntime()?.functions;
+    // A refresh drops cached RSC payloads for every previously-visited /
+    // prefetched route. Next.js's refresh-reducer invalidates the entire
     // segment cache (refresh-reducer.ts → invalidateSegmentCacheEntries), so
     // without this, a stale cached payload for a sibling route (e.g. a page
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
-    getNavigationRuntime()?.functions.clearNavigationCaches?.();
-    if (hasScheduledAppRouterNavigation()) return;
-    // Re-fetch the current page's RSC stream
-    const rscNavigate = getNavigationRuntime()?.functions.navigate;
-    if (rscNavigate) {
-      const navigate = () => {
-        void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true);
-      };
-      React.startTransition(navigate);
+    if (hasScheduledAppRouterNavigation()) {
+      functions?.clearNavigationCaches?.();
+      return;
     }
+    // Re-fetch the current page's RSC stream. The runtime invalidates the
+    // caches when the refresh runs, which waits for a navigation in flight.
+    functions?.refresh?.();
   },
   prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);
