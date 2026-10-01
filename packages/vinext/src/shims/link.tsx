@@ -283,6 +283,15 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
 // Prefetching infrastructure
 // ---------------------------------------------------------------------------
 
+function fetchAppPrefetch(url: string, init: RequestInit): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    credentials: "include",
+    // @ts-expect-error — purpose is a valid fetch option in some browsers
+    purpose: "prefetch",
+  });
+}
+
 /**
  * Prefetch a URL for faster navigation.
  *
@@ -488,15 +497,7 @@ function prefetchUrl(
         }
         const fetchFullRscPayload = () =>
           scheduleAppPrefetchFetch(
-            (signal) =>
-              fetch(rscUrl, {
-                headers,
-                credentials: "include",
-                priority,
-                signal,
-                // @ts-expect-error — purpose is a valid fetch option in some browsers
-                purpose: "prefetch",
-              }),
+            (signal) => fetchAppPrefetch(rscUrl, { headers, priority, signal }),
             priority,
           );
         const fetchLoadingShellForReuse = async (): Promise<void> => {
@@ -520,14 +521,7 @@ function prefetchUrl(
               shellRscUrl,
               scheduleAppPrefetchFetch(
                 (signal) =>
-                  fetch(shellRscUrl, {
-                    headers: shellHeaders,
-                    credentials: "include",
-                    priority,
-                    signal,
-                    // @ts-expect-error — purpose is a valid fetch option in some browsers
-                    purpose: "prefetch",
-                  }),
+                  fetchAppPrefetch(shellRscUrl, { headers: shellHeaders, priority, signal }),
                 priority,
               ),
               interceptionContext,
@@ -555,13 +549,10 @@ function prefetchUrl(
             probeHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
           }
           const probeRscUrl = await createRscRequestUrl(fullHref, probeHeaders);
-          return fetch(probeRscUrl, {
+          return fetchAppPrefetch(probeRscUrl, {
             method: "HEAD",
             headers: probeHeaders,
-            credentials: "include",
             priority,
-            // @ts-expect-error — purpose is a valid fetch option in some browsers
-            purpose: "prefetch",
           });
         };
         const hasExactNavigationCacheEntry =
@@ -621,13 +612,10 @@ function prefetchUrl(
                   fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
                     scheduleAppPrefetchFetch(
                       (signal) =>
-                        fetch(routeTreeRscUrl, {
+                        fetchAppPrefetch(routeTreeRscUrl, {
                           headers: routeTreeHeaders,
-                          credentials: "include",
                           priority,
                           signal,
-                          // @ts-expect-error — purpose is a valid fetch option in some browsers
-                          purpose: "prefetch",
                         }),
                       priority,
                     ),
@@ -950,6 +938,16 @@ function resolveConcreteRouteHref(href: string, as: string | undefined): string 
   return projection?.href || null;
 }
 
+function mergeAnchorRef(
+  internalRef: React.RefObject<HTMLAnchorElement | null>,
+  externalRef: React.Ref<HTMLAnchorElement> | undefined,
+  node: HTMLAnchorElement | null,
+): void {
+  internalRef.current = node;
+  if (typeof externalRef === "function") externalRef(node);
+  else if (externalRef) externalRef.current = node;
+}
+
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   {
     href,
@@ -1085,12 +1083,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   });
 
   const setRefs = useCallback(
-    (node: HTMLAnchorElement | null) => {
-      internalRef.current = node;
-      if (typeof forwardedRef === "function") forwardedRef(node);
-      else if (forwardedRef)
-        (forwardedRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
-    },
+    (node: HTMLAnchorElement | null) => mergeAnchorRef(internalRef, forwardedRef, node),
     [forwardedRef],
   );
 
@@ -1423,14 +1416,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }>;
       const childOnClick = child.props.onClick;
       const childRef = child.props.ref;
-      const setDangerousRefs = (node: HTMLAnchorElement | null): void => {
-        internalRef.current = node;
-        if (typeof childRef === "function") {
-          childRef(node);
-        } else if (childRef) {
-          (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
-        }
-      };
+      const setDangerousRefs = (node: HTMLAnchorElement | null): void =>
+        mergeAnchorRef(internalRef, childRef, node);
       // Next.js also clones the legacy child and merges its ref during render.
       // oxlint-disable-next-line react/refs -- preserve the Next.js legacy Link contract
       const dangerousChild = React.cloneElement(child, {
@@ -1504,14 +1491,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // `ref` is a regular prop on the element. Merge with our intersection
     // observer ref via `setRefs` so prefetching still works.
     const childRef = childPropsExisting.ref;
-    const setLegacyRefs = (node: HTMLAnchorElement | null): void => {
-      internalRef.current = node;
-      if (typeof childRef === "function") {
-        childRef(node);
-      } else if (childRef) {
-        (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
-      }
-    };
+    const setLegacyRefs = (node: HTMLAnchorElement | null): void =>
+      mergeAnchorRef(internalRef, childRef, node);
     const clonedProps: Record<string, unknown> = {
       ref: setLegacyRefs,
       onClick: (event: MouseEvent<HTMLAnchorElement>) => {
