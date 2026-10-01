@@ -72,7 +72,6 @@ import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-
 import { normalizeRouterHref, resolvePagesRouterHref } from "./internal/normalize-router-href.js";
 import { formatUrlObject, formatUrlObjectWithValidation } from "./internal/format-url-object.js";
 import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
-import { loadChunk } from "../client/chunk-load-recovery.js";
 import {
   getLoadedHybridClientRouteOwner,
   loadHybridClientRouteOwner,
@@ -95,19 +94,11 @@ type NavigationModule = typeof import("./navigation.js");
 let loadedNavigationModule: NavigationModule | null = null;
 let navigationModulePromise: Promise<NavigationModule> | null = null;
 
-/** Memoizes success only: a failed load is forgotten so the next click or prefetch tries again. */
 function loadNavigationModule(): Promise<NavigationModule> {
-  navigationModulePromise ??= loadChunk(() => import("./navigation.js")).then(
-    (module) => {
-      loadedNavigationModule = module;
-      return module;
-    },
-    (error: unknown) => {
-      navigationModulePromise = null;
-      throw error;
-    },
-  );
-  return navigationModulePromise;
+  return (navigationModulePromise ??= import("./navigation.js").then((module) => {
+    loadedNavigationModule = module;
+    return module;
+  }));
 }
 
 export type LinkProps<_RouteInferType = unknown> = {
@@ -1337,15 +1328,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (hasAppNavigationRuntime) {
-      let navigationModule = loadedNavigationModule;
-      try {
-        navigationModule ??= await loadNavigationModule();
-      } catch {
-        // The user asked to go there: a document load reaches the current build.
-        navigateDocument(absoluteFullHref, replace ? "replace" : "push");
-        return;
-      }
-      const { navigateClientSide } = navigationModule;
+      const { navigateClientSide } = loadedNavigationModule ?? (await loadNavigationModule());
       const setter = setPendingRef.current;
       // Register this link as the one driving the current navigation. This
       // resets any previously-pending link (e.g. a different link clicked

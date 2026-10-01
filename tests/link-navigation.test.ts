@@ -1523,36 +1523,6 @@ describe("Link when a lazily loaded chunk cannot load", () => {
   }
 
   it.each([
-    { method: "assign" as const, replace: false },
-    { method: "replace" as const, replace: true },
-  ])(
-    "loads the target as a document when the navigation chunk cannot load (replace=$replace)",
-    async ({ method, replace }) => {
-      breakChunk(NAVIGATION_MODULE);
-      const location = createLocation();
-      const result = await renderIsolatedLink({
-        href: "/target",
-        nodeEnv: "production",
-        props: { prefetch: false, replace },
-        windowOverrides: { location },
-      });
-
-      try {
-        const event = await clickAndSettle(result.capturedAnchorProps.onClick!);
-
-        expect(event.defaultPrevented).toBe(true);
-        expect(location[method]).toHaveBeenCalledExactlyOnceWith("/target");
-        expect(location[method === "assign" ? "replace" : "assign"]).not.toHaveBeenCalled();
-        expect(result.navigate).not.toHaveBeenCalled();
-      } finally {
-        result.restoreNodeEnv();
-      }
-    },
-  );
-
-  it.each([
-    { chunk: "navigation", module: NAVIGATION_MODULE, mode: "push" as const, replace: false },
-    { chunk: "navigation", module: NAVIGATION_MODULE, mode: "replace" as const, replace: true },
     { chunk: "route owner", module: OWNER_MODULE, mode: "push" as const, replace: false },
     { chunk: "route owner", module: OWNER_MODULE, mode: "replace" as const, replace: true },
   ])(
@@ -1581,32 +1551,6 @@ describe("Link when a lazily loaded chunk cannot load", () => {
       }
     },
   );
-
-  it("tries the navigation chunk again on the next click", async () => {
-    const { state } = breakChunk(NAVIGATION_MODULE);
-    const location = createLocation();
-    const result = await renderIsolatedLink({
-      href: "/target",
-      nodeEnv: "production",
-      // The scroll fallback of the real navigation module needs a document.
-      props: { prefetch: false, scroll: false },
-      windowOverrides: { location },
-    });
-
-    try {
-      const onClick = result.capturedAnchorProps.onClick!;
-      await clickAndSettle(onClick);
-      expect(location.assign).toHaveBeenCalledOnce();
-
-      state.available = true;
-      await clickAndSettle(onClick);
-
-      expect(location.assign).toHaveBeenCalledOnce();
-      expect(result.navigate).toHaveBeenCalledOnce();
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
 
   it("loads the target as a document when the route owner chunk cannot load", async () => {
     breakChunk(OWNER_MODULE);
@@ -1692,32 +1636,6 @@ describe("Link when a lazily loaded chunk cannot load", () => {
 
       expect(location.assign).toHaveBeenCalledExactlyOnceWith("/target");
       expect(pushState).not.toHaveBeenCalled();
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
-
-  it("keeps prefetching quiet when the navigation chunk cannot load, and tries again on the next prefetch", async () => {
-    const { attempts } = breakChunk(NAVIGATION_MODULE);
-    const result = await renderIsolatedLink({
-      href: "/intent-prefetch-target",
-      nodeEnv: "production",
-    });
-
-    try {
-      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
-      const attemptsAfterFirstPrefetch = attempts.mock.calls.length;
-
-      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
-
-      expect(result.fetch).not.toHaveBeenCalled();
-      expect(consoleError).toHaveBeenCalledWith(
-        "[vinext] RSC prefetch setup error:",
-        expect.anything(),
-      );
-      expect(attempts.mock.calls.length).toBeGreaterThan(attemptsAfterFirstPrefetch);
     } finally {
       result.restoreNodeEnv();
     }
