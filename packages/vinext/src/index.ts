@@ -15,6 +15,7 @@ import type {
 import {
   createIdResolver,
   createLogger,
+  createRunnableDevEnvironment,
   isRunnableDevEnvironment,
   parseAst,
   transformWithOxc,
@@ -447,6 +448,13 @@ if (earlyViteCliInvocation) {
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+
+// Node parses every module's source map at load; this reads one only when a stack is formatted.
+function createNodeDevEnvironment(name: string, config: ResolvedConfig) {
+  return createRunnableDevEnvironment(name, config, {
+    runnerOptions: { sourcemapInterceptor: "prepareStackTrace" },
+  });
+}
 
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
@@ -3911,6 +3919,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(hasCloudflarePlugin || hasNitroPlugin
                 ? {}
                 : {
+                    ...(config.environments?.rsc?.dev?.createEnvironment
+                      ? {}
+                      : { dev: { createEnvironment: createNodeDevEnvironment } }),
                     resolve: {
                       // Externalize native/heavy packages so the RSC environment
                       // loads them natively via Node rather than through Vite's
@@ -3979,6 +3990,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(hasCloudflarePlugin || hasNitroPlugin
                 ? {}
                 : {
+                    ...(config.environments?.ssr?.dev?.createEnvironment
+                      ? {}
+                      : { dev: { createEnvironment: createNodeDevEnvironment } }),
                     resolve: {
                       external:
                         userSsrExternal === true

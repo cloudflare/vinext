@@ -828,6 +828,33 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("maps Node server stack traces with Vite's prepareStackTrace interceptor", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-dev-runner-interceptor-");
+
+    try {
+      const result = await fixture.config();
+      expect(result.environments.rsc.dev.createEnvironment).toEqual(expect.any(Function));
+      expect(result.environments.ssr.dev.createEnvironment).toBe(
+        result.environments.rsc.dev.createEnvironment,
+      );
+
+      const adapterResult = await fixture.config({
+        plugins: [{ name: "vite-plugin-cloudflare" }],
+      });
+      expect(adapterResult.environments.rsc.dev).toBeUndefined();
+      expect(adapterResult.environments.ssr.dev).toBeUndefined();
+
+      const userCreateEnvironment = () => {};
+      const userResult = await fixture.config({
+        environments: { rsc: { dev: { createEnvironment: userCreateEnvironment } } },
+      });
+      expect(userResult.environments.rsc.dev).toBeUndefined();
+      expect(userResult.environments.ssr.dev.createEnvironment).toEqual(expect.any(Function));
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
   it("preserves user SSR externals while externalizing React in Node dev", async () => {
     const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-array-");
 
