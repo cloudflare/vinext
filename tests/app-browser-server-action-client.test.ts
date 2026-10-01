@@ -61,20 +61,17 @@ describe("app browser server action client", () => {
     vi.stubGlobal("window", {
       location: { href: "https://example.com/source", origin: "https://example.com" },
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response("flight", {
-          status: 303,
-          headers: {
-            [ACTION_REDIRECT_HEADER]: "/target",
-            // The target's render, rewritten from /target to /page?q=rewritten.
-            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/page?q=rewritten"),
-            "content-type": "text/x-component",
-          },
-        }),
-      ),
-    );
+    const redirectResponse = new Response("flight", {
+      status: 303,
+      headers: {
+        [ACTION_REDIRECT_HEADER]: "/target",
+        // The target's render, rewritten from /target to /page?q=rewritten.
+        [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/page?q=rewritten"),
+        "content-type": "text/x-component",
+      },
+    });
+    const clone = vi.spyOn(redirectResponse, "clone");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(redirectResponse));
     vi.mocked(createFromFetch).mockResolvedValueOnce(wireElements);
     const renderRedirectPayload = vi.fn();
     const performHardNavigation = vi.fn();
@@ -113,6 +110,9 @@ describe("app browser server action client", () => {
       "none",
     );
     expect(performHardNavigation).not.toHaveBeenCalled();
+    expect(clone).not.toHaveBeenCalled();
+    // The Flight client reads only the body, so the 303 response goes in as is.
+    await expect(vi.mocked(createFromFetch).mock.calls[0][0]).resolves.toBe(redirectResponse);
   });
 
   it.each([
@@ -537,6 +537,45 @@ describe("app browser server action client", () => {
 
     expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
+  });
+
+  it("throws the text/plain body of a non-RSC error response", async () => {
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("Custom error!", {
+          headers: { "content-type": "text/plain;charset=utf-8" },
+          status: 500,
+        }),
+      ),
+    );
+
+    await expect(
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          performHardNavigation: vi.fn(),
+          renderRedirectPayload: vi.fn(),
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      ),
+    ).rejects.toThrow("Custom error!");
+    expect(createFromFetch).not.toHaveBeenCalled();
   });
 
   it("clears client navigation caches when an unrevalidated action returns a tree", async () => {

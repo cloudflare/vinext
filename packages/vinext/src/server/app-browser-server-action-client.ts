@@ -217,7 +217,7 @@ export async function invokeClientServerAction(
   throwOnServerActionNotFound(fetchResponse, id);
 
   const invalidResponseError = await readInvalidServerActionResponseError(
-    fetchResponse.clone(),
+    fetchResponse,
     actionRedirectTarget !== null,
   );
   if (invalidResponseError) throw invalidResponseError;
@@ -226,16 +226,8 @@ export async function invokeClientServerAction(
     return undefined;
   }
 
-  const flightResponse =
-    fetchResponse.status === 303
-      ? new Response(fetchResponse.body, {
-          headers: fetchResponse.headers,
-          status: 200,
-          statusText: "OK",
-        })
-      : fetchResponse;
   const result = await createFromFetch<ServerActionResult | AppWireElements>(
-    Promise.resolve(flightResponse),
+    Promise.resolve(fetchResponse),
     { temporaryReferences },
   );
   const rendersTree = !isServerActionResult(result) || result.root !== undefined;
