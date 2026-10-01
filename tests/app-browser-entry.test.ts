@@ -34,10 +34,7 @@ import {
   resolveFetchedHydrationLocation,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
-import {
-  createNavigationCommitEffect,
-  type NavigationCommitEffectOptions,
-} from "../packages/vinext/src/server/app-browser-navigation-commit-effect.js";
+import { createNavigationCommitEffect } from "../packages/vinext/src/server/app-browser-navigation-commit-effect.js";
 import { clearActionHttpFallbackHeadOnCommit } from "../packages/vinext/src/server/app-browser-action-http-fallback-head.js";
 import { DOCUMENT_UNLOAD_TIMEOUT_MS } from "../packages/vinext/src/client/chunk-load-recovery.js";
 import { createAppBrowserDocumentNavigation } from "../packages/vinext/src/server/app-browser-document-navigation.js";
@@ -4552,14 +4549,13 @@ describe("app browser navigation controller", () => {
       const { controller, detach, stateRef } = createControllerHarness(createState(), {
         commitClientNavigationState: release,
       });
-      const createEffect = (options: NavigationCommitEffectOptions) =>
-        createNavigationCommitEffect(options, {
-          clearNavigationFailureTarget: () => {},
-          commitClientNavigationState: release,
-          commitNavigationHistory: () => {},
-          isCurrentNavigation: (navId) => controller.isCurrentNavigation(navId),
-          stageClientParams: () => {},
-        });
+      const createEffect = createNavigationCommitEffect({
+        clearNavigationFailureTarget: () => {},
+        commitClientNavigationState: release,
+        commitNavigationHistory: () => {},
+        isCurrentNavigation: (navId) => controller.isCurrentNavigation(navId),
+        stageClientParams: () => {},
+      });
 
       async function navigate(page: string) {
         const href = `https://example.com${page}`;
@@ -4699,7 +4695,7 @@ describe("app browser navigation controller", () => {
   });
 
   describe("navigation commit effect", () => {
-    function createEffectHarness(options: Partial<NavigationCommitEffectOptions> = {}) {
+    function createEffectHarness() {
       let current = true;
       const deps = {
         clearNavigationFailureTarget: vi.fn(),
@@ -4708,19 +4704,15 @@ describe("app browser navigation controller", () => {
         isCurrentNavigation: () => current,
         stageClientParams: vi.fn(),
       };
-      const effect = createNavigationCommitEffect(
-        {
-          activeRoutePaths: [],
-          bfcacheIds: {},
-          href: "https://example.com/next",
-          historyUpdateMode: "push",
-          navId: 4,
-          params: {},
-          previousNextUrl: null,
-          ...options,
-        },
-        deps,
-      );
+      const effect = createNavigationCommitEffect(deps)({
+        activeRoutePaths: [],
+        bfcacheIds: {},
+        href: "https://example.com/next",
+        historyUpdateMode: "push",
+        navId: 4,
+        params: {},
+        previousNextUrl: null,
+      });
       return { deps, effect, supersede: () => (current = false) };
     }
 
@@ -4863,6 +4855,13 @@ describe("app browser navigation controller", () => {
       const base = stateRef.current;
       const startedNavigationId = controller.getActiveNavigationId();
       if (options.stale) controller.beginNavigation();
+      const createEffect = createNavigationCommitEffect({
+        clearNavigationFailureTarget: () => {},
+        commitClientNavigationState: () => {},
+        commitNavigationHistory: () => {},
+        isCurrentNavigation: (navId) => controller.isCurrentNavigation(navId),
+        stageClientParams: () => {},
+      });
       let renderId = -1;
       await controller.commitSameUrlNavigatePayload(
         Promise.resolve(createResolvedElements("route:/initial", "/")),
@@ -4873,24 +4872,15 @@ describe("app browser navigation controller", () => {
           actionBase: options.actionBase ? { state: base, committedState: base } : undefined,
           createCommitEffect: options.actionBase
             ? (state) =>
-                createNavigationCommitEffect(
-                  {
-                    activeRoutePaths: [],
-                    bfcacheIds: state.bfcacheIds,
-                    href: "https://example.com/initial",
-                    historyUpdateMode: undefined,
-                    navId: startedNavigationId,
-                    params: {},
-                    previousNextUrl: null,
-                  },
-                  {
-                    clearNavigationFailureTarget: () => {},
-                    commitClientNavigationState: () => {},
-                    commitNavigationHistory: () => {},
-                    isCurrentNavigation: (navId) => controller.isCurrentNavigation(navId),
-                    stageClientParams: () => {},
-                  },
-                )
+                createEffect({
+                  activeRoutePaths: [],
+                  bfcacheIds: state.bfcacheIds,
+                  href: "https://example.com/initial",
+                  historyUpdateMode: undefined,
+                  navId: startedNavigationId,
+                  params: {},
+                  previousNextUrl: null,
+                })
             : undefined,
           onActionReady: (state) => {
             renderId = state.renderId;

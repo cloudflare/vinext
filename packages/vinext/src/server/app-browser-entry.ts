@@ -109,10 +109,7 @@ import {
   syncServerActionHttpFallbackHead,
 } from "./app-browser-action-http-fallback-head.js";
 import { createAppBrowserDocumentNavigation } from "./app-browser-document-navigation.js";
-import {
-  createNavigationCommitEffect as createNavigationCommitEffectWithDeps,
-  type NavigationCommitEffectOptions,
-} from "./app-browser-navigation-commit-effect.js";
+import { createNavigationCommitEffect as createNavigationCommitEffectWithDeps } from "./app-browser-navigation-commit-effect.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
@@ -363,6 +360,14 @@ const browserNavigationController = createAppBrowserNavigationController({
   performHardNavigation: (href, mode) => documentNavigation.performHardNavigation(href, mode),
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
+});
+const createNavigationCommitEffect = createNavigationCommitEffectWithDeps({
+  clearNavigationFailureTarget: clearAppNavigationFailureTarget,
+  commitClientNavigationState,
+  commitNavigationHistory: (historyOptions) =>
+    historyController.commitNavigationHistory(historyOptions),
+  isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+  stageClientParams,
 });
 const discardedServerActionRefreshScheduler = createDiscardedServerActionRefreshScheduler({
   runRefresh() {
@@ -787,19 +792,6 @@ function createActionInitiationSnapshot(action?: AppBrowserNavigationActionResul
 }
 
 type ActionInitiationSnapshot = ReturnType<typeof createActionInitiationSnapshot>;
-
-function createNavigationCommitEffect(
-  options: NavigationCommitEffectOptions,
-): ReturnType<typeof createNavigationCommitEffectWithDeps> {
-  return createNavigationCommitEffectWithDeps(options, {
-    clearNavigationFailureTarget: clearAppNavigationFailureTarget,
-    commitClientNavigationState,
-    commitNavigationHistory: (historyOptions) =>
-      historyController.commitNavigationHistory(historyOptions),
-    isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
-    stageClientParams,
-  });
-}
 
 type RenderNavigationPayloadOptions = {
   actionType?: "navigate" | "replace" | "traverse";
