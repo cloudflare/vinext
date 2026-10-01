@@ -5089,6 +5089,272 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledOnce();
   });
 
+  // With an unprefixed default locale, the client sends the public source
+  // pathname `/feed`, which the route matcher also resolves to `/[locale]`
+  // itself (locale "feed"). The source middleware rewrites it to `/en/feed`,
+  // the route the source actually renders, so the interception is resolved
+  // again from that rewritten source instead of failing closed.
+  // Extends Next.js: test/e2e/app-dir/interception-dynamic-segment-middleware/
+  it("re-resolves the interception source from a locale rewrite of a nested source", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const feedRoute = createPageRoute({
+      pattern: "/:locale/feed",
+      routeSegments: ["[locale]", "feed"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const interceptSources: (string | null | undefined)[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        interceptSources.push(sourcePathname);
+        if (sourcePathname === "/feed") {
+          return { route: localeRootRoute, params: { locale: "feed" } };
+        }
+        if (sourcePathname === "/en/feed") {
+          return { route: feedRoute, params: { locale: "en" } };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/feed") {
+          return {
+            params: { locale: "en" } as Record<string, string | string[]>,
+            route: feedRoute,
+          };
+        }
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/en/feed" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/en/feed" }),
+    );
+    expect(interceptSources).toContain("/en/feed");
+  });
+
+  it("hands a Server Action the interception source its locale rewrite reaches", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const feedRoute = createPageRoute({
+      pattern: "/:locale/feed",
+      routeSegments: ["[locale]", "feed"],
+    });
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        if (sourcePathname === "/feed") {
+          return { route: localeRootRoute, params: { locale: "feed" } };
+        }
+        if (sourcePathname === "/en/feed") {
+          return { route: feedRoute, params: { locale: "en" } };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/feed") {
+          return {
+            params: { locale: "en" } as Record<string, string | string[]>,
+            route: feedRoute,
+          };
+        }
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/en/feed" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    headers.set("next-action", "interception-action");
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, { headers, method: "POST" }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("action");
+    expect(handleServerActionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ actionId: "interception-action", interceptionContext: "/en/feed" }),
+    );
+  });
+
+  it("re-resolves a rewritten interception source with a __proto__ param", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const protoRoute = createPageRoute({
+      pattern: "/:locale/:__proto__",
+      routeSegments: ["[locale]", "[__proto__]"],
+    });
+    // JSON.parse defines `__proto__` as an own key, like the matcher's
+    // null-prototype param records.
+    const protoParams = (): Record<string, string | string[]> =>
+      JSON.parse('{"locale":"en","__proto__":"x"}');
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        if (sourcePathname === "/x") {
+          return { route: localeRootRoute, params: { locale: "x" } };
+        }
+        if (sourcePathname === "/en/x") {
+          return { route: protoRoute, params: protoParams() };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/x") return { params: protoParams(), route: protoRoute };
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/x"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/en/x" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/x" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+  });
+
+  it("still fails closed when a source rewrite reaches a route outside the interception", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      // Only the raw source is an interception source; `/login` is not.
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: localeRootRoute, params: { locale: "feed" } } : null,
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/login") return { params: {}, route: loginRoute };
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/login" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  // The re-resolved source becomes the context the client sends back, so a
+  // rewrite the inbound header contract would reject (non-canonical, or over
+  // the length cap) keeps the raw match, which the exact rewrite check rejects.
+  it.each([
+    ["a non-canonical", "/en//feed"],
+    ["an over-length", `/en/feed/${"a".repeat(1024)}`],
+  ])("does not re-resolve the interception source from %s rewrite", async (_label, rewritten) => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const feedRoute = createPageRoute({
+      pattern: "/:locale/feed",
+      routeSegments: ["[locale]", "feed"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const interceptSources: (string | null | undefined)[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        interceptSources.push(sourcePathname);
+        if (sourcePathname === "/feed") {
+          return { route: localeRootRoute, params: { locale: "feed" } };
+        }
+        if (sourcePathname === rewritten) {
+          return { route: feedRoute, params: { locale: "en" } };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === rewritten) {
+          return {
+            params: { locale: "en" } as Record<string, string | string[]>,
+            route: feedRoute,
+          };
+        }
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": `https://example.test/docs${rewritten}` },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(interceptSources).not.toContain(rewritten);
+  });
+
   it.each([
     {
       kind: "request headers",
