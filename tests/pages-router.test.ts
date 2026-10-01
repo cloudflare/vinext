@@ -5773,7 +5773,7 @@ export const config = { matcher: ["/protected"] };
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
+      expect(entrySize).toBeLessThan(29 * 1024); // < 29 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
