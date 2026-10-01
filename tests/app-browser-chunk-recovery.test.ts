@@ -65,7 +65,8 @@ function createHarness(currentHref: string, options: { silent?: boolean } = {}) 
     stopRefreshes: vi.fn(),
   });
   const recovery = createAppBrowserChunkRecovery({
-    beforeDocumentNavigation: documentNavigation.beforeDocumentNavigation,
+    performHardNavigation: (href, mode, outcome) =>
+      documentNavigation.performHardNavigation(href, mode, outcome),
   });
   const outcome = { onAbandoned: vi.fn(), onCanceled: vi.fn() } satisfies Outcome;
 
@@ -351,7 +352,8 @@ describe("a superseded recovery navigation", () => {
       stopRefreshes: vi.fn(),
     });
     const recovery = createAppBrowserChunkRecovery({
-      beforeDocumentNavigation: documentNavigation.beforeDocumentNavigation,
+      performHardNavigation: (href, mode, outcome) =>
+        documentNavigation.performHardNavigation(href, mode, outcome),
     });
     primitive.registerChunkRecovery({ entryUrl: "https://example.com/assets/index-abc123.js" });
     primitive.setChunkRecoveryNavigator(recovery.navigator);

@@ -33,10 +33,7 @@ import {
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
-import {
-  createAppBrowserNavigationController,
-  performHardNavigationWithLoopGuard,
-} from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
   createNavigationCommitEffect,
   type NavigationCommitEffectOptions,
@@ -4308,9 +4305,7 @@ describe("app browser document navigation", () => {
       function begin(options: DocumentNavigationHarnessOptions = {}) {
         const harness = createDocumentNavigationHarness(pageHref, options);
         const outcome = { onAbandoned: vi.fn(), onCanceled: vi.fn() };
-        performHardNavigationWithLoopGuard(targetHref, "assign", () =>
-          harness.documentNavigation.beforeDocumentNavigation(targetHref, outcome),
-        );
+        harness.documentNavigation.performHardNavigation(targetHref, "assign", outcome);
         return { ...harness, outcome };
       }
 
@@ -4365,9 +4360,7 @@ describe("app browser document navigation", () => {
         const { attempts, documentNavigation, outcome } = begin();
         const second = { onAbandoned: vi.fn(), onCanceled: vi.fn() };
 
-        performHardNavigationWithLoopGuard("https://example.com/other", "assign", () =>
-          documentNavigation.beforeDocumentNavigation("https://example.com/other", second),
-        );
+        documentNavigation.performHardNavigation("https://example.com/other", "assign", second);
 
         expect(outcome.onAbandoned).toHaveBeenCalledOnce();
         expect(second.onAbandoned).not.toHaveBeenCalled();
@@ -4396,9 +4389,7 @@ describe("app browser document navigation", () => {
         const { attempts, documentNavigation, outcome } = begin();
         const second = { onAbandoned: vi.fn(), onCanceled: vi.fn() };
 
-        performHardNavigationWithLoopGuard("https://example.com/other", "assign", () =>
-          documentNavigation.beforeDocumentNavigation("https://example.com/other", second),
-        );
+        documentNavigation.performHardNavigation("https://example.com/other", "assign", second);
         attempts[1]?.abort();
         await vi.advanceTimersByTimeAsync(DOCUMENT_UNLOAD_TIMEOUT_MS * 2);
 
@@ -4416,9 +4407,7 @@ describe("app browser document navigation", () => {
         });
 
         expect(() =>
-          performHardNavigationWithLoopGuard(targetHref, "assign", () =>
-            harness.documentNavigation.beforeDocumentNavigation(targetHref, outcome),
-          ),
+          harness.documentNavigation.performHardNavigation(targetHref, "assign", outcome),
         ).toThrow("blocked");
 
         expect(outcome.onCanceled).toHaveBeenCalledOnce();

@@ -1,9 +1,5 @@
-import { toDocumentLoadHref, type ChunkRecoveryNavigator } from "../client/chunk-load-recovery.js";
-import type { DocumentNavigationOutcome } from "./app-browser-document-navigation.js";
-import {
-  performHardNavigationWithLoopGuard,
-  type HistoryUpdateMode,
-} from "./app-browser-navigation-controller.js";
+import type { ChunkRecoveryNavigator } from "../client/chunk-load-recovery.js";
+import type { HardNavigationMode, HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 
 export type InFlightNavigation = {
   navId: number;
@@ -12,7 +8,11 @@ export type InFlightNavigation = {
 };
 
 type AppBrowserChunkRecoveryDeps = {
-  beforeDocumentNavigation(href: string, outcome: DocumentNavigationOutcome): () => void;
+  performHardNavigation(
+    href: string,
+    mode: HardNavigationMode,
+    outcome: Parameters<ChunkRecoveryNavigator>[0],
+  ): boolean;
 };
 
 /**
@@ -29,14 +29,11 @@ export function createAppBrowserChunkRecovery(deps: AppBrowserChunkRecoveryDeps)
     // assigning it again would duplicate the history entry.
     const mode =
       inFlight?.historyUpdateMode === "push" &&
-      new URL(targetHref, currentHref).href !== new URL(currentHref).href
+      new URL(targetHref, currentHref).href !== currentHref
         ? "assign"
         : "replace";
-    const loadHref = toDocumentLoadHref(targetHref);
 
-    return performHardNavigationWithLoopGuard(loadHref, mode, () =>
-      deps.beforeDocumentNavigation(loadHref, outcome),
-    );
+    return deps.performHardNavigation(targetHref, mode, outcome);
   };
 
   return {

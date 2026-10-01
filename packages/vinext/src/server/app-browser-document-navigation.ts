@@ -1,4 +1,8 @@
-import { DOCUMENT_UNLOAD_TIMEOUT_MS, toDocumentLoadHref } from "../client/chunk-load-recovery.js";
+import {
+  DOCUMENT_UNLOAD_TIMEOUT_MS,
+  toDocumentLoadHref,
+  type ChunkRecoveryNavigator,
+} from "../client/chunk-load-recovery.js";
 import {
   clearHardNavigationLoopGuard,
   performHardNavigationWithLoopGuard,
@@ -11,10 +15,7 @@ import {
 } from "./app-browser-mpa-navigation.js";
 import { ServerActionNotSentError } from "./app-browser-refresh-queue.js";
 
-export type DocumentNavigationOutcome = {
-  onCanceled(): void;
-  onAbandoned(): void;
-};
+type DocumentNavigationOutcome = Parameters<ChunkRecoveryNavigator>[0];
 
 type AppBrowserDocumentNavigationDeps = {
   discardPendingNavigation(): void;
@@ -106,12 +107,15 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
   }
 
   return {
-    beforeDocumentNavigation,
-    performHardNavigation(href: string, mode?: HardNavigationMode): boolean {
+    performHardNavigation(
+      href: string,
+      mode?: HardNavigationMode,
+      outcome?: DocumentNavigationOutcome,
+    ): boolean {
       // A fragment-only change scrolls instead of loading a document.
       const loadHref = toDocumentLoadHref(href);
       return performHardNavigationWithLoopGuard(loadHref, mode, () =>
-        beforeDocumentNavigation(loadHref),
+        beforeDocumentNavigation(loadHref, outcome),
       );
     },
     performMpaNavigation(

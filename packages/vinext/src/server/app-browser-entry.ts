@@ -388,7 +388,8 @@ const documentNavigation = createAppBrowserDocumentNavigation({
 const resetDocumentNavigationRecovery = documentNavigation.resetRecovery;
 const resetDocumentNavigationRecoveryOnPageHide = documentNavigation.resetRecoveryOnPageHide;
 const chunkRecovery = createAppBrowserChunkRecovery({
-  beforeDocumentNavigation: documentNavigation.beforeDocumentNavigation,
+  performHardNavigation: (href, mode, outcome) =>
+    documentNavigation.performHardNavigation(href, mode, outcome),
 });
 const recoverFromRootError = createRootErrorRecovery(recoverFromChunkFailure);
 
