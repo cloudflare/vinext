@@ -67,7 +67,11 @@ async function flush(): Promise<void> {
 
 function readClaims(ctx: Context): unknown {
   const raw = ctx.storage.data.get(STORAGE_KEY);
-  return raw === undefined ? [] : JSON.parse(raw);
+  return raw === undefined ? {} : JSON.parse(raw);
+}
+
+function claimKey(verdict: "pinned" | "replaced", entryUrl: string = ENTRY): string {
+  return `${verdict} ${entryUrl}`;
 }
 
 async function setup(
@@ -617,7 +621,7 @@ describe("recovery decision", () => {
 
     await expect(ctx.mod.recoverFromChunkFailure(error)).rejects.toBe(error);
     expect(ctx.navigator).not.toHaveBeenCalled();
-    expect(readClaims(ctx)).toEqual([]);
+    expect(readClaims(ctx)).toEqual({});
   });
 
   it("suspends after the probe while the document is unloading, until pageshow", async () => {
@@ -801,7 +805,7 @@ describe("claim", () => {
     void ctx.mod.recoverFromChunkFailure(deployFailure(ctx)).catch(() => undefined);
     await flush();
 
-    expect(readClaims(ctx)).toEqual([{ at: now, entryUrl: ENTRY, verdict: "replaced" }]);
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: now });
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
   });
 
@@ -835,7 +839,7 @@ describe("claim", () => {
     await flush();
 
     expect(ctx.navigator).toHaveBeenCalledTimes(2);
-    expect(readClaims(ctx)).toEqual([{ at: now, entryUrl: ENTRY, verdict: "replaced" }]);
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: now });
   });
 
   it("refuses at the cap across alternating entry URLs", async () => {
@@ -872,40 +876,40 @@ describe("claim", () => {
     await flush();
 
     expect(ctx.navigator).toHaveBeenCalledTimes(2);
-    expect(readClaims(ctx)).toEqual([
-      { at: replacedAt, entryUrl: ENTRY, verdict: "replaced" },
-      { at: pinnedAt, entryUrl: ENTRY, verdict: "pinned" },
-    ]);
+    expect(readClaims(ctx)).toEqual({
+      [claimKey("replaced")]: replacedAt,
+      [claimKey("pinned")]: pinnedAt,
+    });
   });
 
   it("prunes records older than the window before counting", async () => {
     const ctx = await setup();
     const now = Date.now();
-    const old = {
-      at: now - 10 * MINUTE - 1,
-      entryUrl: "https://app.test/old.js",
-      verdict: "pinned",
-    };
-    const recent = { at: now - MINUTE, entryUrl: "https://app.test/recent.js", verdict: "pinned" };
-    ctx.storage.data.set(STORAGE_KEY, JSON.stringify([old, recent]));
+    const oldKey = claimKey("pinned", "https://app.test/old.js");
+    const recentKey = claimKey("pinned", "https://app.test/recent.js");
+    ctx.storage.data.set(
+      STORAGE_KEY,
+      JSON.stringify({ [oldKey]: now - 10 * MINUTE - 1, [recentKey]: now - MINUTE }),
+    );
 
     void ctx.mod.recoverFromChunkFailure(deployFailure(ctx)).catch(() => undefined);
     await flush();
 
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
-    expect(readClaims(ctx)).toEqual([recent, { at: now, entryUrl: ENTRY, verdict: "replaced" }]);
+    expect(readClaims(ctx)).toEqual({ [recentKey]: now - MINUTE, [claimKey("replaced")]: now });
   });
 
   it.each([
-    ["text that is not JSON", "not json", []],
-    ["JSON that is not a list", '{"at":1}', []],
-    ["JSON null", "null", []],
+    ["text that is not JSON", "not json"],
+    ["JSON null", "null"],
+    ["a JSON number", "5"],
+    ["a JSON string", '"x"'],
+    ["a list of records", JSON.stringify([{ at: Date.now(), entryUrl: ENTRY, verdict: "pinned" }])],
     [
-      "a list with entries that are not records",
-      JSON.stringify([null, 5, "x", [1], { at: "soon" }]),
-      [],
+      "values that are not timestamps",
+      JSON.stringify({ [claimKey("pinned")]: "soon", other: null }),
     ],
-  ])("treats a stored list of %s as empty", async (_name, stored, kept) => {
+  ])("treats stored claims of %s as empty", async (_name, stored) => {
     const ctx = await setup();
     ctx.storage.data.set(STORAGE_KEY, stored);
     const now = Date.now();
@@ -914,7 +918,7 @@ describe("claim", () => {
     await flush();
 
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
-    expect(readClaims(ctx)).toEqual([...kept, { at: now, entryUrl: ENTRY, verdict: "replaced" }]);
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: now });
   });
 
   it.each<[string, (ctx: Context) => void]>([
@@ -960,7 +964,7 @@ describe("settling", () => {
 
     await expect(ctx.mod.recoverFromChunkFailure(error)).rejects.toBe(error);
 
-    expect(readClaims(ctx)).toEqual([]);
+    expect(readClaims(ctx)).toEqual({});
     expect(console.error).toHaveBeenCalledTimes(1);
     expect(console.warn).not.toHaveBeenCalled();
   });
@@ -983,7 +987,7 @@ describe("settling", () => {
 
     expect(one).toEqual({ reason: first, status: "rejected" });
     expect(two).toEqual({ reason: second, status: "rejected" });
-    expect(readClaims(ctx)).toEqual([]);
+    expect(readClaims(ctx)).toEqual({});
     await expect(ctx.mod.recoverFromChunkFailure(first)).rejects.toBe(first);
     await expect(ctx.mod.recoverFromChunkFailure(second)).rejects.toBe(second);
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
@@ -1002,7 +1006,7 @@ describe("settling", () => {
 
     expect(one).toEqual({ reason: first, status: "rejected" });
     expect(two).toEqual({ reason: second, status: "rejected" });
-    expect(readClaims(ctx)).toEqual([{ at: Date.now(), entryUrl: ENTRY, verdict: "replaced" }]);
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: Date.now() });
     await expect(ctx.mod.recoverFromChunkFailure(first)).rejects.toBe(first);
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
   });
@@ -1021,7 +1025,7 @@ describe("settling", () => {
     await flush();
 
     expect(result).toEqual({ reason: error, status: "rejected" });
-    expect(readClaims(ctx)).toEqual([{ at: Date.now(), entryUrl: ENTRY, verdict: "replaced" }]);
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: Date.now() });
     await expect(ctx.mod.recoverFromChunkFailure(error)).rejects.toBe(error);
     expect(ctx.navigator).toHaveBeenCalledTimes(1);
   });
@@ -1098,7 +1102,7 @@ describe("default navigator", () => {
     await flush();
 
     expect(result).toEqual({ reason: error, status: "rejected" });
-    expect(readClaims(ctx)).toEqual([]);
+    expect(readClaims(ctx)).toEqual({});
   });
 
   it("reports onAbandoned after the unload timeout", async () => {
@@ -1109,7 +1113,7 @@ describe("default navigator", () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(result).toEqual({ reason: error, status: "rejected" });
-    expect(readClaims(ctx)).toEqual([{ at: claimedAt, entryUrl: ENTRY, verdict: "replaced" }]);
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: claimedAt });
   });
 
   it("stays pending once pagehide fires", async () => {

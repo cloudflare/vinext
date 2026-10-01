@@ -1,4 +1,4 @@
-export const CHUNK_RECOVERY_STORAGE_KEY = "__vinext_chunk_recovery__"; // sessionStorage: [{ entryUrl, verdict, at }]
+export const CHUNK_RECOVERY_STORAGE_KEY = "__vinext_chunk_recovery__"; // sessionStorage: { "<verdict> <entryUrl>": claimedAt }
 export const CHUNK_RECOVERY_WINDOW_MS = 10 * 60_000;
 export const CHUNK_RECOVERY_MAX_LOADS = 2; // automatic document loads per tab per window
 export const CHUNK_RETRY_DELAY_MIN_MS = 200; // Turbopack parity: one retry after 200-600 ms
@@ -12,7 +12,7 @@ export type ChunkRecoveryNavigator = (outcome: {
   onAbandoned(): void; // no unload within DOCUMENT_UNLOAD_TIMEOUT_MS; the claim stays spent
 }) => boolean; // false: refused, nothing started
 
-type ClaimRecord = { entryUrl: string | null; verdict: ChunkFailureVerdict; at: number };
+type Claims = Record<string, number>;
 type NavigateEvent = Event & {
   destination: { sameDocument: boolean };
   downloadRequest: string | null;
@@ -216,8 +216,8 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
   await settlePendingNavigation(state);
   await resumeWhenShown(state);
 
-  const record = claim(state.entryUrl, verdict);
-  if (record === null) {
+  const claimKey = `${verdict} ${state.entryUrl}`;
+  if (!claim(claimKey)) {
     console.error(REFUSED_MESSAGE);
     throw error;
   }
@@ -228,7 +228,7 @@ async function decide(state: State, error: object, errors: Set<object>): Promise
       if (done) return;
       done = true;
       state.onPageshow.delete(onShown);
-      if (!keepClaim) release(record);
+      if (!keepClaim) release(claimKey);
       if (deregister) for (const joined of errors) state.registry.delete(joined);
       reject(error);
     };
@@ -290,43 +290,45 @@ async function settlePendingNavigation(state: State): Promise<void> {
   });
 }
 
-function readClaims(storage: Storage, now: number): ClaimRecord[] {
+function readClaims(storage: Storage, now: number): Claims {
   try {
-    const records: ClaimRecord[] = JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY) ?? "[]");
-    return records.filter(
-      (record) => typeof record?.at === "number" && now - record.at < CHUNK_RECOVERY_WINDOW_MS,
-    );
+    const stored: unknown = JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY) ?? "{}");
+    const claims: Claims = {};
+    for (const [key, at] of Object.entries(stored ?? {})) {
+      if (typeof at === "number" && now - at < CHUNK_RECOVERY_WINDOW_MS) claims[key] = at;
+    }
+    return claims;
   } catch {
-    return [];
+    return {};
   }
 }
 
-function claim(entryUrl: string | null, verdict: ChunkFailureVerdict): ClaimRecord | null {
+function writeClaims(storage: Storage, claims: Claims): boolean {
+  const written = JSON.stringify(claims);
+  storage.setItem(CHUNK_RECOVERY_STORAGE_KEY, written);
+  return storage.getItem(CHUNK_RECOVERY_STORAGE_KEY) === written;
+}
+
+function claim(key: string): boolean {
   try {
     const storage = window.sessionStorage;
     const now = Date.now();
-    const records = readClaims(storage, now);
-    if (
-      records.length >= CHUNK_RECOVERY_MAX_LOADS ||
-      records.some((record) => record.entryUrl === entryUrl && record.verdict === verdict)
-    ) {
-      return null;
-    }
+    const claims = readClaims(storage, now);
+    if (key in claims || Object.keys(claims).length >= CHUNK_RECOVERY_MAX_LOADS) return false;
 
-    const record = { at: now, entryUrl, verdict };
-    const written = JSON.stringify([...records, record]);
-    storage.setItem(CHUNK_RECOVERY_STORAGE_KEY, written);
-    return storage.getItem(CHUNK_RECOVERY_STORAGE_KEY) === written ? record : null;
+    claims[key] = now;
+    return writeClaims(storage, claims);
   } catch {
-    return null;
+    return false;
   }
 }
 
-function release(record: ClaimRecord): void {
+function release(key: string): void {
   try {
     const storage = window.sessionStorage;
-    const kept = readClaims(storage, Date.now()).filter((other) => other.at !== record.at);
-    storage.setItem(CHUNK_RECOVERY_STORAGE_KEY, JSON.stringify(kept));
+    const claims = readClaims(storage, Date.now());
+    delete claims[key];
+    writeClaims(storage, claims);
   } catch {
     // Storage that refuses the release leaves the claim spent, which is the safe side.
   }

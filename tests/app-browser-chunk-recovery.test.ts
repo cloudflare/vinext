@@ -419,7 +419,9 @@ describe("a superseded recovery navigation", () => {
     primitive.recoverFromChunkFailure(laterError).catch(() => {});
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(JSON.parse(storage.get(primitive.CHUNK_RECOVERY_STORAGE_KEY) ?? "[]")).toHaveLength(1);
+    expect(
+      Object.keys(JSON.parse(storage.get(primitive.CHUNK_RECOVERY_STORAGE_KEY) ?? "{}")),
+    ).toHaveLength(1);
     expect(replace).toHaveBeenCalledOnce();
   });
 });
