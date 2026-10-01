@@ -15,6 +15,15 @@ export function getServerActionNotFoundMessage(actionId: string | null): string 
   )} This request might be from an older or newer deployment.\nRead more: ${SERVER_ACTION_NOT_FOUND_DOCS}`;
 }
 
+export function respondServerActionNotFound(
+  actionId: string | null,
+  clearRequestContext: () => void,
+): Response {
+  console.warn(getServerActionNotFoundMessage(actionId));
+  clearRequestContext();
+  return createServerActionNotFoundResponse();
+}
+
 function getServerActionNotFoundClientMessage(actionId: string): string {
   return `Server Action "${actionId}" was not found on the server. \nRead more: ${SERVER_ACTION_NOT_FOUND_DOCS}`;
 }
