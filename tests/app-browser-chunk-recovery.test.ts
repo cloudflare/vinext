@@ -524,6 +524,14 @@ describe("app browser entry chunk recovery wiring", () => {
     expect(source.match(/resetDocumentNavigationRecovery\(\);/g)).toHaveLength(1);
   });
 
+  it("stops refreshes once for navigateExternal, where the navigation begins", () => {
+    expect(source).toMatch(
+      /navigateExternal: \(href, historyUpdateMode\) => \{[^]*?stopRefreshesForDocumentNavigation\(\);[^]*?kind: "mpa-navigation"/,
+    );
+    expect(source).toContain("{ refreshesStopped: true }");
+    expect(source.match(/documentNavigation\.performMpaNavigation\(/g)).toHaveLength(1);
+  });
+
   it("registers the navigator once, inside bootstrapHydration", () => {
     const registration = "setChunkRecoveryNavigator(chunkRecovery.navigator);";
     const bootstrap = source.slice(

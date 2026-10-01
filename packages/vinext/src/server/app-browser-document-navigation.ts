@@ -114,8 +114,12 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
         beforeDocumentNavigation(loadHref),
       );
     },
-    performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
-      deps.stopRefreshes();
+    performMpaNavigation(
+      href: string,
+      historyUpdateMode: HistoryUpdateMode,
+      options: { refreshesStopped?: boolean } = {},
+    ): void {
+      if (!options.refreshesStopped) deps.stopRefreshes();
       const loadHref = toDocumentLoadHref(href);
       // Match Next's MPA path by suspending forever, but delay the actual location
       // mutation just enough for the old tree to commit the pending transition

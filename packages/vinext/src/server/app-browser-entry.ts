@@ -1301,7 +1301,8 @@ function isMpaNavigationState(
 }
 
 function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
-  documentNavigation.performMpaNavigation(href, historyUpdateMode);
+  // navigateExternal stopped refreshes when the navigation began.
+  documentNavigation.performMpaNavigation(href, historyUpdateMode, { refreshesStopped: true });
 }
 
 function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
