@@ -1,5 +1,16 @@
 # @cloudflare/workers-response-store
 
+## 1.0.1
+
+### Bug Fixes
+
+- **Response Store:** await conditional cache revalidation (#3578)
+- **Workers Response Store:** tolerate rejected edge purges (#3534)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0
 
 ## 0.1.0-beta.2
