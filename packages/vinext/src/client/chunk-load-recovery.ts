@@ -135,7 +135,8 @@ export async function loadChunk<T>(
 
   try {
     const result = await load();
-    if (result !== undefined) return result;
+    // Only vinext's own import() loaders treat undefined as a handled preload error.
+    if (result !== undefined || options.retry === false) return result;
   } catch (error) {
     failure = error;
     failed = true;

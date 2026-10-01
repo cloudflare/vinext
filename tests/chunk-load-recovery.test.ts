@@ -284,6 +284,15 @@ describe("loadChunk", () => {
     expect(ctx.fetch).not.toHaveBeenCalled();
   });
 
+  it("returns a resolved undefined unchanged when retry is off", async () => {
+    const ctx = await setup();
+    const load = vi.fn(async () => undefined);
+
+    await expect(ctx.mod.loadChunk(load, { retry: false })).resolves.toBeUndefined();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(ctx.fetch).not.toHaveBeenCalled();
+  });
+
   it.each([
     [0, 200],
     [0.5, 400],
