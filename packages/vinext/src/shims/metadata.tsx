@@ -12,7 +12,10 @@ import type {
 } from "@vinext/types/next/upstream/dist/lib/metadata/types/metadata-interface";
 import { makeThenableParams, type ThenableParamsObserver } from "./thenable-params.js";
 import { isAbsoluteOrProtocolRelativeUrl } from "./url-utils.js";
-import { withUseCachePageMarker } from "./internal/app-page-props-cache-key.js";
+import {
+  withUseCachePageMarker,
+  withUseCacheLayoutMarker,
+} from "./internal/app-page-props-cache-key.js";
 
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcceptsSecondArgument");
@@ -42,7 +45,7 @@ export async function resolveModuleViewport(
     // also gets the `$$isPage` marker.
     const props =
       searchParams === undefined
-        ? { params: asyncParams }
+        ? withUseCacheLayoutMarker(mod.generateViewport, { params: asyncParams })
         : withUseCachePageMarker(mod.generateViewport, {
             params: asyncParams,
             searchParams: makeThenableParams(searchParams, searchParamsObserver),
@@ -604,7 +607,7 @@ export async function resolveModuleMetadata(
     // also gets the `$$isPage` marker.
     const props =
       searchParams === undefined
-        ? { params: asyncParams }
+        ? withUseCacheLayoutMarker(generateMetadata, { params: asyncParams })
         : withUseCachePageMarker(generateMetadata, {
             params: asyncParams,
             searchParams: makeThenableParams(searchParams, searchParamsObserver),

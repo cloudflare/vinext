@@ -761,3 +761,206 @@ export default async function OpenGraphImage() {
     }
   }, 120000);
 });
+
+// File metadata is deliberately stricter than Next.js's encodeFormData key.
+// Next.js covers binary contents in test/e2e/app-dir/use-cache/use-cache.test.ts.
+describe("use cache production argument isolation", () => {
+  let root: string;
+  let handler: BuiltAppHandler;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cache-arguments-"));
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    fs.writeFileSync(
+      path.join(root, "next.config.mjs"),
+      "export default { cacheComponents: true };",
+    );
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    fs.mkdirSync(path.join(root, "app", "api", "check"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "app", "layout.tsx"),
+      "export default function Root({ children }) { return <html><body>{children}</body></html>; }",
+    );
+    fs.writeFileSync(
+      path.join(root, "app", "page.tsx"),
+      "export default function Page() { return <p>Cache arguments</p>; }",
+    );
+    fs.copyFileSync(
+      path.join(APP_FIXTURE_DIR, "app", "api", "use-cache-arguments", "route.ts"),
+      path.join(root, "app", "api", "check", "route.ts"),
+    );
+    fs.cpSync(
+      path.join(APP_FIXTURE_DIR, "app", "use-cache-slot-markers"),
+      path.join(root, "app", "use-cache-slot-markers"),
+      { recursive: true },
+    );
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+    const built = await import(pathToFileURL(path.join(root, "dist", "server", "index.js")).href);
+    expect(isBuiltAppHandler(built.default)).toBe(true);
+    handler = built.default;
+  }, 120000);
+
+  afterAll(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  async function request(
+    query: Record<string, string>,
+  ): Promise<{ execution: number; value: unknown }> {
+    const response = await handler(
+      new Request(`http://localhost/api/check?${new URLSearchParams(query)}`),
+    );
+    expect(response).toBeInstanceOf(Response);
+    if (!(response instanceof Response)) throw new Error("Expected a response");
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+
+  it("preserves parallel slots named like cache markers in a cached layout", async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await handler(new Request("http://localhost/use-cache-slot-markers"));
+      expect(response).toBeInstanceOf(Response);
+      if (!(response instanceof Response)) throw new Error("Expected a response");
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain("<p>layout marker slot content</p>");
+      expect(html).toContain("<p>page marker slot content</p>");
+      expect(html).toContain("<p>cached layout with marker-named slots</p>");
+    }
+  });
+
+  for (const reverse of [false, true]) {
+    it.each([
+      ["bytes", "file", { text: "X" }],
+      ["filename", "file", { name: "public.txt" }],
+      ["timestamp", "file", { time: "333" }],
+      ["mime", "file", { type: "application/pdf" }],
+      ["nested", "nested", { time: "333" }],
+      ["promise", "promise", { time: "333" }],
+      ["augmented-promise", "augmented-promise", { time: "333" }],
+      ["map-file", "map-file", { time: "333" }],
+      ["set-file", "set-file", { time: "333" }],
+      ["form-file", "form-file", { time: "333" }],
+      ["shared-file", "shared-file", { time: "333" }],
+      ["captured-file", "captured-file", { time: "333" }],
+    ] as const)(
+      `isolates %s across requests (attacker first: ${reverse})`,
+      async (label, kind, change) => {
+        const base = { kind, partition: `${label}-${reverse}` };
+        const firstInput = reverse ? { ...base, ...change } : base;
+        const secondInput = reverse ? base : { ...base, ...change };
+        const first = await request(firstInput);
+        const second = await request(secondInput);
+        expect(second.value).not.toEqual(first.value);
+        expect(second.execution).not.toBe(first.execution);
+        expect(await request(firstInput)).toEqual(first);
+        expect(await request(secondInput)).toEqual(second);
+      },
+    );
+  }
+
+  it("separates equal-size file contents with identical metadata", async () => {
+    const base = { kind: "file", partition: "same-size" };
+    const first = await request({ ...base, text: "A" });
+    const second = await request({ ...base, text: "B" });
+    expect(second.value).not.toEqual(first.value);
+    expect(second.execution).not.toBe(first.execution);
+    expect(await request({ ...base, text: "A" })).toEqual(first);
+  });
+
+  it("uses Flight completion order while reusing identical promise schedules", async () => {
+    const base = { kind: "promise-order", partition: "promise-order" };
+    const first = await request({ ...base, order: "forward" });
+    const reverse = await request({ ...base, order: "reverse" });
+    expect(reverse.value).toEqual(first.value);
+    expect(reverse.execution).not.toBe(first.execution);
+    expect(await request({ ...base, order: "forward" })).toEqual(first);
+  });
+
+  it("isolates indexed array values when an iterator hides them", async () => {
+    const base = { kind: "array-iterator", partition: "array-iterator" };
+    const first = await request({ ...base, text: "private" });
+    const second = await request({ ...base, text: "public" });
+    expect(first.value).toEqual(["private"]);
+    expect(second.value).toEqual(["public"]);
+    expect(await request({ ...base, text: "private" })).toEqual(first);
+  });
+
+  it.each(["byte-view", "data-view"])(
+    "normalizes %s and reuses its canonical entry",
+    async (kind) => {
+      const base = { kind, partition: `normalized-${kind}` };
+      const first = await request(base);
+      expect(first.value).toEqual({
+        type: kind === "byte-view" ? "Uint8Array" : "DataView",
+        offset: 0,
+        bytes: [1],
+      });
+      expect(await request({ ...base, standalone: "1" })).toEqual(first);
+    },
+  );
+
+  it.each(["blob", "bytes", "map", "set", "form-order", "date"])(
+    "preserves %s contents and repeat hits",
+    async (kind) => {
+      const base = { kind, partition: kind };
+      const firstText = kind === "date" ? "2000-01-01" : "ab";
+      const secondText = kind === "date" ? "2001-01-01" : "ba";
+      const first = await request({ ...base, text: firstText });
+      const second = await request({ ...base, text: secondText });
+      expect(second.value).not.toEqual(first.value);
+      expect(second.execution).not.toBe(first.execution);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(await request({ ...base, text: firstText })).toEqual(first);
+    },
+  );
+
+  it.each([
+    "file",
+    "nested",
+    "promise",
+    "map-file",
+    "set-file",
+    "form-file",
+    "blob",
+    "bytes",
+    "form-order",
+    "promise-order",
+    "shared-file",
+    "shared-blob",
+    "captured-file",
+    "captured-rich",
+    "byte-view",
+    "data-view",
+    "nested-view",
+    "array-iterator",
+    "augmented-promise",
+    "shared-date",
+    "invalid-date",
+  ])("replays %s with the original metadata and cache key", async (kind) => {
+    const response = await handler(
+      new Request(
+        `http://localhost/api/check?${new URLSearchParams({ kind, replay: "1", partition: `replay-${kind}`, text: "ab" })}`,
+      ),
+    );
+    expect(response).toBeInstanceOf(Response);
+    if (!(response instanceof Response)) throw new Error("Expected a response");
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.hasReplay).toBe(true);
+    expect(result.sameKey).toBe(true);
+    expect(result.writes).toBe(2);
+    expect(result.after.value).toEqual(result.first.value);
+    expect(result.after.execution).toBe(result.first.execution + 1);
+  });
+});

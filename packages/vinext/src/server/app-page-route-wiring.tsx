@@ -24,6 +24,7 @@ import DefaultGlobalError from "vinext/shims/default-global-error";
 import DefaultNotFound from "vinext/shims/default-not-found";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
+import { withUseCacheLayoutMarker } from "vinext/shims/internal/app-page-props-cache-key";
 import {
   MetadataHead,
   ViewportHead,
@@ -373,10 +374,12 @@ export function probeAppPageLayoutWithTracking<TModule extends AppPageModule>(op
     );
     return probeReactServerSubtree(
       <LayoutComponent
-        params={options.makeThenableParams(
-          layoutParams,
-          options.layoutParamAccess?.createThenableParamsObserver(layoutId),
-        )}
+        {...withUseCacheLayoutMarker(LayoutComponent, {
+          params: options.makeThenableParams(
+            layoutParams,
+            options.layoutParamAccess?.createThenableParamsObserver(layoutId),
+          ),
+        })}
       >
         {APP_PAGE_LAYOUT_PROBE_CHILD}
       </LayoutComponent>,
@@ -1190,11 +1193,11 @@ export function buildAppPageElements<
     let layoutElement: ReactNode = layoutDependency ? (
       renderAppComponentWithDependencyBarrier(
         LayoutComponent,
-        { ...layoutProps, children: <Children /> },
+        withUseCacheLayoutMarker(LayoutComponent, { ...layoutProps, children: <Children /> }),
         layoutDependency,
       )
     ) : (
-      <LayoutComponent {...layoutProps}>
+      <LayoutComponent {...withUseCacheLayoutMarker(LayoutComponent, layoutProps)}>
         <Children />
       </LayoutComponent>
     );
@@ -1444,7 +1447,11 @@ export function buildAppPageElements<
         const layoutEntry = layoutEntriesAtPosition[layoutIndex];
         const LayoutComponent = layoutEntry.component;
         slotElement = (
-          <LayoutComponent params={options.makeThenableParams(layoutEntry.params)}>
+          <LayoutComponent
+            {...withUseCacheLayoutMarker(LayoutComponent, {
+              params: options.makeThenableParams(layoutEntry.params),
+            })}
+          >
             {slotElement}
           </LayoutComponent>
         );

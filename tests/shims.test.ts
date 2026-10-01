@@ -6904,7 +6904,7 @@ describe('"use cache" runtime', () => {
     await cached();
 
     // The cache entry should have tags
-    const entry = await handler.get("use-cache:test:tags");
+    const entry = await handler.get("use-cache:v2:test:tags");
     expect(entry).not.toBeNull();
     expect(entry?.value).toHaveProperty("kind", "FETCH");
     if (entry?.value && entry.value.kind === "FETCH") {
@@ -6976,7 +6976,7 @@ describe('"use cache" runtime', () => {
     // Now build the outer entry; its body re-runs `inner()`, which HITs.
     await outer();
 
-    const outerEntry = await handler.get("use-cache:test:nested-outer");
+    const outerEntry = await handler.get("use-cache:v2:test:nested-outer");
     expect(outerEntry?.value).toHaveProperty("kind", "FETCH");
     if (outerEntry?.value && outerEntry.value.kind === "FETCH") {
       // The outer entry must carry both its own tag and the nested inner tag.
@@ -7180,7 +7180,7 @@ describe('"use cache" runtime', () => {
     await cached();
 
     // The entry should have the minimum revalidate (1 second from "seconds" profile)
-    const entry = await handler.get("use-cache:test:min-wins");
+    const entry = await handler.get("use-cache:v2:test:min-wins");
     expect(entry).not.toBeNull();
     if (entry?.value && entry.value.kind === "FETCH") {
       expect(entry.value.revalidate).toBe(1);
@@ -7192,27 +7192,18 @@ describe('"use cache" runtime', () => {
     expect(getCacheContext()).toBeNull();
   });
 
-  it("consistent cache keys for same objects regardless of key order", async () => {
+  it("keys the observable property order in JSON fallback arguments", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     setCacheHandler(new MemoryCacheHandler());
-
-    let callCount = 0;
-    const fn = async (_opts: Record<string, unknown>) => {
-      callCount++;
-      return { result: "ok" };
-    };
-
+    const fn = vi.fn(async (opts: Record<string, unknown>) => Object.keys(opts));
     const cached = registerCachedFunction(fn, "test:stable-key");
-
-    // Different key order, same content — should be same cache key
-    await cached({ b: 2, a: 1 });
-    expect(callCount).toBe(1);
-
-    await cached({ a: 1, b: 2 });
-    expect(callCount).toBe(1); // Same cache key, still cached
+    expect(await cached({ b: 2, a: 1 })).toEqual(["b", "a"]);
+    expect(await cached({ a: 1, b: 2 })).toEqual(["a", "b"]);
+    expect(await cached({ b: 2, a: 1 })).toEqual(["b", "a"]);
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it("cached function with no args works correctly", async () => {
@@ -7365,7 +7356,7 @@ describe('"use cache" runtime', () => {
 
     // Verify the stored value is JSON (no x-vinext-rsc header)
     // stableStringify wraps args as an array: [3]
-    const entry = await handler.get("use-cache:test:json-fallback:[3]");
+    const entry = await handler.get("use-cache:v2:test:json-fallback:[3]");
     expect(entry).not.toBeNull();
     if (entry?.value && entry.value.kind === "FETCH") {
       expect(entry.value.data.headers["x-vinext-rsc"]).toBeUndefined();
@@ -8560,21 +8551,25 @@ describe('"use cache" runtime', () => {
   });
 });
 
-describe("replyToCacheKey deterministic hashing", () => {
-  it("returns string replies as-is", async () => {
-    const { replyToCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    expect(await replyToCacheKey("hello")).toBe("hello");
-    expect(await replyToCacheKey("")).toBe("");
+describe("Flight transport deterministic hashing", () => {
+  async function replyToCacheKey(reply: string | FormData) {
+    const { flightArgumentsKey, snapshotFlightReply } =
+      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
+    return flightArgumentsKey(await snapshotFlightReply(reply));
+  }
+  it("separates string replies", async () => {
+    expect(await replyToCacheKey("hello")).not.toBe(await replyToCacheKey(""));
   });
 
   it("produces stable hash for FormData with string entries", async () => {
-    const { replyToCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { CacheFlightFormData } =
+      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
 
-    const fd1 = new FormData();
+    const fd1 = new CacheFlightFormData();
     fd1.append("a", "1");
     fd1.append("b", "2");
 
-    const fd2 = new FormData();
+    const fd2 = new CacheFlightFormData();
     fd2.append("a", "1");
     fd2.append("b", "2");
 
@@ -8583,31 +8578,33 @@ describe("replyToCacheKey deterministic hashing", () => {
     expect(key1).toBe(key2);
   });
 
-  it("produces stable hash regardless of entry insertion order", async () => {
-    const { replyToCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
+  it("preserves observable entry insertion order", async () => {
+    const { CacheFlightFormData } =
+      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
 
-    const fd1 = new FormData();
+    const fd1 = new CacheFlightFormData();
     fd1.append("b", "2");
     fd1.append("a", "1");
 
-    const fd2 = new FormData();
+    const fd2 = new CacheFlightFormData();
     fd2.append("a", "1");
     fd2.append("b", "2");
 
     const key1 = await replyToCacheKey(fd1);
     const key2 = await replyToCacheKey(fd2);
-    expect(key1).toBe(key2);
+    expect(key1).not.toBe(key2);
   });
 
   it("produces stable hash for FormData with Blob entries", async () => {
-    const { replyToCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { CacheFlightFormData } =
+      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
 
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "application/octet-stream" });
 
-    const fd1 = new FormData();
+    const fd1 = new CacheFlightFormData();
     fd1.append("data", blob);
 
-    const fd2 = new FormData();
+    const fd2 = new CacheFlightFormData();
     fd2.append("data", blob);
 
     const key1 = await replyToCacheKey(fd1);
@@ -8616,12 +8613,13 @@ describe("replyToCacheKey deterministic hashing", () => {
   });
 
   it("produces different hashes for different FormData content", async () => {
-    const { replyToCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { CacheFlightFormData } =
+      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
 
-    const fd1 = new FormData();
+    const fd1 = new CacheFlightFormData();
     fd1.append("a", "1");
 
-    const fd2 = new FormData();
+    const fd2 = new CacheFlightFormData();
     fd2.append("a", "2");
 
     const key1 = await replyToCacheKey(fd1);
@@ -8635,9 +8633,9 @@ describe("buildUseCacheKey logical handler keys", () => {
   // test to exercise per-test module state/loading boundaries.
   it("builds keys from the function scope and serialized arguments", async () => {
     const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    expect(buildUseCacheKey("mod#Comp", undefined)).toBe("use-cache:mod#Comp");
+    expect(buildUseCacheKey("mod#Comp", undefined)).toBe("use-cache:v2:mod#Comp");
     expect(buildUseCacheKey("mod#Comp", "dep-v1", '["a"]')).toBe(
-      'use-cache:build:dep-v1:mod#Comp:["a"]',
+      'use-cache:v2:build:dep-v1:mod#Comp:["a"]',
     );
   });
 
@@ -8646,7 +8644,7 @@ describe("buildUseCacheKey logical handler keys", () => {
     const longArgs = JSON.stringify([{ slug: "a".repeat(600) }]);
     const key = buildUseCacheKey("mod#CachedRoute", "deploy-usecache-v1", longArgs);
 
-    expect(key).toBe(`use-cache:build:deploy-usecache-v1:mod#CachedRoute:${longArgs}`);
+    expect(key).toBe(`use-cache:v2:build:deploy-usecache-v1:mod#CachedRoute:${longArgs}`);
     expect(key).not.toContain(":__hash:");
   });
 });
