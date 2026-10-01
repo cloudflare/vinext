@@ -45,7 +45,7 @@
       "id": "dev-cold-start-pages-large",
       "suite": "Development",
       "label": "Dev server cold start (large Pages Router app)",
-      "description": "Time from launching a fresh dev-server process until the root route of a generated Pages Router app responds. The app links 40 local packages through node_modules and imports them through barrel files (2,000 components). Framework caches are cleared before every round.",
+      "description": "Time from launching a fresh dev-server process until the root route of a generated Pages Router app responds. The app links 40 local packages through node_modules and imports them through barrel files (3,200 components). Framework caches are cleared before every round.",
       "unit": "ms",
       "lowerIsBetter": true,
       "implementations": [
