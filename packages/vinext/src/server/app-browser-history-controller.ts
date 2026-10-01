@@ -426,10 +426,10 @@ export class AppBrowserHistoryController {
 
   /**
    * Writes the history entry for an approved push/replace/traverse commit and
-   * advances the traversal index. `stageClientParams` runs at the exact point it
-   * ran inline in the browser-entry commit effect so client-param staging stays
-   * ordered relative to the history write. Mirrors Next.js committing tree state
-   * into the history entry during the navigation commit.
+   * advances the traversal index. `stageClientParams` runs before the tree
+   * snapshot claim release and the history write; when no entry is written it
+   * runs right after the history state metadata sync. Mirrors Next.js committing
+   * tree state into the history entry during the navigation commit.
    */
   commitNavigationHistory(options: CommitNavigationHistoryOptions): void {
     const currentHref = this.#readCurrentHref();
