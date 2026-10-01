@@ -33,9 +33,7 @@ export class ServerActionNotSentError extends Error {
   override name = "ServerActionNotSentError";
 
   constructor() {
-    super(
-      "[vinext] This Server Action was not sent because the page began loading another document. Try again.",
-    );
+    super("[vinext] Server Action not sent: the page began loading another document. Try again.");
   }
 }
 

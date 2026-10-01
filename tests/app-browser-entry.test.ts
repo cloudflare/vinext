@@ -3753,7 +3753,7 @@ describe("public App Router refresh queue", () => {
 
   describe("when the document navigation expires", () => {
     const notSentMessage =
-      "[vinext] This Server Action was not sent because the page began loading another document. Try again.";
+      "[vinext] Server Action not sent: the page began loading another document. Try again.";
 
     it("exports an error that names itself and explains the unsent action", () => {
       const error = new ServerActionNotSentError();
