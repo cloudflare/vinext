@@ -108,6 +108,7 @@ import {
   clearActionHttpFallbackHeadOnCommit,
   syncServerActionHttpFallbackHead,
 } from "./app-browser-action-http-fallback-head.js";
+import { HAS_CLIENT_REWRITES } from "vinext/shims/internal/hybrid-client-route-owner-loader";
 import { createAppBrowserDocumentNavigation } from "./app-browser-document-navigation.js";
 import {
   createNavigationCommitEffect as createNavigationCommitEffectWithDeps,
@@ -254,8 +255,6 @@ import {
   type VisitedResponseCacheCandidateFacts,
 } from "./navigation-planner.js";
 import { serverActionClient } from "virtual:vinext-app-capabilities";
-
-const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
