@@ -15,7 +15,7 @@ let pendingLoad: Promise<HybridClientRouteOwnerModule | null> | null = null;
 let loadFailure: { error: unknown } | null = null;
 
 const LOAD_FAILED_MESSAGE =
-  "[vinext] Could not load the link routing script, so links will load full pages. The site was probably updated; reload the page.";
+  "[vinext] Could not load the link routing script, so links will load full pages. Reload the page.";
 
 export function getLoadedHybridClientRouteOwner(): HybridClientRouteOwnerModule | null {
   return loadedModule;
@@ -39,10 +39,7 @@ export function resolveHybridClientRouteOwnerOrDocument(
   return loadedModule ? loadedModule.resolveHybridClientRouteOwner(href, basePath) : "document";
 }
 
-/**
- * Resolves to null when the chunk cannot be loaded; callers then navigate by
- * document. Only builds with client rewrites need this chunk.
- */
+/** Resolves to null when the chunk cannot be loaded. */
 export function loadHybridClientRouteOwner(): Promise<HybridClientRouteOwnerModule | null> {
   if (loadedModule) return Promise.resolve(loadedModule);
 
