@@ -190,6 +190,15 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/web-vitals.ts")).toBeUndefined();
   });
 
+  it("keeps next/image's remote-pattern helpers behind the next/image boundary", () => {
+    // image-config (and its ipaddr.js dependency) is only imported by the
+    // image shim. Grouping it into the eager runtime chunk would ship it on
+    // every App Router page, including routes that never render next/image.
+    expect(appClientManualChunks("/vinext/shims/image-config.ts")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/image-config.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/image-config.js")).toBe("vinext");
+  });
+
   it("handles pnpm-style nested node_modules paths", () => {
     const pnpmPath = "/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js";
     expect(clientManualChunks(pnpmPath)).toBe("framework");
