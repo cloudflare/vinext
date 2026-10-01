@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type APIResponse, type Page } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 // Tests shared by the dev and preview specs for examples/app-router-nitro.
@@ -18,6 +18,15 @@ async function expectSameDocument(page: Page): Promise<void> {
   expect(await page.evaluate(() => Reflect.get(window, "__nitroE2eDocument"))).toBe(true);
 }
 
+function setCookieValues(response: APIResponse, name: string): string[] {
+  return response
+    .headersArray()
+    .filter((header) => header.name.toLowerCase() === "set-cookie")
+    .map((header) => header.value.split(";")[0])
+    .filter((pair) => pair.startsWith(`${name}=`))
+    .map((pair) => pair.slice(name.length + 1));
+}
+
 export function defineNitroAppTests(): void {
   test("renders and hydrates the home page", async ({ page }) => {
     await gotoHydrated(page, "/");
@@ -31,7 +40,7 @@ export function defineNitroAppTests(): void {
     const response = await request.get("/");
     expect(response.status()).toBe(200);
     expect(response.headers()["x-vinext-middleware"]).toBe("active");
-    expect(response.headers()["set-cookie"]).toContain("visit-count=1");
+    expect(setCookieValues(response, "visit-count")).toEqual(["1"]);
   });
 
   test("renders a page that reads request headers", async ({ page }) => {
@@ -95,7 +104,7 @@ export function defineNitroAppTests(): void {
     });
     expect(post.status()).toBe(200);
     expect(await post.json()).toEqual({ ok: true, action: "set-theme" });
-    expect(post.headers()["set-cookie"]).toContain("theme=dark");
+    expect(setCookieValues(post, "theme")).toEqual(["dark"]);
 
     const del = await request.delete("/api/hello");
     expect(del.status()).toBe(200);
