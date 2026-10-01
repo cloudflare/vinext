@@ -128,8 +128,6 @@ export type ServerActionResultResponseFactsInput = {
   compatibilityIdHeader: string | null;
   currentHref: string;
   isServerActionNotFound: boolean;
-  origin: string;
-  responseUrl: string | null;
 };
 
 /**
@@ -149,8 +147,6 @@ export function createServerActionResultFacts(
     currentHref: input.currentHref,
     isRscContentType: (input.contentTypeHeader ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE),
     isServerActionNotFound: input.isServerActionNotFound,
-    origin: input.origin,
-    responseUrl: input.responseUrl,
   };
 }
 

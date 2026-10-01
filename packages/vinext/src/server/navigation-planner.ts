@@ -20,6 +20,7 @@ import {
   resolveStreamedRscRedirectLifecycleHop,
 } from "./app-browser-rsc-redirect.js";
 import {
+  isRscCompatibilityIdCompatible,
   resolveHardNavigationTargetFromRscResponse,
   resolveRscCompatibilityNavigationDecision,
 } from "./app-rsc-cache-busting.js";
@@ -1776,8 +1777,6 @@ export type ServerActionResultFacts = {
   currentHref: string;
   isRscContentType: boolean;
   isServerActionNotFound: boolean;
-  origin: string;
-  responseUrl: string | null;
 };
 
 export type ServerActionResultDecision =
@@ -1803,14 +1802,6 @@ export type RscNavigationErrorDecision = {
 };
 
 function classifyServerActionResult(facts: ServerActionResultFacts): ServerActionResultDecision {
-  // A client without a compatibility id cannot prove skew.
-  if (facts.clientCompatibilityId === null) {
-    return {
-      kind: "proceed",
-      trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
-    };
-  }
-
   // Non-RSC action responses are not subject to the cache-busting compatibility
   // check; the executor will handle them directly. An unknown-action response
   // is the exception: a deploy that removed the action also changed the build,
@@ -1822,25 +1813,13 @@ function classifyServerActionResult(facts: ServerActionResultFacts): ServerActio
     };
   }
 
-  const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
-    clientCompatibilityId: facts.clientCompatibilityId,
-    currentHref: facts.currentHref,
-    origin: facts.origin,
-    responseCompatibilityId: facts.compatibilityIdHeader,
-    responseUrl: facts.responseUrl,
-  });
-
-  if (compatibilityDecision.kind === "compatible") {
+  // A client without a compatibility id cannot prove skew.
+  if (isRscCompatibilityIdCompatible(facts.compatibilityIdHeader, facts.clientCompatibilityId)) {
     return {
       kind: "proceed",
       trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
     };
   }
-
-  // compatibilityDecision.hardNavigationTarget (derived from responseUrl with _rsc stripped)
-  // is intentionally not used here. For server actions, responseUrl is the action endpoint URL,
-  // not the page URL the user should land on. The authoritative destinations are actionRedirectHref
-  // (explicit redirect) and currentHref (reload in place) — both are set below.
 
   if (facts.actionRedirectHref !== null) {
     return {

@@ -1066,8 +1066,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: "text/x-component",
       currentHref,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: currentHref,
     });
     expect(pushFacts.actionRedirectHref).toBe("https://example.com/target");
     expect(pushFacts.actionRedirectType).toBe("push");
@@ -1082,8 +1080,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: "text/x-component",
       currentHref,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: currentHref,
     });
     expect(replaceFacts.actionRedirectType).toBe("replace");
 
@@ -1096,8 +1092,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: "text/x-component",
       currentHref,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: currentHref,
     });
     expect(noRedirectFacts.actionRedirectHref).toBeNull();
     expect(noRedirectFacts.actionRedirectType).toBe("replace");
@@ -1111,8 +1105,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: "text/plain",
       currentHref,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: currentHref,
     });
     expect(nonRscFacts.isRscContentType).toBe(false);
   });
@@ -1239,8 +1231,6 @@ describe("app browser entry navigation scheduling", () => {
       currentHref: "https://example.com/current",
       isRscContentType: true,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: "https://example.com/current",
     });
     expect(applyServerActionResultDecision(pushDecision, clearCaches, performHardNavigation)).toBe(
       true,
@@ -1263,8 +1253,6 @@ describe("app browser entry navigation scheduling", () => {
       currentHref: "https://example.com/current",
       isRscContentType: true,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: "https://example.com/current",
     });
     expect(
       applyServerActionResultDecision(replaceDecision, clearCaches, performHardNavigation),
@@ -1283,8 +1271,6 @@ describe("app browser entry navigation scheduling", () => {
       currentHref: "https://example.com/dashboard?view=grid",
       isRscContentType: true,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: "https://example.com/dashboard?view=grid",
     });
     expect(
       applyServerActionResultDecision(noRedirectDecision, clearCaches, performHardNavigation),
@@ -1307,8 +1293,6 @@ describe("app browser entry navigation scheduling", () => {
       currentHref: "https://example.com/current",
       isRscContentType: true,
       isServerActionNotFound: false,
-      origin: "https://example.com",
-      responseUrl: "https://example.com/current",
     });
     expect(
       applyServerActionResultDecision(proceedDecision, clearCaches, performHardNavigation),
@@ -1323,7 +1307,6 @@ describe("app browser entry navigation scheduling", () => {
     // exercises the real helper against synthetic responses so the seam cannot
     // drift out of sync.
     const currentHref = "https://example.com/current";
-    const origin = "https://example.com";
 
     // Incompatible RSC action redirect — mimics the headers a real server would return.
     const redirectResponse = new Response("flight", {
@@ -1342,8 +1325,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: redirectResponse.headers.get("content-type"),
       currentHref,
       isServerActionNotFound: false,
-      origin,
-      responseUrl: currentHref,
     });
     const pushDecision = navigationPlanner.classifyServerActionResult(pushFacts);
     expect(pushDecision.kind).toBe("hardNavigate");
@@ -1371,8 +1352,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: weirdRedirectResponse.headers.get("content-type"),
       currentHref,
       isServerActionNotFound: false,
-      origin,
-      responseUrl: currentHref,
     });
     const weirdDecision = navigationPlanner.classifyServerActionResult(weirdFacts);
     expect(weirdDecision.kind).toBe("hardNavigate");
@@ -1398,8 +1377,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: noRedirectResponse.headers.get("content-type"),
       currentHref,
       isServerActionNotFound: false,
-      origin,
-      responseUrl: currentHref,
     });
     const noRedirectDecision = navigationPlanner.classifyServerActionResult(noRedirectFacts);
     expect(noRedirectDecision.kind).toBe("hardNavigate");
@@ -1424,8 +1401,6 @@ describe("app browser entry navigation scheduling", () => {
       contentTypeHeader: nonRscResponse.headers.get("content-type"),
       currentHref,
       isServerActionNotFound: false,
-      origin,
-      responseUrl: currentHref,
     });
     expect(navigationPlanner.classifyServerActionResult(nonRscFacts).kind).toBe("proceed");
   });
@@ -4036,7 +4011,7 @@ describe("app browser document navigation", () => {
   describe("same-page targets with a fragment", () => {
     const currentHref = "https://example.com/dashboard#section";
     const documentUrl = "https://example.com/dashboard";
-    const planner = { origin: "https://example.com", compatibilityIdHeader: "server-build" };
+    const planner = { compatibilityIdHeader: "server-build" };
 
     // Each decision keeps the hash, which a location change alone would only scroll to.
     const decisions: Array<[string, () => { url: string; historyMode?: "assign" | "replace" }]> = [
@@ -4052,8 +4027,6 @@ describe("app browser document navigation", () => {
               currentHref,
               isRscContentType: true,
               isServerActionNotFound: false,
-              origin: planner.origin,
-              responseUrl: currentHref,
             }),
           ),
       ],

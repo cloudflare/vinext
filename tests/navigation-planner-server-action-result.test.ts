@@ -20,8 +20,6 @@ function createFacts(overrides: Partial<ServerActionResultFacts> = {}): ServerAc
     currentHref: "https://example.com/dashboard",
     isRscContentType: true,
     isServerActionNotFound: false,
-    origin: "https://example.com",
-    responseUrl: "https://example.com/dashboard",
     ...overrides,
   };
 }

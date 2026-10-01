@@ -202,8 +202,6 @@ export async function invokeClientServerAction(
     contentTypeHeader: fetchResponse.headers.get("content-type"),
     currentHref: actionInitiation.href,
     isServerActionNotFound: isServerActionNotFoundResponse(fetchResponse),
-    origin: window.location.origin,
-    responseUrl: fetchResponse.url,
   });
   const fetchResponseIsRsc = actionResultFacts.isRscContentType;
   const actionResultDecision = deps.navigationPlanner.classifyServerActionResult(actionResultFacts);
