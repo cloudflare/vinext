@@ -854,12 +854,7 @@ test.describe("a live build with a chunk that fails to load", () => {
     await page.waitForTimeout(3_000);
     expect(await tab.documentLoads()).toBe(1);
     expectProbesOnEntry(tab);
-    expect(
-      tab.consoleMessages.some(
-        (message) =>
-          message.type === "error" && message.text.includes("could not be reloaded automatically"),
-      ),
-    ).toBe(true);
+    expect(tab.consoleMessages).toContainEqual({ text: recovery.REFUSED_MESSAGE, type: "error" });
   });
 
   test("7. a client component that throws while evaluating surfaces its error with no load", async ({
