@@ -77,10 +77,7 @@ import {
 } from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
-import {
-  resolveDirectHybridClientRouteOwner,
-  type HybridClientOwner,
-} from "./internal/hybrid-client-route-owner-direct.js";
+import type { HybridClientOwner } from "./internal/hybrid-client-route-owner-direct.js";
 import { retryScrollTo, scrollToHashTarget, scrollToHashTargetOnNextFrame } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
@@ -108,11 +105,12 @@ import {
 import {
   getHybridClientRouteOwnerLoadFailure,
   getLoadedHybridClientRouteOwner,
+  HAS_CLIENT_REWRITES,
   loadHybridClientRouteOwner,
+  resolveHybridClientRouteOwnerOrDocument,
 } from "./internal/hybrid-client-route-owner-loader.js";
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
-const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 /**
  * Load rewrite-aware hybrid route ownership before navigation becomes
@@ -132,14 +130,7 @@ export function resolveLoadedHybridClientRewriteHref(
 
 function resolveHybridClientRouteOwner(href: string): HybridClientOwner | null {
   if (!HAS_PAGES_ROUTER) return null;
-
-  const ownerModule = getLoadedHybridClientRouteOwner();
-  if (ownerModule) return ownerModule.resolveHybridClientRouteOwner(href, __basePath);
-  // The direct resolver ignores client rewrites, so it could send a rewritten
-  // URL to the wrong router. Without the rewrite-aware module, the server
-  // decides.
-  if (getHybridClientRouteOwnerLoadFailure()) return "document";
-  return resolveDirectHybridClientRouteOwner(href, __basePath);
+  return resolveHybridClientRouteOwnerOrDocument(href, __basePath);
 }
 
 export {

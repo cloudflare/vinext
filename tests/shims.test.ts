@@ -7,6 +7,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PAGES_FIXTURE_DIR, aliasEntriesToRecord } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
+import {
+  CHUNK_RETRY_DELAY_MIN_MS,
+  CHUNK_RETRY_DELAY_SPREAD_MS,
+} from "../packages/vinext/src/client/chunk-load-recovery.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
 import { compileClientMiddlewareMatchers } from "../packages/vinext/src/entries/pages-client-entry.js";
 import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
@@ -585,6 +589,7 @@ describe("next/navigation shim", () => {
     (globalThis as any).window = win;
 
     try {
+      vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
       vi.resetModules();
       const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
       appRouterInstance.push("/#top", { scroll: false });
@@ -596,6 +601,7 @@ describe("next/navigation shim", () => {
       expect(calls).not.toContain("queue");
       expect(calls).toContain("navigate:refresh:http://localhost/#top");
     } finally {
+      vi.unstubAllEnvs();
       (globalThis as any).window = previousWindow;
       vi.resetModules();
     }
@@ -647,6 +653,7 @@ describe("next/navigation shim", () => {
     (globalThis as any).window = win;
 
     try {
+      vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
       vi.resetModules();
       const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
       const { setClientInstrumentationHooks } =
@@ -667,6 +674,7 @@ describe("next/navigation shim", () => {
       expect(calls).not.toContain("queue");
       expect(calls).toContain("navigate:refresh:http://localhost/#top");
     } finally {
+      vi.unstubAllEnvs();
       (globalThis as any).window = previousWindow;
       vi.resetModules();
     }
@@ -778,6 +786,7 @@ describe("next/navigation shim", () => {
 
     try {
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
+      vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
       vi.resetModules();
       const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
       if (!appRouterInstance.experimental_gesturePush) {
@@ -792,6 +801,7 @@ describe("next/navigation shim", () => {
       expect(calls).not.toContain("queue");
       expect(calls).toContain("navigate:refresh:http://localhost/#top");
     } finally {
+      vi.unstubAllEnvs();
       (globalThis as any).window = previousWindow;
       vi.unstubAllEnvs();
       vi.resetModules();
@@ -927,6 +937,7 @@ describe("next/navigation shim", () => {
     };
 
     try {
+      vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
       vi.resetModules();
       const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
 
@@ -949,6 +960,7 @@ describe("next/navigation shim", () => {
       );
       expect(scrollIntoView).toHaveBeenCalled();
     } finally {
+      vi.unstubAllEnvs();
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -999,6 +1011,7 @@ describe("next/navigation shim", () => {
     };
 
     try {
+      vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
       vi.resetModules();
       const { NAVIGATION_RUNTIME_KEY } =
         await import("../packages/vinext/src/client/navigation-runtime.js");
@@ -1021,6 +1034,7 @@ describe("next/navigation shim", () => {
       expect(navigate).not.toHaveBeenCalled();
       expect(location.replace).not.toHaveBeenCalled();
     } finally {
+      vi.unstubAllEnvs();
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -21920,55 +21934,61 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
-  it("hard-navigates to the requested URL when the hybrid route owner chunk cannot load", async () => {
-    const previousWindow = (globalThis as any).window;
-    const { win, pushState, render } = createNavWindow();
-    Object.assign(win, {
-      __VINEXT_CLIENT_REWRITES__: {
-        afterFiles: [],
-        beforeFiles: [{ destination: "/elsewhere", source: "/rewritten" }],
-        fallback: [],
-      },
-      __VINEXT_LINK_PREFETCH_ROUTES__: [
-        { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["app-page"] },
-      ],
-    });
-    (globalThis as any).window = win;
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.useFakeTimers({ toFake: ["setTimeout"] });
-    // The same chunk the Router loads to check which router owns the URL.
-    vi.doMock("../packages/vinext/src/shims/internal/hybrid-client-route-owner.js", () => {
-      throw new TypeError("Failed to fetch dynamically imported module");
-    });
+  it.each([
+    { method: "push" as const, hardNavigation: "assign" as const },
+    { method: "replace" as const, hardNavigation: "replace" as const },
+  ])(
+    "hard-navigates to the requested URL on Router.$method when the hybrid route owner chunk cannot load",
+    async ({ method, hardNavigation }) => {
+      const previousWindow = (globalThis as any).window;
+      const { win, pushState, render } = createNavWindow();
+      Object.assign(win, {
+        __VINEXT_CLIENT_REWRITES__: {
+          afterFiles: [],
+          beforeFiles: [{ destination: "/elsewhere", source: "/rewritten" }],
+          fallback: [],
+        },
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["app-page"] },
+        ],
+      });
+      (globalThis as any).window = win;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
+      // The same chunk the Router loads to check which router owns the URL.
+      vi.doMock("../packages/vinext/src/shims/internal/hybrid-client-route-owner.js", () => {
+        throw new TypeError("Failed to fetch dynamically imported module");
+      });
 
-    try {
-      vi.resetModules();
-      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      try {
+        vi.resetModules();
+        const Router = (await import("../packages/vinext/src/shims/router.js")).default;
 
-      let outcome: unknown = "pending";
-      void Router.push("/some-page").then(
-        (value) => (outcome = value),
-        (error: unknown) => (outcome = error),
-      );
-      await vi.advanceTimersByTimeAsync(1_000);
+        let outcome: unknown = "pending";
+        void Router[method]("/some-page").then(
+          (value) => (outcome = value),
+          (error: unknown) => (outcome = error),
+        );
+        await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
 
-      // A document navigation never settles the push, and the Pages client
-      // cannot render the page, so nothing may be committed or published.
-      expect(outcome).toBe("pending");
-      expect(win.location.assign).toHaveBeenCalledExactlyOnceWith("/some-page");
-      expect(render).not.toHaveBeenCalled();
-      expect(pushState).not.toHaveBeenCalled();
-      expect(consoleError).toHaveBeenCalledOnce();
-      expect(consoleError.mock.calls[0]?.[0]).toMatch(/^\[vinext\] Could not load/);
-    } finally {
-      consoleError.mockRestore();
-      vi.doUnmock("../packages/vinext/src/shims/internal/hybrid-client-route-owner.js");
-      vi.useRealTimers();
-      vi.resetModules();
-      if (previousWindow === undefined) delete (globalThis as any).window;
-      else (globalThis as any).window = previousWindow;
-    }
-  });
+        // A document navigation never settles the push, and the Pages client
+        // cannot render the page, so nothing may be committed or published.
+        expect(outcome).toBe("pending");
+        expect(win.location[hardNavigation]).toHaveBeenCalledExactlyOnceWith("/some-page");
+        expect(render).not.toHaveBeenCalled();
+        expect(pushState).not.toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalledOnce();
+        expect(consoleError.mock.calls[0]?.[0]).toMatch(/^\[vinext\] Could not load/);
+      } finally {
+        consoleError.mockRestore();
+        vi.doUnmock("../packages/vinext/src/shims/internal/hybrid-client-route-owner.js");
+        vi.useRealTimers();
+        vi.resetModules();
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+      }
+    },
+  );
 
   it("does not double-prefix basePath for middleware data redirects", async () => {
     const previousWindow = (globalThis as any).window;

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { compileClientMiddlewareMatchers } from "../packages/vinext/src/entries/pages-client-entry.js";
 import ReactDOMServer from "react-dom/server";
+import {
+  CHUNK_RETRY_DELAY_MIN_MS,
+  CHUNK_RETRY_DELAY_SPREAD_MS,
+} from "../packages/vinext/src/client/chunk-load-recovery.js";
 import type { ElementType, ReactNode } from "react";
 import {
   getLinkPrefetchDecision,
@@ -1456,7 +1460,6 @@ describe("Link when a lazily loaded chunk cannot load", () => {
   let consoleError: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    // loadChunk waits 200-600 ms before its one retry.
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -1504,7 +1507,7 @@ describe("Link when a lazily loaded chunk cannot load", () => {
       },
     };
     const clicking = onClick(event);
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
     await clicking;
     return event;
   }
@@ -1585,6 +1588,48 @@ describe("Link when a lazily loaded chunk cannot load", () => {
     }
   });
 
+  it("navigates through the direct resolver and never loads the owner chunk in a build without client rewrites", async () => {
+    vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
+    const { attempts } = breakChunk(OWNER_MODULE);
+    const location = createLocation();
+    const result = await renderIsolatedLink({
+      href: "/target",
+      nodeEnv: "production",
+      props: { prefetch: false, scroll: false },
+      windowOverrides: { location },
+    });
+
+    try {
+      await clickAndSettle(result.capturedAnchorProps.onClick!);
+
+      expect(result.navigate).toHaveBeenCalledOnce();
+      expect(location.assign).not.toHaveBeenCalled();
+      expect(attempts).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches without loading the owner chunk in a build without client rewrites", async () => {
+    vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
+    const { attempts } = breakChunk(OWNER_MODULE);
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
+
+      expect(attempts).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("loads the target as a document when the Pages Router chunk cannot load", async () => {
     // Earlier describes stub this boundary and never unmock it.
     vi.doUnmock("../packages/vinext/src/client/pages-router-link-navigation.js");
@@ -1619,11 +1664,11 @@ describe("Link when a lazily loaded chunk cannot load", () => {
 
     try {
       result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
       const attemptsAfterFirstPrefetch = attempts.mock.calls.length;
 
       result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
 
       expect(result.fetch).not.toHaveBeenCalled();
       expect(consoleError).toHaveBeenCalledWith(
@@ -1653,7 +1698,7 @@ describe("Link when a lazily loaded chunk cannot load", () => {
 
     try {
       result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
       // Node reports an unhandled rejection after the microtask queue drains.
       await new Promise((resolve) => setImmediate(resolve));
 

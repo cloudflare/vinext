@@ -1,6 +1,13 @@
 import { loadChunk } from "../../client/chunk-load-recovery.js";
+import {
+  resolveDirectHybridClientRouteOwner,
+  type HybridClientOwner,
+} from "./hybrid-client-route-owner-direct.js";
 
 type HybridClientRouteOwnerModule = typeof import("./hybrid-client-route-owner.js");
+
+/** False when the build has no client rewrites, so the direct resolver is exact. */
+export const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 let loadedModule: HybridClientRouteOwnerModule | null = null;
 let pendingLoad: Promise<HybridClientRouteOwnerModule | null> | null = null;
@@ -18,7 +25,23 @@ export function getHybridClientRouteOwnerLoadFailure(): { error: unknown } | nul
   return loadFailure;
 }
 
-/** Resolves to null when the chunk cannot be loaded; callers then navigate by document. */
+/**
+ * The owner of a URL for a navigation. Without client rewrites the direct
+ * resolver is exact. With them, a module that is not loaded, or failed to
+ * load, answers "document" so the server decides.
+ */
+export function resolveHybridClientRouteOwnerOrDocument(
+  href: string,
+  basePath: string,
+): HybridClientOwner | null {
+  if (!HAS_CLIENT_REWRITES) return resolveDirectHybridClientRouteOwner(href, basePath);
+  return loadedModule ? loadedModule.resolveHybridClientRouteOwner(href, basePath) : "document";
+}
+
+/**
+ * Resolves to null when the chunk cannot be loaded; callers then navigate by
+ * document. Only builds with client rewrites need this chunk.
+ */
 export function loadHybridClientRouteOwner(): Promise<HybridClientRouteOwnerModule | null> {
   if (loadedModule) return Promise.resolve(loadedModule);
 
@@ -30,8 +53,8 @@ export function loadHybridClientRouteOwner(): Promise<HybridClientRouteOwnerModu
     },
     (error: unknown) => {
       pendingLoad = null;
+      if (!loadFailure) console.error(LOAD_FAILED_MESSAGE, error);
       loadFailure = { error };
-      console.error(LOAD_FAILED_MESSAGE, error);
       return null;
     },
   );

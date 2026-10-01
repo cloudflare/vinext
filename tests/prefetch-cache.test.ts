@@ -26,7 +26,11 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import type { ChunkRecoveryNavigator } from "../packages/vinext/src/client/chunk-load-recovery.js";
+import {
+  CHUNK_RETRY_DELAY_MIN_MS,
+  CHUNK_RETRY_DELAY_SPREAD_MS,
+  type ChunkRecoveryNavigator,
+} from "../packages/vinext/src/client/chunk-load-recovery.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
@@ -51,6 +55,7 @@ let appRouterInstance: Navigation["appRouterInstance"];
 let consumePrefetchResponseForNavigation: Navigation["consumePrefetchResponseForNavigation"];
 let seedPrefetchResponseSnapshot: Navigation["seedPrefetchResponseSnapshot"];
 let createAppPrefetchRequestHeaders: Navigation["createAppPrefetchRequestHeaders"];
+let preloadHybridClientRouteOwner: Navigation["preloadHybridClientRouteOwner"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -92,6 +97,7 @@ beforeEach(async () => {
   consumePrefetchResponseForNavigation = nav.consumePrefetchResponseForNavigation;
   seedPrefetchResponseSnapshot = nav.seedPrefetchResponseSnapshot;
   createAppPrefetchRequestHeaders = nav.createAppPrefetchRequestHeaders;
+  preloadHybridClientRouteOwner = nav.preloadHybridClientRouteOwner;
 });
 
 afterEach(() => {
@@ -1341,6 +1347,8 @@ describe("prefetch cache eviction", () => {
   // together they pin the scoping: a global "any navigation cancels everything"
   // rule passes the first and fails the second.
   it("cancels prefetch setup superseded by a navigation to the same route (#2707)", async () => {
+    // The browser entry loads the owner module before any navigation runs.
+    await preloadHybridClientRouteOwner();
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
     ];
@@ -1360,6 +1368,8 @@ describe("prefetch cache eviction", () => {
   });
 
   it("cancels prefetch setup when only the navigation hash differs (#2707)", async () => {
+    // The browser entry loads the owner module before any navigation runs.
+    await preloadHybridClientRouteOwner();
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
     ];
@@ -1379,6 +1389,8 @@ describe("prefetch cache eviction", () => {
   });
 
   it("leaves prefetch setup alone when the navigation goes elsewhere (#2707)", async () => {
+    // The browser entry loads the owner module before any navigation runs.
+    await preloadHybridClientRouteOwner();
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
       { canPrefetchLoadingShell: false, patternParts: ["settings"], isDynamic: false },
@@ -2859,11 +2871,13 @@ describe("navigation when the hybrid route owner chunk cannot load", () => {
   const OWNER_MODULE = "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
   let nav: Navigation;
   let consoleError: ReturnType<typeof vi.spyOn>;
+  let ownerImports: ReturnType<typeof vi.fn<() => void>>;
 
   beforeEach(async () => {
-    // loadChunk waits 200-600 ms before its one retry.
     vi.useFakeTimers({ toFake: ["setTimeout"] });
+    ownerImports = vi.fn();
     vi.doMock(OWNER_MODULE, () => {
+      ownerImports();
       throw new TypeError("Failed to fetch dynamically imported module");
     });
     consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -2878,7 +2892,7 @@ describe("navigation when the hybrid route owner chunk cannot load", () => {
 
   async function preloadFailingOwner() {
     const preload = nav.preloadHybridClientRouteOwner();
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
     return preload;
   }
 
@@ -2910,20 +2924,102 @@ describe("navigation when the hybrid route owner chunk cannot load", () => {
     await expect(outcome).resolves.toBe(failure?.error);
   });
 
-  it("answers document for router.push, not the rewrite-blind direct resolver", async () => {
-    const navigate = vi.fn(async (_href: string) => {});
-    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
-      bootstrap: { routeManifest: null, rsc: undefined },
-      functions: { navigate },
-    };
-    await preloadFailingOwner();
-    const assign = vi.fn();
-    (globalThis as any).window.location.assign = assign;
+  it.each([
+    { method: "assign" as const, mode: "push" as const, other: "replace" as const },
+    { method: "replace" as const, mode: "replace" as const, other: "assign" as const },
+  ])(
+    "answers document for router.$mode, not the rewrite-blind direct resolver",
+    async ({ method, mode, other }) => {
+      const navigate = vi.fn(async (_href: string) => {});
+      (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+        bootstrap: { routeManifest: null, rsc: undefined },
+        functions: { navigate },
+      };
+      await preloadFailingOwner();
+      const location = (globalThis as any).window.location;
+      location.assign = vi.fn();
+      location.replace = vi.fn();
 
-    void nav.navigateClientSide("/rewritten-away", "push", true);
+      void nav.navigateClientSide("/rewritten-away", mode, true);
 
-    expect(assign).toHaveBeenCalledExactlyOnceWith("/rewritten-away");
-    expect(navigate).not.toHaveBeenCalled();
+      expect(location[method]).toHaveBeenCalledExactlyOnceWith("/rewritten-away");
+      expect(location[other]).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
+
+  describe("in a build without client rewrites", () => {
+    beforeEach(async () => {
+      vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
+      Object.assign((globalThis as any).window, {
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["app-page"] },
+        ],
+        __VINEXT_PAGES_LINK_PREFETCH_ROUTES__: [
+          { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["pages-page"] },
+        ],
+      });
+      vi.resetModules();
+      nav = await import("../packages/vinext/src/shims/navigation.js");
+    });
+
+    // A failed load by a Link or a prefetch marker must not change navigation's answers.
+    async function failOwnerLoadElsewhere() {
+      const loader =
+        await import("../packages/vinext/src/shims/internal/hybrid-client-route-owner-loader.js");
+      const loading = loader.loadHybridClientRouteOwner();
+      await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
+      await loading;
+      expect(loader.getHybridClientRouteOwnerLoadFailure()).not.toBeNull();
+      ownerImports.mockClear();
+      consoleError.mockClear();
+    }
+
+    it.each(["push", "replace"] as const)(
+      "resolves ownership with the direct resolver for router.%s after another path failed to load the owner chunk",
+      async (mode) => {
+        await failOwnerLoadElsewhere();
+        const navigate = vi.fn(async (_href: string) => {});
+        (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+          bootstrap: { routeManifest: null, rsc: undefined },
+          functions: { navigate },
+        };
+        const location = (globalThis as any).window.location;
+        location.assign = vi.fn();
+        location.replace = vi.fn();
+
+        void nav.navigateClientSide("/pages-page", mode, true);
+
+        expect(location[mode === "push" ? "assign" : "replace"]).toHaveBeenCalledExactlyOnceWith(
+          "/pages-page",
+        );
+        expect(navigate).not.toHaveBeenCalled();
+
+        void nav.navigateClientSide("/app-page", mode, true);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(navigate).toHaveBeenCalledOnce();
+        expect(ownerImports).not.toHaveBeenCalled();
+        expect(consoleError).not.toHaveBeenCalled();
+      },
+    );
+
+    it("still prefetches an App route and skips a Pages route after another path failed to load the owner chunk", async () => {
+      await failOwnerLoadElsewhere();
+      const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        throw new Error("network down");
+      });
+      (globalThis as any).fetch = fetch;
+
+      nav.appRouterInstance.prefetch("/pages-page");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fetch).not.toHaveBeenCalled();
+
+      nav.appRouterInstance.prefetch("/app-page");
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+
+      expect(ownerImports).not.toHaveBeenCalled();
+    });
   });
 
   it("makes router.prefetch stop quietly", async () => {

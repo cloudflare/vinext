@@ -58,7 +58,11 @@ import {
   resolveDirectHybridClientRouteOwner,
   type HybridClientOwner,
 } from "./internal/hybrid-client-route-owner-direct.js";
-import { loadHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-loader.js";
+import {
+  HAS_CLIENT_REWRITES,
+  loadHybridClientRouteOwner,
+  resolveHybridClientRouteOwnerOrDocument,
+} from "./internal/hybrid-client-route-owner-loader.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -1795,16 +1799,6 @@ function resolveLocalRedirectUrl(location: string): string | null {
   return normalizePathTrailingSlash(stripLocalePrefixForApiRedirect(appPath), __trailingSlash);
 }
 
-function hasClientRewriteRules(): boolean {
-  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
-  return Boolean(
-    rewrites &&
-    (rewrites.beforeFiles.length > 0 ||
-      rewrites.afterFiles.length > 0 ||
-      rewrites.fallback.length > 0),
-  );
-}
-
 function hasClientRedirectRules(): boolean {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   return Array.isArray(redirects) && redirects.length > 0;
@@ -2932,7 +2926,7 @@ async function navigateClient(
       }
       let routeLookupUrl = routeUrl;
       let routePattern = options.routePattern;
-      if (!routeMasked && hasClientRewriteRules()) {
+      if (!routeMasked && HAS_CLIENT_REWRITES) {
         const syncConfigRewrite = hasClientAppRouteManifest()
           ? undefined
           : resolveClientConfigRewriteSync(browserUrl);
@@ -3737,19 +3731,10 @@ async function performNavigation(
     else window.location.replace(redirectBrowserHref ?? full);
     return new Promise<boolean>(() => {});
   }
-  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
-  const hasClientRewrites =
-    rewrites &&
-    (rewrites.beforeFiles.length > 0 ||
-      rewrites.afterFiles.length > 0 ||
-      rewrites.fallback.length > 0);
   let hybridOwner: HybridClientOwner | null;
-  if (hasClientRewrites && hasClientAppRouteManifest()) {
-    const ownerModule = await loadHybridClientRouteOwner();
-    // Without the rewrite-aware resolver the server decides.
-    hybridOwner = ownerModule
-      ? ownerModule.resolveHybridClientRouteOwner(resolved, __basePath)
-      : "document";
+  if (HAS_CLIENT_REWRITES && hasClientAppRouteManifest()) {
+    await loadHybridClientRouteOwner();
+    hybridOwner = resolveHybridClientRouteOwnerOrDocument(resolved, __basePath);
   } else {
     hybridOwner = resolveDirectHybridClientRouteOwner(resolved, __basePath);
   }

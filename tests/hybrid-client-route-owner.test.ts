@@ -23,6 +23,10 @@ import type {
   VinextPagesLinkPrefetchRoute,
 } from "../packages/vinext/src/client/vinext-next-data.js";
 import {
+  CHUNK_RETRY_DELAY_MIN_MS,
+  CHUNK_RETRY_DELAY_SPREAD_MS,
+} from "../packages/vinext/src/client/chunk-load-recovery.js";
+import {
   toClientRewrites,
   type ClientRewrites,
 } from "../packages/vinext/src/client/client-rewrites.js";
@@ -452,14 +456,17 @@ describe("loadHybridClientRouteOwner", () => {
     typeof import("../packages/vinext/src/shims/internal/hybrid-client-route-owner-loader.js");
   const OWNER_MODULE = "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
   let chunkAvailable: boolean;
+  let chunkImports: ReturnType<typeof vi.fn<() => void>>;
   let loader: Loader;
   let consoleError: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
     chunkAvailable = true;
+    chunkImports = vi.fn();
     vi.useFakeTimers();
     vi.resetModules();
     vi.doMock(OWNER_MODULE, async (importOriginal) => {
+      chunkImports();
       if (!chunkAvailable) throw new TypeError("Failed to fetch dynamically imported module");
       return importOriginal();
     });
@@ -470,14 +477,20 @@ describe("loadHybridClientRouteOwner", () => {
 
   afterEach(() => {
     vi.doUnmock(OWNER_MODULE);
+    vi.unstubAllEnvs();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  // loadChunk waits 200-600 ms and retries once before it gives up.
   async function settle<T>(pending: Promise<T>): Promise<T> {
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(CHUNK_RETRY_DELAY_MIN_MS + CHUNK_RETRY_DELAY_SPREAD_MS);
     return pending;
+  }
+
+  async function importLoaderWithoutClientRewrites(): Promise<Loader> {
+    vi.stubEnv("__VINEXT_HAS_CLIENT_REWRITES", "false");
+    vi.resetModules();
+    return import("../packages/vinext/src/shims/internal/hybrid-client-route-owner-loader.js");
   }
 
   it("resolves the route owner module and keeps it", async () => {
@@ -521,6 +534,51 @@ describe("loadHybridClientRouteOwner", () => {
     expect(consoleError).toHaveBeenCalledTimes(1);
   });
 
+  it("explains consecutive failures once", async () => {
+    chunkAvailable = false;
+
+    expect(await settle(loader.loadHybridClientRouteOwner())).toBeNull();
+    expect(await settle(loader.loadHybridClientRouteOwner())).toBeNull();
+
+    expect(consoleError).toHaveBeenCalledTimes(1);
+  });
+
+  describe("resolving the owner of a navigation", () => {
+    beforeEach(() => {
+      installWindow({ app: [appRoute(["a"], false)], pages: [pagesRoute(["b"], false)] });
+    });
+
+    it("answers document while the rewrite-aware module is not loaded", () => {
+      expect(loader.resolveHybridClientRouteOwnerOrDocument("/a", "")).toBe("document");
+    });
+
+    it("answers document after the rewrite-aware module failed to load", async () => {
+      chunkAvailable = false;
+      await settle(loader.loadHybridClientRouteOwner());
+
+      expect(loader.resolveHybridClientRouteOwnerOrDocument("/a", "")).toBe("document");
+    });
+
+    it("resolves with the rewrite-aware module once it is loaded", async () => {
+      await loader.loadHybridClientRouteOwner();
+
+      expect(loader.resolveHybridClientRouteOwnerOrDocument("/a", "")).toBe("app");
+      expect(loader.resolveHybridClientRouteOwnerOrDocument("/b", "")).toBe("pages");
+      expect(loader.resolveHybridClientRouteOwnerOrDocument("/c", "")).toBeNull();
+    });
+
+    it("resolves with the direct resolver in a build without client rewrites, even after a failed load", async () => {
+      const direct = await importLoaderWithoutClientRewrites();
+      chunkAvailable = false;
+      await settle(direct.loadHybridClientRouteOwner());
+      expect(direct.getHybridClientRouteOwnerLoadFailure()).not.toBeNull();
+
+      expect(direct.resolveHybridClientRouteOwnerOrDocument("/a", "")).toBe("app");
+      expect(direct.resolveHybridClientRouteOwnerOrDocument("/b", "")).toBe("pages");
+      expect(direct.resolveHybridClientRouteOwnerOrDocument("/c", "")).toBeNull();
+    });
+  });
+
   describe("prefetch marking", () => {
     async function markPrefetchedApp(): Promise<Record<string, unknown>> {
       installWindow({ app: [appRoute(["a"], false)], pages: [] });
@@ -542,6 +600,29 @@ describe("loadHybridClientRouteOwner", () => {
 
       expect(await markPrefetchedApp()).toEqual({});
       expect(consoleError).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks an App route without importing the owner chunk in a build without client rewrites", async () => {
+      chunkAvailable = false;
+      await importLoaderWithoutClientRewrites();
+
+      expect(await markPrefetchedApp()).toEqual({ "/a": { __appRouter: true } });
+      expect(chunkImports).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    it("marks a Pages route as not an App route without importing the owner chunk when rewrites are absent", async () => {
+      await importLoaderWithoutClientRewrites();
+      installWindow({ app: [appRoute(["a"], false)], pages: [pagesRoute(["b"], false)] });
+      const detection =
+        await import("../packages/vinext/src/shims/internal/app-route-detection.js");
+      const components = detection.getPagesRouterComponentsMap();
+      for (const key of Object.keys(components)) delete components[key];
+
+      await settle(detection.markAppRouteDetectedOnPrefetch("/b", ""));
+
+      expect(components).toEqual({});
+      expect(chunkImports).not.toHaveBeenCalled();
     });
   });
 });

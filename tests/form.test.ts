@@ -5,10 +5,11 @@
  * (GET forms) and function actions (server actions), plus direct
  * submit interception behavior for client-side GET forms.
  */
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Form from "../packages/vinext/src/shims/form.js";
+import { preloadHybridClientRouteOwner } from "../packages/vinext/src/shims/navigation.js";
 
 type FormEntry = [string, string];
 
@@ -211,6 +212,11 @@ function installClientGlobals({ supportsSubmitter }: { supportsSubmitter: boolea
   vi.stubGlobal("FormData", createFormDataClass({ supportsSubmitter }));
   return windowStub;
 }
+
+// The browser entry loads the route owner module before any navigation runs.
+beforeAll(async () => {
+  await preloadHybridClientRouteOwner();
+});
 
 afterEach(() => {
   vi.restoreAllMocks();

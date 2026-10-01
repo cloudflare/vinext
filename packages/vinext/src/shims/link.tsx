@@ -74,7 +74,9 @@ import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js
 import { loadChunk } from "../client/chunk-load-recovery.js";
 import {
   getLoadedHybridClientRouteOwner,
+  HAS_CLIENT_REWRITES,
   loadHybridClientRouteOwner,
+  resolveHybridClientRouteOwnerOrDocument,
 } from "./internal/hybrid-client-route-owner-loader.js";
 
 type NavigateEvent = {
@@ -86,7 +88,6 @@ type NavigateEvent = {
 };
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
-const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 type NavigationModule = typeof import("./navigation.js");
 
@@ -378,10 +379,10 @@ function prefetchUrl(
           import("./internal/app-prefetch-rsc-request.js"),
           import("../server/app-rsc-render-mode.js"),
           import("../server/headers.js"),
-          HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES ? loadHybridClientRouteOwner() : null,
+          HAS_CLIENT_REWRITES ? loadHybridClientRouteOwner() : null,
         ]);
         // Without the rewrite-aware owner module, prefetching could warm the wrong router.
-        if ((HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES) && hybridRouteOwner === null) return;
+        if (HAS_CLIENT_REWRITES && hybridRouteOwner === null) return;
         // A pointer-intent prefetch and its click navigation can start in the
         // same event turn. If navigation won the module-loading race, do not
         // begin a second request after it consumes an equivalent cached route.
@@ -416,14 +417,13 @@ function prefetchUrl(
         // Pages) and would also race the request the browser will issue on
         // the actual navigation.
         const hybridOwner = HAS_PAGES_ROUTER
-          ? hybridRouteOwner!.resolveHybridClientRouteOwner(prefetchHref, __basePath)
+          ? resolveHybridClientRouteOwnerOrDocument(prefetchHref, __basePath)
           : null;
         if (hybridOwner === "pages" || hybridOwner === "document") {
           return;
         }
-        const rewrittenPrefetchHref = HAS_CLIENT_REWRITES
-          ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
-          : null;
+        const rewrittenPrefetchHref =
+          hybridRouteOwner?.resolveHybridClientRewriteHref(fullHref, __basePath) ?? null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
@@ -1331,12 +1331,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // (`setPending`, `setLinkForCurrentNavigation`) would be a no-op at best
     // and a stale `useLinkStatus` indicator at worst.
     if (HAS_PAGES_ROUTER && hasAppNavigationRuntime) {
-      let hybridOwnerModule = getLoadedHybridClientRouteOwner();
-      hybridOwnerModule ??= await loadHybridClientRouteOwner();
-      // Without the owner module the router cannot be told, so the server decides.
-      const hybridOwner = hybridOwnerModule
-        ? hybridOwnerModule.resolveHybridClientRouteOwner(navigateHref, __basePath)
-        : "document";
+      if (HAS_CLIENT_REWRITES && !getLoadedHybridClientRouteOwner()) {
+        await loadHybridClientRouteOwner();
+      }
+      const hybridOwner = resolveHybridClientRouteOwnerOrDocument(navigateHref, __basePath);
       if (hybridOwner === "pages" || hybridOwner === "document") {
         navigateByDocument(absoluteFullHref, replace);
         return;
