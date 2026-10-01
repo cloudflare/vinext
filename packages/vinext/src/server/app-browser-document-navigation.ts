@@ -60,9 +60,13 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
    * DOCUMENT_UNLOAD_TIMEOUT_MS: held Server Actions are rejected, and the loop
    * guard stays because the load may still be in progress.
    */
-  function beforeDocumentNavigation(href: string, outcome?: DocumentNavigationOutcome): () => void {
+  function beginDocumentNavigation(
+    href: string,
+    outcome: DocumentNavigationOutcome | undefined,
+    alreadyStopped: boolean,
+  ): () => void {
     const targetHref = new URL(href, window.location.href).href;
-    deps.stopRefreshes();
+    if (!alreadyStopped) deps.stopRefreshes();
     resetRecovery();
     const restore = () => {
       resetRecoveryOnPageHide();
@@ -97,6 +101,10 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
     return recover;
   }
 
+  function beforeDocumentNavigation(href: string, outcome?: DocumentNavigationOutcome): () => void {
+    return beginDocumentNavigation(href, outcome, false);
+  }
+
   return {
     beforeDocumentNavigation,
     performHardNavigation(href: string, mode?: HardNavigationMode): boolean {
@@ -113,7 +121,7 @@ export function createAppBrowserDocumentNavigation(deps: AppBrowserDocumentNavig
       // mutation just enough for the old tree to commit the pending transition
       // signal before unload.
       deps.mpaNavigationScheduler.navigate(window, loadHref, historyUpdateMode, () =>
-        beforeDocumentNavigation(loadHref),
+        beginDocumentNavigation(loadHref, undefined, true),
       );
     },
     resetRecovery,

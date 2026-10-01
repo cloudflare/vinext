@@ -4188,6 +4188,26 @@ describe("app browser document navigation", () => {
       await heldRejection;
     });
 
+    it("dispatches an action pressed between a multi-page navigation and its load at expiry", async () => {
+      const { documentNavigation, flushMpaNavigations, queue } = createDocumentNavigationHarness(
+        pageHref,
+        { silent: true },
+      );
+      queue.start(1);
+      const held = queue.serverAction(async () => "held");
+      const heldRejection = expect(held).rejects.toBeInstanceOf(ServerActionNotSentError);
+
+      documentNavigation.performMpaNavigation(targetHref, "push");
+      const betweenRun = vi.fn(async () => "between");
+      const between = queue.serverAction(betweenRun);
+      flushMpaNavigations();
+      vi.advanceTimersByTime(DOCUMENT_UNLOAD_TIMEOUT_MS);
+
+      await heldRejection;
+      await expect(between).resolves.toBe("between");
+      expect(betweenRun).toHaveBeenCalledOnce();
+    });
+
     it("refuses one repeat of an abandoned load to the same URL, then allows another", async () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       const { assign, documentNavigation, queue } = createDocumentNavigationHarness(pageHref, {
