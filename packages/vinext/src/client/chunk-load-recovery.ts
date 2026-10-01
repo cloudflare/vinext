@@ -271,23 +271,29 @@ async function probeBuild(entryUrl: string | null): Promise<"replaced" | "live" 
   }
 }
 
+function waitForNavigation(
+  state: State,
+  signal: AbortSignal | undefined,
+  ms: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const resume = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", resume);
+      state.onPageshow.delete(resume);
+      resolve();
+    };
+    const timer = setTimeout(resume, ms);
+    signal?.addEventListener("abort", resume);
+    state.onPageshow.add(resume);
+  });
+}
+
 async function settlePendingNavigation(state: State): Promise<void> {
   const pending = state.pending;
   if (pending === null || pending.signal.aborted) return;
   const remaining = DOCUMENT_UNLOAD_TIMEOUT_MS - (Date.now() - pending.at);
-  if (remaining <= 0) return;
-
-  await new Promise<void>((resolve) => {
-    const resume = () => {
-      clearTimeout(timer);
-      pending.signal.removeEventListener("abort", resume);
-      state.onPageshow.delete(resume);
-      resolve();
-    };
-    const timer = setTimeout(resume, remaining);
-    pending.signal.addEventListener("abort", resume);
-    state.onPageshow.add(resume);
-  });
+  if (remaining > 0) await waitForNavigation(state, pending.signal, remaining);
 }
 
 function readClaims(storage: Storage, now: number): Claims {
@@ -335,39 +341,18 @@ function release(key: string): void {
 }
 
 const defaultNavigator: ChunkRecoveryNavigator = (outcome) => {
-  const { location } = window;
-  const listening = new AbortController();
-  const { signal } = listening;
-  const stop = () => {
-    clearTimeout(timer);
-    listening.abort();
+  const state = getState();
+  const before = state.pending;
+  window.location.replace(toDocumentLoadHref(window.location.href));
+  const signal = state.pending === before ? undefined : state.pending?.signal;
+
+  const settle = () => {
+    if (state.unloading) return;
+    if (signal?.aborted) outcome.onCanceled();
+    else outcome.onAbandoned();
   };
-  const timer = setTimeout(() => {
-    stop();
-    outcome.onAbandoned();
-  }, DOCUMENT_UNLOAD_TIMEOUT_MS);
-  let captured = false;
-
-  getNavigation()?.addEventListener(
-    "navigate",
-    (event) => {
-      if (captured || event.destination.sameDocument) return;
-      captured = true;
-      event.signal.addEventListener(
-        "abort",
-        () => {
-          stop();
-          outcome.onCanceled();
-        },
-        { signal },
-      );
-    },
-    { signal },
-  );
-  window.addEventListener("pagehide", stop, { signal });
-
-  location.replace(toDocumentLoadHref(location.href));
-  if (!captured) listening.abort();
+  if (signal?.aborted) settle();
+  else void waitForNavigation(state, signal, DOCUMENT_UNLOAD_TIMEOUT_MS).then(settle);
   return true;
 };
 

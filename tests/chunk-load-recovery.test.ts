@@ -1124,41 +1124,35 @@ describe("default navigator", () => {
     expect(result.status).toBe("pending");
   });
 
-  it("leaves no navigate listener attached when replace fired no navigate event", async () => {
+  it("reports onAbandoned after the unload timeout when replace fired no navigate event", async () => {
     const ctx = await setup({ navigator: false });
-    const listen = vi.spyOn(ctx.navigation, "addEventListener");
     const error = deployFailure(ctx);
     const result = track(ctx.mod.recoverFromChunkFailure(error));
     await flush();
-
-    const defaultListeners = listen.mock.calls.filter(([type]) => type === "navigate");
-    expect(defaultListeners).toHaveLength(1);
-    const options = defaultListeners[0][2] as { signal: AbortSignal };
-    expect(options.signal.aborted).toBe(true);
+    const claimedAt = Date.now();
     expect(ctx.replace.mock.calls).toEqual([[PAGE]]);
 
     ctx.navigate().abort();
-    await flush();
+    await vi.advanceTimersByTimeAsync(9_999);
     expect(result.status).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(result).toEqual({ reason: error, status: "rejected" });
+    expect(readClaims(ctx)).toEqual({ [claimKey("replaced")]: claimedAt });
   });
 
-  it("keeps the navigate listener attached until the captured navigation ends", async () => {
+  it("reports onCanceled at once when the navigate event it caused is already aborted", async () => {
     const ctx = await setup({ navigator: false });
-    const listen = vi.spyOn(ctx.navigation, "addEventListener");
     const controller = new AbortController();
-    causeNavigate(ctx, controller);
-    const result = track(ctx.mod.recoverFromChunkFailure(deployFailure(ctx)));
-    await flush();
-
-    const options = listen.mock.calls.find(([type]) => type === "navigate")?.[2] as {
-      signal: AbortSignal;
-    };
-    expect(options.signal.aborted).toBe(false);
     controller.abort();
+    causeNavigate(ctx, controller);
+    const error = deployFailure(ctx);
+
+    const result = track(ctx.mod.recoverFromChunkFailure(error));
     await flush();
 
-    expect(options.signal.aborted).toBe(true);
-    expect(result.status).toBe("rejected");
+    expect(result).toEqual({ reason: error, status: "rejected" });
+    expect(readClaims(ctx)).toEqual({});
   });
 
   it("ignores a navigate event that fires after replace returned", async () => {
