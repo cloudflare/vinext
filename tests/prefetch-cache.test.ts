@@ -2897,13 +2897,16 @@ describe("navigation when the hybrid route owner chunk cannot load", () => {
   let nav: Navigation;
   let consoleError: ReturnType<typeof vi.spyOn>;
   let ownerImports: ReturnType<typeof vi.fn<() => void>>;
+  let ownerAvailable: boolean;
 
   beforeEach(async () => {
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     ownerImports = vi.fn();
-    vi.doMock(OWNER_MODULE, () => {
+    ownerAvailable = false;
+    vi.doMock(OWNER_MODULE, async (importOriginal) => {
       ownerImports();
-      throw new TypeError("Failed to fetch dynamically imported module");
+      if (!ownerAvailable) throw new TypeError("Failed to fetch dynamically imported module");
+      return importOriginal();
     });
     consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.resetModules();
@@ -2972,6 +2975,31 @@ describe("navigation when the hybrid route owner chunk cannot load", () => {
       expect(navigate).not.toHaveBeenCalled();
     },
   );
+
+  it("returns to soft navigation once a later load of the owner chunk succeeds", async () => {
+    const navigate = vi.fn(async (_href: string) => {});
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+    await preloadFailingOwner();
+    const location = (globalThis as any).window.location;
+    location.assign = vi.fn();
+    location.replace = vi.fn();
+
+    void nav.navigateClientSide("/rewritten-away", "push", true);
+
+    expect(location.assign).toHaveBeenCalledExactlyOnceWith("/rewritten-away");
+    expect(navigate).not.toHaveBeenCalled();
+
+    ownerAvailable = true;
+    await expect(nav.preloadHybridClientRouteOwner()).resolves.toBeNull();
+    void nav.navigateClientSide("/rewritten-away", "push", true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(navigate).toHaveBeenCalledOnce();
+    expect(location.assign).toHaveBeenCalledOnce();
+  });
 
   describe("in a build without client rewrites", () => {
     beforeEach(async () => {
