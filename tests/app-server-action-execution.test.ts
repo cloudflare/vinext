@@ -11,6 +11,7 @@ import {
 import { getRootParam, runWithRootParamsScope } from "../packages/vinext/src/shims/root-params.js";
 import {
   createServerActionNotFoundResponse,
+  respondServerActionNotFound,
   throwOnServerActionNotFound,
 } from "../packages/vinext/src/server/server-action-not-found.js";
 import {
@@ -3527,5 +3528,28 @@ describe("client recognition of unrecognized server actions", () => {
   it("does not throw for a recognized action response", () => {
     // A recognized action returns an ordinary response without the not-found header.
     expect(() => throwOnServerActionNotFound(new Response("ok"), "abc")).not.toThrow();
+  });
+});
+
+describe("respondServerActionNotFound", () => {
+  it.each([
+    ["a known id", "stale-action-id", 'Failed to find Server Action "stale-action-id".'],
+    ["no id", null, "Failed to find Server Action."],
+  ])("warns, clears the request context, and returns the 404 for %s", async (_label, id, text) => {
+    const clearRequestContext = vi.fn();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = respondServerActionNotFound(id, clearRequestContext);
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(text));
+      expect(clearRequestContext).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await response.text()).toBe("Server action not found.");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

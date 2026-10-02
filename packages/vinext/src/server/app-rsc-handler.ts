@@ -132,10 +132,7 @@ import {
   serializePrerenderRouteParamsHeader,
   type TrustedPrerenderState,
 } from "./prerender-route-params.js";
-import {
-  createServerActionNotFoundResponse,
-  getServerActionNotFoundMessage,
-} from "./server-action-not-found.js";
+import { respondServerActionNotFound } from "./server-action-not-found.js";
 import {
   createRouteTreePrefetchResponse,
   isRouteTreePrefetchRequest,
@@ -622,9 +619,7 @@ function createMissingServerActionResponse(
   options: Pick<CreateAppRscHandlerOptions<AppRscHandlerRoute>, "clearRequestContext">,
   actionId: string | null,
 ): Response {
-  console.warn(getServerActionNotFoundMessage(actionId));
-  options.clearRequestContext();
-  return createServerActionNotFoundResponse();
+  return respondServerActionNotFound(actionId, options.clearRequestContext);
 }
 
 function redirectDestinationWithBasePath(
