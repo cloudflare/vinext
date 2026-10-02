@@ -206,6 +206,14 @@ function findPageElement(payload: unknown): React.ReactElement | null {
   return null;
 }
 
+function findMetadataOutletElements(payload: unknown): React.ReactElement[] {
+  return Object.entries(captureRecord(payload)).flatMap(([key, value]) =>
+    key.startsWith("__vinext_streaming_metadata_outlet:") && React.isValidElement(value)
+      ? [value]
+      : [],
+  );
+}
+
 async function renderReactNodeText(node: unknown): Promise<string> {
   if (node === null || node === undefined || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") {
@@ -243,7 +251,13 @@ function renderPagePayloadToStream(payload: unknown): ReadableStream<Uint8Array>
       }
       didRender = true;
       const pageElement = findPageElement(payload);
-      const text = pageElement ? await renderReactNodeText(pageElement) : "";
+      // Flight renders every entry, so the head resolves during the render.
+      // Its outlet awaits generateMetadata() and generateViewport(). None of
+      // these tests expects a head error, so a rejection fails the render.
+      const [text] = await Promise.all([
+        pageElement ? renderReactNodeText(pageElement) : "",
+        ...findMetadataOutletElements(payload).map((outlet) => renderReactNodeText(outlet)),
+      ]);
       controller.enqueue(new TextEncoder().encode(text));
       controller.close();
     },
@@ -1739,24 +1753,20 @@ describe("app page dispatch", () => {
     },
   );
 
-  it("preserves deferred metadata dynamic usage across a concurrent layout probe", async () => {
-    let releaseMetadata!: () => void;
-    const metadataGate = new Promise<void>((resolve) => {
-      releaseMetadata = resolve;
-    });
-    let metadataObserved!: () => void;
-    const metadataObservedPromise = new Promise<void>((resolve) => {
-      metadataObserved = resolve;
-    });
+  it("keeps metadata dynamic usage from the render after a layout probe", async () => {
+    // generateMetadata() runs inside the render, after the layout probe's
+    // isolated dynamic scope has closed, so its searchParams read reaches the
+    // render's own dynamic usage.
+    let metadataStarted = false;
+    let metadataStartedDuringProbe: boolean | undefined;
     const layoutModule = {
       default: ({ children }: { children?: React.ReactNode }) => children ?? null,
     };
     const pageModule = {
       default: () => React.createElement("h1", null, "metadata body"),
       async generateMetadata(props: { searchParams: Promise<Record<string, unknown>> }) {
-        await metadataGate;
+        metadataStarted = true;
         await props.searchParams;
-        metadataObserved();
         return { title: "deferred metadata" };
       },
     };
@@ -1822,8 +1832,7 @@ describe("app page dispatch", () => {
       isrGet,
       isrSet,
       async probeLayoutAt() {
-        releaseMetadata();
-        await metadataObservedPromise;
+        metadataStartedDuringProbe = metadataStarted;
         return null;
       },
       probePage() {
@@ -1840,6 +1849,8 @@ describe("app page dispatch", () => {
     await response.text();
     await Promise.all(waitUntilPromises);
 
+    expect(metadataStartedDuringProbe).toBe(false);
+    expect(metadataStarted).toBe(true);
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(cache.has("rsc:/deferred-metadata-proof")).toBe(false);
   });

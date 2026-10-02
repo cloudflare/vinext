@@ -232,14 +232,15 @@ type BuildAppPageRouteElementOptions<
   makeThenableParams: MakeThenableParams;
   matchedParams: AppPageParams;
   metadataPlacement?: "body" | "head";
-  resolvedMetadata: Metadata | null;
+  /**
+   * Starts resolving the page's head. The head, its streamed body tags and its
+   * error outlet each call this while Flight renders them, so callers memoise
+   * it per render with React's `cache()`. Without it the head has no metadata.
+   */
+  resolveHead?: (() => AppPageRouteHead) | null;
   resolvedMetadataPathname?: string;
-  resolvedViewport: Viewport;
   scriptNonce?: string;
-  streamingMetadata?: Promise<Metadata | null> | null;
-  streamingMetadataOutlet?: Promise<unknown> | null;
   streamingMetadataOutletSuspended?: boolean;
-  streamingMetadataTags?: Promise<Metadata | null> | null;
   trailingSlash?: boolean;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
@@ -252,6 +253,18 @@ type BuildAppPageRouteElementOptions<
   pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
+};
+
+/**
+ * A page's head as Flight renders it. `metadata` and `viewport` hold the tags
+ * to render, including the HTTP access fallback's when resolution failed, so
+ * they never reject. `outlet` rejects with the resolution error so the route's
+ * boundaries can handle it.
+ */
+export type AppPageRouteHead = {
+  metadata: Promise<Metadata | null>;
+  outlet: Promise<null>;
+  viewport: Promise<Viewport>;
 };
 
 type MakeThenableParams = (params: AppPageParams, observer?: ThenableParamsObserver) => unknown;
@@ -692,8 +705,7 @@ function createAppPageSlotBindings<
 }
 
 function createAppPageRouteHead(
-  metadata: Metadata | null,
-  viewport: Viewport,
+  resolveHead: (() => AppPageRouteHead) | null | undefined,
   pathname: string,
   metadataPlacement: "body" | "head",
   trailingSlash?: boolean,
@@ -701,13 +713,48 @@ function createAppPageRouteHead(
   return (
     <>
       <meta charSet="utf-8" />
-      {metadata && metadataPlacement === "head" ? (
-        <MetadataHead metadata={metadata} pathname={pathname} trailingSlash={trailingSlash} />
+      {resolveHead ? (
+        <AppPageHead
+          metadataPlacement={metadataPlacement}
+          pathname={pathname}
+          resolveHead={resolveHead}
+          trailingSlash={trailingSlash}
+        />
+      ) : (
+        <ViewportHead viewport={{}} />
+      )}
+    </>
+  );
+}
+
+// Like Next.js's MetadataTree/ViewportTree, the head resolves while Flight
+// renders it, so generateMetadata() and generateViewport() share React's
+// cache() with the page instead of running before the render.
+async function AppPageHead(props: {
+  metadataPlacement: "body" | "head";
+  pathname: string;
+  resolveHead: () => AppPageRouteHead;
+  trailingSlash?: boolean;
+}): Promise<ReactNode> {
+  const head = props.resolveHead();
+  const [metadata, viewport] = await Promise.all([
+    props.metadataPlacement === "head" ? head.metadata : null,
+    head.viewport,
+  ]);
+  return (
+    <>
+      {metadata ? (
+        <MetadataHead
+          metadata={metadata}
+          pathname={props.pathname}
+          trailingSlash={props.trailingSlash}
+        />
       ) : null}
       <ViewportHead viewport={viewport} />
     </>
   );
 }
+AppPageHead.displayName = "Vinext.Head";
 
 function hasStreamedIcons(metadata: Metadata): boolean {
   const icons = metadata.icons;
@@ -765,13 +812,13 @@ export function createAppPageRouteBodyMetadata(
 }
 
 async function AppPageStreamingMetadata(props: {
-  metadata: Promise<Metadata | null>;
   pathname: string;
+  resolveHead: () => AppPageRouteHead;
   scriptNonce?: string;
   trailingSlash?: boolean;
 }): Promise<ReactNode> {
   try {
-    const metadata = await props.metadata;
+    const metadata = await props.resolveHead().metadata;
     return createAppPageRouteBodyMetadata(
       metadata,
       props.pathname,
@@ -787,9 +834,10 @@ async function AppPageStreamingMetadata(props: {
 }
 AppPageStreamingMetadata.displayName = "Vinext.StreamingMetadata";
 
-async function AppPageMetadataOutlet(props: { metadata: Promise<unknown> }): Promise<null> {
-  await props.metadata;
-  return null;
+async function AppPageMetadataOutlet(props: {
+  resolveHead: () => AppPageRouteHead;
+}): Promise<null> {
+  return props.resolveHead().outlet;
 }
 AppPageMetadataOutlet.displayName = "Vinext.MetadataOutlet";
 
@@ -833,10 +881,14 @@ export function buildAppPageElements<
   const pageElementId = options.route.childrenSlot
     ? resolveAppPageChildrenSlotId(options.route.childrenSlot)
     : pageId;
-  const streamingMetadataBodyId = options.streamingMetadata
-    ? `__vinext_streaming_metadata_body:${routeId}`
-    : null;
-  const streamingMetadataOutletId = options.streamingMetadataOutlet
+  const metadataPlacement = options.metadataPlacement ?? "head";
+  const streamingMetadataBodyId =
+    options.resolveHead && metadataPlacement === "body"
+      ? `__vinext_streaming_metadata_body:${routeId}`
+      : null;
+  // Head resolution can fail after the render has started, so every resolved
+  // head gets an outlet that rethrows inside the route's boundaries.
+  const streamingMetadataOutletId = options.resolveHead
     ? `__vinext_streaming_metadata_outlet:${routeId}`
     : null;
   const layoutEntries = createAppPageLayoutEntries(options.route);
@@ -873,7 +925,6 @@ export function buildAppPageElements<
   const prefetchLoadingEntry = isPrefetchLoadingShell
     ? getPrefetchLoadingEntry(options.route)
     : null;
-  const metadataPlacement = options.metadataPlacement ?? "head";
   const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
   const templateEntriesByTreePosition = new Map<number, AppPageTemplateEntry<TModule>>();
   const loadingEntriesByTreePosition = new Map<number, AppPageLoadingEntry<TModule>>();
@@ -1024,19 +1075,19 @@ export function buildAppPageElements<
   if (options.route.staticSiblings && options.route.staticSiblings.length > 0) {
     elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
   }
-  if (options.streamingMetadata && streamingMetadataBodyId) {
+  if (options.resolveHead && streamingMetadataBodyId) {
     elements[streamingMetadataBodyId] = (
       <AppPageStreamingMetadata
-        metadata={options.streamingMetadataTags ?? options.streamingMetadata}
         pathname={options.resolvedMetadataPathname ?? options.routePath}
+        resolveHead={options.resolveHead}
         scriptNonce={options.scriptNonce}
         trailingSlash={options.trailingSlash}
       />
     );
   }
-  if (options.streamingMetadataOutlet && streamingMetadataOutletId) {
+  if (options.resolveHead && streamingMetadataOutletId) {
     elements[streamingMetadataOutletId] = (
-      <AppPageMetadataOutlet metadata={options.streamingMetadataOutlet} />
+      <AppPageMetadataOutlet resolveHead={options.resolveHead} />
     );
   }
   const getEffectiveSlotParams = (slotKey: string, _slotName: string): AppPageParams =>
@@ -1790,20 +1841,12 @@ export function buildAppPageElements<
   const routeElement = (
     <>
       {createAppPageRouteHead(
-        options.resolvedMetadata,
-        options.resolvedViewport,
+        options.resolveHead,
         options.resolvedMetadataPathname ?? options.routePath,
         metadataPlacement,
         options.trailingSlash,
       )}
       {routeChildren}
-      {createAppPageRouteBodyMetadata(
-        options.resolvedMetadata,
-        options.resolvedMetadataPathname ?? options.routePath,
-        metadataPlacement,
-        options.trailingSlash,
-        options.scriptNonce,
-      )}
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
   );
