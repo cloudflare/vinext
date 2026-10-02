@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
-import { createServer, type ViteDevServer } from "vite-plus";
+import { createLogger, createServer, type ViteDevServer } from "vite-plus";
 import type { Server } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   APP_FIXTURE_DIR,
@@ -61,12 +62,61 @@ describe("CJS interop (App Router)", () => {
     expect(html).toMatch(/Random:.*4/);
   });
 
+  it("does not add a CommonJS export facade to project-local ESM bundles", async () => {
+    // A linked workspace package's dist resolves outside node_modules. When it
+    // inlines a CommonJS dependency, its wrapper mentions `exports.t`, which
+    // must not become a second `export { t }` next to the bundle's own.
+    const { res, html } = await fetchHtml(baseUrl, "/cjs/bundled-esm");
+    expect(res.status).toBe(200);
+    expect(visibleTextByTestId(html, "cjs-bundled-esm")).toBe("full:1.0.0");
+  });
+
+  it("keeps require() but not exports.* in a module that also exports ESM", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/cjs/mixed-esm");
+    expect(res.status).toBe(200);
+    expect(visibleTextByTestId(html, "cjs-mixed-esm")).toBe("esm");
+  });
+
   it("renders page that uses CJS require('server-only')", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/cjs/server-only");
     expect(res.status).toBe(200);
     expect(html).toContain("cjs-server-only");
     expect(html).toContain("This page uses CJS require");
   });
+});
+
+describe("CJS interop (dependency scan)", () => {
+  it("does not add a CommonJS export facade to project-local ESM bundles", async () => {
+    // vite-plugin-commonjs's optimizer plugin loads and transforms files
+    // without vinext's transform wrapper, so the scan must drop the same export
+    // facade for app/cjs/bundled-esm and app/cjs/mixed-esm.
+    const errors: string[] = [];
+    const logger = createLogger("silent");
+    logger.error = (message) => {
+      errors.push(String(message));
+    };
+    // A fresh cache dir, so the optimizer always scans.
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "vinext-cjs-scan-"));
+    const server = await createServer({
+      root: APP_FIXTURE_DIR,
+      cacheDir,
+      configFile: false,
+      customLogger: logger,
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      server: { host: "127.0.0.1", port: 0 },
+    });
+    try {
+      await server.listen();
+      for (const environment of Object.values(server.environments)) {
+        await (environment as { depsOptimizer?: { scanProcessing?: Promise<void> } }).depsOptimizer
+          ?.scanProcessing;
+      }
+      expect(errors.filter((error) => error.includes("dependency scan"))).toEqual([]);
+    } finally {
+      await server.close();
+      await rm(cacheDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 describe("CJS interop (Pages Router)", () => {
