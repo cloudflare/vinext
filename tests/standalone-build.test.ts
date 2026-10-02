@@ -134,6 +134,11 @@ describe("emitStandaloneOutput", () => {
     expect(fs.readFileSync(path.join(appRoot, "dist/standalone/server.js"), "utf-8")).toContain(
       "startProdServer",
     );
+    // The generated server.js must honour the VINEXT_OUT_DIR env var so that
+    // compiled binaries can be relocated (issue #3445).
+    expect(fs.readFileSync(path.join(appRoot, "dist/standalone/server.js"), "utf-8")).toContain(
+      "VINEXT_OUT_DIR",
+    );
     const standalonePkg = JSON.parse(
       fs.readFileSync(path.join(appRoot, "dist/standalone/package.json"), "utf-8"),
     ) as { type: string };
