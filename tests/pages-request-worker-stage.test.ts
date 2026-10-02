@@ -809,6 +809,38 @@ describe("Pages Worker request stage", () => {
     expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
   });
 
+  // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+  // ("should have original req.url for /_next/data request")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+  it("transports the pre-normalization URL as req.url for data requests", async () => {
+    mocks.normalizeDataRequest.mockImplementation((request: Request) => {
+      const url = new URL(request.url);
+      url.pathname = "/page";
+      return {
+        isDataReq: true,
+        normalizedPathname: "/page",
+        notFoundResponse: null,
+        request: new Request(url, request),
+      };
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("data"));
+
+    await handleRequestStage(
+      new Request("https://example.com/_next/data/request-build/page.json?from=data"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[1]).toMatchObject({
+      renderOptions: {
+        isDataReq: true,
+        originalUrl: "/_next/data/request-build/page.json?from=data",
+      },
+      resolvedUrl: "/page?from=data",
+    });
+  });
+
   it("dispatches a GET API with the same deployment envelope", async () => {
     const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("api"));
 
