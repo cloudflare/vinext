@@ -313,7 +313,10 @@ import {
   createImportMetaUrlPlugin,
   type EmittedModuleFileNameResolver,
 } from "./plugins/import-meta-url.js";
-import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
+import {
+  createWorkerDeploymentIdDefinePlugin,
+  createWorkerImageImportsPlugin,
+} from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
@@ -3442,6 +3445,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // plugin here rather than copying user plugins and duplicating them.
             plugins: () => [
               createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+              createWorkerDeploymentIdDefinePlugin({ deploymentId: nextConfig.deploymentId }),
             ],
           },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
