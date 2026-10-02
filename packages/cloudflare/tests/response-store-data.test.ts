@@ -465,6 +465,46 @@ test("rejects a candidate older than the latest soft-tag invalidation", async ()
   }
 });
 
+test("stores data entries without expire as stale indefinitely, like Next.js", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const policy = async (context: Record<string, unknown>) => {
+    await runWithResponseStoreInvocation("route", true, () => handler.set("key", null, context));
+    return store.response?.headers.get("Cache-Control");
+  };
+
+  // unstable_cache and cached fetch pass `revalidate` without `expire`.
+  expect(await policy({ revalidate: 1 })).toBe(
+    "public, max-age=1, stale-while-revalidate=315360000",
+  );
+  expect(await policy({ cacheControl: { revalidate: 1, expire: 2 } })).toBe(
+    "public, max-age=1, stale-while-revalidate=1",
+  );
+});
+
+test("leaves a stale replayable hit to the Store's own refresh", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await runWithResponseStoreInvocation("route", true, () =>
+      handler.set("key", null, { revalidate: 60 }),
+    );
+
+    vi.setSystemTime(12_000);
+    // A fresh Store hit older than a shorter requested revalidate is still stale for the caller.
+    await expect(handler.get("key", { revalidate: 1 })).resolves.toMatchObject({
+      cacheState: "stale",
+    });
+    // A stale Store hit has already scheduled the Store's refresh.
+    store.response?.headers.set("X-Workers-Response-Store", "BLOB-STALE");
+    await expect(handler.get("key", { revalidate: 1 })).resolves.not.toHaveProperty("cacheState");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("honors a shorter revalidate requested by a later read", async () => {
   vi.useFakeTimers();
   try {

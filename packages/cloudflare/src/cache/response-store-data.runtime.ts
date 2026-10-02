@@ -293,10 +293,13 @@ function cachePolicy(revalidate: number | false | undefined, expire: number | un
   if (revalidate === false || revalidate === undefined) {
     return `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
   }
-  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${Math.max(
-    0,
-    (expire ?? revalidate) - revalidate,
-  )}`;
+  // Like Next.js, an entry without `expire` (unstable_cache, cached fetch) never
+  // hard-expires: past `revalidate` it is served stale and refreshed in the background.
+  // A hard-expired read would instead wait for the Store to replay the page, and a page
+  // reading two such entries would replay itself for each in turn (A -> B -> A).
+  const staleSeconds =
+    expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, expire - revalidate);
+  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${staleSeconds}`;
 }
 
 export class WorkersResponseStoreCacheHandler implements CacheHandler {
@@ -374,7 +377,9 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         age > requestedRevalidate * 1000;
       let cacheState: string | undefined;
       if (response.headers.get(REPLAYABLE_HEADER) === "1") {
-        if (requestedStale) cacheState = "stale";
+        // A stale Store hit has already scheduled the Store's own refresh. Reporting it
+        // stale as well would make the caller (e.g. cached fetch) refresh it a second time.
+        if (requestedStale && storeStatus !== "BLOB-STALE") cacheState = "stale";
       } else if (
         typeof entry.cacheControl?.expire === "number" &&
         age > entry.cacheControl.expire * 1000
