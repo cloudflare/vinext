@@ -28,6 +28,7 @@ import {
   getUnconsumedMiddlewareRequestHeaders,
 } from "../utils/middleware-request-headers.js";
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
+import { compileHeaderSourcePattern } from "../server/middleware-matcher-pattern.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
 
@@ -57,13 +58,13 @@ const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[]
 /**
  * Cache for compiled header source regexes in matchHeaders.
  *
- * Each NextHeader rule has a `source` that is run through escapeHeaderSource()
- * then safeRegExp() to produce a RegExp. Both are pure functions of the source
+ * Each NextHeader rule has a `source` that compileHeaderSourcePattern() parses,
+ * safety-checks and compiles to a RegExp. That is a pure function of the source
  * string and the result never changes. Without caching, every request
- * re-runs the full escapeHeaderSource tokeniser + isSafeRegex scan + new RegExp()
- * for every header rule.
+ * re-runs the path-to-regexp parse + regex safety scan + new RegExp() for
+ * every header rule.
  *
- * Value is `null` when safeRegExp rejected the pattern (ReDoS risk).
+ * Value is `null` when the source was invalid or rejected as unsafe.
  */
 const _compiledHeaderSourceCache = new Map<string, RegExp | null>();
 
@@ -314,79 +315,6 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Convert a Next.js header/rewrite/redirect source pattern into a regex string.
- *
- * Regex groups in the source (e.g. `(\d+)`) are extracted first, the remaining
- * text is escaped/converted in a **single pass** (avoiding chained `.replace()`
- * which CodeQL flags as incomplete sanitization), then groups are restored.
- */
-export function escapeHeaderSource(source: string): string {
-  // Sentinel character for group placeholders. Uses a Unicode private-use-area
-  // codepoint that will never appear in real source patterns.
-  const S = "\uE000";
-
-  // Step 1: extract regex groups and replace with numbered placeholders.
-  const groups: string[] = [];
-  const withPlaceholders = source.replace(/\(([^)]+)\)/g, (_m, inner) => {
-    groups.push(inner);
-    return `${S}G${groups.length - 1}${S}`;
-  });
-
-  // Step 2: single-pass conversion of the placeholder-bearing string.
-  // Match named params (:[\w-]+), sentinel group placeholders, metacharacters, and literal text.
-  // The regex uses non-overlapping alternatives to avoid backtracking:
-  //   :[\w-]+  — named parameter (constraint sentinel is checked procedurally;
-  //              param names may contain hyphens, e.g. :auth-method)
-  //   sentinel group — standalone regex group placeholder
-  //   [.+?*] — single metachar to escape/convert
-  //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
-  let result = "";
-  const re = new RegExp(
-    `${S}G(\\d+)${S}|:[\\w-]+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
-    "g",
-  );
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(withPlaceholders)) !== null) {
-    if (m[1] !== undefined) {
-      // Standalone regex group — restore as-is
-      result += `(${groups[Number(m[1])]})`;
-    } else if (m[0].startsWith(":")) {
-      // Named parameter — check if followed by a constraint group placeholder
-      const afterParam = withPlaceholders.slice(re.lastIndex);
-      const constraintMatch = afterParam.match(new RegExp(`^${S}G(\\d+)${S}`));
-      if (constraintMatch) {
-        // :param(constraint) — use the constraint as the capture group
-        re.lastIndex += constraintMatch[0].length;
-        result += `(${groups[Number(constraintMatch[1])]})`;
-      } else {
-        // Plain named parameter → match one segment
-        result += "[^/]+";
-      }
-    } else {
-      switch (m[0]) {
-        case ".":
-          result += "\\.";
-          break;
-        case "+":
-          result += "\\+";
-          break;
-        case "?":
-          result += "\\?";
-          break;
-        case "*":
-          result += ".*";
-          break;
-        default:
-          result += m[0];
-          break;
-      }
-    }
-  }
-
-  return result;
 }
 
 /**
@@ -1398,14 +1326,17 @@ export function matchHeaders(
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
-    // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
-    // pure functions of rule.source and the result never changes between requests.
+    // Cache the compiled source regex — compileHeaderSourcePattern() is a pure
+    // function of rule.source and the result never changes between requests.
     const source = pathnameHadTrailingSlash
       ? stripTrailingSlashForConfigMatch(rule.source)
       : rule.source;
-    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
-      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
-    );
+    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () => {
+      const compiled = compileHeaderSourcePattern(source);
+      if (compiled.regexp) return compiled.regexp;
+      console.warn(`[vinext] Ignoring headers() source "${source}": ${compiled.error}.`);
+      return null;
+    });
     if (sourceRegex && sourceRegex.test(pathname)) {
       onRuleSourceMatch?.(rule);
       if (rule.has || rule.missing) {

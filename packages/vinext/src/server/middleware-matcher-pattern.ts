@@ -245,7 +245,15 @@ function validateTokens(tokens: MiddlewarePathToken[]): string | null {
   return null;
 }
 
-export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
+type SourcePatternOptions = {
+  delimiter?: string;
+  normalizeUnprefixedRepeats: boolean;
+};
+
+function compileSourcePattern(
+  source: string,
+  { delimiter, normalizeUnprefixedRepeats }: SourcePatternOptions,
+): CompiledMiddlewareMatcherPattern {
   if (!source.startsWith("/")) {
     return { kind: "invalid", error: "source must start with /" };
   }
@@ -255,7 +263,7 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
 
   let tokens: MiddlewarePathToken[];
   try {
-    tokens = parseMiddlewarePath(source);
+    tokens = parseMiddlewarePath(source, delimiter);
   } catch (error) {
     return {
       kind: "invalid",
@@ -267,15 +275,21 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
   if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
 
   try {
-    return { regexp: middlewarePathTokensToRegExp(tokens) };
-  } catch {
+    return { regexp: middlewarePathTokensToRegExp(tokens, delimiter) };
+  } catch (error) {
+    if (!normalizeUnprefixedRepeats) {
+      return {
+        kind: "invalid",
+        error: error instanceof Error ? error.message : "source could not be compiled",
+      };
+    }
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
     const normalizedTokens = normalizeMiddlewarePathTokens(tokens);
     const normalizedUnsafeReason = validateTokens(normalizedTokens);
     if (normalizedUnsafeReason) return { kind: "unsafe", error: normalizedUnsafeReason };
     try {
-      return { regexp: middlewarePathTokensToRegExp(normalizedTokens) };
+      return { regexp: middlewarePathTokensToRegExp(normalizedTokens, delimiter) };
     } catch (error) {
       return {
         kind: "invalid",
@@ -283,6 +297,22 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
       };
     }
   }
+}
+
+export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
+  return compileSourcePattern(source, { normalizeUnprefixedRepeats: true });
+}
+
+/**
+ * Compile a `headers()` source the way `next build` does
+ * (`buildCustomRoute("header", …)`): path-to-regexp 6 with `delimiter: "/"`,
+ * case-insensitive, and an optional trailing slash. Unlike middleware
+ * matchers, an unprefixed repeat such as `/foo-:id*` is a config error.
+ *
+ * @see .nextjs-ref/packages/next/src/lib/build-custom-route.ts
+ */
+export function compileHeaderSourcePattern(source: string): CompiledMiddlewareMatcherPattern {
+  return compileSourcePattern(source, { delimiter: "/", normalizeUnprefixedRepeats: false });
 }
 
 export function validateMiddlewareMatcherPatterns(value: unknown): void {
