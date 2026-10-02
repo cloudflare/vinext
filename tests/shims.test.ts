@@ -13330,6 +13330,51 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     },
   );
 
+  // Ported from Next.js: test/e2e/custom-routes/custom-routes.test.ts (routes-manifest `headers`)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
+  // Each source is paired with the regex Next.js writes to routes-manifest.json for it.
+  it.each([
+    ["/add-header", String.raw`^\/add-header(?:\/)?$`],
+    ["/my-headers/(.*)", String.raw`^\/my-headers(?:\/(.*))(?:\/)?$`],
+    ["/my-other-header/:path", String.raw`^\/my-other-header(?:\/([^\/]+?))(?:\/)?$`],
+    ["/without-params/url", String.raw`^\/without-params\/url(?:\/)?$`],
+    [
+      "/with-params/url/:path*",
+      String.raw`^\/with-params\/url(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`,
+    ],
+    ["/:path*", String.raw`^(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`],
+    ["/named-pattern/:path(.*)", String.raw`^\/named-pattern(?:\/(.*))(?:\/)?$`],
+    [
+      "/catchall-header/:path*",
+      String.raw`^\/catchall-header(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`,
+    ],
+  ])("matches %s where the routes-manifest regex does", async (source, manifestRegex) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+    const expected = new RegExp(manifestRegex, "i");
+    for (const pathname of [
+      "/",
+      "/add-header",
+      "/my-headers",
+      "/my-headers/first",
+      "/my-headers/a/b",
+      "/my-other-header/first",
+      "/my-other-header/a/b",
+      "/without-params/url",
+      "/with-params/url",
+      "/with-params/url/first",
+      "/with-params/url/a/b",
+      "/named-pattern",
+      "/named-pattern/hello",
+      "/catchall-header",
+      "/catchall-header/hello/world",
+      "/Add-Header",
+      "/other",
+    ]) {
+      expect(matchHeaders(pathname, rules, ctx).length > 0, pathname).toBe(expected.test(pathname));
+    }
+  });
+
   // Next.js accepts these, but a repeated group that can match an empty value is a
   // backtracking hazard, so vinext refuses them as it does middleware matchers.
   it.each(["/(.*)*", "/:path(.+)+"])("ignores %s as an unsafe repeated group", async (source) => {
