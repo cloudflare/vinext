@@ -230,6 +230,7 @@
     "@vinext/types": "workspace:^",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
+    "mrmime": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "web-vitals": "catalog:"
   },
