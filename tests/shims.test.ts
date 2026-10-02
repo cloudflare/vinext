@@ -13262,52 +13262,73 @@ describe("safeRegExp", () => {
   });
 });
 
-describe("escapeHeaderSource", () => {
-  it("passes through literal paths unchanged", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/users")).toBe("/api/users");
-  });
+describe("matchHeaders source compilation (Next.js parity)", () => {
+  // Expectations come from `next build`'s compiler for header sources:
+  // buildCustomRoute("header", { source }) in next/dist/lib/build-custom-route.js
+  // (Next.js 16.3), i.e. path-to-regexp 6 with { strict: true, sensitive: false,
+  // delimiter: "/" } plus an optional trailing slash.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/build-custom-route.ts
+  const ctx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
 
-  it("escapes dots", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/file.txt")).toBe("/file\\.txt");
-  });
+  const cases: Array<[source: string, expected: Record<string, boolean>]> = [
+    ["/:path*", { "/": true, "/about": true, "/a/b": true, "/.well-known": true }],
+    ["/:path+", { "/": false, "/about": true, "/a/b": true }],
+    [
+      "/((?!embed/).*)",
+      { "/": true, "/about": true, "/embed": true, "/embed/x": false, "/.well-known": true },
+    ],
+    [
+      "/embed/:path*",
+      { "/embed": true, "/embed/x": true, "/embed/x/y": true, "/embedded": false, "/": false },
+    ],
+    ["/file.txt", { "/file.txt": true, "/fileXtxt": false }],
+    ["/user/:id", { "/user/1": true, "/user/1/2": false, "/user": false }],
+    ["/api/:version(\\d+)/users", { "/api/2/users": true, "/api/v2/users": false }],
+    ["/:lang(en|fr)/:id(\\d+)/page", { "/en/1/page": true, "/de/1/page": false }],
+    ["/api/(v1|v2)/users", { "/api/v1/users": true, "/api/v3/users": false }],
+    ["/:path*.md", { "/docs/intro.md": true, "/docs/intro": false }],
+    ["/blog-:slug", { "/blog-hello": true, "/blog-hello/x": false }],
+    ["/About", { "/about": true }],
+  ];
 
-  it("converts named param to [^/]+", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/user/:id")).toBe("/user/[^/]+");
-  });
+  for (const [source, expected] of cases) {
+    it(`matches ${source} like next build`, async () => {
+      const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      const actual = Object.fromEntries(
+        Object.keys(expected).map((pathname) => [
+          pathname,
+          matchHeaders(pathname, rules, ctx).length > 0,
+        ]),
+      );
+      expect(actual).toEqual(expected);
+    });
+  }
 
-  it("converts glob * to .*", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/*")).toBe("/api/.*");
-  });
-
-  it("escapes + and ?", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/path+query")).toBe("/path\\+query");
-    expect(escapeHeaderSource("/maybe?")).toBe("/maybe\\?");
-  });
-
-  it("handles constrained param :param(constraint)", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/:version(\\d+)/users")).toBe("/api/(\\d+)/users");
-  });
-
-  it("handles constrained param with alternation", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/page")).toBe("/(en|fr)/page");
-  });
-
-  it("preserves standalone regex groups", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/(v1|v2)/users")).toBe("/api/(v1|v2)/users");
-  });
-
-  it("handles multiple groups and params", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/:id(\\d+)/page")).toBe("/(en|fr)/(\\d+)/page");
-  });
+  // Next.js fails the build on these sources; vinext warns and never applies them.
+  it.each(["/api/*", "/(?!embed/)(.*)", "/foo-:id*", "about"])(
+    "ignores %s, which next build rejects",
+    async (source) => {
+      const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+        for (const pathname of ["/", "/api/x", "/about", "/foo-1"]) {
+          expect(matchHeaders(pathname, rules, ctx)).toEqual([]);
+        }
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining(`Ignoring headers() source "${source}"`),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 });
 
 describe("matchConfigPattern rejects ReDoS patterns", () => {
@@ -14060,9 +14081,9 @@ describe("matchHeaders", () => {
 });
 
 describe("matchHeaders compiled source cache", () => {
-  // Regression test: escapeHeaderSource() + safeRegExp() were re-run on every
-  // request for every header rule. The result is now cached in _compiledHeaderSourceCache
-  // keyed by rule.source so subsequent calls skip the tokeniser and isSafeRegex.
+  // Regression test: header sources were recompiled on every request for every
+  // header rule. The result is now cached in _compiledHeaderSourceCache keyed by
+  // rule.source so subsequent calls skip the parse and regex safety scan.
   function makeCtx(h: Record<string, string> = {}) {
     return {
       headers: new Headers(h),
