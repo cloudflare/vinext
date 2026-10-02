@@ -256,6 +256,7 @@ function createCommonOptions() {
       renderPageSpecialError,
       renderToReadableStream,
       routePattern: "/posts/[slug]",
+      runWithReactCacheScope: <T>(run: () => Promise<T>) => run(),
       runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
         return probe();
       },
@@ -2885,6 +2886,7 @@ describe("layoutFlags injection into RSC payload", () => {
         return createStream(["flight-data"]);
       },
       routePattern: overrides.routePattern ?? "/test",
+      runWithReactCacheScope: <T>(run: () => Promise<T>) => run(),
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,

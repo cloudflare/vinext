@@ -84,6 +84,7 @@ import {
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
+import type { ReactCacheScopeRunner } from "./app-react-cache-scope.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
@@ -448,6 +449,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   rootNotFoundModule?: AppPageModule | null;
   rootUnauthorizedModule?: AppPageModule | null;
   route: TRoute;
+  runWithReactCacheScope: ReactCacheScopeRunner;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
   scriptNonce?: string;
@@ -1278,12 +1280,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         if (hasActiveLoadingBoundary) {
           return null;
         }
-        const pageError = await probeAppPageThrownError({
-          probePage: () => options.probePage(pageSearchParams),
-          runWithSuppressedHookWarning(probe) {
-            return options.runWithSuppressedHookWarning(probe);
-          },
-        });
+        const pageError = await options.runWithReactCacheScope(() =>
+          probeAppPageThrownError({
+            probePage: () => options.probePage(pageSearchParams),
+            runWithSuppressedHookWarning(probe) {
+              return options.runWithSuppressedHookWarning(probe);
+            },
+          }),
+        );
         return resolveAppPageSpecialError(pageError);
       },
       renderErrorBoundaryPage(buildError) {
@@ -1470,6 +1474,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     hasCustomGlobalError: options.hasCustomGlobalError,
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
+    runWithReactCacheScope: options.runWithReactCacheScope,
     runWithSuppressedHookWarning(probe) {
       return options.runWithSuppressedHookWarning(probe);
     },

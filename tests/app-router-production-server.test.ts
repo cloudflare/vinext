@@ -1265,6 +1265,20 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("content-type")).toContain("text/x-component");
   });
 
+  // https://github.com/cloudflare/vinext/issues/3671
+  // An RSC navigation probes the page before it renders. The page stores its
+  // locale through React cache(), so the probe must not see the reader's
+  // headers() fallback and mark the route dynamic.
+  it("caches an RSC response when the page reads a React cache() value", async () => {
+    const first = await fetch(`${baseUrl}/react-cache-probe/es.rsc`);
+    expect(first.status).toBe(200);
+    await first.text();
+
+    const second = await fetch(`${baseUrl}/react-cache-probe/es.rsc`);
+    expect(second.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(second.headers.get("cache-control")).not.toContain("no-store");
+  });
+
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
     const res = await fetch(`${baseUrl}/about`, {
       headers: { Accept: "text/x-component", RSC: "1" },

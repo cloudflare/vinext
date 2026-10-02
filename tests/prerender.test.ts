@@ -1368,6 +1368,26 @@ describe("prerenderApp — default mode (app-basic)", () => {
     },
   );
 
+  // https://github.com/cloudflare/vinext/issues/3671
+  // Components read a locale stored above them through React cache(), as with
+  // next-intl's setRequestLocale(). The probe must see it too, or the readers
+  // fall back to headers() and the route is skipped as dynamic.
+  it.each(["en", "es"])(
+    "prerenders components that read a React cache() value stored above them (%s)",
+    (locale) => {
+      const r = findRoute(results, `/react-cache-probe/${locale}`);
+      expect(r).toMatchObject({
+        route: "/react-cache-probe/:locale",
+        status: "rendered",
+      });
+      const html = fs.readFileSync(path.join(outDir, `react-cache-probe/${locale}.html`), "utf-8");
+      expect(html).toMatch(new RegExp(`data-testid="react-cache-probe-nav">(<!-- -->)?${locale}<`));
+      expect(html).toMatch(
+        new RegExp(`data-testid="react-cache-probe-page">(<!-- -->)?${locale}<`),
+      );
+    },
+  );
+
   it("renders inline server actions during the production build phase", () => {
     const r = findRoute(results, "/prerender-inline-server-action");
     expect(r).toMatchObject({

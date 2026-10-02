@@ -139,6 +139,10 @@ const appHookWarningSuppressionPath = resolveEntryPath(
   "../server/app-hook-warning-suppression.js",
   import.meta.url,
 );
+const appReactCacheScopePath = resolveEntryPath(
+  "../server/app-react-cache-scope.js",
+  import.meta.url,
+);
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", import.meta.url);
 const routePatternPath = resolveEntryPath("../routing/route-pattern.js", import.meta.url);
@@ -720,9 +724,13 @@ import {
 import { createClientManifest as _createClientManifest } from "@vitejs/plugin-rsc/core/rsc";
 import { prerender as _prerender } from "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge";
 import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
+import { createReactCacheScopeRunner as __createReactCacheScopeRunner } from ${JSON.stringify(appReactCacheScopePath)};
 
 const renderToReadableStream = createRscRenderer(_renderToReadableStream);
 const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
+  _prerender(model, _createClientManifest(), options),
+);
+const __runWithReactCacheScope = __createReactCacheScopeRunner((model, options) =>
   _prerender(model, _createClientManifest(), options),
 );
 import { createElement } from "react";
@@ -1535,6 +1543,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       rootNotFoundModule,
       rootUnauthorizedModule,
       route,
+      runWithReactCacheScope: __runWithReactCacheScope,
       runWithSuppressedHookWarning(probe) {
         return suppressHookWarningAls.run(true, probe);
       },

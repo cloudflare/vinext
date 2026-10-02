@@ -380,6 +380,7 @@ type CreateDispatchOptionsOverrides = {
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
+  runWithReactCacheScope?: DispatchOptions["runWithReactCacheScope"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
   renderMode?: DispatchOptions["renderMode"];
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
@@ -494,6 +495,8 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     resolveRouteStaticEligible:
       overrides.resolveRouteStaticEligible ?? ((candidate) => !candidate.isDynamic),
     route,
+    runWithReactCacheScope:
+      overrides.runWithReactCacheScope ?? (<T>(run: () => Promise<T>) => run()),
     runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
       return probe();
     },
@@ -765,6 +768,33 @@ describe("app page dispatch", () => {
 
     expect(probePage).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("probes the page for a special error inside a React cache scope", async () => {
+    let insideScope = false;
+    const probedInsideScope: boolean[] = [];
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw Object.assign(new Error("not found"), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+      },
+      probePage() {
+        probedInsideScope.push(insideScope);
+        return null;
+      },
+      async runWithReactCacheScope(run) {
+        insideScope = true;
+        try {
+          return await run();
+        } finally {
+          insideScope = false;
+        }
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(probedInsideScope).toEqual([true]);
   });
 
   afterEach(() => {

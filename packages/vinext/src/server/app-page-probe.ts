@@ -13,6 +13,7 @@ import {
   type LayoutFlags,
 } from "./app-page-execution.js";
 import { makeObservedAppPageSearchParamsThenable } from "./app-page-search-params-observation.js";
+import type { ReactCacheScopeRunner } from "./app-react-cache-scope.js";
 import { isPromiseLike } from "../utils/promise.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
@@ -445,6 +446,7 @@ type ProbeAppPageBeforeRenderOptions = {
   ) => Promise<Response>;
   renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
+  runWithReactCacheScope: ReactCacheScopeRunner;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   /** When provided, enables per-layout static/dynamic classification. */
   classification?: LayoutClassificationOptions | null;
@@ -459,6 +461,14 @@ export async function probeAppPageBeforeRender(
     return { response: null, layoutFlags };
   }
 
+  // One React cache per probe. Layouts are probed separately, deepest first,
+  // so a shared cache would leak a deeper layout's `cache()` state into a
+  // shallower layout that renders before it.
+  const probeLayoutAt = (layoutIndex: number): Promise<unknown> =>
+    options.runWithReactCacheScope(async () => options.probeLayoutAt(layoutIndex));
+  const probePage = (): Promise<unknown> =>
+    options.runWithReactCacheScope(async () => options.probePage());
+
   // Layouts render before their children in Next.js, so layout-level special
   // errors must be handled before probing the page component itself.
   if (options.layoutCount > 0) {
@@ -472,7 +482,7 @@ export async function probeAppPageBeforeRender(
 
         return options.renderLayoutSpecialError(specialError, layoutIndex);
       },
-      probeLayoutAt: options.probeLayoutAt,
+      probeLayoutAt,
       runWithSuppressedHookWarning(probe) {
         return options.runWithSuppressedHookWarning(probe);
       },
@@ -516,7 +526,7 @@ export async function probeAppPageBeforeRender(
       // The real RSC/SSR render path will surface those properly below.
       return null;
     },
-    probePage: options.probePage,
+    probePage,
     runWithSuppressedHookWarning(probe) {
       return options.runWithSuppressedHookWarning(probe);
     },

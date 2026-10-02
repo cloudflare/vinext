@@ -105,6 +105,7 @@ export default {
         "src/server/prerender-work-unit-setup.ts",
         "src/server/app-page-element-builder.ts",
         "src/server/app-hook-warning-suppression.ts",
+        "src/server/app-react-cache-scope.ts",
         "src/server/app-post-middleware-context.ts",
         "src/server/app-route-handler-middleware-context.ts",
         "src/server/app-request-stage-context.ts",

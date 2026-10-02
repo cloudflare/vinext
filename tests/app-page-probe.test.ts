@@ -157,6 +157,49 @@ describe("app page probe helpers", () => {
     expect(sharedChildren.next().value).toMatchObject({ type: Child });
   });
 
+  it("probes each layout and the page in a separate React cache scope", async () => {
+    const events: string[] = [];
+
+    await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      layoutCount: 2,
+      probeLayoutAt(layoutIndex) {
+        events.push(`layout:${layoutIndex}`);
+        return null;
+      },
+      probePage() {
+        events.push("page");
+        return null;
+      },
+      renderLayoutSpecialError: vi.fn(),
+      renderPageSpecialError: vi.fn(),
+      resolveSpecialError: () => null,
+      async runWithReactCacheScope(run) {
+        events.push("scope:open");
+        try {
+          return await run();
+        } finally {
+          events.push("scope:close");
+        }
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(events).toEqual([
+      "scope:open",
+      "layout:1",
+      "scope:close",
+      "scope:open",
+      "layout:0",
+      "scope:close",
+      "scope:open",
+      "page",
+      "scope:close",
+    ]);
+  });
+
   it("handles layout special errors before probing the page", async () => {
     const layoutError = new Error("layout failed");
     const pageProbe = vi.fn(() => "page");
@@ -187,6 +230,7 @@ describe("app page probe helpers", () => {
             }
           : null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -228,6 +272,7 @@ describe("app page probe helpers", () => {
       resolveSpecialError() {
         return null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -266,6 +311,7 @@ describe("app page probe helpers", () => {
             }
           : null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -299,6 +345,7 @@ describe("app page probe helpers", () => {
       resolveSpecialError() {
         return null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -345,6 +392,7 @@ describe("app page probe helpers", () => {
       resolveSpecialError(error) {
         return error === layoutError ? { kind: "http-access-fallback", statusCode: 404 } : null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -401,6 +449,7 @@ describe("app page probe helpers", () => {
       resolveSpecialError(error) {
         return error === NOT_FOUND_ERROR ? { kind: "http-access-fallback", statusCode: 404 } : null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -448,6 +497,7 @@ describe("app page probe helpers", () => {
           ? { kind: "redirect", location: "/about", statusCode: 307 }
           : null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -489,6 +539,7 @@ describe("app page probe helpers", () => {
           ? { kind: "redirect", location: "/about", statusCode: 307 }
           : null;
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -526,6 +577,7 @@ describe("app page probe helpers", () => {
       resolveSpecialError() {
         throw new Error("should not be reached when the page probe is skipped");
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
@@ -557,6 +609,7 @@ describe("app page probe helpers", () => {
       resolveSpecialError() {
         throw new Error("should not be reached when the page probe is skipped");
       },
+      runWithReactCacheScope: (run) => run(),
       runWithSuppressedHookWarning(probe) {
         return probe();
       },

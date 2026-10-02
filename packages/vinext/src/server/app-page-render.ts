@@ -25,6 +25,7 @@ import {
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
+import type { ReactCacheScopeRunner } from "./app-react-cache-scope.js";
 import {
   applyEdgeRuntimeHeader,
   buildAppPageHtmlResponse,
@@ -234,6 +235,7 @@ type RenderAppPageLifecycleOptionsBase = {
     options: { onError: AppPageBoundaryOnError; signal?: AbortSignal },
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
   routePattern: string;
+  runWithReactCacheScope: ReactCacheScopeRunner;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   scriptNonce?: string;
   clientReuseManifest?: ClientReuseManifestParseResult;
@@ -887,6 +889,7 @@ async function renderAppPageLifecycleImpl(
       return options.renderPageSpecialError(specialError);
     },
     resolveSpecialError: resolveAppPageSpecialError,
+    runWithReactCacheScope: options.runWithReactCacheScope,
     runWithSuppressedHookWarning(probe) {
       return options.runWithSuppressedHookWarning(probe);
     },
