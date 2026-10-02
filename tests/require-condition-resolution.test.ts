@@ -1,6 +1,7 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createBuilder, createIdResolver } from "vite";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createRequireConditionResolutionPlugin,
@@ -282,6 +283,53 @@ describe("vinext:require-condition-resolution", () => {
           `${target}.vinext-require.js`,
         ),
       ).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves the require condition for packages a server environment would externalize", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "vinext-require-condition-")));
+    try {
+      const packageDir = path.join(root, "node_modules", "lib-cjs");
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({
+          name: "lib-cjs",
+          version: "1.0.0",
+          type: "commonjs",
+          exports: { ".": { import: "./index.mjs", default: "./index.js" } },
+        }),
+      );
+      await writeFile(path.join(packageDir, "index.js"), "module.exports = 'cjs';\n");
+      await writeFile(path.join(packageDir, "index.mjs"), "export default 'esm';\n");
+
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        environments: { ssr: {} },
+      });
+      const config = builder.config;
+      const plugin = createRequireConditionResolutionPlugin(createIdResolver, () => undefined);
+      const configResolved = plugin.configResolved;
+      if (typeof configResolved !== "function") throw new Error("missing configResolved hook");
+      await configResolved.call({} as never, config);
+      const hook = plugin.transform;
+      const handler = typeof hook === "function" ? hook : hook?.handler;
+
+      const importer = path.join(root, "page.tsx");
+      const result = (await handler!.call(
+        { environment: builder.environments.ssr } as never,
+        `const Library = require("lib-cjs");\nexport default Library;`,
+        importer,
+      )) as { code: string } | null;
+
+      expect(result).not.toBeNull();
+      expect(result?.code).toContain(
+        `require(${JSON.stringify(`${path.join(packageDir, "index.js")}.vinext-require.js`)})`,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

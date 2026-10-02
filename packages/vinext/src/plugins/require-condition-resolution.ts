@@ -184,8 +184,11 @@ export function createRequireConditionResolutionPlugin(
     name: "vinext:require-condition-resolution",
     enforce: "pre",
     configResolved(config) {
-      resolveImport = createResolver(config, { isRequire: false });
-      resolveRequire = createResolver(config, { isRequire: true });
+      // Resolve to the real file even for packages Vite would externalize in a
+      // server environment: the CommonJS transform turns the call into a static
+      // import that gets bundled, so the condition must be picked here.
+      resolveImport = createResolver(config, { isRequire: false, noExternal: true });
+      resolveRequire = createResolver(config, { isRequire: true, noExternal: true });
     },
     resolveId(source) {
       if (virtualTargets.has(source)) return source;
