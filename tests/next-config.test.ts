@@ -1941,6 +1941,39 @@ describe("parseBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig outputFileTracingIncludes/Excludes", () => {
+  it("defaults to empty arrays", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.outputFileTracingIncludes).toEqual([]);
+    expect(resolved.outputFileTracingExcludes).toEqual([]);
+  });
+
+  it("merges the globs of every route key and drops duplicates", async () => {
+    const resolved = await resolveNextConfig({
+      outputFileTracingIncludes: {
+        "/": ["./node_modules/typescript/lib/lib.*.d.ts", "./data/**"],
+        "/api/*": ["./data/**", "./node_modules/@types/node/**"],
+      },
+      outputFileTracingExcludes: { "/": ["./node_modules/@swc/core-*/**"] },
+    });
+    expect(resolved.outputFileTracingIncludes).toEqual([
+      "./node_modules/typescript/lib/lib.*.d.ts",
+      "./data/**",
+      "./node_modules/@types/node/**",
+    ]);
+    expect(resolved.outputFileTracingExcludes).toEqual(["./node_modules/@swc/core-*/**"]);
+  });
+
+  it("ignores values that are not a route-keyed map of string arrays", async () => {
+    const resolved = await resolveNextConfig({
+      outputFileTracingIncludes: ["./data/**"] as unknown as Record<string, string[]>,
+      outputFileTracingExcludes: { "/": [1, "./keep/**"] } as unknown as Record<string, string[]>,
+    });
+    expect(resolved.outputFileTracingIncludes).toEqual([]);
+    expect(resolved.outputFileTracingExcludes).toEqual(["./keep/**"]);
+  });
+});
+
 describe("resolveNextConfig serverExternalPackages", () => {
   it("defaults to empty array when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -2590,6 +2623,8 @@ describe("detectNextIntlConfig", () => {
       serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
+      outputFileTracingIncludes: [],
+      outputFileTracingExcludes: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       hashSalt: "",
