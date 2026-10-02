@@ -444,6 +444,34 @@ describe("unsafe middleware matcher rejection", () => {
     },
   );
 
+  it("accepts commonly recommended static-asset exclusion matchers with variable-length branches", async () => {
+    const root = await createIsolatedFixture(
+      FIXTURE_DIR,
+      "vinext-middleware-matcher-woff2-build-",
+      (source) => path.basename(source) !== "wrangler.jsonc",
+    );
+    try {
+      // Exact matcher from supabase/supabase examples (clerk/middleware.ts): the
+      // extension alternation contains variable-length branches (html?, jpe?g,
+      // js(?!on), woff2?), which are non-finite but safe — no repetition over
+      // ambiguous alternatives. Previously rejected as "ambiguous sequence expansion".
+      await writeMatcherFixture(
+        root,
+        "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+      );
+      await expect(
+        createBuilder({
+          root,
+          configFile: false,
+          plugins: [vinext({ appDir: root })],
+          logLevel: "silent",
+        }),
+      ).resolves.toBeDefined();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an ambiguous constrained repeat during dev config processing", async () => {
     const root = await createIsolatedFixture(
       FIXTURE_DIR,

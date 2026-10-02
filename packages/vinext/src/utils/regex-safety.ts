@@ -638,7 +638,13 @@ function ambiguousExpansionFactor(node: RegexNode): number {
     case "alternation": {
       const result = hasPrefixFreeFiniteLanguage(node);
       if (result.safe) return 1;
-      if (result.budgetExceeded || result.wordCount === 0) return MAX_SEQUENCE_EXPANSIONS + 1;
+      if (result.budgetExceeded) return MAX_SEQUENCE_EXPANSIONS + 1;
+      // Non-finite language (a branch carries a variable-length quantifier, e.g.
+      // `woff2?` in `.*\.(?:svg|png|woff2?)$`): the bounded-expansion metric does
+      // not apply here, so treat it like the variable `repeat` case below
+      // (factor 1). Ambiguity under repetition is still caught by the dedicated
+      // nested/overlapping/ambiguous-alternative checks.
+      if (result.wordCount === 0) return 1;
       return result.wordCount;
     }
     case "sequence": {
