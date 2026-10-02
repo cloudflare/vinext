@@ -13329,6 +13329,20 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       }
     },
   );
+
+  // Next.js accepts these, but a repeated group that can match an empty value is a
+  // backtracking hazard, so vinext refuses them as it does middleware matchers.
+  it.each(["/(.*)*", "/:path(.+)+"])("ignores %s as an unsafe repeated group", async (source) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      expect(matchHeaders("/about", rules, ctx)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("may match an empty value"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("matchConfigPattern rejects ReDoS patterns", () => {
