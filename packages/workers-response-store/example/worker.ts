@@ -215,7 +215,11 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/cache")) {
-        return store.fetch(cacheRequest(request, "/cache"));
+        const target = cacheRequest(request, "/cache");
+        const noRegenerate = request.headers.get("X-Workers-Response-Store-No-Regenerate");
+        if (noRegenerate)
+          target.headers.set("X-Workers-Response-Store-No-Regenerate", noRegenerate);
+        return store.fetch(target);
       }
 
       if (request.method === "PUT" && url.pathname.startsWith("/admin/put")) {

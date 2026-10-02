@@ -145,6 +145,12 @@ export type WorkersResponseStoreProps = {
   locationHint?: ResponseStoreLocationHint;
   revalidator?: RevalidationService;
   shards?: number;
+  /**
+   * Answer a miss instead of regenerating in the foreground. Set from
+   * `X-Workers-Response-Store-No-Regenerate` so these reads get their own
+   * Workers Cache key and never collapse into an in-flight regeneration.
+   */
+  noRegenerate?: boolean;
 };
 
 export type ResponseStoreLocationHint = DurableObjectLocationHint;
@@ -200,7 +206,17 @@ export function getWorkersResponseStore(
   if (typeof binding !== "function") {
     throw new Error("The ResponseStoreBinding entrypoint is not exported");
   }
-  return binding({ props });
+  const store = binding({ props });
+  return {
+    fetch: (request) =>
+      request.headers.get(NO_REGENERATE_HEADER) === "1"
+        ? binding({ props: { ...props, noRegenerate: true } }).fetch(request)
+        : store.fetch(request),
+    getTagExpiration: (tags) => store.getTagExpiration(tags),
+    put: (request, response, options) => store.put(request, response, options),
+    refresh: (options) => store.refresh(options),
+    purge: (options) => store.purge(options),
+  };
 }
 
 export class ResponseStoreService extends WorkerEntrypoint<
@@ -256,6 +272,8 @@ const MISS_HEADERS = {
   "Content-Type": "text/plain; charset=utf-8",
   "X-Workers-Response-Store": "MISS",
 };
+// Read-only request header: answer a miss instead of regenerating in the foreground.
+const NO_REGENERATE_HEADER = "X-Workers-Response-Store-No-Regenerate";
 
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
@@ -1146,8 +1164,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     // (both background SWR and blocking expiry). Return its fresh replacement
     // instead of starting another SWR cycle. A fresh R2 revision can still fill
     // the edge immediately; unconditional reads retain the stale fast path.
+    // A no-regenerate read must not regenerate in the foreground, so a conditional one is
+    // served stale and refreshed in the background like an unconditional read.
     const revalidateStale =
       now >= entry.freshUntil &&
+      this.ctx.props?.noRegenerate !== true &&
       (request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since"));
     if (now < entry.swrUntil && !revalidateStale) {
       const stored = await this.readStoredResponse(entry, now, r2Read?.object);
@@ -1167,6 +1188,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     await r2Read?.object?.body.cancel().catch(() => {});
+    // A reader that is itself running a regeneration (for example a page replay
+    // rewriting one entry) must not wait on another foreground regeneration: its
+    // revalidator may replay the same page and read this entry again.
+    if (this.ctx.props?.noRegenerate === true) {
+      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+    }
     const metadata = this.getMetadata(keyHash);
     let regenerated: StoreResult;
     if (revalidateStale && now < entry.swrUntil) {

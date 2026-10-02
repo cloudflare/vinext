@@ -146,6 +146,37 @@ test("manual refresh calls back into the user Worker version", async () => {
   assert.equal(response.headers.get("X-Revalidation-Reason"), "manual");
 });
 
+test("a no-regenerate read crosses the service binding and skips a hard-expired entry", async () => {
+  await put("/expired-no-regenerate", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    regeneratedBody: "regenerated",
+  });
+
+  const skipped = await worker.fetch("https://user.test/cache/expired-no-regenerate", {
+    headers: { "X-Workers-Response-Store-No-Regenerate": "1" },
+  });
+  assert.equal(skipped.status, 404);
+  assert.equal(skipped.headers.get("X-Workers-Response-Store"), "MISS");
+
+  const regenerated = await read("/expired-no-regenerate");
+  assert.equal(await regenerated.text(), "regenerated");
+});
+
+test("a no-regenerate read crosses the service binding and still serves a stale-while-revalidate entry", async () => {
+  await put("/stale-no-regenerate", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    regeneratedBody: "refreshed",
+  });
+
+  const stale = await worker.fetch("https://user.test/cache/stale-no-regenerate", {
+    headers: { "X-Workers-Response-Store-No-Regenerate": "1" },
+  });
+  assert.equal(await stale.text(), "stale-body");
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await (await read("/stale-no-regenerate")).text(), "refreshed");
+});
+
 test("SWR keeps the passed user-Worker loopback alive after returning stale", async () => {
   await put("/swr", "stale", {
     cacheControl: "public, max-age=0, stale-while-revalidate=30",

@@ -5,6 +5,7 @@ import type {
   WorkersResponseStore,
 } from "@cloudflare/workers-response-store";
 import {
+  captureResponseStoreDataRegeneration,
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
   runWithResponseStoreInvocation,
@@ -25,7 +26,7 @@ class TestStore implements WorkersResponseStore {
   tagExpiration = 0;
   tagExpirationCalls: string[][] = [];
 
-  async fetch(): Promise<Response> {
+  async fetch(_request: Request): Promise<Response> {
     return (
       this.response?.clone() ??
       new Response("miss", {
@@ -494,4 +495,89 @@ test("propagates mutation errors without treating an unavailable local edge cach
   store.mutationError = new Error("edge purge failed");
   await expect(handler.set("key", null)).rejects.toThrow("edge purge failed");
   await expect(handler.revalidateTag("posts", { expire: 60 })).rejects.toThrow("edge purge failed");
+});
+
+// Models the two states of @cloudflare/workers-response-store that matter here: an
+// unexpired entry is served, and a hard-expired one runs its revalidator in the
+// foreground unless the reader asks for a miss. The vinext:data revalidator replays
+// the owning page.
+function createReplayingStore(renderPage: () => Promise<void>) {
+  const store = new TestStore();
+  const entries = new Map<string, { key: string; response: Response; expired: boolean }>();
+  const regenerations: string[] = [];
+  let writing = "";
+  vi.spyOn(store, "put").mockImplementation(async (request, response) => {
+    entries.set(request.url, { key: writing, response: response.clone(), expired: false });
+    return store.putResult;
+  });
+  vi.spyOn(store, "fetch").mockImplementation(async (request) => {
+    const entry = entries.get(request.url);
+    if (
+      !entry ||
+      (entry.expired && request.headers.get("X-Workers-Response-Store-No-Regenerate") === "1")
+    ) {
+      return new Response("miss", { status: 404, headers: { "X-Workers-Response-Store": "MISS" } });
+    }
+    if (!entry.expired) return entry.response.clone();
+    regenerations.push(entry.key);
+    const response = await captureResponseStoreDataRegeneration(entry.key, renderPage);
+    entries.set(request.url, { ...entry, response: response.clone(), expired: false });
+    return response;
+  });
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  return {
+    handler,
+    regenerations,
+    async seed(key: string, value: string, expired: boolean) {
+      writing = key;
+      await handler.set(key, fetchValue(value));
+      for (const entry of entries.values()) if (entry.key === key) entry.expired = expired;
+    },
+  };
+}
+
+function fetchValue(body: string) {
+  return { kind: "FETCH", data: { body, headers: {}, url: "" }, revalidate: 60 } as const;
+}
+
+function bodyOf(value: Awaited<ReturnType<WorkersResponseStoreCacheHandler["get"]>>) {
+  const data = value?.value && "data" in value.value ? value.value.data : undefined;
+  return data && "body" in data ? data.body : undefined;
+}
+
+test("regenerating an expired data entry does not replay the page for an expired sibling", async () => {
+  let renders = 0;
+  const replay = createReplayingStore(async () => {
+    if (++renders > 10) throw new Error("page replayed recursively");
+    for (const key of ["a", "b"]) {
+      if (!(await replay.handler.get(key)))
+        await replay.handler.set(key, fetchValue(`fresh ${key}`));
+    }
+  });
+  await replay.seed("a", "old a", true);
+  await replay.seed("b", "old b", true);
+  const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  expect(bodyOf(await replay.handler.get("a"))).toBe("fresh a");
+  expect(replay.regenerations).toEqual(["a"]);
+  expect(renders).toBe(1);
+  expect(errorLog).not.toHaveBeenCalled();
+});
+
+test("regeneration keeps serving unexpired entries that the target's cache key depends on", async () => {
+  // unstable_cache folds its arguments into the key, so an entry read from another
+  // entry's value must see the same value during the replay as in the original render.
+  const replay = createReplayingStore(async () => {
+    const id = bodyOf(await replay.handler.get("id")) ?? "new-id";
+    const key = `item:${id}`;
+    if (!(await replay.handler.get(key)))
+      await replay.handler.set(key, fetchValue(`item for ${id}`));
+  });
+  await replay.seed("id", "old-id", false);
+  await replay.seed("item:old-id", "stale item", true);
+  const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  expect(bodyOf(await replay.handler.get("item:old-id"))).toBe("item for old-id");
+  expect(replay.regenerations).toEqual(["item:old-id"]);
+  expect(errorLog).not.toHaveBeenCalled();
 });

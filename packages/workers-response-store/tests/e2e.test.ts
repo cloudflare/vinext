@@ -114,6 +114,12 @@ beforeEach(async () => {
         r2Buckets: { CACHE_BODIES: "programmatic-cache-test" },
         serviceBindings: {
           RESPONSE_STORE_BINDING: { name: "user-worker", entrypoint: "ResponseStoreBinding" },
+          // What getWorkersResponseStore routes a no-regenerate read to.
+          NO_REGENERATE_RESPONSE_STORE_BINDING: {
+            name: "user-worker",
+            entrypoint: "ResponseStoreBinding",
+            props: { noRegenerate: true },
+          },
         },
         bindings: {
           CF_VERSION_METADATA: {
@@ -191,11 +197,18 @@ async function read(
 
 // Miniflare does not run Workers Cache. Inject the header at the cache-bearing
 // entrypoint, where deployed Workers Cache adds it during revalidation.
-async function conditionalRead(path: string, header = "If-None-Match") {
-  const bindings = await mf.getBindings<{
-    RESPONSE_STORE_BINDING: Awaited<ReturnType<Miniflare["getWorker"]>>;
-  }>("user-worker");
-  return bindings.RESPONSE_STORE_BINDING.fetch(`https://cache-key.invalid${path}`, {
+async function conditionalRead(
+  path: string,
+  header = "If-None-Match",
+  binding:
+    | "RESPONSE_STORE_BINDING"
+    | "NO_REGENERATE_RESPONSE_STORE_BINDING" = "RESPONSE_STORE_BINDING",
+) {
+  const bindings =
+    await mf.getBindings<Record<typeof binding, Awaited<ReturnType<Miniflare["getWorker"]>>>>(
+      "user-worker",
+    );
+  return bindings[binding].fetch(`https://cache-key.invalid${path}`, {
     headers: {
       [header]: header === "If-None-Match" ? 'W/"previous"' : "Tue, 29 Sep 2026 00:00:00 GMT",
     },
@@ -1086,6 +1099,66 @@ test("hard-expired content is never returned and regeneration is committed befor
   assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "2");
   const objects = await r2Objects();
   assert.equal(objects.objects.length, 1, "the superseded R2 revision is deleted");
+});
+
+test("a no-regenerate read answers a miss instead of regenerating a hard-expired entry", async () => {
+  await put("/expired-no-regenerate", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    revalidator: { body: "regenerated-body", cacheControl: "public, max-age=60" },
+  });
+  const noRegenerate = { "X-Workers-Response-Store-No-Regenerate": "1" };
+  const regenerations = async () =>
+    (
+      (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+        regenerationCount: number;
+      }
+    ).regenerationCount;
+
+  const skipped = await read("/expired-no-regenerate", { headers: noRegenerate });
+  assert.equal(skipped.status, 404);
+  assert.equal(skipped.headers.get("X-Workers-Response-Store"), "MISS");
+  assert.equal(await regenerations(), 0);
+
+  const regenerated = await read("/expired-no-regenerate");
+  assert.equal(await regenerated.text(), "regenerated-body");
+  assert.equal(await regenerations(), 1);
+
+  const fresh = await read("/expired-no-regenerate", { headers: noRegenerate });
+  assert.equal(await fresh.text(), "regenerated-body");
+  assert.equal(await regenerations(), 1);
+});
+
+test("a no-regenerate read still serves a stale-while-revalidate entry and refreshes it", async () => {
+  await put("/stale-no-regenerate", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "refreshed-body", cacheControl: "public, max-age=60" },
+  });
+
+  const stale = await read("/stale-no-regenerate", {
+    headers: { "X-Workers-Response-Store-No-Regenerate": "1" },
+  });
+  assert.equal(await stale.text(), "stale-body");
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await (await read("/stale-no-regenerate")).text(), "refreshed-body");
+});
+
+test("a conditional no-regenerate read still serves a stale-while-revalidate entry and refreshes it", async () => {
+  await put("/stale-conditional-no-regenerate", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "refreshed-body", cacheControl: "public, max-age=60" },
+  });
+
+  // Workers Cache revalidates its copy of the no-regenerate read with If-None-Match once it is stale.
+  const stale = await conditionalRead(
+    "/stale-conditional-no-regenerate",
+    "If-None-Match",
+    "NO_REGENERATE_RESPONSE_STORE_BINDING",
+  );
+  assert.equal(await stale.text(), "stale-body");
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await (await read("/stale-conditional-no-regenerate")).text(), "refreshed-body");
 });
 
 test("missing R2 content returns a cache miss without querying metadata", async () => {

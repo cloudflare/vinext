@@ -217,6 +217,10 @@ The `regenerate` callback receives the stored `id` and `args`, a canonical cache
 | `missing` | The R2 object exists but its committed response content is unavailable.                                               |
 | `manual`  | `refresh()` selected the entry.                                                                                       |
 
+### Request headers
+
+A read made from inside a regeneration can set `X-Workers-Response-Store-No-Regenerate: 1`. Fresh and stale-while-revalidate entries are returned as usual, but a read that would otherwise wait for a foreground regeneration returns a Response Store miss instead. A revalidator that replays a render uses this so it doesn't start another regeneration that replays the same render. These reads reach `ResponseStoreBinding` with their own `ctx.props`, so Workers Cache keys them separately and never collapses them into an in-flight regeneration. When Workers Cache revalidates such a read with `If-None-Match` or `If-Modified-Since`, a stale-while-revalidate entry is still returned and refreshed in the background.
+
 ### Response headers
 
 `fetch()` responses include these Response Store protocol headers:

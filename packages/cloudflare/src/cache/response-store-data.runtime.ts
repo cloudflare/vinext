@@ -45,6 +45,8 @@ const CACHE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
 const CACHE_MAX_AGE = `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
 const DATA_ENTRY_PATH = "__vinext_data";
 const REPLAYABLE_HEADER = "X-Vinext-Response-Store-Replayable";
+// Asks @cloudflare/workers-response-store for a miss instead of a foreground regeneration.
+const NO_REGENERATE_HEADER = "X-Workers-Response-Store-No-Regenerate";
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const DATA_REVALIDATOR_ID = "vinext:data";
 const CACHE_FUNCTION_REVALIDATOR_ID = "vinext:cache-function";
@@ -311,9 +313,15 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
   }
 
   async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
-    if (regenerationStorage.getStore()?.targetKey === key) return null;
+    const regeneration = regenerationStorage.getStore();
+    if (regeneration?.targetKey === key) return null;
 
     const request = await cacheRequest(key);
+    // A data revalidator replays the whole owning page. If another entry the page
+    // reads has hard-expired, the Store would replay that page again to regenerate it
+    // (A -> B -> A). Ask for a miss instead; unexpired entries are still served, so
+    // values that feed the target's cache key stay the same as in the original render.
+    if (regeneration) request.headers.set(NO_REGENERATE_HEADER, "1");
     try {
       const response = await this.store.fetch(request);
       if (!response.ok) {
