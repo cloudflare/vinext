@@ -286,6 +286,7 @@ type AppElementsWireCodec = {
   readonly unmatchedSlotValue: typeof APP_UNMATCHED_SLOT_WIRE_VALUE;
   createMetadataEntries(input: AppElementsWireMetadataInput): AppElementsWireMetadataEntries;
   decode(elements: AppWireElements): AppElements;
+  decodeCacheKey(cacheKey: string): { interceptionContext: string | null; rscUrl: string };
   encodeCacheKey(rscUrl: string, interceptionContext: string | null): string;
   encodeLayoutId(treePath: string): string;
   encodeOutgoingPayload(input: {
@@ -333,6 +334,20 @@ function createAppPayloadTemplateId(treePath: string): string {
 
 function createAppPayloadCacheKey(rscUrl: string, interceptionContext: string | null): string {
   return appendInterceptionContext(rscUrl, interceptionContext);
+}
+
+function decodeAppPayloadCacheKey(cacheKey: string): {
+  interceptionContext: string | null;
+  rscUrl: string;
+} {
+  const separatorIndex = cacheKey.indexOf(APP_INTERCEPTION_SEPARATOR);
+  if (separatorIndex === -1) {
+    return { interceptionContext: null, rscUrl: cacheKey };
+  }
+  return {
+    interceptionContext: cacheKey.slice(separatorIndex + 1),
+    rscUrl: cacheKey.slice(0, separatorIndex),
+  };
 }
 
 function isAppElementsWireBfcacheIdentityId(key: string): boolean {
@@ -901,6 +916,7 @@ export const AppElementsWire: AppElementsWireCodec = {
   unmatchedSlotValue: APP_UNMATCHED_SLOT_WIRE_VALUE,
   createMetadataEntries: createAppElementsWireMetadataEntries,
   decode: normalizeAppElements,
+  decodeCacheKey: decodeAppPayloadCacheKey,
   encodeCacheKey: createAppPayloadCacheKey,
   encodeLayoutId: createAppPayloadLayoutId,
   encodeOutgoingPayload: buildOutgoingAppPayload,
