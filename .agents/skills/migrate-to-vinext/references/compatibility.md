@@ -26,7 +26,7 @@ All of these resolve automatically to vinext shims. Do not rewrite imports in ap
 | `next/document`     | Full    | Pages Router                                                     |
 | `next/constants`    | Full    |                                                                  |
 | `next/amp`          | Stub    | No-op; AMP deprecated since Next.js 13                           |
-| `next/web-vitals`   | Stub    | No-op                                                            |
+| `next/web-vitals`   | Full    | `useReportWebVitals`; not the `_app` export                      |
 | `server-only`       | Full    |                                                                  |
 | `client-only`       | Full    |                                                                  |
 
