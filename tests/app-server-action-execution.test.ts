@@ -930,7 +930,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.getSetCookie()).toEqual([
       "session=new; Path=/; HttpOnly",
       "lang=en; Path=/",
@@ -1768,7 +1768,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
     expect(JSON.parse(await response!.text())).toEqual({
       root: "redirect-target:{}:none",
@@ -1943,7 +1943,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target?from=action");
     expect(response?.headers.get("x-target-pipeline")).toBe("1");
     expect(await response?.text()).toBe("target-flight");
@@ -2017,7 +2017,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
     expect(response?.headers.get("content-type")).toBeNull();
     expect(await response?.text()).toBe("");
@@ -2042,7 +2042,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
     expect(response?.headers.get("content-type")).toBeNull();
     expect(await response?.text()).toBe("");
@@ -2075,7 +2075,7 @@ describe("app server action execution helpers", () => {
         }),
       );
 
-      expect(response?.status).toBe(303);
+      expect(response?.status).toBe(200);
       expect(response?.headers.get("x-action-redirect")).toBe(target);
       expect(await response?.text()).toBe("");
       expect(dispatchRedirectTargetRequest).not.toHaveBeenCalled();
@@ -2127,7 +2127,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/pages-target");
     expect(response?.headers.get("content-type")).toBeNull();
     expect(response?.headers.get("vary")).toBeNull();
@@ -2164,7 +2164,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/api/logout");
     expect(response?.headers.get("content-type")).toBeNull();
     expect(response?.headers.get("vary")).toBeNull();
@@ -2196,7 +2196,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/layout-only");
     expect(response?.headers.get("content-type")).toBeNull();
     expect(response?.headers.get("vary")).toBeNull();
@@ -2221,7 +2221,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/protected");
     expect(response?.headers.get("content-type")).toBeNull();
     expect(await response?.text()).toBe("");
@@ -2405,13 +2405,14 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    // The wrapper's protocol headers steer the action client: a Location on the
-    // 303 would make fetch follow it before the client reads x-action-redirect,
+    // The wrapper's protocol headers steer the action client: a Location
+    // header would make fetch follow it before the client reads
+    // x-action-redirect (this response never sets one, at 200 or otherwise),
     // a foreign Content-Type flips the client to a hard navigation, a stale
     // Content-Length misframes the generated Flight stream, and
     // x-action-redirect is the destination itself. Ordinary middleware headers
     // must still come through.
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/redirect-target");
     expect(response?.headers.get("location")).toBeNull();
     expect(response?.headers.get("content-type")).toContain("text/x-component");
@@ -2988,7 +2989,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-redirect")).toBe("/target?ok=1");
     expect(response?.headers.get("x-action-redirect-type")).toBe("push");
     expect(response?.headers.get("x-action-redirect-status")).toBe("308");
@@ -3014,7 +3015,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
     expect(response?.headers.get("x-action-redirect")).toBe("/target");
   });
@@ -3435,7 +3436,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get("x-edge-runtime")).toBe("1");
   });
 

@@ -18,8 +18,7 @@ import {
 import type { ReactFormState } from "react-dom/client";
 import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
-import { splitPathSegments } from "../routing/utils.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import {
   ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
@@ -1044,62 +1043,6 @@ function resolveInternalActionRedirectTarget(
   }
 }
 
-function isAncestorRouteRedirect(targetPathname: string, currentPathname: string): boolean {
-  return targetPathname !== "/" && currentPathname.startsWith(`${targetPathname}/`);
-}
-
-function isStaleChildSiblingRouteRedirect(
-  targetPathname: string,
-  currentPathname: string,
-): boolean {
-  const targetSegments = splitPathSegments(targetPathname);
-  const currentSegments = splitPathSegments(currentPathname);
-  // Only deeper-to-shallower redirects can be stale in the Next.js worker
-  // model (same-depth siblings share the same page worker). The depth guard
-  // ensures we don't misclassify same-level redirects.
-  if (targetSegments.length === 0 || currentSegments.length <= targetSegments.length) {
-    return false;
-  }
-
-  let commonPrefixLength = 0;
-  const maxPrefixLength = Math.min(targetSegments.length, currentSegments.length);
-  while (
-    commonPrefixLength < maxPrefixLength &&
-    targetSegments[commonPrefixLength] === currentSegments[commonPrefixLength]
-  ) {
-    commonPrefixLength++;
-  }
-
-  return commonPrefixLength > 0 && commonPrefixLength < targetSegments.length;
-}
-
-function normalizeRuntime(runtime: AppServerActionRouteRuntime): "edge" | "nodejs" {
-  if (runtime === "edge" || runtime === "experimental-edge") {
-    return "edge";
-  }
-  return "nodejs";
-}
-
-function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRoute>(options: {
-  actionWasForwarded: boolean;
-  currentPathname: string;
-  currentRoute: TRoute | null;
-  resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
-  targetPathname: string;
-  targetRoute: TRoute | null;
-}): boolean {
-  if (options.actionWasForwarded) return true;
-  if (isAncestorRouteRedirect(options.targetPathname, options.currentPathname)) return true;
-  if (isStaleChildSiblingRouteRedirect(options.targetPathname, options.currentPathname)) {
-    return true;
-  }
-  if (!options.currentRoute || !options.targetRoute || !options.resolveRouteRuntime) return false;
-
-  const currentRuntime = normalizeRuntime(options.resolveRouteRuntime(options.currentRoute));
-  const targetRuntime = normalizeRuntime(options.resolveRouteRuntime(options.targetRoute));
-  return currentRuntime !== targetRuntime;
-}
-
 function getActionHttpFallbackStatus(error: unknown): number | null {
   const digest = getNextErrorDigest(error);
   if (!digest) return null;
@@ -1720,9 +1663,16 @@ export async function handleServerActionRscRequest<
         options.basePath ?? "",
       );
       if (!redirectTarget) {
+        // Next.js answers every fetch (client-invoked) action's redirect with
+        // 200, whether or not the target can be streamed in-process — the
+        // actual navigation is driven by the client reading
+        // ACTION_REDIRECT_HEADER, not by the HTTP status (vercel/next.js
+        // action-handler.ts, `isFetchAction` branch; the non-fetch,
+        // progressive-enhancement path above is the only one that answers
+        // 303). An external or otherwise non-internal target falls here.
         options.clearRequestContext();
         return new Response(null, {
-          status: 303,
+          status: 200,
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
@@ -1761,31 +1711,27 @@ export async function handleServerActionRscRequest<
       ) {
         targetResponse?.body?.cancel().catch(() => {});
         options.clearRequestContext();
+        // Same rationale as the `!redirectTarget` branch above: a fetch
+        // action's redirect is always 200, even when the in-process forward
+        // couldn't be completed (non-RSC content-type, no body, or the
+        // dispatch itself threw).
         return new Response(null, {
-          status: 303,
+          status: 200,
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
 
       mergeActionRedirectTargetHeaders(redirectHeaders, targetResponse.headers);
-      const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
-      const targetMatch = options.matchRoute(targetPathname);
-      const currentMatch = options.currentRouteMatch;
-      const redirectResponseStatus = shouldUseForwardedActionRedirectStatus({
-        actionWasForwarded,
-        currentPathname: options.cleanPathname,
-        currentRoute: currentMatch?.route ?? null,
-        resolveRouteRuntime: options.resolveRouteRuntime,
-        targetPathname,
-        targetRoute: targetMatch?.route ?? null,
-      })
-        ? 200
-        : 303;
 
       return markAppRscResponseConfigHeadersApplied(
         createServerActionRscResponse(
           targetResponse.body,
-          { status: redirectResponseStatus, headers: redirectHeaders },
+          // Always 200: see the `!redirectTarget` branch above. (Previously
+          // this forwarded 200 only for an already-forwarded action, an
+          // ancestor/stale-sibling route redirect, or a cross-runtime
+          // redirect, and fell back to 303 otherwise — a pre-vercel/next.js#96310
+          // rule Next.js no longer applies.)
+          { status: 200, headers: redirectHeaders },
           options.clearRequestContext,
         ),
       );
