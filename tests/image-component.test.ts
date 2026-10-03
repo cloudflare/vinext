@@ -63,6 +63,59 @@ describe("default loader emits /_next/image URLs (issue #1513)", () => {
   });
 });
 
+// ─── trailingSlash: the image optimizer's own path obeys the config ────
+//
+// Ported from Next.js e2e fixtures:
+//   test/e2e/next-image-new/trailing-slash/trailing-slash.test.ts
+//   test/e2e/next-image-legacy/trailing-slash/trailing-slash.test.ts
+// Both expect /_next/image/?url=... (trailing slash before the query
+// string) once next.config.js sets `trailingSlash: true`. imageOptimizationUrl
+// is shared by the legacy Image shim (shims/legacy-image.tsx wraps this
+// component), so fixing it here fixes both fixtures.
+
+describe("imageOptimizationUrl honors trailingSlash", () => {
+  afterEach(() => {
+    delete process.env.__VINEXT_TRAILING_SLASH;
+    vi.resetModules();
+  });
+
+  it("adds a trailing slash before the query string when trailingSlash is set", async () => {
+    process.env.__VINEXT_TRAILING_SLASH = "true";
+    vi.resetModules();
+    const { imageOptimizationUrl: imageOptimizationUrlWithTrailingSlash } =
+      await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrlWithTrailingSlash("/test.jpg", 828, 75)).toBe(
+      "/_next/image/?url=%2Ftest.jpg&w=828&q=75",
+    );
+  });
+
+  it("does not add a trailing slash when trailingSlash is unset", async () => {
+    delete process.env.__VINEXT_TRAILING_SLASH;
+    vi.resetModules();
+    const { imageOptimizationUrl: imageOptimizationUrlDefault } =
+      await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrlDefault("/test.jpg", 828, 75)).toBe(
+      "/_next/image?url=%2Ftest.jpg&w=828&q=75",
+    );
+  });
+
+  it("the Image component's SSR src carries the trailing slash", async () => {
+    process.env.__VINEXT_TRAILING_SLASH = "true";
+    vi.resetModules();
+    const { default: TrailingSlashImage } = await import("../packages/vinext/src/shims/image.js");
+    const html = ReactDOMServer.renderToString(
+      React.createElement(TrailingSlashImage, {
+        id: "test1",
+        alt: "test",
+        src: "/_next/static/media/test.hash.jpg",
+        width: 400,
+        height: 300,
+      }),
+    );
+    expect(html).toMatch(/src="\/_next\/image\/\?url=/);
+  });
+});
+
 // ─── SSR rendering ──────────────────────────────────────────────────────
 
 describe("Image SSR rendering", () => {
@@ -212,7 +265,13 @@ describe("Image SSR rendering", () => {
         loader,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=200&amp;q=75"');
+    // A custom loader gets the same per-width srcSet treatment as the
+    // built-in loader: src is the 2x (larger) breakpoint, srcSet carries
+    // both the 1x and 2x breakpoints rounded up from [200, 400].
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=640&amp;q=75"');
+    expect(html).toContain(
+      'srcSet="https://cdn.example.com/photo.jpg?w=256&amp;q=75 1x, https://cdn.example.com/photo.jpg?w=640&amp;q=75 2x"',
+    );
   });
 
   it("renders StaticImageData (import result)", () => {
@@ -431,7 +490,12 @@ describe("getImageProps", () => {
       loader,
     });
 
-    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=300");
+    // Same per-width srcSet treatment as the built-in loader: [300, 600]
+    // round up to the nearest configured breakpoints, 384 and 640.
+    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=640");
+    expect(props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=384 1x, https://cdn.example.com/photo.jpg?w=640 2x",
+    );
   });
 
   it("returns blur placeholder styles", () => {

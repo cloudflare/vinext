@@ -53,6 +53,13 @@ function renderContracts(tempDir) {
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(typesRoot, "index.d.ts")))} />`,
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(repoRoot, "packages/vinext/src/global.d.ts")))} />`,
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(repoRoot, "packages/vinext/src/private-next-instrumentation-client.d.ts")))} />`,
+    // Ambient type for the `vinext:image-loader-file` resolve.alias id that
+    // shims/image.tsx imports unconditionally (see that file and index.ts's
+    // `config()` hook). Kept in its own file rather than global.d.ts, same
+    // as the other per-feature virtual-module ambient types (e.g.
+    // virtual-vinext-rsc-entry.d.ts) — unlike those, this one is imported
+    // from inside shims/, so this contract check needs to know about it too.
+    `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(repoRoot, "packages/vinext/src/virtual-vinext-image-loader-file.d.ts")))} />`,
     "",
   ];
 

@@ -1306,6 +1306,7 @@ const _appBrowserServerActionClientPath = resolveShimModulePath(
 const _appRscCombinedHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-combined-handler");
 const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
 const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
+const _imageLoaderFileDefaultPath = resolveShimModulePath(_shimsDir, "image-loader-file-default");
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
 // do not execute a stale dist build. Published packages resolve to emitted JS,
 // which Node can load natively outside the RSC transform graph.
@@ -3518,6 +3519,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ...nextConfig.aliases,
                   ...nextShimMap,
                   "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+                  // `images.loaderFile` from next.config.js — an absolute
+                  // path when `images: { loader: "custom", loaderFile }` is
+                  // set, else the no-op default (shims/image.tsx imports
+                  // this unconditionally and treats `undefined` as "no
+                  // configured loader file").
+                  "vinext:image-loader-file":
+                    nextConfig.images?.loader === "custom" &&
+                    typeof nextConfig.images.loaderFile === "string"
+                      ? path.resolve(root, nextConfig.images.loaderFile)
+                      : _imageLoaderFileDefaultPath,
                 },
                 tsconfigPathAliases,
                 { ...nextConfig.aliases, ...nextShimMap },

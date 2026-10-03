@@ -17,6 +17,12 @@ const WORKSPACE_SRC_ALIAS = {
   "@vinext/cloudflare/internal": CLOUDFLARE_SRC,
   "@vinext/cloudflare/cache": path.resolve(import.meta.dirname, "packages/cloudflare/src/cache"),
   "@vinext/cloudflare/images": path.resolve(import.meta.dirname, "packages/cloudflare/src/images"),
+  // No next.config.js in these unit tests, so always resolve to the no-op
+  // default — same as a project that never sets `images.loaderFile`.
+  "vinext:image-loader-file": path.resolve(
+    import.meta.dirname,
+    "packages/vinext/src/shims/image-loader-file-default.ts",
+  ),
 };
 
 export default defineConfig({

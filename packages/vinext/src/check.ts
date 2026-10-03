@@ -217,7 +217,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   images: {
     status: "partial",
     detail:
-      "remotePatterns, deviceSizes/imageSizes, qualities and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
+      "remotePatterns, deviceSizes/imageSizes, qualities, SVG/CSP options, the `loader` prop and `images.loaderFile` honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise",
   },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {

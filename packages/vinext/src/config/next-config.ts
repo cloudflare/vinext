@@ -314,6 +314,10 @@ export type NextConfig = {
   headers?: () => Promise<NextHeader[]> | NextHeader[];
   /** Image optimization config */
   images?: {
+    /** "default" (built-in /_next/image endpoint) or "custom" (use `loaderFile`). Defaults to "default". */
+    loader?: "default" | "custom";
+    /** Path to a module exporting a custom image loader as its default export. Requires `loader: "custom"`. */
+    loaderFile?: string;
     remotePatterns?: Array<
       | URL
       | {
