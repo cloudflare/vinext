@@ -194,15 +194,17 @@ function writeStandaloneServerEntry(filePath: string): void {
   // Uses import.meta.dirname (Node >= 21.2, vinext requires >= 22) so the
   // entry point is pure ESM — no need for CJS require() or __dirname.
   //
-  // The static import of "vinext/server/prod-server" is intentional: that
-  // subpath is a documented export in vinext's package.json exports map and
-  // is always present in the standalone node_modules/vinext/dist tree
-  // (emitStandaloneOutput copies vinext's dist/ directory in full). A static
-  // import gives a clearer ERR_MODULE_NOT_FOUND at startup rather than a
-  // runtime error deep inside the server if the import were deferred.
+  // process.env.NODE_ENV must be set before loading "vinext/server/prod-server"
+  // (and React transitively). Static ESM imports are evaluated before the
+  // module body runs, so loading the server entry dynamically via await import()
+  // guarantees that NODE_ENV is set to "production" before the production server
+  // initializes.
   const content = `#!/usr/bin/env node
 import { join } from "node:path";
-import { startProdServer } from "vinext/server/prod-server";
+
+process.env.NODE_ENV ??= "production";
+
+const { startProdServer } = await import("vinext/server/prod-server");
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const host = process.env.HOST ?? "0.0.0.0";
