@@ -27,6 +27,9 @@ export async function getStaticProps({
   params: { slug: string };
   revalidateReason?: string;
 }) {
+  if (params.slug === "redirect") {
+    return { redirect: { destination: "/pages-about", permanent: false } };
+  }
   return {
     props: {
       revalidateReason: revalidateReason ?? "unknown",
