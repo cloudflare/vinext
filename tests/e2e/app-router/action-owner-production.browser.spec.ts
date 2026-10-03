@@ -98,7 +98,13 @@ function findOnlyCacheActionId(source: string): string {
 }
 
 async function buildAndServeFixture(): Promise<ProductionApp> {
-  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-action-owner-e2e-"));
+  // Vite resolves the project root through realpath, and the offline id below
+  // is computed relative to fixtureRoot. On macOS os.tmpdir() sits behind a
+  // /var -> /private/var symlink, so an unresolved root would yield a
+  // `../../private/...` relative path that hashes differently from the build's.
+  const fixtureRoot = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "vinext-action-owner-e2e-")),
+  );
   await fs.cp(FIXTURE_DIR, fixtureRoot, { recursive: true });
   await linkFixtureNodeModules(fixtureRoot);
 
