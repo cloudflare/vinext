@@ -485,6 +485,29 @@ describe("build metadata cache lifecycle", () => {
     expect(render()).toBe(second);
   });
 
+  it("uses registered shared chunks for a caller-supplied copy of the SSR manifest", () => {
+    // The Node production server passes the SSR manifest it read from disk,
+    // a different object from the registered one. Hash-only file names carry
+    // no chunk name, so only the registered build-time list can find them.
+    const registeredManifest = {
+      "pages/index.tsx": ["_next/static/chunks/Pg1ndex0.js"],
+    };
+    setPagesClientAssets({
+      ssrManifest: registeredManifest,
+      sharedChunks: ["_next/static/chunks/Fr4m3w0k.js", "_next/static/chunks/V1n3xt00.js"],
+    });
+
+    const result = collectAssetTags({
+      manifest: structuredClone(registeredManifest),
+      moduleIds: ["/project/pages/index.tsx"],
+      disableOptimizedLoading: false,
+    });
+
+    expect(result).toContain('src="/_next/static/chunks/Pg1ndex0.js"');
+    expect(result).toContain('src="/_next/static/chunks/Fr4m3w0k.js"');
+    expect(result).toContain('src="/_next/static/chunks/V1n3xt00.js"');
+  });
+
   it("keeps tag options and stylesheet tracking per request", () => {
     // Next.js keeps nonce and loading attributes on request-local document tags:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
@@ -568,7 +591,7 @@ describe("manifest lookup scaling", () => {
 describe("precomputed shared chunks", () => {
   afterEach(() => setPagesClientAssets(undefined));
 
-  it("uses the build list only with its own registered manifest", () => {
+  it("uses the registered build list for any manifest and scans only without one", () => {
     const manifest = new Proxy(
       { "pages/index.tsx": ["page.js"] },
       {
@@ -583,12 +606,20 @@ describe("precomputed shared chunks", () => {
     expect(html).toContain('src="/page.js"');
     expect(html).toContain('src="/framework-built.js"');
 
-    const custom = collectAssetTags({
-      ...options,
-      manifest: { "pages/index.tsx": ["custom.js"], "shared.ts": ["framework-custom.js"] },
-    });
+    // Shared chunks are build-wide (collected from chunk names), so a caller's
+    // copy of the SSR manifest uses the registered list without scanning.
+    const customManifest = {
+      "pages/index.tsx": ["custom.js"],
+      "shared.ts": ["framework-custom.js"],
+    };
+    const custom = collectAssetTags({ ...options, manifest: customManifest });
     expect(custom).toContain('src="/custom.js"');
-    expect(custom).toContain('src="/framework-custom.js"');
-    expect(custom).not.toContain("framework-built.js");
+    expect(custom).toContain('src="/framework-built.js"');
+    expect(custom).not.toContain("framework-custom.js");
+
+    // Without registered build metadata, fall back to the file-name scan.
+    setPagesClientAssets(undefined);
+    const scanned = collectAssetTags({ ...options, manifest: customManifest });
+    expect(scanned).toContain('src="/framework-custom.js"');
   });
 });

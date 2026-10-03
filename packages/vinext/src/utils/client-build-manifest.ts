@@ -26,6 +26,8 @@ export function readClientBuildManifest(manifestPath: string): ClientBuildManife
       const assets = readStringArray(entry.assets);
       manifest[key] = {
         file: entry.file,
+        ...(typeof entry.src === "string" ? { src: entry.src } : {}),
+        ...(typeof entry.name === "string" ? { name: entry.name } : {}),
         ...(entry.isEntry === true ? { isEntry: true } : {}),
         ...(entry.isDynamicEntry === true ? { isDynamicEntry: true } : {}),
         ...(imports ? { imports } : {}),
@@ -61,18 +63,29 @@ function findEntryFileFromManifest(
   markers: string[],
   fallbackToFirstEntry: boolean,
 ): string | undefined {
-  const entries = Object.values(buildManifest).filter((entry) => entry.isEntry && entry.file);
+  const entries = Object.entries(buildManifest).filter(([, entry]) => entry.isEntry && entry.file);
   // A client build can emit more than one `isEntry` chunk (e.g. the client
   // entry plus instrumentation or middleware entries), and the manifest's
   // iteration order is not guaranteed to surface the client entry first.
   // Prefer marker order over manifest order so hybrid app+pages builds use the
   // Pages entry for the Pages renderer even if the App entry appears first.
-  for (const marker of markers) {
-    const markedEntry = entries.find((entry) => entry.file.includes(marker));
-    if (markedEntry) return manifestFileWithBase(markedEntry.file, assetBase);
+  // Match every entry's manifest key, source id and chunk name before any
+  // output file: users can configure file names that no longer carry (or
+  // happen to contain another) entry's name.
+  const fieldGroups = [
+    (key: string, entry: BuildManifestChunk) => [key, entry.src, entry.name],
+    (_key: string, entry: BuildManifestChunk) => [entry.file],
+  ];
+  for (const fields of fieldGroups) {
+    for (const marker of markers) {
+      const markedEntry = entries.find(([key, entry]) =>
+        fields(key, entry).some((value) => value?.includes(marker)),
+      );
+      if (markedEntry) return manifestFileWithBase(markedEntry[1].file, assetBase);
+    }
   }
 
-  const chosen = fallbackToFirstEntry ? entries[0] : undefined;
+  const chosen = fallbackToFirstEntry ? entries[0]?.[1] : undefined;
 
   return chosen ? manifestFileWithBase(chosen.file, assetBase) : undefined;
 }

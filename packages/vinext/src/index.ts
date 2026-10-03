@@ -281,7 +281,9 @@ import {
   type SassTsconfigPathAlias,
 } from "./plugins/sass.js";
 import {
-  createClientFileNameConfig,
+  createClientOutputFileNameDefaults,
+  findUnsupportedClientOutputFileNames,
+  getOutputFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
@@ -1431,15 +1433,13 @@ const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualCh
 const appClientManualChunks = createClientManualChunks(_shimsDir, true);
 const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientManualChunks);
 
-function getClientOutputConfig(assetsDir: string, preserveAppRouteBoundaries = false) {
+function getClientOutputConfig(preserveAppRouteBoundaries = false) {
   const codeSplitting = preserveAppRouteBoundaries
     ? appClientCodeSplittingConfig
     : clientCodeSplittingConfig;
-  return {
-    ...createClientFileNameConfig(assetsDir),
-    assetFileNames: createClientAssetFileNames(assetsDir),
-    codeSplitting,
-  };
+  // File names are defaults that yield to user config; see
+  // createClientOutputFileNameDefaults and vinext:css-url-assets-defaults.
+  return { codeSplitting };
 }
 
 export type VinextOptions = {
@@ -1657,6 +1657,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // plugin. `config` runs before `configEnvironment`/build, and the `= 0`
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
+  // Set in the `config` hook when vinext owns the client build's output shape.
+  // The `configEnvironment` defaults plugin then fills in client file names the
+  // user left unset, so a user's entry/chunk/asset file names win.
+  let clientOutputFileNamesAssetsDir: string | null = null;
+  // Plain Pages builds (no App Router, Cloudflare or Nitro) used to seed their
+  // SSR environment from vinext's top-level client output. Keep that SSR
+  // naming as defaults: SSR-emitted asset URLs must match the client's.
+  let plainPagesSsrFileNamesAssetsDir: string | null = null;
+  // User file names from top-level `build` and each `environments.<name>`,
+  // captured before Vite seeds every environment from top-level `build`.
+  // Top-level names are client naming: server environments that only inherited
+  // them are reset, and a client-environment asset name is copied onto them so
+  // server-emitted asset URLs match the files the client build writes.
+  let topLevelFileNames: ReturnType<typeof getOutputFileNames> = {};
+  let environmentFileNames: Record<string, ReturnType<typeof getOutputFileNames>> = {};
   let hasCloudflarePlugin = false;
   let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
@@ -3215,6 +3230,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Next emits CSS url() deps as files, not inlined data URLs. A user's
         // explicit `build.assetsInlineLimit` always wins.
         clientAssetsInlineLimit = config.build?.assetsInlineLimit ?? 0;
+        clientOutputFileNamesAssetsDir =
+          (!isSSR && !isMultiEnv) ||
+          hasAppDir ||
+          hasCloudflarePlugin ||
+          shouldInjectPlainPagesEnvironments
+            ? clientAssetsDir
+            : null;
+        plainPagesSsrFileNamesAssetsDir =
+          !isMultiEnv && shouldInjectPlainPagesEnvironments ? clientAssetsDir : null;
+        topLevelFileNames = getOutputFileNames(getBuildBundlerOptions(config.build)?.output);
+        environmentFileNames = Object.fromEntries(
+          Object.entries(config.environments ?? {}).map(([environmentName, environment]) => [
+            environmentName,
+            getOutputFileNames(getBuildBundlerOptions(environment?.build)?.output),
+          ]),
+        );
         const devHmrConfig =
           config.server?.hmr === false
             ? false
@@ -3432,7 +3463,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Router). For multi-environment builds (App Router, Cloudflare),
               // manualChunks is set per-environment on the client env below
               // to avoid leaking into RSC/SSR environments.
-              ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
+              ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig() } : {}),
             }),
           },
           worker: {
@@ -4096,7 +4127,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: appClientInput,
-                  output: getClientOutputConfig(clientAssetsDir, true),
+                  output: getClientOutputConfig(true),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4121,7 +4152,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(clientAssetsDir),
+                  output: getClientOutputConfig(),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4151,7 +4182,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(clientAssetsDir),
+                  output: getClientOutputConfig(),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -5282,21 +5313,78 @@ export const loadServerActionClient = ${
 
       configEnvironment(name, config) {
         if (name === "client") {
-          return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+          const output = getBuildBundlerOptions(config.build)?.output;
+          const fileNameDefaults = clientOutputFileNamesAssetsDir
+            ? createClientOutputFileNameDefaults(output, clientOutputFileNamesAssetsDir)
+            : null;
+          if (clientOutputFileNamesAssetsDir) {
+            const unsupported = findUnsupportedClientOutputFileNames(
+              output,
+              clientOutputFileNamesAssetsDir,
+            );
+            if (unsupported.length > 0) {
+              console.warn(
+                `[vinext] Client output file names should stay under "${clientOutputFileNamesAssetsDir}/", ` +
+                  `include [hash], emit ".js" chunks and keep [name] and a trailing [extname] in asset ` +
+                  `names so asset URLs, immutable caching, content types, CSS url() assets and ` +
+                  `script tags keep working: ` +
+                  unsupported.join("; "),
+              );
+            }
+          }
+          return {
+            build: {
+              assetsInlineLimit: clientAssetsInlineLimit,
+              ...(fileNameDefaults && Object.keys(fileNameDefaults).length > 0
+                ? withBuildBundlerOptions({ output: fileNameDefaults })
+                : {}),
+            },
+          };
         }
-        if (!hasAppDir || (name !== "rsc" && name !== "ssr")) return null;
+        const plainPagesSsrAssetsDir = name === "ssr" ? plainPagesSsrFileNamesAssetsDir : null;
+        if (!(hasAppDir && (name === "rsc" || name === "ssr")) && !plainPagesSsrAssetsDir) {
+          return null;
+        }
         const output = getBuildBundlerOptions(config.build)?.output;
         // Vite concatenates arrays returned from config hooks rather than
         // merging output entries by index, so an array-shaped user config
         // cannot be safely augmented here. Preserve it unchanged.
-        if (Array.isArray(output) || output?.assetFileNames !== undefined) return null;
-        const assetFileNames = createClientAssetFileNames(
-          resolveAssetsDir(nextConfig.assetPrefix ?? ""),
-        );
+        if (Array.isArray(output)) return null;
+        // Names added by later plugins' config hooks aren't seen here; such
+        // setups should set matching file names on every environment.
+        const ownFileNames = environmentFileNames[name] ?? {};
+        const inheritsTopLevel = (key: "entryFileNames" | "chunkFileNames") =>
+          ownFileNames[key] === undefined &&
+          topLevelFileNames[key] !== undefined &&
+          output?.[key] === topLevelFileNames[key];
+        const clientAssetFileNames = environmentFileNames.client?.assetFileNames;
+        const serverAssetFileNames =
+          ownFileNames.assetFileNames === undefined && clientAssetFileNames !== undefined
+            ? clientAssetFileNames
+            : output?.assetFileNames === undefined
+              ? createClientAssetFileNames(resolveAssetsDir(nextConfig.assetPrefix ?? ""))
+              : undefined;
+        // Server chunk names are never public, so they keep `[name]`. Inherited
+        // top-level names return to Vite's SSR defaults so fixed server entry
+        // paths (dist/server/index.js, ssr/index.js) still exist.
+        const serverChunkFileNames =
+          output?.chunkFileNames === undefined || inheritsTopLevel("chunkFileNames")
+            ? plainPagesSsrAssetsDir
+              ? `${plainPagesSsrAssetsDir}/chunks/[name]-[hash].js`
+              : output?.chunkFileNames === undefined
+                ? undefined
+                : `${config.build?.assetsDir ?? "assets"}/[name]-[hash].js`
+            : undefined;
+        const serverFileNameDefaults = {
+          ...(serverAssetFileNames !== undefined ? { assetFileNames: serverAssetFileNames } : {}),
+          ...(serverChunkFileNames !== undefined ? { chunkFileNames: serverChunkFileNames } : {}),
+          ...(inheritsTopLevel("entryFileNames") ? { entryFileNames: "[name].js" } : {}),
+        };
+        if (Object.keys(serverFileNameDefaults).length === 0) return null;
         return {
           build: {
             ...withBuildBundlerOptions({
-              output: { assetFileNames },
+              output: serverFileNameDefaults,
             }),
           },
         };
@@ -8156,6 +8244,7 @@ export const loadServerActionClient = ${
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               ssrManifest,
               cssGraph: runtimeMetadata.cssGraph,
+              sharedChunks: runtimeMetadata.sharedChunks,
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
               crossOrigin: nextConfig.crossOrigin ?? "",

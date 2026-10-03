@@ -14,7 +14,11 @@ import {
   computeDynamicImportPreloads,
   dynamicImportPreloadsWithBase,
 } from "./lazy-chunks.js";
-import { manifestFileWithBase, manifestFileWithAssetPrefix } from "./manifest-paths.js";
+import {
+  isSharedClientChunkName,
+  manifestFileWithBase,
+  manifestFileWithAssetPrefix,
+} from "./manifest-paths.js";
 import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
 
 type ClientRuntimeMetadata = {
@@ -23,7 +27,26 @@ type ClientRuntimeMetadata = {
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
+  sharedChunks?: string[];
 };
+
+/**
+ * Shared Pages Router chunk files, keyed on Rolldown chunk names rather than
+ * emitted file names so user-configured `chunkFileNames` (e.g. hash-only
+ * patterns) keep their modulepreload/script tags.
+ */
+function collectSharedChunkFiles(
+  buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
+  applyBase: (file: string) => string,
+): string[] | undefined {
+  const files = new Set<string>();
+  for (const chunk of Object.values(buildManifest)) {
+    if (chunk.file.endsWith(".js") && isSharedClientChunkName(chunk.name)) {
+      files.add(applyBase(chunk.file));
+    }
+  }
+  return files.size > 0 ? [...files] : undefined;
+}
 
 function collectCssGraph(
   buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
@@ -129,6 +152,10 @@ export function computeClientRuntimeMetadata(opts: {
 
   if (opts.includeClientEntry) {
     metadata.cssGraph = collectCssGraph(buildManifest, (file) =>
+      manifestFileWithBase(file, opts.assetBase),
+    );
+    // SSR-manifest key-space (basePath only), like `lazyChunks` below.
+    metadata.sharedChunks = collectSharedChunkFiles(buildManifest, (file) =>
       manifestFileWithBase(file, opts.assetBase),
     );
   }

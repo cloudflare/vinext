@@ -34,10 +34,16 @@ import {
   computeLazyChunks,
 } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
-import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
+import {
+  collectAssetTags,
+  getSharedChunkFiles,
+} from "../packages/vinext/src/server/pages-asset-tags.js";
 import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
-import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
+import {
+  manifestFileWithBase,
+  SSR_MANIFEST_SHARED_CHUNKS_KEY,
+} from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
 import { aliasEntriesToRecord } from "./helpers.js";
 import { injectPregeneratedConcretePaths } from "../packages/vinext/src/build/inject-pregenerated-paths.js";
@@ -1797,6 +1803,244 @@ describe("treeshake config integration", () => {
     }
   }, 15000);
 
+  it.each([
+    ["top-level build", (output: object) => ({ build: { rolldownOptions: { output } } })],
+    [
+      "client environment",
+      (output: object) => ({
+        environments: { client: { build: { rolldownOptions: { output } } } },
+      }),
+    ],
+  ])(
+    "honors user client file names from the %s config",
+    async (_label, toUserConfig) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-client-file-names-"));
+      const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+      await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Layout({ children }) { return <html><body>{children}</body></html> }`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() { return <p>home</p> }`,
+      );
+
+      try {
+        const defaultBuilder = await createBuilder({
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+        });
+        const defaultOutput = defaultBuilder.environments.client.config.build.rolldownOptions
+          .output as Record<string, unknown>;
+        expect(defaultOutput.entryFileNames).toBe("_next/static/chunks/[name]-[hash].js");
+        expect(defaultOutput.chunkFileNames).toBe("_next/static/chunks/[name]-[hash].js");
+        expect(defaultOutput.assetFileNames).toEqual(expect.any(Function));
+
+        const builder = await createBuilder({
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+          ...toUserConfig({
+            entryFileNames: "_next/static/chunks/[hash].js",
+            chunkFileNames: "_next/static/chunks/[hash].js",
+          }),
+        });
+        const output = builder.environments.client.config.build.rolldownOptions.output as Record<
+          string,
+          unknown
+        >;
+        expect(output.entryFileNames).toBe("_next/static/chunks/[hash].js");
+        expect(output.chunkFileNames).toBe("_next/static/chunks/[hash].js");
+        // Unset names keep vinext's defaults, and chunk grouping is preserved.
+        expect(output.assetFileNames).toEqual(expect.any(Function));
+        expect(output.codeSplitting).toMatchObject({ minSize: 10_000 });
+
+        // Server environments emit asset URLs too, so they must follow the
+        // user's asset names even when those are set only on the client.
+        const assetBuilder = await createBuilder({
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+          ...toUserConfig({ assetFileNames: "_next/static/media/[hash][extname]" }),
+        });
+        for (const name of ["client", "rsc", "ssr"]) {
+          const envOutput = assetBuilder.environments[name].config.build.rolldownOptions
+            .output as Record<string, unknown>;
+          expect(envOutput.assetFileNames).toBe("_next/static/media/[hash][extname]");
+        }
+
+        // A client-environment override also replaces an inherited top-level
+        // name, while an explicit server-environment name is kept.
+        const layeredBuilder = await createBuilder({
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+          build: {
+            rolldownOptions: {
+              output: { assetFileNames: "_next/static/media/top-[hash][extname]" },
+            },
+          },
+          environments: {
+            client: {
+              build: {
+                rolldownOptions: {
+                  output: { assetFileNames: "_next/static/media/client-[hash][extname]" },
+                },
+              },
+            },
+            ssr: {
+              build: {
+                rolldownOptions: {
+                  output: { assetFileNames: "_next/static/media/top-[hash][extname]" },
+                },
+              },
+            },
+          },
+        });
+        const layeredAssetFileNames = (name: string) =>
+          (
+            layeredBuilder.environments[name].config.build.rolldownOptions.output as Record<
+              string,
+              unknown
+            >
+          ).assetFileNames;
+        expect(layeredAssetFileNames("client")).toBe("_next/static/media/client-[hash][extname]");
+        expect(layeredAssetFileNames("rsc")).toBe("_next/static/media/client-[hash][extname]");
+        // Kept even though it equals the inherited top-level name.
+        expect(layeredAssetFileNames("ssr")).toBe("_next/static/media/top-[hash][extname]");
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    30_000,
+  );
+
+  it("warns when user client file names are outside the assets directory, unhashed or not .js", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const clientAssetsDefaultsPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:css-url-assets-defaults" && typeof p.configEnvironment === "function",
+    );
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-client-file-names-warn-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [] },
+        { command: "build" },
+      );
+      const result = (clientAssetsDefaultsPlugin as any).configEnvironment(
+        "client",
+        {
+          build: {
+            rolldownOptions: {
+              output: {
+                chunkFileNames: "[hash].js",
+                entryFileNames: () => "entry.js",
+                assetFileNames: "_next/static/media/[name]",
+              },
+            },
+          },
+        },
+        { command: "build" },
+      );
+
+      // Every name is user-provided, so vinext adds no output defaults.
+      expect(result.build.rolldownOptions).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain('chunkFileNames: "[hash].js" (outside "_next/static/")');
+      expect(message).toContain(
+        'assetFileNames: "_next/static/media/[name]" (no [hash], not ending in [extname])',
+      );
+      expect(message).not.toContain("entryFileNames");
+
+      warn.mockClear();
+      (clientAssetsDefaultsPlugin as any).configEnvironment(
+        "client",
+        {
+          build: {
+            rolldownOptions: {
+              output: {
+                entryFileNames: "_next/static/chunks/[hash].mjs",
+                chunkFileNames: "_next/static/chunks/[name]-[hash].js",
+                assetFileNames: "_next/static/media/[name]-[hash].[ext]",
+              },
+            },
+          },
+        },
+        { command: "build" },
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(
+        'entryFileNames: "_next/static/chunks/[hash].mjs" (not ".js")',
+      );
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain("chunkFileNames");
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain("assetFileNames");
+
+      warn.mockClear();
+      (clientAssetsDefaultsPlugin as any).configEnvironment(
+        "client",
+        {
+          build: {
+            rolldownOptions: {
+              output: { assetFileNames: "_next/static/media/[hash][extname]" },
+            },
+          },
+        },
+        { command: "build" },
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(
+        'assetFileNames: "_next/static/media/[hash][extname]" (no [name])',
+      );
+
+      // Plain Pages SSR keeps the server naming it used to inherit from the
+      // top-level client output, as defaults that yield to user config.
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
+      ).toEqual({
+        build: {
+          rolldownOptions: {
+            output: {
+              assetFileNames: expect.any(Function),
+              chunkFileNames: "_next/static/chunks/[name]-[hash].js",
+            },
+          },
+        },
+      });
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          { build: { rolldownOptions: { output: { chunkFileNames: "server/[name].js" } } } },
+          { command: "build" },
+        ).build.rolldownOptions.output,
+      ).toEqual({ assetFileNames: expect.any(Function) });
+    } finally {
+      warn.mockRestore();
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("multi-env build scopes treeshake to client environment only", async () => {
     // In App Router builds (multi-env), treeshake must NOT be set globally
     // (which would leak into RSC/SSR) — it should only appear on the client
@@ -1863,7 +2107,16 @@ describe("treeshake config integration", () => {
       expect(
         (clientAssetsDefaultsPlugin as any).configEnvironment("client", {}, { command: "build" }),
       ).toEqual({
-        build: { assetsInlineLimit: 0 },
+        build: {
+          assetsInlineLimit: 0,
+          rolldownOptions: {
+            output: {
+              entryFileNames: "_next/static/chunks/[name]-[hash].js",
+              chunkFileNames: "_next/static/chunks/[name]-[hash].js",
+              assetFileNames: expect.any(Function),
+            },
+          },
+        },
       });
       expect(
         (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
@@ -1997,8 +2250,9 @@ describe("treeshake config integration", () => {
       // output config should include the min chunk size setting.
       const output = getBuildBundlerOptions(result).output;
       expect(output).toBeDefined();
-      expect(output.entryFileNames).toBe("_next/static/chunks/[name]-[hash].js");
-      expect(output.chunkFileNames).toBe("_next/static/chunks/[name]-[hash].js");
+      // File names are client-environment defaults that yield to user config.
+      expect(output.entryFileNames).toBeUndefined();
+      expect(output.chunkFileNames).toBeUndefined();
       if (output.codeSplitting) {
         expect(output.codeSplitting.minSize).toBe(10_000);
       } else {
@@ -2937,6 +3191,70 @@ describe("augmentSsrManifestFromBundle", () => {
       "assets/vinext.js",
       "assets/framework.js",
     ]);
+  });
+
+  it("records shared runtime chunks by chunk name for hash-only file names", () => {
+    const bundle = {
+      "_next/static/chunks/aB3_x-9Z.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/aB3_x-9Z.js",
+        name: "vinext-client-entry",
+        isEntry: true,
+        facadeModuleId: "\0virtual:vinext-client-entry",
+        modules: { "/app/pages/index.tsx": {} },
+      },
+      "_next/static/chunks/Qw1-2eR_.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/Qw1-2eR_.js",
+        name: "index",
+        isEntry: true,
+        facadeModuleId: "\0virtual:vinext-client-entry",
+        modules: {},
+      },
+      "_next/static/chunks/Fr4m3w0k.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/Fr4m3w0k.js",
+        name: "framework",
+        modules: {},
+      },
+      "_next/static/chunks/V1n3xtRt.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/V1n3xtRt.js",
+        name: "vinext",
+        modules: {},
+      },
+      "_next/static/chunks/Ab0utPg1.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/Ab0utPg1.js",
+        name: "about",
+        modules: { "/app/pages/about.tsx": {} },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app", "/docs/");
+
+    expect(augmented[SSR_MANIFEST_SHARED_CHUNKS_KEY]).toEqual([
+      "docs/_next/static/chunks/aB3_x-9Z.js",
+      "docs/_next/static/chunks/Qw1-2eR_.js",
+      "docs/_next/static/chunks/Fr4m3w0k.js",
+      "docs/_next/static/chunks/V1n3xtRt.js",
+    ]);
+    expect(getSharedChunkFiles(augmented)).toBe(augmented[SSR_MANIFEST_SHARED_CHUNKS_KEY]);
+  });
+
+  it("omits the shared runtime chunk key when no shared chunks are emitted", () => {
+    const bundle = {
+      "assets/about.js": {
+        type: "chunk" as const,
+        fileName: "assets/about.js",
+        name: "about",
+        modules: { "/app/pages/about.tsx": {} },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app");
+
+    expect(augmented).not.toHaveProperty([SSR_MANIFEST_SHARED_CHUNKS_KEY]);
   });
 
   it("adds CSS and asset metadata from the containing chunk", () => {
