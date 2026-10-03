@@ -222,12 +222,13 @@ function getFillStyle(
   style?: React.CSSProperties,
   backgroundStyle?: React.CSSProperties,
 ): React.CSSProperties {
+  // Next.js leaves object-fit unset unless the caller provides one, allowing
+  // stylesheet rules to apply.
   return {
     position: "absolute",
     inset: 0,
     width: "100%",
     height: "100%",
-    objectFit: "cover",
     ...backgroundStyle,
     ...style,
   };
