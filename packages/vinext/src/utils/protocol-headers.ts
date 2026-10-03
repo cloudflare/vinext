@@ -10,6 +10,9 @@ export const VINEXT_PRERENDER_ROUTE_PARAMS_HEADER = "x-vinext-prerender-route-pa
 /** Indicates a build-time prerender render is probing whether a route can be static. */
 export const VINEXT_PRERENDER_SPECULATIVE_HEADER = "x-vinext-prerender-speculative";
 
+/** Prerender-only App side channel: the cache identity of a render reached through a rewrite. */
+export const VINEXT_PRERENDER_CACHE_IDENTITY_HEADER = "x-vinext-prerender-cache-identity";
+
 /** Logical hostname carried only by authenticated Node revalidation loopbacks. */
 export const VINEXT_REVALIDATE_HOST_HEADER = "x-vinext-revalidate-host";
 

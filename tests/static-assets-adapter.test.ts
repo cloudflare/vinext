@@ -119,6 +119,68 @@ describe("staticAssetsAdapter", () => {
     },
   );
 
+  it("packages a rewritten source URL under its runtime cache pathname", async () => {
+    const root = createRoot();
+    const cachePathname = "/about?__vinext_rewrite=%2Fen%2Fabout";
+    const page = {
+      route: "/:locale/about",
+      path: "/en/about",
+      status: "rendered",
+      revalidate: false,
+      router: "app",
+    };
+    write(
+      root,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [page, { ...page, rewrite: { source: "/about", cachePathname } }],
+      }),
+    );
+    write(root, "dist/server/prerendered-routes/en/about.html", "<h1>destination</h1>");
+    write(root, "dist/server/prerendered-routes/en/about.rsc", "destination flight");
+    write(
+      root,
+      "dist/server/prerendered-routes/__vinext/rewrite-sources/about.html",
+      "<h1>source</h1>",
+    );
+    write(
+      root,
+      "dist/server/prerendered-routes/__vinext/rewrite-sources/about.rsc",
+      "source flight",
+    );
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+
+    const clientOutDir = path.join(root, "dist/client");
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: RequestInfo | URL) {
+            const url = new URL(
+              typeof input === "string" ? input : input instanceof URL ? input : input.url,
+            );
+            const file = path.join(clientOutDir, url.pathname.replace(/^\//, ""));
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response("not found", { status: 404 });
+          },
+        },
+      },
+    });
+
+    const html = async (pathname: string) => {
+      const entry = await adapter.get(appIsrCacheKey(pathname, "html", "build-a"));
+      return entry?.value?.kind === "APP_PAGE" ? entry.value.html : undefined;
+    };
+    expect(await html(cachePathname)).toBe("<h1>source</h1>");
+    expect(await html("/en/about")).toBe("<h1>destination</h1>");
+
+    const rsc = await adapter.get(appIsrCacheKey(cachePathname, "rsc", "build-a"));
+    if (rsc?.value?.kind !== "APP_PAGE") throw new Error("expected APP_PAGE");
+    expect(new TextDecoder().decode(rsc.value.rscData)).toBe("source flight");
+  });
+
   it.each(
     [false, true].flatMap((trailingSlash) =>
       ["first", "café", "with space"].flatMap((slug) =>

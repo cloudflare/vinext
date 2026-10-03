@@ -127,6 +127,13 @@ import {
   resolvePublicFileRoute,
 } from "./request-pipeline.js";
 import {
+  appRewriteCachePathname,
+  applyPrerenderCacheIdentityHeader,
+  isRewriteSourceProbePage,
+  readRewriteSourceProbe,
+  refusedRewriteSourceProbe,
+} from "./app-rewrite-cache-identity.js";
+import {
   matchPrerenderRouteParamsPayload,
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
@@ -239,10 +246,6 @@ function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolea
     }
   }
   return true;
-}
-
-function rewriteCachePathname(sourcePathname: string, resolvedPathname: string): string {
-  return `${sourcePathname}?__vinext_rewrite=${encodeURIComponent(resolvedPathname)}`;
 }
 
 function requestOptsOutOfWorkerResponseStage(
@@ -806,6 +809,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (originBlock) return originBlock;
   }
 
+  // The prerender asks how this handler resolves a public URL that it expects
+  // a rewrite to map to a prerendered page. Such a probe may render that page
+  // only. Every other outcome is refused before the code that owns the URL
+  // loads or runs: the prerender never ran that code for this URL before.
+  // Read the expected page before middleware can change the request headers.
+  const rewriteSourceProbe = readRewriteSourceProbe(request.headers);
+
   const canHandleOutsideBasePath =
     Boolean(options.runMiddleware) ||
     [
@@ -1054,6 +1064,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (hadBasePath || !routeClaimed) return null;
     return resolveInvalidRscCacheBustingRequest({ isRscRequest, request });
   };
+  // Every external rewrite, from config or from middleware, asks this before
+  // it sends the request to the other origin.
+  const validateExternalRewriteRequest = (): Promise<Response | null> =>
+    rewriteSourceProbe === null
+      ? validateClaimedOutsideBasePathRsc(true)
+      : Promise.resolve(refusedRewriteSourceProbe());
 
   const runMiddleware = isOnDemandRevalidateRequest(
     request.headers.get(PRERENDER_REVALIDATE_HEADER),
@@ -1086,7 +1102,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isDataRequest: isMiddlewareDataRequest,
       middlewareRequest: isolatedMiddlewareRequest,
       request: userlandRequest,
-      validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+      validateExternalRewriteRequest,
     });
     if (!dispatchResponseStage && middlewareResult.pathnameEligible) {
       // Next.js runs matched middleware before serving a page response. A CDN
@@ -1309,6 +1325,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   };
   const renderMetadataRouteIfMatched = async (): Promise<Response | null> => {
     if (
+      // A metadata route is not the page that a rewrite source probe expects.
+      rewriteSourceProbe !== null ||
       !filesystemRouteEligible ||
       (options.isMetadataRoute
         ? !options.isMetadataRoute(cleanPathname)
@@ -1441,7 +1459,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         ),
         rewrites: [rewrite],
-        validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+        validateExternalRewriteRequest,
       },
       matchPathname(cleanPathname),
       dispatchResponseStage === undefined,
@@ -1482,7 +1500,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
           rewrites: [rewrite],
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+          validateExternalRewriteRequest,
         },
         matchPathname(cleanPathname),
         dispatchResponseStage === undefined,
@@ -1512,7 +1530,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
             ),
             rewrites: [rewrite],
-            validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+            validateExternalRewriteRequest,
           },
           matchPathname(cleanPathname),
           dispatchResponseStage === undefined,
@@ -1705,7 +1723,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           hadBasePath,
           isDataRequest: isMiddlewareDataRequest,
           request: sourceMiddlewareRequest,
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+          validateExternalRewriteRequest,
         }),
       );
     } finally {
@@ -1924,7 +1942,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
-    if (!filesystemRouteEligible) return null;
+    // The Pages Router finds its route and runs it in one step, so a rewrite
+    // source probe cannot ask it which route owns the URL. The probe passes it
+    // by. A render that results for a URL that a Pages route owns has a cache
+    // pathname that no runtime request reads.
+    if (!filesystemRouteEligible || rewriteSourceProbe !== null) return null;
     let sharedOuterPolicyNeedsReconciliation = false;
     const dispatchPagesResponseStage = dispatchResponseStage
       ? async (
@@ -2076,7 +2098,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
           rewrites: [rewrite],
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+          validateExternalRewriteRequest,
         },
         matchPathname(cleanPathname),
         dispatchResponseStage === undefined,
@@ -2135,7 +2157,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
           rewrites: [rewrite],
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+          validateExternalRewriteRequest,
         },
         matchPathname(cleanPathname),
         dispatchResponseStage === undefined,
@@ -2240,6 +2262,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   if (!match) {
+    if (rewriteSourceProbe !== null) {
+      options.clearRequestContext();
+      return refusedRewriteSourceProbe();
+    }
     // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
     // every page load. Don't compile/render the not-found page for it.
     // Check `canonicalPathname` (the original browser-requested URL) so a
@@ -2297,6 +2323,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isInterceptionMatch ||
     route.routeHandler != null ||
     typeof route.__loadRouteHandler === "function";
+  // Refuse a rewrite source probe before the route module loads, because the
+  // load runs the module. The probe may reach one outcome only: a rewrite
+  // resolved the URL to the page that the prerender expects.
+  if (
+    rewriteSourceProbe !== null &&
+    (cleanPathnameIsRequestPathname ||
+      !isRewriteSourceProbePage(rewriteSourceProbe, route.pattern, cleanPathname))
+  ) {
+    options.clearRequestContext();
+    return refusedRewriteSourceProbe();
+  }
   if ((!isInterceptionMatch || requestPathnameDiffersFromCachePath) && options.matchRequestRoute) {
     const cachePathMatch = options.matchRoute(cleanPathname);
     if (
@@ -2314,13 +2351,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       setInterceptionResponseUncacheable(true);
     }
   }
-  // Next.js keys App ISR by the resolved pathname:
-  // packages/next/src/build/templates/app-route.ts
-  // Keep that resolved identity while also partitioning by the public source
-  // pathname that user code observes through usePathname().
   const cachePathname = cleanPathnameIsRequestPathname
     ? cleanPathname
-    : rewriteCachePathname(canonicalPathname, cleanPathname);
+    : appRewriteCachePathname(canonicalPathname, cleanPathname);
   setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
@@ -2521,6 +2554,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Issue: https://github.com/cloudflare/vinext/issues/1483
   if (isProgressiveActionRender) {
     return applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState);
+  }
+  // A rewrite source probe that reaches this point resolved to the page that
+  // the prerender expects. Confirm the cache pathname of the render, so the
+  // prerender seeds it under the key that runtime requests for the same source
+  // URL read.
+  if (rewriteSourceProbe !== null && pageResponse.ok) {
+    applyPrerenderCacheIdentityHeader(pageResponse.headers, cachePathname);
   }
   return pageResponse;
 }

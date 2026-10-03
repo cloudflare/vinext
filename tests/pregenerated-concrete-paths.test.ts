@@ -112,6 +112,31 @@ describe("pregenerated concrete paths", () => {
     ).toEqual([["/blog/:slug", []]]);
   });
 
+  // The render of a rewritten source URL is a second cache entry of the page
+  // it resolves to. It exists even when the render of that page URL failed,
+  // and must not make the page URL look prerendered.
+  const rewrittenSourceOnlyManifest = {
+    routes: [
+      {
+        route: "/:locale/about",
+        path: "/en/about",
+        status: "rendered",
+        router: "app",
+        revalidate: false as const,
+        fallback: false,
+        rewrite: { source: "/about", cachePathname: "/about?__vinext_rewrite=%2Fen%2Fabout" },
+      },
+    ],
+  };
+
+  it("does not list the page of a rewritten source URL as a concrete path", () => {
+    expect(buildPregeneratedConcretePathTable(rewrittenSourceOnlyManifest)).toEqual([]);
+  });
+
+  it("does not select the page of a rewritten source URL as a prerendered path", () => {
+    expect(getPrerenderedConcretePaths(rewrittenSourceOnlyManifest)).toEqual([]);
+  });
+
   describe("isFallbackShellArtifactPath", () => {
     it("identifies fallback shells when fallback === true", () => {
       expect(

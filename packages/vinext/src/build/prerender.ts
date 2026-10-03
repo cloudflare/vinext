@@ -24,6 +24,12 @@ import type { Route } from "../routing/pages-router.js";
 import { appRouteLayoutStaticParamsGroups, type AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
+import { normalizeTrailingSlashPathname } from "../server/request-pipeline.js";
+import {
+  applyRewriteSourceProbeHeader,
+  isRewriteCachePathnameOf,
+  readPrerenderCacheIdentityHeader,
+} from "../server/app-rewrite-cache-identity.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -68,6 +74,7 @@ import { readPrerenderSecret } from "./server-manifest.js";
 import {
   getAppRouteOutputPath,
   getOutputPath,
+  getRewriteSourceArtifactPathname,
   getRscOutputPath,
 } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -78,6 +85,7 @@ import {
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
+import { collectRewriteSources } from "./prerender-rewrite-sources.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
@@ -193,6 +201,13 @@ export type PrerenderRouteResult =
       routeSegments?: string[];
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
+      /**
+       * Present when this is the render of a public URL that a next.config
+       * rewrite resolves to `path`. The runtime keys such a request by
+       * `cachePathname`, not by `path`, so the artifact is a second cache
+       * entry of the page and not a concrete path of the route.
+       */
+      rewrite?: { source: string; cachePathname: string };
     }
   | {
       route: string;
@@ -279,6 +294,12 @@ type PrerenderPagesOptions = {
 type PrerenderAppOptions = {
   /** Discovered app routes. */
   routes: AppRoute[];
+  /**
+   * Pages Router page and API routes of a hybrid build. The prerender does not
+   * request a rewrite source URL that one of these routes owns, because the
+   * request would run that route.
+   */
+  pagesRoutes?: readonly Pick<Route, "pattern" | "isDynamic">[];
   /** Discovered file-based metadata routes. Used by static export. */
   metadataRoutes?: readonly MetadataFileRoute[];
   /**
@@ -1551,6 +1572,8 @@ export async function prerenderApp({
       revalidate: number | false;
       isSpeculative: boolean; // 'unknown' route — mark skipped if render fails
       isFallback?: boolean;
+      /** Public URL to request in place of `urlPath`, which a rewrite resolves to `urlPath`. */
+      rewriteSourcePath?: string;
     };
     const urlsToRender: UrlToRender[] = [];
 
@@ -1805,6 +1828,21 @@ export async function prerenderApp({
       }
     }
 
+    // ── Queue the public URLs that next.config rewrites onto these pages ──────
+    // The runtime keys a rewritten request by its source URL too, because the
+    // page observes that URL through usePathname(). The artifact of `urlPath`
+    // therefore never serves the source URL: render the source URL itself so
+    // that its own entry exists. A static export has no server to rewrite a
+    // request, and its output directory is public.
+    if (mode !== "export") {
+      // A fallback shell has a placeholder path that no visitor requests.
+      const pages = urlsToRender.filter((page) => !page.isFallback);
+      const routeOwners = [...routes, ...(options.pagesRoutes ?? [])];
+      for (const { page, sourcePathname } of collectRewriteSources(pages, config, routeOwners)) {
+        urlsToRender.push({ ...page, rewriteSourcePath: sourcePathname });
+      }
+    }
+
     if (metadataRoutes.length > 0) {
       const response = await fetch(`${baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}`, {
         headers: secretHeaders,
@@ -1863,6 +1901,8 @@ export async function prerenderApp({
      * `onProgress` is intentionally not called here; the outer loop calls it
      * exactly once per URL after this function returns, keeping the callback
      * at a single, predictable call site.
+     *
+     * Returns null when a rewritten source URL did not resolve to its page.
      */
     async function renderUrl({
       kind,
@@ -1873,7 +1913,8 @@ export async function prerenderApp({
       revalidate,
       isSpeculative,
       isFallback,
-    }: UrlToRender): Promise<PrerenderRouteResult> {
+      rewriteSourcePath,
+    }: UrlToRender): Promise<PrerenderRouteResult | null> {
       try {
         if (kind === "metadata") {
           const request = new Request(`http://localhost${config.basePath ?? ""}${urlPath}`);
@@ -1949,6 +1990,12 @@ export async function prerenderApp({
         if (isSpeculative) {
           htmlHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
         }
+        // Ask the handler whether a rewrite resolves this source URL to the
+        // page. The handler renders that page only, and refuses the request
+        // before it runs anything else that owns the URL.
+        if (rewriteSourcePath !== undefined) {
+          applyRewriteSourceProbeHeader(htmlHeaders, { routePattern, pagePathname: urlPath });
+        }
         // Match Next.js's export worker: when trailingSlash is enabled, render
         // the canonical slash form instead of letting the request pipeline
         // return a 308 that the exporter would misclassify as a failed route.
@@ -1957,8 +2004,16 @@ export async function prerenderApp({
         // an ordinary static host can serve the output tree verbatim.
         // Ported from Next.js: packages/next/src/export/worker.ts
         // https://github.com/vercel/next.js/blob/canary/packages/next/src/export/worker.ts
+        // A visitor reaches a rewritten source URL in the form that the
+        // runtime's trailing-slash redirect leaves it in, and the handler keys
+        // the render by that form. `/api` and file-like paths get no slash.
         const routeRequestPath =
-          config.trailingSlash && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath;
+          rewriteSourcePath !== undefined
+            ? (normalizeTrailingSlashPathname(rewriteSourcePath, config.trailingSlash) ??
+              rewriteSourcePath)
+            : config.trailingSlash && !urlPath.endsWith("/")
+              ? `${urlPath}/`
+              : urlPath;
         const requestPath =
           config.basePath && routeRequestPath === "/" && !config.trailingSlash
             ? config.basePath
@@ -1979,6 +2034,7 @@ export async function prerenderApp({
               await response.body?.cancel();
               return {
                 cacheControl,
+                cachePathname: null,
                 linkHeader,
                 html: null,
                 ok: response.ok,
@@ -1996,6 +2052,7 @@ export async function prerenderApp({
             const processCacheLife = _consumeRequestScopedCacheLife();
             return {
               cacheControl,
+              cachePathname: readPrerenderCacheIdentityHeader(response.headers),
               linkHeader,
               html,
               ok: true,
@@ -2036,6 +2093,27 @@ export async function prerenderApp({
             error: "RSC handler returned no prerender HTML",
           };
         }
+
+        // Only the request handler knows how the source URL resolved. Keep the
+        // render only when the handler confirms that it rewrote this request
+        // to this page. The confirmed value is also the key to store: it has
+        // the spelling that a runtime request for this URL reads.
+        let rewrite: { source: string; cachePathname: string } | undefined;
+        if (rewriteSourcePath !== undefined) {
+          const cachePathname = htmlRender.cachePathname;
+          if (
+            cachePathname === null ||
+            !isRewriteCachePathnameOf(cachePathname, routeRequestPath, urlPath)
+          ) {
+            return null;
+          }
+          rewrite = { source: rewriteSourcePath, cachePathname };
+        }
+        // A source URL can be equal to the URL of another prerendered route.
+        const artifactUrlPath =
+          rewriteSourcePath === undefined
+            ? urlPath
+            : getRewriteSourceArtifactPathname(rewriteSourcePath);
         const html = isFallback
           ? markAppPprDynamicFallbackShellHtml(htmlRender.html)
           : htmlRender.html;
@@ -2077,7 +2155,7 @@ export async function prerenderApp({
 
         // Write HTML
         const htmlOutputPath = getOutputPath(
-          urlPath,
+          artifactUrlPath,
           config.trailingSlash,
           mode === "export" ? config.basePath : "",
         );
@@ -2089,7 +2167,7 @@ export async function prerenderApp({
         // Next.js writes export-mode Flight payloads as `.txt` so a plain
         // static host serves a portable `text/plain` content type. Normal
         // server prerenders retain vinext's internal `.rsc` artifact shape.
-        const rscOutputPath = getRscOutputPath(urlPath, {
+        const rscOutputPath = getRscOutputPath(artifactUrlPath, {
           mode,
           trailingSlash: config.trailingSlash,
           basePath: mode === "export" ? config.basePath : "",
@@ -2128,9 +2206,13 @@ export async function prerenderApp({
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
+          ...(rewrite ? { rewrite } : {}),
         };
       } catch (e) {
-        renderPool?.recordRenderError(e);
+        // A rewritten source URL is optional output. Its failed request must
+        // not stop the build: a response with a very long confirmation header
+        // fails in fetch. A worker that exits is still seen by assertHealthy().
+        if (rewriteSourcePath === undefined) renderPool?.recordRenderError(e);
         if (isSpeculative) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
@@ -2161,16 +2243,23 @@ export async function prerenderApp({
 
     let completedApp = 0;
     const appResults = await runWithConcurrency(urlsToRender, concurrency, async (urlToRender) => {
-      const result = await renderUrl(urlToRender);
+      const rendered = await renderUrl(urlToRender);
+      // A rewritten source URL is an extra cache entry of a page, not a route
+      // of the app. When its render is not reusable, record nothing: the
+      // runtime renders that URL on demand, as it did before.
+      const result =
+        urlToRender.rewriteSourcePath !== undefined && rendered?.status !== "rendered"
+          ? null
+          : rendered;
       onProgress?.({
         completed: ++completedApp,
         total: urlsToRender.length,
-        route: urlToRender.urlPath,
-        status: result.status,
+        route: urlToRender.rewriteSourcePath ?? urlToRender.urlPath,
+        status: result?.status ?? "skipped",
       });
       return result;
     });
-    results.push(...appResults);
+    results.push(...appResults.filter((result) => result !== null));
 
     // Fail loudly if a render worker crashed mid-build (otherwise its routes
     // fail with connection errors recorded as non-fatal → partial output).
@@ -2362,6 +2451,7 @@ export function writePrerenderIndex(
         ...(r.locale ? { locale: r.locale } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
+        ...(r.rewrite ? { rewrite: r.rewrite } : {}),
       };
     }
     if (r.status === "skipped") {

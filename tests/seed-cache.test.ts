@@ -606,6 +606,118 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(await getCacheHandler().get(rscKey)).toBeNull();
   });
 
+  it("seeds a rewritten source URL under its runtime cache pathname with the tags of its page", async () => {
+    const buildId = "rewrite-source-test";
+    const cachePathname = "/about?__vinext_rewrite=%2Fen%2Fabout";
+    const page = {
+      route: "/:locale/about",
+      path: "/en/about",
+      status: "rendered",
+      revalidate: 60,
+      router: "app",
+    };
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [page, { ...page, rewrite: { source: "/about", cachePathname } }],
+      },
+      {
+        "en/about.html": "<html>destination</html>",
+        "en/about.rsc": "destination flight",
+        "__vinext/rewrite-sources/about.html": "<html>source</html>",
+        "__vinext/rewrite-sources/about.rsc": "source flight",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const sourceHtmlKey = appIsrCacheKey(cachePathname, "html", buildId);
+    const sourceRscKey = appIsrCacheKey(cachePathname, "rsc", buildId);
+    expect((await getCacheHandler().get(sourceHtmlKey))?.value).toMatchObject({
+      kind: "APP_PAGE",
+      html: "<html>source</html>",
+    });
+    expect(await getCacheHandler().get(sourceRscKey)).not.toBeNull();
+    expect(
+      (await getCacheHandler().get(appIsrCacheKey("/en/about", "html", buildId)))?.value,
+    ).toMatchObject({ kind: "APP_PAGE", html: "<html>destination</html>" });
+
+    // The runtime tags a rewritten render by the page it resolved to, so
+    // revalidating that page must purge the seeded source entry too.
+    await Promise.resolve(revalidatePath("/en/about"));
+    expect(await getCacheHandler().get(sourceHtmlKey)).toBeNull();
+    expect(await getCacheHandler().get(sourceRscKey)).toBeNull();
+  });
+
+  it("does not register the page of a rewritten source URL as a concrete path", async () => {
+    // The render of the page URL failed, and only its rewritten source rendered.
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "rewrite-source-only-test",
+        routes: [
+          {
+            route: "/:locale/about",
+            path: "/en/about",
+            status: "rendered",
+            revalidate: false,
+            router: "app",
+            rewrite: { source: "/about", cachePathname: "/about?__vinext_rewrite=%2Fen%2Fabout" },
+          },
+        ],
+      },
+      {
+        "__vinext/rewrite-sources/about.html": "<html>source</html>",
+        "__vinext/rewrite-sources/about.rsc": "source flight",
+      },
+    );
+
+    await expect(seedMemoryCacheFromPrerender(serverDir)).resolves.toBe(1);
+
+    expect(getRenderedConcreteUrlPathsForRoute("/:locale/about")).toBeUndefined();
+  });
+
+  it("does not let rewritten source entries evict page entries from a bounded cache", async () => {
+    const buildId = "rewrite-source-eviction-test";
+    const body = "x".repeat(10_000);
+    const pages: unknown[] = [];
+    const sources: unknown[] = [];
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) {
+      const page = {
+        route: "/:locale/p/:id",
+        path: `/en/p/${i}`,
+        status: "rendered",
+        revalidate: false,
+        router: "app",
+      };
+      pages.push(page);
+      sources.push({
+        ...page,
+        rewrite: { source: `/p/${i}`, cachePathname: `/p/${i}?__vinext_rewrite=%2Fen%2Fp%2F${i}` },
+      });
+      for (const name of [`en/p/${i}`, `__vinext/rewrite-sources/p/${i}`]) {
+        files[`${name}.html`] = body;
+        files[`${name}.rsc`] = body;
+      }
+    }
+    const cachedPages = async (routes: unknown[]) => {
+      // Room for the 20 artifacts of the 10 pages, but not for 40 artifacts.
+      setCacheHandler(new MemoryCacheHandler({ cacheMaxMemorySize: 260_000 }));
+      setupPrerenderFixture(serverDir, { buildId, routes }, files);
+      await seedMemoryCacheFromPrerender(serverDir);
+      let cached = 0;
+      for (let i = 0; i < 10; i++) {
+        if (await getCacheHandler().get(appIsrCacheKey(`/en/p/${i}`, "html", buildId))) cached++;
+      }
+      return cached;
+    };
+
+    expect(await cachedPages(pages)).toBe(10);
+    expect(await cachedPages([...pages, ...sources])).toBe(10);
+  });
+
   it("user cache tags from the prerender manifest invalidate seeded entries", async () => {
     const buildId = "revalidate-seeded-user-tag-test";
     setupPrerenderFixture(

@@ -52,6 +52,7 @@ import {
 } from "./pregenerated-concrete-paths.js";
 import {
   readPrerenderManifest,
+  getAppPageArtifactPathname,
   getRenderedAppRoutes,
   getRenderedMetadataRoutes,
   isFallbackShellArtifactPath,
@@ -125,16 +126,25 @@ export async function seedMemoryCacheFromPrerender(
     }
   }
 
-  const appRoutes = getRenderedAppRoutes(routes);
+  const renderedAppRoutes = getRenderedAppRoutes(routes);
+  // A bounded cache evicts its oldest entries. Seed the entries of rewritten
+  // source URLs first, so that they cannot push out the entry of a page URL.
+  const appRoutes = [
+    ...renderedAppRoutes.filter((route) => route.rewrite),
+    ...renderedAppRoutes.filter((route) => !route.rewrite),
+  ];
 
   for (const route of appRoutes) {
     const concretePathname = route.path ?? route.route;
-    if (!isFallbackShellArtifactPath(concretePathname, route)) {
+    if (!route.rewrite && !isFallbackShellArtifactPath(concretePathname, route)) {
       addPregeneratedConcretePath(route.route, concretePathname);
     }
 
-    const artifactPathname = route.path ?? route.route;
-    const cachePathname = normalizePregeneratedPathname(artifactPathname);
+    const artifactPathname = getAppPageArtifactPathname(route);
+    // The runtime builds tags from the pathname the request resolved to, and
+    // keys from its cache pathname. The two differ for a rewritten source URL.
+    const resolvedPathname = normalizePregeneratedPathname(concretePathname);
+    const cachePathname = route.rewrite ? route.rewrite.cachePathname : resolvedPathname;
     // Fallback keys support older generated entries that do not export their
     // runtime key builders. Current App Router entries inject buildAppPage*Key
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
@@ -151,7 +161,7 @@ export async function seedMemoryCacheFromPrerender(
     // Preserve both path-derived implicit tags and user tags collected during
     // prerender so revalidatePath()/revalidateTag() can invalidate the seeded
     // page artifact, not only its nested data-cache entries (#1486).
-    const tags = buildAppPageCacheTags(cachePathname, route.tags ?? []);
+    const tags = buildAppPageCacheTags(resolvedPathname, route.tags ?? []);
 
     if (
       await seedHtml(

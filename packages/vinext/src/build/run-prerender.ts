@@ -276,6 +276,15 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       sharedPrerenderSecret = readPrerenderSecret(serverDir);
     }
 
+    // The App phase needs the Pages routes of a hybrid build too: it must not
+    // request a rewrite source URL that a Pages route owns.
+    const pagesRouteLists = pagesDir
+      ? await Promise.all([
+          pagesRouter(pagesDir, config.pageExtensions),
+          apiRouter(pagesDir, config.pageExtensions),
+        ])
+      : null;
+
     // ── App Router phase ──────────────────────────────────────────────────────
     if (appDir) {
       const routes = await appRouter(appDir, config.pageExtensions);
@@ -288,6 +297,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       const result = await prerenderApp({
         mode,
         routes,
+        ...(pagesRouteLists ? { pagesRoutes: pagesRouteLists.flat() } : {}),
         metadataRoutes,
         outDir,
         skipManifest: true,
@@ -314,11 +324,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
-    if (pagesDir) {
-      const [pageRoutes, apiRoutes] = await Promise.all([
-        pagesRouter(pagesDir, config.pageExtensions),
-        apiRouter(pagesDir, config.pageExtensions),
-      ]);
+    if (pagesDir && pagesRouteLists) {
+      const [pageRoutes, apiRoutes] = pagesRouteLists;
 
       let pagesTotal = 0;
       const result = await prerenderPages({

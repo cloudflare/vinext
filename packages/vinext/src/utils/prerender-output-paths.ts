@@ -17,6 +17,23 @@ export function getOutputPath(urlPath: string, trailingSlash: boolean, basePath 
   return `${clean}.html`;
 }
 
+const REWRITE_SOURCE_ARTIFACT_PREFIX = "/__vinext/rewrite-sources";
+
+/**
+ * URL path that names the artifact files of a rewritten source URL.
+ *
+ * A source URL can be equal to the URL of a prerendered route (a `beforeFiles`
+ * rewrite of a static page), so its artifacts cannot use that URL's file
+ * names. They go below `/__vinext/`, the prefix of the framework's own paths.
+ * The root source maps to the prefix itself, so it cannot collide with a
+ * source URL of any name.
+ */
+export function getRewriteSourceArtifactPathname(sourcePathname: string): string {
+  return sourcePathname === "/"
+    ? REWRITE_SOURCE_ARTIFACT_PREFIX
+    : `${REWRITE_SOURCE_ARTIFACT_PREFIX}${sourcePathname}`;
+}
+
 /** Determine the Flight payload path for a prerendered App Router URL. */
 export function getRscOutputPath(
   urlPath: string,

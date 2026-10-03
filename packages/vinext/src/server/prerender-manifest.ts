@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { getRewriteSourceArtifactPathname } from "../utils/prerender-output-paths.js";
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -25,6 +26,13 @@ export type PrerenderManifestRoute = {
   locale?: string;
   routeSegments?: string[];
   tags?: string[];
+  /**
+   * Present when the artifact is the render of a public URL that a next.config
+   * rewrite resolves to `path`. The runtime keys such a request by
+   * `cachePathname`, so the entry is a second cache entry of the page: it is
+   * not a concrete path of the route, and its cache tags derive from `path`.
+   */
+  rewrite?: { source: string; cachePathname: string };
 };
 
 export type PrerenderManifest = {
@@ -57,6 +65,13 @@ export function getRenderedMetadataRoutes(
   routes: PrerenderManifestRoute[],
 ): PrerenderManifestRoute[] {
   return routes.filter((route) => route.status === "rendered" && route.router === "metadata");
+}
+
+/** URL path that names the HTML and Flight artifact files of a rendered App page. */
+export function getAppPageArtifactPathname(route: PrerenderManifestRoute): string {
+  return route.rewrite
+    ? getRewriteSourceArtifactPathname(route.rewrite.source)
+    : (route.path ?? route.route);
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {
@@ -127,6 +142,7 @@ export function buildPregeneratedConcretePathTable(
 
   const appRoutes = getRenderedAppRoutes(routes);
   const concreteRoutes = appRoutes.filter((r) => {
+    if (r.rewrite) return false;
     const pathname = r.path ?? r.route;
     return !isFallbackShellArtifactPath(pathname, r);
   });
@@ -160,7 +176,8 @@ export function getPrerenderedConcretePaths(
   const seen = new Set<string>();
   for (const route of routes) {
     // A Pages getStaticProps notFound result is a 404 snapshot, not a page URL.
-    if (route.status !== "rendered" || route.notFound) continue;
+    // A rewritten source entry repeats the `path` of the page it resolves to.
+    if (route.status !== "rendered" || route.notFound || route.rewrite) continue;
     const pathname = route.path ?? route.route;
     if (!options?.includeFallbackShells && isFallbackShellArtifactPath(pathname, route)) {
       continue;

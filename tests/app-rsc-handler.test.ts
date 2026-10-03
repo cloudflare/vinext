@@ -33,6 +33,12 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import {
+  applyRewriteSourceProbeHeader,
+  readPrerenderCacheIdentityHeader,
+  type RewriteSourceProbe,
+} from "../packages/vinext/src/server/app-rewrite-cache-identity.js";
+import { ensureFetchPatch } from "../packages/vinext/src/shims/fetch-cache.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
@@ -2691,6 +2697,201 @@ describe("createAppRscHandler", () => {
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=3600");
+  });
+
+  describe("a rewrite source probe of the prerender", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    });
+
+    const ABOUT_PAGE: RewriteSourceProbe = { routePattern: "/about", pagePathname: "/about" };
+    const probeFor = (probe: RewriteSourceProbe) => {
+      const headers = new Headers();
+      applyRewriteSourceProbeHeader(headers, probe);
+      return headers;
+    };
+
+    // Each thing that can answer a URL records its call and answers with its
+    // own name.
+    function createProbeTarget() {
+      const ownerCalls: string[] = [];
+      const answer = (owner: string, status = 200) => {
+        ownerCalls.push(owner);
+        return new Response(owner, { status });
+      };
+      const routes = new Map<string, TestRoute>([
+        ["/about", createPageRoute()],
+        ["/contact", createPageRoute({ pattern: "/contact", routeSegments: ["contact"] })],
+        [
+          "/hook",
+          createPageRoute({
+            __loadPage: undefined,
+            __loadRouteHandler() {},
+            page: null,
+            pattern: "/hook",
+            routeHandler: { GET: () => new Response("get") },
+            routeSegments: ["hook"],
+          }),
+        ],
+      ]);
+      const blogRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", "[slug]"],
+      });
+      const matchRoute = (pathname: string) => {
+        const route = pathname.startsWith("/blog/") ? blogRoute : routes.get(pathname);
+        if (!route) return null;
+        const params: Record<string, string> =
+          route === blogRoute ? { slug: pathname.slice("/blog/".length) } : {};
+        return { params, route };
+      };
+      // The handler replaces the global fetch one time, on its first request.
+      // Install that replacement first, so that it does not remove the stub.
+      ensureFetchPatch();
+      vi.stubGlobal("fetch", async () => answer("other origin"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [
+            { source: "/alias", destination: "/about" },
+            { source: "/to-other-page", destination: "/contact" },
+            { source: "/to-other-params", destination: "/blog/b" },
+            { source: "/to-route-handler", destination: "/hook" },
+            { source: "/to-other-origin", destination: "https://upstream.example/landing" },
+          ],
+          fallback: [],
+        },
+        dispatchMatchedPage: async ({ cleanPathname }) => answer(`page ${cleanPathname}`),
+        dispatchMatchedRouteHandler: async () => answer("route handler"),
+        ensureRouteLoaded: (route) => {
+          ownerCalls.push(`module ${route.pattern}`);
+        },
+        handleMetadataRouteRequest: async (cleanPathname) => {
+          const response = answer("metadata route");
+          return cleanPathname === "/robots.txt" ? response : null;
+        },
+        matchRequestRoute: matchRoute,
+        matchRoute,
+        middlewareModule: {
+          default(request: NextRequest) {
+            return new Response(null, {
+              headers:
+                request.nextUrl.pathname === "/middleware-to-other-origin"
+                  ? { "x-middleware-rewrite": "https://upstream.example/landing" }
+                  : { "x-middleware-next": "1" },
+            });
+          },
+        },
+        renderNotFound: async () => answer("not-found page", 404),
+        renderPagesFallback: async ({ pathname }) => {
+          const response = answer("Pages Router");
+          return pathname === "/feed" ? response : null;
+        },
+      });
+      const request = (pathname: string, headers?: Headers) =>
+        handler(new Request(`https://example.test/docs${pathname}`, { headers }), null);
+      return { ownerCalls, request };
+    }
+
+    it("renders the page that it expects and confirms the cache pathname", async () => {
+      const { ownerCalls, request } = createProbeTarget();
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+
+      const response = await request("/alias", probeFor(ABOUT_PAGE));
+
+      expect(await response.text()).toBe("page /about");
+      expect(readPrerenderCacheIdentityHeader(response.headers)).toBe(
+        "/alias?__vinext_rewrite=%2Fabout",
+      );
+      expect(ownerCalls).toEqual(["module /about", "page /about"]);
+    });
+
+    it.each<[string, string, string, RewriteSourceProbe]>([
+      ["/about", "page /about", "the request is not rewritten", ABOUT_PAGE],
+      ["/to-other-page", "page /contact", "a rewrite resolves it to another page", ABOUT_PAGE],
+      [
+        "/to-other-params",
+        "page /blog/b",
+        "a rewrite resolves it to the route of the page with other params",
+        { routePattern: "/blog/:slug", pagePathname: "/blog/a" },
+      ],
+      // The handler can match another route for the pathname of the page than
+      // the route that the prerender renders the page from.
+      [
+        "/to-other-page",
+        "page /contact",
+        "another page route takes the pathname of the page",
+        { routePattern: "/:slug", pagePathname: "/contact" },
+      ],
+      [
+        "/to-route-handler",
+        "route handler",
+        "a route handler takes the pathname of the page",
+        { routePattern: "/:slug", pagePathname: "/hook" },
+      ],
+      [
+        "/to-route-handler",
+        "route handler",
+        "a rewrite resolves it to a route handler",
+        ABOUT_PAGE,
+      ],
+      ["/hook", "route handler", "a route handler owns it", ABOUT_PAGE],
+      [
+        "/to-other-origin",
+        "other origin",
+        "a config rewrite sends it to another origin",
+        ABOUT_PAGE,
+      ],
+      [
+        "/middleware-to-other-origin",
+        "other origin",
+        "middleware sends it to another origin",
+        ABOUT_PAGE,
+      ],
+      ["/robots.txt", "metadata route", "a metadata route owns it", ABOUT_PAGE],
+      ["/feed", "Pages Router", "a Pages Router route owns it", ABOUT_PAGE],
+      ["/missing", "not-found page", "nothing owns it", ABOUT_PAGE],
+    ])("refuses %s and does not run %j, because %s", async (pathname, owner, _reason, probe) => {
+      const { ownerCalls, request } = createProbeTarget();
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+
+      // An ordinary request for the URL reaches the owner.
+      expect(await (await request(pathname)).text()).toBe(owner);
+      ownerCalls.length = 0;
+
+      const refused = await request(pathname, probeFor(probe));
+
+      expect(refused.status).toBe(404);
+      expect(refused.headers.get("Cache-Control")).toBe("no-store");
+      expect(await refused.text()).toBe("");
+      expect(readPrerenderCacheIdentityHeader(refused.headers)).toBeNull();
+      expect(ownerCalls).toEqual([]);
+    });
+
+    it("is an ordinary request outside the prerender", async () => {
+      const { request } = createProbeTarget();
+
+      expect(await (await request("/to-route-handler", probeFor(ABOUT_PAGE))).text()).toBe(
+        "route handler",
+      );
+      const page = await request("/alias", probeFor(ABOUT_PAGE));
+      expect(await page.text()).toBe("page /about");
+      expect(readPrerenderCacheIdentityHeader(page.headers)).toBeNull();
+    });
+
+    it("does not change a prerender response that is not a probe", async () => {
+      const { request } = createProbeTarget();
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+
+      const page = await request("/alias");
+
+      expect(await page.text()).toBe("page /about");
+      expect(readPrerenderCacheIdentityHeader(page.headers)).toBeNull();
+    });
   });
 
   it.each([
