@@ -59,6 +59,7 @@ import { mergeRewriteQuery } from "../utils/query.js";
 import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
+import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import type {
   AppPrerenderRootParamNamesMap,
   AppPrerenderStaticParamsMap,
@@ -182,6 +183,42 @@ type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
 
+/**
+ * Decode an interception context to the canonical source pathname it names.
+ * Throws for any value the client could not send back as its context header.
+ */
+function decodeInterceptionSourcePathname(context: string): string {
+  if (!isInterceptionMatchedUrlPath(context)) {
+    throw new Error("Invalid interception source pathname");
+  }
+  const decodedSourcePathname = normalizePathnameForRouteMatchStrict(context);
+  if (/[\t\n\r]/.test(decodedSourcePathname)) {
+    throw new Error("Interception source contains a stripped URL character");
+  }
+  if (hasUrlParserDotSegment(decodedSourcePathname)) {
+    throw new Error("Interception source contains a URL dot segment");
+  }
+  const sourcePathname = normalizePath(decodedSourcePathname);
+  if (sourcePathname !== decodedSourcePathname) {
+    throw new Error("Non-canonical interception source pathname");
+  }
+  return sourcePathname;
+}
+
+/**
+ * Whether a server-derived context satisfies the whole inbound header
+ * contract, so the client can send it back unchanged on its next request.
+ */
+function isValidInterceptionSourceContext(context: string): boolean {
+  if (normalizeInterceptionContextHeader(context) !== context) return false;
+  try {
+    decodeInterceptionSourcePathname(context);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
     (condition) =>
@@ -217,6 +254,17 @@ function haveSameRequestCookies(
     if (second.get(name) !== value) return false;
   }
   return true;
+}
+
+function encodeDecodedPageParams(params: AppPageParams): AppPageParams {
+  // Null prototype, like the matcher's records, so a `__proto__` param is kept.
+  const encoded: AppPageParams = Object.create(null);
+  for (const [name, value] of Object.entries(params)) {
+    encoded[name] = Array.isArray(value)
+      ? value.map((part) => encodeURIComponent(part))
+      : encodeURIComponent(value);
+  }
+  return encoded;
 }
 
 function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolean {
@@ -859,21 +907,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   let interceptionSourcePathname: string | null = null;
   if (isRscRequest && interceptionContextHeader !== null) {
     try {
-      if (!isInterceptionMatchedUrlPath(interceptionContextHeader)) {
-        throw new Error("Invalid interception source pathname");
-      }
-      const decodedInterceptionSourcePathname =
-        normalizePathnameForRouteMatchStrict(interceptionContextHeader);
-      if (/[\t\n\r]/.test(decodedInterceptionSourcePathname)) {
-        throw new Error("Interception source contains a stripped URL character");
-      }
-      if (hasUrlParserDotSegment(decodedInterceptionSourcePathname)) {
-        throw new Error("Interception source contains a URL dot segment");
-      }
-      interceptionSourcePathname = normalizePath(decodedInterceptionSourcePathname);
-      if (interceptionSourcePathname !== decodedInterceptionSourcePathname) {
-        throw new Error("Non-canonical interception source pathname");
-      }
+      interceptionSourcePathname = decodeInterceptionSourcePathname(interceptionContextHeader);
     } catch {
       options.clearRequestContext();
       setInterceptionResponseUncacheable(true);
@@ -1607,7 +1641,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // a client header, so authorize it before anything downstream renders from it.
   // Skipped when the source resolves to the route already matched and authorized
   // for this request, which is also the case where interception does not fire.
-  const interceptionSourceMatch =
+  // The context the selected source was resolved from. A source middleware
+  // rewrite below can replace both with the rewritten source it authorized.
+  let interceptionSourceContext = interceptionContextHeader;
+  let interceptionSourceMatch =
     filesystemRouteEligible &&
     interceptionSourcePathname !== null &&
     interceptionContextHeader !== null
@@ -1780,14 +1817,44 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     if (sourceMiddlewareResult.rewritten) {
       // Rewrites such as locale insertion are valid only when they resolve to
-      // the exact source route and params already selected for interception.
-      // A different route, params, or query would authorize one identity and
+      // the exact source route and params selected for interception. A
+      // different route, params, or query would authorize one identity and
       // render another, so fail closed instead.
       const rewrittenSourceMatch = options.matchRoute(sourceMiddlewareResult.cleanPathname);
+      // The raw context was matched before this rewrite, so it can name another
+      // route: with an unprefixed default locale, `/feed` rewrites to
+      // `/en/feed`, yet `/feed` alone matches `/[locale]` with locale "feed".
+      // Propose the source this rewrite reaches instead. The check below still
+      // requires the exact rewritten route and params, so this cannot select a
+      // source the middleware did not route the claimed source to. The
+      // rewritten pathname is a URL pathname, so it is percent-encoded like the
+      // raw context and the matcher's single decode applies to it unchanged.
+      // It becomes the context the client sends back, so it must satisfy the
+      // same contract as the raw header; otherwise keep the raw match.
+      const rewrittenSourceContext = sourceMiddlewareResult.cleanPathname;
+      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(
+        rewrittenSourceContext,
+      )
+        ? (options.matchInterceptRoute?.(
+            preActionRoutePathname,
+            rewrittenSourceContext,
+            interceptionIdHeader,
+          ) ?? null)
+        : null;
+      if (rewrittenInterceptionSourceMatch !== null) {
+        interceptionSourceMatch = rewrittenInterceptionSourceMatch;
+        interceptionSourceContext = rewrittenSourceContext;
+      }
+      // `matchRoute` returns canonical (encoded) page params while the
+      // interception matcher returns them decoded once, so encode those
+      // without decoding them again before comparing.
+      const canonicalInterceptionSourceParams = encodeDecodedPageParams(
+        interceptionSourceMatch.params,
+      );
       if (
         sourceMiddlewareResult.search !== sourceUrl.search ||
         rewrittenSourceMatch?.route !== interceptionSourceMatch.route ||
-        !haveSamePageParams(rewrittenSourceMatch.params, interceptionSourceMatch.params)
+        !haveSamePageParams(rewrittenSourceMatch.params, canonicalInterceptionSourceParams)
       ) {
         options.clearRequestContext();
         return notFoundResponse();
@@ -1902,7 +1969,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           actionId,
           cleanPathname,
           contentType,
-          interceptionContext: interceptionContextHeader,
+          interceptionContext: interceptionSourceContext,
           isRscRequest,
           middlewareContext,
           mountedSlotsHeader,
@@ -2171,7 +2238,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
-  if (interceptionCacheProofInvalidated && interceptionContextHeader !== null) {
+  if (interceptionCacheProofInvalidated && interceptionSourceContext !== null) {
     const finalInterceptionTargetPathname = cleanPathnameIsRequestPathname
       ? requestCleanPathname
       : cleanPathname;
@@ -2179,7 +2246,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       filesystemRouteEligible && match !== null
         ? (options.matchInterceptRoute?.(
             finalInterceptionTargetPathname,
-            interceptionContextHeader,
+            interceptionSourceContext,
             interceptionIdHeader,
           ) ?? null)
         : null;
@@ -2459,7 +2526,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname,
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
-        interceptionContext: isRscRequest ? interceptionContextHeader : null,
+        interceptionContext: isRscRequest ? interceptionSourceContext : null,
         interceptionId: interceptionIdHeader,
         isRscRequest,
         matchKind: responseStageMatchKind,
@@ -2484,7 +2551,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         actionError: normalizedProgressiveActionError,
         actionFailed,
         handlerStart,
-        interceptionContext: isRscRequest ? interceptionContextHeader : null,
+        interceptionContext: isRscRequest ? interceptionSourceContext : null,
         interceptionId: interceptionIdHeader,
         interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         isProgressiveActionRender,
