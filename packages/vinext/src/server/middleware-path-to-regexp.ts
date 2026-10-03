@@ -120,11 +120,37 @@ function lexer(value: string): LexerToken[] {
   return tokens;
 }
 
-export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
+const MIDDLEWARE_DELIMITER = "/#?";
+
+function containsDelimiter(text: string, delimiter: string): boolean {
+  for (const character of delimiter) {
+    if (text.includes(character)) return true;
+  }
+  return false;
+}
+
+/**
+ * The pattern of a param that has no constraint of its own: a lazy run of
+ * non-delimiter characters. When the param follows text that has no
+ * delimiter (`/:name.:ext`, where `ext` follows `.`), a lookahead also keeps
+ * that text out of the run.
+ */
+export function middlewarePathSegmentPattern(
+  delimiter: string = MIDDLEWARE_DELIMITER,
+  precedingText: string = "",
+): string {
+  const segmentCharacter = `[^${escapeRegex(delimiter)}]`;
+  if (!precedingText || containsDelimiter(precedingText, delimiter)) return `${segmentCharacter}+?`;
+  return `(?:(?!${escapeRegex(precedingText)})${segmentCharacter})+?`;
+}
+
+export function parseMiddlewarePath(
+  value: string,
+  delimiter: string = MIDDLEWARE_DELIMITER,
+): MiddlewarePathToken[] {
   const tokens = lexer(value);
   const result: MiddlewarePathToken[] = [];
   const prefixes = "./";
-  const delimiter = "/#?";
   let key = 0;
   let index = 0;
   let path = "";
@@ -152,13 +178,6 @@ export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
     return text;
   };
 
-  const containsDelimiter = (text: string): boolean => {
-    for (const character of delimiter) {
-      if (text.includes(character)) return true;
-    }
-    return false;
-  };
-
   const defaultPattern = (prefix: string): string => {
     const previous = result[result.length - 1];
     const previousText = prefix || (typeof previous === "string" ? previous : "");
@@ -166,8 +185,7 @@ export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
       const name = typeof previous === "string" ? previous : previous.name;
       throw new TypeError(`Must have text between two parameters, missing text after "${name}"`);
     }
-    if (!previousText || containsDelimiter(previousText)) return "[^\\/#\\?]+?";
-    return `(?:(?!${escapeRegex(previousText)})[^\\/#\\?])+?`;
+    return middlewarePathSegmentPattern(delimiter, previousText);
   };
 
   while (index < tokens.length) {
@@ -244,8 +262,20 @@ export function normalizeMiddlewarePathTokens(
   });
 }
 
-export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): RegExp {
-  const delimiter = "/#?";
+type MiddlewarePathRegExpOptions = {
+  /**
+   * Receives one entry per capture group, in capture order, so `keys[i]`
+   * names `match[i + 1]`. It mirrors path-to-regexp's out-parameter and is
+   * filled here, where the groups are emitted, so the two cannot drift apart.
+   */
+  keys?: MiddlewarePathKey[];
+};
+
+export function middlewarePathTokensToRegExp(
+  tokens: MiddlewarePathToken[],
+  delimiter: string = MIDDLEWARE_DELIMITER,
+  { keys }: MiddlewarePathRegExpOptions = {},
+): RegExp {
   const delimiterRegex = `[${escapeRegex(delimiter)}]`;
   let route = "^";
 
@@ -258,6 +288,7 @@ export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): Reg
     const prefix = escapeRegex(token.prefix);
     const suffix = escapeRegex(token.suffix);
     if (token.pattern) {
+      keys?.push(token);
       if (prefix || suffix) {
         if (token.modifier === "+" || token.modifier === "*") {
           const optional = token.modifier === "*" ? "?" : "";

@@ -71,6 +71,10 @@ import {
   withBasePath,
 } from "./url-utils.js";
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
+import {
+  matchSimpleClientConfigPattern,
+  simpleClientConfigSourceCouldMatch,
+} from "../client/client-simple-source-matcher.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import {
   addLocalePrefix,
@@ -1899,54 +1903,6 @@ function shouldEvaluateClientConfigRule(
 ): boolean {
   if (!state.basePath) return true;
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
-}
-
-function matchSimpleClientConfigPattern(
-  pathname: string,
-  source: string,
-): Record<string, string> | null | undefined {
-  if (source.includes("(") || source.includes("\\") || /:[\w-]+[*+][^/]/.test(source)) {
-    return undefined;
-  }
-
-  const sourceParts = removeTrailingSlash(source).split("/");
-  const pathParts = removeTrailingSlash(pathname).split("/");
-  const params: Record<string, string> = {};
-  let pathIndex = 0;
-
-  for (let sourceIndex = 0; sourceIndex < sourceParts.length; sourceIndex++) {
-    const sourcePart = sourceParts[sourceIndex]!;
-    const pathPart = pathParts[pathIndex];
-    if (sourcePart.startsWith(":")) {
-      const catchAll = sourcePart.match(/^:([\w-]+)([*+])$/);
-      if (catchAll) {
-        const rest = pathParts.slice(pathIndex).join("/");
-        if (catchAll[2] === "+" && rest === "") return null;
-        params[catchAll[1]!] = rest;
-        return sourceIndex === sourceParts.length - 1 ? params : undefined;
-      }
-      if (pathPart === undefined) return null;
-      params[sourcePart.slice(1)] = pathPart;
-      pathIndex++;
-      continue;
-    }
-
-    if (pathPart !== sourcePart) return null;
-    pathIndex++;
-  }
-
-  return pathIndex === pathParts.length ? params : null;
-}
-
-function simpleClientConfigSourceCouldMatch(pathname: string, source: string): boolean {
-  const wildcardIndex = source.search(/[:(\\*+?]/);
-  const literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
-  const normalizedPrefix = removeTrailingSlash(literalPrefix);
-  if (!normalizedPrefix || normalizedPrefix === "/") return true;
-  const normalizedPathname = removeTrailingSlash(pathname);
-  return (
-    normalizedPathname === normalizedPrefix || normalizedPathname.startsWith(`${normalizedPrefix}/`)
-  );
 }
 
 function substituteSimpleClientConfigDestination(

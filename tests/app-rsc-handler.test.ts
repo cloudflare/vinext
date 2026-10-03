@@ -6109,6 +6109,25 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  // The handler gives the raw request pathname to the config matcher, and
+  // the route matcher ignores an empty segment. A redirect that guards a
+  // section must therefore also apply to a pathname with a doubled slash.
+  // Next.js redirects such a request to the collapsed path before any rule runs.
+  it("applies a catch-all config redirect to a pathname with a doubled slash", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/admin/:path*", destination: "/login", permanent: false }],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/admin//secret"), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/docs/login");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
   it("does not match config redirects through percent-encoded literal aliases", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({
