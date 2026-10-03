@@ -2,7 +2,9 @@
 
 import {
   createElement,
+  Fragment,
   startTransition,
+  StrictMode,
   use,
   useEffect,
   useLayoutEffect,
@@ -232,6 +234,7 @@ import {
 import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
 
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+const StrictModeIfEnabled = process.env.__NEXT_STRICT_MODE_APP ? StrictMode : Fragment;
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
@@ -1979,11 +1982,15 @@ function bootstrapHydration(
           onRecoverableError,
           onUncaughtError,
         });
-  const children = createElement(BrowserRoot, {
-    hydrationCachePublication,
-    initialElements: root,
-    initialNavigationSnapshot,
-  });
+  const children = createElement(
+    StrictModeIfEnabled,
+    null,
+    createElement(BrowserRoot, {
+      hydrationCachePublication,
+      initialElements: root,
+      initialNavigationSnapshot,
+    }),
+  );
   const errorShellStyles = document.querySelectorAll("style[data-vinext-error-shell-style]");
   if (document.documentElement.id === "__next_error__") {
     // Next.js client/app-index.tsx uses the document id alone to select CSR
