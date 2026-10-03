@@ -394,6 +394,45 @@ describe("loadNextConfig phase argument", () => {
   });
 });
 
+describe("loadNextConfig function-form defaultConfig argument", () => {
+  // Ported from Next.js: test/e2e/custom-page-extension/next.config.js
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/custom-page-extension/next.config.js
+  let tmpDir: string;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the real pageExtensions default, not an empty object, to a CJS function-form config", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = (phase, { defaultConfig }) => ({\n` +
+        `  pageExtensions: [...defaultConfig.pageExtensions, "page.js"],\n` +
+        `});\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.pageExtensions).toEqual(["tsx", "ts", "jsx", "js", "page.js"]);
+  });
+
+  it("passes the real pageExtensions default to a function-form next.config.ts", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `export default (phase: string, { defaultConfig }: { defaultConfig: { pageExtensions?: string[] } }) => ({\n` +
+        `  pageExtensions: [...(defaultConfig.pageExtensions ?? []), "page.ts"],\n` +
+        `});\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.pageExtensions).toEqual(["tsx", "ts", "jsx", "js", "page.ts"]);
+  });
+});
+
 describe("loadNextConfig with CJS globals in next.config.ts", () => {
   // Ported from Next.js: test/e2e/app-dir/next-config-ts/node-api-cjs/
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/node-api-cjs/next.config.ts

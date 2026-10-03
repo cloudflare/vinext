@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginOption } from "vite";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
-import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -793,7 +793,12 @@ async function resolveConfigValue(
 ): Promise<NextConfig> {
   if (typeof config === "function") {
     const result = await config(phase, {
-      defaultConfig: {},
+      // Next.js passes the function-form config its real defaults (see
+      // config-shared.js's `defaultConfig`), not an empty object -- a config
+      // like `(phase, { defaultConfig }) => ({ pageExtensions: [...defaultConfig.pageExtensions, 'page.js'] })`
+      // (the compat suite's custom-page-extension fixture) otherwise throws
+      // `defaultConfig.pageExtensions is not iterable`.
+      defaultConfig: { pageExtensions: [...DEFAULT_PAGE_EXTENSIONS] },
     });
     return result as NextConfig;
   }
@@ -1203,7 +1208,7 @@ async function loadNextConfigWithPackageIdentity(
               `const cjsExports = cjsModule && cjsModule.exports;\n` +
               `const cjsValue = cjsExports != null && (cjsExports !== cjsInitial || (typeof cjsExports === "object" && Object.keys(cjsExports).length > 0)) ? cjsExports : undefined;\n` +
               `const value = cjsValue ?? configModule.default ?? configModule;\n` +
-              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: {} }) : value;\n`
+              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: { pageExtensions: ${JSON.stringify([...DEFAULT_PAGE_EXTENSIONS])} } }) : value;\n`
             );
           },
         },
