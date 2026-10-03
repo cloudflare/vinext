@@ -11,6 +11,7 @@ import {
   type AppPagePprRuntime,
   type DispatchAppPageOptions,
 } from "./app-page-dispatch.js";
+import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 type PprFallbackShellEligibility =
   | {
@@ -23,6 +24,7 @@ type PprFallbackShellEligibility =
       kind:
         | "skip-known-pregenerated-route"
         | "skip-no-fallback-shells"
+        | "skip-blocking-metadata"
         | "skip-rsc-request"
         | "skip-non-get"
         | "skip-search-params"
@@ -43,6 +45,20 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
   const fallbackShells = options.pprFallbackCacheShells;
   if (!fallbackShells || fallbackShells.length === 0) {
     return { kind: "skip-no-fallback-shells" };
+  }
+  // Mirrors Next.js's `shouldForceDynamicPPRRender = isRoutePPREnabled &&
+  // !serveStreamingMetadata`: a fallback shell has already closed its head
+  // before the dynamic render resumes, so blocking metadata resolved during
+  // the resume would be emitted after the head, where HTML-limited bots
+  // cannot observe it. Bypassing the shell lets that metadata land in the
+  // initial document head instead.
+  if (
+    !shouldServeStreamingMetadata(
+      options.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    )
+  ) {
+    return { kind: "skip-blocking-metadata" };
   }
   if (options.isRscRequest) return { kind: "skip-rsc-request" };
   if (options.request.method !== "GET") return { kind: "skip-non-get" };

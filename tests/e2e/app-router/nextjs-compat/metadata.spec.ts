@@ -8,6 +8,7 @@
  * - document.title updates on client-side navigation
  * - Meta tags present in the DOM after hydration
  * - Title template applied in browser
+ * - HTML-limited bot user agents receive blocking metadata inside <head>
  */
 
 import { test, expect } from "@playwright/test";
@@ -161,5 +162,53 @@ test.describe("Next.js compat: metadata (browser)", () => {
       const title = await page.evaluate(() => document.title);
       expect(title).toBe("this is the page title");
     }).toPass({ timeout: 10_000 });
+  });
+});
+
+test.describe("Next.js compat: metadata streaming for HTML-limited bots", () => {
+  // Ported from Next.js: test/e2e/app-dir/metadata-streaming-cache-components/metadata-streaming-cache-components-custom-bots.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming-cache-components/metadata-streaming-cache-components-custom-bots.test.ts
+  // Twitterbot is in the default htmlLimitedBots list; Googlebot is not — it
+  // executes JS and receives streamed (body) metadata.
+  test.use({ userAgent: "Twitterbot/1.0" });
+
+  test("blocks the shell on generated metadata and hydrates without errors", async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    const response = await page.goto(`${BASE}/metadata-streaming-bot`);
+    expect(response?.status()).toBe(200);
+
+    // Assert against the streamed document itself: once hydrated, React may
+    // relocate a title that streamed inside the body boundary.
+    const html = await response?.text();
+    const serverTitles = await page.evaluate((raw) => {
+      const document = new DOMParser().parseFromString(raw, "text/html");
+      return {
+        head: Array.from(document.head.querySelectorAll("title")).map((title) => title.textContent),
+        bodyCount: document.body.querySelectorAll("title").length,
+      };
+    }, html ?? "");
+
+    expect(serverTitles.head).toEqual(["Delayed bot metadata"]);
+    expect(serverTitles.bodyCount).toBe(0);
+
+    await expect(page.locator("#metadata-streaming-bot-content")).toBeVisible();
+    await waitForAppRouterHydration(page);
+
+    const hydratedHeadTitles = await page.evaluate(() =>
+      Array.from(document.head.querySelectorAll("title")).map((title) => title.textContent),
+    );
+    expect(hydratedHeadTitles).toEqual(["Delayed bot metadata"]);
+    await expect(page.locator("body title")).toHaveCount(0);
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
   });
 });
