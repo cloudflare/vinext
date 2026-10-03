@@ -2232,7 +2232,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Do not await here: the filter is consulted synchronously while this
         // environment-scoped flag is set. The remaining async transform work
         // does not read it, so concurrent module transforms cannot cross-talk.
-        return commonJsTransform.call(this, code, id, ...args);
+        //
+        // vite-plugin-commonjs prepends its CJS->ESM interop runtime (the
+        // `module`/`exports` facade) to the source it transforms. If `code`
+        // starts with a hashbang line, that prepend pushes `#!` out of
+        // byte-0, which later fails to parse ("Invalid Character '!'") once
+        // bundled -- `#!` is only valid Hashbang grammar at the very start of
+        // the file. Strip it before handing the source to the transform and
+        // splice it back onto whatever comes back.
+        const hashbangMatch = /^#![^\n]*\n/.exec(code);
+        if (!hashbangMatch) return commonJsTransform.call(this, code, id, ...args);
+        const hashbang = hashbangMatch[0];
+        const transformed = commonJsTransform.call(this, code.slice(hashbang.length), id, ...args);
+        return Promise.resolve(transformed).then((result) => {
+          if (result == null) return result;
+          if (typeof result === "string") return hashbang + result;
+          if (typeof result === "object" && typeof result.code === "string") {
+            return { ...result, code: hashbang + result.code };
+          }
+          return result;
+        });
       } finally {
         transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
