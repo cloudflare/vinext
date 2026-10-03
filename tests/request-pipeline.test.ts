@@ -169,6 +169,24 @@ describe("isOpenRedirectShaped", () => {
     expect(isOpenRedirectShaped("/api/users")).toBe(false);
     expect(isOpenRedirectShaped("/%61dmin")).toBe(false);
   });
+
+  it("returns false for a bare double slash with no host-like segment after it", () => {
+    // Ported from Next.js: test/e2e/hydration (browsing "//" hydrates
+    // normally, matching "/"). A bare "//" — in any of its literal or
+    // percent-encoded forms — has nothing after it that looks like a host,
+    // so there is no open-redirect shape to reject; Next.js serves it as the
+    // index route.
+    expect(isOpenRedirectShaped("//")).toBe(false);
+    expect(isOpenRedirectShaped("/\\")).toBe(false);
+    expect(isOpenRedirectShaped("/%5C")).toBe(false);
+    expect(isOpenRedirectShaped("/%2F")).toBe(false);
+    expect(isOpenRedirectShaped("/%2f")).toBe(false);
+
+    // The real attack shapes — anything non-empty after the double slash —
+    // must still be rejected.
+    expect(isOpenRedirectShaped("//evil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/%2F/evil.com")).toBe(true);
+  });
 });
 
 // ── stripBasePath ───────────────────────────────────────────────────────
