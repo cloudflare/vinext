@@ -41,6 +41,23 @@ function writePackage(
   fs.writeFileSync(path.join(packageRoot, "index.js"), "module.exports = {};\n", "utf-8");
 }
 
+/** Write a package at an explicit version into an explicit node_modules directory. */
+function writePackageVersion(
+  nodeModulesDir: string,
+  packageName: string,
+  version: string,
+  dependencies: Record<string, string> = {},
+): void {
+  const packageRoot = path.join(nodeModulesDir, packageName);
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    JSON.stringify({ name: packageName, version, main: "index.js", dependencies }, null, 2),
+    "utf-8",
+  );
+  fs.writeFileSync(path.join(packageRoot, "index.js"), "module.exports = {};\n", "utf-8");
+}
+
 beforeEach(() => {
   tmpDir = createTmpDir();
 });
@@ -209,6 +226,64 @@ describe("emitStandaloneOutput", () => {
     expect(
       fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-b/package.json")),
     ).toBe(true);
+  });
+
+  it("prefers the app root's version over a dependency's nested copy", () => {
+    // Ported from #3443: the copier dedupes by package name, so a package is
+    // copied from whichever dependent reaches it first. In a workspace where a
+    // dependency pins a different version than the app root, the standalone
+    // output got the dependency's copy and every page failed with
+    // "Incompatible React versions".
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(
+      appRoot,
+      "package.json",
+      JSON.stringify({ name: "app", dependencies: { react: "19.3.0" } }, null, 2),
+    );
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    // `react` is only reachable transitively, so the manifest lists the package
+    // that depends on it rather than `react` itself.
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["ws-pkg"]));
+
+    writePackageVersion(path.join(appRoot, "node_modules"), "react", "19.3.0");
+    writePackageVersion(path.join(appRoot, "node_modules"), "ws-pkg", "1.0.0", {
+      react: "19.2.5",
+    });
+    writePackageVersion(
+      path.join(appRoot, "node_modules", "ws-pkg", "node_modules"),
+      "react",
+      "19.2.5",
+    );
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain("react");
+    const copiedReact = JSON.parse(
+      fs.readFileSync(
+        path.join(appRoot, "dist/standalone/node_modules/react/package.json"),
+        "utf-8",
+      ),
+    ) as { version: string };
+    expect(copiedReact.version).toBe("19.3.0");
   });
 
   it("falls back gracefully when vinext-externals.json is missing (no manifest)", () => {
