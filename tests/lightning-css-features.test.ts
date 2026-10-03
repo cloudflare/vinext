@@ -49,6 +49,41 @@ async function makeFixture(): Promise<string> {
   return tmpDir;
 }
 
+async function makeCustomMediaFixture(): Promise<string> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-lightning-css-custom-media-"));
+  await fs.symlink(ROOT_NODE_MODULES, path.join(tmpDir, "node_modules"), "junction");
+
+  const stylesPath = path.join(tmpDir, "styles.css");
+  await fs.writeFile(
+    stylesPath,
+    "@custom-media --narrow (max-width: 960px);\n" +
+      ".box {\n" +
+      "  color: blue;\n" +
+      "}\n" +
+      "@media (--narrow) {\n" +
+      "  .box {\n" +
+      "    color: red;\n" +
+      "  }\n" +
+      "}\n",
+  );
+
+  const pagesDir = path.join(tmpDir, "pages");
+  await fs.mkdir(pagesDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pagesDir, "_app.tsx"),
+    'import "../styles.css";\n' +
+      "export default function App({ Component, pageProps }: any) {\n" +
+      "  return <Component {...pageProps} />;\n" +
+      "}\n",
+  );
+  await fs.writeFile(
+    path.join(pagesDir, "index.tsx"),
+    'export default function Home() {\n  return <div className="box">Custom media</div>;\n}\n',
+  );
+
+  return tmpDir;
+}
+
 async function findBuiltCss(dir: string): Promise<string> {
   const entries = await fs.readdir(dir, { withFileTypes: true, recursive: true });
   let combined = "";
@@ -145,6 +180,60 @@ describe("experimental.lightningCssFeatures", () => {
       expect(css).not.toContain("light-dark(");
       expect(css).toContain("--lightningcss-light");
       expect(css).toContain("--lightningcss-dark");
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
+
+  it("substitutes @custom-media when custom-media-queries is included", async () => {
+    // Ported from Next.js: test/e2e/app-dir/experimental-lightningcss-features
+    // (the `custom-media-queries` describe block) —
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/experimental-lightningcss-features/experimental-lightningcss-features.test.ts
+    //
+    // `@custom-media` is draft CSS syntax, gated behind lightningcss's own
+    // `drafts.customMedia` parser flag — independent of the include/exclude
+    // transform mask. Next.js derives it from the same `include` list
+    // (packages/next/src/build/webpack/loaders/lightningcss-loader/src/loader.ts):
+    // when the user's `include` turns on `custom-media-queries`, Next also
+    // turns on `drafts.customMedia` so the parser accepts the syntax it is
+    // about to transpile. vinext forwarded `include`/`exclude` to lightningcss
+    // but never derived `drafts`, so `@custom-media` failed to parse at all.
+    const tmpDir = await makeCustomMediaFixture();
+    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-lightning-build-"));
+    try {
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [
+          vinext({
+            disableAppRouter: true,
+            nextConfig: {
+              experimental: {
+                useLightningcss: true,
+                lightningCssFeatures: {
+                  include: ["custom-media-queries"],
+                },
+              },
+            },
+          }),
+        ],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "client"),
+          manifest: true,
+          ssrManifest: true,
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      const css = await findBuiltCss(path.join(outDir, "client"));
+
+      // With `include: ['custom-media-queries']`, lightningcss should
+      // substitute `@custom-media` away entirely, leaving a plain media query.
+      expect(css).not.toContain("@custom-media");
+      expect(css).not.toContain("--narrow");
+      expect(css).toMatch(/max-width:\s*960px|width\s*<=\s*960px/);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});

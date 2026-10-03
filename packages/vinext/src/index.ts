@@ -102,6 +102,7 @@ import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
+  lightningCssFeatureNamesToMask,
   VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY,
   loadNextConfig,
   resolveNextConfigInput,
@@ -3630,6 +3631,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       : {}),
                     ...(nextConfig.lightningCssFeatures.exclude
                       ? { exclude: nextConfig.lightningCssFeatures.exclude }
+                      : {}),
+                    // `@custom-media` is draft CSS syntax, gated behind
+                    // lightningcss's own `drafts.customMedia` parser flag —
+                    // independent of the include/exclude transform mask.
+                    // Next.js derives it the same way (lightningcss-loader):
+                    // when the user's `include` turns on the
+                    // `custom-media-queries` feature, also turn on
+                    // `drafts.customMedia` so the parser accepts the syntax
+                    // it is about to transpile.
+                    ...((nextConfig.lightningCssFeatures.include &
+                      lightningCssFeatureNamesToMask(["custom-media-queries"])) !==
+                    0
+                      ? { drafts: { customMedia: true } }
                       : {}),
                   },
                 }
