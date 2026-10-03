@@ -430,8 +430,31 @@ export function resolveAppRouteHandlerFetchCacheMode(
   return isRouteSegmentFetchCache(handler.fetchCache) ? handler.fetchCache : null;
 }
 
+let hasWarnedAboutEdgeRuntime = false;
+
+/**
+ * Warn, once per process, that the Edge Runtime is deprecated.
+ *
+ * Mirrors Next.js (`warnAboutEdgeRuntime` in build/warn-about-edge-runtime.ts,
+ * via `Log.warnOnce`), which emits this message the first time any route's
+ * resolved `runtime` is `edge`/`experimental-edge` — during the build's
+ * page-data collection, or (in dev) on first compile of the route. vinext has
+ * no separate page-data-collection pass, so this fires from the one shared
+ * `isEdgeRuntime` check instead; the module-level flag gives the same "once
+ * per process" dedup Next.js gets from `Log.warnOnce`.
+ */
+function warnAboutEdgeRuntimeOnce(): void {
+  if (hasWarnedAboutEdgeRuntime) return;
+  hasWarnedAboutEdgeRuntime = true;
+  console.warn(
+    'The Edge Runtime is deprecated. You can use the "nodejs" runtime instead. Learn more: https://nextjs.org/docs/messages/edge-runtime-deprecated',
+  );
+}
+
 export function isEdgeRuntime(runtime: string | undefined): boolean {
-  return isEdgeApiRuntime(runtime);
+  const isEdge = isEdgeApiRuntime(runtime);
+  if (isEdge) warnAboutEdgeRuntimeOnce();
+  return isEdge;
 }
 
 /**
