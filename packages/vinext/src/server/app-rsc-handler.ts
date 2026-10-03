@@ -88,6 +88,7 @@ import {
   notFoundResponse,
   notFoundStaticAssetResponse,
 } from "./http-error-responses.js";
+import { isNonHtmlSecFetchDest } from "./is-non-html-sec-fetch-dest.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import {
   isOnDemandRevalidateRequest,
@@ -2250,6 +2251,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (process.env.NODE_ENV !== "production" && canonicalPathname === "/favicon.ico") {
       options.clearRequestContext();
       return new Response("", { status: 404 });
+    }
+
+    // For subresource requests (e.g. images or fonts), return a plain-text
+    // 404 instead of compiling/rendering the not-found route. Matches
+    // Next.js: base-server.ts's `is404Page` branch, gated on
+    // `isNonHtmlSecFetchDest(req.headers['sec-fetch-dest'])`.
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      isNonHtmlSecFetchDest(request.headers.get("sec-fetch-dest"))
+    ) {
+      options.clearRequestContext();
+      const headers = new Headers();
+      mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+      return notFoundStaticAssetResponse(headers);
     }
 
     setFrameworkRequestRoute("/404", isRscRequest);
