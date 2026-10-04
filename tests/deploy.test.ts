@@ -758,6 +758,16 @@ describe("parseDeployArgs", () => {
     }
   });
 
+  it("forwards retained-assets options through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    expect(cliSource).toContain("retainAssetsDir: parsed.retainAssetsDir");
+    expect(cliSource).toContain("retainAssetsDays: parsed.retainAssetsDays");
+  });
+
   it("forwards verbose output control through the deploy CLI", () => {
     const cliSource = fs.readFileSync(
       path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
@@ -780,6 +790,28 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnCertify).toBe(false);
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
     expect(parsed.warmCdnPromote).toBe(true);
+  });
+
+  it("does not retain earlier builds' assets unless an archive directory is given", () => {
+    const parsed = parseDeployArgs([]);
+    expect(parsed.retainAssetsDir).toBeUndefined();
+    expect(parsed.retainAssetsDays).toBeUndefined();
+  });
+
+  it("parses the retained-assets archive directory and window", () => {
+    const parsed = parseDeployArgs([
+      "--retain-assets-dir",
+      ".vinext/retained-assets",
+      "--retain-assets-days=3",
+    ]);
+    expect(parsed.retainAssetsDir).toBe(".vinext/retained-assets");
+    expect(parsed.retainAssetsDays).toBe(3);
+  });
+
+  it("requires an archive directory when a retention window is given", () => {
+    expect(() => parseDeployArgs(["--retain-assets-days", "3"])).toThrow(
+      "--retain-assets-days requires --retain-assets-dir.",
+    );
   });
 
   it("requires CDN warming when certification is requested", () => {
@@ -869,6 +901,8 @@ describe("parseDeployArgs", () => {
     expect(help).toContain("--traffic-aware-warm-cache");
     expect(help).toContain("--warm-cache");
     expect(help).toContain("--warm-cache-target");
+    expect(help).toContain("--retain-assets-dir");
+    expect(help).toContain("--retain-assets-days");
     expect(help).toContain("--dangerously-promote-on-warm-cache-error");
     expect(help).not.toContain("--dangerously-promote-on-cdn-warm-error");
     expect(help).not.toContain("--experimental-");

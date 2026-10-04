@@ -229,6 +229,17 @@ function writeApiOnlyProject(): void {
   writeFile("dist/server/index.js", "export default {};\n");
 }
 
+function writeWranglerStub(): void {
+  writeFile(
+    "node_modules/wrangler/package.json",
+    JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+  );
+  writeFile(
+    "node_modules/wrangler/index.js",
+    `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+  );
+}
+
 describe("deploy prerender config wiring", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-vinext-deploy-prerender-"));
@@ -298,6 +309,52 @@ describe("deploy prerender config wiring", () => {
       warn.mockRestore();
     },
   );
+
+  it("records the uploaded build in --retain-assets-dir after a promoted deploy", async () => {
+    writeProject(undefined);
+    writeWranglerStub();
+    writeFile("dist/client/_next/static/chunks/page-abc.js", "page");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, retainAssetsDir: "retained" });
+
+    const builds = JSON.parse(fs.readFileSync(path.join(tmpDir, "retained/builds.json"), "utf8"));
+    expect(builds).toEqual([
+      expect.objectContaining({ files: ["_next/static/chunks/page-abc.js"] }),
+    ]);
+  });
+
+  it("retains assets from the directory Wrangler uploads, not a guessed dist/client", async () => {
+    writeProject(undefined);
+    writeWranglerStub();
+    writeFile(
+      "wrangler.jsonc",
+      '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"out/client"}}\n',
+    );
+    writeFile("out/client/_next/static/chunks/page-abc.js", "page");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, retainAssetsDir: "retained" });
+
+    const builds = JSON.parse(fs.readFileSync(path.join(tmpDir, "retained/builds.json"), "utf8"));
+    expect(builds[0].files).toEqual(["_next/static/chunks/page-abc.js"]);
+  });
+
+  it("does not record a build uploaded with --no-promote", async () => {
+    writeProject(undefined);
+    writeWranglerStub();
+    writeFile("dist/client/_next/static/chunks/page-abc.js", "page");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({
+      root: tmpDir,
+      skipBuild: true,
+      retainAssetsDir: "retained",
+      warmCdnPromote: false,
+    });
+
+    expect(fs.existsSync(path.join(tmpDir, "retained/builds.json"))).toBe(false);
+  });
 
   it("ignores --prerender-all during Worker deploys", async () => {
     writeProject("true");

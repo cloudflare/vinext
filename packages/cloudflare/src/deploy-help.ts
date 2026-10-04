@@ -70,6 +70,20 @@ export function formatDeployHelp(): string {
                              Also warm PPR fallback-shell placeholder paths
     -h, --help               Show this help
 
+  Retained client assets:
+    --retain-assets-dir <dir>        Keep earlier builds' hashed client assets in
+                                     this directory and add them to each upload,
+                                     so tabs opened before a deploy can still load
+                                     their lazy chunks. Keep the directory between
+                                     deploys (restore and save it in CI)
+    --retain-assets-days <days>      Days to keep a build's assets after a later
+                                     build replaced it (default: 7)
+
+  Use one directory per Worker and environment. A version uploaded with
+  --no-promote is not recorded; promoting it by hand with Wrangler does not
+  record it either, so the next deploy will not keep its chunks. Assets
+  served from an absolute assetPrefix (a CDN) are not covered.
+
   Traffic-aware warming:
     --traffic-aware-warm-cache       Select cache warming routes from traffic
     --traffic-aware-coverage <pct>   Traffic coverage target, 0-100 (default: 90)
@@ -98,6 +112,8 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
     vinext-cloudflare deploy --no-promote                              Upload a version without changing deployment traffic
+    vinext-cloudflare deploy --retain-assets-dir .vinext/retained-assets
+                                                                          Keep recent builds' chunks for open tabs
     vinext-cloudflare deploy --warm-cache                               Warm build-discovered paths during version deploy
     vinext-cloudflare deploy --warm-cache --warm-cache-target https://example.com
                                                                           Warm an explicit production origin

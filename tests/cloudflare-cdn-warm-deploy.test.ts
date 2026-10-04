@@ -3501,15 +3501,57 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (args.includes("triggers")) return "Triggers deployed\n";
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
-    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+    const { deployWithCdnWarmup, PromotedVersionError } =
+      await import("../packages/cloudflare/src/deploy.js");
 
-    await expect(
-      deployWithCdnWarmup(tmpDir, ["/"], {
-        expectedBuildId: "app-build-a",
-        warmCdnPromotionDelay: 0,
-        warmCdnReadinessProbes: 1,
-      }),
-    ).rejects.toThrow("already promoted to 100%");
+    const result = deployWithCdnWarmup(tmpDir, ["/"], {
+      expectedBuildId: "app-build-a",
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbes: 1,
+    });
+    await expect(result).rejects.toThrow("already promoted to 100%");
+    await expect(result).rejects.toBeInstanceOf(PromotedVersionError);
+  });
+
+  it("marks a trigger failure after promotion as a promoted-version error", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    // A 50/50 split cannot be staged at 0%, so the version is promoted directly
+    // and triggers are applied afterwards.
+    let promoted = false;
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) return `Uploaded version ${PROBE_VERSION}\n`;
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: promoted
+            ? [{ version_id: PROBE_VERSION, percentage: 100 }]
+            : [
+                { version_id: OLD_VERSION, percentage: 50 },
+                { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+              ],
+        });
+      }
+      if (args.includes(`${PROBE_VERSION}@100%`)) {
+        promoted = true;
+        return "Promoted version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) throw new Error("route sync failed");
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup, PromotedVersionError } =
+      await import("../packages/cloudflare/src/deploy.js");
+
+    const result = deployWithCdnWarmup(tmpDir, ["/"], {
+      expectedBuildId: "app-build-a",
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbes: 1,
+      dangerouslyPromoteOnCdnWarmError: true,
+    });
+
+    await expect(result).rejects.toBeInstanceOf(PromotedVersionError);
+    await expect(result).rejects.toThrow("route sync failed");
   });
 
   it("explains staged version cleanup when trigger deployment fails after staging", async () => {

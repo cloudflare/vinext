@@ -105,6 +105,12 @@ import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { cacheabilityRoutePathname } from "vinext/internal/server/cacheability-manifest";
 import { writeCacheabilityManifestArtifact } from "./cacheability-artifact.js";
 import {
+  DEFAULT_RETAIN_ASSETS_DAYS,
+  prepareRetainedAssets,
+  type PreparedRetainedAssets,
+} from "./retained-assets.js";
+import { resolveAssetsDir } from "vinext/utils/asset-prefix";
+import {
   DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
   DEFAULT_CACHEABILITY_PROBE_RETRIES,
   DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS,
@@ -141,6 +147,14 @@ export type DeployOptions = {
   warmCdnCache?: boolean;
   /** Explicit production origin to use for CDN discovery, probing, and warming */
   warmCdnTarget?: string;
+  /**
+   * Directory kept between deploys that holds earlier builds' hashed client
+   * assets. When set, those assets are added to the upload so tabs opened
+   * before the deploy can still load their lazy chunks.
+   */
+  retainAssetsDir?: string;
+  /** Days to keep a build's assets after a later build replaced it (default: 7) */
+  retainAssetsDays?: number;
   /** Maximum number of CDN warmup requests to issue in parallel */
   warmCdnConcurrency?: number;
   /** Per-request CDN warmup timeout in milliseconds */
@@ -198,6 +212,7 @@ type ProjectWranglerApi = {
   ): {
     configPath?: string;
     version_metadata?: { binding: string };
+    assets?: { directory?: string };
   };
 };
 
@@ -295,7 +310,13 @@ function formatUnknownError(error: unknown): string {
 
 class StagedWarmupError extends Error {}
 
+/** The version reached 100% traffic, but a later step (triggers, warming) failed. */
+export class PromotedVersionError extends Error {}
+
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
+
+/** Workers static asset limit per version on the Paid plan (Free allows 20,000). */
+const MAX_WORKER_STATIC_ASSET_FILES = 100_000;
 
 /** Deploy command flag definitions for util.parseArgs. */
 const deployArgOptions = {
@@ -332,6 +353,8 @@ const deployArgOptions = {
   "traffic-aware-coverage": { type: "string" },
   "traffic-aware-limit": { type: "string" },
   "traffic-aware-window": { type: "string" },
+  "retain-assets-dir": { type: "string" },
+  "retain-assets-days": { type: "string" },
   // Backwards-compatible aliases (intentionally omitted from help).
   "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
   "experimental-warm-cdn-cache": { type: "boolean", default: false },
@@ -390,6 +413,9 @@ export function parseDeployArgs(args: string[]) {
   }
   if (values["warm-cache-target"] && !warming) {
     throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
+  }
+  if (values["retain-assets-days"] && !values["retain-assets-dir"]) {
+    throw new Error("--retain-assets-days requires --retain-assets-dir.");
   }
 
   function parseIntArg(name: string, raw: string | undefined): number | undefined {
@@ -517,6 +543,11 @@ export function parseDeployArgs(args: string[]) {
       "traffic-aware-window",
       values["traffic-aware-window"] ?? values["tpr-window"],
     ),
+    retainAssetsDir: values["retain-assets-dir"]?.trim() || undefined,
+    retainAssetsDays:
+      values["retain-assets-days"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(values["retain-assets-days"], "--retain-assets-days"),
   };
 }
 
@@ -1568,6 +1599,7 @@ async function deployUploadedVersionWithCdnWarmup(
         desiredTraffic: promotionTraffic,
         desiredDescription:
           "The uploaded version is already promoted to 100%; Worker triggers/routes may already have changed.",
+        promotion: true,
         priorState:
           prePromotionState ??
           (stagingTraffic
@@ -1663,15 +1695,19 @@ function reconcileVersionDeployFailure(
     desiredDescription: string;
     priorState: WranglerDeploymentStatus;
     priorDescription: string;
+    /** The requested traffic promotes the uploaded version to 100%. */
+    promotion?: boolean;
   },
 ): Error {
   const message = error instanceof Error ? error.message : String(error);
   let reconciliation: string;
   let mayNeedCleanup = true;
+  let promoted = false;
   try {
     const current = runDeploymentStatus(root, options);
     if (deploymentTrafficEquals(current.versions, expected.desiredTraffic)) {
       reconciliation = expected.desiredDescription;
+      promoted = expected.promotion === true;
     } else if (deploymentStateEquals(current, expected.priorState)) {
       reconciliation = expected.priorDescription;
       mayNeedCleanup = false;
@@ -1687,6 +1723,7 @@ function reconcileVersionDeployFailure(
     reconciliation = `Worker deployment status could not be read after the command failed, so the deployment outcome is unknown (${detail}).`;
   }
   const detail = `${message} ${reconciliation}`;
+  if (promoted) return new PromotedVersionError(detail, { cause: error });
   return mayNeedCleanup
     ? new StagedWarmupError(detail, { cause: error })
     : new Error(detail, { cause: error });
@@ -2091,7 +2128,7 @@ function getStagedVersionCleanupNote(): string {
 
 function withPromotedVersionTriggerNote(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(
+  return new PromotedVersionError(
     `${message} The uploaded version may already be promoted to 100%, but Worker triggers/routes may not be updated; ` +
       "rerun deploy or apply the Worker triggers after fixing the trigger error.",
     {
@@ -2102,7 +2139,7 @@ function withPromotedVersionTriggerNote(error: unknown): Error {
 
 function withPromotedVersionWarmupNote(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(
+  return new PromotedVersionError(
     `${message} The uploaded version is already promoted to 100% and its Worker triggers/routes were updated; ` +
       "rerun deploy to retry cache warming or create a deployment for the previous version.",
     { cause: error },
@@ -2110,6 +2147,58 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 }
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────
+
+/**
+ * The directory whose files become the Worker's static assets. Build Output
+ * projects upload the generated assets directory; Wrangler projects upload
+ * `assets.directory` of the (generated) Wrangler config, which follows any
+ * custom Vite client `outDir`.
+ */
+async function resolveClientUploadDir(
+  root: string,
+  deploymentTool: DeploymentTool,
+  options: { buildOutputClientDir?: string; config?: string; env?: string },
+): Promise<string> {
+  if (deploymentTool === "cf") {
+    if (!options.buildOutputClientDir) {
+      throw new Error(
+        "--retain-assets-dir needs the Build Output in .cloudflare/output. Build before deploying with --skip-build.",
+      );
+    }
+    return path.resolve(root, options.buildOutputClientDir);
+  }
+  const wrangler = await loadProjectWranglerApi(root);
+  const previousCwd = process.cwd();
+  try {
+    // Wrangler resolves its generated deploy redirect relative to cwd.
+    process.chdir(root);
+    const config = wrangler.unstable_readConfig(
+      { config: options.config, env: options.env },
+      { hideWarnings: true, preserveOriginalMain: true, useRedirectIfAvailable: true },
+    );
+    const directory = config.assets?.directory;
+    if (!directory) {
+      throw new Error(
+        "--retain-assets-dir needs the Worker to upload static assets, but the Wrangler config has no assets.directory.",
+      );
+    }
+    return path.resolve(config.configPath ? path.dirname(config.configPath) : root, directory);
+  } finally {
+    process.chdir(previousCwd);
+  }
+}
+
+function commitRetainedAssets(retainedAssets: PreparedRetainedAssets): void {
+  try {
+    retainedAssets.commit();
+  } catch (error) {
+    throw new Error(
+      `The deploy completed, but recording its assets in the --retain-assets-dir archive failed: ${formatUnknownError(error)} ` +
+        "The next deploy will not keep this build's chunks until the archive is fixed.",
+      { cause: error },
+    );
+  }
+}
 
 export async function deploy(options: DeployOptions): Promise<void> {
   if (options.warmCdnTarget !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
@@ -2394,97 +2483,138 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Build complete.\n");
   }
 
-  // Step 7: Deploy the entry Worker via the selected CLI.
-  let url: string | undefined;
-
-  if (shouldWarmCdnCache) {
-    try {
-      url = await deployWithCdnWarmup(root, [], {
-        ...wranglerOptions,
-        allowEmptyWarmPlan: tprRoutes.length > 0 && !options.warmCdnCache,
-        cacheabilityProbe: needsCacheabilityProbeManifest,
-        discoverWarmPlan: async ({ headers, targetUrl }) => {
-          const discovery = await discoverPrerenderPathManifest({
-            root: info.root,
-            candidatePaths: tprRoutes.map(({ path }) => path),
-            candidatePathsOnly,
-            nextConfig,
-            buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
-            includeCanonicalRsc: hasCanonicalRscWarmup,
-            requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
-            responseVary: hasStrictResponseVary ? "verbatim" : undefined,
-            isResponsePolicyHeader: (name) =>
-              isConfiguredCdnResponsePolicyHeader(viteConfigMetadata.cacheConfig, name),
-            routeRootConfig: viteConfigMetadata.routeRootConfig,
-            pathDiscoveryTarget: {
-              baseUrl: targetUrl,
-              headers,
-              phaseTimeoutMs:
-                options.warmCdnDiscoveryTimeout ?? DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
-              retries: options.warmCdnDiscoveryRetries,
-              retryDelayMs: DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
-            },
-          });
-          if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
-          return createPrerenderWarmPlan(root, discovery, {
-            includeCanonicalRsc: hasCanonicalRscWarmup,
-            includeFallbackShells: options.warmCdnIncludeFallbacks,
-            strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
-          });
-        },
-        selectWarmPlan: shouldSelectTpr
-          ? (plan) =>
-              selectTPRWarmPlan(
-                plan,
-                tprRoutes,
-                Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
-                Math.max(1, options.tprLimit ?? 1000),
-              )
-          : undefined,
-        statusSource: warmupStatusSource,
-        warmCdnConcurrency: options.warmCdnConcurrency,
-        warmCdnTarget: warmCdnTarget ?? tpr?.targetUrl,
-        warmCdnTimeout: options.warmCdnTimeout,
-        warmCdnRetries: options.warmCdnRetries,
-        warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,
-        warmCdnDiscoveryRetries: options.warmCdnDiscoveryRetries,
-        warmCdnProbeTimeout: options.warmCdnProbeTimeout,
-        warmCdnProbeRetries: options.warmCdnProbeRetries,
-        warmCdnCertify: options.warmCdnCertify,
-        warmCdnReadinessTimeout: options.warmCdnReadinessTimeout,
-        warmCdnReadinessRetries: options.warmCdnReadinessRetries,
-        warmCdnReadinessProbes: options.warmCdnReadinessProbes,
-        warmCdnReadinessProbeDelay: options.warmCdnReadinessProbeDelay,
-        dangerouslyPromoteOnCdnWarmError: options.dangerouslyPromoteOnCdnWarmError,
-        warmCdnPromote: options.warmCdnPromote,
-        warmCdnPromotionDelay: options.warmCdnPromotionDelay,
-      });
-    } catch (error) {
-      if (
-        options.warmCdnCache ||
-        options.warmCdnCertify ||
-        (options.warmCdnPromote === false && error instanceof StagedWarmupError)
-      ) {
-        throw error;
-      }
-      console.log(
-        `  TPR: Skipping pre-warm (${formatUnknownError(error)}). Continuing with deploy.`,
+  // Step 6b: add earlier builds' hashed client assets to this upload, so tabs
+  // opened before the deploy can still import their lazy chunks.
+  let retainedAssets: PreparedRetainedAssets | undefined;
+  if (options.retainAssetsDir) {
+    const clientDir = await resolveClientUploadDir(info.root, deploymentTool, {
+      buildOutputClientDir: prerenderOutputDirs?.clientOutDir,
+      config: options.config,
+      env: wranglerFallbackEnv,
+    });
+    if (!fs.existsSync(clientDir)) {
+      throw new Error(
+        `--retain-assets-dir: client output ${clientDir} does not exist. Build before deploying.`,
       );
     }
+    retainedAssets = prepareRetainedAssets({
+      archiveDir: path.resolve(root, options.retainAssetsDir),
+      clientDir,
+      assetsDir: resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+      retentionMs: (options.retainAssetsDays ?? DEFAULT_RETAIN_ASSETS_DAYS) * 24 * 60 * 60 * 1000,
+      maxFiles: MAX_WORKER_STATIC_ASSET_FILES,
+    });
+    console.log(
+      `  Retained assets: ${retainedAssets.merged} file(s) from earlier builds added to the upload`,
+    );
   }
-  if (url === undefined) {
-    if (deploymentTool === "cf" && options.warmCdnPromote === false) {
-      const upload = runCfVersionUpload(root, wranglerOptions);
-      url = upload.previewUrl ?? "(Preview URL not detected in cf output)";
-    } else if (deploymentTool === "cf") {
-      url = await runCfDeploy(root, wranglerOptions);
-    } else {
-      url = await runWranglerDeploy(root, {
-        ...wranglerOptions,
-        promote: options.warmCdnPromote,
-      });
+
+  // Step 7: Deploy the entry Worker via the selected CLI.
+  let url: string | undefined;
+  try {
+    if (shouldWarmCdnCache) {
+      try {
+        url = await deployWithCdnWarmup(root, [], {
+          ...wranglerOptions,
+          allowEmptyWarmPlan: tprRoutes.length > 0 && !options.warmCdnCache,
+          cacheabilityProbe: needsCacheabilityProbeManifest,
+          discoverWarmPlan: async ({ headers, targetUrl }) => {
+            const discovery = await discoverPrerenderPathManifest({
+              root: info.root,
+              candidatePaths: tprRoutes.map(({ path }) => path),
+              candidatePathsOnly,
+              nextConfig,
+              buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
+              includeCanonicalRsc: hasCanonicalRscWarmup,
+              requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
+              responseVary: hasStrictResponseVary ? "verbatim" : undefined,
+              isResponsePolicyHeader: (name) =>
+                isConfiguredCdnResponsePolicyHeader(viteConfigMetadata.cacheConfig, name),
+              routeRootConfig: viteConfigMetadata.routeRootConfig,
+              pathDiscoveryTarget: {
+                baseUrl: targetUrl,
+                headers,
+                phaseTimeoutMs:
+                  options.warmCdnDiscoveryTimeout ?? DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
+                retries: options.warmCdnDiscoveryRetries,
+                retryDelayMs: DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
+              },
+            });
+            if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
+            return createPrerenderWarmPlan(root, discovery, {
+              includeCanonicalRsc: hasCanonicalRscWarmup,
+              includeFallbackShells: options.warmCdnIncludeFallbacks,
+              strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
+            });
+          },
+          selectWarmPlan: shouldSelectTpr
+            ? (plan) =>
+                selectTPRWarmPlan(
+                  plan,
+                  tprRoutes,
+                  Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
+                  Math.max(1, options.tprLimit ?? 1000),
+                )
+            : undefined,
+          statusSource: warmupStatusSource,
+          warmCdnConcurrency: options.warmCdnConcurrency,
+          warmCdnTarget: warmCdnTarget ?? tpr?.targetUrl,
+          warmCdnTimeout: options.warmCdnTimeout,
+          warmCdnRetries: options.warmCdnRetries,
+          warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,
+          warmCdnDiscoveryRetries: options.warmCdnDiscoveryRetries,
+          warmCdnProbeTimeout: options.warmCdnProbeTimeout,
+          warmCdnProbeRetries: options.warmCdnProbeRetries,
+          warmCdnCertify: options.warmCdnCertify,
+          warmCdnReadinessTimeout: options.warmCdnReadinessTimeout,
+          warmCdnReadinessRetries: options.warmCdnReadinessRetries,
+          warmCdnReadinessProbes: options.warmCdnReadinessProbes,
+          warmCdnReadinessProbeDelay: options.warmCdnReadinessProbeDelay,
+          dangerouslyPromoteOnCdnWarmError: options.dangerouslyPromoteOnCdnWarmError,
+          warmCdnPromote: options.warmCdnPromote,
+          warmCdnPromotionDelay: options.warmCdnPromotionDelay,
+        });
+      } catch (error) {
+        if (
+          options.warmCdnCache ||
+          options.warmCdnCertify ||
+          (options.warmCdnPromote === false && error instanceof StagedWarmupError)
+        ) {
+          throw error;
+        }
+        console.log(
+          `  TPR: Skipping pre-warm (${formatUnknownError(error)}). Continuing with deploy.`,
+        );
+      }
     }
+    if (url === undefined) {
+      if (deploymentTool === "cf" && options.warmCdnPromote === false) {
+        const upload = runCfVersionUpload(root, wranglerOptions);
+        url = upload.previewUrl ?? "(Preview URL not detected in cf output)";
+      } else if (deploymentTool === "cf") {
+        url = await runCfDeploy(root, wranglerOptions);
+      } else {
+        url = await runWranglerDeploy(root, {
+          ...wranglerOptions,
+          promote: options.warmCdnPromote,
+        });
+      }
+    }
+  } catch (error) {
+    // Promoted, then triggers or warming failed: the build is serving, so record it.
+    if (retainedAssets && error instanceof PromotedVersionError) {
+      try {
+        retainedAssets.commit();
+      } catch (archiveError) {
+        error.message += ` Recording this build in --retain-assets-dir also failed: ${formatUnknownError(archiveError)}`;
+      }
+    }
+    throw error;
   }
+
+  // A version left at 0% is not serving yet: it is not recorded, so the build it
+  // replaces is not retired early. A later promoted deploy records it.
+  if (retainedAssets && options.warmCdnPromote !== false) commitRetainedAssets(retainedAssets);
 
   console.log("\n  ─────────────────────────────────────────");
   console.log(`  ${options.warmCdnPromote === false ? "Version URL" : "Deployed to"}: ${url}`);

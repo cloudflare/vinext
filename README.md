@@ -375,6 +375,19 @@ Use the traffic-aware flag on its own to apply the coverage and route limits. Co
 
 The previous `--experimental-traffic-aware-warm-cache`, `--experimental-tpr`, and `--tpr-*` names remain supported as aliases.
 
+#### Keeping chunks for tabs opened before a deploy
+
+A Worker version serves only the static assets uploaded with it, so after a deploy a tab opened on the previous version gets a 404 when it lazily imports a chunk the new build no longer has (for example the server action client). `--retain-assets-dir <dir>` keeps the hashed client assets of recent builds in `<dir>`, which you persist between deploys, and adds them to each upload:
+
+```bash
+npx @vinext/cloudflare deploy --retain-assets-dir .vinext/retained-assets                         # Keep replaced builds for 7 days
+npx @vinext/cloudflare deploy --retain-assets-dir .vinext/retained-assets --retain-assets-days 3  # Shorter window
+```
+
+Use one directory per Worker and environment, and run the deploys that share it one at a time (restore, deploy, save): two deploys started from the same copy each miss the other's build. In CI, restore the latest copy before deploying and save a new one afterwards, including when the deploy fails after publishing. With GitHub Actions caches, which cannot be overwritten, that means saving under a new key each run (for example `retained-assets-<worker>-<env>-${{ github.run_id }}`) and restoring with the `retained-assets-<worker>-<env>-` prefix. The files in the directory are uploaded as they are, so give it the same trust as your build output. Keep `build.emptyOutDir` at its default so each build starts from an empty output.
+
+This only keeps the files reachable. Requests from an old tab still go to the current version, so what happens to an old tab's server action depends on the new build. Rolling back to an existing version does not add later builds' files to it.
+
 #### Custom Vite configuration
 
 If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. For Cloudflare Workers deployment with the App Router, configure `@cloudflare/vite-plugin` so the RSC environment runs in workerd:

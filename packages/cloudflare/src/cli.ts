@@ -73,6 +73,8 @@ async function deployCommand(): Promise<void> {
     tprCoverage: parsed.tprCoverage,
     tprLimit: parsed.tprLimit,
     tprWindow: parsed.tprWindow,
+    retainAssetsDir: parsed.retainAssetsDir,
+    retainAssetsDays: parsed.retainAssetsDays,
   });
 }
 
