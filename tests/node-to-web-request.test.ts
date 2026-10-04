@@ -30,6 +30,20 @@ describe("nodeToWebRequest", () => {
     readNodeStream = mod.readNodeStream;
   });
 
+  it("preserves the supplied response lifetime signal", () => {
+    const controller = new AbortController();
+    const request = nodeToWebRequest(
+      mockReq(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      controller.signal,
+    );
+    controller.abort();
+    expect(request.signal.aborted).toBe(true);
+  });
+
   it("uses req.url when no urlOverride is provided", () => {
     const req = mockReq({ url: "/test/page?q=1" });
 
