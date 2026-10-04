@@ -1,3 +1,4 @@
+import { signalFromNodeResponse } from "./server/node-response-signal.js";
 import type {
   Alias,
   CSSModulesOptions,
@@ -6683,6 +6684,7 @@ export const loadServerActionClient = ${
               const webRequest = new Request(new URL(routeUrl, requestOrigin), {
                 method,
                 headers: nodeRequestHeaders,
+                signal: signalFromNodeResponse(res),
               });
 
               const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
@@ -6716,6 +6718,7 @@ export const loadServerActionClient = ${
                       const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
                         method: req.method,
                         headers: nodeRequestHeaders,
+                        signal: webRequest.signal,
                       });
                       const result = await runMiddleware(
                         getPagesRunner(),
@@ -6844,6 +6847,7 @@ export const loadServerActionClient = ${
                     method: externalMethod,
                     // Use the pipeline's current request headers (post-middleware)
                     headers: currentRequest.headers,
+                    signal: currentRequest.signal,
                   };
                   if (hasBody) {
                     const { Readable } = await import("node:stream");
