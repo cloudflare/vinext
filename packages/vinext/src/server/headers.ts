@@ -101,8 +101,9 @@ export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Metadata";
 
 /**
- * Marks an App page RSC response whose 401, 403 or 404 is its page's stored
- * notFound(), forbidden() or unauthorized(). The request stage strips it.
+ * Carries the stored status of an App page RSC response whose 401, 403 or 404
+ * is its page's notFound(), forbidden() or unauthorized(). Middleware and
+ * config headers can't set it, and the request stage strips it.
  */
 export const VINEXT_SPECIAL_ERROR_STATUS_HEADER = "x-vinext-special-error-status";
 

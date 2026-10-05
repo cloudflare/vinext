@@ -373,10 +373,15 @@ function applyMiddlewareContextToResponse(
  * decide the status here.
  */
 function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boolean): Response {
-  if (!response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)) return response;
+  const marker = response.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER);
+  if (marker === null) return response;
   const headers = new Headers(response.headers);
   headers.delete(VINEXT_SPECIAL_ERROR_STATUS_HEADER);
-  const status = isSegmentPrefetch ? 200 : response.status;
+  const storedStatus = Number(marker);
+  const isStoredSpecialError = storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
+  // As on a single-stage render, the stored status takes precedence over a
+  // middleware status that the response stage's composition applied.
+  const status = !isStoredSpecialError ? response.status : isSegmentPrefetch ? 200 : storedStatus;
   return preserveFullyBufferedBodyMetadata(
     response,
     new Response(response.body, {

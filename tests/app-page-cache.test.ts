@@ -2318,7 +2318,7 @@ describe("app page special-error entries", () => {
 
     const rsc = buildAppPageCachedResponse(specialErrorEntry(status, "doc"), options);
     expect(rsc?.status).toBe(status);
-    expect(marker(rsc)).toBe("1");
+    expect(marker(rsc)).toBe(String(status));
     const document = buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
       ...options,
       isRscRequest: false,

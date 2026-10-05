@@ -366,7 +366,7 @@ export function buildAppPageCachedResponse(
     applyRscDeploymentIdHeader(rscHeaders);
     // The request stage sends it to a Link's segment prefetch as a 200.
     if (isHttpErrorFallbackStatus && status === storedStatus) {
-      rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, "1");
+      rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(storedStatus));
     }
 
     return new Response(cachedValue.rscData, {

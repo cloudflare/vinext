@@ -625,7 +625,7 @@ describe("createAppRscHandler", () => {
     function storedResponse(status: number, marked = true): Response {
       return new Response("rsc", {
         status,
-        headers: marked ? { [VINEXT_SPECIAL_ERROR_STATUS_HEADER]: "1" } : {},
+        headers: marked ? { [VINEXT_SPECIAL_ERROR_STATUS_HEADER]: String(status) } : {},
       });
     }
 
@@ -696,6 +696,74 @@ describe("createAppRscHandler", () => {
         expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
       },
     );
+
+    // As on a fresh render, middleware can't override the page's own status.
+    it("keeps its status behind a middleware status for a navigation", async () => {
+      const handler = createHandler({
+        matchRequestRoute: matchRoute,
+        matchRoute,
+        middlewareModule: {
+          default() {
+            return new Response(null, { headers: { "x-middleware-next": "1" }, status: 202 });
+          },
+        },
+      });
+      const dispatchResponseStage = async () => storedResponse(404);
+
+      const navigation = await handler(await rscRequest(false), null, false, dispatchResponseStage);
+      expect(navigation.status).toBe(404);
+      expect(navigation.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+
+      const prefetch = await handler(await rscRequest(true), null, false, dispatchResponseStage);
+      expect(prefetch.status).toBe(200);
+    });
+
+    it.each(["middleware", "a config header"])("ignores a marker that %s sets", async (source) => {
+      const marker = { key: VINEXT_SPECIAL_ERROR_STATUS_HEADER, value: "404" };
+      const handler =
+        source === "middleware"
+          ? createHandler({
+              matchRequestRoute: matchRoute,
+              matchRoute,
+              middlewareModule: {
+                default() {
+                  return new Response(null, {
+                    headers: { "x-middleware-next": "1", [marker.key]: marker.value },
+                  });
+                },
+              },
+            })
+          : createHandler({
+              configHeaders: [{ source: "/about", headers: [marker] }],
+              matchRequestRoute: matchRoute,
+              matchRoute,
+            });
+
+      const response = await handler(await rscRequest(true), null, false, async () =>
+        storedResponse(404, false),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+    });
+
+    it("ignores a marker without a special error's status", async () => {
+      const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+
+      const response = await handler(
+        await rscRequest(true),
+        null,
+        false,
+        async () =>
+          new Response("rsc", {
+            headers: { [VINEXT_SPECIAL_ERROR_STATUS_HEADER]: "1" },
+            status: 404,
+          }),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+    });
 
     // A dynamicParams = false miss is a 404 for a segment prefetch in Next.js.
     it("leaves any other 404 to a segment prefetch alone", async () => {
