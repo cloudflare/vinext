@@ -1,7 +1,14 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
-import { stripEsmCommonJsExportFacade } from "../packages/vinext/src/plugins/commonjs-esm-facade.js";
+import {
+  commonJsEsmFacadeOptimizeDepsPlugin,
+  stripEsmCommonJsExportFacade,
+} from "../packages/vinext/src/plugins/commonjs-esm-facade.js";
+import {
+  originalPositionFor,
+  type SourceMapPayload,
+} from "../packages/vinext/src/server/dev-stack-sourcemap.js";
 
 type CommonJsTransform = (code: string, id: string) => Promise<{ code: string } | null | undefined>;
 
@@ -95,5 +102,42 @@ describe("stripEsmCommonJsExportFacade", () => {
     expect(stripEsmCommonJsExportFacade(output)).toBe(
       `export const a = 1;\n\nfunction __matchRequireRuntime0__(path) {}`,
     );
+  });
+});
+
+describe("commonJsEsmFacadeOptimizeDepsPlugin", () => {
+  type TransformHandler = (
+    code: string,
+    id: string,
+  ) => { code: string; map: SourceMapPayload } | null;
+  const transform = commonJsEsmFacadeOptimizeDepsPlugin.transform as { handler: TransformHandler };
+
+  it("maps code appended after the removed facade to its loaded position", () => {
+    const loaded = [
+      `export const a = 1;`,
+      `/* [vite-plugin-commonjs] export-statement-S */`,
+      `export { x as default }`,
+      `/* [vite-plugin-commonjs] export-statement-E */`,
+      `function __matchRequireRuntime0__(path) {}`,
+    ].join("\n");
+    const result = transform.handler.call(undefined, loaded, "/project/module.js");
+
+    expect(result?.code).toBe(`export const a = 1;\n\nfunction __matchRequireRuntime0__(path) {}`);
+    expect(originalPositionFor(result!.map, 3, 1)).toEqual({
+      source: "/project/module.js",
+      line: 5,
+      column: 1,
+    });
+  });
+
+  it("leaves CommonJS output alone", () => {
+    const loaded = [
+      `exports.a = 1;`,
+      `/* [vite-plugin-commonjs] export-statement-S */`,
+      `export { x as default }`,
+      `/* [vite-plugin-commonjs] export-statement-E */`,
+    ].join("\n");
+
+    expect(transform.handler.call(undefined, loaded, "/project/module.js")).toBeNull();
   });
 });

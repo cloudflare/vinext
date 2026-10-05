@@ -1,3 +1,4 @@
+import MagicString from "magic-string";
 import { parseAst, type Plugin } from "vite";
 
 // vite-plugin-commonjs appends its export facade between these markers.
@@ -47,27 +48,42 @@ function hasEsmExports(code: string): boolean {
  * leaves the plugin's source map valid.
  */
 export function stripEsmCommonJsExportFacade(output: string): string | undefined {
+  const facade = findEsmCommonJsExportFacade(output);
+  return facade && output.slice(0, facade[0]) + output.slice(facade[1]);
+}
+
+/** The `[start, end)` range of the facade {@link stripEsmCommonJsExportFacade} removes. */
+function findEsmCommonJsExportFacade(output: string): [number, number] | undefined {
   const start = output.lastIndexOf(EXPORT_FACADE_START);
   if (start === -1) return undefined;
   const end = output.indexOf(EXPORT_FACADE_END, start);
   if (end === -1) return undefined;
-  const stripped = output.slice(0, start) + output.slice(end + EXPORT_FACADE_END.length);
-  return hasEsmExports(stripped) ? stripped : undefined;
+  const facadeEnd = end + EXPORT_FACADE_END.length;
+  return hasEsmExports(output.slice(0, start) + output.slice(facadeEnd))
+    ? [start, facadeEnd]
+    : undefined;
 }
 
 /**
  * Applies {@link stripEsmCommonJsExportFacade} in the client dependency
  * optimizer's Rolldown builds (scan and pre-bundle). vite-plugin-commonjs's
  * pre-bundle plugin loads and converts files there without vinext's transform
- * wrapper, so its output reaches this hook as the loaded code.
+ * wrapper, so its output reaches this hook as the loaded code. That code is
+ * the optimizer's source, so the removal needs its own map for anything the
+ * plugin appended after the facade.
  */
 export const commonJsEsmFacadeOptimizeDepsPlugin: Plugin = {
   name: "vinext:commonjs-esm-facade:optimize-deps",
   transform: {
     filter: { code: { include: EXPORT_FACADE_START } },
-    handler(code) {
-      const stripped = stripEsmCommonJsExportFacade(code);
-      return stripped === undefined ? null : { code: stripped, map: null };
+    handler(code, id) {
+      const facade = findEsmCommonJsExportFacade(code);
+      if (!facade) return null;
+      const output = new MagicString(code).remove(facade[0], facade[1]);
+      return {
+        code: output.toString(),
+        map: output.generateMap({ source: id, hires: "boundary" }),
+      };
     },
   },
 };
