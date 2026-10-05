@@ -93,6 +93,8 @@ type BuildAppPageCachedResponseOptions = {
   isEdgeRuntime?: boolean;
   isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
+  /** An RSC request a Link sent to prefetch the page's segments for navigation. */
+  isSegmentPrefetchRequest?: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
@@ -109,6 +111,7 @@ type ReadAppPageCacheResponseOptions = {
   isEdgeRuntime?: boolean;
   isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
+  isSegmentPrefetchRequest?: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
@@ -315,15 +318,24 @@ export function buildAppPageCachedResponse(
   // falsy statuses still fall back to 200 rather than being forwarded through.
   const storedStatus = cachedValue.status || 200;
   const isRedirect = isRedirectStatus(storedStatus);
+  const isHttpErrorFallbackStatus =
+    storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
   // As in Next.js, an RSC response carries a redirect in its payload, so a
   // stored redirect is sent as a 200 with its `location`. With PPR, an RSC
-  // response is always a 200.
+  // response is always a 200. Next.js answers a Link's segment prefetches of
+  // a page whose notFound(), forbidden() or unauthorized() it stored with
+  // 200s, so the router renders the page's fallback without loading the
+  // document. A navigation without that prefetch receives the status.
   const replayStatus =
-    options.isRscRequest && (isRedirect || options.isRoutePPREnabled === true) ? 200 : storedStatus;
+    options.isRscRequest &&
+    (isRedirect ||
+      options.isRoutePPREnabled === true ||
+      (isHttpErrorFallbackStatus && options.isSegmentPrefetchRequest === true))
+      ? 200
+      : storedStatus;
   // The status of a stored special error is the page's own, which middleware
   // can't override, as on a fresh render.
-  const isSpecialErrorStatus =
-    isRedirect || storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
+  const isSpecialErrorStatus = isRedirect || isHttpErrorFallbackStatus;
   const status = isSpecialErrorStatus ? replayStatus : (options.middlewareStatus ?? replayStatus);
   const { cacheControl } = decideIsr({
     cacheState: options.cacheState,
@@ -531,6 +543,7 @@ export async function readAppPageCacheResponse(
         isEdgeRuntime: options.isEdgeRuntime,
         isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
+        isSegmentPrefetchRequest: options.isSegmentPrefetchRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
@@ -716,6 +729,7 @@ export async function readAppPageCacheResponse(
         isEdgeRuntime: options.isEdgeRuntime,
         isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
+        isSegmentPrefetchRequest: options.isSegmentPrefetchRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,

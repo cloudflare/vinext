@@ -95,6 +95,70 @@ test("serves the document of an ISR page that calls notFound() or redirect() fro
   }
 });
 
+// A page's stored notFound() is a 404 RSC HIT. As in Next.js, whose Link
+// prefetches the page's segments as 200s, a default Link renders the fallback
+// without loading the document. A navigation without that prefetch, after a
+// full prefetch, or to a route that doesn't exist loads the document.
+test.describe("client navigation to a stored notFound() page", () => {
+  const target = "/nextjs-compat/isr-special-error/link-target";
+
+  test.beforeAll(async ({ request }) => {
+    // The document request stores the page, RSC payload included.
+    await expect
+      .poll(async () => (await request.get(target)).headers()["x-vinext-cache"])
+      .toBe("HIT");
+    const rsc = await request.get(`${target}.rsc`, { headers: RSC_HEADERS });
+    expect(rsc.status()).toBe(404);
+    expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
+  });
+
+  async function openLinksPage(page: Page, mode: string): Promise<void> {
+    await page.goto(`/nextjs-compat/isr-special-error/link/${mode}`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __NAV_MARKER__?: boolean }).__NAV_MARKER__ = true;
+    });
+  }
+
+  async function readMarker(page: Page): Promise<boolean | undefined> {
+    return page.evaluate(() => (window as Window & { __NAV_MARKER__?: boolean }).__NAV_MARKER__);
+  }
+
+  test("a prefetching Link renders the page's notFound() without a reload", async ({ page }) => {
+    const prefetch = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === target &&
+        response.request().headers()["next-router-segment-prefetch"] !== undefined,
+    );
+    await openLinksPage(page, "prefetch");
+    expect((await prefetch).status()).toBe(200);
+
+    await page.click("#link");
+    await expect(page.locator("body")).toContainText("404");
+    expect(new URL(page.url()).pathname).toBe(target);
+    expect(await readMarker(page)).toBe(true);
+  });
+
+  // A full prefetch fetches the page's whole payload, which carries its status.
+  for (const mode of ["no-prefetch", "full-prefetch"]) {
+    test(`a ${mode} Link loads the page's 404 document`, async ({ page }) => {
+      await openLinksPage(page, mode);
+      await page.click("#link");
+      await expect(page.locator("body")).toContainText("404");
+      expect(new URL(page.url()).pathname).toBe(target);
+      await expect.poll(() => readMarker(page)).toBeUndefined();
+    });
+  }
+
+  test("a Link to a route that doesn't exist loads its 404 document", async ({ page }) => {
+    await openLinksPage(page, "missing");
+    await page.click("#link");
+    await expect(page.locator("body")).toContainText("404");
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/isr-special-error/does-not-exist");
+    await expect.poll(() => readMarker(page)).toBeUndefined();
+  });
+});
+
 test("stores the 404 document of an ISR page without the query of the request that rendered it", async ({
   request,
 }) => {

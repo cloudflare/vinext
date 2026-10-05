@@ -86,7 +86,11 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import {
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
@@ -928,6 +932,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isEdgeRuntime: options.isEdgeRuntime,
       isRoutePPREnabled: options.pprRuntime !== undefined,
       isRscRequest: options.isRscRequest,
+      isSegmentPrefetchRequest:
+        options.isRscRequest && options.request.headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
       isrHtmlKey: options.isrHtmlKey,

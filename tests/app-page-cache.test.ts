@@ -2308,6 +2308,54 @@ describe("app page special-error entries", () => {
     ).toBe(status);
   });
 
+  // Next.js answers a Link's segment prefetches of such a page with 200s, so
+  // its router renders the fallback without loading the document. Without a
+  // segment prefetch, an RSC request receives the stored status.
+  it.each([404, 403, 401])("replays a stored %s as a 200 to a segment prefetch", (status) => {
+    const options = { cacheState: "HIT" as const, isRscRequest: true, revalidateSeconds: 60 };
+
+    expect(
+      buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
+        ...options,
+        isSegmentPrefetchRequest: true,
+      })?.status,
+    ).toBe(200);
+    expect(buildAppPageCachedResponse(specialErrorEntry(status, "doc"), options)?.status).toBe(
+      status,
+    );
+    // A document request is never a segment prefetch.
+    expect(
+      buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
+        ...options,
+        isRscRequest: false,
+        isSegmentPrefetchRequest: true,
+      })?.status,
+    ).toBe(status);
+  });
+
+  it("threads a segment prefetch into an RSC HIT", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/missing",
+      clearRequestContext() {},
+      isRscRequest: true,
+      isSegmentPrefetchRequest: true,
+      async isrGet() {
+        return buildISRCacheEntry(specialErrorEntry(404, ""), false, { revalidate: 60 });
+      },
+      isrHtmlKey: (pathname) => "html:" + pathname,
+      isrRscKey: (pathname) => "rsc:" + pathname,
+      isrSet: async () => {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a HIT must not render");
+      },
+      scheduleBackgroundRegeneration() {},
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+  });
+
   it("threads the route's PPR state into an RSC HIT", async () => {
     const response = await readAppPageCacheResponse({
       cleanPathname: "/missing",
