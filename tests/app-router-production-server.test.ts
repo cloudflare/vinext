@@ -1472,14 +1472,10 @@ describe("App Router Production server (startProdServer)", () => {
       expect(rscBody).toContain("NEXT_REDIRECT");
       expect(rscBody).toContain("/result");
 
-      // The RSC drain applies to matched-route HTTP-access fallbacks too, not
-      // only route misses. `/gated` is a matched route that calls notFound();
-      // its route-level not-found boundary (app/gated/not-found.tsx) redirects
-      // on its own header, so it renders during the fallback (not the layout
-      // probe) and its async redirect is caught by the boundary drain. With the
-      // trigger → 200 flight redirect; without it → a normal 404 flight
-      // (proving the buffering does not drop or corrupt the matched-route
-      // payload).
+      // `/gated` is a matched route whose page calls notFound(). As in Next.js,
+      // an RSC request renders the page, so the notFound() digest and the
+      // route's not-found boundary travel in the Flight payload, including a
+      // redirect() in that boundary.
       const matchedRedirectRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
         redirect: "manual",
         headers: {
@@ -1488,16 +1484,18 @@ describe("App Router Production server (startProdServer)", () => {
         },
       });
       expect(matchedRedirectRes.status).toBe(200);
-      expect(matchedRedirectRes.headers.get("x-vinext-rsc-redirect")).toBe("/result");
-      expect(await matchedRedirectRes.text()).toContain("NEXT_REDIRECT");
+      const matchedRedirectBody = await matchedRedirectRes.text();
+      expect(matchedRedirectBody).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+      expect(matchedRedirectBody).toContain("NEXT_REDIRECT");
 
       const matchedNotFoundRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
         redirect: "manual",
         headers: { Accept: "text/x-component" },
       });
-      expect(matchedNotFoundRes.status).toBe(404);
-      expect(matchedNotFoundRes.headers.get("x-vinext-rsc-redirect")).toBeNull();
-      expect(await matchedNotFoundRes.text()).toContain("Gated Not Found");
+      expect(matchedNotFoundRes.status).toBe(200);
+      const matchedNotFoundBody = await matchedNotFoundRes.text();
+      expect(matchedNotFoundBody).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+      expect(matchedNotFoundBody).toContain("Gated Not Found");
     } finally {
       await new Promise<void>((resolve, reject) => {
         if (!redirectServer) {

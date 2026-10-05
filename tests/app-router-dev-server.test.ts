@@ -2466,16 +2466,12 @@ describe("App Router route-miss root layout redirects", () => {
     expect(body).toContain("/result");
   });
 
-  // The RSC drain applies to every HTTP-access fallback, not only route misses.
-  // `/gated` is a *matched* route that calls notFound(); its route-level
-  // not-found boundary (app/gated/not-found.tsx) redirects on its own header.
-  // That boundary renders only during the not-found fallback — not the
-  // matched-route layout probe — so the async redirect is caught by the
-  // renderAppPageBoundaryElementResponse drain, the new code path, rather than
-  // the layout special-error path. (The layout-redirect header is intentionally
-  // NOT sent here, so the root layout renders normally and we actually reach
-  // the fallback.)
-  it("encodes a matched-route not-found boundary's async redirect into the RSC flight", async () => {
+  // `/gated` is a matched route whose page calls notFound(). As in Next.js,
+  // an RSC request renders the page, so the notFound() digest and the route's
+  // not-found boundary (app/gated/not-found.tsx) travel in the Flight payload
+  // and the client router shows the boundary. A redirect() in that boundary
+  // travels the same way.
+  it("streams a matched-route not-found boundary's redirect in the RSC flight", async () => {
     const res = await fetch(`${baseUrl}/gated.rsc`, {
       redirect: "manual",
       headers: {
@@ -2486,25 +2482,22 @@ describe("App Router route-miss root layout redirects", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
-    expect(res.headers.get("x-vinext-rsc-redirect")).toBe("/result");
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
     expect(body).toContain("NEXT_REDIRECT");
-    expect(body).toContain("/result");
+    expect(body).toContain("result");
   });
 
-  // Guards the drain's cost side: a matched-route not-found with no redirect
-  // must still produce a normal 404 flight. The stream is now buffered before
-  // responding, so this proves buffering does not corrupt or drop the payload.
-  it("still returns a normal 404 flight for a matched-route not-found without a redirect", async () => {
+  it("streams a matched-route not-found boundary in the RSC flight", async () => {
     const res = await fetch(`${baseUrl}/gated.rsc`, {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
-    expect(res.headers.get("x-vinext-rsc-redirect")).toBeNull();
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
     expect(body).toContain("Gated Not Found");
   });
 
