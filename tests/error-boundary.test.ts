@@ -474,6 +474,40 @@ describe("RedirectBoundary digest classification", () => {
   });
 });
 
+describe("RedirectBoundary reset", () => {
+  type RedirectState = {
+    redirect: string | null;
+    redirectType: "push" | "replace" | null;
+    previousResetKey: string | null;
+  };
+  let getDerivedStateFromProps:
+    | ((props: { resetKey?: string | null }, state: RedirectState) => RedirectState | null)
+    | null = null;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/error-boundary.js");
+    getDerivedStateFromProps = (props, state) =>
+      mod.RedirectErrorBoundary.getDerivedStateFromProps(props, state);
+  });
+
+  // A javascript: redirect is refused by the router, so HandleRedirect never
+  // resets the boundary; navigating to another route must clear it.
+  it("drops a pending redirect when the route reset key changes", () => {
+    const state: RedirectState = {
+      redirect: "javascript:alert(1)",
+      redirectType: "replace",
+      previousResetKey: "/redirecting",
+    };
+
+    expect(getDerivedStateFromProps?.({ resetKey: "/redirecting" }, state)).toBeNull();
+    expect(getDerivedStateFromProps?.({ resetKey: "/trigger" }, state)).toEqual({
+      redirect: null,
+      redirectType: null,
+      previousResetKey: "/trigger",
+    });
+  });
+});
+
 // Test the actual ForbiddenBoundary.getDerivedStateFromError classification.
 // Catches NEXT_HTTP_ERROR_FALLBACK;403 and re-throws everything else.
 describe("ForbiddenBoundary digest classification", () => {

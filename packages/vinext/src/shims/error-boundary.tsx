@@ -43,6 +43,12 @@ type CapturedError = {
 type RedirectBoundaryState = {
   redirect: string | null;
   redirectType: "push" | "replace" | null;
+  previousResetKey: string | null;
+};
+
+type RedirectBoundaryProps = {
+  children?: React.ReactNode;
+  resetKey?: string | null;
 };
 
 type ErrorBoundaryInnerProps = {
@@ -127,18 +133,32 @@ function HandleRedirect({
 }
 
 export class RedirectErrorBoundary extends React.Component<
-  { children?: React.ReactNode },
+  RedirectBoundaryProps,
   RedirectBoundaryState
 > {
-  constructor(props: { children?: React.ReactNode }) {
+  constructor(props: RedirectBoundaryProps) {
     super(props);
     this.state = {
       redirect: null,
       redirectType: null,
+      previousResetKey: normalizeBoundaryResetKey(props.resetKey),
     };
   }
 
-  static getDerivedStateFromError(error: unknown): RedirectBoundaryState {
+  // A redirect the router refuses (a javascript: URL) is never reset by
+  // HandleRedirect. Next.js mounts a boundary per segment, so navigating to
+  // another segment starts clean; the reset key gives this shared boundary the
+  // same behavior.
+  static getDerivedStateFromProps(
+    props: RedirectBoundaryProps,
+    state: RedirectBoundaryState,
+  ): RedirectBoundaryState | null {
+    const resetKey = normalizeBoundaryResetKey(props.resetKey);
+    if (resetKey === state.previousResetKey) return null;
+    return { redirect: null, redirectType: null, previousResetKey: resetKey };
+  }
+
+  static getDerivedStateFromError(error: unknown): Omit<RedirectBoundaryState, "previousResetKey"> {
     if (isRedirectError(error)) {
       // Next.js parity: an outer RedirectBoundary that has already started
       // handling a redirect marks the error as `handled` so that, if React
@@ -186,8 +206,8 @@ export class RedirectErrorBoundary extends React.Component<
   }
 }
 
-export function RedirectBoundary({ children }: { children?: React.ReactNode }) {
-  return <RedirectErrorBoundary>{children}</RedirectErrorBoundary>;
+export function RedirectBoundary({ children, resetKey }: RedirectBoundaryProps) {
+  return <RedirectErrorBoundary resetKey={resetKey}>{children}</RedirectErrorBoundary>;
 }
 
 /**

@@ -1606,7 +1606,7 @@ export function buildAppPageElements<
     // is a pre-existing nesting divergence tracked separately.)
     // This keeps the loading fallback visible during redirect-driven
     // transitions rather than unmounting it.
-    routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
+    routeChildren = <RedirectBoundary resetKey={routeResetKey}>{routeChildren}</RedirectBoundary>;
 
     if (routeLoadingComponent) {
       const RouteLoadingComponent = routeLoadingComponent;
