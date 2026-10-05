@@ -9,7 +9,10 @@ import createResponseStoreDataCacheAdapter, {
 } from "../packages/cloudflare/src/cache/response-store-data.runtime.js";
 import createResponseStoreCdnCacheAdapter from "../packages/cloudflare/src/cache/response-store-cdn.runtime.js";
 import { createCanonicalRscRequestHeaders } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_RSC_VARY_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 const stages = vi.hoisted(() => ({ request: vi.fn(), response: vi.fn() }));
 
@@ -449,7 +452,7 @@ describe("Cloudflare Response Store Worker", () => {
 
 describe("Cloudflare Response Store Worker query-free cache identity", () => {
   type PutOptions = { revalidator?: { id: string; args: unknown[] } };
-  type StoredEntry = { body: string; headers: Headers; options?: PutOptions };
+  type StoredEntry = { body: string; headers: Headers; options?: PutOptions; status: number };
 
   beforeEach(() => {
     stages.request.mockReset();
@@ -470,6 +473,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         body: await response.text(),
         headers: new Headers(response.headers),
         options,
+        status: response.status,
       });
       return mutationResult;
     });
@@ -804,4 +808,48 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect(await rsc.text()).toBe("rsc");
     expect(stages.response).not.toHaveBeenCalled();
   });
+
+  // As in Next.js, the page's RSC entry takes its document's status, and a
+  // redirect is a 200 that carries its location. The request stage sends a
+  // marked 404 to a Link's segment prefetch as a 200.
+  it.each([
+    { documentStatus: 404, location: null, marker: "404", rscStatus: 404 },
+    { documentStatus: 307, location: "/target", marker: null, rscStatus: 200 },
+  ])(
+    "seeds the RSC entry of a $documentStatus document with status $rscStatus",
+    async ({ documentStatus, location, marker, rscStatus }) => {
+      dispatchWithIdentity();
+      stages.response.mockImplementation(async () => {
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+        return new Response("html", {
+          headers: {
+            "Cache-Control": "public, max-age=60",
+            ...(location ? { Location: location } : {}),
+          },
+          status: documentStatus,
+        });
+      });
+      const { entries, store } = createMemoryStore();
+
+      const warmup = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/page", {
+          headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+        }),
+        {} as never,
+        context(),
+      );
+      await warmup.text();
+
+      const stored = [...entries.values()].map((entry) => ({
+        body: entry.body,
+        location: entry.headers.get("Location"),
+        marker: entry.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER),
+        status: entry.status,
+      }));
+      expect(stored).toEqual([
+        { body: "html", location, marker: null, status: documentStatus },
+        { body: "rsc", location, marker, status: rscStatus },
+      ]);
+    },
+  );
 });

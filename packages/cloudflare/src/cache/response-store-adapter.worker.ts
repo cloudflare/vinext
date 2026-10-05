@@ -15,6 +15,7 @@ import type {
 import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "vinext/internal/server/headers";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
@@ -575,12 +576,18 @@ const handler = {
         rscHeaders.set("Vary", VINEXT_RSC_VARY_HEADER);
         applyRscCompatibilityIdHeader(rscHeaders);
         applyRscDeploymentIdHeader(rscHeaders);
+        // The request stage sends it to a Link's segment prefetch as a 200.
+        if (rendered.status === 404) {
+          rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(rendered.status));
+        }
         const serializedRscInvocation = JSON.stringify(rscInvocation);
         await responseStore.put(
           rscKey,
           new Response(rscData, {
             headers: rscHeaders,
-            status: 200,
+            // As in Next.js, the page's RSC payload takes its document's
+            // status, except that it carries a redirect as a 200.
+            status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
           }),
           {
             coalesce: true,
