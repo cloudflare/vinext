@@ -24,6 +24,8 @@ type StoredCacheEntry = {
 
 type RegenerationScope = {
   captured?: Response;
+  /** Other entries the regeneration stores; callers like cached fetch don't await them. */
+  sideWrites: Promise<void>[];
   targetKey: string;
 };
 
@@ -203,8 +205,10 @@ export async function captureResponseStoreDataRegeneration(
   key: string,
   callback: () => Promise<void>,
 ): Promise<Response> {
-  const scope: RegenerationScope = { targetKey: key };
+  const scope: RegenerationScope = { sideWrites: [], targetKey: key };
   await regenerationStorage.run(scope, callback);
+  // Unawaited work can be cancelled once the Store's regeneration returns.
+  while (scope.sideWrites.length) await Promise.allSettled(scope.sideWrites.splice(0));
   if (!scope.captured) {
     throw new Error(`vinext response-store regeneration did not rewrite data key ${key}`);
   }
@@ -408,7 +412,18 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     }
   }
 
-  async set(
+  set(
+    key: string,
+    value: IncrementalCacheValue | null,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    const write = this.write(key, value, context);
+    const regeneration = regenerationStorage.getStore();
+    if (regeneration && regeneration.targetKey !== key) regeneration.sideWrites.push(write);
+    return write;
+  }
+
+  private async write(
     key: string,
     value: IncrementalCacheValue | null,
     context?: Record<string, unknown>,
@@ -471,12 +486,15 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     );
 
     // A regeneration returns its own entry to the Store; any other entry it recomputes is
-    // stored as usual, as Next.js stores every entry a revalidation recomputes.
+    // stored as usual, as Next.js stores every entry a revalidation recomputes. A cache
+    // function call has no page to replay, so an entry it recomputes without its own
+    // revalidator would replace one the Store can regenerate with one it can't: skip it.
     const regeneration = regenerationStorage.getStore();
     if (regeneration?.targetKey === key) {
       regeneration.captured = response;
       return;
     }
+    if (regeneration && !revalidator) return;
 
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),

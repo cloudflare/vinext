@@ -5,6 +5,7 @@ import type {
   WorkersResponseStore,
 } from "@cloudflare/workers-response-store";
 import {
+  captureResponseStoreDataRegeneration,
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
   runWithResponseStoreInvocation,
@@ -119,6 +120,45 @@ test("only attaches loopback regeneration to replayable requests", async () => {
   expect(store.options).toEqual({ coalesce: true, purgeExisting: true });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBeNull();
   expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
+});
+
+test("stores the other entries a regeneration recomputes before returning its target", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const stored: string[] = [];
+  const put = store.put.bind(store);
+  vi.spyOn(store, "put").mockImplementation(async (request, response, options) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    stored.push(options?.revalidator?.args[0] as string);
+    return put(request, response, options);
+  });
+  const cacheControl = { revalidate: 1, expire: 2 };
+
+  const captured = await captureResponseStoreDataRegeneration("target", () =>
+    runWithResponseStoreInvocation("page", true, async () => {
+      // Cached fetch doesn't await its write.
+      void handler.set("sibling", null, { cacheControl });
+      await handler.set("target", null, { cacheControl });
+    }),
+  );
+
+  expect(captured.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
+  expect(stored).toEqual(["sibling"]);
+});
+
+test("skips a regenerated entry the Store could not regenerate itself", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const put = vi.spyOn(store, "put");
+  const cacheControl = { revalidate: 1, expire: 2 };
+
+  // A cache function call has no page invocation to fall back to.
+  await captureResponseStoreDataRegeneration("target", async () => {
+    await handler.set("sibling", null, { cacheControl });
+    await handler.set("target", null, { cacheControl });
+  });
+
+  expect(put).not.toHaveBeenCalled();
 });
 
 test("prefers a cache function invocation over route replay", async () => {
