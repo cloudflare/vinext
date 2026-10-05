@@ -181,11 +181,6 @@ type ProbeAppPageLayoutsOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
-type ProbeAppPageThrownErrorOptions = {
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
 function getAppPageStatusText(statusCode: number): string {
   return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
 }
@@ -577,27 +572,6 @@ async function probeLayoutForErrors(
   });
 
   return outcome.completed ? outcome.result : null;
-}
-
-export async function probeAppPageThrownError(
-  options: ProbeAppPageThrownErrorOptions,
-): Promise<unknown> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          await pageResult;
-        }
-      } catch (error) {
-        return { error, thrown: true } as const;
-      }
-
-      return { error: null, thrown: false } as const;
-    });
-
-    return outcome.completed && outcome.result.thrown ? outcome.result.error : null;
-  });
 }
 
 export async function readAppPageBinaryStream(

@@ -81,7 +81,6 @@ const appPageRouteWiringPath = resolveEntryPath(
   "../server/app-page-route-wiring.js",
   import.meta.url,
 );
-const appPageProbePath = resolveEntryPath("../server/app-page-probe.js", import.meta.url);
 const appPageDispatchPath = resolveEntryPath("../server/app-page-dispatch.js", import.meta.url);
 const appPagePprRuntimePath = resolveEntryPath(
   "../server/app-page-ppr-runtime.js",
@@ -818,7 +817,6 @@ import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
@@ -1461,31 +1459,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           matchedParams: params,
           route,
         });
-      },
-      async probePage(probeSearchParams = searchParams) {
-        const __probeIntercept = findIntercept(
-          interceptionPathname,
-          interceptionContext,
-          interceptionId,
-        );
-        // The intercepting-route page module is lazy (page: null + __pageLoader).
-        // Resolve it before probing so buildAppPageProbes inspects the real page
-        // component for dynamic bailout — matching the render path, which also
-        // hydrates it (resolveAppPageInterceptState). Without this the intercept
-        // probe branch silently inspects an undefined component and never
-        // observes the page's searchParams/headers access. Shared loader, so
-        // the import is isolated from the request context here too.
-        if (__probeIntercept) await __loadAppInterceptPage(__probeIntercept);
-        return Promise.all(__buildAppPageProbes({
-          route,
-          pageComponent: PageComponent,
-          asyncRouteParams: _asyncRouteParams,
-          searchParams: probeSearchParams,
-          intercept: __probeIntercept,
-          isRscRequest,
-          matchedParams: params,
-          makeThenableParams,
-        }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {
         const __activeIntercept = findIntercept(

@@ -44,7 +44,6 @@ import {
 } from "./app-page-boundary.js";
 import {
   buildAppPageSpecialErrorResponse,
-  probeAppPageThrownError,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
   type AppPageSpecialError,
@@ -406,7 +405,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
-  probePage: (searchParams?: URLSearchParams) => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (
     error: unknown,
@@ -779,7 +777,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
   const activeLoadingTreePositions = getActiveLoadingTreePositions(route);
-  const hasActiveLoadingBoundary = activeLoadingTreePositions.length > 0;
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -1273,18 +1270,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             serveStreamingMetadata: placeGeneratedMetadataInBody,
           },
         );
-      },
-      async probePageSpecialError() {
-        if (hasActiveLoadingBoundary) {
-          return null;
-        }
-        const pageError = await probeAppPageThrownError({
-          probePage: () => options.probePage(pageSearchParams),
-          runWithSuppressedHookWarning(probe) {
-            return options.runWithSuppressedHookWarning(probe);
-          },
-        });
-        return resolveAppPageSpecialError(pageError);
       },
       renderErrorBoundaryPage(buildError) {
         return options.renderErrorBoundaryPage(buildError);

@@ -12,7 +12,6 @@ import {
   buildPageElements,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
-import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import {
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
@@ -33,7 +32,7 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
-import { after, connection } from "../packages/vinext/src/shims/server.js";
+import { after } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -393,7 +392,6 @@ type CreateDispatchOptionsOverrides = {
   pprFallbackShell?: DispatchOptions["pprFallbackShell"];
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
-  probePage?: DispatchOptions["probePage"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
   renderMode?: DispatchOptions["renderMode"];
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
@@ -494,7 +492,6 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     pprFallbackShell: overrides.pprFallbackShell,
     pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
-    probePage: overrides.probePage ?? (() => null),
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
     renderMode: overrides.renderMode,
     renderErrorBoundaryPage: vi.fn(async () => null),
@@ -680,7 +677,6 @@ function createLayoutParamProbe(
 describe("app page dispatch", () => {
   it("does not probe layouts below an active ancestor loading boundary", async () => {
     const probeLayoutAt = vi.fn((_layoutIndex: number) => null);
-    const probePage = vi.fn(() => null);
     const route = createRoute({
       layouts: [{}, {}, {}],
       layoutTreePositions: [0, 1, 2],
@@ -689,7 +685,7 @@ describe("app page dispatch", () => {
       loadingTreePositions: [1],
       routeSegments: ["parent", "slow"],
     });
-    const { options } = createDispatchOptions({ probeLayoutAt, probePage, route });
+    const { options } = createDispatchOptions({ probeLayoutAt, route });
 
     const response = await dispatchAppPage(options);
     await response.text();
@@ -697,7 +693,6 @@ describe("app page dispatch", () => {
     // The loading at position 1 catches descendants, but not a layout at the
     // same position. Probe the root and co-located layout only.
     expect(probeLayoutAt.mock.calls.map(([layoutIndex]) => layoutIndex)).toEqual([1, 0]);
-    expect(probePage).not.toHaveBeenCalled();
   });
 
   it("disables streaming metadata while producing prerendered HTML", async () => {
@@ -736,51 +731,6 @@ describe("app page dispatch", () => {
     });
   });
 
-  it("does not run a speculative connection() page probe for HTML renders", async () => {
-    const probePage = vi.fn(async () => {
-      await connection();
-    });
-    const { options } = createDispatchOptions({ probePage });
-
-    const response = await Promise.race([
-      dispatchAppPage(options),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("dispatch timed out")), 250);
-      }),
-    ]);
-
-    expect(response.status).toBe(200);
-    expect(probePage).not.toHaveBeenCalled();
-    await expect(response.text()).resolves.toBe("<html>page</html>");
-  });
-
-  it.each([
-    ["force-dynamic", { dynamicConfig: "force-dynamic" as const }],
-    [
-      "draft mode",
-      {
-        request: new Request("https://example.test/posts/hello", {
-          headers: { Cookie: "__prerender_bypass=draft-secret" },
-        }),
-      },
-    ],
-    ["progressive actions", { isProgressiveActionRender: true }],
-    ["revalidate zero", { revalidateSeconds: 0 }],
-  ])("does not probe queryless production HTML for %s", async (_name, overrides) => {
-    const probePage = vi.fn(() => null);
-    const { options } = createDispatchOptions({
-      isProduction: true,
-      probePage,
-      revalidateSeconds: 60,
-      ...overrides,
-    });
-
-    const response = await dispatchAppPage(options);
-
-    expect(probePage).not.toHaveBeenCalled();
-    await expect(response.text()).resolves.toBe("<html>page</html>");
-  });
-
   afterEach(() => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();
@@ -792,9 +742,6 @@ describe("app page dispatch", () => {
   });
 
   it("serves cached production HTML instead of revalidating params or rendering", async () => {
-    const probePage = vi.fn(() => {
-      throw new Error("cache hit must not execute page code");
-    });
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("cache hit should not render the page");
@@ -804,7 +751,6 @@ describe("app page dispatch", () => {
       },
       isProduction: true,
       isrGet: vi.fn(async () => buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>"))),
-      probePage,
       revalidateSeconds: 60,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
     });
@@ -812,7 +758,6 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
   });
@@ -952,7 +897,6 @@ describe("app page dispatch", () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
     );
-    const probePage = vi.fn(() => null);
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
@@ -968,7 +912,6 @@ describe("app page dispatch", () => {
           });
         },
       }),
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -976,7 +919,6 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
@@ -985,7 +927,6 @@ describe("app page dispatch", () => {
   });
 
   it("renders query-bearing HTML as a cache candidate and stores it when searchParams is unread", async () => {
-    const probePage = vi.fn(() => null);
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
     const ssrOptions: { isCacheCandidate?: boolean }[] = [];
     const waitUntilPromises: Promise<unknown>[] = [];
@@ -1003,7 +944,6 @@ describe("app page dispatch", () => {
           return createStream(["<html>page</html>"]);
         },
       }),
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("utm_source=google"),
     });
@@ -1015,7 +955,6 @@ describe("app page dispatch", () => {
     // SSR keeps the query out of the output unless the render turns dynamic,
     // so a candidate miss reports MISS with or without a query.
     expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await expect(response.text()).resolves.toBe("<html>page</html>");
@@ -1480,13 +1419,6 @@ describe("app page dispatch", () => {
         return createStream([`<html>${renderedText}</html>`]);
       },
     });
-    const probePage = vi.fn((searchParams: URLSearchParams) =>
-      probeAppPage({
-        asyncRouteParams: makeThenableParams({}),
-        pageComponent: Page,
-        searchParams,
-      }),
-    );
 
     async function request(searchParams: URLSearchParams): Promise<{
       response: Response;
@@ -1499,7 +1431,6 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
-        probePage: () => probePage(searchParams),
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -1517,13 +1448,11 @@ describe("app page dispatch", () => {
     expect(queryless.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(queryless.text).toBe("<html>empty</html>");
     expect(cache.has("html:/query-proof")).toBe(false);
-    expect(probePage).not.toHaveBeenCalled();
     expect(pageExecutions).toBe(1);
 
     const withQuery = await request(new URLSearchParams({ q: "hello" }));
     expect(withQuery.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(withQuery.text).toBe("<html>hello</html>");
-    expect(probePage).not.toHaveBeenCalled();
     expect(pageExecutions).toBe(2);
   });
 
@@ -1602,7 +1531,6 @@ describe("app page dispatch", () => {
           return createStream([`<html>${renderedText}</html>`]);
         },
       });
-      const probePage = vi.fn(() => null);
 
       async function request(searchParams: URLSearchParams): Promise<Response> {
         const { options } = createDispatchOptions({
@@ -1612,7 +1540,6 @@ describe("app page dispatch", () => {
           isrGet,
           isrSet,
           loadSsrHandler,
-          probePage,
           renderToReadableStream: renderPagePayloadToStream,
           revalidateSeconds: 60,
           route,
@@ -1629,7 +1556,6 @@ describe("app page dispatch", () => {
       const queryless = await request(new URLSearchParams());
       expect(queryless.headers.get("x-vinext-cache")).not.toBe("HIT");
       expect(cache.has("html:/head-proof")).toBe(false);
-      expect(probePage).not.toHaveBeenCalled();
 
       const withQuery = await request(new URLSearchParams({ q: "hello" }));
       expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");
@@ -1728,9 +1654,6 @@ describe("app page dispatch", () => {
           isRscRequest: true,
           isrGet,
           isrSet,
-          probePage() {
-            return null;
-          },
           renderToReadableStream: renderPagePayloadToStream,
           revalidateSeconds: 60,
           route,
@@ -1835,9 +1758,6 @@ describe("app page dispatch", () => {
         metadataStartedDuringProbe = metadataStarted;
         return null;
       },
-      probePage() {
-        return null;
-      },
       renderToReadableStream: renderPagePayloadToStream,
       revalidateSeconds: 60,
       route,
@@ -1922,9 +1842,6 @@ describe("app page dispatch", () => {
           });
         },
         params: {},
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -1962,15 +1879,9 @@ describe("app page dispatch", () => {
         ),
       ),
     );
-    const probePage = vi.fn(() => {
-      const unusedCommentOnlySearchParams = "searchParams";
-      expect(unusedCommentOnlySearchParams).toBe("searchParams");
-      return null;
-    });
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -1978,7 +1889,6 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached static page</html>");
   });
@@ -2296,9 +2206,6 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -2392,9 +2299,6 @@ describe("app page dispatch", () => {
             return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
           },
         }),
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         params: {},
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
