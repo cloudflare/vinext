@@ -1075,6 +1075,7 @@ async function renderAppPageLifecycleImpl(
             capturedRscData: capturedRscDataRef.value,
             getCapturedSpecialError: rscErrorTracker.getCapturedSpecialError,
             getCapturedSpecialErrors: rscErrorTracker.getCapturedSpecialErrors,
+            isForceStatic: options.isForceStatic,
             loadSsrHandler: options.loadSsrHandler,
             navigationContext: options.getNavigationContext(),
             rootParams: options.rootParams,

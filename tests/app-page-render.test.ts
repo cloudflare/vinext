@@ -3077,11 +3077,13 @@ describe("ISR storage of a page's special error", () => {
     async function renderRscMiss(options: {
       flightError: unknown;
       handleSsr: (...args: unknown[]) => Promise<ReadableStream<Uint8Array>>;
+      isForceStatic?: boolean;
     }) {
       const common = createCommonOptions();
       const handleSsr = vi.fn(options.handleSsr);
       const response = await renderAppPageLifecycle({
         ...common.options,
+        isForceStatic: options.isForceStatic ?? false,
         isProduction: true,
         isRscRequest: true,
         loadSsrHandler: async () => ({ handleSsr }),
@@ -3109,6 +3111,26 @@ describe("ISR storage of a page's special error", () => {
       await Promise.all(common.waitUntilPromises);
       expect(handleSsr).toHaveBeenCalledOnce();
       expect(handleSsr.mock.calls[0]?.[3]).toMatchObject({ isStaticGeneration: true });
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
+      });
+    });
+
+    // As the HTML render does, the shell keeps force-static's exemption, so a
+    // client component that reads useSearchParams() doesn't bail out.
+    it("renders a force-static page's shell as force-static", async () => {
+      const { common, response } = await renderRscMiss({
+        flightError: notFoundError,
+        handleSsr: async (...args) => {
+          const ssrOptions = args[3] as { isForceStatic?: boolean };
+          if (ssrOptions.isForceStatic !== true) throw new Error("Bail out to client rendering");
+          throw notFoundError;
+        },
+        isForceStatic: true,
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
       expect(readStoredEntries(common.isrSet)).toEqual({
         "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
       });

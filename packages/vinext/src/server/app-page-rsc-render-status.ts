@@ -22,6 +22,7 @@ type CreateAppPageRscRenderStatusResolverOptions = {
   capturedRscData: Promise<ArrayBuffer>;
   getCapturedSpecialError: () => unknown;
   getCapturedSpecialErrors: (error: unknown) => readonly unknown[];
+  isForceStatic: boolean;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   navigationContext: NavigationContext | null;
   rootParams?: RootParams;
@@ -58,6 +59,7 @@ async function resolveAppPageRscRenderStatus(
       { links: [], preloads: [], styles: [] },
       {
         basePath: options.basePath,
+        isForceStatic: options.isForceStatic,
         isStaticGeneration: true,
         // The RSC render already reported its errors, and this document is
         // discarded.
