@@ -283,3 +283,63 @@ test("sends an unmatched route's 404 with the never-cache policy", async ({ requ
     );
   }
 });
+
+// A special error that a Suspense boundary, here a loading.tsx, catches
+// doesn't reject the shell. As in Next.js, the document streams as a 200 with
+// the digest, and the ISR cache stores it, and its RSC payload, as a 200.
+test.describe("an ISR page whose special error its loading.tsx catches", () => {
+  const cases = [
+    {
+      pathname: "/nextjs-compat/isr-special-error/loading-not-found",
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      head: '<meta name="robots" content="noindex"/>',
+    },
+    {
+      pathname: "/nextjs-compat/isr-special-error/loading-redirect",
+      digest: "NEXT_REDIRECT;",
+      head: '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/nextjs-compat/nav-redirect-result"/>',
+    },
+  ];
+
+  test("streams and stores the document as a 200 with the digest", async ({ request }) => {
+    for (const { pathname, digest, head } of cases) {
+      // The first request may already hit an entry stored by an earlier run.
+      const first = await request.get(pathname, { maxRedirects: 0 });
+      expect(first.status(), pathname).toBe(200);
+      expect(first.headers()["location"], pathname).toBeUndefined();
+      const firstHtml = await first.text();
+      expect(firstHtml, pathname).toContain(`<template data-dgst="${digest}`);
+      expect(firstHtml, pathname).toContain(head);
+
+      await expect
+        .poll(async () => {
+          const response = await request.get(pathname, { maxRedirects: 0 });
+          return [response.headers()["x-vinext-cache"], response.status()];
+        })
+        .toEqual(["HIT", 200]);
+      const hit = await request.get(pathname, { maxRedirects: 0 });
+      expect(hit.headers()["cache-control"], pathname).toContain("s-maxage=60");
+      const hitHtml = await hit.text();
+      expect(hitHtml, pathname).toContain(`<template data-dgst="${digest}`);
+      expect(hitHtml, pathname).toContain(head);
+
+      const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS, maxRedirects: 0 });
+      expect(rsc.status(), pathname).toBe(200);
+      expect(rsc.headers()["x-vinext-cache"], pathname).toBe("HIT");
+      expect(rsc.headers()["location"], pathname).toBeUndefined();
+      expect(await rsc.text(), pathname).toContain(digest);
+    }
+  });
+
+  test("the client renders the not-found boundary", async ({ page }) => {
+    await page.goto(cases[0]!.pathname);
+    await expect(page.locator("body")).toContainText("404");
+    expect(new URL(page.url()).pathname).toBe(cases[0]!.pathname);
+  });
+
+  test("the client follows the redirect", async ({ page }) => {
+    await page.goto(cases[1]!.pathname);
+    await expect(page.locator("#result-page")).toHaveText("Result Page");
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/nav-redirect-result");
+  });
+});
