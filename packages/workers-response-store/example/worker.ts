@@ -126,8 +126,8 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     coalesce: request.headers.get("X-Coalesce") === "1",
     revalidator,
     purgeExisting: request.headers.get("X-Purge-Existing") === "1",
-    ...(request.headers.get("X-Expiry-Behaviour") === "miss"
-      ? { expiryBehaviour: "miss" as const }
+    ...(request.headers.get("X-Expiry-Behavior") === "miss"
+      ? { expiryBehavior: "miss" as const }
       : {}),
   });
   await new Response(teeSibling).arrayBuffer();
