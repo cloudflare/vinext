@@ -338,6 +338,66 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  // Next.js sends every 404 of a route it couldn't match with its never-cache
+  // policy.
+  describe("an unmatched route's 404", () => {
+    const NEVER_CACHE = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    it.each([
+      {
+        name: "rendered not-found page",
+        renderNotFound: async () => new Response("rendered not found", { status: 404 }),
+        url: "https://example.test/docs/missing",
+      },
+      {
+        name: "plain fallback",
+        renderNotFound: async () => null,
+        url: "https://example.test/docs/missing",
+      },
+      {
+        // A basePath: false rewrite lets the request reach routing.
+        name: "unrewritten request outside the basePath",
+        renderNotFound: async () => null,
+        url: "https://example.test/elsewhere",
+      },
+    ])("sends the $name with the never-cache policy", async ({ renderNotFound, url }) => {
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [{ source: "/outside", destination: "/about", basePath: false }],
+          afterFiles: [],
+          fallback: [],
+        },
+        renderNotFound,
+      });
+
+      const response = await handler(new Request(url), null);
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
+      await response.text();
+    });
+
+    it("sends a staged not-found page with the never-cache policy", async () => {
+      const handler = createHandler({
+        configHeaders: [],
+        renderNotFound: async () => new Response("styled-not-found", { status: 404 }),
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/missing"),
+        null,
+        false,
+        (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+          handler.handleResponseStage(stageRequest, null, props),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
+      expect(await response.text()).toBe("styled-not-found");
+    });
+  });
+
   it("traces direct App route misses through the internal /404 render", async () => {
     const handler = createHandler({
       renderNotFound: async () => new Response("not found", { status: 404 }),

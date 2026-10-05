@@ -794,7 +794,8 @@ function requestWithoutRscSuffix(request: Request): Request {
   return cloneRequestWithUrl(request, url.toString());
 }
 
-function markUnverifiedInterceptionResponseUncacheable(response: Response): Response {
+/** Send a response with the never-cache policy, rebuilding immutable headers. */
+function withNeverCacheControl(response: Response): Response {
   const applyNoStore = (headers: Headers): void => {
     applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
   };
@@ -2246,6 +2247,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     options.clearRequestContext();
     const headers = new Headers();
     mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
     return notFoundResponse({ headers });
   }
 
@@ -2301,7 +2303,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         resolvedUrl,
         scriptNonce: scriptNonce ?? null,
       });
-      return composeResponseStageResponse(response);
+      // As in Next.js, an unmatched route's 404 is never cached.
+      return withNeverCacheControl(await composeResponseStageResponse(response));
     }
 
     const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
@@ -2313,11 +2316,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         scriptNonce,
       }),
     );
-    if (renderedNotFoundResponse) return renderedNotFoundResponse;
+    if (renderedNotFoundResponse) return withNeverCacheControl(renderedNotFoundResponse);
 
     options.clearRequestContext();
     const headers = new Headers();
     mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
     return notFoundResponse({ headers });
   }
 
@@ -2794,9 +2798,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,
           });
-          return interceptionResponseUncacheable
-            ? markUnverifiedInterceptionResponseUncacheable(response)
-            : response;
+          return interceptionResponseUncacheable ? withNeverCacheControl(response) : response;
         },
         {
           cacheComponents: options.createPprFallbackShells !== undefined,

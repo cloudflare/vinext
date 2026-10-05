@@ -269,3 +269,17 @@ test("keeps the previous entry when generateMetadata() calls notFound() in a reg
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 });
+
+// As in Next.js, a route that doesn't exist is never cached.
+test("sends an unmatched route's 404 with the never-cache policy", async ({ request }) => {
+  for (const [pathname, headers] of [
+    ["/nextjs-compat/isr-special-error/does-not-exist", {}],
+    ["/nextjs-compat/isr-special-error/does-not-exist.rsc", RSC_HEADERS],
+  ] as const) {
+    const response = await request.get(pathname, { headers });
+    expect(response.status(), pathname).toBe(404);
+    expect(response.headers()["cache-control"], pathname).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  }
+});
