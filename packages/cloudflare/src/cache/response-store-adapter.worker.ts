@@ -405,8 +405,11 @@ function publicResponse(
     headers.set("X-Vinext-Cache", publicCacheStatus);
   }
   const cacheControl = headers.get("Cache-Control");
+  // Admission can still find a late dynamic API, so the browser must not keep
+  // this response: a dynamic render is no-store in Next.js. This is the same
+  // pending policy the framework sends when it caches the response itself.
   if (pendingAdmission && (!cacheControl || !isNonCacheableCacheControl(cacheControl, "browser"))) {
-    headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    headers.set("Cache-Control", "no-store, must-revalidate");
   }
   return traceCachedResponseStart(
     new Response(response.body, {

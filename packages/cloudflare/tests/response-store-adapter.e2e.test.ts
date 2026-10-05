@@ -508,8 +508,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.match(response.headers.get("cache-control") ?? "", /no-store/);
     }
     // The RSC response streams before the page reads cookies(), so it carries
-    // the pending policy. Next.js renders it in full first and sends no-store.
-    assert.equal(rsc.headers.get("cache-control"), "private, max-age=0, must-revalidate");
+    // the pending policy, which is no-store like Next.js's dynamic render.
+    assert.equal(rsc.headers.get("cache-control"), "no-store, must-revalidate");
     // The dynamic page, rendered per request.
     assert.notEqual(
       htmlValue(firstBody, "generated-cookies-render-id"),

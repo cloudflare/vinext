@@ -680,7 +680,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       );
       expect(response.headers.get("Cache-Control")).toBe(
         cacheControl.startsWith("private")
-          ? "private, max-age=0, must-revalidate"
+          ? "no-store, must-revalidate"
           : cacheControl === "no-cache"
             ? "no-cache"
             : cacheControl,
@@ -722,7 +722,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       );
       expect(response.headers.get("X-Vinext-Cache")).toBe(expectedStatus);
       if (path === "admitted" && expectedStatus === "MISS") {
-        expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
+        expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
       }
       expect(response.headers.get("X-Vinext-Params")).toBe(routeHeaders["X-Vinext-Params"]);
       expect(response.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
