@@ -111,3 +111,45 @@ test("stores the 404 document of an ISR page without the query of the request th
   expect(hit.headers()["x-vinext-cache"]).toBe("HIT");
   expect(await hit.text()).not.toContain("SECRET");
 });
+
+// An html-limited bot blocks on metadata, so generateMetadata()'s notFound()
+// rejects the document's shell.
+const HTML_LIMITED_BOT = { "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" };
+
+test("doesn't store the 404 document of an ISR page whose generateMetadata() calls notFound()", async ({
+  request,
+}) => {
+  const pathname = "/nextjs-compat/isr-special-error/metadata-not-found";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(pathname, { headers: HTML_LIMITED_BOT });
+    expect(response.status()).toBe(404);
+    expect(response.headers()["x-vinext-cache"]).toBeUndefined();
+    expect(response.headers()["cache-control"] ?? "").not.toContain("s-maxage");
+    await response.text();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+});
+
+test("keeps the previous entry when generateMetadata() calls notFound() in a regeneration", async ({
+  request,
+}) => {
+  const pathname = "/nextjs-compat/isr-special-error/metadata-not-found-regen";
+  await expect
+    .poll(async () => (await request.get(pathname)).headers()["x-vinext-cache"])
+    .toBe("HIT");
+
+  await request.get("/api/isr-metadata-not-found-regen");
+  // The entry goes stale after a second, and the next request regenerates it.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  const stale = await request.get(pathname);
+  expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
+  await stale.text();
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await request.get(pathname);
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain("metadata not-found regen page");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+});

@@ -2984,15 +2984,22 @@ describe("ISR storage of a page's special error", () => {
     // streaming gives it: a 200 for most user agents, or a 404 for an
     // html-limited bot, whose blocking metadata rejects the shell as here.
     const common = createCommonOptions();
-    const metadataNotFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), {
-      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const metadataNotFoundError = Object.assign(new Error(digest), {
+      digest,
       [Symbol.for("vinext.appPage.metadataError")]: true,
     });
 
     const response = await renderAppPageLifecycle({
       ...common.options,
       isProduction: true,
-      loadSsrHandler: shellRejectingSsrHandler(metadataNotFoundError),
+      // The shell rejects with SSR's copy of the error, decoded from its
+      // Flight digest, without the server-side metadata marker.
+      loadSsrHandler: shellRejectingSsrHandler(Object.assign(new Error(digest), { digest })),
+      renderToReadableStream(_element, { onError }) {
+        onError(metadataNotFoundError, undefined, undefined);
+        return createStream(["page-flight-with-digest"]);
+      },
       revalidateSeconds: 60,
     });
 

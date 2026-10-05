@@ -18,6 +18,7 @@ import {
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
+  resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   resolveAppPageSpecialErrorStoredHeaders,
   teeAppPageRscStreamForCapture,
@@ -1551,7 +1552,12 @@ async function renderAppPageLifecycleImpl(
         isCacheCandidate: isCacheCandidateHtmlRender,
       });
     },
-    resolveSpecialError: resolveAppPageSpecialError,
+    resolveSpecialError(error: unknown) {
+      return resolveAppPageShellSpecialError(
+        error,
+        rscErrorTracker.getCapturedSpecialErrors(error),
+      );
+    },
   });
   options.onRenderComplete?.(htmlRender.renderComplete);
   if (htmlRender.response) {

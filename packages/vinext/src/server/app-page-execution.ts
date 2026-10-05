@@ -236,6 +236,26 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
 }
 
 /**
+ * Resolve the special error that rejected an SSR shell. The shell's error is
+ * decoded from the Flight digest, so whether generateMetadata() threw it comes
+ * from the errors the RSC render threw with that digest. When the page threw
+ * one too, the page's decides.
+ */
+export function resolveAppPageShellSpecialError(
+  error: unknown,
+  renderedSpecialErrors: readonly unknown[],
+): AppPageSpecialError | null {
+  const specialError = resolveAppPageSpecialError(error);
+  if (!specialError || specialError.fromMetadata === true) return specialError;
+  const fromMetadata =
+    renderedSpecialErrors.length > 0 &&
+    renderedSpecialErrors.every(
+      (rendered) => resolveAppPageSpecialError(rendered)?.fromMetadata === true,
+    );
+  return fromMetadata ? { ...specialError, fromMetadata: true } : specialError;
+}
+
+/**
  * Resolves a redirect() target against the request URL and prepends the
  * configured basePath when the target is an app-internal absolute path.
  *

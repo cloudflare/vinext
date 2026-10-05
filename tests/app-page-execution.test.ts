@@ -4,6 +4,7 @@ import {
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
   probeAppPageLayouts,
+  resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
@@ -43,6 +44,30 @@ function createMiddlewareContext() {
 }
 
 describe("app page execution helpers", () => {
+  it("resolves a shell's special error as generateMetadata()'s only when the render threw it there alone", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const fromMetadata = Object.assign(new Error(digest), {
+      digest,
+      [Symbol.for("vinext.appPage.metadataError")]: true,
+    });
+    const fromPage = Object.assign(new Error(digest), { digest });
+
+    expect(resolveAppPageShellSpecialError(decoded, [fromMetadata])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      fromMetadata: true,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [fromMetadata, fromPage])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+  });
+
   it("parses redirect and access-fallback digests", () => {
     expect(
       resolveAppPageSpecialError({

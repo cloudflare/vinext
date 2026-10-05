@@ -3915,6 +3915,7 @@ describe("app page dispatch", () => {
   it("does not store generateMetadata()'s special error from a stale regeneration", async () => {
     // Next.js stores it with the status the triggering request's metadata
     // streaming gives it: a 200 for most user agents.
+    const metadataNotFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
     let scheduledRender: unknown = null;
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
     const { options } = createDispatchOptions({
@@ -3930,14 +3931,24 @@ describe("app page dispatch", () => {
               captureOptions.sideStream,
             ).arrayBuffer();
           }
-          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
-          throw Object.assign(new Error(digest), {
-            digest,
-            [Symbol.for("vinext.appPage.metadataError")]: true,
+          // SSR's copy of the error is decoded from its Flight digest,
+          // without the server-side metadata marker.
+          throw Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
           });
         },
       }),
-      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
       revalidateSeconds: 60,
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRender = renderFn;

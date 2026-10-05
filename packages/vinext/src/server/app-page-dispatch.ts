@@ -45,6 +45,7 @@ import {
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
+  resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
   type AppPageSpecialError,
@@ -1013,7 +1014,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               revalidationTarget.route.pattern,
               { renderSource: "server-rendering", revalidateReason: "stale" },
             );
-            revalidationRscErrorTracker = createAppPageRscErrorTracker(baseRevalidatedOnError);
+            const rscErrorTracker = createAppPageRscErrorTracker(baseRevalidatedOnError);
+            revalidationRscErrorTracker = rscErrorTracker;
             // No inner runWithFetchDedupe here: this renderFn is already
             // wrapped in runWithFetchDedupe by runAppPageRevalidationContext.
             const rendered = await renderAppPageCacheArtifacts({
@@ -1029,15 +1031,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               loadSsrHandler: options.loadSsrHandler,
               mountedSlotsHeader: options.mountedSlotsHeader,
               navigationParams: revalidationTarget.navigationParams,
-              isCapturedRscError: revalidationRscErrorTracker.isCapturedError,
-              onError: revalidationRscErrorTracker.onRenderError,
+              isCapturedRscError: rscErrorTracker.isCapturedError,
+              onError: rscErrorTracker.onRenderError,
               onSsrError(error) {
                 reportedSsrRevalidationErrors.add(error);
                 return baseRevalidatedOnSsrError(error, undefined, undefined);
               },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
               async renderShellSpecialError(error) {
-                const specialError = resolveAppPageSpecialError(error);
+                const specialError = resolveAppPageShellSpecialError(
+                  error,
+                  rscErrorTracker.getCapturedSpecialErrors(error),
+                );
                 // Next.js stores generateMetadata()'s special error with the
                 // status its triggering request's metadata streaming gives
                 // it. This render always blocks on metadata, so it fails

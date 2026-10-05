@@ -257,6 +257,12 @@ type AppPageRscErrorTracker = {
    * synchronously inside a route-level Suspense boundary (loading.tsx).
    */
   getCapturedSpecialError: () => unknown;
+  /**
+   * The special errors the RSC render threw with the digest of `error`. The
+   * SSR shell rejects with its own copy, decoded from the Flight digest, which
+   * loses server-side markers such as generateMetadata()'s.
+   */
+  getCapturedSpecialErrors: (error: unknown) => readonly unknown[];
   isCapturedError: (error: unknown) => boolean;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
@@ -417,6 +423,7 @@ export function createAppPageRscErrorTracker(
   let capturedSpecialError: unknown = null;
   const capturedErrors = new Set<unknown>();
   const capturedDigests = new Set<string>();
+  const specialErrorsByDigest = new Map<string, unknown[]>();
 
   return {
     getCapturedError() {
@@ -424,6 +431,10 @@ export function createAppPageRscErrorTracker(
     },
     getCapturedSpecialError() {
       return capturedSpecialError;
+    },
+    getCapturedSpecialErrors(error) {
+      const digest = getNextErrorDigest(error);
+      return (digest !== null && specialErrorsByDigest.get(digest)) || [];
     },
     isCapturedError(error) {
       if (capturedErrors.has(error)) return true;
@@ -450,6 +461,8 @@ export function createAppPageRscErrorTracker(
       const digest = typeof result === "string" ? result : getNextErrorDigest(error);
       if (digest !== null && !isNavigationSignalError(error)) {
         capturedDigests.add(digest);
+      } else if (digest !== null) {
+        specialErrorsByDigest.set(digest, [...(specialErrorsByDigest.get(digest) ?? []), error]);
       }
       return result;
     },
