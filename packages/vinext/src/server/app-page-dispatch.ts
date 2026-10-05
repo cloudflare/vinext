@@ -1425,10 +1425,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     probeLayoutAt(layoutIndex) {
       return options.probeLayoutAt(layoutIndex, layoutParamAccess);
     },
-    probePage() {
-      return options.probePage(pageSearchParams);
-    },
-    probePageBeforeRender: options.isRscRequest,
     classification: {
       getLayoutId(index) {
         const treePosition = route.layoutTreePositions?.[index] ?? 0;

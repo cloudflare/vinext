@@ -21,6 +21,9 @@ export default function Page() {
         <Link href="/notfound-test" id="link-to-notfound-page">
           Go to notFound() Page
         </Link>
+        <Link href="/nextjs-compat/nav-redirect-server" id="link-to-redirect-page">
+          Go to redirect() Page
+        </Link>
       </nav>
       <RelativeQueryLink />
     </div>

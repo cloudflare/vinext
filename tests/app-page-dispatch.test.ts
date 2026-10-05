@@ -1983,7 +1983,7 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached static page</html>");
   });
 
-  it("lets force-static override observed searchParams access", async () => {
+  it("serves force-static pages from the cache when the request has a query", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached force static</html>")),
     );
@@ -1991,11 +1991,6 @@ describe("app page dispatch", () => {
       dynamicConfig: "force-static",
       isProduction: true,
       isrGet,
-      probePage() {
-        markDynamicUsage();
-        markRenderRequestApiUsage("searchParams");
-        return null;
-      },
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -2012,7 +2007,6 @@ describe("app page dispatch", () => {
     // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
     const buildQueries: string[] = [];
-    const probeQueries: string[] = [];
     const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
       async (_route, _params, _opts, searchParams) => {
@@ -2023,10 +2017,6 @@ describe("app page dispatch", () => {
     const { options } = createDispatchOptions({
       buildPageElement,
       isRscRequest: true,
-      probePage(searchParams) {
-        probeQueries.push(searchParams?.get("searchParam") ?? "empty");
-        return null;
-      },
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
       renderToReadableStream(element) {
         if (typeof element !== "string") {
@@ -2042,7 +2032,6 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("empty");
     expect(buildQueries).toEqual([""]);
-    expect(probeQueries).toEqual(["empty"]);
     const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
     expect(navigationContext?.searchParams.toString()).toBe("");
   });
@@ -2123,7 +2112,6 @@ describe("app page dispatch", () => {
           },
           routePath: "/force-static-query",
         }).then(toDispatchElementRecord);
-      const probeQueries: string[] = [];
       const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
       const request = new Request("https://example.test/force-static-query?user=alice", {
         headers: {
@@ -2142,10 +2130,6 @@ describe("app page dispatch", () => {
             return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
           },
         }),
-        probePage(searchParams) {
-          probeQueries.push(searchParams?.get("user") ?? "empty");
-          return null;
-        },
         request,
         renderToReadableStream: renderPagePayloadToStream,
         route,
@@ -2158,7 +2142,6 @@ describe("app page dispatch", () => {
       await expect(response.text()).resolves.toBe(isRscRequest ? "empty" : "<html>empty</html>");
       expect(metadataQueries).toEqual(["empty"]);
       expect(viewportQueries).toEqual(["empty"]);
-      expect(probeQueries).toEqual(isRscRequest ? ["empty"] : []);
       expect(pageHeaders).toEqual([null]);
       expect(pageDraftModes).toEqual([isDraftMode]);
       const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];

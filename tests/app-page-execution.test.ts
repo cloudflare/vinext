@@ -3,7 +3,6 @@ import {
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
-  probeAppPageComponent,
   probeAppPageLayouts,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
@@ -914,24 +913,6 @@ describe("app page execution helpers", () => {
     expect(probedLayouts).toEqual([2, 1]);
     expect(result.response?.status).toBe(404);
     await expect(result.response?.text()).resolves.toBe("layout-fallback");
-  });
-
-  it("does not await async page probes when a loading boundary is present", async () => {
-    const onError = vi.fn();
-
-    const response = await probeAppPageComponent({
-      awaitAsyncResult: false,
-      onError,
-      probePage() {
-        return new Promise<void>(() => {});
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-    });
-
-    expect(response).toBeNull();
-    expect(onError).not.toHaveBeenCalled();
   });
 
   it("produces fused ssrStream + sideStream when capturing (#981)", async () => {

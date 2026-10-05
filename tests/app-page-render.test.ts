@@ -247,9 +247,6 @@ function createCommonOptions() {
       probeLayoutAt() {
         return null;
       },
-      probePage() {
-        return null;
-      },
       revalidateSeconds: null,
       renderErrorBoundaryResponse,
       renderLayoutSpecialError,
@@ -464,41 +461,72 @@ describe("form state rendering", () => {
 });
 
 describe("app page render lifecycle", () => {
-  it("returns pre-render special responses before starting the render stream", async () => {
+  it("returns layout special responses before starting the render stream", async () => {
     const common = createCommonOptions();
 
     const response = await renderAppPageLifecycle({
       ...common.options,
       isRscRequest: true,
-      probePage() {
+      layoutCount: 1,
+      probeLayoutAt() {
         throw { digest: "NEXT_NOT_FOUND" };
       },
     });
 
     expect(response.status).toBe(404);
-    await expect(response.text()).resolves.toBe("page:404");
+    await expect(response.text()).resolves.toBe("layout:404");
     expect(common.renderToReadableStream).not.toHaveBeenCalled();
-    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
+    expect(common.renderLayoutSpecialError).toHaveBeenCalledTimes(1);
   });
 
-  it("does not run the page probe before normal HTML rendering", async () => {
+  it("streams an RSC page's notFound() as part of the Flight payload", async () => {
     const common = createCommonOptions();
-    const probePage = vi.fn(() => {
-      throw new Error("page probe should not execute for HTML");
-    });
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
 
     const response = await renderAppPageLifecycle({
       ...common.options,
-      isRscRequest: false,
-      probePage,
+      isRscRequest: true,
+      renderToReadableStream(_element, opts) {
+        opts.onError(notFoundError, null, null);
+        return createStream(["flight-with-digest"]);
+      },
     });
 
-    expect(probePage).not.toHaveBeenCalled();
-    expect(common.renderToReadableStream).toHaveBeenCalledTimes(1);
-    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+    // As in Next.js, the client router renders the not-found boundary from the digest.
     expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await expect(response.text()).resolves.toBe("flight-with-digest");
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { hasLoadingBoundary: false, stored: false },
+    { hasLoadingBoundary: true, stored: true },
+  ])(
+    "stores an RSC render whose page called redirect() only below a loading boundary ($hasLoadingBoundary)",
+    async ({ hasLoadingBoundary, stored }) => {
+      const common = createCommonOptions();
+      const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+        digest: "NEXT_REDIRECT;replace;/target;307;",
+      });
+
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        hasLoadingBoundary,
+        isProduction: true,
+        isRscRequest: true,
+        renderToReadableStream(_element, opts) {
+          opts.onError(redirectError, null, null);
+          return createStream(["flight-with-digest"]);
+        },
+        revalidateSeconds: 60,
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(common.isrSet).toHaveBeenCalledTimes(stored ? 1 : 0);
+    },
+  );
 
   it("streams lazy HTML while pending dynamic usage determines the cache write", async () => {
     const common = createCommonOptions();
@@ -548,7 +576,7 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("recovers HTML page special errors from the real render when the page probe is skipped", async () => {
+  it("recovers HTML page special errors from the real render", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
     let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
@@ -563,9 +591,6 @@ describe("app page render lifecycle", () => {
           return createStream(["<html>fallback</html>"]);
         },
       }),
-      probePage() {
-        throw new Error("page probe should not execute for HTML");
-      },
       renderToReadableStream(_element, opts) {
         capturedOnError = opts.onError;
         return createStream(["flight-data"]);
@@ -953,7 +978,8 @@ describe("app page render lifecycle", () => {
       isRscRequest: true,
       isProduction: true,
       isStaticEligible: false,
-      probePage() {
+      layoutCount: 1,
+      probeLayoutAt() {
         throw { digest: "NEXT_NOT_FOUND" };
       },
     });
@@ -2935,7 +2961,6 @@ describe("layoutFlags injection into RSC payload", () => {
       navigationParams: {},
       params: {},
       probeLayoutAt: overrides.probeLayoutAt ?? (() => null),
-      probePage: () => null,
       revalidateSeconds: null,
       renderErrorBoundaryResponse: async () => null,
       renderLayoutSpecialError: async () => new Response("error", { status: 500 }),

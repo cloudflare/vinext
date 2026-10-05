@@ -192,6 +192,24 @@ test.describe("Next.js compat: navigation (browser)", () => {
     expect(page.url()).toContain("/notfound-test");
   });
 
+  // Client navigation to a server component that calls redirect(): the RSC
+  // payload carries the redirect digest and the client router follows it.
+  test("Link to page calling redirect() follows it via client navigation", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    await page.click("#link-to-redirect-page");
+
+    await expect(page.locator("#result-page")).toHaveText("Result Page", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+    expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
+  });
+
   // Back/forward navigation
   test("browser back button works after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);

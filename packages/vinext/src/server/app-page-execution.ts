@@ -181,13 +181,6 @@ type ProbeAppPageLayoutsOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
-type ProbeAppPageComponentOptions = {
-  awaitAsyncResult: boolean;
-  onError: (error: unknown) => Promise<Response | null>;
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
 type ProbeAppPageThrownErrorOptions = {
   probePage: () => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
@@ -584,31 +577,6 @@ async function probeLayoutForErrors(
   });
 
   return outcome.completed ? outcome.result : null;
-}
-
-export async function probeAppPageComponent(
-  options: ProbeAppPageComponentOptions,
-): Promise<Response | null> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          if (options.awaitAsyncResult) {
-            await pageResult;
-          } else {
-            void Promise.resolve(pageResult).catch(() => {});
-          }
-        }
-      } catch (error) {
-        return options.onError(error);
-      }
-
-      return null;
-    });
-
-    return outcome.completed ? outcome.result : null;
-  });
 }
 
 export async function probeAppPageThrownError(
