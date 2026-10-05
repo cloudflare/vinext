@@ -320,6 +320,7 @@ export function createAppBrowserNavigationController(
       committedState: AppRouterState | null;
       onCommittedState?: (state: AppRouterState) => void;
       resolve: (committed: boolean) => void;
+      targetHref: string;
     }
   >();
   const pendingNavigationFailureTargets = new Map<number, URL>();
@@ -328,11 +329,11 @@ export function createAppBrowserNavigationController(
   const snapshotRenderIds = new Set<number>();
   // The visible URL of the pending user navigation's optimistic shell, once
   // that detached render has committed.
-  let pendingUserNavigationShellPathAndSearch: string | null = null;
+  let pendingUserNavigationShellHref: string | null = null;
   // A raw history write after the optimistic shell committed retires the
   // navigation's own URL: its authoritative render still commits, but keeps
   // the URL the write set, as in Next.js.
-  let retiredNavigationUrl: { navigationId: number; pathAndSearch: string } | null = null;
+  let retiredNavigationUrl: { navigationId: number; href: string } | null = null;
 
   let setBrowserRouterState: Dispatch<AppRouterState | Promise<AppRouterState>> | null = null;
   let browserRouterStateRef: BrowserRouterStateRef | null = null;
@@ -386,7 +387,7 @@ export function createAppBrowserNavigationController(
     pendingUserNavigationId = activeNavigationId;
     pendingUserNavigationLane = null;
     pendingUserNavigationCommitStarted = false;
-    pendingUserNavigationShellPathAndSearch = null;
+    pendingUserNavigationShellHref = null;
     retiredNavigationUrl = null;
     return activeNavigationId;
   }
@@ -459,6 +460,10 @@ export function createAppBrowserNavigationController(
     if (isCurrentNavigation(navId)) {
       pendingUserNavigationId = null;
       pendingUserNavigationLane = null;
+      // Server action redirects reuse this navigation id without
+      // beginNavigation(), so its retired URL must not outlive it.
+      pendingUserNavigationShellHref = null;
+      retiredNavigationUrl = null;
       clearPendingPathname(navId);
     }
   }
@@ -479,14 +484,14 @@ export function createAppBrowserNavigationController(
       return false;
     }
 
-    if (pendingUserNavigationShellPathAndSearch !== null) {
+    if (pendingUserNavigationShellHref !== null) {
       // The optimistic shell is already visible. Next.js treats its commit as
       // the navigation's, so the write lands on top of it and the content
       // still streams in. Keep the navigation but retire its URL, and release
       // its pending renders' snapshots so hooks read the URL just written.
       retiredNavigationUrl = {
         navigationId: pendingUserNavigationId,
-        pathAndSearch: pendingUserNavigationShellPathAndSearch,
+        href: pendingUserNavigationShellHref,
       };
       for (const renderId of pendingNavigationPrePaintEffects.keys()) {
         releaseRenderSnapshot(renderId);
@@ -540,15 +545,13 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  function isRetiredNavigationUrl(
-    navId: number,
-    navigationSnapshot: ClientNavigationRenderSnapshot,
-  ): boolean {
-    // A redirect hop renders a different URL, which still becomes visible.
+  function isRetiredNavigationUrl(navId: number, targetHref: string): boolean {
+    // A redirect hop renders a different URL, including one that only adds a
+    // hash, which still becomes visible.
     return (
       retiredNavigationUrl !== null &&
       retiredNavigationUrl.navigationId === navId &&
-      retiredNavigationUrl.pathAndSearch === createSnapshotPathAndSearch(navigationSnapshot)
+      retiredNavigationUrl.href === normalizeBrowserHref(targetHref)
     );
   }
 
@@ -611,16 +614,14 @@ export function createAppBrowserNavigationController(
     committingNavigationRenderId = renderId;
     // The optimistic shell is a detached commit: the authoritative render
     // that follows is still pending, so it does not end discardability.
-    const committingState = pendingNavigationCommits.get(renderId)?.committedState;
-    const committingOperation = committingState?.activeOperation;
+    const committingCommit = pendingNavigationCommits.get(renderId);
+    const committingOperation = committingCommit?.committedState?.activeOperation;
     if (
-      committingState &&
+      committingCommit &&
       committingOperation?.navigationCommitKind === "detached" &&
       committingOperation.navigationId === pendingUserNavigationId
     ) {
-      pendingUserNavigationShellPathAndSearch = createSnapshotPathAndSearch(
-        committingState.navigationSnapshot,
-      );
+      pendingUserNavigationShellHref = normalizeBrowserHref(committingCommit.targetHref);
     } else {
       pendingUserNavigationCommitStarted = true;
     }
@@ -927,6 +928,7 @@ export function createAppBrowserNavigationController(
         committedState: null,
         onCommittedState: options.onCommittedState,
         resolve,
+        targetHref: options.targetHref,
       });
     });
 
@@ -1019,14 +1021,14 @@ export function createAppBrowserNavigationController(
       queuePrePaintNavigationEffect(renderId, () => {
         // Decided at commit: the URL can be retired while this render is pending.
         commitEffect({
-          keepCurrentUrl: isRetiredNavigationUrl(options.navId, options.navigationSnapshot),
+          keepCurrentUrl: isRetiredNavigationUrl(options.navId, options.targetHref),
           releaseSnapshot: snapshotRenderIds.delete(renderId),
         });
       });
       claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId);
       // The render snapshot gives hooks this navigation's URL while it renders.
       // A retired URL is not becoming visible, so hooks read the current one.
-      if (!isRetiredNavigationUrl(options.navId, options.navigationSnapshot)) {
+      if (!isRetiredNavigationUrl(options.navId, options.targetHref)) {
         activateNavigationSnapshot();
         snapshotRenderIds.add(renderId);
       }

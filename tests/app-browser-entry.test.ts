@@ -4310,6 +4310,7 @@ describe("app browser navigation controller", () => {
         navId: number,
         navigationCommitKind: "authoritative" | "detached",
         href = targetHref,
+        navigationInitiationState = initialState,
       ) => {
         const commitEffect = vi.fn();
         const dispatched = harness.waitForNextVisibleCommitDispatch();
@@ -4318,7 +4319,7 @@ describe("app browser navigation controller", () => {
           createNavigationCommitEffect: () => commitEffect,
           historyUpdateMode: "push",
           navigationCommitKind,
-          navigationInitiationState: initialState,
+          navigationInitiationState,
           navigationSnapshot: createClientNavigationRenderSnapshot(href, {}),
           navId,
           nextElements: Promise.resolve(
@@ -4423,6 +4424,57 @@ describe("app browser navigation controller", () => {
         commit(stateRef().renderId);
         await expect(redirected.outcome).resolves.toBe("committed");
         expect(redirected.commitEffect).toHaveBeenCalledExactlyOnceWith({
+          keepCurrentUrl: false,
+          releaseSnapshot: true,
+        });
+      } finally {
+        detach();
+      }
+    });
+
+    it("still writes the URL of a redirect that only adds a hash", async () => {
+      const { controller, detach, commit, commitShell, render } = createShellHarness();
+      const stateRef = () => controller.getBrowserRouterState();
+
+      try {
+        const navId = controller.beginNavigation();
+        await commitShell(navId);
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+
+        const redirected = render(navId, "authoritative", "https://example.com/dashboard#done");
+        await redirected.dispatched;
+        commit(stateRef().renderId);
+        await expect(redirected.outcome).resolves.toBe("committed");
+        expect(redirected.commitEffect).toHaveBeenCalledExactlyOnceWith({
+          keepCurrentUrl: false,
+          releaseSnapshot: true,
+        });
+      } finally {
+        detach();
+      }
+    });
+
+    it("forgets the retired URL once the navigation finalizes", async () => {
+      const { controller, detach, commit, commitShell, render } = createShellHarness();
+      const stateRef = () => controller.getBrowserRouterState();
+
+      try {
+        const navId = controller.beginNavigation();
+        await commitShell(navId);
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+        const authoritative = render(navId, "authoritative");
+        await authoritative.dispatched;
+        commit(stateRef().renderId);
+        await expect(authoritative.outcome).resolves.toBe("committed");
+        controller.finalizeNavigation(navId, null);
+
+        // A server action redirect reuses the navigation id without
+        // beginNavigation(); landing back on the shell's URL still writes it.
+        const actionRedirect = render(navId, "authoritative", undefined, stateRef());
+        await actionRedirect.dispatched;
+        commit(stateRef().renderId);
+        await expect(actionRedirect.outcome).resolves.toBe("committed");
+        expect(actionRedirect.commitEffect).toHaveBeenCalledExactlyOnceWith({
           keepCurrentUrl: false,
           releaseSnapshot: true,
         });
