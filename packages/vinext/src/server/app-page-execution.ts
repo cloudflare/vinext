@@ -248,7 +248,10 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
  * Skips prefixing only when basePath is unset or the raw target does not start
  * with `/`, matching Next.js's literal `addPathPrefix()` contract.
  */
-function applyAppPageRedirectBasePath(location: string, basePath: string | undefined): string {
+export function applyAppPageRedirectBasePath(
+  location: string,
+  basePath: string | undefined,
+): string {
   if (!basePath || !location.startsWith("/")) return location;
 
   const queryIndex = location.indexOf("?");

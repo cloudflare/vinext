@@ -43,6 +43,7 @@ import {
   resolveAppPageParentHttpAccessBoundaryModule,
 } from "./app-page-boundary.js";
 import {
+  applyAppPageRedirectBasePath,
   buildAppPageSpecialErrorResponse,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
@@ -1032,6 +1033,34 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 return baseRevalidatedOnSsrError(error, undefined, undefined);
               },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
+              async renderShellSpecialError(error) {
+                // The fallback boundaries are resolved for the matched route.
+                const specialError =
+                  revalidationTarget.route === route ? resolveAppPageSpecialError(error) : null;
+                if (!specialError) return null;
+                // An RSC request regenerates only its RSC entry.
+                const document = options.isRscRequest
+                  ? null
+                  : await renderPageSpecialError(
+                      options,
+                      specialError,
+                      false,
+                      revalidationTarget.interceptOpts,
+                    );
+                return {
+                  headers:
+                    specialError.kind === "redirect"
+                      ? {
+                          location: applyAppPageRedirectBasePath(
+                            specialError.location,
+                            options.basePath,
+                          ),
+                        }
+                      : undefined,
+                  html: document ? await document.text() : "",
+                  status: specialError.statusCode,
+                };
+              },
               renderToReadableStream: options.renderToReadableStream,
               rootParams: options.rootParams,
               route: revalidationTarget.route,
@@ -1040,6 +1069,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             });
             options.clearRequestContext();
             return {
+              headers: rendered.headers,
               html: rendered.html,
               htmlRenderObservation: rendered.htmlRenderObservation,
               linkHeader: rendered.linkHeader,
@@ -1048,6 +1078,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               tags: rendered.tags,
               cacheControl: rendered.cacheControl,
               revalidateSeconds: revalidationRouteRevalidateSeconds,
+              status: rendered.status,
               usedDynamicApi: rendered.usedDynamicApi,
             };
           },

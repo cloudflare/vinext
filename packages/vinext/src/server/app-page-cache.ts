@@ -67,11 +67,15 @@ type AppPageCacheOutcomeRecorder = (metric: AppPageCacheOutcomeMetric) => void;
 
 type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
+  /** Response headers stored with both entries, such as a redirect's `location`. */
+  headers?: Record<string, string>;
   html: string;
   htmlRenderObservation: RenderObservation;
   linkHeader?: string;
   rscData: ArrayBuffer;
   rscRenderObservation: RenderObservation;
+  /** The status of a render whose shell ended in a special error. */
+  status?: number;
   /**
    * The route-level revalidate of the route this render regenerated, or null
    * when it has none and the render's cacheLife sets it. Undefined keeps the
@@ -289,13 +293,34 @@ function resolveRegenerationFailureCacheControl(
   };
 }
 
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+/** Replay the stored response headers, such as a redirect's `location`. */
+function appendStoredAppPageHeaders(
+  headers: Headers,
+  storedHeaders: CachedAppPageValue["headers"],
+): void {
+  for (const [name, value] of Object.entries(storedHeaders ?? {})) {
+    // The HTML replay appends the renderer's Link with its provenance.
+    if (name.toLowerCase() === "link") continue;
+    for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
+  }
+}
+
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
 ): Response | null {
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
-  const status = options.middlewareStatus ?? (cachedValue.status || 200);
+  const storedStatus = cachedValue.status || 200;
+  const isRedirect = isRedirectStatus(storedStatus);
+  // As in Next.js, an RSC response carries a redirect in its payload, so a
+  // stored redirect is sent as a 200 with its `location`.
+  const status =
+    options.middlewareStatus ?? (options.isRscRequest && isRedirect ? 200 : storedStatus);
   const { cacheControl } = decideIsr({
     cacheState: options.cacheState,
     kind: "app-page",
@@ -330,6 +355,7 @@ export function buildAppPageCachedResponse(
         encodeURIComponent(options.renderedPathAndSearch),
       );
     }
+    appendStoredAppPageHeaders(rscHeaders, cachedValue.headers);
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
 
@@ -339,7 +365,8 @@ export function buildAppPageCachedResponse(
     });
   }
 
-  if (typeof cachedValue.html !== "string" || cachedValue.html.length === 0) {
+  // A redirect's document is empty.
+  if (typeof cachedValue.html !== "string" || (cachedValue.html.length === 0 && !isRedirect)) {
     return null;
   }
 
@@ -352,6 +379,7 @@ export function buildAppPageCachedResponse(
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
   });
+  appendStoredAppPageHeaders(htmlHeaders, cachedValue.headers);
 
   const response = new Response(cachedValue.html, {
     status,
@@ -624,13 +652,15 @@ export async function readAppPageCacheResponse(
             return false;
           }
         };
+        const status = revalidatedPage.status ?? 200;
         const storedRsc = await store(
           rscKey,
           buildAppPageCacheValue(
             "",
             revalidatedPage.rscData,
-            200,
+            status,
             revalidatedPage.rscRenderObservation,
+            revalidatedPage.headers,
           ),
         );
         // A failed RSC write leaves the previous page untouched, so the HTML
@@ -647,9 +677,11 @@ export async function readAppPageCacheResponse(
             buildAppPageCacheValue(
               revalidatedPage.html,
               undefined,
-              200,
+              status,
               revalidatedPage.htmlRenderObservation,
-              revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
+              revalidatedPage.linkHeader
+                ? { ...revalidatedPage.headers, link: revalidatedPage.linkHeader }
+                : revalidatedPage.headers,
             ),
           );
           // A failed HTML write leaves this regeneration's RSC beside the

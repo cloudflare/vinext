@@ -3723,6 +3723,73 @@ describe("app page dispatch", () => {
     );
   });
 
+  it.each([
+    {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      headers: undefined,
+      html: "<html>not found</html>",
+      status: 404,
+    },
+    {
+      digest: "NEXT_REDIRECT;replace;/target;307;",
+      headers: { location: "/target" },
+      html: "",
+      status: 307,
+    },
+  ])(
+    "stores a stale regeneration whose shell ended in a $status",
+    async ({ digest, headers, html, status }) => {
+      let scheduledRender: unknown = null;
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        isrSet,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            throw Object.assign(new Error(digest), { digest });
+          },
+        }),
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+      options.renderHttpAccessFallbackPage = vi.fn(
+        async (statusCode: number) =>
+          new Response("<html>not found</html>", { status: statusCode }),
+      );
+
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("<html>stale</html>");
+      if (typeof scheduledRender !== "function") {
+        throw new Error("expected stale HTML response to schedule regeneration");
+      }
+      await scheduledRender();
+
+      expect(
+        isrSet.mock.calls.map(([key, value]) => ({
+          headers: value.headers,
+          html: value.html,
+          key,
+          rsc: value.rscData ? new TextDecoder().decode(value.rscData) : undefined,
+          status: value.status,
+        })),
+      ).toEqual([
+        { headers, html: "", key: "rsc:/posts/hello", rsc: "page-flight-with-digest", status },
+        { headers, html, key: "html:/posts/hello", rsc: undefined, status },
+      ]);
+    },
+  );
+
   it.each(["page", "metadata"] as const)(
     "keeps the previous entry when a stale regeneration reads searchParams in %s",
     async (reader) => {

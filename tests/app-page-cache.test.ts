@@ -2209,6 +2209,136 @@ describe("app page cache helpers", () => {
   });
 });
 
+describe("app page special-error entries", () => {
+  // Next.js stores a render whose special error escaped the shell with its
+  // status and `location`, and replays both on HIT and STALE. An RSC response
+  // carries a redirect in its payload, so its stored redirect status is sent
+  // as a 200 (`build/templates/app-page.ts`).
+  function specialErrorEntry(status: number, html: string): CachedAppPageValue {
+    return {
+      ...buildCachedAppPageValue(html, new TextEncoder().encode("flight").buffer, status),
+      headers: status >= 300 && status < 400 ? { location: "/target" } : undefined,
+    };
+  }
+
+  it.each([
+    { isRscRequest: false, status: 404, expectedStatus: 404, html: "<h1>not found</h1>" },
+    { isRscRequest: false, status: 403, expectedStatus: 403, html: "<h1>forbidden</h1>" },
+    { isRscRequest: false, status: 307, expectedStatus: 307, html: "" },
+    { isRscRequest: false, status: 308, expectedStatus: 308, html: "" },
+    { isRscRequest: true, status: 404, expectedStatus: 404, html: "" },
+    { isRscRequest: true, status: 307, expectedStatus: 200, html: "" },
+    { isRscRequest: true, status: 308, expectedStatus: 200, html: "" },
+  ] as const)(
+    "replays a stored $status as $expectedStatus (RSC request: $isRscRequest)",
+    async ({ isRscRequest, status, expectedStatus, html }) => {
+      for (const cacheState of ["HIT", "STALE"] as const) {
+        const options = {
+          cacheControl: { revalidate: 60, expire: 300 },
+          cacheState,
+          isRscRequest,
+          revalidateSeconds: 60,
+        };
+        const response = buildAppPageCachedResponse(specialErrorEntry(status, html), options);
+        const pageResponse = buildAppPageCachedResponse(
+          specialErrorEntry(200, "<h1>page</h1>"),
+          options,
+        );
+
+        expect(response?.status).toBe(expectedStatus);
+        expect(response?.headers.get("location")).toBe(
+          status === 404 || status === 403 ? null : "/target",
+        );
+        expect(response?.headers.get("x-vinext-cache")).toBe(cacheState);
+        // The same policy as the page's own entry.
+        expect(response?.headers.get("cache-control")).toBe(
+          "s-maxage=60, stale-while-revalidate=240",
+        );
+        expect(response?.headers.get("cache-control")).toBe(
+          pageResponse?.headers.get("cache-control"),
+        );
+        await expect(response?.text()).resolves.toBe(isRscRequest ? "flight" : html);
+      }
+    },
+  );
+
+  it("serves an empty-document redirect entry as a HIT", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/redirecting",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(specialErrorEntry(307, ""), false, { revalidate: 60 });
+      },
+      isrHtmlKey: (pathname) => "html:" + pathname,
+      isrRscKey: (pathname) => "rsc:" + pathname,
+      isrSet: async () => {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a HIT must not render");
+      },
+      scheduleBackgroundRegeneration() {},
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("/target");
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+  });
+
+  it.each([false, true])(
+    "stores a regeneration whose shell ended in a special error (RSC request: %s)",
+    async (isRscRequest) => {
+      const scheduled: Array<() => Promise<void>> = [];
+      const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+
+      const response = await readAppPageCacheResponse({
+        cleanPathname: "/stale",
+        clearRequestContext() {},
+        isRscRequest,
+        async isrGet() {
+          return buildISRCacheEntry(
+            buildCachedAppPageValue("<h1>stale</h1>", new TextEncoder().encode("stale").buffer),
+            true,
+            { revalidate: 60 },
+          );
+        },
+        isrHtmlKey: (pathname) => "html:" + pathname,
+        isrRscKey: (pathname) => "rsc:" + pathname,
+        isrSet,
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          return {
+            ...queryInvariantRegenObservations(),
+            headers: { location: "/target" },
+            html: "",
+            rscData: new TextEncoder().encode("redirect-flight").buffer,
+            status: 307,
+            tags: ["_N_T_/stale"],
+            usedDynamicApi: false,
+          };
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduled.push(renderFn);
+        },
+      });
+
+      expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+      await scheduled[0]();
+      const stored = isrSet.mock.calls.map(([key, value]) => ({
+        headers: value.headers,
+        key,
+        status: value.status,
+      }));
+      expect(stored).toEqual([
+        { headers: { location: "/target" }, key: "rsc:/stale", status: 307 },
+        ...(isRscRequest
+          ? []
+          : [{ headers: { location: "/target" }, key: "html:/stale", status: 307 }]),
+      ]);
+    },
+  );
+});
+
 describe("app page regeneration failures", () => {
   // A failed regeneration re-reads its key before keeping the previous entry,
   // so each read must return the same entry.

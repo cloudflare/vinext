@@ -99,13 +99,17 @@ import {
   bindRequestContext,
   preserveFullyBufferedBodyMetadata,
 } from "vinext/shims/unified-request-context";
+import { setCacheStateHeaders } from "./cache-headers.js";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
-import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
+import {
+  copyLinkHeaderProvenance,
+  hasFrameworkLinkHeaders,
+} from "./app-response-header-provenance.js";
 import {
   isRouteCacheabilityEvaluation,
   recordRouteCacheabilityClientTraceMetadataMarker,
@@ -1239,6 +1243,149 @@ async function renderAppPageLifecycleImpl(
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
+  let shellRejectedBySpecialError = false;
+
+  const resolveHtmlCacheWrite = (dynamicUsedDuringRender: boolean) => {
+    const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
+      dynamicUsedDuringRender,
+      isProgressiveActionRender: options.isProgressiveActionRender === true,
+      hasScriptNonce: Boolean(options.scriptNonce),
+      isDraftMode: options.isDraftMode,
+      isDynamicError: options.isDynamicError,
+      isForceDynamic: options.isForceDynamic,
+      isForceStatic: options.isForceStatic,
+      isProduction: options.isProduction,
+      isStaticEligible: options.isStaticEligible,
+      expireSeconds,
+      revalidateSeconds,
+    });
+    const shouldSpeculativelyWriteCache =
+      options.isProduction &&
+      shouldCaptureRscForCacheMetadata &&
+      !options.isEdgeRuntime &&
+      revalidateSeconds === null &&
+      !options.isDynamicError &&
+      !options.isForceStatic &&
+      !options.scriptNonce &&
+      options.isProgressiveActionRender !== true &&
+      !dynamicUsedDuringRender;
+    return {
+      htmlResponsePolicy,
+      shouldWriteHtmlCache: htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache,
+    };
+  };
+
+  const finalizeHtmlCacheWrite = (
+    response: Response,
+    write: {
+      capturedDynamicUsageBeforeContextCleanup: () => boolean;
+      headers?: Record<string, string>;
+      htmlResponsePolicy: ReturnType<typeof resolveAppPageHtmlResponsePolicy>;
+      linkHeader: string | null;
+      status?: number;
+    },
+  ): Response =>
+    finalizeAppPageHtmlCacheResponse(response, {
+      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
+      capturedDynamicUsageBeforeContextCleanup: write.capturedDynamicUsageBeforeContextCleanup,
+      capturedRscDataPromise: capturedRscDataRef.value,
+      cleanPathname: options.cleanPathname,
+      clientTraceMetadataMarker,
+      consumeDynamicUsage: consumeRenderDynamicUsage,
+      consumeRenderObservationState,
+      createHtmlRenderObservation(input) {
+        return createAppPageRenderObservation({
+          boundaryOutcome: { kind: "success" },
+          cacheability: "public",
+          cacheTags: input.cacheTags,
+          cleanPathname: options.cleanPathname,
+          completeness: "complete",
+          output: htmlOutputScope,
+          params: options.navigationParams,
+          state: input.state,
+        });
+      },
+      createRscRenderObservation(input) {
+        return createAppPageRenderObservation({
+          boundaryOutcome: { kind: "success" },
+          cacheability: "public",
+          cacheTags: input.cacheTags,
+          cleanPathname: options.cleanPathname,
+          completeness: "complete",
+          output: rscOutputScope,
+          params: options.navigationParams,
+          state: input.state,
+        });
+      },
+      getPageTags() {
+        return options.getPageTags();
+      },
+      getRequestCacheLife() {
+        return readRequestCacheLifeForCachePolicy(options);
+      },
+      headers: write.headers,
+      isrDebug: options.isrDebug,
+      isrHtmlKey: options.isrHtmlKey,
+      isrRscKey: options.isrRscKey,
+      isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
+      interceptionId: options.interceptionId,
+      omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
+      preserveClientResponseHeaders: !write.htmlResponsePolicy.shouldWriteToCache,
+      expireSeconds,
+      isStaticEligible: options.isStaticEligible,
+      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+        isDynamicError: options.isDynamicError,
+        isForceStatic: options.isForceStatic,
+        isStaticEligible: options.isStaticEligible,
+        revalidateSeconds,
+      }),
+      linkHeader: write.linkHeader,
+      status: write.status,
+      waitUntil(cachePromise) {
+        options.waitUntil?.(cachePromise);
+      },
+    });
+
+  // The special-error response replaces the page's document, and is stored as
+  // a normal render would be, with its status and redirect `location`. The
+  // RSC entry is the page's own payload, captured from the same render.
+  const finalizeShellSpecialErrorResponse = (response: Response): Response => {
+    const dynamicUsedDuringRender = consumeRenderDynamicUsage();
+    const { htmlResponsePolicy, shouldWriteHtmlCache } =
+      resolveHtmlCacheWrite(dynamicUsedDuringRender);
+    if (!shouldWriteHtmlCache) return response;
+
+    const headers = new Headers(response.headers);
+    // Middleware's merged policy wins, as on a normal response.
+    if (htmlResponsePolicy.cacheControl && !headers.has("cache-control")) {
+      headers.set("Cache-Control", htmlResponsePolicy.cacheControl);
+    }
+    if (htmlResponsePolicy.cacheState) {
+      setCacheStateHeaders(headers, htmlResponsePolicy.cacheState);
+    }
+    const isrResponse = new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+    copyLinkHeaderProvenance(response.headers, isrResponse.headers);
+    const location = response.headers.get("location");
+    const clientResponse = finalizeHtmlCacheWrite(isrResponse, {
+      capturedDynamicUsageBeforeContextCleanup: () => dynamicUsedDuringRender,
+      headers: location ? { location } : undefined,
+      htmlResponsePolicy,
+      // Middleware's Link merges into the same header, and is merged again on
+      // replay, so only a renderer-only Link is stored.
+      linkHeader:
+        hasFrameworkLinkHeaders(response.headers) && !options.middlewareContext.headers?.has("link")
+          ? response.headers.get("link")
+          : null,
+      status: response.status,
+    });
+    copyLinkHeaderProvenance(response.headers, clientResponse.headers);
+    return clientResponse;
+  };
 
   const htmlRender = await renderAppPageHtmlStreamWithRecovery({
     onShellRendered() {
@@ -1358,12 +1505,23 @@ async function renderAppPageLifecycleImpl(
       });
     },
     renderSpecialErrorResponse(specialError) {
+      shellRejectedBySpecialError = true;
       return options.renderPageSpecialError(specialError);
     },
     resolveSpecialError: resolveAppPageSpecialError,
   });
   options.onRenderComplete?.(htmlRender.renderComplete);
   if (htmlRender.response) {
+    // A special error that escaped the shell sets the status of the render,
+    // which Next.js stores like any other: 404/403/401, or 307/308 with its
+    // `location`, beside the page's RSC payload carrying the digest.
+    if (
+      shellRejectedBySpecialError &&
+      options.isPrerender !== true &&
+      resolveEarlyResponseCacheControl(options) === null
+    ) {
+      return finalizeShellSpecialErrorResponse(htmlRender.response);
+    }
     return applyIneligibleRouteCachePolicy(htmlRender.response, options);
   }
   let htmlStream = htmlRender.htmlStream;
@@ -1463,19 +1621,8 @@ async function renderAppPageLifecycleImpl(
     options.clearRequestContext();
   });
 
-  const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
-    dynamicUsedDuringRender,
-    isProgressiveActionRender: options.isProgressiveActionRender === true,
-    hasScriptNonce: Boolean(options.scriptNonce),
-    isDraftMode: options.isDraftMode,
-    isDynamicError: options.isDynamicError,
-    isForceDynamic: options.isForceDynamic,
-    isForceStatic: options.isForceStatic,
-    isProduction: options.isProduction,
-    isStaticEligible: options.isStaticEligible,
-    expireSeconds,
-    revalidateSeconds,
-  });
+  const { htmlResponsePolicy, shouldWriteHtmlCache } =
+    resolveHtmlCacheWrite(dynamicUsedDuringRender);
   const htmlResponseTiming = buildResponseTiming({
     compileEnd,
     handlerStart: options.handlerStart,
@@ -1502,18 +1649,7 @@ async function renderAppPageLifecycleImpl(
     return response;
   }
 
-  const shouldSpeculativelyWriteCache =
-    options.isProduction &&
-    shouldCaptureRscForCacheMetadata &&
-    !options.isEdgeRuntime &&
-    revalidateSeconds === null &&
-    !options.isDynamicError &&
-    !options.isForceStatic &&
-    !options.scriptNonce &&
-    options.isProgressiveActionRender !== true &&
-    !dynamicUsedDuringRender;
-
-  if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
+  if (shouldWriteHtmlCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
@@ -1529,66 +1665,10 @@ async function renderAppPageLifecycleImpl(
       return isrResponse;
     }
 
-    return finalizeAppPageHtmlCacheResponse(isrResponse, {
-      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
-      capturedDynamicUsageBeforeContextCleanup() {
-        return dynamicUsedBeforeContextCleanup;
-      },
-      capturedRscDataPromise: capturedRscDataRef.value,
-      cleanPathname: options.cleanPathname,
-      clientTraceMetadataMarker,
-      consumeDynamicUsage: consumeRenderDynamicUsage,
-      consumeRenderObservationState,
-      createHtmlRenderObservation(input) {
-        return createAppPageRenderObservation({
-          boundaryOutcome: { kind: "success" },
-          cacheability: "public",
-          cacheTags: input.cacheTags,
-          cleanPathname: options.cleanPathname,
-          completeness: "complete",
-          output: htmlOutputScope,
-          params: options.navigationParams,
-          state: input.state,
-        });
-      },
-      createRscRenderObservation(input) {
-        return createAppPageRenderObservation({
-          boundaryOutcome: { kind: "success" },
-          cacheability: "public",
-          cacheTags: input.cacheTags,
-          cleanPathname: options.cleanPathname,
-          completeness: "complete",
-          output: rscOutputScope,
-          params: options.navigationParams,
-          state: input.state,
-        });
-      },
-      getPageTags() {
-        return options.getPageTags();
-      },
-      getRequestCacheLife() {
-        return readRequestCacheLifeForCachePolicy(options);
-      },
-      isrDebug: options.isrDebug,
-      isrHtmlKey: options.isrHtmlKey,
-      isrRscKey: options.isrRscKey,
-      isrSet: options.isrSet,
-      interceptionContext: options.interceptionContext,
-      interceptionId: options.interceptionId,
-      omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
-      preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
-      expireSeconds,
-      isStaticEligible: options.isStaticEligible,
-      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
-        isDynamicError: options.isDynamicError,
-        isForceStatic: options.isForceStatic,
-        isStaticEligible: options.isStaticEligible,
-        revalidateSeconds,
-      }),
+    return finalizeHtmlCacheWrite(isrResponse, {
+      capturedDynamicUsageBeforeContextCleanup: () => dynamicUsedBeforeContextCleanup,
+      htmlResponsePolicy,
       linkHeader: linkHeader ?? null,
-      waitUntil(cachePromise) {
-        options.waitUntil?.(cachePromise);
-      },
     });
   }
 
