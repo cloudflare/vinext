@@ -333,15 +333,16 @@ describe("Next.js compat: not-found", () => {
     expect(body).toContain("404");
   });
 
-  it("RSC request for page calling notFound() returns 404 with valid RSC payload", async () => {
+  // As in Next.js dev, the page's notFound() streams as a digest in a 200
+  // flight; the client renders the not-found boundary from it.
+  it("RSC request for page calling notFound() streams the not-found digest", async () => {
     const res = await fetch(`${baseUrl}/notfound-test.rsc`, {
       headers: { Accept: "text/x-component" },
     });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
     const body = await res.text();
-    expect(body.length).toBeGreaterThan(0);
-    expect(body).toContain("404");
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
   });
 
   it("RSC not-found response includes client component wrappers matching normal pages", async () => {
