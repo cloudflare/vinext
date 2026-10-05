@@ -683,39 +683,6 @@ function commonjsTransformFilter(
   return undefined;
 }
 
-type CommonJsPreBundleLoad = (args: { path: string }) => Promise<{ contents?: unknown } | void>;
-
-type CommonJsPreBundlePlugin = {
-  name: string;
-  setup: (build: { onLoad(options: object, callback: CommonJsPreBundleLoad): void }) => unknown;
-};
-
-const preBundlePluginsWithoutEsmFacade = new WeakSet<CommonJsPreBundlePlugin>();
-
-/** Applies {@link stripEsmCommonJsExportFacade} to vite-plugin-commonjs's pre-bundle loads. */
-function stripEsmExportFacadeInPreBundle(plugin: CommonJsPreBundlePlugin): void {
-  if (preBundlePluginsWithoutEsmFacade.has(plugin)) return;
-  preBundlePluginsWithoutEsmFacade.add(plugin);
-  const setup = plugin.setup;
-  plugin.setup = (build) =>
-    setup.call(
-      plugin,
-      // Inherit the rest of the build: Vite's esbuild shim throws from getters
-      // it does not implement, so its properties must not be copied.
-      Object.create(build, {
-        onLoad: {
-          value: (options: object, load: CommonJsPreBundleLoad) =>
-            build.onLoad(options, async (args) => {
-              const result = await load(args);
-              if (typeof result?.contents !== "string") return result;
-              const contents = stripEsmCommonJsExportFacade(result.contents);
-              return contents === undefined ? result : { ...result, contents };
-            }),
-        },
-      }),
-    );
-}
-
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
   return (
     statement.specifiers !== undefined &&
@@ -2190,15 +2157,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // current Vite environment into that call without creating per-environment
   // plugin instances: environment plugins cannot run the configResolved hook
   // that vite-plugin-commonjs requires to initialize its resolver.
+  let transformingCommonJs = false;
   let transformProjectLocalCommonJs = false;
   let transformBundledCommonJsDependencies = false;
   const commonJsPlugin = commonjs({
     filter(id: string) {
-      // vite-plugin-commonjs's optimizeDeps pre-bundle plugin calls this filter
-      // directly, without the transform wrapper below. Reject vinext's own
-      // runtime there too: its inlined dependencies (dist/deps) are already ESM,
-      // and a second export facade breaks the whole dependency scan.
-      if (isPathInside(__dirname, toSlash(stripViteModuleQuery(id)))) return false;
+      // Only the transform wrapper below converts modules. vite-plugin-commonjs's
+      // optimizeDeps pre-bundle plugin calls this filter directly, outside it.
+      // Rolldown already handles CommonJS in the dependency scan and optimizer,
+      // including require() discovery, so convert nothing there.
+      if (!transformingCommonJs) return false;
       return commonjsTransformFilter(
         id,
         transformProjectLocalCommonJs,
@@ -2260,8 +2228,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       if (userCondition !== true && id.includes("node_modules")) return null;
       const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;
+      const previousTransforming = transformingCommonJs;
       transformProjectLocalCommonJs = projectLocal && isDev;
       transformBundledCommonJsDependencies = bundledDependency;
+      transformingCommonJs = true;
       let result: ReturnType<typeof commonJsTransform>;
       try {
         // Do not await here: the filter is consulted synchronously while this
@@ -2271,6 +2241,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       } finally {
         transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
+        transformingCommonJs = previousTransforming;
       }
       return Promise.resolve(result).then((transformed) => {
         if (typeof transformed !== "object" || typeof transformed?.code !== "string") {
@@ -2285,24 +2256,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     commonJsPlugin.transform = {
       filter: { code: { include: COMMONJS_SYNTAX_CODE_FILTER } },
       handler: environmentAwareCommonJsTransform,
-    };
-  }
-  // The pre-bundle plugin transforms files without the wrapper above, so it
-  // must drop the same facade, or one ESM module that inlines CommonJS
-  // wrappers fails the whole dependency scan.
-  const commonJsConfigResolved = commonJsPlugin.configResolved;
-  if (typeof commonJsConfigResolved === "function") {
-    commonJsPlugin.configResolved = function (config) {
-      const result = commonJsConfigResolved.call(this, config);
-      const esbuildOptions = config.optimizeDeps.esbuildOptions as
-        | { plugins?: CommonJsPreBundlePlugin[] }
-        | undefined;
-      for (const plugin of esbuildOptions?.plugins ?? []) {
-        if (plugin.name === "vite-plugin-commonjs:pre-bundle") {
-          stripEsmExportFacadeInPreBundle(plugin);
-        }
-      }
-      return result;
     };
   }
 
