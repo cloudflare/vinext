@@ -97,6 +97,8 @@ import {
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
+  getPendingAppRouterScrollIntent,
+  isLatestAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
@@ -4244,6 +4246,7 @@ describe("app browser navigation controller", () => {
     try {
       expect(controller.discardPendingNavigation(visibleState)).toBe(false);
 
+      const scrollIntent = beginAppRouterScrollIntent("#section");
       const navId = controller.beginNavigation();
       const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -4260,13 +4263,15 @@ describe("app browser navigation controller", () => {
         params: {},
         pendingRouterState: null,
         previousNextUrl: null,
-        targetHref: "https://example.com/dashboard",
+        scrollIntent,
+        targetHref: "https://example.com/dashboard#section",
         navId,
       });
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       expect(stateRef.current).not.toBe(visibleState);
+      expect(getPendingAppRouterScrollIntent()?.id).toBe(scrollIntent.id);
 
       expect(controller.discardPendingNavigation(visibleState)).toBe(true);
       await expect(renderPromise).resolves.toBe("no-commit");
@@ -4280,9 +4285,14 @@ describe("app browser navigation controller", () => {
       });
       controller.drainPrePaintEffects(Number.MAX_SAFE_INTEGER);
       expect(commitClientNavigationState).toHaveBeenCalledOnce();
+      // navigateClientSide's post-navigation scroll fallback must not scroll
+      // to the discarded destination's hash or to the top of the page.
+      expect(getPendingAppRouterScrollIntent()).toBeNull();
+      expect(isLatestAppRouterScrollIntent(scrollIntent)).toBe(false);
 
       expect(controller.discardPendingNavigation(visibleState)).toBe(false);
     } finally {
+      clearAppRouterScrollIntent();
       detach();
     }
   });

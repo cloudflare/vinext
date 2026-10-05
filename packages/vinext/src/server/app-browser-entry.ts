@@ -2958,6 +2958,7 @@ function bootstrapHydration(
         navigationAbortCoordinator.abortActive();
       }
     },
+    flushCommittingNavigationUrl: () => browserNavigationController.flushCommittingNavigationUrl(),
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).

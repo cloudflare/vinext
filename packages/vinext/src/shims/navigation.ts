@@ -3286,6 +3286,9 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      // A write from a layout effect of a committing navigation must land on
+      // top of the destination entry, as it does in Next.js.
+      getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
       // Match Next.js' `data?.__NA` escape hatch. Reusing a captured internal
       // history entry must remain a real traversal target so back/forward can
       // fetch it (and follow redirects) instead of treating it as a copied
@@ -3316,8 +3319,9 @@ if (!isServer) {
         // not cancel prefetch setup for the URL it moves to.
         resetStaleLinkStatus();
         // Like Next.js' ACTION_RESTORE, the shallow URL keeps the visible tree,
-        // so a navigation still rendering must not commit over it later.
-        getNavigationRuntime()?.functions.discardPendingNavigation?.();
+        // so a navigation still rendering must not commit over it later. Next
+        // only restores when a URL is given; a state-only write keeps it.
+        if (url) getNavigationRuntime()?.functions.discardPendingNavigation?.();
         commitClientNavigationState();
       }
     };
@@ -3327,6 +3331,7 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
       if (isAppOwnedHistoryState(data)) {
         const previousHistoryState = window.history.state;
         state.originalReplaceState.call(window.history, data, unused, url);
@@ -3349,7 +3354,7 @@ if (!isServer) {
       );
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();
-        getNavigationRuntime()?.functions.discardPendingNavigation?.();
+        if (url) getNavigationRuntime()?.functions.discardPendingNavigation?.();
         commitClientNavigationState();
       }
     };
