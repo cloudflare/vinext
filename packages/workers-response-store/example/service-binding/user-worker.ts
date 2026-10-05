@@ -1,5 +1,6 @@
 import {
   createWorkersResponseStoreClient,
+  type ResponseStoreInvalidateOptions,
   type ResponseStorePurgeOptions,
   type ResponseStoreRefreshOptions,
   type SerializableValue,
@@ -98,6 +99,12 @@ export default {
       if (request.method === "POST" && url.pathname === "/admin/refresh") {
         return json(
           await responseStore.refresh((await request.json()) as ResponseStoreRefreshOptions),
+        );
+      }
+
+      if (request.method === "POST" && url.pathname === "/admin/invalidate") {
+        return json(
+          await responseStore.invalidate((await request.json()) as ResponseStoreInvalidateOptions),
         );
       }
 

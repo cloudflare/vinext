@@ -4,6 +4,7 @@ import type {
   CandidateMetadata,
   PurgedEntry,
   RefreshCandidate,
+  ResponseStoreInvalidateOptions,
   ResponseStoreRefreshOptions,
   ResponseStorePurgeOptions,
   SerializableValue,
@@ -35,7 +36,7 @@ type RegenerationReservation = {
   reservation?: WriteReservation;
 };
 
-type PurgeReservation = {
+export type PurgeReservation = {
   backingStoreUpdated: boolean;
   pendingTombstones: number;
   tombstoneSequence: number;
@@ -108,6 +109,11 @@ export type CacheMetadataStub = DurableObjectStub & {
     options: ResponseStorePurgeOptions,
     invalidatedAt?: number,
   ): Promise<PurgeReservation>;
+  invalidateMatching(
+    options: Pick<ResponseStoreInvalidateOptions, "tags" | "pathPrefixes">,
+    invalidatedAt: number,
+    expiresAt?: number,
+  ): Promise<PurgeReservation>;
   drainPendingTombstones(
     limit: number,
     keyHash?: string,
@@ -149,7 +155,10 @@ type PurgeEntryRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_revision"
 
 type RefreshCandidateRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_revision"> & {
   active_revision: number;
+  fresh_until: number;
   has_revalidator: number;
+  object_key: string;
+  swr_until: number;
 };
 
 const MAX_SQL_PARAMETERS = 100;
@@ -164,11 +173,23 @@ type CacheMetadataEnv = {
 
 type PendingTombstoneRow = Record<string, SqlStorageValue> & {
   cache_key: string;
+  edge_invalidate: number;
   edge_purge_complete: number;
+  fresh_until: number | null;
   key_hash: string;
   object_key: string;
   r2_complete: number;
   revision: number;
+  source_revision: number | null;
+  swr_until: number | null;
+};
+
+/**
+ * A queued R2 update: a tombstone, or with `stale` a soft invalidation that
+ * republishes the source revision's response under a higher revision.
+ */
+type PendingR2Update = PurgedEntry & {
+  stale?: { freshUntil: number; sourceRevision: number; swrUntil: number };
 };
 
 function metadataInteger(value: string | undefined): number | undefined {
@@ -219,6 +240,16 @@ function storedEntryFromRow(row: EntryRow): StoredEntry | null {
           },
     expiryBehavior: row.expiry_behavior === "miss" ? "miss" : "regenerate",
     cacheTags: JSON.parse(row.cache_tags ?? "[]") as string[],
+  };
+}
+
+function pendingEntryFromRow(row: PendingTombstoneRow): PurgedEntry {
+  return {
+    keyHash: row.key_hash,
+    cacheKey: row.cache_key,
+    objectKey: row.object_key,
+    revision: row.revision,
+    ...(row.edge_invalidate ? { edgeInvalidate: true } : {}),
   };
 }
 
@@ -307,7 +338,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           revision INTEGER NOT NULL,
           r2_complete INTEGER NOT NULL DEFAULT 0,
           edge_purge_complete INTEGER NOT NULL DEFAULT 0,
-          tombstone_sequence INTEGER NOT NULL DEFAULT 0
+          tombstone_sequence INTEGER NOT NULL DEFAULT 0,
+          source_revision INTEGER,
+          fresh_until INTEGER,
+          swr_until INTEGER,
+          edge_invalidate INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
       `);
 
@@ -315,12 +350,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 6) return;
+        if (migrations.size === 7) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
@@ -406,6 +441,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             ctx.storage.sql.exec("ALTER TABLE entries ADD COLUMN expiry_behavior TEXT");
           }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (7)");
+        }
+        if (!migrations.has(8)) {
+          const tombstones = schemas.find(({ name }) => name === "pending_r2_tombstones")?.sql;
+          if (!tombstones?.includes("edge_invalidate")) {
+            ctx.storage.sql.exec(`
+              ALTER TABLE pending_r2_tombstones ADD COLUMN source_revision INTEGER;
+              ALTER TABLE pending_r2_tombstones ADD COLUMN fresh_until INTEGER;
+              ALTER TABLE pending_r2_tombstones ADD COLUMN swr_until INTEGER;
+              ALTER TABLE pending_r2_tombstones ADD COLUMN edge_invalidate INTEGER NOT NULL DEFAULT 0;
+            `);
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (8)");
         }
       });
       ctx.storage.sql.exec(`
@@ -521,7 +568,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           projection === "purge"
             ? "key_hash, cache_key, latest_revision, object_key"
             : projection === "refresh"
-              ? "key_hash, cache_key, active_revision, latest_revision, revalidator_id IS NOT NULL AS has_revalidator"
+              ? "key_hash, cache_key, active_revision, latest_revision, object_key, fresh_until, swr_until, revalidator_id IS NOT NULL AS has_revalidator"
               : "*"
         } FROM entries ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`,
         ...parameters,
@@ -1138,6 +1185,48 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     }));
   }
 
+  /**
+   * Fence writes reserved before an invalidation from publishing over it.
+   * `invalidatedAt` also expires the tags for soft-tag reads; pass 0 to leave
+   * their expiration unchanged.
+   */
+  private recordInvalidations(keyHashes: string[], tags: string[], invalidatedAt: number): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
+      WHERE singleton = 1`,
+    );
+    for (const batch of batches(keyHashes, MAX_SQL_PARAMETERS)) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO key_invalidations (key_hash, invalidation_sequence) VALUES ${batch
+          .map(
+            () => "(?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
+          )
+          .join(", ")}
+        ON CONFLICT(key_hash) DO UPDATE SET invalidation_sequence =
+          MAX(key_invalidations.invalidation_sequence, excluded.invalidation_sequence)`,
+        ...batch,
+      );
+    }
+    for (const batch of batches(tags, MAX_SQL_PARAMETERS / 2)) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO tag_invalidations
+          (tag, invalidated_at, invalidation_sequence) VALUES ${batch
+            .map(
+              () =>
+                "(?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
+            )
+            .join(", ")}
+        ON CONFLICT(tag) DO UPDATE SET invalidated_at =
+          MAX(tag_invalidations.invalidated_at, excluded.invalidated_at),
+          invalidation_sequence = MAX(
+            tag_invalidations.invalidation_sequence,
+            excluded.invalidation_sequence
+          )`,
+        ...batch.flatMap((tag) => [tag, invalidatedAt]),
+      );
+    }
+  }
+
   async purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt = Date.now(),
@@ -1149,41 +1238,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       );
 
       const tags = normalizeTags(options.tags ?? []);
-      this.ctx.storage.sql.exec(
-        `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
-        WHERE singleton = 1`,
+      this.recordInvalidations(
+        matches.map((row) => row.key_hash),
+        tags,
+        invalidatedAt,
       );
-      for (const batch of batches(matches, MAX_SQL_PARAMETERS)) {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO key_invalidations (key_hash, invalidation_sequence) VALUES ${batch
-            .map(
-              () =>
-                "(?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
-            )
-            .join(", ")}
-          ON CONFLICT(key_hash) DO UPDATE SET invalidation_sequence =
-            MAX(key_invalidations.invalidation_sequence, excluded.invalidation_sequence)`,
-          ...batch.map((row) => row.key_hash),
-        );
-      }
-      for (const batch of batches(tags, MAX_SQL_PARAMETERS / 2)) {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO tag_invalidations
-            (tag, invalidated_at, invalidation_sequence) VALUES ${batch
-              .map(
-                () =>
-                  "(?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
-              )
-              .join(", ")}
-          ON CONFLICT(tag) DO UPDATE SET invalidated_at =
-            MAX(tag_invalidations.invalidated_at, excluded.invalidated_at),
-            invalidation_sequence = MAX(
-              tag_invalidations.invalidation_sequence,
-              excluded.invalidation_sequence
-            )`,
-          ...batch.flatMap((tag) => [tag, invalidatedAt]),
-        );
-      }
 
       for (const batch of batches(matches, MAX_SQL_PARAMETERS - 1)) {
         const active = batch.filter((row) => row.object_key !== null);
@@ -1245,28 +1304,122 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return reservation;
   }
 
-  private async writeR2Tombstone(entry: PurgedEntry): Promise<void> {
-    let etag: string | null | undefined;
-    for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
-      const current = await this.env.CACHE_BODIES.head(entry.objectKey);
-      const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-      if (currentRevision !== undefined && currentRevision >= entry.revision) return;
-      etag = current?.etag ?? null;
+  /**
+   * Mark matching entries stale without deleting them. Each entry moves to a
+   * new revision with its freshness ended and its SWR window capped at
+   * `expiresAt`, and its R2 object is queued for the same rewrite, so writes
+   * reserved before the invalidation cannot publish over it.
+   */
+  async invalidateMatching(
+    options: Pick<ResponseStoreInvalidateOptions, "tags" | "pathPrefixes">,
+    invalidatedAt: number,
+    expiresAt?: number,
+  ): Promise<PurgeReservation> {
+    const reservation = this.ctx.storage.transactionSync(() => {
+      const matches = this.findMatchingEntryRows(options, "refresh");
+      const tombstoneSequence = this.tombstoneSequence(matches.length > 0);
+      this.recordInvalidations(
+        matches.map((row) => row.key_hash),
+        normalizeTags(options.tags ?? []),
+        0,
+      );
 
-      const stored = await this.env.CACHE_BODIES.put(entry.objectKey, new Uint8Array(), {
-        onlyIf: etag === null ? { etagDoesNotMatch: "*" } : { etagMatches: etag },
-        customMetadata: {
-          latestRevision: String(entry.revision),
-          tombstoned: "1",
-        },
+      for (const batch of batches(matches, MAX_SQL_PARAMETERS / 10)) {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO pending_r2_tombstones
+            (key_hash, cache_key, object_key, revision, tombstone_sequence,
+              source_revision, fresh_until, swr_until, edge_invalidate) VALUES ${batch
+                .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .join(", ")}`,
+          ...batch.flatMap((row) => [
+            row.key_hash,
+            row.cache_key,
+            row.object_key,
+            row.latest_revision + 1,
+            tombstoneSequence,
+            row.active_revision,
+            Math.min(row.fresh_until, invalidatedAt),
+            Math.min(row.swr_until, expiresAt ?? row.swr_until),
+            row.has_revalidator,
+          ]),
+        );
+      }
+      for (const batch of batches(matches, MAX_SQL_PARAMETERS - 2)) {
+        const keyHashes = batch.map((row) => row.key_hash);
+        const placeholders = keyHashes.map(() => "?").join(", ");
+        this.ctx.storage.sql.exec(
+          `UPDATE entries SET
+            latest_revision = latest_revision + 1,
+            active_revision = latest_revision + 1,
+            fresh_until = MIN(fresh_until, ?),
+            swr_until = MIN(swr_until, COALESCE(?, swr_until))
+          WHERE key_hash IN (${placeholders})`,
+          invalidatedAt,
+          expiresAt ?? null,
+          ...keyHashes,
+        );
+        this.ctx.storage.sql.exec(
+          `DELETE FROM revalidation_claims WHERE key_hash IN (${placeholders})`,
+          ...keyHashes,
+        );
+      }
+
+      return {
+        backingStoreUpdated: matches.length > 0,
+        pendingTombstones: matches.length,
+        tombstoneSequence,
+      };
+    });
+    if (reservation.pendingTombstones > 0) {
+      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
+        this.logCleanupFailure(error),
+      );
+    }
+    return reservation;
+  }
+
+  private async writeR2Update(entry: PendingR2Update): Promise<PurgedEntry> {
+    const { stale, ...updated } = entry;
+    for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
+      const object = stale ? await this.env.CACHE_BODIES.get(entry.objectKey) : null;
+      const current = stale ? object : await this.env.CACHE_BODIES.head(entry.objectKey);
+      const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
+      let body: ArrayBuffer | null = null;
+      if (object) {
+        // A stale rewrite republishes the source revision. When R2 does not hold
+        // it (its write is still in flight or failed), tombstone the key instead
+        // so that late write cannot publish it as fresh.
+        if (
+          currentRevision === stale?.sourceRevision &&
+          object.customMetadata?.tombstoned !== "1"
+        ) {
+          body = await object.arrayBuffer();
+        } else {
+          await object.body.cancel();
+        }
+      }
+      if (currentRevision !== undefined && currentRevision >= entry.revision) return updated;
+
+      const stored = await this.env.CACHE_BODIES.put(entry.objectKey, body ?? new Uint8Array(), {
+        onlyIf: current ? { etagMatches: current.etag } : { etagDoesNotMatch: "*" },
+        customMetadata:
+          body && stale
+            ? {
+                ...current!.customMetadata,
+                latestRevision: String(entry.revision),
+                freshUntil: String(stale.freshUntil),
+                swrUntil: String(stale.swrUntil),
+              }
+            : { latestRevision: String(entry.revision), tombstoned: "1" },
       });
-      if (stored) return;
+      // Workers Cache must not refetch a tombstoned key's stale response.
+      if (stored) return body ? updated : { ...updated, edgeInvalidate: false };
     }
     const current = await this.env.CACHE_BODIES.head(entry.objectKey);
     const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-    if (currentRevision !== undefined && currentRevision >= entry.revision) return;
+    if (currentRevision !== undefined && currentRevision >= entry.revision) return updated;
     throw new Error(
-      `R2 revision ${entry.revision} could not be tombstoned after concurrent writes`,
+      `R2 revision ${entry.revision} could not be ${stale ? "invalidated" : "tombstoned"} after concurrent writes`,
     );
   }
 
@@ -1305,37 +1458,44 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     parameters.push(limit);
     const rows = this.ctx.storage.sql
       .exec<PendingTombstoneRow>(
-        `SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
-        FROM pending_r2_tombstones
+        `SELECT * FROM pending_r2_tombstones
         WHERE ${filters.join(" AND ")}
         ORDER BY key_hash LIMIT ?`,
         ...parameters,
       )
       .toArray();
-    const pending = rows.map((row) => ({
-      keyHash: row.key_hash,
-      cacheKey: row.cache_key,
-      objectKey: row.object_key,
-      revision: row.revision,
-    }));
-    const settled = await mapSettledWithR2Concurrency(
-      pending,
-      async (entry): Promise<PurgedEntry> => {
-        await this.writeR2Tombstone(entry);
-        return entry;
-      },
+    const pending = rows.map(pendingEntryFromRow);
+    const settled = await mapSettledWithR2Concurrency(rows, (row) =>
+      this.writeR2Update({
+        ...pendingEntryFromRow(row),
+        ...(row.source_revision !== null && row.fresh_until !== null && row.swr_until !== null
+          ? {
+              stale: {
+                freshUntil: row.fresh_until,
+                sourceRevision: row.source_revision,
+                swrUntil: row.swr_until,
+              },
+            }
+          : {}),
+      }),
     );
     const purged = settled.flatMap((result) =>
       result.status === "fulfilled" ? [result.value] : [],
     );
     this.ctx.storage.transactionSync(() => {
-      for (const batch of batches(purged, MAX_SQL_PARAMETERS / 2)) {
-        this.ctx.storage.sql.exec(
-          `UPDATE pending_r2_tombstones SET r2_complete = 1 WHERE ${batch
-            .map(() => "(key_hash = ? AND revision = ?)")
-            .join(" OR ")}`,
-          ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
+      for (const edgeInvalidate of [true, false]) {
+        const completed = purged.filter(
+          (entry) => Boolean(entry.edgeInvalidate) === edgeInvalidate,
         );
+        for (const batch of batches(completed, MAX_SQL_PARAMETERS / 2 - 1)) {
+          this.ctx.storage.sql.exec(
+            `UPDATE pending_r2_tombstones SET r2_complete = 1, edge_invalidate = ? WHERE ${batch
+              .map(() => "(key_hash = ? AND revision = ?)")
+              .join(" OR ")}`,
+            Number(edgeInvalidate),
+            ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
+          );
+        }
       }
       this.finishCompletedTombstones(purged);
     });
@@ -1355,20 +1515,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     const sequenceFilter = tombstoneSequence === undefined ? "" : " AND tombstone_sequence = ?";
     return this.ctx.storage.sql
       .exec<PendingTombstoneRow>(
-        `SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
-        FROM pending_r2_tombstones
+        `SELECT * FROM pending_r2_tombstones
         WHERE r2_complete = 1 AND edge_purge_complete = 0${sequenceFilter}
         ORDER BY key_hash LIMIT ?`,
         ...(tombstoneSequence === undefined ? [] : [tombstoneSequence]),
         limit,
       )
       .toArray()
-      .map((row) => ({
-        keyHash: row.key_hash,
-        cacheKey: row.cache_key,
-        objectKey: row.object_key,
-        revision: row.revision,
-      }));
+      .map(pendingEntryFromRow);
   }
 
   markTombstonesEdgePurged(entries: PurgedEntry[]): void {
