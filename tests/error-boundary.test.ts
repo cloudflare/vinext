@@ -474,6 +474,27 @@ describe("RedirectBoundary digest classification", () => {
   });
 });
 
+describe("isRedirectToCurrentUrl", () => {
+  // A page whose redirect() targets its own URL would refetch forever, so the
+  // boundary loads it as a document instead of following it.
+  it("matches only a redirect to the URL the browser is at", async () => {
+    const { isRedirectToCurrentUrl } =
+      await import("../packages/vinext/src/shims/error-boundary-navigation.js");
+    vi.stubGlobal("window", { location: { href: "https://example.test/self?x=1" } });
+    try {
+      expect(isRedirectToCurrentUrl("/self?x=1")).toBe(true);
+      expect(isRedirectToCurrentUrl("https://example.test/self?x=1")).toBe(true);
+      expect(isRedirectToCurrentUrl("?x=1")).toBe(true);
+      expect(isRedirectToCurrentUrl("/self")).toBe(false);
+      expect(isRedirectToCurrentUrl("/self?x=1#top")).toBe(false);
+      expect(isRedirectToCurrentUrl("https://other.test/self?x=1")).toBe(false);
+      expect(isRedirectToCurrentUrl("javascript:alert(1)")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("RedirectBoundary reset", () => {
   type RedirectState = {
     redirect: string | null;

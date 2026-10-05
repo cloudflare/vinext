@@ -3,10 +3,12 @@ import { stripBasePath } from "../utils/base-path.js";
 import { getNavigationContext } from "./navigation-server.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
+import { toCanonicalBrowserNavigationHref } from "./url-utils.js";
 
 const CLIENT_NAVIGATION_STATE_KEY = Symbol.for("vinext.clientNavigationState");
 const CLIENT_NAVIGATION_RENDER_CONTEXT_KEY = Symbol.for("vinext.clientNavigationRenderContext");
 const BASE_PATH = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+const TRAILING_SLASH = process.env.__VINEXT_TRAILING_SLASH === "true";
 
 type ClientNavigationState = {
   cachedPathname: string;
@@ -78,4 +80,21 @@ export function useErrorBoundaryRouter(): AppRouterInstance {
     throw new Error("invariant expected app router to be mounted");
   }
   return router;
+}
+
+/**
+ * Whether following a redirect() would load the URL the browser is already
+ * at, which re-renders the same redirect.
+ */
+export function isRedirectToCurrentUrl(redirect: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const target = new URL(
+      toCanonicalBrowserNavigationHref(redirect, window.location.href, BASE_PATH, TRAILING_SLASH),
+      window.location.href,
+    );
+    return target.href === window.location.href;
+  } catch {
+    return false;
+  }
 }

@@ -2,7 +2,11 @@
 
 import React from "react";
 import { decodeRedirectError, isRedirectError } from "./navigation-server.js";
-import { useErrorBoundaryPathname, useErrorBoundaryRouter } from "./error-boundary-navigation.js";
+import {
+  isRedirectToCurrentUrl,
+  useErrorBoundaryPathname,
+  useErrorBoundaryRouter,
+} from "./error-boundary-navigation.js";
 import DefaultGlobalError from "./default-global-error.js";
 import { handleAppNavigationFailure } from "../client/app-nav-failure-handler.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
@@ -119,6 +123,16 @@ function HandleRedirect({
   const router = useErrorBoundaryRouter();
 
   React.useEffect(() => {
+    if (isRedirectToCurrentUrl(redirect)) {
+      // Following it would refetch the same page forever (Next.js does). Load
+      // the URL as a document instead, as vinext does for a streamed redirect
+      // to the current URL, so the browser stops the server's redirect loop.
+      console.error(
+        "[vinext] redirect() resolved to the current URL — aborting the client navigation to prevent an infinite loop.",
+      );
+      window.location.replace(window.location.href);
+      return;
+    }
     React.startTransition(() => {
       if (redirectType === "push") {
         router.push(redirect);
