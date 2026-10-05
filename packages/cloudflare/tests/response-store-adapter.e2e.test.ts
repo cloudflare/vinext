@@ -502,8 +502,14 @@ describe("Cloudflare Workers Response Store adapter", () => {
     for (const response of [first, second, rsc]) {
       assert.equal(response.status, 200);
       assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    // The HTML shell waits for the page, so its cookies() read comes first.
+    for (const response of [first, second]) {
       assert.match(response.headers.get("cache-control") ?? "", /no-store/);
     }
+    // The RSC response streams before the page reads cookies(), so it carries
+    // the pending policy. Next.js renders it in full first and sends no-store.
+    assert.equal(rsc.headers.get("cache-control"), "private, max-age=0, must-revalidate");
     // The dynamic page, rendered per request.
     assert.notEqual(
       htmlValue(firstBody, "generated-cookies-render-id"),
