@@ -11,6 +11,8 @@ import {
 } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vitest";
 
+import { encodeCloudflareCacheTag } from "../src/cache/cdn-adapter.runtime.js";
+
 const root = path.resolve(import.meta.dirname, "../../..");
 const appOutput = path.join(root, "examples/response-store-demo/dist/server");
 const selfContainedAppOutput = path.join(
@@ -1145,13 +1147,19 @@ describe("Cloudflare Workers Response Store adapter", () => {
         (entry) =>
           entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
       );
-    const secondRevision = async () =>
-      (await replayEntries()).find(
-        (entry) => !JSON.stringify(entry.cacheTags).includes("unreplayable-first"),
-      )?.activeRevision;
+    // Only the first value carries the tag, which the adapter stores encoded.
+    const firstTag = encodeCloudflareCacheTag("unreplayable-first");
+    const isFirst = (entry: StoredResponseEntry) =>
+      Array.isArray(entry.cacheTags) && entry.cacheTags.includes(firstTag);
+    const secondRevision = async () => {
+      const second = (await replayEntries()).filter((entry) => !isFirst(entry));
+      assert.equal(second.length, 1);
+      return second[0].activeRevision;
+    };
     for (let attempt = 0; attempt < 50 && (await replayEntries()).length < 2; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    assert.equal((await replayEntries()).filter(isFirst).length, 1);
     const before = await secondRevision();
     assert.equal(typeof before, "number");
 
