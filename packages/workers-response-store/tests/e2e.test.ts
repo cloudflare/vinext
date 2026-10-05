@@ -17,8 +17,8 @@ import { mapSettledWithR2Concurrency } from "../src/r2-concurrency.js";
 
 const workerScript = fileURLToPath(new URL("../dist/worker/worker.js", import.meta.url));
 const versionId = "poc-v2";
-const metadataName = `${versionId}:r2-v1`;
-const r2Root = `runtime-cache/${versionId}/r2-v1`;
+const metadataName = `${versionId}:r2-v2`;
+const r2Root = `runtime-cache/${versionId}/r2-v2`;
 
 type PutOptions = {
   age?: number;

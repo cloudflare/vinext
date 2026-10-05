@@ -62,7 +62,7 @@ async function metadataEntries(): Promise<unknown[][]> {
   return Promise.all(
     Array.from({ length: responseStoreShards }, async (_, index) => {
       const metadata = namespace.getByName(
-        `${workerVersionId}:r2-v1:metadata-shard:${index}-of-${responseStoreShards}`,
+        `${workerVersionId}:r2-v2:metadata-shard:${index}-of-${responseStoreShards}`,
       );
       const inspect = Reflect.get(metadata, "inspect");
       assert.equal(typeof inspect, "function");
@@ -1097,7 +1097,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const bucket = await miniflare.getR2Bucket("CACHE_BODIES", "cache");
     const objects = await bucket.list();
     assert.equal(objects.objects.length, 1);
-    assert.match(objects.objects[0].key, /\/r2-v1\/shards-4\/[0-9a-f]{64}\/active$/);
+    assert.match(objects.objects[0].key, /\/r2-v2\/shards-4\/[0-9a-f]{64}\/active$/);
   });
 
   test("recomputes expired use-cache values that only a page replay could regenerate", async () => {
