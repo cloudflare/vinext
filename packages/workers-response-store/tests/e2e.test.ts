@@ -1121,6 +1121,31 @@ test("expired: miss returns a miss for hard-expired content without regenerating
   assert.equal(refreshed.headers.get("X-Workers-Response-Store"), "MISS");
 });
 
+test("expired: miss also answers conditional and large-header reads with a miss", async () => {
+  await put("/expired-miss-conditional", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    expired: "miss",
+    revalidator: { body: "must-not-regenerate", cacheControl: "public, max-age=60" },
+  });
+  await put("/expired-miss-large", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    expired: "miss",
+    largeHeaderBytes: 9_000,
+    revalidator: { body: "must-not-regenerate", cacheControl: "public, max-age=60" },
+  });
+
+  const conditional = await conditionalRead("/expired-miss-conditional");
+  assert.equal(conditional.status, 404);
+  assert.equal(conditional.headers.get("X-Workers-Response-Store"), "MISS");
+  const large = await read("/expired-miss-large");
+  assert.equal(large.status, 404);
+  assert.equal(large.headers.get("X-Workers-Response-Store"), "MISS");
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    regenerationCount: number;
+  };
+  assert.equal(stats.regenerationCount, 0);
+});
+
 test("expired: miss still serves stale content and regenerates it in the background", async () => {
   await put("/expired-miss-stale", "stale-body", {
     cacheControl: "public, max-age=0, stale-while-revalidate=30",
