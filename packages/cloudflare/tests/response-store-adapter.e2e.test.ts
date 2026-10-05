@@ -1100,6 +1100,42 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(objects.objects[0].key, /\/r2-v1\/shards-4\/[0-9a-f]{64}\/active$/);
   });
 
+  test("recomputes expired use-cache values that only a page replay could regenerate", async () => {
+    const pathname = "/use-cache-unreplayable";
+    const read = async () => {
+      // Regenerating one value replays the page, which reads the other. A read that
+      // waited for that replay would replay the page for each value in turn, without end.
+      const body = await Promise.race([
+        cacheStatus(pathname).then((result) => result.body),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`${pathname} did not respond within 4s`)), 4_000),
+        ),
+      ]);
+      return [htmlValue(body, "unreplayable-first"), htmlValue(body, "unreplayable-second")];
+    };
+    const first = await read();
+
+    // Both values must be stored for a page replay, not a cache function call.
+    const replayEntries = async () =>
+      ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+        (entry) =>
+          entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
+      );
+    for (let attempt = 0; attempt < 50 && (await replayEntries()).length < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal((await replayEntries()).length, 2);
+
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+
+    // Past `expire` the values are a miss, as in Next.js, and the render recomputes them.
+    const recomputed = await read();
+    assert.notEqual(recomputed[0], first[0]);
+    assert.notEqual(recomputed[1], first[1]);
+    assert.match(recomputed[0], /^first:unreplayable:/);
+    assert.match(recomputed[1], /^second:unreplayable:/);
+  }, 15_000);
+
   test("never serves a hard-expired use-cache value", async () => {
     const first = htmlValue((await cacheStatus("/use-cache-expired")).body, "expired-cache-value");
 

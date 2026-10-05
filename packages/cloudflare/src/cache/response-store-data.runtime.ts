@@ -295,8 +295,6 @@ function cachePolicy(revalidate: number | false | undefined, expire: number | un
   }
   // Like Next.js, an entry without `expire` (unstable_cache, cached fetch) never
   // hard-expires: past `revalidate` it is served stale and refreshed in the background.
-  // A hard-expired read would instead wait for the Store to replay the page, and a page
-  // reading two such entries would replay itself for each in turn (A -> B -> A).
   const staleSeconds =
     expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, expire - revalidate);
   return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${staleSeconds}`;
@@ -480,6 +478,10 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
 
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
+      // A read that finds a page-replay entry expired must not wait for the replay: a page
+      // reading two such entries would replay itself for each in turn (A -> B -> A). The
+      // Store answers a miss and the caller recomputes, as in Next.js; refresh() still replays.
+      ...(revalidator?.id === DATA_REVALIDATOR_ID ? { expired: "miss" as const } : {}),
       coalesce: true,
       purgeExisting: true,
     });

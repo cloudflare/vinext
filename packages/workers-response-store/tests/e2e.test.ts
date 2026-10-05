@@ -30,6 +30,7 @@ type PutOptions = {
   coalesce?: boolean;
   contentType?: string;
   etag?: string;
+  expired?: "regenerate" | "miss";
   host?: string;
   largeHeaderBytes?: number;
   lastModified?: string;
@@ -157,6 +158,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.noRevalidator) headers.set("X-No-Revalidator", "1");
   if (options.purgeExisting) headers.set("X-Purge-Existing", "1");
   if (options.coalesce) headers.set("X-Coalesce", "1");
+  if (options.expired) headers.set("X-Expired", options.expired);
   if (options.bodyFailure) headers.set("X-Body-Failure", "1");
   if (options.bodyDelayMs) headers.set("X-Body-Delay-Ms", String(options.bodyDelayMs));
   if (options.teeBody) headers.set("X-Tee-Body", "1");
@@ -1086,6 +1088,53 @@ test("hard-expired content is never returned and regeneration is committed befor
   assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "2");
   const objects = await r2Objects();
   assert.equal(objects.objects.length, 1, "the superseded R2 revision is deleted");
+});
+
+test("expired: miss returns a miss for hard-expired content without regenerating", async () => {
+  await put("/expired-miss", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    expired: "miss",
+    tags: ["expired-miss"],
+    revalidator: { bodyPrefix: "manual", cacheControl: "public, max-age=0" },
+  });
+  assert.equal((await metadata())[0].expiredRead, "miss");
+
+  const missed = await read("/expired-miss");
+  assert.equal(missed.status, 404);
+  assert.equal(missed.headers.get("X-Workers-Response-Store"), "MISS");
+  assert.equal(missed.headers.get("Cache-Control"), "no-store");
+  assert.equal(await missed.text(), "Workers Response Store miss");
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    regenerationCount: number;
+  };
+  assert.equal(stats.regenerationCount, 0);
+  assert.equal((await metadata())[0].activeRevision, 1);
+
+  // refresh() still regenerates through the stored revalidator and keeps the policy.
+  const result = await refreshSelectors({ tags: ["expired-miss"] });
+  assert.equal(result.json.backingStoreUpdated, true);
+  const [entry] = await metadata();
+  assert.equal(entry.activeRevision, 2);
+  assert.equal(entry.expiredRead, "miss");
+  const refreshed = await read("/expired-miss");
+  assert.equal(refreshed.status, 404);
+  assert.equal(refreshed.headers.get("X-Workers-Response-Store"), "MISS");
+});
+
+test("expired: miss still serves stale content and regenerates it in the background", async () => {
+  await put("/expired-miss-stale", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    expired: "miss",
+    revalidator: { body: "swr-regenerated", cacheControl: "public, max-age=60" },
+  });
+
+  const stale = await read("/expired-miss-stale");
+  assert.equal(await stale.text(), "stale-body");
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const fresh = await read("/expired-miss-stale");
+  assert.equal(await fresh.text(), "swr-regenerated");
+  assert.equal((await metadata())[0].expiredRead, "miss");
 });
 
 test("missing R2 content returns a cache miss without querying metadata", async () => {
@@ -2239,7 +2288,12 @@ test("the previous metadata schema is upgraded in place", async () => {
         { version: 4 },
         { version: 5 },
         { version: 6 },
+        { version: 7 },
       ],
+    );
+    assert.deepEqual(
+      await storage.exec("SELECT expired_read FROM entries WHERE key_hash = ?", "legacy-entry"),
+      [{ expired_read: null }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(

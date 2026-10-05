@@ -22,7 +22,16 @@ export type ResponseStorePutOptions = {
   coalesce?: boolean;
   revalidator?: RevalidatorDescriptor;
   purgeExisting?: boolean;
+  /**
+   * What a read does once the entry is past its stale-while-revalidate window.
+   * `"regenerate"` (the default) waits for the revalidator. `"miss"` returns a
+   * Response Store miss so the caller regenerates the value itself; `refresh()`
+   * still regenerates the entry through its revalidator.
+   */
+  expired?: ExpiredRead;
 };
+
+export type ExpiredRead = "regenerate" | "miss";
 
 export type ResponseStoreRefreshOptions = {
   tags?: string[];
@@ -67,6 +76,7 @@ type EntryMetadata = {
   freshUntil: number;
   swrUntil: number;
   revalidator: RevalidatorDescriptor | null;
+  expiredRead: ExpiredRead;
   cacheTags: string[];
 };
 
@@ -637,6 +647,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       freshUntil,
       swrUntil,
       revalidator: null,
+      expiredRead: metadata.expiredRead === "miss" ? "miss" : "regenerate",
       cacheTags: [],
       activeRevision: latestRevision,
       latestRevision,
@@ -740,6 +751,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         freshUntil: String(entry.freshUntil),
         swrUntil: String(entry.swrUntil),
         latestRevision: String(entry.activeRevision),
+        ...(entry.expiredRead === "miss" ? { expiredRead: "miss" } : {}),
       };
       if (customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES) {
         const responseMetadata = new TextEncoder().encode(
@@ -754,6 +766,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           freshUntil: String(entry.freshUntil),
           swrUntil: String(entry.swrUntil),
           latestRevision: String(entry.activeRevision),
+          ...(entry.expiredRead === "miss" ? { expiredRead: "miss" } : {}),
         };
       }
       return await this.writeR2Revision(
@@ -901,6 +914,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     request: Request,
     response: Response,
     revalidator: ResponseStorePutOptions["revalidator"],
+    expiredRead: ExpiredRead,
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
@@ -932,6 +946,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         freshUntil: policy.freshUntil,
         swrUntil: policy.swrUntil,
         revalidator: revalidator ?? null,
+        expiredRead,
         cacheTags,
       };
 
@@ -1074,6 +1089,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       cacheRequest,
       response,
       entry.revalidator,
+      entry.expiredRead,
       writeReservation,
       undefined,
       expectedR2Etag,
@@ -1167,6 +1183,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     await r2Read?.object?.body.cancel().catch(() => {});
+    // The writer asked for a miss instead of a regeneration once the entry expires.
+    if (now >= entry.swrUntil && entry.expiredRead === "miss") {
+      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+    }
     const metadata = this.getMetadata(keyHash);
     let regenerated: StoreResult;
     if (revalidateStale && now < entry.swrUntil) {
@@ -1295,6 +1315,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         request,
         response,
         options.revalidator,
+        options.expired === "miss" ? "miss" : "regenerate",
         reservation,
         cacheTags,
       );

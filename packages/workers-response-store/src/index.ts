@@ -186,6 +186,7 @@ export function createWorkersResponseStoreClient<
 }
 
 export type {
+  ExpiredRead,
   ResponseStoreMutationResult,
   ResponseStoreLocationHint,
   ResponseStorePurgeOptions,
