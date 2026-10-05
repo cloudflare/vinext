@@ -144,6 +144,17 @@ test("stores the other entries a regeneration recomputes before returning its ta
 
   expect(captured.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
   expect(stored).toEqual(["sibling"]);
+
+  // A replay that fails after starting a side write still finishes the write.
+  await expect(
+    captureResponseStoreDataRegeneration("target", () =>
+      runWithResponseStoreInvocation("page", true, async () => {
+        void handler.set("failed-sibling", null, { cacheControl });
+        throw new Error("render failed");
+      }),
+    ),
+  ).rejects.toThrow("render failed");
+  expect(stored).toEqual(["sibling", "failed-sibling"]);
 });
 
 test("skips a regenerated entry the Store could not regenerate itself", async () => {

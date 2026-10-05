@@ -206,9 +206,12 @@ export async function captureResponseStoreDataRegeneration(
   callback: () => Promise<void>,
 ): Promise<Response> {
   const scope: RegenerationScope = { sideWrites: [], targetKey: key };
-  await regenerationStorage.run(scope, callback);
-  // Unawaited work can be cancelled once the Store's regeneration returns.
-  while (scope.sideWrites.length) await Promise.allSettled(scope.sideWrites.splice(0));
+  try {
+    await regenerationStorage.run(scope, callback);
+  } finally {
+    // Unawaited work can be cancelled once the Store's regeneration returns, even a failed one.
+    while (scope.sideWrites.length) await Promise.allSettled(scope.sideWrites.splice(0));
+  }
   if (!scope.captured) {
     throw new Error(`vinext response-store regeneration did not rewrite data key ${key}`);
   }
