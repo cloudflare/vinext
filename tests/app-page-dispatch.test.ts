@@ -79,6 +79,7 @@ import {
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
 import { cacheLife } from "../packages/vinext/src/shims/cache.js";
+import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -5233,6 +5234,48 @@ describe("query-free App page ISR entries", () => {
     expect(rscText).not.toContain(canary);
     expect(JSON.stringify(value.headers ?? {})).not.toContain(canary);
   }
+
+  // A client component's notFound() rejects the shell during SSR itself.
+  // generateMetadata() threw the same digest in the RSC render, but runs only
+  // there, so the shell's 404 is the page's and is stored, as in Next.js.
+  it("stores a client component's SSR notFound() when generateMetadata() also threw a 404", async () => {
+    const { cache, isrGet, isrSet } = createCache();
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    function ClientNotFound(): React.ReactNode {
+      notFound();
+    }
+
+    const { response } = await dispatchQuery("", {
+      buildPageElement: async () =>
+        toDispatchElementRecord({
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            layoutIds: [],
+            rootLayoutTreePath: null,
+            routeId: ROUTE_ID,
+          }),
+          [ROUTE_ID]: React.createElement("main", null, React.createElement(ClientNotFound)),
+        }),
+      isrGet,
+      isrSet,
+      loadSsrHandler: createProductionSsrHandler([]),
+      renderToReadableStream(payload, { onError }) {
+        onError(
+          Object.assign(new Error(digest), {
+            digest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return serializePayloadToStream(payload);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    const stored = cache.get("html:/posts/hello")?.value.value as CachedAppPageValue | undefined;
+    expect(stored?.status).toBe(404);
+  });
 
   // Ported from Next.js app-static.test.ts:4622-4700 and the plan's canary
   // test: useSearchParams() inside Suspense keeps the page cached with the

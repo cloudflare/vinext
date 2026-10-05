@@ -9,6 +9,7 @@ import {
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
 import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
+import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 import {
   hasFrameworkLinkHeaders,
@@ -63,6 +64,27 @@ describe("app page execution helpers", () => {
       statusCode: 404,
     });
     expect(resolveAppPageShellSpecialError(decoded, [])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+  });
+
+  it("resolves a special error a client component threw during SSR as the page's", () => {
+    // generateMetadata() threw the same digest in the RSC render, but runs
+    // only there, so an error SSR threw itself is never generateMetadata()'s.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const fromMetadata = Object.assign(new Error(digest), {
+      digest,
+      [Symbol.for("vinext.appPage.metadataError")]: true,
+    });
+    let thrownDuringSsr: unknown;
+    try {
+      notFound();
+    } catch (error) {
+      thrownDuringSsr = error;
+    }
+
+    expect(resolveAppPageShellSpecialError(thrownDuringSsr, [fromMetadata])).toEqual({
       kind: "http-access-fallback",
       statusCode: 404,
     });

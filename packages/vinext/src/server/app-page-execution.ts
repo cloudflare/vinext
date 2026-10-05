@@ -19,6 +19,7 @@ import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
+import { isThrownNavigationError } from "vinext/shims/navigation-errors";
 
 export type { LayoutFlags };
 
@@ -236,10 +237,12 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
 }
 
 /**
- * Resolve the special error that rejected an SSR shell. The shell's error is
- * decoded from the Flight digest, so whether generateMetadata() threw it comes
- * from the errors the RSC render threw with that digest. When the page threw
- * one too, the page's decides.
+ * Resolve the special error that rejected an SSR shell. An error from the RSC
+ * render reaches the shell decoded from its Flight digest, so whether
+ * generateMetadata() threw it comes from the errors the RSC render threw with
+ * that digest. When the page threw one too, the page's decides. An error a
+ * client component threw during SSR is the page's, since generateMetadata()
+ * runs only in the RSC render.
  */
 export function resolveAppPageShellSpecialError(
   error: unknown,
@@ -247,6 +250,7 @@ export function resolveAppPageShellSpecialError(
 ): AppPageSpecialError | null {
   const specialError = resolveAppPageSpecialError(error);
   if (!specialError || specialError.fromMetadata === true) return specialError;
+  if (isThrownNavigationError(error)) return specialError;
   const fromMetadata =
     renderedSpecialErrors.length > 0 &&
     renderedSpecialErrors.every(
