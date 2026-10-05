@@ -73,6 +73,7 @@ async function metadataEntries(): Promise<unknown[][]> {
 
 type StoredResponseEntry = {
   activeRevision?: unknown;
+  cacheTags?: unknown;
   freshUntil?: unknown;
   objectKey?: unknown;
   responseHeaders?: unknown;
@@ -1134,6 +1135,40 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.notEqual(recomputed[1], first[1]);
     assert.match(recomputed[0], /^first:unreplayable:/);
     assert.match(recomputed[1], /^second:unreplayable:/);
+  }, 15_000);
+
+  test("stores the other values a page replay recomputes", async () => {
+    const pathname = "/use-cache-unreplayable";
+    await cacheStatus(pathname);
+    const replayEntries = async () =>
+      ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+        (entry) =>
+          entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
+      );
+    const secondRevision = async () =>
+      (await replayEntries()).find(
+        (entry) => !JSON.stringify(entry.cacheTags).includes("unreplayable-first"),
+      )?.activeRevision;
+    for (let attempt = 0; attempt < 50 && (await replayEntries()).length < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const before = await secondRevision();
+    assert.equal(typeof before, "number");
+
+    // Once both values expire, refreshing the first replays the page, which recomputes
+    // the second. That value is stored too, as Next.js stores every entry a revalidation
+    // recomputes, instead of being recomputed again by the next request.
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    const refresh = await request("/api/revalidate-tag", {
+      body: JSON.stringify({ tag: "unreplayable-first" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(refresh.status, 200, await refresh.text());
+    for (let attempt = 0; attempt < 40 && (await secondRevision()) === before; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(Number(await secondRevision()) > Number(before));
   }, 15_000);
 
   test("never serves a hard-expired use-cache value", async () => {

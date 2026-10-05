@@ -470,9 +470,11 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       },
     );
 
+    // A regeneration returns its own entry to the Store; any other entry it recomputes is
+    // stored as usual, as Next.js stores every entry a revalidation recomputes.
     const regeneration = regenerationStorage.getStore();
-    if (regeneration) {
-      if (key === regeneration.targetKey) regeneration.captured = response;
+    if (regeneration?.targetKey === key) {
+      regeneration.captured = response;
       return;
     }
 

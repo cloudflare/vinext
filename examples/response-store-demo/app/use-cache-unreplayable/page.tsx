@@ -1,4 +1,4 @@
-import { cacheLife } from "next/cache";
+import { cacheLife, cacheTag } from "next/cache";
 import { connection } from "next/server";
 
 // A getter keeps the arguments from being replayed, so the Response Store can't call these
@@ -13,6 +13,7 @@ const input = {
 async function getFirst(value: { id: string }): Promise<string> {
   "use cache";
   cacheLife({ revalidate: 1, expire: 2 });
+  cacheTag("unreplayable-first");
   return `first:${value.id}:${crypto.randomUUID()}`;
 }
 
