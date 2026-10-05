@@ -91,6 +91,7 @@ type BuildAppPageCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   expireSeconds?: number;
   isEdgeRuntime?: boolean;
+  isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
@@ -318,9 +319,15 @@ export function buildAppPageCachedResponse(
   const storedStatus = cachedValue.status || 200;
   const isRedirect = isRedirectStatus(storedStatus);
   // As in Next.js, an RSC response carries a redirect in its payload, so a
-  // stored redirect is sent as a 200 with its `location`.
-  const status =
-    options.middlewareStatus ?? (options.isRscRequest && isRedirect ? 200 : storedStatus);
+  // stored redirect is sent as a 200 with its `location`. With PPR, an RSC
+  // response is always a 200.
+  const replayStatus =
+    options.isRscRequest && (isRedirect || options.isRoutePPREnabled === true) ? 200 : storedStatus;
+  // The status of a stored special error is the page's own, which middleware
+  // can't override, as on a fresh render.
+  const isSpecialErrorStatus =
+    isRedirect || storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
+  const status = isSpecialErrorStatus ? replayStatus : (options.middlewareStatus ?? replayStatus);
   const { cacheControl } = decideIsr({
     cacheState: options.cacheState,
     kind: "app-page",
@@ -525,6 +532,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached?.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -709,6 +717,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,

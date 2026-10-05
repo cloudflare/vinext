@@ -2262,6 +2262,75 @@ describe("app page special-error entries", () => {
     },
   );
 
+  it.each([
+    { isRscRequest: false, status: 404 },
+    { isRscRequest: false, status: 307 },
+    { isRscRequest: false, status: 403 },
+    { isRscRequest: true, status: 404 },
+    { isRscRequest: true, status: 307 },
+  ] as const)(
+    "replays a stored $status over middleware's status (RSC request: $isRscRequest)",
+    ({ isRscRequest, status }) => {
+      const options = {
+        cacheState: "HIT" as const,
+        isRscRequest,
+        middlewareStatus: 202,
+        revalidateSeconds: 60,
+      };
+
+      expect(buildAppPageCachedResponse(specialErrorEntry(status, "doc"), options)?.status).toBe(
+        isRscRequest && status === 307 ? 200 : status,
+      );
+      // Middleware still sets an ordinary page's status.
+      expect(buildAppPageCachedResponse(specialErrorEntry(200, "doc"), options)?.status).toBe(202);
+    },
+  );
+
+  it.each([404, 403, 307])("replays a stored %s as a 200 on an RSC request with PPR", (status) => {
+    // `cachedData.status && (!isRSCRequest || !isRoutePPREnabled)`
+    const options = {
+      cacheState: "HIT" as const,
+      isRoutePPREnabled: true,
+      revalidateSeconds: 60,
+    };
+
+    expect(
+      buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
+        ...options,
+        isRscRequest: true,
+      })?.status,
+    ).toBe(200);
+    expect(
+      buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
+        ...options,
+        isRscRequest: false,
+      })?.status,
+    ).toBe(status);
+  });
+
+  it("threads the route's PPR state into an RSC HIT", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/missing",
+      clearRequestContext() {},
+      isRoutePPREnabled: true,
+      isRscRequest: true,
+      async isrGet() {
+        return buildISRCacheEntry(specialErrorEntry(404, ""), false, { revalidate: 60 });
+      },
+      isrHtmlKey: (pathname) => "html:" + pathname,
+      isrRscKey: (pathname) => "rsc:" + pathname,
+      isrSet: async () => {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a HIT must not render");
+      },
+      scheduleBackgroundRegeneration() {},
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+  });
+
   it("serves an empty-document redirect entry as a HIT", async () => {
     const response = await readAppPageCacheResponse({
       cleanPathname: "/redirecting",
