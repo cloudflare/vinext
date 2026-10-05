@@ -877,7 +877,7 @@ import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressio
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
-import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptPage as __loadAppInterceptPage } from ${JSON.stringify(appRouteModuleLoaderPath)};
+import { ensureAppRouteModulesLoaded as __ensureRouteLoaded } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import {
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
@@ -1354,7 +1354,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       routePatternParts: route.patternParts,
       routeSegments: route.routeSegments,
     });
-    const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
       bypassInterceptionContextCache,

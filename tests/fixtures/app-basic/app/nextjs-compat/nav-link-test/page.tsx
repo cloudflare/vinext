@@ -27,6 +27,9 @@ export default function Page() {
         <Link href="/nextjs-compat/self-redirect" id="link-to-self-redirect">
           Go to self-redirecting Page
         </Link>
+        <Link href="/nextjs-compat/self-redirect-streamed" id="link-to-self-redirect-streamed">
+          Go to streamed self-redirecting Page
+        </Link>
       </nav>
       <RelativeQueryLink />
     </div>

@@ -115,22 +115,21 @@ function HandleRedirect({
   redirect,
   redirectType,
   reset,
+  stopsSelfRedirect,
 }: {
   redirect: string;
   redirectType: "push" | "replace";
   reset: () => void;
+  stopsSelfRedirect: boolean;
 }) {
   const router = useErrorBoundaryRouter();
 
   React.useEffect(() => {
-    if (isRedirectToCurrentUrl(redirect)) {
-      // Following it would refetch the same page forever (Next.js does). Load
-      // the URL as a document instead, as vinext does for a streamed redirect
-      // to the current URL, so the browser stops the server's redirect loop.
+    if (stopsSelfRedirect && isRedirectToCurrentUrl(redirect)) {
+      // Following it would refetch the same page forever, as Next.js does.
       console.error(
-        "[vinext] redirect() resolved to the current URL — aborting the client navigation to prevent an infinite loop.",
+        "[vinext] redirect() resolved to the current URL — not following it, to prevent an infinite loop.",
       );
-      window.location.replace(window.location.href);
       return;
     }
     React.startTransition(() => {
@@ -141,7 +140,7 @@ function HandleRedirect({
       }
       reset();
     });
-  }, [redirect, redirectType, reset, router]);
+  }, [redirect, redirectType, reset, router, stopsSelfRedirect]);
 
   return null;
 }
@@ -212,6 +211,10 @@ export class RedirectErrorBoundary extends React.Component<
           redirect={redirect}
           redirectType={redirectType}
           reset={() => this.setState({ redirect: null, redirectType: null })}
+          // Page and slot boundaries (the ones with a reset key) render inside
+          // the committed route, so the browser URL is already the redirecting
+          // page's. The root boundary can catch a redirect before that commit.
+          stopsSelfRedirect={this.props.resetKey !== undefined}
         />
       );
     }

@@ -3,7 +3,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import { getNavigationContext } from "./navigation-server.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
-import { toCanonicalBrowserNavigationHref } from "./url-utils.js";
+import { toCanonicalBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 
 const CLIENT_NAVIGATION_STATE_KEY = Symbol.for("vinext.clientNavigationState");
 const CLIENT_NAVIGATION_RENDER_CONTEXT_KEY = Symbol.for("vinext.clientNavigationRenderContext");
@@ -83,17 +83,29 @@ export function useErrorBoundaryRouter(): AppRouterInstance {
 }
 
 /**
- * Whether following a redirect() would load the URL the browser is already
- * at, which re-renders the same redirect.
+ * Whether following a redirect() would refetch the URL the browser is at,
+ * which renders the same redirect again. A target that adds a hash only
+ * scrolls, so it is not a refetch.
  */
 export function isRedirectToCurrentUrl(redirect: string): boolean {
   if (typeof window === "undefined") return false;
   try {
+    const current = new URL(window.location.href);
     const target = new URL(
-      toCanonicalBrowserNavigationHref(redirect, window.location.href, BASE_PATH, TRAILING_SLASH),
-      window.location.href,
+      toCanonicalBrowserNavigationHref(
+        toSameOriginAppPath(redirect, BASE_PATH) ?? redirect,
+        current.href,
+        BASE_PATH,
+        TRAILING_SLASH,
+      ),
+      current.href,
     );
-    return target.href === window.location.href;
+    return (
+      target.hash === "" &&
+      target.origin === current.origin &&
+      target.pathname === current.pathname &&
+      target.search === current.search
+    );
   } catch {
     return false;
   }

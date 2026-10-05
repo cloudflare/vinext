@@ -83,7 +83,7 @@ type AppRscSiblingInterceptForMatching = {
   // Sibling intercept pages are lazy-loaded (manifest emits `page: null` plus a
   // `__pageLoader`) so the intercepting page's CSS chunk stays isolated in
   // production, matching slot intercepts (see #1738). The loader is awaited on
-  // demand by resolveAppPageInterceptState / probePage.
+  // demand by resolveAppPageInterceptState.
   __pageLoader?: (() => Promise<unknown>) | null;
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
