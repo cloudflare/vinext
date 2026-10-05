@@ -533,7 +533,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
    * Workers Cache keeps serving them while it refetches from this binding in
    * the background.
    */
-  private async purgeEdgeCache(
+  private async updateEdgeCache(
     options: CachePurgeOptions,
     operation: EdgeCacheOperation = "purge",
   ): Promise<boolean> {
@@ -576,14 +576,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
   }
 
-  private async purgeEdgeCacheByTags(
+  private async updateEdgeCacheByTags(
     tags: string[],
     operation: EdgeCacheOperation = "purge",
   ): Promise<boolean> {
     let accepted = true;
 
     for (const batch of batches(tags, CACHE_PURGE_BATCH_SIZE)) {
-      if (!(await this.purgeEdgeCache({ tags: batch }, operation))) {
+      if (!(await this.updateEdgeCache({ tags: batch }, operation))) {
         accepted = false;
       }
     }
@@ -592,7 +592,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean> {
-    return await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
+    return await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry));
   }
 
   private async purgePendingEdgeEntries(
@@ -605,7 +605,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         tombstoneSequence,
       );
       if (!entries.length) return true;
-      if (!(await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
+      if (!(await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
         return false;
       }
       await metadata.markTombstonesEdgePurged(entries);
@@ -1019,7 +1019,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
         if (reconciliation.purged.length) {
           try {
-            if (await this.purgeEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
+            if (await this.updateEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
               await metadata.markTombstonesEdgePurged(reconciliation.purged);
             }
           } catch (reconciliationError) {
@@ -1317,7 +1317,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             backingStoreUpdated: true,
             edgePurgeAccepted:
               options.purgeExisting && result.edgePurgeRequired
-                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
                 : true,
           };
         }
@@ -1349,7 +1349,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         backingStoreUpdated: true,
         edgePurgeAccepted:
           options.purgeExisting && result.edgePurgeRequired
-            ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
             : true,
       };
     } finally {
@@ -1427,7 +1427,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     // Refresh is stale-while-revalidate: R2 already holds the new revisions,
     // so let Workers Cache keep serving the prior responses while it refills.
     const edgePurgeAccepted = refreshed.length
-      ? await this.purgeEdgeCacheByTags(
+      ? await this.updateEdgeCacheByTags(
           refreshed.map((entry) => purgeTagForEntry(entry)),
           "invalidate",
         )
@@ -1482,7 +1482,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     if (options.purgeEverything && failures.length === 0) {
       try {
-        edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
+        edgePurgeAccepted = await this.updateEdgeCache({ purgeEverything: true });
         if (edgePurgeAccepted) {
           const acknowledged = await Promise.allSettled(
             reservations.map(({ metadata, reservation }) =>

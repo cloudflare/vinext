@@ -15,6 +15,7 @@ import { cacheForRequest } from "vinext/cache";
 import type { VinextCacheFunctionInvocation } from "vinext/server/multi-stage";
 
 import { encodeCloudflareCacheTag } from "./cdn-adapter.runtime.js";
+import { isStaleTagInvalidation } from "./workers-cache-invalidation.js";
 
 type StoredCacheEntry = {
   cacheControl?: CacheControlMetadata;
@@ -491,7 +492,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     const dataTags = Array.isArray(tags) ? tags : [tags];
     const encodedTags = dataTags.map(encodeCloudflareCacheTag);
     if (!encodedTags.length) return;
-    if (durations?.expire && durations.expire > 0) {
+    if (isStaleTagInvalidation(durations)) {
       await this.store.refresh({ tags: encodedTags });
     } else {
       await this.store.purge({

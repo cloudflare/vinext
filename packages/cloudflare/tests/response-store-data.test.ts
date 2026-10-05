@@ -11,6 +11,7 @@ import {
   WorkersResponseStoreCacheHandler,
   type ResponseStoreInvocationCapture,
 } from "../src/cache/response-store-data.runtime";
+import { encodeCloudflareCacheTag } from "../src/cache/cdn-adapter.runtime";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 
 class TestStore implements WorkersResponseStore {
@@ -524,6 +525,27 @@ test("honors a shorter revalidate requested by a later read", async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("refreshes stale tag invalidations and purges expired ones, as Next.js classifies them", async () => {
+  const store = new TestStore();
+  const refresh = vi.spyOn(store, "refresh");
+  const purge = vi.spyOn(store, "purge");
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  await handler.revalidateTag("max-profile", { expire: 31_536_000 });
+  await handler.revalidateTag("no-expire", {});
+  await handler.revalidateTag("expired");
+  await handler.revalidateTag("expire-zero", { expire: 0 });
+
+  expect(refresh.mock.calls).toEqual([
+    [{ tags: [encodeCloudflareCacheTag("max-profile")] }],
+    [{ tags: [encodeCloudflareCacheTag("no-expire")] }],
+  ]);
+  expect(purge.mock.calls).toEqual([
+    [{ tags: [encodeCloudflareCacheTag("expired")] }],
+    [{ tags: [encodeCloudflareCacheTag("expire-zero")] }],
+  ]);
 });
 
 test("propagates mutation errors without treating an unavailable local edge cache as fatal", async () => {
