@@ -572,6 +572,19 @@ function createAppPageSlotLoadingEntries<TModule extends AppPageModule>(
   return entries;
 }
 
+/**
+ * Only an override that replaces the slot's page or layouts changes its tree.
+ * A params-only override, as built for an inherited slot with its own param
+ * names, keeps the slot's nested loading boundaries.
+ */
+function getAppPageSlotTreeOverride<TModule extends AppPageModule>(
+  override: AppPageSlotOverride<TModule> | null | undefined,
+): AppPageSlotOverride<TModule> | null {
+  return override?.pageModule != null || override?.layoutModules !== undefined
+    ? (override ?? null)
+    : null;
+}
+
 function getFirstLoadingEntry<TModule extends AppPageModule>(
   entries: readonly AppPageLoadingEntry<TModule>[],
 ): AppPageLoadingEntry<TModule> | null {
@@ -990,7 +1003,7 @@ export function buildAppPageElements<
   );
   const prefetchSlotLoadingEntries = isPrefetchLoadingShell
     ? Object.entries(options.route.slots ?? {}).flatMap(([slotKey, slot]) => {
-        const override = resolveSlotOverride(slotKey, slot.name) ?? null;
+        const override = getAppPageSlotTreeOverride(resolveSlotOverride(slotKey, slot.name));
         const firstLoadingEntry = getFirstLoadingEntry(
           createAppPageSlotLoadingEntries(slot, override),
         );
@@ -1297,12 +1310,9 @@ export function buildAppPageElements<
       layoutEntries[targetIndex]?.treePosition ?? 0,
       options.matchedParams,
     );
-    const hasSlotTreeOverride =
-      slotOverride?.pageModule != null || slotOverride?.layoutModules !== undefined;
-    const slotLoadingEntries = createAppPageSlotLoadingEntries(
-      slot,
-      hasSlotTreeOverride ? (slotOverride ?? null) : null,
-    );
+    const slotTreeOverride = getAppPageSlotTreeOverride(slotOverride);
+    const hasSlotTreeOverride = slotTreeOverride !== null;
+    const slotLoadingEntries = createAppPageSlotLoadingEntries(slot, slotTreeOverride);
     const prefetchSlotLoadingEntry = isOwnedAtRoutePrefetchCutoff
       ? prefetchLoadingEntry
       : isPrefetchLoadingShell

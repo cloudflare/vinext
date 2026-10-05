@@ -1833,6 +1833,57 @@ describe("app page route wiring helpers", () => {
     expect(findSlotById(full["route:/dashboard"], bodyId)).not.toBeNull();
   });
 
+  it("treats a nested slot loading boundary as the loading shell when the slot override only carries params", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      metadataPlacement: "body",
+      resolveHead: createResolvedHead,
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            loadings: [{ default: SlotLoadingProbe }],
+            loadingTreePositions: [1],
+            name: "sidebar",
+            ownerTreePosition: 0,
+            page: { default: SlotPage },
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      // An inherited slot with its own param names gets a params-only
+      // override. It does not change the slot's tree, so the nested loading
+      // boundary still renders.
+      slotOverrides: { sidebar: { params: { team: "core" } } },
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html).toContain("Slot loading");
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(Object.hasOwn(elements, "__vinext_streaming_metadata_body:route:/dashboard")).toBe(true);
+  });
+
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
