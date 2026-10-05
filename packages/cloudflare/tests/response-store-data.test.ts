@@ -109,7 +109,7 @@ test("only attaches loopback regeneration to replayable requests", async () => {
     purgeExisting: true,
     revalidator: { id: "vinext:data", args: ["get", "safe-get"] },
     // A page replay never runs for a read that finds the entry expired.
-    expired: "miss",
+    expiryBehaviour: "miss",
   });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
 
@@ -142,7 +142,7 @@ test("prefers a cache function invocation over route replay", async () => {
     args: ["key", JSON.stringify(invocation)],
   });
   // Calling the function can't replay the page, so the Store keeps regenerating it on expiry.
-  expect(store.options).not.toHaveProperty("expired");
+  expect(store.options).not.toHaveProperty("expiryBehaviour");
 });
 
 test("captures App page RSC data for one-request warmup", async () => {
