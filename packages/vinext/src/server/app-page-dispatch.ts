@@ -999,9 +999,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 isForceStatic: revalidationDynamicConfig === "force-static",
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
-                // Cache regeneration produces a complete static artifact, so metadata
-                // must be resolved into <head> before the artifact is stored.
-                serveStreamingMetadata: false,
+                // As in Next.js, a regeneration streams metadata as the
+                // request that triggered it does.
+                serveStreamingMetadata: placeGeneratedMetadataInBody,
               },
             );
             const baseRevalidatedOnError = options.createRscOnErrorHandler(
@@ -1043,12 +1043,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   error,
                   rscErrorTracker.getCapturedSpecialErrors(error),
                 );
-                // Next.js stores generateMetadata()'s special error with the
-                // status its triggering request's metadata streaming gives
-                // it. This render always blocks on metadata, so it fails
-                // instead, keeping the previous entry, as a miss stores
-                // nothing for it.
-                if (!specialError || specialError.fromMetadata === true) return null;
+                // generateMetadata()'s special error rejects the shell only
+                // when the triggering request blocks on metadata, as an
+                // html-limited bot does, and is then stored like the page's.
+                if (!specialError) return null;
                 // An RSC request regenerates only its RSC entry, so needs no
                 // document.
                 if (options.isRscRequest) {

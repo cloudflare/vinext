@@ -14,7 +14,7 @@ import { isAppSsrRenderResult, type AppPageSsrHandler } from "./app-page-stream.
 export type AppPageRscRenderStatus =
   | { kind: "page" }
   | { kind: "special-error"; status: number; headers?: Record<string, string> }
-  /** A render Next.js wouldn't store: another error rejected the shell, or generateMetadata()'s. */
+  /** A render Next.js wouldn't store: another error rejected the shell. */
   | { kind: "unstorable" };
 
 type CreateAppPageRscRenderStatusResolverOptions = {
@@ -72,7 +72,10 @@ async function resolveAppPageRscRenderStatus(
       error,
       options.getCapturedSpecialErrors(error),
     );
-    if (!specialError || specialError.fromMetadata === true) return { kind: "unstorable" };
+    // generateMetadata()'s special error rejects the shell only for a request
+    // that blocks on metadata, as an html-limited bot does, and is then stored
+    // like the page's.
+    if (!specialError) return { kind: "unstorable" };
     const headers = resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath);
     return {
       kind: "special-error",

@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
 
-// An ISR page whose generateMetadata() calls notFound(). Next.js stores it
-// with the status its triggering request's metadata streaming gives it, which
-// vinext can't reproduce, so it stores nothing.
+// An ISR page whose generateMetadata() calls notFound(). An html-limited bot
+// blocks on metadata, so the error rejects the shell, and Next.js stores the
+// 404 for everyone.
 export const revalidate = 60;
 
 export async function generateMetadata() {

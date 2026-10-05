@@ -1400,11 +1400,10 @@ async function renderAppPageLifecycleImpl(
     specialError: AppPageSpecialError,
   ): Response => {
     // A response the boundary replaced, such as a 500 from a failing
-    // not-found boundary, is not the special error's document. Next.js stores
-    // generateMetadata()'s special error with the status its triggering
-    // request's metadata streaming gives it, which a regeneration can't
-    // reproduce, so it isn't stored.
-    if (response.status !== specialError.statusCode || specialError.fromMetadata === true) {
+    // not-found boundary, is not the special error's document. As in Next.js,
+    // generateMetadata()'s special error, which rejects the shell only for a
+    // request that blocks on metadata, is stored like the page's.
+    if (response.status !== specialError.statusCode) {
       return applyIneligibleRouteCachePolicy(response, options);
     }
     const dynamicUsedDuringRender = consumeRenderDynamicUsage();
@@ -1565,8 +1564,7 @@ async function renderAppPageLifecycleImpl(
         // the request context is alive, before the special-error response
         // clears it, so that its dynamic API use, fetch tags and cacheLife all
         // decide the store. A render that turns dynamic isn't stored, and
-        // stops the wait. generateMetadata()'s special error isn't stored, but
-        // the page's components still run against the request context.
+        // stops the wait.
         await settleCapturedRscRenderForCacheMetadata(
           capturedRscDataRef.value,
           peekRenderDynamicUsage,

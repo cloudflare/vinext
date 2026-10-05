@@ -229,45 +229,96 @@ test("stores the 404 document of an ISR page without the query of the request th
 });
 
 // An html-limited bot blocks on metadata, so generateMetadata()'s notFound()
-// rejects the document's shell.
+// rejects the document's shell. Other user agents stream metadata, so it
+// doesn't. As in Next.js, the render is stored with the status the request
+// that rendered it gets, and served to everyone.
 const HTML_LIMITED_BOT = { "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" };
 
-test("doesn't store the 404 document of an ISR page whose generateMetadata() calls notFound()", async ({
+test("stores the 404 document of an ISR page whose generateMetadata() calls notFound() for an html-limited bot", async ({
   request,
 }) => {
   const pathname = "/nextjs-compat/isr-special-error/metadata-not-found";
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await request.get(pathname, { headers: HTML_LIMITED_BOT });
-    expect(response.status()).toBe(404);
-    expect(response.headers()["x-vinext-cache"]).toBeUndefined();
-    expect(response.headers()["cache-control"] ?? "").not.toContain("s-maxage");
-    await response.text();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
+  const miss = await request.get(pathname, { headers: HTML_LIMITED_BOT });
+  expect(miss.status()).toBe(404);
+  await miss.text();
+
+  await expect
+    .poll(async () => {
+      const response = await request.get(pathname, { headers: HTML_LIMITED_BOT });
+      return [response.headers()["x-vinext-cache"], response.status()];
+    })
+    .toEqual(["HIT", 404]);
+  // Every user agent gets the stored 404.
+  const hit = await request.get(pathname);
+  expect(hit.status()).toBe(404);
+  expect(hit.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(hit.headers()["cache-control"]).toContain("s-maxage=60");
+  const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
+  expect(rsc.status()).toBe(404);
+  expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
 });
 
-test("keeps the previous entry when generateMetadata() calls notFound() in a regeneration", async ({
+test("stores the 200 document of an ISR page whose generateMetadata() calls notFound()", async ({
+  request,
+}) => {
+  const pathname = "/nextjs-compat/isr-special-error/metadata-not-found-streaming";
+  const miss = await request.get(pathname);
+  expect(miss.status()).toBe(200);
+  await miss.text();
+
+  await expect
+    .poll(async () => {
+      const response = await request.get(pathname);
+      return [response.headers()["x-vinext-cache"], response.status()];
+    })
+    .toEqual(["HIT", 200]);
+  const hit = await request.get(pathname);
+  const html = await hit.text();
+  expect(html).toContain("metadata not-found streaming page");
+  expect(html).toContain('<template data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"');
+  expect(html).toContain('<meta name="robots" content="noindex"/>');
+  const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
+  expect(rsc.status()).toBe(200);
+  expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(await rsc.text()).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+});
+
+// As in Next.js, a regeneration streams metadata as the request that
+// triggered it does, and replaces the entry with what it rendered.
+test("regenerates an ISR page whose generateMetadata() starts calling notFound() with the triggering request's status", async ({
   request,
 }) => {
   const pathname = "/nextjs-compat/isr-special-error/metadata-not-found-regen";
-  await expect
-    .poll(async () => (await request.get(pathname)).headers()["x-vinext-cache"])
-    .toBe("HIT");
+  const botPathname = `${pathname}-bot`;
+  for (const path of [pathname, botPathname]) {
+    await expect
+      .poll(async () => (await request.get(path)).headers()["x-vinext-cache"])
+      .toBe("HIT");
+  }
 
   await request.get("/api/isr-metadata-not-found-regen");
-  // The entry goes stale after a second, and the next request regenerates it.
+  // The entries go stale after a second, and the next requests regenerate them.
   await new Promise((resolve) => setTimeout(resolve, 1_500));
   const stale = await request.get(pathname);
   expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
   await stale.text();
-  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const botStale = await request.get(botPathname, { headers: HTML_LIMITED_BOT });
+  expect(botStale.headers()["x-vinext-cache"]).toBe("STALE");
+  await botStale.text();
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const response = await request.get(pathname);
-    expect(response.status()).toBe(200);
-    expect(await response.text()).toContain("metadata not-found regen page");
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
+  // A regeneration that a normal user agent triggered stores the 200 document
+  // with the digest.
+  await expect
+    .poll(async () => {
+      const response = await request.get(pathname);
+      const html = await response.text();
+      return [response.status(), html.includes('data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"')];
+    })
+    .toEqual([200, true]);
+  // One that an html-limited bot triggered stores the 404.
+  await expect
+    .poll(async () => (await request.get(botPathname, { headers: HTML_LIMITED_BOT })).status())
+    .toBe(404);
 });
 
 // As in Next.js, a route that doesn't exist is never cached.

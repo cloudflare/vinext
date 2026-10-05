@@ -476,6 +476,24 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
   });
 
+  // An html-limited bot blocks on metadata, so generateMetadata()'s notFound()
+  // rejects the shell. As in Next.js, its 404 is stored and served to every
+  // user agent.
+  test("stores the 404 an html-limited bot gets from generateMetadata()'s notFound()", async () => {
+    const pathname = "/special-error/metadata-not-found";
+    const miss = await request(pathname, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+    });
+    assert.equal(miss.status, 404);
+    await miss.arrayBuffer();
+    await waitForResponseEntries(pathname, 1);
+
+    const hit = await request(pathname);
+    assert.equal(hit.status, 404);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    await hit.arrayBuffer();
+  });
+
   test("serves a request without a query from the entries a canary query filled", async () => {
     const pathname = "/static-default";
     const canary = crypto.randomUUID();
