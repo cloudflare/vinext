@@ -192,7 +192,7 @@ type ResponseStoreMutationResult = {
 };
 ```
 
-`edgePurgeAccepted` reports whether Workers Cache accepted the edge update: a purge for `put()` and `purge()`, or an invalidation for `refresh()`. Runtimes without `ctx.cache.invalidate()` fall back to a purge.
+`edgePurgeAccepted` reports whether Workers Cache accepted the edge update: a purge for `put()` and `purge()`, or an invalidation for `refresh()`. Local Miniflare does not implement `ctx.cache.invalidate()` yet, so `refresh()` purges there instead.
 
 ### Cache keys
 

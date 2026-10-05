@@ -40,9 +40,9 @@ export function hasCacheMethod<Name extends CacheMethodName>(
 
 /**
  * Mark matching Workers Cache responses stale so the edge keeps serving them
- * while it refetches in the background. Runtimes without `invalidate()`,
- * including current Miniflare, fall back to a hard purge. Returns `undefined`
- * when the cache supports neither.
+ * while it refetches in the background. Local Miniflare does not implement
+ * `invalidate()` yet, so it falls back to a hard purge there. Returns
+ * `undefined` when the cache supports neither.
  */
 export function invalidateOrPurge(cache: unknown, options: CacheInvalidationOptions): unknown {
   if (hasCacheMethod(cache, "invalidate")) return cache.invalidate(options);

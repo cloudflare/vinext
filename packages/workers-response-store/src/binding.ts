@@ -552,8 +552,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     try {
-      // Runtimes without soft invalidation, including current Miniflare,
-      // fall back to a hard purge.
+      // Local Miniflare does not implement invalidate() yet, so fall back to a
+      // hard purge there.
       const result =
         operation === "invalidate" && typeof cache.invalidate === "function"
           ? await cache.invalidate(options)
