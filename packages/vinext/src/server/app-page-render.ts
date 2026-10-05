@@ -1615,29 +1615,10 @@ async function renderAppPageLifecycleImpl(
     await htmlRender.metadataReady;
   }
 
-  // The page renders once, inside the RSC stream. Mirror Next.js's
-  // `app-render.tsx:4293` catch shape: by the time the SSR shell promise has
-  // resolved, any redirect()/notFound() throw whose
-  // async work settles in microtasks during shell rendering has already fired
-  // through React's onError and been captured by the tracker. Convert that to
-  // a 307/404 before any bytes are flushed.
-  //
-  // Late rejections — ones that settle after macrotask boundaries (real
-  // I/O, setTimeout, etc.) — fall through to the streamed body, exactly
-  // as Next.js does. The digest survives in the Flight payload for the
-  // client router to consume.
-  const captured = rscErrorTracker.getCapturedSpecialError();
-  if (captured) {
-    const specialError = resolveAppPageSpecialError(captured);
-    if (specialError) {
-      void htmlStream.cancel().catch(() => {});
-      return applyIneligibleRouteCachePolicy(
-        await options.renderPageSpecialError(specialError),
-        options,
-      );
-    }
-  }
-
+  // A special error that a Suspense boundary, such as a loading.tsx, caught
+  // didn't reject the shell. As in Next.js, the document streams as a 200
+  // with the digest, which the client's boundary renders, in dev, dynamic and
+  // ISR renders alike, and an ISR render is stored with that status.
   // Eagerly read values that must be captured before the stream is consumed.
   let dynamicUsedDuringRender = consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;

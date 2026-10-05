@@ -86,9 +86,11 @@ export function defineNitroAppTests(): void {
     await expect(page.getByTestId("guestbook-list")).toContainText(entry);
   });
 
+  // The root loading.tsx catches the page's notFound(), so, as in Next.js,
+  // the document streams as a 200 and the client renders the boundary.
   test("renders not-found for an unknown dynamic route param", async ({ page }) => {
     const response = await page.goto("/blog/missing-post");
-    expect(response?.status()).toBe(404);
+    expect(response?.status()).toBe(200);
     await expect(page.getByTestId("not-found")).toHaveText("404");
   });
 

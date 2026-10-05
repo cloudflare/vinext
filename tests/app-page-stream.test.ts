@@ -502,8 +502,8 @@ describe("app page stream helpers", () => {
     const tracker = createAppPageRscErrorTracker(baseOnError);
 
     // A genuine error that merely carries a (e.g. hashed) digest is not a
-    // navigation signal: it must reach the error boundary, not pre-empt the
-    // 307/404 swap slot reserved for real redirect/notFound signals.
+    // navigation signal: it must reach the error boundary, not take the slot
+    // reserved for real redirect/notFound signals.
     const realError = Object.assign(new Error("kaboom"), { digest: "1234567890" });
     tracker.onRenderError(realError, { path: "/test" }, { chunk: 1 });
 

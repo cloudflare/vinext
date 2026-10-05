@@ -568,7 +568,10 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("recovers HTML page special errors from the real render", async () => {
+  // A Suspense boundary, such as a loading.tsx, caught the page's notFound()
+  // before the shell finished, so the shell rendered. Next.js streams that
+  // document as a 200 with the digest, in dev as in production.
+  it("streams a special error a Suspense boundary caught as the page's 200 document", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
     let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
@@ -588,12 +591,9 @@ describe("app page render lifecycle", () => {
       },
     });
 
-    expect(response.status).toBe(404);
-    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
-    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
-      kind: "http-access-fallback",
-      statusCode: 404,
-    });
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("<html>fallback</html>");
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
 
   it("returns RSC responses and schedules an ISR cache write through waitUntil", async () => {
@@ -2576,7 +2576,8 @@ describe("app page render lifecycle", () => {
     expect(response.status).toBe(200);
   });
 
-  it("captures special errors thrown during the full prerender SSR pass and converts them to 307/404 response", async () => {
+  // As in Next.js, whose prerender writes such a page with a 200.
+  it("prerenders a special error a Suspense boundary caught as the page's 200 document", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
     let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
@@ -2603,12 +2604,9 @@ describe("app page render lifecycle", () => {
       },
     });
 
-    expect(response.status).toBe(404);
-    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
-    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
-      kind: "http-access-fallback",
-      statusCode: 404,
-    });
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("<html>fallback</html>");
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
 });
 
@@ -2709,10 +2707,9 @@ describe("ISR storage of a page's special error", () => {
     });
   });
 
-  it("does not store a special error that a Suspense boundary caught before the shell", async () => {
-    // Below a loading boundary the shell renders, so Next.js stores a 200
-    // render. vinext answers with the special-error response instead, which
-    // is never stored as the page's entry.
+  // Below a loading boundary the shell renders, so Next.js streams and stores
+  // a 200 document with the digest, and the page's RSC payload beside it.
+  it("stores a special error a Suspense boundary caught before the shell as a 200", async () => {
     const common = createCommonOptions();
     let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
 
@@ -2720,22 +2717,67 @@ describe("ISR storage of a page's special error", () => {
       ...common.options,
       isProduction: true,
       loadSsrHandler: async () => ({
-        async handleSsr() {
+        // The SSR handler captures the page's Flight payload for the store.
+        async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
           capturedOnError?.(notFoundError, null, null);
+          if (ssrOptions?.capturedRscDataRef && ssrOptions.sideStream) {
+            ssrOptions.capturedRscDataRef.value = new Response(ssrOptions.sideStream).arrayBuffer();
+          }
+          return {
+            htmlStream: createStream(["<html>loading</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: ssrOptions?.capturedRscDataRef?.value ?? null,
+          };
+        },
+      }),
+      renderToReadableStream(_element, opts) {
+        capturedOnError = opts.onError;
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("<html>loading</html>");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+    const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
+    expect(readStoredEntries(common.isrSet)).toEqual({
+      "html:/posts/post": { html: "<html>loading</html>", policy, status: 200 },
+      "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 200 },
+    });
+  });
+
+  it("streams a special error a Suspense boundary caught on a force-dynamic page as a 200", async () => {
+    const common = createCommonOptions();
+    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isForceDynamic: true,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          capturedOnError?.(redirectError, null, null);
           return createStream(["<html>loading</html>"]);
         },
       }),
       renderToReadableStream(_element, opts) {
         capturedOnError = opts.onError;
-        return createStream(["flight-data"]);
+        return createStream(["page-flight-with-digest"]);
       },
       revalidateSeconds: 60,
     });
 
-    expect(response.status).toBe(404);
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
-    await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await expect(response.text()).resolves.toBe("<html>loading</html>");
     await Promise.all(common.waitUntilPromises);
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 

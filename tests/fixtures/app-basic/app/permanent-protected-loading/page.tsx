@@ -1,9 +1,8 @@
 import { permanentRedirect } from "next/navigation";
 
 // Same shape as protected-loading/page.tsx but uses permanentRedirect (308)
-// instead of redirect (307). The status comes from the digest's statusCode
-// field; this regression confirms resolveAppPageSpecialError honors it
-// rather than coercing to a default.
+// instead of redirect (307). As in Next.js, the document streams as a 200
+// with the digest and an immediate meta refresh.
 export default async function PermanentProtectedLoadingPage() {
   permanentRedirect("/");
 }

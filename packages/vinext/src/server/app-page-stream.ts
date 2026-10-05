@@ -251,10 +251,9 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
 type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
   /**
-   * Returns a NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured during
-   * the RSC render. Read after the SSR shell promise resolves to swap a
-   * 307/404 in place of the streamed body when redirect()/notFound() throws
-   * synchronously inside a route-level Suspense boundary (loading.tsx).
+   * Returns the first NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured
+   * during the RSC render, if any. Whether it set the render's status depends
+   * on whether it rejected the document's shell.
    */
   getCapturedSpecialError: () => unknown;
   /**
@@ -444,12 +443,10 @@ export function createAppPageRscErrorTracker(
     onRenderError(error, requestInfo, errorContext) {
       if (isNavigationSignalError(error)) {
         // Navigation signal throws (NEXT_REDIRECT, NEXT_NOT_FOUND,
-        // NEXT_HTTP_ERROR_FALLBACK) are not real failures — keep the first one
-        // so the lifecycle can swap a 307/404 in place of a streamed "Switched
-        // to client rendering" body for routes with a route-level Suspense
-        // boundary. A bare `digest` field is NOT enough: a genuine error that
-        // happens to carry a (e.g. hashed) digest is a real failure and must
-        // reach the error boundary, not masquerade as a special response.
+        // NEXT_HTTP_ERROR_FALLBACK) are not real failures, so keep the first
+        // one apart from them. A bare `digest` field is NOT enough: a genuine
+        // error that happens to carry a (e.g. hashed) digest is a real failure
+        // and must reach the error boundary, not masquerade as a special one.
         if (capturedSpecialError === null) {
           capturedSpecialError = error;
         }
