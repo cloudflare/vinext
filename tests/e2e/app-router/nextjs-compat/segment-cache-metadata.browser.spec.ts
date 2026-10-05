@@ -126,12 +126,25 @@ async function revealAndWaitForPrefetch(
 ) {
   const before = responses.length;
   await page.locator(`input[data-link-accordion="${href}"]`).click();
+  // A prefetch={true} link makes vinext fetch the loading shell beside the full
+  // payload. Wait for that request too, then for every request of the reveal
+  // to settle, the way router-act waits for its whole batch, so the duplicate
+  // check below sees all of them.
+  await expect
+    .poll(() =>
+      responses
+        .slice(before)
+        .some(
+          (response) =>
+            response.pathname === href &&
+            response.renderModeHeader === "prefetch-loading-shell" &&
+            response.settled,
+        ),
+    )
+    .toBe(true);
   await expect
     .poll(() => claimExpectedResponses(responses.slice(before), expected).claimed.length)
     .toBe(expected.length);
-  // Let the rest of the reveal's requests (vinext also prefetches the loading
-  // shell) finish before checking that no expected string was sent twice.
-  await page.waitForTimeout(500);
   await expect.poll(() => responses.slice(before).every((response) => response.settled)).toBe(true);
   const { claimed, duplicate } = claimExpectedResponses(responses.slice(before), expected);
   expect(claimed).toEqual(expected);

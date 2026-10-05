@@ -1784,8 +1784,11 @@ describe("app page route wiring helpers", () => {
 
   // Ported from Next.js: test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
-  it("leaves streamed generateMetadata() tags out of loading-shell prefetches", () => {
-    const buildElements = (renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) =>
+  it("leaves streamed generateMetadata() tags out of loading-shell prefetches without a loading boundary", () => {
+    const buildElements = (
+      renderMode: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL | undefined,
+      hasLoadingBoundary: boolean,
+    ) =>
       buildAppPageElements({
         element: createElement(PageProbe),
         makeThenableParams(params) {
@@ -1799,7 +1802,7 @@ describe("app page route wiring helpers", () => {
           errors: [null],
           layoutTreePositions: [0],
           layouts: [{ default: RootLayout }],
-          loading: { default: RouteLoadingProbe },
+          loading: hasLoadingBoundary ? { default: RouteLoadingProbe } : null,
           notFound: null,
           notFounds: [null],
           routeSegments: ["dashboard"],
@@ -1812,11 +1815,20 @@ describe("app page route wiring helpers", () => {
       });
     const bodyId = "__vinext_streaming_metadata_body:route:/dashboard";
 
-    const shell = buildElements(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+    // Next.js short-circuits a pre-PPR prefetch with no loading boundary to the
+    // router state and a [null, null] head.
+    const shell = buildElements(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL, false);
     expect(Object.hasOwn(shell, bodyId)).toBe(false);
     expect(findSlotById(shell["route:/dashboard"], bodyId)).toBeNull();
 
-    const full = buildElements();
+    // A shell that renders a loading boundary carries the head, as
+    // walkTreeWithFlightRouterState() returns rscHead with it.
+    const loadingShell = buildElements(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL, true);
+    expect(loadingShell[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(Object.hasOwn(loadingShell, bodyId)).toBe(true);
+    expect(findSlotById(loadingShell["route:/dashboard"], bodyId)).not.toBeNull();
+
+    const full = buildElements(undefined, false);
     expect(Object.hasOwn(full, bodyId)).toBe(true);
     expect(findSlotById(full["route:/dashboard"], bodyId)).not.toBeNull();
   });
