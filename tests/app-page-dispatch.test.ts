@@ -3806,6 +3806,56 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("stores only the renderer's Link from a stale 404 regeneration when middleware also sets one", async () => {
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const frameworkLink = "</font.woff2>; rel=preload";
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      middlewareContext: { headers: new Headers({ link: "</mw.css>; rel=preload" }), status: null },
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+    options.renderHttpAccessFallbackPage = vi.fn(async (statusCode: number) => {
+      const fallback = new Response("<html>not found</html>", {
+        headers: { link: frameworkLink },
+        status: statusCode,
+      });
+      markFrameworkLinkHeaders(fallback.headers, frameworkLink);
+      return fallback;
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["rsc:/posts/hello", undefined],
+      ["html:/posts/hello", { link: frameworkLink }],
+    ]);
+  });
+
   it("does not store a regeneration whose page reads a dynamic API after its shell rejected", async () => {
     // A root layout's `<Suspense><Session /></Suspense>` reads cookies() after
     // the page's redirect() rejected the shell.

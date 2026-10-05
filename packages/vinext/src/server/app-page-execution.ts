@@ -11,7 +11,7 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   copyLinkHeaderProvenance,
-  hasFrameworkLinkHeaders,
+  getFrameworkLinkHeader,
   markFrameworkLinkHeaders,
 } from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
@@ -189,9 +189,7 @@ function mergeAppPageSpecialErrorHeaders(
   response: Response,
   middlewareContext: { headers: Headers | null } | undefined,
 ): Response {
-  const frameworkLink = hasFrameworkLinkHeaders(response.headers)
-    ? response.headers.get("link")
-    : null;
+  const frameworkLink = getFrameworkLinkHeader(response.headers);
   const headers = new Headers(response.headers);
   if (frameworkLink) headers.delete("link");
   mergeMiddlewareResponseHeaders(headers, middlewareContext?.headers ?? null);
@@ -248,10 +246,7 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
  * Skips prefixing only when basePath is unset or the raw target does not start
  * with `/`, matching Next.js's literal `addPathPrefix()` contract.
  */
-export function applyAppPageRedirectBasePath(
-  location: string,
-  basePath: string | undefined,
-): string {
+function applyAppPageRedirectBasePath(location: string, basePath: string | undefined): string {
   if (!basePath || !location.startsWith("/")) return location;
 
   const queryIndex = location.indexOf("?");
@@ -261,6 +256,19 @@ export function applyAppPageRedirectBasePath(
   const pathname = suffixIndex === -1 ? location : location.slice(0, suffixIndex);
   const suffix = suffixIndex === -1 ? "" : location.slice(suffixIndex);
   return `${basePath}${pathname}${suffix}`;
+}
+
+/**
+ * The response headers stored with a page's special-error entries: a
+ * redirect's own `location`, not the response's, which middleware may have
+ * replaced for this request.
+ */
+export function resolveAppPageSpecialErrorStoredHeaders(
+  specialError: AppPageSpecialError,
+  basePath: string | undefined,
+): Record<string, string> | undefined {
+  if (specialError.kind !== "redirect") return undefined;
+  return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
 /**

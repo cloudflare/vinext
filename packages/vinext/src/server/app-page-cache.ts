@@ -205,6 +205,7 @@ function buildAppPageCachedHeaders(options: {
   mountedSlotsHeader?: string | null;
   params?: Record<string, string | string[]>;
   staleTimeSeconds?: number;
+  storedHeaders?: CachedAppPageValue["headers"];
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
@@ -226,6 +227,14 @@ function buildAppPageCachedHeaders(options: {
   }
 
   applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
+
+  // The page's stored headers, such as a redirect's `location`, precede this
+  // request's middleware headers, as on a fresh special-error response.
+  for (const [name, value] of Object.entries(options.storedHeaders ?? {})) {
+    // The renderer's Link is appended after middleware's, below.
+    if (name.toLowerCase() === "link") continue;
+    for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
+  }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
   if (options.linkHeader) {
@@ -298,18 +307,6 @@ function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
-/** Replay the stored response headers, such as a redirect's `location`. */
-function appendStoredAppPageHeaders(
-  headers: Headers,
-  storedHeaders: CachedAppPageValue["headers"],
-): void {
-  for (const [name, value] of Object.entries(storedHeaders ?? {})) {
-    // The HTML replay appends the renderer's Link with its provenance.
-    if (name.toLowerCase() === "link") continue;
-    for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
-  }
-}
-
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
@@ -355,6 +352,7 @@ export function buildAppPageCachedResponse(
       // bytes, so a hit composes them as a fresh render does.
       params: options.params,
       staleTimeSeconds,
+      storedHeaders: cachedValue.headers,
     });
     if (options.renderedPathAndSearch) {
       rscHeaders.set(
@@ -362,7 +360,6 @@ export function buildAppPageCachedResponse(
         encodeURIComponent(options.renderedPathAndSearch),
       );
     }
-    appendStoredAppPageHeaders(rscHeaders, cachedValue.headers);
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
 
@@ -385,8 +382,8 @@ export function buildAppPageCachedResponse(
     linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
+    storedHeaders: cachedValue.headers,
   });
-  appendStoredAppPageHeaders(htmlHeaders, cachedValue.headers);
 
   const response = new Response(cachedValue.html, {
     status,

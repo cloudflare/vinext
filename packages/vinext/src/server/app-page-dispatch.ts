@@ -43,7 +43,7 @@ import {
   resolveAppPageParentHttpAccessBoundaryModule,
 } from "./app-page-boundary.js";
 import {
-  applyAppPageRedirectBasePath,
+  resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
@@ -109,7 +109,7 @@ import {
 } from "./cacheability-manifest.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
-import { hasFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -1048,7 +1048,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 // document.
                 if (options.isRscRequest) {
                   return {
-                    headers: resolveStoredSpecialErrorHeaders(specialError, options.basePath),
+                    headers: resolveAppPageSpecialErrorStoredHeaders(
+                      specialError,
+                      options.basePath,
+                    ),
                     html: "",
                     status: specialError.statusCode,
                   };
@@ -1065,15 +1068,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 // As on a miss, only the special error's own document is stored.
                 if (document.status !== specialError.statusCode) return null;
                 return {
-                  headers: resolveStoredSpecialErrorHeaders(specialError, options.basePath),
+                  headers: resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath),
                   html: await document.text(),
-                  // Middleware's Link is merged again on replay, so only a
-                  // renderer-only Link is stored, as on a miss.
-                  linkHeader:
-                    hasFrameworkLinkHeaders(document.headers) &&
-                    !options.middlewareContext.headers?.has("link")
-                      ? (document.headers.get("link") ?? undefined)
-                      : undefined,
+                  // Only the renderer's own Link, as on a miss: middleware's is
+                  // merged again on replay.
+                  linkHeader: getFrameworkLinkHeader(document.headers) ?? undefined,
                   status: specialError.statusCode,
                 };
               },
@@ -1551,15 +1550,6 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
     request: options.request,
     specialError,
   });
-}
-
-/** The response headers stored with a special error's entries. */
-function resolveStoredSpecialErrorHeaders(
-  specialError: AppPageSpecialError,
-  basePath: string | undefined,
-): Record<string, string> | undefined {
-  if (specialError.kind !== "redirect") return undefined;
-  return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
 async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(

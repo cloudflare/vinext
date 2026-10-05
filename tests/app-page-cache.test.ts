@@ -2331,6 +2331,24 @@ describe("app page special-error entries", () => {
     expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
   });
 
+  it.each([false, true])(
+    "replays a stored location before middleware's, as a fresh redirect does (RSC request: %s)",
+    (isRscRequest) => {
+      const options = { cacheState: "HIT" as const, isRscRequest, revalidateSeconds: 60 };
+
+      // Middleware's Location replaces the redirect's own, as on a fresh render.
+      expect(
+        buildAppPageCachedResponse(specialErrorEntry(307, ""), {
+          ...options,
+          middlewareHeaders: new Headers({ location: "/current" }),
+        })?.headers.get("location"),
+      ).toBe("/current");
+      expect(
+        buildAppPageCachedResponse(specialErrorEntry(307, ""), options)?.headers.get("location"),
+      ).toBe("/target");
+    },
+  );
+
   it("serves an empty-document redirect entry as a HIT", async () => {
     const response = await readAppPageCacheResponse({
       cleanPathname: "/redirecting",

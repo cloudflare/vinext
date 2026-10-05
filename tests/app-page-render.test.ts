@@ -2905,7 +2905,9 @@ describe("ISR storage of a page's special error", () => {
     const response = await renderAppPageLifecycle({
       ...common.options,
       isProduction: true,
-      loadSsrHandler: shellRejectingSsrHandler(redirectError),
+      loadSsrHandler: shellRejectingSsrHandler(
+        Object.assign(new Error("NEXT_REDIRECT"), { digest: "NEXT_REDIRECT;replace;;307;" }),
+      ),
       renderPageSpecialError: async (specialError) =>
         new Response(null, { headers: { Location: "" }, status: specialError.statusCode }),
       revalidateSeconds: 60,
@@ -2917,6 +2919,63 @@ describe("ISR storage of a page's special error", () => {
     expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
       ["html:/posts/post", { location: "" }],
       ["rsc:/posts/post", { location: "" }],
+    ]);
+  });
+
+  it("stores only the renderer's Link when middleware also sets one", async () => {
+    const common = createCommonOptions();
+    const frameworkLink = "</font.woff2>; rel=preload";
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      middlewareContext: { headers: new Headers({ link: "</mw.css>; rel=preload" }), status: null },
+      renderPageSpecialError: async (specialError) => {
+        // The fallback merges middleware's Link before the renderer's.
+        const fallback = new Response("page:404", {
+          headers: { link: `</mw.css>; rel=preload, ${frameworkLink}` },
+          status: specialError.statusCode,
+        });
+        markFrameworkLinkHeaders(fallback.headers, frameworkLink);
+        return fallback;
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("link")).toBe(`</mw.css>; rel=preload, ${frameworkLink}`);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["html:/posts/post", { link: frameworkLink }],
+      ["rsc:/posts/post", undefined],
+    ]);
+  });
+
+  it("stores the redirect's own location, not middleware's", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      basePath: "/base",
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(redirectError),
+      middlewareContext: { headers: new Headers({ location: "/from-middleware" }), status: null },
+      // Middleware's headers merge after the redirect's own Location.
+      renderPageSpecialError: async (specialError) =>
+        new Response(null, {
+          headers: { Location: "/from-middleware" },
+          status: specialError.statusCode,
+        }),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("location")).toBe("/from-middleware");
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["html:/posts/post", { location: "/base/target" }],
+      ["rsc:/posts/post", { location: "/base/target" }],
     ]);
   });
 

@@ -19,6 +19,7 @@ import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
   resolveAppPageSpecialError,
+  resolveAppPageSpecialErrorStoredHeaders,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
   type AppPageSpecialError,
@@ -108,7 +109,7 @@ import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
 import {
   copyLinkHeaderProvenance,
-  hasFrameworkLinkHeaders,
+  getFrameworkLinkHeader,
 } from "./app-response-header-provenance.js";
 import {
   isRouteCacheabilityEvaluation,
@@ -130,7 +131,7 @@ type AppPageRequestCacheLife = {
 
 type AppPageRenderableElement = ReactNode | Readonly<Record<string, ReactNode>>;
 
-export type AppPageSpecialErrorRenderOptions = {
+type AppPageSpecialErrorRenderOptions = {
   /**
    * The document may be stored in place of the page's, so like a cache
    * candidate's render it must not carry the request's query.
@@ -1402,17 +1403,13 @@ async function renderAppPageLifecycleImpl(
     copyLinkHeaderProvenance(response.headers, policyResponse.headers);
     if (!shouldWriteHtmlCache) return policyResponse;
 
-    const location = response.headers.get("location");
     const clientResponse = finalizeHtmlCacheWrite(policyResponse, {
       capturedDynamicUsageBeforeContextCleanup: () => dynamicUsedDuringRender,
-      headers: location === null ? undefined : { location },
+      // The response's headers carry this request's middleware headers, which
+      // replay merges again, so only the page's own are stored.
+      headers: resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath),
       htmlResponsePolicy,
-      // Middleware's Link merges into the same header, and is merged again on
-      // replay, so only a renderer-only Link is stored.
-      linkHeader:
-        hasFrameworkLinkHeaders(response.headers) && !options.middlewareContext.headers?.has("link")
-          ? response.headers.get("link")
-          : null,
+      linkHeader: getFrameworkLinkHeader(response.headers),
       status: response.status,
     });
     copyLinkHeaderProvenance(response.headers, clientResponse.headers);
