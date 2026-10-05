@@ -1483,7 +1483,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     if (!options.tags?.length && !options.pathPrefixes?.length) {
       throw new TypeError("invalidate() requires tags or pathPrefixes");
     }
-    if (options.expire !== undefined && !(options.expire >= 0)) {
+    if (
+      options.expire !== undefined &&
+      !(typeof options.expire === "number" && options.expire >= 0)
+    ) {
       throw new TypeError("invalidate() expire must be a non-negative number of seconds");
     }
 

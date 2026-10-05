@@ -508,7 +508,11 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       // A read that finds a page-replay entry expired must not wait for the replay: a page
       // reading two such entries would replay itself for each in turn (A -> B -> A). The
       // Store answers a miss and the caller recomputes, as in Next.js; refresh() still replays.
-      ...(revalidator?.id === DATA_REVALIDATOR_ID ? { expiryBehavior: "miss" as const } : {}),
+      // An entry without a revalidator only expires through invalidate()'s `expire`, and the
+      // Store can't regenerate it either.
+      ...(revalidator?.id !== CACHE_FUNCTION_REVALIDATOR_ID
+        ? { expiryBehavior: "miss" as const }
+        : {}),
       coalesce: true,
       purgeExisting: true,
     });

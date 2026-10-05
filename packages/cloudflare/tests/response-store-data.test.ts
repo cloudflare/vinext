@@ -123,7 +123,8 @@ test("only attaches loopback regeneration to replayable requests", async () => {
   await runWithResponseStoreInvocation("unsafe-post", false, () =>
     handler.set("post", null, { cacheControl: { revalidate: 1, expire: 2 } }),
   );
-  expect(store.options).toEqual({ coalesce: true, purgeExisting: true });
+  // Only invalidate()'s `expire` can expire it, and nothing can regenerate it.
+  expect(store.options).toEqual({ coalesce: true, expiryBehavior: "miss", purgeExisting: true });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBeNull();
   expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
 });

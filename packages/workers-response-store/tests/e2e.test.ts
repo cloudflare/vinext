@@ -592,6 +592,89 @@ test("invalidate tombstones an entry whose source revision is not in R2", async 
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
 });
 
+test("back-to-back invalidations keep an entry stale instead of tombstoning it", async () => {
+  await put("/invalidate-twice", "seed", { tags: ["invalidate-twice"] });
+  const stub = await metadataStub();
+  await stub.invalidateMatching({ tags: ["invalidate-twice"] }, Date.now());
+  await stub.invalidateMatching({ tags: ["invalidate-twice"] }, Date.now());
+  assert.deepEqual((await stub.drainPendingTombstones(400)).failures, []);
+  let response = await read("/invalidate-twice");
+  assert.equal(await response.text(), "seed");
+  assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "3");
+
+  // An earlier drain may land its stale copy without recording it.
+  await put("/invalidate-in-flight", "seed", { tags: ["invalidate-in-flight"] });
+  await stub.invalidateMatching({ tags: ["invalidate-in-flight"] }, Date.now());
+  await stub.drainPendingTombstones(400);
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  await storage.exec("UPDATE pending_r2_tombstones SET r2_complete = 0");
+  await stub.invalidateMatching({ tags: ["invalidate-in-flight"] }, Date.now());
+  assert.deepEqual((await stub.drainPendingTombstones(400)).failures, []);
+  response = await read("/invalidate-in-flight");
+  assert.equal(await response.text(), "seed");
+  assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "3");
+});
+
+test("invalidate's expire also expires an entry regenerated before it", async () => {
+  const path = "/invalidate-expire-regenerated";
+  await put(path, "seed", {
+    tags: ["expire-regenerated"],
+    revalidator: {
+      body: "regenerated",
+      cacheControl: "public, max-age=60",
+      cacheTags: ["expire-regenerated"],
+    },
+  });
+
+  await invalidate({ tags: ["expire-regenerated"], expire: 1 });
+  assert.equal(await (await read(path)).text(), "seed");
+  await vi.waitFor(async () => {
+    const fresh = await read(path);
+    assert.equal(await fresh.text(), "regenerated");
+    assert.equal(fresh.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const expired = await read(path);
+  assert.equal(await expired.text(), "regenerated");
+  assert.equal(expired.headers.get("X-Revalidation-Reason"), "expired");
+});
+
+test("a retried stale rewrite purges the edge once R2 holds its tombstone", async () => {
+  await put("/invalidate-retry", "seed");
+  const stub = await metadataStub();
+  await stub.invalidateMatching({ pathPrefixes: ["/invalidate-retry"] }, Date.now());
+  // A previous drain tombstoned the key but stopped before recording it.
+  const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
+  await bucket.put((await bucket.list()).objects[0].key, new Uint8Array(), {
+    customMetadata: { latestRevision: "2", tombstoned: "1" },
+  });
+
+  const drained = await stub.drainPendingTombstones(400);
+  assert.equal(drained.purged.length, 1);
+  assert.equal(drained.purged[0].edgeInvalidate, false);
+});
+
+test("invalidate keeps a pending purge's hard edge purge", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  await put("/invalidate-after-purge", "purged");
+  await purge({ pathPrefixes: ["/invalidate-after-purge"] });
+  await put("/invalidate-after-purge", "replacement");
+
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  const result = await invalidate({ pathPrefixes: ["/invalidate-after-purge"] });
+  assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual(
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()).map(
+      ({ operation }: { operation: string }) => operation,
+    ),
+    ["purge"],
+  );
+  assert.equal(await (await read("/invalidate-after-purge")).text(), "replacement");
+});
+
 test.each(["rate-limit", "throw", "reject"])(
   "refresh reports a failed edge invalidation: %s",
   async (mode) => {
@@ -2537,6 +2620,10 @@ test("the previous metadata schema is upgraded in place", async () => {
     assert.equal(invalidations[0]?.tag, "new-tag");
     assert.ok(Number(invalidations[0]?.invalidated_at) > 123);
     assert.deepEqual(invalidations[1], { invalidated_at: 123, tag: "old-tag" });
+    assert.deepEqual(
+      await storage.exec("SELECT expires_at FROM tag_invalidations WHERE tag = 'old-tag'"),
+      [{ expires_at: null }],
+    );
     assert.deepEqual(
       await storage.exec("SELECT invalidation_sequence, publishable FROM pending_objects"),
       [],

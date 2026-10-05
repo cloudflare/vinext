@@ -309,7 +309,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         CREATE TABLE IF NOT EXISTS tag_invalidations (
           tag TEXT PRIMARY KEY,
           invalidated_at INTEGER NOT NULL,
-          invalidation_sequence INTEGER NOT NULL DEFAULT 0
+          invalidation_sequence INTEGER NOT NULL DEFAULT 0,
+          expires_at INTEGER
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS metadata_schema_migrations (
           version INTEGER PRIMARY KEY
@@ -443,6 +444,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (7)");
         }
         if (!migrations.has(8)) {
+          if (
+            !schemas.find(({ name }) => name === "tag_invalidations")?.sql.includes("expires_at")
+          ) {
+            ctx.storage.sql.exec("ALTER TABLE tag_invalidations ADD COLUMN expires_at INTEGER");
+          }
           const tombstones = schemas.find(({ name }) => name === "pending_r2_tombstones")?.sql;
           if (!tombstones?.includes("edge_invalidate")) {
             ctx.storage.sql.exec(`
@@ -1021,6 +1027,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         };
       }
 
+      // Like Next.js, a tag's pending `expire` deadline also expires entries
+      // published before it.
+      const deadline = this.getTagExpiryDeadline(metadata.cacheTags, Date.now());
+      const freshUntil = Math.min(metadata.freshUntil, deadline);
+      const swrUntil = Math.min(metadata.swrUntil, deadline);
       const update = this.ctx.storage.sql.exec<{ key_hash: string }>(
         `UPDATE entries SET
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
@@ -1033,8 +1044,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.objectKey,
         metadata.statusText,
         JSON.stringify(metadata.responseHeaders),
-        metadata.freshUntil,
-        metadata.swrUntil,
+        freshUntil,
+        swrUntil,
         metadata.revalidator?.id ?? null,
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         metadata.expiryBehavior === "miss" ? "miss" : null,
@@ -1068,8 +1079,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         objectKey: metadata.objectKey,
         statusText: metadata.statusText,
         responseHeaders: metadata.responseHeaders,
-        freshUntil: metadata.freshUntil,
-        swrUntil: metadata.swrUntil,
+        freshUntil,
+        swrUntil,
         revalidator: metadata.revalidator,
         expiryBehavior: metadata.expiryBehavior,
         cacheTags: metadata.cacheTags,
@@ -1160,6 +1171,23 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return expiration;
   }
 
+  /** The earliest `expire` deadline still ahead of `now` among `tags`, or Infinity. */
+  private getTagExpiryDeadline(tags: string[], now: number): number {
+    let deadline = Number.POSITIVE_INFINITY;
+    for (const batch of batches(normalizeTags(tags), MAX_SQL_PARAMETERS - 1)) {
+      const row = this.ctx.storage.sql
+        .exec<{ deadline: number | null }>(
+          `SELECT MIN(expires_at) AS deadline FROM tag_invalidations
+          WHERE expires_at > ? AND tag IN (${batch.map(() => "?").join(", ")})`,
+          now,
+          ...batch,
+        )
+        .one();
+      deadline = Math.min(deadline, row.deadline ?? Number.POSITIVE_INFINITY);
+    }
+    return deadline;
+  }
+
   getTagExpiration(tags: string[]): number {
     return this.getTagInvalidationMaximum(tags, "invalidated_at");
   }
@@ -1188,9 +1216,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   /**
    * Fence writes reserved before an invalidation from publishing over it.
    * `invalidatedAt` also expires the tags for soft-tag reads; pass 0 to leave
-   * their expiration unchanged.
+   * their expiration unchanged. Like Next.js, `expiresAt` replaces the tags'
+   * deadline for entries published before it; null keeps the current one.
    */
-  private recordInvalidations(keyHashes: string[], tags: string[], invalidatedAt: number): void {
+  private recordInvalidations(
+    keyHashes: string[],
+    tags: string[],
+    invalidatedAt: number,
+    expiresAt: number | null,
+  ): void {
     this.ctx.storage.sql.exec(
       `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
       WHERE singleton = 1`,
@@ -1207,22 +1241,23 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         ...batch,
       );
     }
-    for (const batch of batches(tags, MAX_SQL_PARAMETERS / 2)) {
+    for (const batch of batches(tags, Math.floor(MAX_SQL_PARAMETERS / 3))) {
       this.ctx.storage.sql.exec(
         `INSERT INTO tag_invalidations
-          (tag, invalidated_at, invalidation_sequence) VALUES ${batch
+          (tag, invalidated_at, expires_at, invalidation_sequence) VALUES ${batch
             .map(
               () =>
-                "(?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
+                "(?, ?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
             )
             .join(", ")}
         ON CONFLICT(tag) DO UPDATE SET invalidated_at =
           MAX(tag_invalidations.invalidated_at, excluded.invalidated_at),
+          expires_at = COALESCE(excluded.expires_at, tag_invalidations.expires_at),
           invalidation_sequence = MAX(
             tag_invalidations.invalidation_sequence,
             excluded.invalidation_sequence
           )`,
-        ...batch.flatMap((tag) => [tag, invalidatedAt]),
+        ...batch.flatMap((tag) => [tag, invalidatedAt, expiresAt]),
       );
     }
   }
@@ -1238,9 +1273,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       );
 
       const tags = normalizeTags(options.tags ?? []);
+      // A hard purge expires the tags now, replacing any later deadline.
       this.recordInvalidations(
         matches.map((row) => row.key_hash),
         tags,
+        invalidatedAt,
         invalidatedAt,
       );
 
@@ -1322,15 +1359,35 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         matches.map((row) => row.key_hash),
         normalizeTags(options.tags ?? []),
         0,
+        expiresAt ?? null,
       );
 
+      // An undrained earlier invalidation's revision never reached R2, so keep
+      // its source. A pending purge keeps its hard edge purge.
       for (const batch of batches(matches, MAX_SQL_PARAMETERS / 10)) {
         this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO pending_r2_tombstones
+          `INSERT INTO pending_r2_tombstones
             (key_hash, cache_key, object_key, revision, tombstone_sequence,
               source_revision, fresh_until, swr_until, edge_invalidate) VALUES ${batch
                 .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                .join(", ")}`,
+                .join(", ")}
+          ON CONFLICT(key_hash) DO UPDATE SET
+            cache_key = excluded.cache_key,
+            object_key = excluded.object_key,
+            revision = excluded.revision,
+            tombstone_sequence = excluded.tombstone_sequence,
+            source_revision = CASE
+              WHEN pending_r2_tombstones.r2_complete = 0
+                AND pending_r2_tombstones.source_revision IS NOT NULL
+                AND pending_r2_tombstones.revision = excluded.source_revision
+              THEN pending_r2_tombstones.source_revision
+              ELSE excluded.source_revision
+            END,
+            fresh_until = excluded.fresh_until,
+            swr_until = excluded.swr_until,
+            edge_invalidate = MIN(pending_r2_tombstones.edge_invalidate, excluded.edge_invalidate),
+            r2_complete = 0,
+            edge_purge_complete = 0`,
           ...batch.flatMap((row) => [
             row.key_hash,
             row.cache_key,
@@ -1380,44 +1437,52 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   private async writeR2Update(entry: PendingR2Update): Promise<PurgedEntry> {
     const { stale, ...updated } = entry;
+    // Workers Cache must not refetch a tombstoned key's stale response.
+    const completed = (tombstoned: boolean): PurgedEntry =>
+      tombstoned ? { ...updated, edgeInvalidate: false } : updated;
     for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
       const object = stale ? await this.env.CACHE_BODIES.get(entry.objectKey) : null;
       const current = stale ? object : await this.env.CACHE_BODIES.head(entry.objectKey);
       const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-      let body: ArrayBuffer | null = null;
-      if (object) {
-        // A stale rewrite republishes the source revision. When R2 does not hold
-        // it (its write is still in flight or failed), tombstone the key instead
-        // so that late write cannot publish it as fresh.
-        if (
-          currentRevision === stale?.sourceRevision &&
-          object.customMetadata?.tombstoned !== "1"
-        ) {
-          body = await object.arrayBuffer();
-        } else {
-          await object.body.cancel();
-        }
+      const tombstoned = current?.customMetadata?.tombstoned === "1";
+      if (currentRevision !== undefined && currentRevision >= entry.revision) {
+        await object?.body.cancel();
+        return completed(tombstoned);
       }
-      if (currentRevision !== undefined && currentRevision >= entry.revision) return updated;
+      // A stale rewrite republishes the source revision, or a stale copy of it
+      // an earlier invalidation wrote. When R2 does not hold either (the source
+      // write is still in flight or failed), tombstone the key instead so that
+      // late write cannot publish it as fresh.
+      const restale =
+        stale !== undefined &&
+        !tombstoned &&
+        currentRevision !== undefined &&
+        currentRevision >= stale.sourceRevision;
+      if (object && !restale) await object.body.cancel();
 
-      const stored = await this.env.CACHE_BODIES.put(entry.objectKey, body ?? new Uint8Array(), {
-        onlyIf: current ? { etagMatches: current.etag } : { etagDoesNotMatch: "*" },
-        customMetadata:
-          body && stale
-            ? {
-                ...current!.customMetadata,
-                latestRevision: String(entry.revision),
-                freshUntil: String(stale.freshUntil),
-                swrUntil: String(stale.swrUntil),
-              }
-            : { latestRevision: String(entry.revision), tombstoned: "1" },
-      });
-      // Workers Cache must not refetch a tombstoned key's stale response.
-      if (stored) return body ? updated : { ...updated, edgeInvalidate: false };
+      const stored = await this.env.CACHE_BODIES.put(
+        entry.objectKey,
+        restale && object ? object.body : new Uint8Array(),
+        {
+          onlyIf: current ? { etagMatches: current.etag } : { etagDoesNotMatch: "*" },
+          customMetadata:
+            restale && object
+              ? {
+                  ...object.customMetadata,
+                  latestRevision: String(entry.revision),
+                  freshUntil: String(stale.freshUntil),
+                  swrUntil: String(stale.swrUntil),
+                }
+              : { latestRevision: String(entry.revision), tombstoned: "1" },
+        },
+      );
+      if (stored) return completed(!restale);
     }
     const current = await this.env.CACHE_BODIES.head(entry.objectKey);
     const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-    if (currentRevision !== undefined && currentRevision >= entry.revision) return updated;
+    if (currentRevision !== undefined && currentRevision >= entry.revision) {
+      return completed(current?.customMetadata?.tombstoned === "1");
+    }
     throw new Error(
       `R2 revision ${entry.revision} could not be ${stale ? "invalidated" : "tombstoned"} after concurrent writes`,
     );
@@ -1465,19 +1530,20 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       )
       .toArray();
     const pending = rows.map(pendingEntryFromRow);
-    const settled = await mapSettledWithR2Concurrency(rows, (row) =>
-      this.writeR2Update({
-        ...pendingEntryFromRow(row),
-        ...(row.source_revision !== null && row.fresh_until !== null && row.swr_until !== null
-          ? {
-              stale: {
-                freshUntil: row.fresh_until,
-                sourceRevision: row.source_revision,
-                swrUntil: row.swr_until,
-              },
-            }
-          : {}),
-      }),
+    const updates: PendingR2Update[] = rows.map((row, index) => ({
+      ...pending[index]!,
+      ...(row.source_revision !== null && row.fresh_until !== null && row.swr_until !== null
+        ? {
+            stale: {
+              freshUntil: row.fresh_until,
+              sourceRevision: row.source_revision,
+              swrUntil: row.swr_until,
+            },
+          }
+        : {}),
+    }));
+    const settled = await mapSettledWithR2Concurrency(updates, (update) =>
+      this.writeR2Update(update),
     );
     const purged = settled.flatMap((result) =>
       result.status === "fulfilled" ? [result.value] : [],
