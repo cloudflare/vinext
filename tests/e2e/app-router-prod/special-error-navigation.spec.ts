@@ -51,3 +51,46 @@ test("serves the RSC payload of a page that calls notFound() or redirect() from 
     expect(await response.text()).toContain(digest);
   }
 });
+
+test("serves the document of an ISR page that calls notFound() or redirect() from the ISR cache", async ({
+  request,
+}) => {
+  for (const { pathname, status, location, rscStatus, digest } of [
+    {
+      pathname: "/nextjs-compat/isr-special-error/not-found",
+      status: 404,
+      location: undefined,
+      rscStatus: 404,
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    },
+    {
+      pathname: "/nextjs-compat/isr-special-error/redirect",
+      status: 307,
+      location: "/nextjs-compat/nav-redirect-result",
+      // An RSC response carries the redirect in its payload, as in Next.js.
+      rscStatus: 200,
+      digest: "NEXT_REDIRECT;",
+    },
+  ]) {
+    // The first document request renders and stores the page.
+    await expect
+      .poll(
+        async () => (await request.get(pathname, { maxRedirects: 0 })).headers()["x-vinext-cache"],
+      )
+      .toBe("HIT");
+    const response = await request.get(pathname, { maxRedirects: 0 });
+    expect(response.status()).toBe(status);
+    expect(response.headers()["location"]).toBe(location);
+    expect(response.headers()["cache-control"]).toContain("s-maxage=60");
+
+    // The same render stored the page's RSC payload, with the same status.
+    const rscResponse = await request.get(`${pathname}.rsc`, {
+      headers: RSC_HEADERS,
+      maxRedirects: 0,
+    });
+    expect(rscResponse.status()).toBe(rscStatus);
+    expect(rscResponse.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(rscResponse.headers()["location"]).toBe(location);
+    expect(await rscResponse.text()).toContain(digest);
+  }
+});
