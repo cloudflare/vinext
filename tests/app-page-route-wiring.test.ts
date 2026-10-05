@@ -1782,6 +1782,45 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Page");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
+  it("leaves streamed generateMetadata() tags out of loading-shell prefetches", () => {
+    const buildElements = (renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        metadataPlacement: "body",
+        resolveHead: createResolvedHead,
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: { default: RouteLoadingProbe },
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+        renderMode,
+      });
+    const bodyId = "__vinext_streaming_metadata_body:route:/dashboard";
+
+    const shell = buildElements(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+    expect(Object.hasOwn(shell, bodyId)).toBe(false);
+    expect(findSlotById(shell["route:/dashboard"], bodyId)).toBeNull();
+
+    const full = buildElements();
+    expect(Object.hasOwn(full, bodyId)).toBe(true);
+    expect(findSlotById(full["route:/dashboard"], bodyId)).not.toBeNull();
+  });
+
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
