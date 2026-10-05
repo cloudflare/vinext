@@ -39,14 +39,19 @@ test("client navigation renders a page's notFound()", async ({ page }) => {
 test("serves the RSC payload of a page that calls notFound() or redirect() from the ISR cache", async ({
   request,
 }) => {
-  for (const [pathname, digest] of [
-    ["/notfound-test", "NEXT_HTTP_ERROR_FALLBACK;404"],
-    ["/nextjs-compat/nav-redirect-server", "NEXT_REDIRECT;"],
+  for (const { pathname, digest, status } of [
+    { pathname: "/notfound-test", digest: "NEXT_HTTP_ERROR_FALLBACK;404", status: 404 },
+    // An RSC response carries the redirect in its payload, as in Next.js.
+    { pathname: "/nextjs-compat/nav-redirect-server", digest: "NEXT_REDIRECT;", status: 200 },
   ]) {
     // The first request may already hit an entry stored by an earlier test.
-    await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
-    const response = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
-    expect(response.status()).toBe(200);
+    await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS, maxRedirects: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const response = await request.get(`${pathname}.rsc`, {
+      headers: RSC_HEADERS,
+      maxRedirects: 0,
+    });
+    expect(response.status()).toBe(status);
     expect(response.headers()["x-vinext-cache"]).toBe("HIT");
     expect(await response.text()).toContain(digest);
   }
@@ -159,6 +164,51 @@ test.describe("client navigation to a stored notFound() page", () => {
     expect(new URL(page.url()).pathname).toBe("/nextjs-compat/isr-special-error/does-not-exist");
     await expect.poll(() => readMarker(page)).toBeUndefined();
   });
+});
+
+// Next.js renders an ISR page's document beside its RSC payload, so an RSC
+// request that renders the page first stores the status the document's shell
+// gives it. A redirect's RSC response is a 200 carrying its location.
+test("stores the status of an ISR page's special error from the RSC request that renders it first", async ({
+  request,
+}) => {
+  for (const { pathname, rscStatus, location, digest } of [
+    {
+      pathname: "/nextjs-compat/isr-special-error/rsc-first-not-found",
+      rscStatus: 404,
+      location: undefined,
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    },
+    {
+      pathname: "/nextjs-compat/isr-special-error/rsc-first-redirect",
+      rscStatus: 200,
+      location: "/nextjs-compat/nav-redirect-result",
+      digest: "NEXT_REDIRECT;",
+    },
+    {
+      // A Suspense boundary caught it, so the shell rendered.
+      pathname: "/nextjs-compat/isr-special-error/rsc-first-suspense-not-found",
+      rscStatus: 200,
+      location: undefined,
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    },
+  ]) {
+    const rscOptions = { headers: RSC_HEADERS, maxRedirects: 0 };
+    // The miss has already streamed its 200 when the status is resolved.
+    const miss = await request.get(`${pathname}.rsc`, rscOptions);
+    expect(miss.status(), pathname).toBe(200);
+    expect(await miss.text(), pathname).toContain(digest);
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${pathname}.rsc`, rscOptions);
+        return [response.headers()["x-vinext-cache"], response.status()];
+      })
+      .toEqual(["HIT", rscStatus]);
+    const hit = await request.get(`${pathname}.rsc`, rscOptions);
+    expect(hit.headers()["location"], pathname).toBe(location);
+    expect(await hit.text(), pathname).toContain(digest);
+  }
 });
 
 test("stores the 404 document of an ISR page without the query of the request that rendered it", async ({

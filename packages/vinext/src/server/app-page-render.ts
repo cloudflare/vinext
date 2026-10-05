@@ -27,6 +27,7 @@ import {
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
+import { createAppPageRscRenderStatusResolver } from "./app-page-rsc-render-status.js";
 import {
   applyEdgeRuntimeHeader,
   buildAppPageHtmlResponse,
@@ -200,6 +201,8 @@ type RenderAppPageLifecycleOptionsBase = {
   isCacheCandidate?: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
+  /** PPR routes send every RSC response as a 200. */
+  isRoutePPREnabled?: boolean;
   isSpeculativePrerender?: boolean;
   isProduction: boolean;
   omitPendingDynamicCacheState?: boolean;
@@ -1059,6 +1062,24 @@ async function renderAppPageLifecycleImpl(
   }
 
   if (options.isRscRequest) {
+    // A stored RSC render takes the status of its document's shell, as in
+    // Next.js, which renders HTML beside RSC for a cache entry.
+    const resolveRscRenderStatus =
+      options.isProduction &&
+      shouldCaptureRscForCacheMetadata &&
+      capturedRscDataRef.value !== null &&
+      options.isPrerender !== true &&
+      options.isRoutePPREnabled !== true
+        ? createAppPageRscRenderStatusResolver({
+            basePath: options.basePath,
+            capturedRscData: capturedRscDataRef.value,
+            getCapturedSpecialError: rscErrorTracker.getCapturedSpecialError,
+            getCapturedSpecialErrors: rscErrorTracker.getCapturedSpecialErrors,
+            loadSsrHandler: options.loadSsrHandler,
+            navigationContext: options.getNavigationContext(),
+            rootParams: options.rootParams,
+          })
+        : undefined;
     let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
     if (shouldWaitForAllReady) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
@@ -1222,6 +1243,7 @@ async function renderAppPageLifecycleImpl(
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
+      resolveRscRenderStatus,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
       isStaticEligible: options.isStaticEligible,

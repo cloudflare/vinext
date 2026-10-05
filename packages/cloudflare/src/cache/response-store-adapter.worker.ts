@@ -333,6 +333,12 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
   });
 }
 
+// A page's notFound(), forbidden() and unauthorized() are stored with their
+// status, as in Next.js.
+function isStoredErrorStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 404;
+}
+
 function isCacheable(response: Response): boolean {
   const policy =
     response.headers.get("Cloudflare-CDN-Cache-Control") ??
@@ -340,7 +346,7 @@ function isCacheable(response: Response): boolean {
     response.headers.get("Cache-Control");
   return (
     response.status >= 200 &&
-    (response.status < 400 || response.status === 404) &&
+    (response.status < 400 || isStoredErrorStatus(response.status)) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
   );
@@ -353,7 +359,8 @@ async function readStoredResponse(key: Request): Promise<Response | null> {
     const storeStatus = response.headers.get("X-Workers-Response-Store");
     if (
       (response.status >= 200 && response.status < 400) ||
-      (response.status === 404 && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
+      (isStoredErrorStatus(response.status) &&
+        (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
     )
       return response;
     void response.body?.cancel().catch(() => {});

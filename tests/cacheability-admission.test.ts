@@ -449,6 +449,85 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("static");
   });
 
+  describe("an App page RSC render whose special error rejected its shell", () => {
+    // Next.js sends a buffered ISR entry with its stored status, so a completed
+    // RSC response takes the status its render resolved, with the redirect's
+    // `location`.
+    const rscRequest = new Request("https://example.com/page", {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+
+    function rscAdmissionContext(
+      outcome: NonNullable<ReturnType<typeof cacheabilityState>["outcome"]>,
+    ) {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        rscRequest,
+        null,
+        "build-a",
+        true,
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      state.outcome = outcome;
+      return { context, state };
+    }
+
+    const rscResponse = () =>
+      new Response("flight-with-digest", {
+        headers: { "Cache-Control": "no-store, must-revalidate" },
+      });
+
+    it("sends a completed notFound() render with its status", async () => {
+      const { context } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        searchParamsUnread: true,
+        status: 404,
+      });
+
+      const response = await finalizeWorkerCacheabilityResponse(rscResponse(), context);
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("Cache-Control")).toBe(
+        "s-maxage=60, stale-while-revalidate=31535940",
+      );
+      await expect(response.text()).resolves.toBe("flight-with-digest");
+    });
+
+    it("sends a completed redirect() render as a 200 with its location", async () => {
+      const { context } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        headers: { location: "/target" },
+        searchParamsUnread: true,
+        status: 200,
+      });
+
+      const response = await finalizeWorkerCacheabilityResponse(rscResponse(), context);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Location")).toBe("/target");
+      await expect(response.text()).resolves.toBe("flight-with-digest");
+    });
+
+    it("keeps the streamed status when the response could not be captured", async () => {
+      const { context, state } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        searchParamsUnread: true,
+        status: 404,
+      });
+      state.captureBudget = createCacheabilityAdmissionCaptureBudget(3);
+
+      const response = await finalizeWorkerCacheabilityResponse(rscResponse(), context);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cache-Control")).toContain("no-store");
+      await expect(response.text()).resolves.toBe("flight-with-digest");
+    });
+  });
+
   it("keeps a completed dynamic response private without a build manifest", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },

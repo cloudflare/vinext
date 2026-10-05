@@ -32,6 +32,10 @@ import {
   type RouteCacheabilityOutcome,
 } from "vinext/shims/cacheability-classification";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import {
+  resolveAppPageRscResponseStatus,
+  type AppPageRscRenderStatus,
+} from "./app-page-rsc-render-status.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -63,6 +67,8 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
    * cacheable even when a cacheLife resolves during the render.
    */
   isStaticEligible: boolean;
+  /** An RSC render's status, from its document's shell. */
+  resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
   revalidateSeconds: number | null;
 };
 
@@ -118,6 +124,8 @@ type ScheduleAppPageRscCacheWriteOptions = {
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
+  /** The render's status, from its document's shell. Without it the render is a 200. */
+  resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   isStaticEligible: boolean;
@@ -207,6 +215,25 @@ function appPageCacheControlHeader(cacheControl: CacheControlMetadata): string {
     : buildRevalidateCacheControl(cacheControl.revalidate, cacheControl.expire);
 }
 
+/**
+ * The completed response replaces a streamed 200 with the status Next.js sends
+ * for the render's special error, and stores that.
+ */
+function applyRscRenderStatus(
+  outcome: RouteCacheabilityOutcome,
+  renderStatus: AppPageRscRenderStatus,
+): RouteCacheabilityOutcome {
+  if (renderStatus.kind === "page") return outcome;
+  if (renderStatus.kind === "unstorable") {
+    return { cacheable: false, reason: "render ended in a special error Next.js doesn't store" };
+  }
+  return {
+    ...outcome,
+    status: resolveAppPageRscResponseStatus(renderStatus.status),
+    ...(renderStatus.headers ? { headers: renderStatus.headers } : {}),
+  };
+}
+
 function finalizeEvaluatedAppPageResponse(
   response: Response,
   options: FinalizeAppPageCacheabilityEvaluationOptions,
@@ -255,6 +282,14 @@ function finalizeEvaluatedAppPageResponse(
             tags: options.getPageTags(),
           }
         : { cacheable: false, reason: "render did not produce a cache policy" };
+    }
+    if (outcome.cacheable && options.resolveRscRenderStatus) {
+      const cacheableOutcome = outcome;
+      void options.resolveRscRenderStatus().then(
+        (renderStatus) => complete(applyRscRenderStatus(cacheableOutcome, renderStatus)),
+        () => complete({ cacheable: false, reason: "render status could not be resolved" }),
+      );
+      return;
     }
     complete(outcome);
   };
@@ -517,10 +552,26 @@ export function scheduleAppPageRscCacheWrite(
         options.isrDebug?.("RSC cache write skipped (searchParams not proven unread)", rscKey);
         return;
       }
-      await options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
-        cacheControl,
-        tags: pageTags,
-      });
+      // Like Next.js, store the status and `location` of a special error that
+      // rejects the document's shell. Replay sends a redirect as a 200.
+      const renderStatus = (await options.resolveRscRenderStatus?.()) ?? { kind: "page" };
+      if (renderStatus.kind === "unstorable") {
+        options.isrDebug?.("RSC cache write skipped (unstorable special error)", rscKey);
+        return;
+      }
+      await options.isrSet(
+        rscKey,
+        renderStatus.kind === "special-error"
+          ? buildAppPageCacheValue(
+              "",
+              rscData,
+              renderStatus.status,
+              rscRenderObservation,
+              renderStatus.headers,
+            )
+          : buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
+        { cacheControl, tags: pageTags },
+      );
       options.isrDebug?.("RSC cache written", rscKey);
     } catch (cacheError) {
       console.error("[vinext] ISR RSC cache write error:", cacheError);

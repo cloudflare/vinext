@@ -75,11 +75,12 @@ import {
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import {
+  usePathname,
   useSearchParams,
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
-import { cacheLife } from "../packages/vinext/src/shims/cache.js";
 import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
+import { cacheLife } from "../packages/vinext/src/shims/cache.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -5374,6 +5375,97 @@ describe("query-free App page ISR entries", () => {
       expect(hit.body, search).toBe(miss.body);
     }
     expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
+  // An RSC-only miss resolves its status by rendering the document's shell
+  // from the completed payload. The payload can complete after the response
+  // has left and the request's context is cleared, so the shell pass must
+  // carry its own navigation context.
+  it.each([
+    { name: "a notFound() that rejects the shell with its status", status: 404, suspense: false },
+    { name: "a notFound() inside Suspense as a 200", status: 200, suspense: true },
+  ])("stores $name after the request context is cleared", async ({ status, suspense }) => {
+    const { cache, isrGet, isrSet } = createCache();
+    let navigation: NavigationContext | null = null;
+    let cleared = false;
+    const shellRenders: { cleared: boolean; pathname: string }[] = [];
+    function NotFoundPage(): React.ReactNode {
+      shellRenders.push({ cleared, pathname: usePathname() });
+      notFound();
+    }
+    const page = React.createElement(NotFoundPage);
+    let releasePayload!: () => void;
+    const payloadReleased = new Promise<void>((resolve) => {
+      releasePayload = resolve;
+    });
+
+    const { body, response } = await dispatchQuery(
+      "",
+      {
+        buildPageElement: async () =>
+          toDispatchElementRecord({
+            ...AppElementsWire.createMetadataEntries({
+              interceptionContext: null,
+              layoutIds: [],
+              rootLayoutTreePath: null,
+              routeId: ROUTE_ID,
+            }),
+            [ROUTE_ID]: suspense
+              ? React.createElement(
+                  React.Suspense,
+                  { fallback: React.createElement("p", null, "loading") },
+                  page,
+                )
+              : page,
+          }),
+        clearRequestContext() {
+          setHeadersContext(null);
+          navigation = null;
+        },
+        getNavigationContext: () => navigation,
+        isRscRequest: true,
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler([]),
+        renderToReadableStream(payload, { onError }) {
+          // The stand-in Flight render doesn't run components, so report the
+          // page's notFound() as Flight would.
+          try {
+            notFound();
+          } catch (error) {
+            onError(error, undefined, undefined);
+          }
+          return serializePayloadToStream(payload).pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({ flush: () => payloadReleased }),
+          );
+        },
+        setNavigationContext(next) {
+          navigation = next;
+        },
+      },
+      undefined,
+      () => {
+        // The response has left: clear the request's context before the
+        // payload completes.
+        setHeadersContext(null);
+        navigation = null;
+        cleared = true;
+        releasePayload();
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(body).not.toBe("");
+    // React renders a Suspense boundary's failed content again before
+    // falling back to the client.
+    expect(shellRenders.length).toBeGreaterThan(0);
+    expect(shellRenders).toEqual(
+      shellRenders.map(() => ({ cleared: true, pathname: "/posts/hello" })),
+    );
+    expect([...cache.keys()]).toEqual(["rsc:/posts/hello"]);
+    const stored = cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue;
+    expect(stored.status).toBe(status);
+    expect(new TextDecoder().decode(stored.rscData)).toBe(body);
   });
 
   // A dynamic-segment route without generateStaticParams is ƒ: it renders

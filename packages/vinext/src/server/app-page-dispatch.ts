@@ -1421,6 +1421,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isStaticEligible,
     isCacheCandidate,
     isPrerender,
+    isRoutePPREnabled: options.pprRuntime !== undefined,
     isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,

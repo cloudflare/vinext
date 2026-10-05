@@ -605,19 +605,24 @@ function responseWithCachePolicy(
   body: BodyInit | null,
   outcome: RouteCacheabilityOutcome | null,
   browserCacheControl?: string,
+  completedStatus?: Pick<RouteCacheabilityOutcome, "headers" | "status">,
 ): Response {
   const headers = new Headers(response.headers);
   if (typeof body === "string") headers.delete("Content-Length");
+  for (const [name, value] of Object.entries(completedStatus?.headers ?? {})) {
+    headers.set(name, value);
+  }
   applyCdnResponseHeaders(
     headers,
     outcome?.cacheable === true && outcome.cacheControl
       ? { cacheControl: outcome.cacheControl, tags: outcome.tags, browserCacheControl }
       : { cacheControl: NO_STORE_CACHE_CONTROL, browserCacheControl },
   );
+  const status = completedStatus?.status ?? response.status;
   return new Response(body, {
     headers,
-    status: response.status,
-    statusText: response.statusText,
+    status,
+    statusText: status === response.status ? response.statusText : "",
   });
 }
 
@@ -916,6 +921,9 @@ async function finalizeWorkerCacheabilityAdmission(
       : captured.body,
     outcome,
     browserCacheControl,
+    // The body is complete, so the response can take the status its render
+    // resolved, as Next.js sends a buffered cache entry.
+    rendererOutcome ?? undefined,
   );
 }
 
