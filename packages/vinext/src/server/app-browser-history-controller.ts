@@ -215,6 +215,20 @@ export class AppBrowserHistoryController {
   }
 
   rememberHistoryStateSnapshot(state: AppRouterState): void {
+    // An authoritative render completes the optimistic shell its navigation
+    // committed first. In Next.js both share one tree whose data fills in, so
+    // every entry that remembered the shell (including the shell's own entry
+    // after a shallow history write moved on) must restore the full tree.
+    const previousState = this.readCurrentTreeSnapshot();
+    const previousOperation = previousState?.activeOperation;
+    if (
+      previousState &&
+      previousOperation?.navigationCommitKind === "detached" &&
+      state.activeOperation?.navigationCommitKind === "authoritative" &&
+      state.activeOperation.navigationId === previousOperation.navigationId
+    ) {
+      this.#restorableClientState.replaceHistoryStateSnapshots(previousState, state);
+    }
     this.#restorableClientState.rememberHistoryStateSnapshot({
       historyIndex: this.#currentHistoryTraversalIndex,
       state,
