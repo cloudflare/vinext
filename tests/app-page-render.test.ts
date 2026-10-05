@@ -3010,6 +3010,48 @@ describe("ISR storage of a page's special error", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it("keeps the request context for the page's render after generateMetadata()'s redirect", async () => {
+    const common = createCommonOptions();
+    const digest = "NEXT_REDIRECT;replace;/target;307;";
+    let requestContextCleared = false;
+    let lateReadSawContext: boolean | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(Object.assign(new Error(digest), { digest })),
+      renderPageSpecialError: async (specialError) => {
+        // The special-error response clears the request context.
+        requestContextCleared = true;
+        return new Response(null, {
+          headers: { Location: "/target" },
+          status: specialError.statusCode,
+        });
+      },
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(digest), {
+            digest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        // A sibling server component reads headers() after the shell rejected.
+        return lateFlightStream(() => {
+          lateReadSawContext = !requestContextCleared;
+        });
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(307);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(lateReadSawContext).toBe(true);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("does not store a response the boundary replaced", async () => {
     const common = createCommonOptions();
 

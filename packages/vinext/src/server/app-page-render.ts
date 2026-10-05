@@ -1536,13 +1536,14 @@ async function renderAppPageLifecycleImpl(
     },
     async renderSpecialErrorResponse(specialError) {
       shellSpecialError = specialError;
-      if (specialError.fromMetadata !== true && mayStoreShellSpecialError()) {
+      if (mayStoreShellSpecialError()) {
         // The page's Flight render goes on after its shell rejected, such as
         // a layout's Suspense boundary reading cookies(). Let it finish while
         // the request context is alive, before the special-error response
         // clears it, so that its dynamic API use, fetch tags and cacheLife all
         // decide the store. A render that turns dynamic isn't stored, and
-        // stops the wait.
+        // stops the wait. generateMetadata()'s special error isn't stored, but
+        // the page's components still run against the request context.
         await settleCapturedRscRenderForCacheMetadata(
           capturedRscDataRef.value,
           peekRenderDynamicUsage,
