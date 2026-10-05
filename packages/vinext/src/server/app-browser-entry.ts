@@ -2947,6 +2947,17 @@ function bootstrapHydration(
       historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
     commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
       historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
+    discardPendingNavigation: () => {
+      if (
+        browserNavigationController.discardPendingNavigation(
+          historyController.readCurrentTreeSnapshot(),
+        )
+      ) {
+        // Only cancels a request still waiting for its response; a Flight body
+        // React is already decoding has released its abort handle.
+        navigationAbortCoordinator.abortActive();
+      }
+    },
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).

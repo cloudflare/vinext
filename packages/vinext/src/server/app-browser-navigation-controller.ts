@@ -133,6 +133,7 @@ type BrowserNavigationController = {
   ): () => void;
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
+  discardPendingNavigation(visibleState: AppRouterState | null): boolean;
   restoreHistorySnapshotVisibleState(options: {
     restoreCopiedExternalHistoryEntry?: boolean;
     beforeCommit?: () => void;
@@ -297,6 +298,9 @@ export function createAppBrowserNavigationController(
   let activeNavigationId = 0;
   let pendingUserNavigationId: number | null = null;
   let pendingUserNavigationLane: OperationLane | null = null;
+  // Set between a navigation render's insertion and layout effects, while
+  // React commits it but before its URL update has run.
+  let committingNavigationRenderId: number | null = null;
   let latestHmrUpdateId = 0;
   const pendingNavigationCommits = new Map<
     number,
@@ -435,6 +439,46 @@ export function createAppBrowserNavigationController(
     }
   }
 
+  /**
+   * Discard the user navigation that has not committed yet, keeping
+   * `visibleState` (the committed tree) on screen. Next.js does the same when
+   * a raw history.pushState/replaceState dispatches ACTION_RESTORE: the
+   * pending action is marked discarded and the restore commits the current
+   * tree in a transition, which replaces the navigation's suspended one.
+   * Returns whether a navigation was discarded.
+   */
+  function discardPendingNavigation(visibleState: AppRouterState | null): boolean {
+    // A history write from an effect of the committing render (for example a
+    // child layout effect) runs before the navigation's own URL update. The
+    // navigation is no longer pending then, so it must not be rolled back.
+    if (pendingUserNavigationId === null || committingNavigationRenderId !== null) {
+      return false;
+    }
+
+    activeNavigationId += 1;
+    pendingUserNavigationId = null;
+    pendingUserNavigationLane = null;
+
+    // These renders will never mount their NavigationCommitSignal, so release
+    // their render snapshots here; hooks then read the URL the history write
+    // just committed. Their commit effects would only do the same, since the
+    // navigation id above is no longer current.
+    for (const renderId of pendingNavigationPrePaintEffects.keys()) {
+      pendingNavigationPrePaintEffects.delete(renderId);
+      commitClientNavigationStateImpl(undefined, { releaseSnapshot: true });
+    }
+    clearCommittedNavigationFailureTargets(nextNavigationRenderId);
+    settleNavigationCommits(nextNavigationRenderId, false);
+
+    if (visibleState && setBrowserRouterState) {
+      const setter = setBrowserRouterState;
+      startTransition(() => {
+        setter(visibleState);
+      });
+    }
+    return true;
+  }
+
   function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
     if (!effect) {
       return;
@@ -490,6 +534,7 @@ export function createAppBrowserNavigationController(
   }
 
   function commitNavigationRender(renderId: number): void {
+    committingNavigationRenderId = null;
     drainPrePaintEffects(renderId);
     settleNavigationCommits(renderId, true);
   }
@@ -563,6 +608,7 @@ export function createAppBrowserNavigationController(
     },
   ): ReactNode {
     useInsertionEffect(() => {
+      committingNavigationRenderId = renderId;
       clearCommittedNavigationFailureTargets(renderId);
     }, [renderId]);
 
@@ -1047,6 +1093,7 @@ export function createAppBrowserNavigationController(
     attachBrowserRouterState,
     beginPendingBrowserRouterState,
     finalizeNavigation,
+    discardPendingNavigation,
     restoreHistorySnapshotVisibleState,
     renderNavigationPayload,
     commitSameUrlNavigatePayload,

@@ -4230,6 +4230,63 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("discardPendingNavigation drops an uncommitted render and restores the visible tree", async () => {
+    // Next.js: a raw history.pushState/replaceState dispatches ACTION_RESTORE,
+    // which marks the pending navigation discarded so it never commits.
+    const commitClientNavigationState = vi.fn();
+    const visibleState = createState();
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness(
+      visibleState,
+      { commitClientNavigationState },
+    );
+    const commitEffect = vi.fn();
+
+    try {
+      expect(controller.discardPendingNavigation(visibleState)).toBe(false);
+
+      const navId = controller.beginNavigation();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current).not.toBe(visibleState);
+
+      expect(controller.discardPendingNavigation(visibleState)).toBe(true);
+      await expect(renderPromise).resolves.toBe("no-commit");
+      expect(controller.isCurrentNavigation(navId)).toBe(false);
+      expect(setBrowserRouterState).toHaveBeenLastCalledWith(visibleState);
+      // The discarded render's snapshot is released without running its URL
+      // commit, and nothing is left to drain if a later render commits.
+      expect(commitEffect).not.toHaveBeenCalled();
+      expect(commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
+        releaseSnapshot: true,
+      });
+      controller.drainPrePaintEffects(Number.MAX_SAFE_INTEGER);
+      expect(commitClientNavigationState).toHaveBeenCalledOnce();
+
+      expect(controller.discardPendingNavigation(visibleState)).toBe(false);
+    } finally {
+      detach();
+    }
+  });
+
   it("does not clear a newer navigation failure target when an older render commits", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
     vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");

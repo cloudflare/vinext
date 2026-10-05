@@ -3315,6 +3315,9 @@ if (!isServer) {
         // but changes browser state only — it issues no RSC request, so it must
         // not cancel prefetch setup for the URL it moves to.
         resetStaleLinkStatus();
+        // Like Next.js' ACTION_RESTORE, the shallow URL keeps the visible tree,
+        // so a navigation still rendering must not commit over it later.
+        getNavigationRuntime()?.functions.discardPendingNavigation?.();
         commitClientNavigationState();
       }
     };
@@ -3346,6 +3349,7 @@ if (!isServer) {
       );
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();
+        getNavigationRuntime()?.functions.discardPendingNavigation?.();
         commitClientNavigationState();
       }
     };

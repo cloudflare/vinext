@@ -250,6 +250,12 @@ export class AppBrowserHistoryController {
     }
   }
 
+  /** The router state of the most recently committed render, if any. */
+  readCurrentTreeSnapshot(): AppRouterState | null {
+    if (this.#currentTreeSnapshotId === null) return null;
+    return this.#treeSnapshots.get(this.#currentTreeSnapshotId) ?? null;
+  }
+
   isCurrentExternalHistoryTree(historyState: unknown): boolean {
     const treeSnapshotId = readHistoryStateTreeSnapshotId(historyState);
     return treeSnapshotId !== null && treeSnapshotId === this.#currentTreeSnapshotId;
