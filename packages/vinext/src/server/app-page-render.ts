@@ -89,7 +89,12 @@ import type {
   StaticLayoutObservationSkipRejection,
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
-import { isRenderDynamicLatched, peekDynamicUsage } from "vinext/shims/headers";
+import {
+  isRenderDynamicLatched,
+  markDynamicUsage,
+  peekDynamicUsage,
+  runWithDetachedDynamicUsage,
+} from "vinext/shims/headers";
 import {
   bindRequestContext,
   preserveFullyBufferedBodyMetadata,
@@ -869,30 +874,38 @@ async function renderAppPageLifecycleImpl(
   const probePageBeforeRender =
     options.isRscRequest ||
     (configuredProbePageBeforeRender && !(options.peekDynamicUsage?.() ?? false));
-  const preRenderResult = await probeAppPageBeforeRender({
-    hasLoadingBoundary: options.hasLoadingBoundary,
-    probePageBeforeRender,
-    skipProbes: options.pprFallbackShellSignal !== undefined,
-    layoutCount: options.layoutCount,
-    probeLayoutAt(layoutIndex) {
-      return options.probeLayoutAt(layoutIndex);
-    },
-    probePage() {
-      return options.probePage();
-    },
-    renderLayoutSpecialError(specialError, layoutIndex) {
-      return options.renderLayoutSpecialError(specialError, layoutIndex);
-    },
-    renderPageSpecialError(specialError) {
-      return options.renderPageSpecialError(specialError);
-    },
-    resolveSpecialError: resolveAppPageSpecialError,
-    runWithSuppressedHookWarning(probe) {
-      return options.runWithSuppressedHookWarning(probe);
-    },
-    classification: options.classification,
-  });
+  // The probe runs layouts and the page outside React's render, without its
+  // cache() scope, so what it sees can differ from the render. As in Next.js,
+  // which has no probe, the render alone decides whether the page is dynamic.
+  const probeOutcome = await runWithDetachedDynamicUsage(() =>
+    probeAppPageBeforeRender({
+      hasLoadingBoundary: options.hasLoadingBoundary,
+      probePageBeforeRender,
+      skipProbes: options.pprFallbackShellSignal !== undefined,
+      layoutCount: options.layoutCount,
+      probeLayoutAt(layoutIndex) {
+        return options.probeLayoutAt(layoutIndex);
+      },
+      probePage() {
+        return options.probePage();
+      },
+      renderLayoutSpecialError(specialError, layoutIndex) {
+        return options.renderLayoutSpecialError(specialError, layoutIndex);
+      },
+      renderPageSpecialError(specialError) {
+        return options.renderPageSpecialError(specialError);
+      },
+      resolveSpecialError: resolveAppPageSpecialError,
+      runWithSuppressedHookWarning(probe) {
+        return options.runWithSuppressedHookWarning(probe);
+      },
+      classification: options.classification,
+    }),
+  );
+  const preRenderResult = probeOutcome.result;
   if (preRenderResult.response) {
+    // This response replaces the render, so the probe's usage classifies it.
+    if (probeOutcome.dynamicDetected) markDynamicUsage();
     return applyIneligibleRouteCachePolicy(preRenderResult.response, options);
   }
 

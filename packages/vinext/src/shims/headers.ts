@@ -194,6 +194,51 @@ export async function runWithIsolatedDynamicUsage<T>(
   return await _als.run(childState, () => runInChildState(childState));
 }
 
+/**
+ * Run a pre-render probe without letting its dynamic API usage classify the
+ * request. Next.js has no probe: only the render decides whether a page is
+ * dynamic, and the render runs the probed layouts and page again. Returns the
+ * probe's own usage for a caller whose probe response replaces the render.
+ */
+export async function runWithDetachedDynamicUsage<T>(
+  fn: () => T | Promise<T>,
+): Promise<{ result: T; dynamicDetected: boolean }> {
+  const runInChildState = async (childState: VinextHeadersShimState) => {
+    const result = await fn();
+    return {
+      result,
+      // Nested isolated scopes latch without setting this scope's flag.
+      dynamicDetected: childState.dynamicUsageDetected || childState.renderDynamicLatch.dynamic,
+    };
+  };
+
+  if (isInsideUnifiedScope()) {
+    let childState: VinextHeadersShimState | null = null;
+    return await runWithUnifiedStateMutation(
+      (context) => {
+        context.dynamicUsageDetected = false;
+        context.renderDynamicLatch = createRenderDynamicLatch();
+        context.renderRequestApiUsage = new Set();
+        childState = context;
+      },
+      () => {
+        if (!childState) {
+          throw new Error("Dynamic usage scope was not initialized");
+        }
+        return runInChildState(childState);
+      },
+    );
+  }
+
+  const childState: VinextHeadersShimState = {
+    ..._getState(),
+    dynamicUsageDetected: false,
+    renderDynamicLatch: createRenderDynamicLatch(),
+    renderRequestApiUsage: new Set(),
+  };
+  return await _als.run(childState, () => runInChildState(childState));
+}
+
 export async function runWithConnectionProbe<T>(
   fn: () => T | Promise<T>,
 ): Promise<ConnectionProbeResult<T>> {

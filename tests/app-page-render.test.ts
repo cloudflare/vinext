@@ -1153,9 +1153,9 @@ describe("app page render lifecycle", () => {
   });
 
   it("never stores a candidate render that latched dynamic outside its own scope", async () => {
-    // A dynamic API in an isolated scope (the layout probe) or in SSR opens the
-    // useSearchParams() gate with the real query, but never reaches the
-    // render's own dynamic flag.
+    // A dynamic API in an isolated scope or in SSR opens the useSearchParams()
+    // gate with the real query, but never reaches the render's own dynamic
+    // flag.
     const common = createCommonOptions();
     await runWithHeadersContext(
       headersContextFromRequest(new Request("https://example.test/posts/post?q=secret")),
@@ -1178,6 +1178,66 @@ describe("app page render lifecycle", () => {
         await response.text();
         await Promise.all(common.waitUntilPromises);
         expect(common.isrSet).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it("stores a render whose layout probe alone used a dynamic API", async () => {
+    // The probe calls layouts outside React's render, where a value a layout
+    // stores through cache() is missing, so a component can fall back to a
+    // dynamic API the render never calls (#3671). Only the render counts.
+    const common = createCommonOptions();
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/posts/post")),
+      async () => {
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage,
+          isCacheCandidate: true,
+          isProduction: true,
+          layoutCount: 1,
+          peekDynamicUsage,
+          probeLayoutAt() {
+            markDynamicUsage();
+            markRenderRequestApiUsage("headers");
+            return null;
+          },
+          revalidateSeconds: 30,
+        });
+
+        expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+        await response.text();
+        await Promise.all(common.waitUntilPromises);
+        expect(common.isrSet).toHaveBeenCalledTimes(2);
+        expect(peekDynamicUsage()).toBe(false);
+      },
+    );
+  });
+
+  it("classifies a layout probe's special-error response by the probe's dynamic usage", async () => {
+    // The render never runs, so the probe is the only evidence.
+    const common = createCommonOptions();
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/posts/post")),
+      async () => {
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage,
+          isProduction: true,
+          layoutCount: 1,
+          peekDynamicUsage,
+          probeLayoutAt() {
+            markDynamicUsage();
+            throw { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+          },
+          revalidateSeconds: 30,
+        });
+
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        expect(common.renderToReadableStream).not.toHaveBeenCalled();
       },
     );
   });
