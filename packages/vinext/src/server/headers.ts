@@ -100,6 +100,12 @@ export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 /** Marks an RSC body carrying completion metadata after the Flight payload. */
 export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Metadata";
 
+/**
+ * Marks an App page RSC response whose 401, 403 or 404 is its page's stored
+ * notFound(), forbidden() or unauthorized(). The request stage strips it.
+ */
+export const VINEXT_SPECIAL_ERROR_STATUS_HEADER = "x-vinext-special-error-status";
+
 /** URL-encoded rendered path and search after middleware/config rewrites. */
 export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
 

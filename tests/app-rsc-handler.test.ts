@@ -31,6 +31,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
@@ -601,6 +602,90 @@ describe("createAppRscHandler", () => {
     expect(request.headers.get("next-url")).toBeNull();
     expect(new URL(request.url).searchParams.get("_rsc")).not.toBe("");
     expect(props).toMatchObject({ canUseCanonicalLoadingShell: true, matchKind: "request" });
+  });
+
+  // Next.js answers a Link's segment prefetch of a page whose notFound(),
+  // forbidden() or unauthorized() it stored with a 200, so its router renders
+  // the fallback without loading the document.
+  describe("a stored special error's status", () => {
+    const route = createPageRoute();
+    const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
+
+    async function rscRequest(segmentPrefetch: boolean): Promise<Request> {
+      const headers = createRscRequestHeaders({
+        prefetchRouterState: segmentPrefetch
+          ? { pathAndSearch: "/source", routeId: "route:/source" }
+          : undefined,
+      });
+      if (segmentPrefetch) headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
+      const url = await createRscRequestUrl("/docs/about", headers);
+      return new Request(new URL(url, "https://example.test"), { headers });
+    }
+
+    function storedResponse(status: number, marked = true): Response {
+      return new Response("rsc", {
+        status,
+        headers: marked ? { [VINEXT_SPECIAL_ERROR_STATUS_HEADER]: "1" } : {},
+      });
+    }
+
+    it.each([401, 403, 404])(
+      "is a 200 for a segment prefetch the shared response stage served a stored %s",
+      async (status) => {
+        const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+          storedResponse(status),
+        );
+        const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+
+        const response = await handler(await rscRequest(true), null, false, dispatchResponseStage);
+
+        // The shared stage gives the prefetch the navigation's response.
+        const [request, , options] = dispatchResponseStage.mock.calls[0]!;
+        expect(options.cache).toBe("shared");
+        expect(request.headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe(false);
+        expect(response.status).toBe(200);
+        expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+        expect(await response.text()).toBe("rsc");
+      },
+    );
+
+    it("keeps its status for a navigation", async () => {
+      const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+
+      const response = await handler(await rscRequest(false), null, false, async () =>
+        storedResponse(404),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+    });
+
+    it("is a 200 for a segment prefetch the page's dispatch served", async () => {
+      const handler = createHandler({
+        dispatchMatchedPage: async () => storedResponse(404),
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      const prefetch = await handler(await rscRequest(true), null);
+      expect(prefetch.status).toBe(200);
+      expect(prefetch.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+
+      const navigation = await handler(await rscRequest(false), null);
+      expect(navigation.status).toBe(404);
+      expect(navigation.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+    });
+
+    // A dynamicParams = false miss is a 404 for a segment prefetch in Next.js.
+    it("leaves any other 404 to a segment prefetch alone", async () => {
+      const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+
+      const response = await handler(await rscRequest(true), null, false, async () =>
+        storedResponse(404, false),
+      );
+
+      expect(response.status).toBe(404);
+    });
   });
 
   it("keeps rewritten and mounted-slot RSC requests contextual", async () => {

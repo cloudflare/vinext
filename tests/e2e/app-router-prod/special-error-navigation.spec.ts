@@ -110,6 +110,8 @@ test.describe("client navigation to a stored notFound() page", () => {
     const rsc = await request.get(`${target}.rsc`, { headers: RSC_HEADERS });
     expect(rsc.status()).toBe(404);
     expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
+    // vinext's internal marker for the request stage never reaches the client.
+    expect(rsc.headers()["x-vinext-special-error-status"]).toBeUndefined();
   });
 
   async function openLinksPage(page: Page, mode: string): Promise<void> {

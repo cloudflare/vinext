@@ -24,6 +24,7 @@ import {
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
   NEXT_ACTION_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -39,6 +40,7 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import type { ReactFormState } from "react-dom/client";
 import {
@@ -358,6 +360,28 @@ function applyMiddlewareContextToResponse(
       status: middlewareContext.status ?? response.status,
       statusText: response.statusText,
       headers,
+    }),
+  );
+}
+
+/**
+ * Next.js answers a Link's segment prefetch of a page whose notFound(),
+ * forbidden() or unauthorized() it stored with a 200, so its router renders
+ * the page's fallback without loading the document. A shared response stage
+ * gives that prefetch the navigation's response, so the request's own headers
+ * decide the status here.
+ */
+function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boolean): Response {
+  if (!response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)) return response;
+  const headers = new Headers(response.headers);
+  headers.delete(VINEXT_SPECIAL_ERROR_STATUS_HEADER);
+  const status = isSegmentPrefetch ? 200 : response.status;
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status,
+      statusText: status === response.status ? response.statusText : "",
     }),
   );
 }
@@ -2447,7 +2471,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
   }
 
-  const pageResponse = matchedResponseStage
+  const renderedPageResponse = matchedResponseStage
     ? await matchedResponseStage(responseStageRequest(), {
         kind: "app-page",
         buildId: options.buildId,
@@ -2511,6 +2535,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         searchParams: resolvedSearchParams,
         renderMode,
       });
+  const pageResponse = withStoredSpecialErrorStatus(
+    renderedPageResponse,
+    isRscRequest && request.headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
+  );
 
   // No-JS progressive form actions write cookies via cookies().set() / draftMode()
   // *during action execution*, before the page rerender begins. Those writes only

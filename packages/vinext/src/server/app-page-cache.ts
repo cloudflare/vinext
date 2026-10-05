@@ -11,6 +11,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -93,8 +94,6 @@ type BuildAppPageCachedResponseOptions = {
   isEdgeRuntime?: boolean;
   isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
-  /** An RSC request a Link sent to prefetch the page's segments for navigation. */
-  isSegmentPrefetchRequest?: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
@@ -111,7 +110,6 @@ type ReadAppPageCacheResponseOptions = {
   isEdgeRuntime?: boolean;
   isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
-  isSegmentPrefetchRequest?: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
@@ -322,17 +320,9 @@ export function buildAppPageCachedResponse(
     storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
   // As in Next.js, an RSC response carries a redirect in its payload, so a
   // stored redirect is sent as a 200 with its `location`. With PPR, an RSC
-  // response is always a 200. Next.js answers a Link's segment prefetches of
-  // a page whose notFound(), forbidden() or unauthorized() it stored with
-  // 200s, so the router renders the page's fallback without loading the
-  // document. A navigation without that prefetch receives the status.
+  // response is always a 200.
   const replayStatus =
-    options.isRscRequest &&
-    (isRedirect ||
-      options.isRoutePPREnabled === true ||
-      (isHttpErrorFallbackStatus && options.isSegmentPrefetchRequest === true))
-      ? 200
-      : storedStatus;
+    options.isRscRequest && (isRedirect || options.isRoutePPREnabled === true) ? 200 : storedStatus;
   // The status of a stored special error is the page's own, which middleware
   // can't override, as on a fresh render.
   const isSpecialErrorStatus = isRedirect || isHttpErrorFallbackStatus;
@@ -374,6 +364,10 @@ export function buildAppPageCachedResponse(
     }
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
+    // The request stage sends it to a Link's segment prefetch as a 200.
+    if (isHttpErrorFallbackStatus && status === storedStatus) {
+      rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, "1");
+    }
 
     return new Response(cachedValue.rscData, {
       status,
@@ -543,7 +537,6 @@ export async function readAppPageCacheResponse(
         isEdgeRuntime: options.isEdgeRuntime,
         isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
-        isSegmentPrefetchRequest: options.isSegmentPrefetchRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
@@ -729,7 +722,6 @@ export async function readAppPageCacheResponse(
         isEdgeRuntime: options.isEdgeRuntime,
         isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
-        isSegmentPrefetchRequest: options.isSegmentPrefetchRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,

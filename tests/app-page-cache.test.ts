@@ -31,6 +31,7 @@ import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import {
   markClientTraceMetadataBlock,
@@ -2308,52 +2309,27 @@ describe("app page special-error entries", () => {
     ).toBe(status);
   });
 
-  // Next.js answers a Link's segment prefetches of such a page with 200s, so
-  // its router renders the fallback without loading the document. Without a
-  // segment prefetch, an RSC request receives the stored status.
-  it.each([404, 403, 401])("replays a stored %s as a 200 to a segment prefetch", (status) => {
+  // The request stage sends a marked RSC replay to a Link's segment prefetch
+  // as a 200, as Next.js does.
+  it.each([404, 403, 401])("marks the RSC replay of a stored %s", (status) => {
     const options = { cacheState: "HIT" as const, isRscRequest: true, revalidateSeconds: 60 };
+    const marker = (response: Response | null) =>
+      response?.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER);
 
-    expect(
-      buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
-        ...options,
-        isSegmentPrefetchRequest: true,
-      })?.status,
-    ).toBe(200);
-    expect(buildAppPageCachedResponse(specialErrorEntry(status, "doc"), options)?.status).toBe(
-      status,
-    );
-    // A document request is never a segment prefetch.
-    expect(
-      buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
-        ...options,
-        isRscRequest: false,
-        isSegmentPrefetchRequest: true,
-      })?.status,
-    ).toBe(status);
-  });
-
-  it("threads a segment prefetch into an RSC HIT", async () => {
-    const response = await readAppPageCacheResponse({
-      cleanPathname: "/missing",
-      clearRequestContext() {},
-      isRscRequest: true,
-      isSegmentPrefetchRequest: true,
-      async isrGet() {
-        return buildISRCacheEntry(specialErrorEntry(404, ""), false, { revalidate: 60 });
-      },
-      isrHtmlKey: (pathname) => "html:" + pathname,
-      isrRscKey: (pathname) => "rsc:" + pathname,
-      isrSet: async () => {},
-      revalidateSeconds: 60,
-      async renderFreshPageForCache() {
-        throw new Error("a HIT must not render");
-      },
-      scheduleBackgroundRegeneration() {},
+    const rsc = buildAppPageCachedResponse(specialErrorEntry(status, "doc"), options);
+    expect(rsc?.status).toBe(status);
+    expect(marker(rsc)).toBe("1");
+    const document = buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
+      ...options,
+      isRscRequest: false,
     });
-
-    expect(response?.status).toBe(200);
-    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(marker(document)).toBeNull();
+    // With PPR, the RSC replay is already a 200.
+    const ppr = buildAppPageCachedResponse(specialErrorEntry(status, "doc"), {
+      ...options,
+      isRoutePPREnabled: true,
+    });
+    expect(marker(ppr)).toBeNull();
   });
 
   it("threads the route's PPR state into an RSC HIT", async () => {
