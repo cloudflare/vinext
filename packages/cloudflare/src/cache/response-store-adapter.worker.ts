@@ -587,7 +587,7 @@ const handler = {
         applyRscCompatibilityIdHeader(rscHeaders);
         applyRscDeploymentIdHeader(rscHeaders);
         // The request stage sends it to a Link's segment prefetch as a 200.
-        if (rendered.status === 404) {
+        if (isStoredErrorStatus(rendered.status)) {
           rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(rendered.status));
         }
         const serializedRscInvocation = JSON.stringify(rscInvocation);

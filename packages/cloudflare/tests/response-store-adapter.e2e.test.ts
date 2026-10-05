@@ -10,6 +10,8 @@ import {
   type Request as MiniflareRequest,
 } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { createRscRequestUrl } from "vinext/internal/server/app-rsc-cache-busting";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "vinext/internal/server/headers";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const appOutput = path.join(root, "examples/response-store-demo/dist/server");
@@ -441,6 +443,37 @@ describe("Cloudflare Workers Response Store adapter", () => {
     for (const entry of routeEntries) {
       assert.doesNotMatch(entry, new RegExp(`${firstQuery}|${secondQuery}`));
     }
+  });
+
+  // Next.js stores a page's notFound() with its 404 and answers a Link's
+  // segment prefetch of it with a 200, so the router renders the fallback
+  // without loading the document. The prefetch shares the navigation's entry.
+  test("sends a stored notFound() page's RSC entry to a Link's segment prefetch as a 200", async () => {
+    const pathname = "/special-error/not-found";
+    const navigationHeaders = { Accept: "text/x-component", RSC: "1" };
+    // A client navigation's URL, whose cache identity the prefetch shares.
+    const miss = await request(`${pathname}?_rsc`, { headers: navigationHeaders });
+    await miss.arrayBuffer();
+    await waitForResponseEntries(pathname, 1);
+
+    const navigation = await request(`${pathname}?_rsc`, { headers: navigationHeaders });
+    assert.equal(navigation.status, 404);
+    assert.equal(navigation.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(navigation.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER), null);
+    assert.match(await navigation.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
+
+    const prefetchHeaders = new Headers({
+      ...navigationHeaders,
+      "Next-Router-Prefetch": "1",
+      "Next-Router-Segment-Prefetch": "/__PAGE__",
+    });
+    const prefetch = await request(await createRscRequestUrl(pathname, prefetchHeaders), {
+      headers: Object.fromEntries(prefetchHeaders),
+    });
+    assert.equal(prefetch.status, 200);
+    assert.equal(prefetch.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(prefetch.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER), null);
+    assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
   });
 
   test("serves a request without a query from the entries a canary query filled", async () => {

@@ -9,7 +9,10 @@ import createResponseStoreDataCacheAdapter, {
 } from "../packages/cloudflare/src/cache/response-store-data.runtime.js";
 import createResponseStoreCdnCacheAdapter from "../packages/cloudflare/src/cache/response-store-cdn.runtime.js";
 import { createCanonicalRscRequestHeaders } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_RSC_VARY_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 const stages = vi.hoisted(() => ({ request: vi.fn(), response: vi.fn() }));
 
@@ -815,14 +818,15 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
   });
 
   // As in Next.js, the page's RSC entry takes its document's status, and a
-  // redirect is a 200 that carries its location.
+  // redirect is a 200 that carries its location. The request stage sends a
+  // marked 403 or 404 to a Link's segment prefetch as a 200.
   it.each([
-    { documentStatus: 404, location: null, rscStatus: 404 },
-    { documentStatus: 403, location: null, rscStatus: 403 },
-    { documentStatus: 307, location: "/target", rscStatus: 200 },
+    { documentStatus: 404, location: null, marker: "404", rscStatus: 404 },
+    { documentStatus: 403, location: null, marker: "403", rscStatus: 403 },
+    { documentStatus: 307, location: "/target", marker: null, rscStatus: 200 },
   ])(
     "seeds the RSC entry of a $documentStatus document with status $rscStatus",
-    async ({ documentStatus, location, rscStatus }) => {
+    async ({ documentStatus, location, marker, rscStatus }) => {
       dispatchWithIdentity();
       stages.response.mockImplementation(async () => {
         captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
@@ -848,11 +852,12 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       const stored = [...entries.values()].map((entry) => ({
         body: entry.body,
         location: entry.headers.get("Location"),
+        marker: entry.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER),
         status: entry.status,
       }));
       expect(stored).toEqual([
-        { body: "html", location, status: documentStatus },
-        { body: "rsc", location, status: rscStatus },
+        { body: "html", location, marker: null, status: documentStatus },
+        { body: "rsc", location, marker, status: rscStatus },
       ]);
     },
   );

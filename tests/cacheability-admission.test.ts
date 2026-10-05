@@ -20,6 +20,7 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { finalizeAppPageCacheabilityEvaluationResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import type { AppPageRenderObservationState } from "../packages/vinext/src/server/app-page-render-observation.js";
@@ -478,17 +479,20 @@ describe("single-request cacheability admission", () => {
         headers: { "Cache-Control": "no-store, must-revalidate" },
       });
 
-    it("sends a completed notFound() render with its status", async () => {
+    // The request stage sends a marked status to a Link's segment prefetch as
+    // a 200, as Next.js does.
+    it.each([401, 403, 404])("sends a completed render with its %s, marked", async (status) => {
       const { context } = rscAdmissionContext({
         cacheable: true,
         cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
         searchParamsUnread: true,
-        status: 404,
+        status,
       });
 
       const response = await finalizeWorkerCacheabilityResponse(rscResponse(), context);
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(status);
+      expect(response.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(String(status));
       expect(response.headers.get("Cache-Control")).toBe(
         "s-maxage=60, stale-while-revalidate=31535940",
       );
@@ -508,6 +512,7 @@ describe("single-request cacheability admission", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("Location")).toBe("/target");
+      expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
       await expect(response.text()).resolves.toBe("flight-with-digest");
     });
 
@@ -524,6 +529,7 @@ describe("single-request cacheability admission", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("Cache-Control")).toContain("no-store");
+      expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
       await expect(response.text()).resolves.toBe("flight-with-digest");
     });
   });

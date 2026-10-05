@@ -19,6 +19,7 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import { isVinextRscVaryField } from "./app-rsc-vary.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
@@ -619,6 +620,13 @@ function responseWithCachePolicy(
       : { cacheControl: NO_STORE_CACHE_CONTROL, browserCacheControl },
   );
   const status = completedStatus?.status ?? response.status;
+  // A completed status replaces a streamed 200 only for a page's special
+  // error, and the request stage sends its 401, 403 or 404 to a Link's
+  // segment prefetch as a 200.
+  const completed = completedStatus?.status;
+  if (completed === 401 || completed === 403 || completed === 404) {
+    headers.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(completed));
+  }
   return new Response(body, {
     headers,
     status,
