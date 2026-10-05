@@ -10,6 +10,7 @@ const ROOT = "/nextjs-compat/segment-cache-metadata";
 
 type RscResponseRecord = {
   body: string | null;
+  ok: boolean;
   pathname: string;
   prefetchHeader: string | undefined;
   renderModeHeader: string | undefined;
@@ -93,6 +94,7 @@ function trackRscResponses(page: Page): RscResponseRecord[] {
     if (!url.searchParams.has("_rsc") || request.headers()["rsc"] !== "1") return;
     const record: RscResponseRecord = {
       body: null,
+      ok: false,
       pathname: url.pathname,
       prefetchHeader: request.headers()["next-router-prefetch"],
       renderModeHeader: request.headers()["x-vinext-rsc-render-mode"],
@@ -106,6 +108,7 @@ function trackRscResponses(page: Page): RscResponseRecord[] {
     if (!record) return;
     try {
       record.body = await response.text();
+      record.ok = response.ok();
     } catch {
       // Ignore aborted responses; successful RSC responses are what the assertions observe.
     }
@@ -127,9 +130,9 @@ async function revealAndWaitForPrefetch(
   const before = responses.length;
   await page.locator(`input[data-link-accordion="${href}"]`).click();
   // A prefetch={true} link makes vinext fetch the loading shell beside the full
-  // payload. Wait for that request too, then for every request of the reveal
-  // to settle, the way router-act waits for its whole batch, so the duplicate
-  // check below sees all of them.
+  // payload. Wait for that request to succeed, so the duplicate check covers a
+  // real shell, then for every request of the reveal to settle, the way
+  // router-act waits for its whole batch, so the check sees all of them.
   await expect
     .poll(() =>
       responses
@@ -138,7 +141,8 @@ async function revealAndWaitForPrefetch(
           (response) =>
             response.pathname === href &&
             response.renderModeHeader === "prefetch-loading-shell" &&
-            response.settled,
+            response.settled &&
+            response.ok,
         ),
     )
     .toBe(true);
