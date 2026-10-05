@@ -108,7 +108,8 @@ jobs:
             benchmarks/vinext/node_modules \
             benchmarks/nextjs/app \
             benchmarks/nextjs/.next \
-            benchmarks/nextjs/node_modules; do
+            benchmarks/nextjs/node_modules \
+            benchmarks/pages-large; do
             if [ -L "$path" ]; then
               echo "Performance mutable path may not be a symlink: $path" >&2
               exit 1
@@ -256,6 +257,7 @@ jobs:
               benchmarks/vinext/node_modules/.vite-temp
               benchmarks/nextjs/.next
               benchmarks/nextjs/node_modules
+              benchmarks/pages-large
             )
             for relative_path in "${paths[@]}"; do
               local path="$root/$relative_path"
