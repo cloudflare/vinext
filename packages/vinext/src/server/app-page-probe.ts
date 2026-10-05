@@ -234,10 +234,9 @@ async function probeReactServerSubtreeForDynamicUsage(node: unknown): Promise<vo
 /**
  * Build a probePage() invocation for the App Router request lifecycle.
  *
- * The generated RSC entry calls this once per request after route matching to
- * eagerly invoke the page component. Surfacing redirect()/notFound() throws
- * here lets the probe lifecycle turn them into proper HTTP responses before
- * RSC streaming begins (see `probeAppPageBeforeRender`).
+ * The dispatch calls this when building the page element fails, so a
+ * redirect()/notFound() the page throws still becomes a proper HTTP response
+ * (see `probeAppPageThrownError`).
  *
  * The helper exists to keep the generated entry thin (a single delegation
  * call) and to make the search-params wiring directly unit-testable. A bug
@@ -319,8 +318,8 @@ type AppPageProbeIntercept =
  *
  * A single request can render more than one page component: the matched page,
  * each active parallel-route slot page, and an interception page when one
- * matches. Each must be probed so searchParams access anywhere in the rendered
- * tree bails the request out of the query-invariant static cache.
+ * matches. Each is probed, so a redirect()/notFound() thrown by any of them is
+ * recovered when building the page element fails.
  *
  * Extracted out of the generated RSC entry so the fan-out is directly
  * unit-testable and the entry stays codegen glue (see AGENTS.md "Generated

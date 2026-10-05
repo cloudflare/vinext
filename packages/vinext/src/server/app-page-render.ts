@@ -167,7 +167,6 @@ type RenderAppPageLifecycleOptionsBase = {
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
   hasCustomGlobalError?: boolean;
-  hasLoadingBoundary: boolean;
   dynamicStaleTimeSeconds?: number;
   isDynamicError: boolean;
   isDraftMode: boolean;
@@ -868,7 +867,7 @@ async function renderAppPageLifecycleImpl(
     }
     return dynamicUsageObserved;
   };
-  // The probe runs layouts and the page outside React's render, without its
+  // The probe runs layouts outside React's render, without its
   // cache() scope, so what it sees can differ from the render. As in Next.js,
   // which has no probe, the render alone decides whether the page is dynamic.
   const probeOutcome = await runWithDetachedDynamicUsage(() =>
@@ -1197,12 +1196,6 @@ async function renderAppPageLifecycleImpl(
       },
       getRequestCacheLife() {
         return readRequestCacheLifeForCachePolicy(options);
-      },
-      hasReplacedPage() {
-        // Without a loading boundary, a redirect() or notFound() replaces the
-        // page rather than streaming inside it. Such a payload has never been
-        // stored; Next.js stores it with the 404 or 307 status.
-        return !options.hasLoadingBoundary && rscErrorTracker.getCapturedSpecialError() !== null;
       },
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,

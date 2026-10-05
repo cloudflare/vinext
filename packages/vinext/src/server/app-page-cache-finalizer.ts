@@ -104,8 +104,6 @@ type ScheduleAppPageRscCacheWriteOptions = {
   dynamicUsedDuringBuild: boolean;
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
-  /** Whether the render ended in a redirect() or notFound() that replaced the page. */
-  hasReplacedPage?: () => boolean;
   isrDebug?: AppPageDebugLogger;
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
@@ -485,11 +483,6 @@ export function scheduleAppPageRscCacheWrite(
 
       if (options.consumeDynamicUsage()) {
         options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
-        return;
-      }
-
-      if (options.hasReplacedPage?.()) {
-        options.isrDebug?.("RSC cache write skipped (redirect or notFound)", rscKey);
         return;
       }
 

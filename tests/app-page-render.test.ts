@@ -220,7 +220,6 @@ function createCommonOptions() {
         return null;
       },
       handlerStart: 10,
-      hasLoadingBoundary: false,
       isDynamicError: false,
       isDraftMode: false,
       isForceDynamic: false,
@@ -498,35 +497,28 @@ describe("app page render lifecycle", () => {
     expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { hasLoadingBoundary: false, stored: false },
-    { hasLoadingBoundary: true, stored: true },
-  ])(
-    "stores an RSC render whose page called redirect() only below a loading boundary ($hasLoadingBoundary)",
-    async ({ hasLoadingBoundary, stored }) => {
-      const common = createCommonOptions();
-      const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
-        digest: "NEXT_REDIRECT;replace;/target;307;",
-      });
+  it("stores an RSC render whose page called redirect(), as Next.js does", async () => {
+    const common = createCommonOptions();
+    const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/target;307;",
+    });
 
-      const response = await renderAppPageLifecycle({
-        ...common.options,
-        hasLoadingBoundary,
-        isProduction: true,
-        isRscRequest: true,
-        renderToReadableStream(_element, opts) {
-          opts.onError(redirectError, null, null);
-          return createStream(["flight-with-digest"]);
-        },
-        revalidateSeconds: 60,
-      });
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream(_element, opts) {
+        opts.onError(redirectError, null, null);
+        return createStream(["flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+    });
 
-      expect(response.status).toBe(200);
-      await response.text();
-      await Promise.all(common.waitUntilPromises);
-      expect(common.isrSet).toHaveBeenCalledTimes(stored ? 1 : 0);
-    },
-  );
+    expect(response.status).toBe(200);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenCalledOnce();
+  });
 
   it("streams lazy HTML while pending dynamic usage determines the cache write", async () => {
     const common = createCommonOptions();
@@ -583,7 +575,6 @@ describe("app page render lifecycle", () => {
 
     const response = await renderAppPageLifecycle({
       ...common.options,
-      hasLoadingBoundary: false,
       isRscRequest: false,
       loadSsrHandler: async () => ({
         async handleSsr() {
@@ -2593,7 +2584,6 @@ describe("app page render lifecycle", () => {
     const response = await renderAppPageLifecycle({
       ...common.options,
       isPrerender: true,
-      hasLoadingBoundary: true,
       loadSsrHandler: async () => ({
         async handleSsr(_rscStream, _navContext, _fontData, _options) {
           // Trigger the captured onError callback representing a component throw
@@ -2943,7 +2933,6 @@ describe("layoutFlags injection into RSC payload", () => {
       getPageTags: () => overrides.pageTags ?? [],
       getRequestCacheLife: () => null,
       handlerStart: 0,
-      hasLoadingBoundary: false,
       isDynamicError: false,
       isDraftMode: false,
       isForceDynamic: false,

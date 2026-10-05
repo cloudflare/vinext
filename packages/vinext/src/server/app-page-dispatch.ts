@@ -1372,7 +1372,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return requestCacheLife.peek();
     },
     handlerStart: options.handlerStart,
-    hasLoadingBoundary: hasActiveLoadingBoundary,
     // Only candidate HTML renders gate searchParams, so their MISS is final.
     omitPendingDynamicCacheState:
       hasRequestSearchParams && !(isCacheCandidate && !options.isRscRequest),
