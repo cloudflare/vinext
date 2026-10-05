@@ -1372,6 +1372,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           isForceStatic: buildOptions?.isForceStatic === true,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
+          placeStreamedMetadataInHead: buildOptions?.placeStreamedMetadataInHead === true,
           isProduction: process.env.NODE_ENV === "production",
         }, layoutParamAccess, displayPathname, scriptNonce);
       },

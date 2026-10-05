@@ -318,6 +318,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
       serveStreamingMetadata?: boolean;
+      placeStreamedMetadataInHead?: boolean;
     },
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
@@ -1000,8 +1001,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 // As in Next.js, a regeneration streams metadata as the
-                // request that triggered it does.
+                // request that triggered it does, into the <head> of a
+                // document it renders whole.
                 serveStreamingMetadata: placeGeneratedMetadataInBody,
+                placeStreamedMetadataInHead: true,
               },
             );
             const baseRevalidatedOnError = options.createRscOnErrorHandler(
@@ -1236,6 +1239,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
           observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
           serveStreamingMetadata: placeGeneratedMetadataInBody,
+          placeStreamedMetadataInHead: isCacheCandidate,
         },
       );
     },
@@ -1320,6 +1324,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
+            // Next.js renders a page it may store whole before serving it, so
+            // the page's streamed metadata is ready for <head>.
+            placeStreamedMetadataInHead: isCacheCandidate,
           },
         );
       },

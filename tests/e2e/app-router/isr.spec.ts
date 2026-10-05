@@ -369,6 +369,54 @@ test.describe("App Router ISR", () => {
  * MISS for non-prebuilt, and 404 for notFound(). `dynamicParams=false` returns 404
  * for unknown params. These tests verify the same cache header semantics in vinext.
  */
+// Next.js renders an ISR page whole before serving it, so the title that its
+// generateMetadata() streams is in <head>, on a miss and on a regeneration.
+test.describe("ISR generated metadata placement", () => {
+  function expectTitleInHead(html: string, title: string): void {
+    const titleIndex = html.indexOf(`<title>${title}</title>`);
+    expect(titleIndex).toBeGreaterThan(-1);
+    expect(titleIndex).toBeLessThan(html.indexOf("</head>"));
+  }
+
+  function readTimestamp(html: string): string | undefined {
+    return html.match(/data-testid="timestamp">(\d+)</)?.[1];
+  }
+
+  test("puts the generated title in <head> on a miss and on a regeneration", async ({
+    request,
+  }) => {
+    const id = crypto.randomUUID();
+    const path = `/isr-metadata-head/${id}`;
+    const title = `ISR metadata head ${id}`;
+
+    const miss = await request.get(`${baseUrl()}${path}`);
+    expect(miss.headers()["x-vinext-cache"]).toBe("MISS");
+    expectTitleInHead(await miss.text(), title);
+
+    const hit = await waitForCacheHit(request, path);
+    const hitHtml = await hit.text();
+    expectTitleInHead(hitHtml, title);
+    const storedTimestamp = readTimestamp(hitHtml);
+    expect(storedTimestamp).toBeDefined();
+
+    // The entry goes stale after a second, and the next request regenerates it.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const stale = await request.get(`${baseUrl()}${path}`);
+    expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
+    await stale.text();
+
+    let regeneratedHtml = "";
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${baseUrl()}${path}`);
+        regeneratedHtml = await response.text();
+        return [response.headers()["x-vinext-cache"], readTimestamp(regeneratedHtml)];
+      })
+      .toEqual(["HIT", expect.not.stringMatching(`^${storedTimestamp}$`)]);
+    expectTitleInHead(regeneratedHtml, title);
+  });
+});
+
 test.describe("ISR dynamicParams cache headers", () => {
   test.describe("dynamicParams=false (products)", () => {
     // Ref: opennextjs-cloudflare isr.test.ts "dynamicParams set to false"

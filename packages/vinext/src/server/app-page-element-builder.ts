@@ -169,6 +169,12 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
   serveStreamingMetadata?: boolean;
+  /**
+   * Wait for streamed metadata in `<head>`, as Next.js does in a document it
+   * renders whole before serving it (a static or ISR render). Its errors still
+   * reach the route's boundaries through the outlet.
+   */
+  placeStreamedMetadataInHead?: boolean;
   /** Whether streamed render errors must be sanitized for client transport. */
   isProduction?: boolean;
 };
@@ -271,6 +277,7 @@ export async function buildPageElements<
     observePageSearchParamsAccess = false,
     isForceStatic = false,
     serveStreamingMetadata,
+    placeStreamedMetadataInHead = false,
     isProduction = process.env.NODE_ENV === "production",
   } = pageRequest;
 
@@ -451,7 +458,8 @@ export async function buildPageElements<
       pageRequest.request.headers.get("user-agent") ?? "",
       options.htmlLimitedBots,
     );
-  const metadataPlacement = hasDynamicMetadata && streamGeneratedHead ? "body" : "head";
+  const metadataPlacement =
+    hasDynamicMetadata && streamGeneratedHead && !placeStreamedMetadataInHead ? "body" : "head";
 
   const resolveNotFoundFallbackPlanOptions = () => {
     const routeBoundaryModule = route.notFound;

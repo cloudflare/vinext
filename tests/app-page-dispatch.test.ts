@@ -3519,6 +3519,7 @@ describe("app page dispatch", () => {
         isForceStatic: false,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
+        placeStreamedMetadataInHead: false,
         serveStreamingMetadata: true,
       },
     ]);
@@ -4083,7 +4084,58 @@ describe("app page dispatch", () => {
       buildPageElement.mockClear();
       await scheduledRender();
 
-      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({ serveStreamingMetadata });
+      // Its document is rendered whole, so the metadata waits in <head>.
+      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead: true,
+        serveStreamingMetadata,
+      });
+    },
+  );
+
+  // Next.js renders a page it may store whole before serving it, so the page's
+  // streamed metadata is ready for <head>. Other pages stream it into <body>.
+  it.each([
+    { name: "a cache candidate", overrides: {}, placeStreamedMetadataInHead: true },
+    {
+      name: "a force-dynamic page",
+      overrides: { dynamicConfig: "force-dynamic" },
+      placeStreamedMetadataInHead: false,
+    },
+    {
+      name: "a dev render",
+      overrides: { isProduction: false },
+      placeStreamedMetadataInHead: false,
+    },
+  ] as const)(
+    "builds $name with placeStreamedMetadataInHead $placeStreamedMetadataInHead",
+    async ({ overrides, placeStreamedMetadataInHead }) => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        revalidateSeconds: 60,
+        ...overrides,
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+
+      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead,
+        serveStreamingMetadata: true,
+      });
     },
   );
 
