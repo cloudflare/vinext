@@ -516,6 +516,27 @@ describe("single-request cacheability admission", () => {
       await expect(response.text()).resolves.toBe("flight-with-digest");
     });
 
+    // As on a fresh render or an ISR replay, middleware's Location wins.
+    it("keeps middleware's Location over a completed redirect() render's", async () => {
+      const { context } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        headers: { location: "/target" },
+        searchParamsUnread: true,
+        status: 200,
+      });
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("flight-with-digest", {
+          headers: { "Cache-Control": "no-store, must-revalidate", Location: "/middleware" },
+        }),
+        context,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Location")).toBe("/middleware");
+    });
+
     it("keeps the streamed status when the response could not be captured", async () => {
       const { context, state } = rscAdmissionContext({
         cacheable: true,

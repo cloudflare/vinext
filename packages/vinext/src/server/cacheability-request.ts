@@ -610,8 +610,10 @@ function responseWithCachePolicy(
 ): Response {
   const headers = new Headers(response.headers);
   if (typeof body === "string") headers.delete("Content-Length");
+  // The response already carries middleware's headers, which win over the
+  // render's, as on a fresh render or an ISR replay.
   for (const [name, value] of Object.entries(completedStatus?.headers ?? {})) {
-    headers.set(name, value);
+    if (!headers.has(name)) headers.set(name, value);
   }
   applyCdnResponseHeaders(
     headers,
