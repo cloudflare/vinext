@@ -1,4 +1,4 @@
-import { parseAst } from "vite";
+import { parseAst, type Plugin } from "vite";
 
 // vite-plugin-commonjs appends its export facade between these markers.
 const EXPORT_FACADE_START = "/* [vite-plugin-commonjs] export-statement-S */";
@@ -54,3 +54,20 @@ export function stripEsmCommonJsExportFacade(output: string): string | undefined
   const stripped = output.slice(0, start) + output.slice(end + EXPORT_FACADE_END.length);
   return hasEsmExports(stripped) ? stripped : undefined;
 }
+
+/**
+ * Applies {@link stripEsmCommonJsExportFacade} in the client dependency
+ * optimizer's Rolldown builds (scan and pre-bundle). vite-plugin-commonjs's
+ * pre-bundle plugin loads and converts files there without vinext's transform
+ * wrapper, so its output reaches this hook as the loaded code.
+ */
+export const commonJsEsmFacadeOptimizeDepsPlugin: Plugin = {
+  name: "vinext:commonjs-esm-facade:optimize-deps",
+  transform: {
+    filter: { code: { include: EXPORT_FACADE_START } },
+    handler(code) {
+      const stripped = stripEsmCommonJsExportFacade(code);
+      return stripped === undefined ? null : { code: stripped, map: null };
+    },
+  },
+};

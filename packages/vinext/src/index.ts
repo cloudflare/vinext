@@ -315,7 +315,10 @@ import {
 } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
-import { stripEsmCommonJsExportFacade } from "./plugins/commonjs-esm-facade.js";
+import {
+  commonJsEsmFacadeOptimizeDepsPlugin,
+  stripEsmCommonJsExportFacade,
+} from "./plugins/commonjs-esm-facade.js";
 import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
   createRequireConditionResolutionPlugin,
@@ -2157,16 +2160,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // current Vite environment into that call without creating per-environment
   // plugin instances: environment plugins cannot run the configResolved hook
   // that vite-plugin-commonjs requires to initialize its resolver.
-  let transformingCommonJs = false;
   let transformProjectLocalCommonJs = false;
   let transformBundledCommonJsDependencies = false;
   const commonJsPlugin = commonjs({
     filter(id: string) {
-      // Only the transform wrapper below converts modules. vite-plugin-commonjs's
-      // optimizeDeps pre-bundle plugin calls this filter directly, outside it.
-      // Rolldown already handles CommonJS in the dependency scan and optimizer,
-      // including require() discovery, so convert nothing there.
-      if (!transformingCommonJs) return false;
+      // vite-plugin-commonjs's optimizeDeps pre-bundle plugin calls this filter
+      // directly, without the transform wrapper below. Reject vinext's own
+      // runtime there too: its inlined dependencies (dist/deps) are already ESM,
+      // and a second export facade breaks the whole dependency scan.
+      if (isPathInside(__dirname, toSlash(stripViteModuleQuery(id)))) return false;
       return commonjsTransformFilter(
         id,
         transformProjectLocalCommonJs,
@@ -2228,10 +2230,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       if (userCondition !== true && id.includes("node_modules")) return null;
       const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;
-      const previousTransforming = transformingCommonJs;
       transformProjectLocalCommonJs = projectLocal && isDev;
       transformBundledCommonJsDependencies = bundledDependency;
-      transformingCommonJs = true;
       let result: ReturnType<typeof commonJsTransform>;
       try {
         // Do not await here: the filter is consulted synchronously while this
@@ -2241,7 +2241,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       } finally {
         transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
-        transformingCommonJs = previousTransforming;
       }
       return Promise.resolve(result).then((transformed) => {
         if (typeof transformed !== "object" || typeof transformed?.code !== "string") {
@@ -3773,7 +3772,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
-            plugins: [depOptimizeAliasPlugin],
+            // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
+            plugins: [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
           },
         };
         pagesOptimizeEntries = !hasAppDir
