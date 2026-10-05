@@ -676,6 +676,27 @@ describe("createAppRscHandler", () => {
       expect(navigation.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
     });
 
+    // As in Next.js, only a prefetch carries a segment prefetch.
+    it.each([401, 403, 404])(
+      "keeps a stored %s for a segment header without Next-Router-Prefetch",
+      async (status) => {
+        const headers = createRscRequestHeaders();
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
+        const url = await createRscRequestUrl("/docs/about", headers);
+        const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+
+        const response = await handler(
+          new Request(new URL(url, "https://example.test"), { headers }),
+          null,
+          false,
+          async () => storedResponse(status),
+        );
+
+        expect(response.status).toBe(status);
+        expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+      },
+    );
+
     // A dynamicParams = false miss is a 404 for a segment prefetch in Next.js.
     it("leaves any other 404 to a segment prefetch alone", async () => {
       const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });

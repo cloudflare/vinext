@@ -24,6 +24,7 @@ import {
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
   NEXT_ACTION_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
@@ -2537,7 +2538,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       });
   const pageResponse = withStoredSpecialErrorStatus(
     renderedPageResponse,
-    isRscRequest && request.headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
+    // Next.js reads the segment header only on a prefetch.
+    isRscRequest &&
+      request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) === "1" &&
+      request.headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
   );
 
   // No-JS progressive form actions write cookies via cookies().set() / draftMode()
