@@ -210,6 +210,36 @@ test.describe("Next.js compat: navigation (browser)", () => {
     expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
   });
 
+  // A parallel slot page's redirect() is caught in the slot, as in Next.js, so
+  // the shared layout keeps its client state.
+  test("slot page calling redirect() keeps the layout's state", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/slot-redirect/start`);
+    await waitForAppRouterHydration(page);
+    await page.click("#layout-counter");
+    await expect(page.locator("#layout-counter")).toHaveText("count 1");
+
+    await page.click("#link-to-slot-redirect");
+
+    await expect(page.locator("#slot-done")).toBeVisible({ timeout: 10_000 });
+    expect(page.url()).toContain("/nextjs-compat/slot-redirect/done");
+    await expect(page.locator("#layout-counter")).toHaveText("count 1");
+  });
+
+  // Next.js renders the root not-found page for a slot page's notFound().
+  test("slot page calling notFound() renders the root not-found page", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/slot-redirect/start`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    await page.click("#link-to-slot-not-found");
+
+    await expect(page.locator("h1")).toHaveText("404 - Page Not Found", { timeout: 10_000 });
+    expect(page.url()).toContain("/nextjs-compat/slot-not-found");
+    expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
+  });
+
   // Back/forward navigation
   test("browser back button works after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
