@@ -63,6 +63,31 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
 `,
     );
 
+    // https://github.com/cloudflare/vinext/issues/3672: the packaged cache is
+    // read-only, so a rewritten URL that is not packaged renders on every request.
+    write(
+      root,
+      "next.config.mjs",
+      `export default {
+  async rewrites() {
+    return { afterFiles: [{ source: "/about", destination: "/en/about" }] };
+  },
+};
+`,
+    );
+    write(
+      root,
+      "app/[locale]/about/page.tsx",
+      `export function generateStaticParams() {
+  return [{ locale: "en" }];
+}
+
+export default function Page() {
+  return <main>about served from prerender assets</main>;
+}
+`,
+    );
+
     const descriptor = staticAssetsAdapter();
     const cloudflarePluginPath = path.join(
       root,
@@ -155,6 +180,23 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
     expect(await rsc.text()).toContain("served from prerender assets");
   });
+
+  it.each(["/en/about", "/about"])(
+    "serves the prerendered page at %s as a cache hit, directly and through a rewrite",
+    async (pathname) => {
+      const html = await fetch(`${baseUrl}${pathname}`);
+      expect(html.status).toBe(200);
+      expect(html.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(await html.text()).toContain("about served from prerender assets");
+
+      const rsc = await fetch(`${baseUrl}${pathname}`, {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      });
+      expect(rsc.status).toBe(200);
+      expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(await rsc.text()).toContain("about served from prerender assets");
+    },
+  );
 
   it("does not expose the packaged cache through public asset URLs", async () => {
     const artifacts = fs.readdirSync(path.join(root, "dist/client/_vinext/static-cache"));

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { appIsrCacheKey, pagesIsrCacheKey } from "vinext/internal/server/isr-cache";
 import { extractVinextNextDataJson } from "vinext/internal/client/vinext-next-data";
 import {
+  getAppPageArtifactPathname,
   readPrerenderManifest,
   type PrerenderManifestRoute,
 } from "vinext/internal/server/prerender-manifest";
@@ -101,13 +102,16 @@ export function finalizeStaticAssetsPrerenderOutput(
     const pathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(pathname);
     if (route.router === "app") {
+      // A rewritten source URL has its own artifact files and its own key.
+      const artifactPathname = getAppPageArtifactPathname(route);
+      const appCachePathname = route.rewrite ? route.rewrite.cachePathname : cachePathname;
       count += Number(
         writeCacheAsset(
           outputDir,
           index,
-          appIsrCacheKey(cachePathname, "html", manifest.buildId),
+          appIsrCacheKey(appCachePathname, "html", manifest.buildId),
           "html",
-          path.join(prerenderDir, getOutputPath(pathname, manifest.trailingSlash ?? false)),
+          path.join(prerenderDir, getOutputPath(artifactPathname, manifest.trailingSlash ?? false)),
           route,
         ),
       );
@@ -115,9 +119,9 @@ export function finalizeStaticAssetsPrerenderOutput(
         writeCacheAsset(
           outputDir,
           index,
-          appIsrCacheKey(cachePathname, "rsc", manifest.buildId),
+          appIsrCacheKey(appCachePathname, "rsc", manifest.buildId),
           "rsc",
-          path.join(prerenderDir, getRscOutputPath(pathname)),
+          path.join(prerenderDir, getRscOutputPath(artifactPathname)),
           route,
         ),
       );
