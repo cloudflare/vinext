@@ -37,7 +37,7 @@
     "test:live": "vitest run tests/live-e2e.test.ts tests/service-binding-live-e2e.test.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260904.1",
+    "@cloudflare/workers-types": "5.20261004.1",
     "@types/node": "catalog:",
     "miniflare": "catalog:",
     "typescript": "catalog:",

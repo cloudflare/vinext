@@ -65,6 +65,8 @@ beforeEach(async () => {
               import worker, { ResponseStoreBinding as BaseBinding } from "./worker.js";
               export { CacheMetadata, ResponseStoreRevalidator } from "./worker.js";
               let purgeMode;
+              let exposeInvalidate = false;
+              let edgeCalls = [];
               let failR2Write = false;
               export class ResponseStoreBinding extends BaseBinding {
                 constructor(ctx, env) {
@@ -82,15 +84,18 @@ beforeEach(async () => {
                     }),
                   });
                   if (purgeMode) {
+                    const edgeOperation = (operation) => (options) => {
+                      edgeCalls.push({ operation, options });
+                      if (purgeMode === "throw") throw new Error("Purge unavailable");
+                      if (purgeMode === "reject") return Promise.reject(new Error("Purge unavailable"));
+                      return Promise.resolve({
+                        success: purgeMode === "success",
+                        errors: [{ code: 1134, message: "Rate limited" }],
+                      });
+                    };
                     Object.defineProperty(ctx, "cache", { value: {
-                      purge() {
-                        if (purgeMode === "throw") throw new Error("Purge unavailable");
-                        if (purgeMode === "reject") return Promise.reject(new Error("Purge unavailable"));
-                        return Promise.resolve({
-                          success: purgeMode === "success",
-                          errors: [{ code: 1134, message: "Rate limited" }],
-                        });
-                      },
+                      purge: edgeOperation("purge"),
+                      ...(exposeInvalidate ? { invalidate: edgeOperation("invalidate") } : {}),
                     } });
                   }
                 }
@@ -99,8 +104,13 @@ beforeEach(async () => {
                 fetch(request) {
                   if (new URL(request.url).pathname === "/admin/edge-purge") {
                     purgeMode = new URL(request.url).searchParams.get("mode");
+                    exposeInvalidate = new URL(request.url).searchParams.has("invalidate");
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
+                    edgeCalls = [];
                     return new Response("ok");
+                  }
+                  if (new URL(request.url).pathname === "/admin/edge-calls") {
+                    return Response.json(edgeCalls);
                   }
                   return worker.fetch(request);
                 },
@@ -404,6 +414,67 @@ test.each(["rate-limit", "throw", "reject"])(
     assert.equal(result.response.status, 200);
     assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
     assert.equal(await (await read("/refresh-purge-failure")).text(), "regenerated");
+  },
+);
+
+test("refresh invalidates prior edge responses instead of purging them", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/refresh-invalidate", "original", {
+    revalidator: { body: "regenerated" },
+  });
+  const result = await refreshSelectors({ pathPrefixes: ["/refresh-invalidate"] });
+  assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual(await (await worker.fetch("https://user.test/admin/edge-calls")).json(), [
+    {
+      operation: "invalidate",
+      options: { tags: [`runtime-cache-${await cacheKeyHash("/refresh-invalidate")}`] },
+    },
+  ]);
+  assert.equal(await (await read("/refresh-invalidate")).text(), "regenerated");
+});
+
+test("replacement writes and purges keep hard edge purges when invalidation is available", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/hard-edge-purge", "original", { tags: ["hard-edge-purge"] });
+  await put("/hard-edge-purge", "replacement", {
+    purgeExisting: true,
+    tags: ["hard-edge-purge"],
+  });
+  await purge({ tags: ["hard-edge-purge"] });
+  assert.deepEqual(
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()).map(
+      ({ operation }: { operation: string }) => operation,
+    ),
+    ["purge", "purge"],
+  );
+});
+
+test("refresh falls back to a hard edge purge when invalidation is unavailable", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/refresh-purge-fallback", "original", {
+    revalidator: { body: "regenerated" },
+  });
+  const result = await refreshSelectors({ pathPrefixes: ["/refresh-purge-fallback"] });
+  assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual(
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()).map(
+      ({ operation }: { operation: string }) => operation,
+    ),
+    ["purge"],
+  );
+});
+
+test.each(["rate-limit", "throw", "reject"])(
+  "refresh reports a failed edge invalidation: %s",
+  async (mode) => {
+    await worker.fetch(`https://user.test/admin/edge-purge?mode=${mode}&invalidate`);
+    await put("/refresh-invalidate-failure", "original", {
+      revalidator: { body: "regenerated" },
+    });
+    const result = await refreshSelectors({ pathPrefixes: ["/refresh-invalidate-failure"] });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+    assert.equal(await (await read("/refresh-invalidate-failure")).text(), "regenerated");
   },
 );
 

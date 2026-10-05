@@ -23,6 +23,7 @@ import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-bui
 type StageBinding = {
   fetch(request: Request): Promise<Response> | Response;
   purge?(options: CachePurgeOptions): unknown;
+  invalidate?(options: CachePurgeOptions): unknown;
 };
 
 type StageBindingFactory = (options: { props: unknown }) => StageBinding;
@@ -203,13 +204,22 @@ function hasFetch(value: unknown): value is StageBinding {
   );
 }
 
-function hasPurge(value: unknown): value is Required<Pick<StageBinding, "purge">> {
+function hasCacheMethod<Name extends "purge" | "invalidate">(
+  value: unknown,
+  name: Name,
+): value is Required<Pick<StageBinding, Name>> {
   return (
     value !== null &&
     (typeof value === "object" || typeof value === "function") &&
-    "purge" in value &&
-    typeof value.purge === "function"
+    name in value &&
+    typeof Reflect.get(value, name) === "function"
   );
+}
+
+/** Soft-invalidate when the runtime supports it, otherwise hard-purge. */
+function invalidateOrPurge(cache: unknown, options: CachePurgeOptions): unknown {
+  if (hasCacheMethod(cache, "invalidate")) return cache.invalidate(options);
+  return hasCacheMethod(cache, "purge") ? cache.purge(options) : undefined;
 }
 
 function getResponseStageBinding(
@@ -431,6 +441,10 @@ function hasTaggedCustomVary(response: Response): boolean {
   return varyFields.some((name) => !FRAMEWORK_RESPONSE_VARY_FIELDS.has(name));
 }
 
+/**
+ * Workers Cache purges and invalidations only reach the calling entrypoint's
+ * cache, so route both through the cache-bearing response entrypoint.
+ */
 function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
   const factory = context.exports?.[CACHED_RESPONSE_STAGE_EXPORT];
   if (typeof factory !== "function") return context;
@@ -440,8 +454,15 @@ function withResponseStagePurge(context: CloudflareStageContext): CloudflareStag
     cache: {
       purge(options: CachePurgeOptions) {
         const target = (factory as StageBindingFactory)({ props: {} });
-        if (hasPurge(target)) return target.purge(options);
-        return hasPurge(fallback) ? fallback.purge(options) : undefined;
+        if (hasCacheMethod(target, "purge")) return target.purge(options);
+        return hasCacheMethod(fallback, "purge") ? fallback.purge(options) : undefined;
+      },
+      invalidate(options: CachePurgeOptions) {
+        const target = (factory as StageBindingFactory)({ props: {} });
+        if (hasCacheMethod(target, "invalidate") || hasCacheMethod(target, "purge")) {
+          return invalidateOrPurge(target, options);
+        }
+        return invalidateOrPurge(fallback, options);
       },
     },
   };
@@ -577,8 +598,12 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
 
   async purge(options: CachePurgeOptions): Promise<unknown> {
     const cache = Reflect.get(this.ctx, "cache");
-    if (!hasPurge(cache)) return undefined;
+    if (!hasCacheMethod(cache, "purge")) return undefined;
     return cache.purge(options);
+  }
+
+  async invalidate(options: CachePurgeOptions): Promise<unknown> {
+    return invalidateOrPurge(Reflect.get(this.ctx, "cache"), options);
   }
 }
 

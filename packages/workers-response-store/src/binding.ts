@@ -137,6 +137,8 @@ type PublicationResult = {
   published: boolean;
 };
 
+type EdgeCacheOperation = "purge" | "invalidate";
+
 class R2PublicationError extends Error {
   constructor(cause: unknown) {
     super("R2 response publication failed", { cause });
@@ -526,14 +528,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return { cacheKey, keyHash };
   }
 
-  private async purgeEdgeCache(options: CachePurgeOptions): Promise<boolean> {
+  /**
+   * `purge` deletes matching edge responses. `invalidate` marks them stale so
+   * Workers Cache keeps serving them while it refetches from this binding in
+   * the background.
+   */
+  private async purgeEdgeCache(
+    options: CachePurgeOptions,
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     if (this.env.WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE === "disabled") {
       return false;
     }
-    if (!this.ctx.cache) {
+    const cache = this.ctx.cache;
+    if (!cache) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge is unavailable",
+          message: `Workers Response Store cache ${operation} is unavailable`,
           reason: "ctx.cache is absent",
         }),
       );
@@ -541,18 +552,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     try {
-      const result = await this.ctx.cache.purge(options);
+      // Runtimes without soft invalidation, including current Miniflare,
+      // fall back to a hard purge.
+      const result =
+        operation === "invalidate" && typeof cache.invalidate === "function"
+          ? await cache.invalidate(options)
+          : await cache.purge(options);
       if (!result.success) {
         throw new Error(
           result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ") ||
-            "Workers Response Store cache purge was rejected",
+            `Workers Response Store cache ${operation} was rejected`,
         );
       }
       return true;
     } catch (error) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge failed",
+          message: `Workers Response Store cache ${operation} failed`,
           error: error instanceof Error ? error.message : String(error),
         }),
       );
@@ -560,11 +576,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
   }
 
-  private async purgeEdgeCacheByTags(tags: string[]): Promise<boolean> {
+  private async purgeEdgeCacheByTags(
+    tags: string[],
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     let accepted = true;
 
     for (const batch of batches(tags, CACHE_PURGE_BATCH_SIZE)) {
-      if (!(await this.purgeEdgeCache({ tags: batch }))) {
+      if (!(await this.purgeEdgeCache({ tags: batch }, operation))) {
         accepted = false;
       }
     }
@@ -1405,8 +1424,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
     }
 
+    // Refresh is stale-while-revalidate: R2 already holds the new revisions,
+    // so let Workers Cache keep serving the prior responses while it refills.
     const edgePurgeAccepted = refreshed.length
-      ? await this.purgeEdgeCacheByTags(refreshed.map((entry) => purgeTagForEntry(entry)))
+      ? await this.purgeEdgeCacheByTags(
+          refreshed.map((entry) => purgeTagForEntry(entry)),
+          "invalidate",
+        )
       : false;
 
     if (failures.length) {

@@ -22,6 +22,9 @@
  *   `Cloudflare-CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
  *   for the edge to honor max-age + stale-while-revalidate.
  * - `revalidateTag` purges the edge via the request context's `cache.purge({ tags })`.
+ *   A stale-while-revalidate invalidation (a profile with a non-zero `expire`)
+ *   uses `cache.invalidate({ tags })` instead, so the edge keeps serving the
+ *   stale response while it refetches in the background.
  *
  * Tags use fixed-size lowercase digests before emission and purge because
  * Workers Cache tags are case-insensitive printable ASCII, while Next.js tags
@@ -144,6 +147,8 @@ type WorkersCacheLike = {
   // Miniflare currently resolves undefined; production Workers returns the
   // documented result object.
   purge(options: { tags: string[] }): Promise<WorkersCachePurgeResult | undefined>;
+  // Absent on runtimes without soft invalidation, including current Miniflare.
+  invalidate?(options: { tags: string[] }): Promise<WorkersCachePurgeResult | undefined>;
 };
 
 function getWorkersCache(): WorkersCacheLike | null {
@@ -355,8 +360,16 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     };
   }
 
-  /** Purge edge-cached responses by tag via the request context's `cache.purge`. */
-  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  /**
+   * Invalidate edge-cached responses by tag via the request context's cache.
+   *
+   * Next.js marks a tag stale when `revalidateTag` receives durations and
+   * expires it immediately otherwise (`updateTag`, `revalidatePath`, or
+   * `expire: 0`). Stale tags map to `cache.invalidate`, so the edge serves the
+   * stale response while it refetches; expired tags map to `cache.purge`.
+   * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/file-system-cache.ts
+   */
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
     const cache = getWorkersCache();
     if (!cache) return; // no host cache in the request context (e.g. Node dev)
 
@@ -365,10 +378,16 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     );
     if (tagList.length === 0) return;
 
-    const result = await cache.purge({ tags: tagList.map(encodeCloudflareCacheTag) });
+    const options = { tags: tagList.map(encodeCloudflareCacheTag) };
+    const markStale =
+      durations !== undefined && !(typeof durations.expire === "number" && durations.expire <= 0);
+    // Runtimes without soft invalidation fall back to a hard purge.
+    const invalidate = markStale && typeof cache.invalidate === "function";
+    const operation = invalidate ? "invalidate" : "purge";
+    const result = invalidate ? await cache.invalidate?.(options) : await cache.purge(options);
     if (result?.success === false) {
       const errors = result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ");
-      throw new Error(`[vinext] Workers Cache purge failed${errors ? `: ${errors}` : ""}`);
+      throw new Error(`[vinext] Workers Cache ${operation} failed${errors ? `: ${errors}` : ""}`);
     }
   }
 }
