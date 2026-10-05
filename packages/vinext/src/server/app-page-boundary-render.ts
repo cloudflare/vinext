@@ -129,6 +129,11 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   getFontStyles: () => string[];
   getNavigationContext: () => NavigationContext | null;
   globalErrorModule?: TModule | null;
+  /**
+   * The document may be stored under a query-free key, so its SSR
+   * `useSearchParams()` waits as a cache candidate's does.
+   */
+  isCacheCandidate?: boolean;
   isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -452,6 +457,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           clearRequestContext: options.clearRequestContext,
           fontData,
           fontLinkHeader: options.buildFontLinkHeader(fontData.preloads),
+          isCacheCandidate: options.isCacheCandidate,
           isEdgeRuntime: options.isEdgeRuntime,
           middlewareHeaders: options.middlewareContext.headers,
           navigationContext: options.getNavigationContext() ?? {

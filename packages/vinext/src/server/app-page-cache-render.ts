@@ -73,6 +73,8 @@ type AppPageCacheSpecialErrorDocument = {
   /** Response headers stored with the entries, such as a redirect's `location`. */
   headers?: Record<string, string>;
   html: string;
+  /** The renderer's own `Link` header, without middleware's. */
+  linkHeader?: string;
   status: number;
 };
 
@@ -159,13 +161,18 @@ async function renderAppPageCacheArtifactsImpl(
       },
     );
   } catch (error) {
+    if (!options.renderShellSpecialError) throw error;
+    // The page's Flight render goes on after its shell rejected. Let it finish
+    // before the special-error document clears the request context, so that
+    // what it does, such as reading cookies(), decides the store.
+    await capturedRscDataRef.value?.catch(() => {});
     // As in Next.js, a special error that rejects the shell is the render's
     // outcome, stored with its status beside the page's RSC payload.
-    specialErrorDocument = (await options.renderShellSpecialError?.(error)) ?? null;
+    specialErrorDocument = await options.renderShellSpecialError(error);
     if (!specialErrorDocument) throw error;
   }
   let html = specialErrorDocument?.html ?? "";
-  let linkHeader: string | undefined;
+  let linkHeader = specialErrorDocument?.linkHeader;
   if (htmlResult) {
     const htmlStream = isAppSsrRenderResult(htmlResult) ? htmlResult.htmlStream : htmlResult;
     const reactLinkHeader = isAppSsrRenderResult(htmlResult) ? htmlResult.linkHeader : undefined;

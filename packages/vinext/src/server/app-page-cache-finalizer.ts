@@ -331,6 +331,11 @@ export function finalizeAppPageHtmlCacheResponse(
   const cachePromise = (async () => {
     try {
       let cachedHtml = streamForCache ? await readStreamAsText(streamForCache) : "";
+      // The page's Flight render can outlive a document it didn't render, such
+      // as a special error's, and the store reads what that render observed.
+      const rscData = options.capturedRscDataPromise
+        ? await options.capturedRscDataPromise
+        : undefined;
 
       if (
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
@@ -391,14 +396,12 @@ export function finalizeAppPageHtmlCacheResponse(
         ),
       ];
 
-      if (options.capturedRscDataPromise) {
+      if (rscData) {
         writes.push(
-          options.capturedRscDataPromise.then((rscData) =>
-            options.isrSet(
-              rscKey,
-              buildAppPageCacheValue("", rscData, status, rscRenderObservation, options.headers),
-              { cacheControl, tags: pageTags },
-            ),
+          options.isrSet(
+            rscKey,
+            buildAppPageCacheValue("", rscData, status, rscRenderObservation, options.headers),
+            { cacheControl, tags: pageTags },
           ),
         );
       }

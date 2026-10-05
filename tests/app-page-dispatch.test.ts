@@ -69,6 +69,7 @@ import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import {
   createWorkerCacheabilityAdmissionContext,
   finalizeWorkerCacheabilityResponse,
@@ -3727,18 +3728,20 @@ describe("app page dispatch", () => {
     {
       digest: "NEXT_HTTP_ERROR_FALLBACK;404",
       headers: undefined,
+      htmlHeaders: { link: "</font.woff2>; rel=preload" },
       html: "<html>not found</html>",
       status: 404,
     },
     {
       digest: "NEXT_REDIRECT;replace;/target;307;",
       headers: { location: "/target" },
+      htmlHeaders: { location: "/target" },
       html: "",
       status: 307,
     },
   ])(
     "stores a stale regeneration whose shell ended in a $status",
-    async ({ digest, headers, html, status }) => {
+    async ({ digest, headers, htmlHeaders, html, status }) => {
       let scheduledRender: unknown = null;
       const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
       const { options } = createDispatchOptions({
@@ -3763,10 +3766,15 @@ describe("app page dispatch", () => {
           scheduledRender = renderFn;
         },
       });
-      options.renderHttpAccessFallbackPage = vi.fn(
-        async (statusCode: number) =>
-          new Response("<html>not found</html>", { status: statusCode }),
-      );
+      options.renderHttpAccessFallbackPage = vi.fn(async (statusCode: number) => {
+        const link = "</font.woff2>; rel=preload";
+        const fallback = new Response("<html>not found</html>", {
+          headers: { link },
+          status: statusCode,
+        });
+        markFrameworkLinkHeaders(fallback.headers, link);
+        return fallback;
+      });
 
       const response = await dispatchAppPage(options);
       await expect(response.text()).resolves.toBe("<html>stale</html>");
@@ -3785,10 +3793,189 @@ describe("app page dispatch", () => {
         })),
       ).toEqual([
         { headers, html: "", key: "rsc:/posts/hello", rsc: "page-flight-with-digest", status },
-        { headers, html, key: "html:/posts/hello", rsc: undefined, status },
+        { headers: htmlHeaders, html, key: "html:/posts/hello", rsc: undefined, status },
       ]);
+      if (status === 404) {
+        // The stored document must not carry the request's query.
+        expect(options.renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+          404,
+          expect.objectContaining({ isCacheCandidate: true }),
+          null,
+        );
+      }
     },
   );
+
+  it("does not store a regeneration whose page reads a dynamic API after its shell rejected", async () => {
+    // A root layout's `<Suspense><Session /></Suspense>` reads cookies() after
+    // the page's redirect() rejected the shell.
+    let scheduledRender: unknown = null;
+    let requestContextCleared = false;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      clearRequestContext() {
+        requestContextCleared = true;
+      },
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_REDIRECT;replace;/target;307;";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      renderToReadableStream: () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("page-flight-with-digest"));
+            setTimeout(() => {
+              // Without a request context, cookies() rejects instead.
+              if (!requestContextCleared) markDynamicUsage();
+              controller.close();
+            }, 5);
+          },
+        }),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    requestContextCleared = false;
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).rejects.toThrow(
+      "Page changed from static to dynamic at runtime /posts/hello",
+    );
+    expect(isrSet.mock.calls.map(([, value]) => value.status)).not.toContain(307);
+  });
+
+  it("does not store generateMetadata()'s special error from a stale regeneration", async () => {
+    // Next.js stores it with the status the triggering request's metadata
+    // streaming gives it: a 200 for most user agents.
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+          throw Object.assign(new Error(digest), {
+            digest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          });
+        },
+      }),
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).rejects.toThrow("NEXT_HTTP_ERROR_FALLBACK;404");
+    expect(isrSet.mock.calls.map(([, value]) => value.status)).not.toContain(404);
+  });
+
+  it("stores an intercepted RSC regeneration whose shell ended in a 404", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      renderToReadableStream: () => createStream(["modal-flight-with-digest"]),
+      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 60 : null),
+      revalidateSeconds: 60,
+      route: currentRoute,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(
+      isrSet.mock.calls.map(([, value]) => ({
+        rsc: value.rscData ? new TextDecoder().decode(value.rscData) : undefined,
+        status: value.status,
+      })),
+    ).toEqual([{ rsc: "modal-flight-with-digest", status: 404 }]);
+  });
 
   it.each(["page", "metadata"] as const)(
     "keeps the previous entry when a stale regeneration reads searchParams in %s",

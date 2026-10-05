@@ -94,3 +94,20 @@ test("serves the document of an ISR page that calls notFound() or redirect() fro
     expect(await rscResponse.text()).toContain(digest);
   }
 });
+
+test("stores the 404 document of an ISR page without the query of the request that rendered it", async ({
+  request,
+}) => {
+  const pathname = "/nextjs-compat/isr-special-error/not-found-query";
+  const miss = await request.get(`${pathname}?token=SECRET`);
+  expect(miss.status()).toBe(404);
+  expect(miss.headers()["x-vinext-cache"]).toBe("MISS");
+  await miss.text();
+
+  // The miss stored the page, so the next request is a HIT.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const hit = await request.get(pathname);
+  expect(hit.status()).toBe(404);
+  expect(hit.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(await hit.text()).not.toContain("SECRET");
+});

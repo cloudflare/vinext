@@ -109,6 +109,7 @@ import {
 } from "./cacheability-manifest.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
+import { hasFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -417,6 +418,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       boundaryComponent?: unknown;
       boundaryModule?: AppPageModule | null;
       intercept?: AppPageDispatchInterceptOptions | null;
+      /** The document may be stored, so it must not carry the request's query. */
+      isCacheCandidate?: boolean;
       layouts?: readonly AppPageModule[];
       matchedParams: AppPageParams;
     },
@@ -1034,30 +1037,43 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
               async renderShellSpecialError(error) {
+                const specialError = resolveAppPageSpecialError(error);
+                // Next.js stores generateMetadata()'s special error with the
+                // status its triggering request's metadata streaming gives
+                // it. This render always blocks on metadata, so it fails
+                // instead, keeping the previous entry, as a miss stores
+                // nothing for it.
+                if (!specialError || specialError.fromMetadata === true) return null;
+                // An RSC request regenerates only its RSC entry, so needs no
+                // document.
+                if (options.isRscRequest) {
+                  return {
+                    headers: resolveStoredSpecialErrorHeaders(specialError, options.basePath),
+                    html: "",
+                    status: specialError.statusCode,
+                  };
+                }
                 // The fallback boundaries are resolved for the matched route.
-                const specialError =
-                  revalidationTarget.route === route ? resolveAppPageSpecialError(error) : null;
-                if (!specialError) return null;
-                // An RSC request regenerates only its RSC entry.
-                const document = options.isRscRequest
-                  ? null
-                  : await renderPageSpecialError(
-                      options,
-                      specialError,
-                      false,
-                      revalidationTarget.interceptOpts,
-                    );
+                if (revalidationTarget.route !== route) return null;
+                const document = await renderPageSpecialError(
+                  options,
+                  specialError,
+                  false,
+                  revalidationTarget.interceptOpts,
+                  true,
+                );
+                // As on a miss, only the special error's own document is stored.
+                if (document.status !== specialError.statusCode) return null;
                 return {
-                  headers:
-                    specialError.kind === "redirect"
-                      ? {
-                          location: applyAppPageRedirectBasePath(
-                            specialError.location,
-                            options.basePath,
-                          ),
-                        }
+                  headers: resolveStoredSpecialErrorHeaders(specialError, options.basePath),
+                  html: await document.text(),
+                  // Middleware's Link is merged again on replay, so only a
+                  // renderer-only Link is stored, as on a miss.
+                  linkHeader:
+                    hasFrameworkLinkHeaders(document.headers) &&
+                    !options.middlewareContext.headers?.has("link")
+                      ? (document.headers.get("link") ?? undefined)
                       : undefined,
-                  html: document ? await document.text() : "",
                   status: specialError.statusCode,
                 };
               },
@@ -1469,12 +1485,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     renderLayoutSpecialError(specialError, layoutIndex) {
       return renderLayoutSpecialError(options, specialError, layoutIndex, serveStreamingMetadata);
     },
-    renderPageSpecialError(specialError) {
+    renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(
         options,
         specialError,
         serveStreamingMetadata,
         interceptResult.interceptOpts,
+        renderOptions?.isCacheCandidate === true,
       );
     },
     renderToReadableStream: options.renderToReadableStream,
@@ -1536,11 +1553,21 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   });
 }
 
+/** The response headers stored with a special error's entries. */
+function resolveStoredSpecialErrorHeaders(
+  specialError: AppPageSpecialError,
+  basePath: string | undefined,
+): Record<string, string> | undefined {
+  if (specialError.kind !== "redirect") return undefined;
+  return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
+}
+
 async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
   serveStreamingMetadata: boolean,
   intercept: AppPageDispatchInterceptOptions | null | undefined,
+  isCacheCandidate = false,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
@@ -1590,6 +1617,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
         (routeBoundaryModule === null || routeBoundaryModule === parentBoundaryModule);
       const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
         intercept,
+        ...(isCacheCandidate ? { isCacheCandidate } : {}),
         matchedParams: options.params,
       };
       if (useLayoutAlignedBoundary && boundaryLayoutIndex !== null) {

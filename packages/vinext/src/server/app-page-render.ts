@@ -130,6 +130,14 @@ type AppPageRequestCacheLife = {
 
 type AppPageRenderableElement = ReactNode | Readonly<Record<string, ReactNode>>;
 
+export type AppPageSpecialErrorRenderOptions = {
+  /**
+   * The document may be stored in place of the page's, so like a cache
+   * candidate's render it must not carry the request's query.
+   */
+  isCacheCandidate?: boolean;
+};
+
 type PreparedAppPageElement =
   | { element: AppPageRenderableElement; response?: never }
   | { element?: never; response: Response };
@@ -230,7 +238,10 @@ type RenderAppPageLifecycleOptionsBase = {
     specialError: AppPageSpecialError,
     layoutIndex: number,
   ) => Promise<Response>;
-  renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
+  renderPageSpecialError: (
+    specialError: AppPageSpecialError,
+    renderOptions?: AppPageSpecialErrorRenderOptions,
+  ) => Promise<Response>;
   renderToReadableStream: (
     element: ReactNode | AppOutgoingElements,
     options: { onError: AppPageBoundaryOnError; signal?: AbortSignal },
@@ -1243,7 +1254,7 @@ async function renderAppPageLifecycleImpl(
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
-  let shellRejectedBySpecialError = false;
+  let shellSpecialError: AppPageSpecialError | null = null;
 
   const resolveHtmlCacheWrite = (dynamicUsedDuringRender: boolean) => {
     const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
@@ -1347,14 +1358,33 @@ async function renderAppPageLifecycleImpl(
       },
     });
 
+  // Whether a special error that escaped the shell may be stored, before its
+  // response renders.
+  const mayStoreShellSpecialError = (): boolean =>
+    options.isProduction &&
+    shouldCaptureRscForCacheMetadata &&
+    options.isPrerender !== true &&
+    capturedRscDataRef.value !== null &&
+    resolveEarlyResponseCacheControl(options) === null;
+
   // The special-error response replaces the page's document, and is stored as
   // a normal render would be, with its status and redirect `location`. The
   // RSC entry is the page's own payload, captured from the same render.
-  const finalizeShellSpecialErrorResponse = (response: Response): Response => {
+  const finalizeShellSpecialErrorResponse = (
+    response: Response,
+    specialError: AppPageSpecialError,
+  ): Response => {
+    // A response the boundary replaced, such as a 500 from a failing
+    // not-found boundary, is not the special error's document. Next.js stores
+    // generateMetadata()'s special error with the status its triggering
+    // request's metadata streaming gives it, which a regeneration can't
+    // reproduce, so it isn't stored.
+    if (response.status !== specialError.statusCode || specialError.fromMetadata === true) {
+      return applyIneligibleRouteCachePolicy(response, options);
+    }
     const dynamicUsedDuringRender = consumeRenderDynamicUsage();
     const { htmlResponsePolicy, shouldWriteHtmlCache } =
       resolveHtmlCacheWrite(dynamicUsedDuringRender);
-    if (!shouldWriteHtmlCache) return response;
 
     const headers = new Headers(response.headers);
     // Middleware's merged policy wins, as on a normal response.
@@ -1364,16 +1394,18 @@ async function renderAppPageLifecycleImpl(
     if (htmlResponsePolicy.cacheState) {
       setCacheStateHeaders(headers, htmlResponsePolicy.cacheState);
     }
-    const isrResponse = new Response(response.body, {
+    const policyResponse = new Response(response.body, {
       headers,
       status: response.status,
       statusText: response.statusText,
     });
-    copyLinkHeaderProvenance(response.headers, isrResponse.headers);
+    copyLinkHeaderProvenance(response.headers, policyResponse.headers);
+    if (!shouldWriteHtmlCache) return policyResponse;
+
     const location = response.headers.get("location");
-    const clientResponse = finalizeHtmlCacheWrite(isrResponse, {
+    const clientResponse = finalizeHtmlCacheWrite(policyResponse, {
       capturedDynamicUsageBeforeContextCleanup: () => dynamicUsedDuringRender,
-      headers: location ? { location } : undefined,
+      headers: location === null ? undefined : { location },
       htmlResponsePolicy,
       // Middleware's Link merges into the same header, and is merged again on
       // replay, so only a renderer-only Link is stored.
@@ -1504,9 +1536,23 @@ async function renderAppPageLifecycleImpl(
         onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
       });
     },
-    renderSpecialErrorResponse(specialError) {
-      shellRejectedBySpecialError = true;
-      return options.renderPageSpecialError(specialError);
+    async renderSpecialErrorResponse(specialError) {
+      shellSpecialError = specialError;
+      if (specialError.fromMetadata !== true && mayStoreShellSpecialError()) {
+        // The page's Flight render goes on after its shell rejected, such as
+        // a layout's Suspense boundary reading cookies(). Let it finish while
+        // the request context is alive, before the special-error response
+        // clears it, so that its dynamic API use, fetch tags and cacheLife all
+        // decide the store. A render that turns dynamic isn't stored, and
+        // stops the wait.
+        await settleCapturedRscRenderForCacheMetadata(
+          capturedRscDataRef.value,
+          peekRenderDynamicUsage,
+        );
+      }
+      return options.renderPageSpecialError(specialError, {
+        isCacheCandidate: isCacheCandidateHtmlRender,
+      });
     },
     resolveSpecialError: resolveAppPageSpecialError,
   });
@@ -1516,11 +1562,12 @@ async function renderAppPageLifecycleImpl(
     // which Next.js stores like any other: 404/403/401, or 307/308 with its
     // `location`, beside the page's RSC payload carrying the digest.
     if (
-      shellRejectedBySpecialError &&
+      shellSpecialError &&
+      options.isProduction &&
       options.isPrerender !== true &&
       resolveEarlyResponseCacheControl(options) === null
     ) {
-      return finalizeShellSpecialErrorResponse(htmlRender.response);
+      return finalizeShellSpecialErrorResponse(htmlRender.response, shellSpecialError);
     }
     return applyIneligibleRouteCachePolicy(htmlRender.response, options);
   }
