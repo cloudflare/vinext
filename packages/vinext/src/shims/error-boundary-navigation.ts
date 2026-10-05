@@ -84,8 +84,9 @@ export function useErrorBoundaryRouter(): AppRouterInstance {
 
 /**
  * Whether following a redirect() would refetch the URL the browser is at,
- * which renders the same redirect again. A target that adds a hash only
- * scrolls, so it is not a refetch.
+ * which renders the same redirect again. As in the navigation planner, only the
+ * exact URL refreshes the page; any hash change, including removing the
+ * current hash, only scrolls.
  */
 export function isRedirectToCurrentUrl(redirect: string): boolean {
   if (typeof window === "undefined") return false;
@@ -101,7 +102,7 @@ export function isRedirectToCurrentUrl(redirect: string): boolean {
       current.href,
     );
     return (
-      target.hash === "" &&
+      target.hash === current.hash &&
       target.origin === current.origin &&
       target.pathname === current.pathname &&
       target.search === current.search

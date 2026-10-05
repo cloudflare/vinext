@@ -494,15 +494,15 @@ describe("isRedirectToCurrentUrl", () => {
     }
   });
 
-  // The browser keeps the hash on the current URL, but a redirect to it still
-  // refetches the page.
-  it("ignores a hash on the current URL", async () => {
+  // Only the exact URL, hash included, refetches the page; a hash change scrolls.
+  it("compares the hash exactly", async () => {
     const { isRedirectToCurrentUrl } =
       await import("../packages/vinext/src/shims/error-boundary-navigation.js");
     vi.stubGlobal("window", { location: { href: "https://example.test/self#section" } });
     try {
-      expect(isRedirectToCurrentUrl("/self")).toBe(true);
-      expect(isRedirectToCurrentUrl("https://example.test/self")).toBe(true);
+      expect(isRedirectToCurrentUrl("/self#section")).toBe(true);
+      expect(isRedirectToCurrentUrl("https://example.test/self#section")).toBe(true);
+      expect(isRedirectToCurrentUrl("/self")).toBe(false);
       expect(isRedirectToCurrentUrl("/self#other")).toBe(false);
     } finally {
       vi.unstubAllGlobals();
