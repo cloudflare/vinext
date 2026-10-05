@@ -222,6 +222,12 @@ export async function runWithDetachedDynamicUsage<T>(
         // cacheForRequest() values would hand the probe's result to the render
         // without the dynamic API calls that produced it.
         context.requestCache = new WeakMap();
+        // The render records its own fetches, tags and cacheLife.
+        context.cacheableFetchUrls = new Set();
+        context.currentRequestTags = [];
+        context.dynamicFetchUrls = new Set();
+        context.requestScopedCacheLife = null;
+        context.unstableCacheObservations = new Map();
         childState = context;
       },
       () => {

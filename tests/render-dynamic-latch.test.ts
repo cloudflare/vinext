@@ -14,6 +14,7 @@ import {
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import {
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
   runWithUnifiedStateMutation,
 } from "../packages/vinext/src/shims/unified-request-context.js";
@@ -304,6 +305,24 @@ describe("render dynamic latch", () => {
         expect(outcome.dynamicDetected).toBe(true);
         expect(consumeDynamicUsage()).toBe(false);
         expect(isRenderDynamicLatched()).toBe(false);
+      });
+    });
+
+    it("keeps a probe's fetch observations and cacheLife out of the request", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        await runWithDetachedDynamicUsage(() => {
+          const probeContext = getRequestContext();
+          probeContext.cacheableFetchUrls.add("https://api.example.test/cached");
+          probeContext.currentRequestTags.push("probe-tag");
+          probeContext.dynamicFetchUrls.add("https://api.example.test/dynamic");
+          probeContext.requestScopedCacheLife = { revalidate: 1 };
+        });
+
+        const context = getRequestContext();
+        expect([...context.cacheableFetchUrls]).toEqual([]);
+        expect(context.currentRequestTags).toEqual([]);
+        expect([...context.dynamicFetchUrls]).toEqual([]);
+        expect(context.requestScopedCacheLife).toBeNull();
       });
     });
 
