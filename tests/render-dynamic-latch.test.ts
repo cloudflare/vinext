@@ -8,8 +8,10 @@ import {
   onRenderDynamicLatched,
   runWithConnectionProbe,
   runWithHeadersContext,
+  runWithDetachedDynamicUsage,
   runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -291,6 +293,33 @@ describe("render dynamic latch", () => {
           () => markDynamicUsage(),
         );
         expect(isRenderDynamicLatched()).toBe(true);
+      });
+    });
+  });
+
+  describe("detached dynamic usage", () => {
+    it("reports a probe's dynamic usage without marking the request", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const outcome = await runWithDetachedDynamicUsage(() => markDynamicUsage());
+        expect(outcome.dynamicDetected).toBe(true);
+        expect(consumeDynamicUsage()).toBe(false);
+        expect(isRenderDynamicLatched()).toBe(false);
+      });
+    });
+
+    it("lets the render rerun a cacheForRequest factory the probe called", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const factory = vi.fn(() => {
+          markDynamicUsage();
+          return "session";
+        });
+        const getSession = cacheForRequest(factory);
+
+        await runWithDetachedDynamicUsage(() => getSession());
+        expect(getSession()).toBe("session");
+
+        expect(factory).toHaveBeenCalledTimes(2);
+        expect(consumeDynamicUsage()).toBe(true);
       });
     });
   });

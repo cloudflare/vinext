@@ -219,6 +219,9 @@ export async function runWithDetachedDynamicUsage<T>(
         context.dynamicUsageDetected = false;
         context.renderDynamicLatch = createRenderDynamicLatch();
         context.renderRequestApiUsage = new Set();
+        // cacheForRequest() values would hand the probe's result to the render
+        // without the dynamic API calls that produced it.
+        context.requestCache = new WeakMap();
         childState = context;
       },
       () => {
