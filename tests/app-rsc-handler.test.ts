@@ -339,9 +339,20 @@ describe("createAppRscHandler", () => {
   );
 
   // Next.js sends every 404 of a route it couldn't match with its never-cache
-  // policy.
+  // policy, even when a next.config rule sets a matching Cache-Control.
   describe("an unmatched route's 404", () => {
     const NEVER_CACHE = "private, no-cache, no-store, max-age=0, must-revalidate";
+    const cacheableConfigHeaders = [
+      {
+        source: "/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=3600" }],
+      },
+      {
+        source: "/:path*",
+        basePath: false as const,
+        headers: [{ key: "Cache-Control", value: "public, max-age=3600" }],
+      },
+    ];
 
     it.each([
       {
@@ -362,7 +373,7 @@ describe("createAppRscHandler", () => {
       },
     ])("sends the $name with the never-cache policy", async ({ renderNotFound, url }) => {
       const handler = createHandler({
-        configHeaders: [],
+        configHeaders: cacheableConfigHeaders,
         configRewrites: {
           beforeFiles: [{ source: "/outside", destination: "/about", basePath: false }],
           afterFiles: [],
@@ -380,7 +391,7 @@ describe("createAppRscHandler", () => {
 
     it("sends a staged not-found page with the never-cache policy", async () => {
       const handler = createHandler({
-        configHeaders: [],
+        configHeaders: cacheableConfigHeaders,
         renderNotFound: async () => new Response("styled-not-found", { status: 404 }),
       });
 

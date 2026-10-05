@@ -816,6 +816,17 @@ function withNeverCacheControl(response: Response): Response {
   return markedResponse;
 }
 
+// The never-cache policy of an unmatched route's 404 is reasserted after
+// next.config headers, so a matching Cache-Control rule can't replace it.
+const unmatchedRouteResponses = new WeakSet<Response>();
+
+/** Send an unmatched route's 404 with the never-cache policy, as Next.js does. */
+function withUnmatchedRouteCacheControl(response: Response): Response {
+  const markedResponse = withNeverCacheControl(response);
+  unmatchedRouteResponses.add(markedResponse);
+  return markedResponse;
+}
+
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
@@ -2247,8 +2258,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     options.clearRequestContext();
     const headers = new Headers();
     mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
-    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
-    return notFoundResponse({ headers });
+    return withUnmatchedRouteCacheControl(notFoundResponse({ headers }));
   }
 
   if (pagesDataRequest) {
@@ -2304,7 +2314,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         scriptNonce: scriptNonce ?? null,
       });
       // As in Next.js, an unmatched route's 404 is never cached.
-      return withNeverCacheControl(await composeResponseStageResponse(response));
+      return withUnmatchedRouteCacheControl(await composeResponseStageResponse(response));
     }
 
     const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
@@ -2316,13 +2326,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         scriptNonce,
       }),
     );
-    if (renderedNotFoundResponse) return withNeverCacheControl(renderedNotFoundResponse);
+    if (renderedNotFoundResponse) {
+      return withUnmatchedRouteCacheControl(renderedNotFoundResponse);
+    }
 
     options.clearRequestContext();
     const headers = new Headers();
     mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
-    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
-    return notFoundResponse({ headers });
+    return withUnmatchedRouteCacheControl(notFoundResponse({ headers }));
   }
 
   const { route, params } = match;
@@ -2798,7 +2809,9 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,
           });
-          return interceptionResponseUncacheable ? withNeverCacheControl(response) : response;
+          return interceptionResponseUncacheable || unmatchedRouteResponses.has(response)
+            ? withNeverCacheControl(response)
+            : response;
         },
         {
           cacheComponents: options.createPprFallbackShells !== undefined,
