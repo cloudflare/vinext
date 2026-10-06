@@ -190,14 +190,17 @@ for (const project of ["nextjs", "vinext"]) {
   const nodeModules = join(APP, project, "node_modules");
   const projectNodeModules = join(benchmarkRoot, project, "node_modules");
   mkdirSync(join(nodeModules, "@bench"), { recursive: true });
+  // Junctions avoid the elevated rights Windows needs for directory symlinks;
+  // other platforms ignore the link type.
   // Pull request runs that skip Next.js do not install its dependencies.
   for (const entry of existsSync(projectNodeModules) ? readdirSync(projectNodeModules) : []) {
     if (!entry.startsWith(".")) {
-      symlinkSync(join("..", "..", "..", project, "node_modules", entry), join(nodeModules, entry));
+      const target = join("..", "..", "..", project, "node_modules", entry);
+      symlinkSync(target, join(nodeModules, entry), "junction");
     }
   }
   for (let p = 0; p < PACKAGES; p++) {
-    symlinkSync(join("..", "..", "packages", `ui-${p}`), join(nodeModules, pkg(p)));
+    symlinkSync(join("..", "..", "packages", `ui-${p}`), join(nodeModules, pkg(p)), "junction");
   }
 }
 
