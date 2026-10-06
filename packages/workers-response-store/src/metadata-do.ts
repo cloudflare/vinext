@@ -161,6 +161,17 @@ type RefreshCandidateRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_rev
   swr_until: number;
 };
 
+/** A matching row, refreshable when it has an active response to refresh. */
+type InvalidateCandidateRow = Omit<RefreshCandidateRow, "active_revision"> & {
+  active_revision: number | null;
+  refreshable: number;
+};
+
+// Rows whose active response can be refreshed or soft-invalidated.
+const REFRESHABLE_ENTRY = `tombstoned = 0 AND active_revision IS NOT NULL
+  AND object_key IS NOT NULL AND response_headers IS NOT NULL
+  AND fresh_until IS NOT NULL AND swr_until IS NOT NULL`;
+
 const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
@@ -530,8 +541,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   ): RefreshCandidateRow[];
   private findMatchingEntryRows(
     options: ResponseStorePurgeOptions,
-    projection: "entry" | "purge" | "refresh" = "entry",
-  ): EntryRow[] | PurgeEntryRow[] | RefreshCandidateRow[] {
+    projection: "invalidate",
+  ): InvalidateCandidateRow[];
+  private findMatchingEntryRows(
+    options: ResponseStorePurgeOptions,
+    projection: "entry" | "invalidate" | "purge" | "refresh" = "entry",
+  ): EntryRow[] | InvalidateCandidateRow[] | PurgeEntryRow[] | RefreshCandidateRow[] {
     const selectors: string[] = [];
     const parameters: string[] = [];
     if (!options.purgeEverything) {
@@ -556,13 +571,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     if (!options.purgeEverything && !selectors.length) return [];
 
     const conditions: string[] = [];
-    if (projection !== "purge") {
+    if (projection === "entry") {
       conditions.push("tombstoned = 0 AND active_revision IS NOT NULL");
     }
     if (projection === "refresh") {
-      conditions.push(
-        "object_key IS NOT NULL AND response_headers IS NOT NULL AND fresh_until IS NOT NULL AND swr_until IS NOT NULL",
-      );
+      conditions.push(REFRESHABLE_ENTRY);
     }
     if (!options.purgeEverything) {
       conditions.push(`(${selectors.join(" OR ")})`);
@@ -573,8 +586,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         `SELECT ${
           projection === "purge"
             ? "key_hash, cache_key, latest_revision, object_key"
-            : projection === "refresh"
-              ? "key_hash, cache_key, active_revision, latest_revision, object_key, fresh_until, swr_until, revalidator_id IS NOT NULL AS has_revalidator"
+            : projection === "refresh" || projection === "invalidate"
+              ? `key_hash, cache_key, active_revision, latest_revision, object_key, fresh_until, swr_until, revalidator_id IS NOT NULL AS has_revalidator${
+                  projection === "invalidate" ? `, ${REFRESHABLE_ENTRY} AS refreshable` : ""
+                }`
               : "*"
         } FROM entries ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`,
         ...parameters,
@@ -1353,16 +1368,21 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     expiresAt?: number,
   ): Promise<PurgeReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
-      const matches = this.findMatchingEntryRows(options, "refresh");
-      const active = new Set(matches.map((row) => row.key_hash));
+      const rows = this.findMatchingEntryRows(options, "invalidate");
+      const matches = rows.filter((row): row is InvalidateCandidateRow & RefreshCandidateRow =>
+        Boolean(row.refreshable),
+      );
       // A path can also match a key whose first write is still in flight. Like
       // purge, advance its revision so that write cannot publish.
-      const reserved = this.findMatchingEntryRows(options, "purge")
-        .map((row) => row.key_hash)
-        .filter((keyHash) => !active.has(keyHash));
+      const reserved = rows.filter((row) => !row.refreshable).map((row) => row.key_hash);
       const tags = normalizeTags(options.tags ?? []);
       const tombstoneSequence = this.tombstoneSequence(matches.length > 0);
-      this.recordInvalidations([...active, ...reserved], tags, 0, expiresAt ?? null);
+      this.recordInvalidations(
+        rows.map((row) => row.key_hash),
+        tags,
+        0,
+        expiresAt ?? null,
+      );
       for (const batch of batches(reserved, MAX_SQL_PARAMETERS)) {
         this.ctx.storage.sql.exec(
           `UPDATE entries SET
