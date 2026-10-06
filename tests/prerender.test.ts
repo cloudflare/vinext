@@ -828,6 +828,8 @@ describe("prerenderApp — special errors that escape the shell", () => {
     "</body></html>";
   const pagePayload = '0:["$","p",null,{"children":"page with digest"}]\n';
 
+  // The marker carries the redirect's own location, as runtime ISR stores it,
+  // not the response's, which middleware may have replaced.
   it.each([
     { status: 404, location: undefined },
     { status: 403, location: undefined },
@@ -843,8 +845,11 @@ describe("prerenderApp — special errors that escape the shell", () => {
       res.statusCode = status;
       res.setHeader("content-type", "text/html");
       res.setHeader("cache-control", "s-maxage=60, stale-while-revalidate");
-      res.setHeader(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, "1");
-      if (location) res.setHeader("location", location);
+      res.setHeader(
+        VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
+        JSON.stringify(location ? { location } : {}),
+      );
+      res.setHeader("location", "/middleware-location");
       res.end(location ? "" : boundaryDocument);
     });
 
@@ -852,8 +857,9 @@ describe("prerenderApp — special errors that escape the shell", () => {
       status: "rendered",
       responseStatus: status,
       revalidate: 60,
-      ...(location ? { headers: { location } } : {}),
     });
+    if (route?.status !== "rendered") throw new Error("expected the page to render");
+    expect(route.headers?.location).toBe(location);
     expect(html).toBe(location ? "" : boundaryDocument);
     expect(rsc).toBe(pagePayload);
   });
@@ -874,7 +880,7 @@ describe("prerenderApp — special errors that escape the shell", () => {
     const { route } = await prerenderSpecialErrorPage((res) => {
       res.statusCode = 404;
       res.setHeader("cache-control", "private, no-cache, no-store, max-age=0, must-revalidate");
-      res.setHeader(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, "1");
+      res.setHeader(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, "{}");
       res.end(boundaryDocument);
     });
 

@@ -1979,9 +1979,9 @@ export async function prerenderApp({
             const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
             // As in Next.js's build, the page's own special error that
             // escaped the shell is written with its status and location.
-            const isSpecialError =
-              mode !== "export" &&
-              response.headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER) === "1";
+            const specialError =
+              mode === "export" ? null : readPrerenderSpecialErrorHeader(response.headers);
+            const isSpecialError = specialError !== null;
             const ok = response.ok || isSpecialError;
             if (!ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
@@ -2013,7 +2013,7 @@ export async function prerenderApp({
               status: response.status,
               tags: cacheTags,
               fatal: false,
-              specialErrorLocation: isSpecialError ? response.headers.get("location") : null,
+              specialErrorLocation: specialError?.location ?? null,
               isSpecialError,
             };
           },
@@ -2316,6 +2316,20 @@ function readPrerenderCacheLifeHeader(headers: Headers): PrerenderCacheLife | nu
       cacheLife.stale === undefined
       ? null
       : cacheLife;
+  } catch {
+    return null;
+  }
+}
+
+/** Reads the special-error marker: the page's stored headers, or null. */
+function readPrerenderSpecialErrorHeader(headers: Headers): { location: string | null } | null {
+  const value = headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER);
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const location = (parsed as { location?: unknown }).location;
+    return { location: typeof location === "string" ? location : null };
   } catch {
     return null;
   }

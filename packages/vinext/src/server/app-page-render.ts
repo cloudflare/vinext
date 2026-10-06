@@ -1441,7 +1441,11 @@ async function renderAppPageLifecycleImpl(
     }
     applyPrerenderCacheLifeHeader(headers, prerendered.requestCacheLife);
     applyPrerenderCacheTagsHeader(headers, prerendered.cacheTags);
-    headers.set(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, "1");
+    // Carries the redirect's own location, which middleware can't replace.
+    headers.set(
+      VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
+      JSON.stringify(resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath) ?? {}),
+    );
     const prerenderResponse = new Response(response.body, {
       headers,
       status: response.status,

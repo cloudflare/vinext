@@ -31,6 +31,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
@@ -817,6 +818,39 @@ describe("createAppRscHandler", () => {
       expect(response.status).toBe(404);
       expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
     });
+
+    // prerender.ts trusts this marker to write a non-2xx response.
+    it.each(["middleware", "a config header"])(
+      "drops a prerender special-error marker that %s sets",
+      async (source) => {
+        const marker = { key: VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, value: "{}" };
+        const handler =
+          source === "middleware"
+            ? createHandler({
+                matchRequestRoute: matchRoute,
+                matchRoute,
+                middlewareModule: {
+                  default() {
+                    return new Response(null, {
+                      headers: { "x-middleware-next": "1", [marker.key]: marker.value },
+                    });
+                  },
+                },
+              })
+            : createHandler({
+                configHeaders: [{ source: "/about", headers: [marker] }],
+                matchRequestRoute: matchRoute,
+                matchRoute,
+              });
+
+        const response = await handler(await rscRequest(false), null, false, async () =>
+          storedResponse(404, false),
+        );
+
+        expect(response.status).toBe(404);
+        expect(response.headers.has(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER)).toBe(false);
+      },
+    );
 
     it("ignores a marker without a special error's status", async () => {
       const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });

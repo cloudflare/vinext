@@ -2710,13 +2710,20 @@ describe("ISR storage of a page's special error", () => {
 
   // As in Next.js's build, a prerender writes the special error that escaped
   // the shell with its status and location. A prerender-only header tells
-  // prerender.ts the response is the page's own special error.
+  // prerender.ts the response is the page's own special error, and carries the
+  // redirect's own location, not the one middleware merged into the response.
   it.each([
-    { name: "notFound()", error: notFoundError, status: 404, location: null, body: "page:404" },
-    { name: "redirect()", error: redirectError, status: 307, location: "/target", body: "" },
+    { name: "notFound()", error: notFoundError, status: 404, marker: "{}", body: "page:404" },
+    {
+      name: "redirect()",
+      error: redirectError,
+      status: 307,
+      marker: '{"location":"/target"}',
+      body: "",
+    },
   ])(
     "prerenders a page's $name that rejects the shell with its status",
-    async ({ error, status, location, body }) => {
+    async ({ error, status, marker, body }) => {
       const common = createCommonOptions();
 
       const response = await renderAppPageLifecycle({
@@ -2725,17 +2732,19 @@ describe("ISR storage of a page's special error", () => {
         isProduction: true,
         loadSsrHandler: shellRejectingSsrHandler(error),
         renderPageSpecialError: async (specialError) =>
-          new Response(location === null ? `page:${specialError.statusCode}` : null, {
-            headers: location === null ? {} : { Location: location },
-            status: specialError.statusCode,
-          }),
+          new Response(
+            specialError.kind === "redirect" ? null : `page:${specialError.statusCode}`,
+            {
+              headers: { Location: "/middleware-location" },
+              status: specialError.statusCode,
+            },
+          ),
         renderToReadableStream: () => createStream(["page-flight-with-digest"]),
         revalidateSeconds: 60,
       });
 
       expect(response.status).toBe(status);
-      expect(response.headers.get("location")).toBe(location);
-      expect(response.headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER)).toBe("1");
+      expect(response.headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER)).toBe(marker);
       expect(response.headers.get("cache-control")).toContain("s-maxage=60");
       expect(response.headers.get(NEXT_CACHE_TAGS_HEADER)).toBe("_N_T_/posts/post");
       await expect(response.text()).resolves.toBe(body);
