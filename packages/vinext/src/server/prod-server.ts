@@ -431,6 +431,8 @@ const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   "content-length",
   "content-range",
   "content-type",
+  // Only a page's recorded special error carries it; see markPrerenderSpecialError.
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
 
 function omitHeadersCaseInsensitive(
@@ -1869,10 +1871,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           recorded.marker = marker;
         };
       }
-      let response = await rscHandler(request, ctx);
-      if (purpose === "prerender") {
-        response = markPrerenderSpecialError(response, recorded.marker);
-      }
+      const response = await rscHandler(request, ctx);
 
       const staticFileSignal = readStaticFileSignal(response);
       if (staticFileSignal) {
@@ -1912,7 +1911,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
 
       // Stream the Web Response back to the Node.js response
-      await sendWebResponse(response, req, res, compress);
+      await sendWebResponse(
+        // A page's special error is never a public-file signal, which a
+        // reconstructed response would lose.
+        purpose === "prerender" ? markPrerenderSpecialError(response, recorded.marker) : response,
+        req,
+        res,
+        compress,
+      );
     } catch (e) {
       console.error("[vinext] Server error:", e);
       if (!res.headersSent) {

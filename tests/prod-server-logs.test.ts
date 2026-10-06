@@ -240,6 +240,7 @@ describe("startProdServer prerender special-error marker", () => {
     const serverDir = path.join(root, "dist", "server");
     fs.mkdirSync(path.join(root, "dist", "client"), { recursive: true });
     fs.mkdirSync(serverDir, { recursive: true });
+    fs.writeFileSync(path.join(root, "dist", "client", "asset.txt"), "asset");
     fs.writeFileSync(
       path.join(serverDir, "index.js"),
       [
@@ -248,6 +249,11 @@ describe("startProdServer prerender special-error marker", () => {
         `  const forged = { "${marker}": '{"location":"/forged"}' };`,
         "  if (pathname === '/recorder') return new Response(typeof ctx.recordPrerenderSpecialError);",
         "  if (pathname === '/middleware') return new Response('denied', { status: 404, headers: forged });",
+        "  if (pathname === '/asset') {",
+        "    const signal = new Response(null, { headers: forged });",
+        "    Reflect.set(signal, Symbol.for('vinext.static-file-signal'), '/asset.txt');",
+        "    return signal;",
+        "  }",
         "  const status = pathname === '/page' ? 307 : 500;",
         "  ctx.recordPrerenderSpecialError?.({ status: 307, headers: { location: '/target' } });",
         "  return new Response(null, { status, headers: { ...forged, location: '/middleware-location' } });",
@@ -275,6 +281,13 @@ describe("startProdServer prerender special-error marker", () => {
   it("drops a marker that a middleware short-circuit's 404 carries", async () => {
     const { marker: value, response } = await fetchFromServer("/middleware", "prerender");
     expect(response.status).toBe(404);
+    expect(value).toBeNull();
+  });
+
+  it("serves a public-file signal that carries a forged marker, without it", async () => {
+    const { body, marker: value, response } = await fetchFromServer("/asset", "prerender");
+    expect(response.status).toBe(200);
+    expect(body).toBe("asset");
     expect(value).toBeNull();
   });
 
