@@ -2537,8 +2537,9 @@ describe("app page dispatch", () => {
     } satisfies ExecutionContextLike;
 
     try {
+      const buildRscPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => element);
       const { options: rscOptions } = createDispatchOptions({
-        buildPageElement: async () => element,
+        buildPageElement: buildRscPageElement,
         clientReuseManifest,
         isProduction: true,
         isRscRequest: true,
@@ -2561,6 +2562,10 @@ describe("app page dispatch", () => {
       expect(capturedRscPayloads).toHaveLength(1);
       expect(Object.hasOwn(capturedRscPayloads[0], layoutId)).toBe(false);
       expect(capturedRscPayloads[0][pageId]).toBe("profile-page");
+      // The per-client response is never stored, so metadata keeps streaming.
+      expect(buildRscPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead: false,
+      });
 
       const capturedDynamicPayloads: Record<string, unknown>[] = [];
       const { options: dynamicOptions } = createDispatchOptions({

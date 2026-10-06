@@ -876,9 +876,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     !isNeverStoredPath;
   // Next.js renders a page it may store whole before serving it, so the
   // page's streamed metadata is ready for <head>. A mounted-slot RSC request
-  // is never read from or written to the cache.
+  // is never read from or written to the cache. Neither is an RSC request
+  // whose client-reuse manifest may enable skip transport, which is decided
+  // only once the page's elements are built.
   const isMountedSlotsRscRequest = options.isRscRequest && Boolean(options.mountedSlotsHeader);
-  const placeStreamedMetadataInHead = isCacheCandidate && !isMountedSlotsRscRequest;
+  const maySkipTransport =
+    options.isRscRequest &&
+    options.clientReuseManifest?.kind === "parsed" &&
+    options.clientReuseManifest.manifest.entries.length > 0;
+  const mayBypassRscCache = isMountedSlotsRscRequest || maySkipTransport;
+  const placeStreamedMetadataInHead = isCacheCandidate && !mayBypassRscCache;
   if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
@@ -1249,7 +1256,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.pprRuntime === undefined &&
         options.resolveRouteStaticEligible(interceptRoute) &&
         !isNeverStoredPath &&
-        !isMountedSlotsRscRequest;
+        !mayBypassRscCache;
       return options.buildPageElement(
         interceptRoute,
         interceptParams,

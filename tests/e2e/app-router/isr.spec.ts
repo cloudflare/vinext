@@ -405,14 +405,19 @@ test.describe("ISR generated metadata placement", () => {
     expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
     await stale.text();
 
+    // A complete regenerated document has the page's new timestamp.
     let regeneratedHtml = "";
     await expect
       .poll(async () => {
         const response = await request.get(`${baseUrl()}${path}`);
         regeneratedHtml = await response.text();
-        return [response.headers()["x-vinext-cache"], readTimestamp(regeneratedHtml)];
+        const timestamp = readTimestamp(regeneratedHtml);
+        return [
+          response.headers()["x-vinext-cache"],
+          timestamp !== undefined && timestamp !== storedTimestamp,
+        ];
       })
-      .toEqual(["HIT", expect.not.stringMatching(`^${storedTimestamp}$`)]);
+      .toEqual(["HIT", true]);
     expectTitleInHead(regeneratedHtml, title);
   });
 });
