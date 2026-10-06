@@ -19,6 +19,7 @@ import {
   type SharedResponseStage,
 } from "./browser-cache-policy.js";
 import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
+import { hasCacheMethod, invalidateOrPurge } from "./workers-cache-invalidation.js";
 
 type StageBinding = {
   fetch(request: Request): Promise<Response> | Response;
@@ -200,15 +201,6 @@ function hasFetch(value: unknown): value is StageBinding {
     (typeof value === "object" || typeof value === "function") &&
     "fetch" in value &&
     typeof value.fetch === "function"
-  );
-}
-
-function hasPurge(value: unknown): value is Required<Pick<StageBinding, "purge">> {
-  return (
-    value !== null &&
-    (typeof value === "object" || typeof value === "function") &&
-    "purge" in value &&
-    typeof value.purge === "function"
   );
 }
 
@@ -431,7 +423,11 @@ function hasTaggedCustomVary(response: Response): boolean {
   return varyFields.some((name) => !FRAMEWORK_RESPONSE_VARY_FIELDS.has(name));
 }
 
-function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
+/**
+ * Workers Cache purges and invalidations only reach the calling entrypoint's
+ * cache, so route both through the cache-bearing response entrypoint.
+ */
+function withResponseStageCache(context: CloudflareStageContext): CloudflareStageContext {
   const factory = context.exports?.[CACHED_RESPONSE_STAGE_EXPORT];
   if (typeof factory !== "function") return context;
   const fallback = context.cache;
@@ -440,8 +436,14 @@ function withResponseStagePurge(context: CloudflareStageContext): CloudflareStag
     cache: {
       purge(options: CachePurgeOptions) {
         const target = (factory as StageBindingFactory)({ props: {} });
-        if (hasPurge(target)) return target.purge(options);
-        return hasPurge(fallback) ? fallback.purge(options) : undefined;
+        if (hasCacheMethod(target, "purge")) return target.purge(options);
+        return hasCacheMethod(fallback, "purge") ? fallback.purge(options) : undefined;
+      },
+      invalidate(options: CachePurgeOptions) {
+        const target = (factory as StageBindingFactory)({ props: {} });
+        const targetCanUpdate =
+          hasCacheMethod(target, "invalidate") || hasCacheMethod(target, "purge");
+        return invalidateOrPurge(targetCanUpdate ? target : fallback, options);
       },
     },
   };
@@ -577,15 +579,19 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
 
   async purge(options: CachePurgeOptions): Promise<unknown> {
     const cache = Reflect.get(this.ctx, "cache");
-    if (!hasPurge(cache)) return undefined;
+    if (!hasCacheMethod(cache, "purge")) return undefined;
     return cache.purge(options);
+  }
+
+  async invalidate(options: CachePurgeOptions): Promise<unknown> {
+    return invalidateOrPurge(Reflect.get(this.ctx, "cache"), options);
   }
 }
 
 /** Uncached response entrypoint retained for deployment readiness probes. */
 export class VinextUncachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
-    const context = withResponseStagePurge(withWorkerHostRuntime(this.ctx, this.env));
+    const context = withResponseStageCache(withWorkerHostRuntime(this.ctx, this.env));
     const invocation = getResponseStageInvocation(context.props, "bypass");
     if (!invocation) {
       return stampResponseStageBuildIdentity(
@@ -616,7 +622,7 @@ export default {
   ): Promise<Response> {
     request = stripUntrustedTransportHeaders(request);
     const sharedResponses = new Map<string, SharedResponseStage>();
-    const stageContext = withResponseStagePurge(withWorkerHostRuntime(context, env));
+    const stageContext = withResponseStageCache(withWorkerHostRuntime(context, env));
     const dispatchResponseStage: VinextResponseStageTransport = async (
       stageRequest,
       props,

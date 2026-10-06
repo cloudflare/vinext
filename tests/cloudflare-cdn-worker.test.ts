@@ -1644,6 +1644,46 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).not.toHaveBeenCalled();
   });
 
+  it("routes gateway invalidations through the cache-bearing entrypoint", async () => {
+    const invalidate = vi.fn().mockResolvedValue({ success: true });
+    const defaultInvalidate = vi.fn();
+    const binding = vi.fn(() => ({ fetch: vi.fn(), purge: vi.fn(), invalidate }));
+    stages.request.mockImplementation((_request, _env, context) =>
+      context.cache.invalidate({ tags: ["encoded-tag"] }).then(() => new Response("invalidated")),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/revalidate"),
+      {},
+      {
+        cache: { purge: vi.fn(), invalidate: defaultInvalidate },
+        exports: { VinextCachedResponse: binding },
+      },
+    );
+
+    expect(await response.text()).toBe("invalidated");
+    expect(binding).toHaveBeenCalledWith({ props: {} });
+    expect(invalidate).toHaveBeenCalledWith({ tags: ["encoded-tag"] });
+    expect(defaultInvalidate).not.toHaveBeenCalled();
+  });
+
+  it("invalidates from the cache-bearing entrypoint, purging when the runtime cannot", async () => {
+    const invalidate = vi.fn().mockResolvedValue({ success: true });
+    const purge = vi.fn().mockResolvedValue({ success: true });
+    const createWithCache = (cache: unknown) =>
+      Object.assign(Object.create(VinextCachedResponse.prototype), {
+        ctx: { cache },
+        env: {},
+      }) as VinextCachedResponse;
+
+    await createWithCache({ purge, invalidate }).invalidate({ tags: ["soft"] });
+    await createWithCache({ purge }).invalidate({ tags: ["fallback"] });
+
+    expect(invalidate).toHaveBeenCalledWith({ tags: ["soft"] });
+    expect(purge).toHaveBeenCalledWith({ tags: ["fallback"] });
+    expect(purge).toHaveBeenCalledTimes(1);
+  });
+
   it("routes gateway purges through the cache-bearing entrypoint", async () => {
     const purge = vi.fn().mockResolvedValue({ success: true });
     const defaultPurge = vi.fn();

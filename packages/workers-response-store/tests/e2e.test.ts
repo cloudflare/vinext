@@ -17,8 +17,8 @@ import { mapSettledWithR2Concurrency } from "../src/r2-concurrency.js";
 
 const workerScript = fileURLToPath(new URL("../dist/worker/worker.js", import.meta.url));
 const versionId = "poc-v2";
-const metadataName = `${versionId}:r2-v1`;
-const r2Root = `runtime-cache/${versionId}/r2-v1`;
+const metadataName = `${versionId}:r2-v2`;
+const r2Root = `runtime-cache/${versionId}/r2-v2`;
 
 type PutOptions = {
   age?: number;
@@ -30,6 +30,7 @@ type PutOptions = {
   coalesce?: boolean;
   contentType?: string;
   etag?: string;
+  expiryBehavior?: "regenerate" | "miss";
   host?: string;
   largeHeaderBytes?: number;
   lastModified?: string;
@@ -64,6 +65,8 @@ beforeEach(async () => {
               import worker, { ResponseStoreBinding as BaseBinding } from "./worker.js";
               export { CacheMetadata, ResponseStoreRevalidator } from "./worker.js";
               let purgeMode;
+              let exposeInvalidate = false;
+              let edgeCalls = [];
               let failR2Write = false;
               export class ResponseStoreBinding extends BaseBinding {
                 constructor(ctx, env) {
@@ -81,15 +84,18 @@ beforeEach(async () => {
                     }),
                   });
                   if (purgeMode) {
+                    const edgeOperation = (operation) => (options) => {
+                      edgeCalls.push({ operation, options });
+                      if (purgeMode === "throw") throw new Error("Purge unavailable");
+                      if (purgeMode === "reject") return Promise.reject(new Error("Purge unavailable"));
+                      return Promise.resolve({
+                        success: purgeMode === "success",
+                        errors: [{ code: 1134, message: "Rate limited" }],
+                      });
+                    };
                     Object.defineProperty(ctx, "cache", { value: {
-                      purge() {
-                        if (purgeMode === "throw") throw new Error("Purge unavailable");
-                        if (purgeMode === "reject") return Promise.reject(new Error("Purge unavailable"));
-                        return Promise.resolve({
-                          success: purgeMode === "success",
-                          errors: [{ code: 1134, message: "Rate limited" }],
-                        });
-                      },
+                      purge: edgeOperation("purge"),
+                      ...(exposeInvalidate ? { invalidate: edgeOperation("invalidate") } : {}),
                     } });
                   }
                 }
@@ -98,8 +104,13 @@ beforeEach(async () => {
                 fetch(request) {
                   if (new URL(request.url).pathname === "/admin/edge-purge") {
                     purgeMode = new URL(request.url).searchParams.get("mode");
+                    exposeInvalidate = new URL(request.url).searchParams.has("invalidate");
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
+                    edgeCalls = [];
                     return new Response("ok");
+                  }
+                  if (new URL(request.url).pathname === "/admin/edge-calls") {
+                    return Response.json(edgeCalls);
                   }
                   return worker.fetch(request);
                 },
@@ -157,6 +168,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.noRevalidator) headers.set("X-No-Revalidator", "1");
   if (options.purgeExisting) headers.set("X-Purge-Existing", "1");
   if (options.coalesce) headers.set("X-Coalesce", "1");
+  if (options.expiryBehavior) headers.set("X-Expiry-Behavior", options.expiryBehavior);
   if (options.bodyFailure) headers.set("X-Body-Failure", "1");
   if (options.bodyDelayMs) headers.set("X-Body-Delay-Ms", String(options.bodyDelayMs));
   if (options.teeBody) headers.set("X-Tee-Body", "1");
@@ -402,6 +414,67 @@ test.each(["rate-limit", "throw", "reject"])(
     assert.equal(result.response.status, 200);
     assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
     assert.equal(await (await read("/refresh-purge-failure")).text(), "regenerated");
+  },
+);
+
+test("refresh invalidates prior edge responses instead of purging them", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/refresh-invalidate", "original", {
+    revalidator: { body: "regenerated" },
+  });
+  const result = await refreshSelectors({ pathPrefixes: ["/refresh-invalidate"] });
+  assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual(await (await worker.fetch("https://user.test/admin/edge-calls")).json(), [
+    {
+      operation: "invalidate",
+      options: { tags: [`runtime-cache-${await cacheKeyHash("/refresh-invalidate")}`] },
+    },
+  ]);
+  assert.equal(await (await read("/refresh-invalidate")).text(), "regenerated");
+});
+
+test("replacement writes and purges keep hard edge purges when invalidation is available", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/hard-edge-purge", "original", { tags: ["hard-edge-purge"] });
+  await put("/hard-edge-purge", "replacement", {
+    purgeExisting: true,
+    tags: ["hard-edge-purge"],
+  });
+  await purge({ tags: ["hard-edge-purge"] });
+  assert.deepEqual(
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()).map(
+      ({ operation }: { operation: string }) => operation,
+    ),
+    ["purge", "purge"],
+  );
+});
+
+test("refresh falls back to a hard edge purge when invalidation is unavailable", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/refresh-purge-fallback", "original", {
+    revalidator: { body: "regenerated" },
+  });
+  const result = await refreshSelectors({ pathPrefixes: ["/refresh-purge-fallback"] });
+  assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual(
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()).map(
+      ({ operation }: { operation: string }) => operation,
+    ),
+    ["purge"],
+  );
+});
+
+test.each(["rate-limit", "throw", "reject"])(
+  "refresh reports a failed edge invalidation: %s",
+  async (mode) => {
+    await worker.fetch(`https://user.test/admin/edge-purge?mode=${mode}&invalidate`);
+    await put("/refresh-invalidate-failure", "original", {
+      revalidator: { body: "regenerated" },
+    });
+    const result = await refreshSelectors({ pathPrefixes: ["/refresh-invalidate-failure"] });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+    assert.equal(await (await read("/refresh-invalidate-failure")).text(), "regenerated");
   },
 );
 
@@ -1086,6 +1159,78 @@ test("hard-expired content is never returned and regeneration is committed befor
   assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "2");
   const objects = await r2Objects();
   assert.equal(objects.objects.length, 1, "the superseded R2 revision is deleted");
+});
+
+test("expiryBehavior: miss returns a miss for hard-expired content without regenerating", async () => {
+  await put("/expired-miss", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    expiryBehavior: "miss",
+    tags: ["expired-miss"],
+    revalidator: { bodyPrefix: "manual", cacheControl: "public, max-age=0" },
+  });
+  assert.equal((await metadata())[0].expiryBehavior, "miss");
+
+  const missed = await read("/expired-miss");
+  assert.equal(missed.status, 404);
+  assert.equal(missed.headers.get("X-Workers-Response-Store"), "MISS");
+  assert.equal(missed.headers.get("Cache-Control"), "no-store");
+  assert.equal(await missed.text(), "Workers Response Store miss");
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    regenerationCount: number;
+  };
+  assert.equal(stats.regenerationCount, 0);
+  assert.equal((await metadata())[0].activeRevision, 1);
+
+  // refresh() still regenerates through the stored revalidator and keeps the policy.
+  const result = await refreshSelectors({ tags: ["expired-miss"] });
+  assert.equal(result.json.backingStoreUpdated, true);
+  const [entry] = await metadata();
+  assert.equal(entry.activeRevision, 2);
+  assert.equal(entry.expiryBehavior, "miss");
+  const refreshed = await read("/expired-miss");
+  assert.equal(refreshed.status, 404);
+  assert.equal(refreshed.headers.get("X-Workers-Response-Store"), "MISS");
+});
+
+test("expiryBehavior: miss also answers conditional and large-header reads with a miss", async () => {
+  await put("/expired-miss-conditional", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    expiryBehavior: "miss",
+    revalidator: { body: "must-not-regenerate", cacheControl: "public, max-age=60" },
+  });
+  await put("/expired-miss-large", "must-not-return", {
+    cacheControl: "public, max-age=0",
+    expiryBehavior: "miss",
+    largeHeaderBytes: 9_000,
+    revalidator: { body: "must-not-regenerate", cacheControl: "public, max-age=60" },
+  });
+
+  const conditional = await conditionalRead("/expired-miss-conditional");
+  assert.equal(conditional.status, 404);
+  assert.equal(conditional.headers.get("X-Workers-Response-Store"), "MISS");
+  const large = await read("/expired-miss-large");
+  assert.equal(large.status, 404);
+  assert.equal(large.headers.get("X-Workers-Response-Store"), "MISS");
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    regenerationCount: number;
+  };
+  assert.equal(stats.regenerationCount, 0);
+});
+
+test("expiryBehavior: miss still serves stale content and regenerates it in the background", async () => {
+  await put("/expired-miss-stale", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    expiryBehavior: "miss",
+    revalidator: { body: "swr-regenerated", cacheControl: "public, max-age=60" },
+  });
+
+  const stale = await read("/expired-miss-stale");
+  assert.equal(await stale.text(), "stale-body");
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const fresh = await read("/expired-miss-stale");
+  assert.equal(await fresh.text(), "swr-regenerated");
+  assert.equal((await metadata())[0].expiryBehavior, "miss");
 });
 
 test("missing R2 content returns a cache miss without querying metadata", async () => {
@@ -2239,7 +2384,12 @@ test("the previous metadata schema is upgraded in place", async () => {
         { version: 4 },
         { version: 5 },
         { version: 6 },
+        { version: 7 },
       ],
+    );
+    assert.deepEqual(
+      await storage.exec("SELECT expiry_behavior FROM entries WHERE key_hash = ?", "legacy-entry"),
+      [{ expiry_behavior: null }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(

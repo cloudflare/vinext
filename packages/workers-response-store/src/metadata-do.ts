@@ -140,6 +140,7 @@ type EntryRow = Record<string, SqlStorageValue> & {
   swr_until: number | null;
   revalidator_id: string | null;
   revalidator_args: string | null;
+  expiry_behavior: string | null;
   cache_tags: string | null;
   tombstoned: number;
 };
@@ -216,6 +217,7 @@ function storedEntryFromRow(row: EntryRow): StoredEntry | null {
             id: row.revalidator_id,
             args: JSON.parse(row.revalidator_args ?? "[]") as SerializableValue[],
           },
+    expiryBehavior: row.expiry_behavior === "miss" ? "miss" : "regenerate",
     cacheTags: JSON.parse(row.cache_tags ?? "[]") as string[],
   };
 }
@@ -252,6 +254,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           swr_until INTEGER,
           revalidator_id TEXT,
           revalidator_args TEXT,
+          expiry_behavior TEXT,
           cache_tags TEXT,
           tombstoned INTEGER NOT NULL DEFAULT 0
         );
@@ -312,18 +315,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 5) return;
+        if (migrations.size === 6) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
             `SELECT name, sql FROM sqlite_schema
             WHERE type = 'table'
-              AND name IN ('tag_invalidations', 'metadata_state', 'pending_objects', 'pending_r2_tombstones')`,
+              AND name IN ('entries', 'tag_invalidations', 'metadata_state', 'pending_objects', 'pending_r2_tombstones')`,
           )
           .toArray();
         if (
@@ -397,6 +400,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             this.replaceEntryTags(entry.key_hash, JSON.parse(entry.cache_tags) as string[]);
           }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (6)");
+        }
+        if (!migrations.has(7)) {
+          if (!schemas.find(({ name }) => name === "entries")?.sql.includes("expiry_behavior")) {
+            ctx.storage.sql.exec("ALTER TABLE entries ADD COLUMN expiry_behavior TEXT");
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (7)");
         }
       });
       ctx.storage.sql.exec(`
@@ -969,7 +978,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         `UPDATE entries SET
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
           fresh_until = ?, swr_until = ?,
-          revalidator_id = ?, revalidator_args = ?, cache_tags = ?, tombstoned = 0
+          revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0
         WHERE key_hash = ? AND latest_revision >= ?
           AND (active_revision IS NULL OR active_revision < ?)
         RETURNING key_hash`,
@@ -981,6 +990,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.swrUntil,
         metadata.revalidator?.id ?? null,
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
+        metadata.expiryBehavior === "miss" ? "miss" : null,
         JSON.stringify(metadata.cacheTags),
         keyHash,
         revision,
@@ -1014,6 +1024,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         freshUntil: metadata.freshUntil,
         swrUntil: metadata.swrUntil,
         revalidator: metadata.revalidator,
+        expiryBehavior: metadata.expiryBehavior,
         cacheTags: metadata.cacheTags,
       };
 
@@ -1054,7 +1065,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           latest_revision = ?, active_revision = ?, object_key = NULL,
           status_text = NULL, response_headers = NULL, fresh_until = NULL,
           swr_until = NULL, revalidator_id = NULL, revalidator_args = NULL,
-          cache_tags = NULL, tombstoned = 1
+          expiry_behavior = NULL, cache_tags = NULL, tombstoned = 1
         WHERE key_hash = ? AND active_revision = ?`,
         tombstoneRevision,
         tombstoneRevision,
@@ -1204,6 +1215,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             swr_until = NULL,
             revalidator_id = NULL,
             revalidator_args = NULL,
+            expiry_behavior = NULL,
             cache_tags = NULL,
             tombstoned = 1
           WHERE key_hash IN (${placeholders})`,

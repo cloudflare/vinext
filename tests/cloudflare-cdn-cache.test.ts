@@ -4,7 +4,8 @@
  * Covers the edge-managed adapter backed by the Workers Cache (ctx.cache):
  *  - get null / set no-op / ownsBackgroundRevalidation false
  *  - buildResponseHeaders emits a cacheable Cache-Control + Cache-Tag
- *  - revalidateTag purges via ctx.cache.purge({ tags })
+ *  - revalidateTag purges via ctx.cache.purge({ tags }), or invalidates via
+ *    ctx.cache.invalidate({ tags }) for stale-while-revalidate profiles
  *  - getCdnCacheAdapter() only selects the Cloudflare adapter when it is
  *    explicitly configured.
  */
@@ -786,6 +787,54 @@ describe("CloudflareCdnCacheAdapter", () => {
       await adapter.revalidateTag("");
     });
     expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("")] });
+  });
+
+  it("revalidateTag invalidates stale-while-revalidate tags instead of purging them", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    const invalidate = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge, invalidate } }, async () => {
+      await adapter.revalidateTag("posts", { expire: 31_536_000 });
+      await adapter.revalidateTag("drafts", {});
+    });
+    expect(invalidate.mock.calls).toEqual([
+      [{ tags: [encodeCloudflareCacheTag("posts")] }],
+      [{ tags: [encodeCloudflareCacheTag("drafts")] }],
+    ]);
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("revalidateTag purges immediately expired tags even when invalidation is available", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    const invalidate = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge, invalidate } }, async () => {
+      await adapter.revalidateTag("posts");
+      await adapter.revalidateTag("drafts", { expire: 0 });
+    });
+    expect(purge.mock.calls).toEqual([
+      [{ tags: [encodeCloudflareCacheTag("posts")] }],
+      [{ tags: [encodeCloudflareCacheTag("drafts")] }],
+    ]);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("revalidateTag falls back to purge when the runtime cannot invalidate", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag("posts", { expire: 60 });
+    });
+    expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("posts")] });
+  });
+
+  it("surfaces a resolved Workers Cache invalidation failure", async () => {
+    const invalidate = vi.fn(async () => ({
+      errors: [{ code: 10000, message: "rate limited" }],
+      success: false,
+    }));
+    await expect(
+      runWithExecutionContext({ waitUntil() {}, cache: { purge: vi.fn(), invalidate } }, () =>
+        adapter.revalidateTag("posts", { expire: 60 }),
+      ),
+    ).rejects.toThrow("Workers Cache invalidate failed: 10000: rate limited");
   });
 
   it("revalidateTag is a no-op when the Workers Cache is absent (e.g. Node dev)", async () => {

@@ -6504,6 +6504,32 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2);
   });
 
+  // Next.js treats a "use cache" entry past its expire as a miss and regenerates it:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("regenerates a cached value once it is past its expire", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers();
+    try {
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 2 });
+        return ++callCount;
+      }, "test:expire");
+
+      await expect(cached()).resolves.toBe(1);
+      await expect(cached()).resolves.toBe(1);
+      vi.advanceTimersByTime(2_100);
+      await expect(cached()).resolves.toBe(2);
+      await expect(cached()).resolves.toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
   it("varies shared cache entries by root params read by the cached function", async () => {
