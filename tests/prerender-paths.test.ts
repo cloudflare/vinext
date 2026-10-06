@@ -3036,6 +3036,35 @@ describe("prerender path manifest", () => {
     expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(true);
   });
 
+  it.each(["entry.js", "index.js"])(
+    "discovers Pages paths using the configured SSR output (%s)",
+    async (entryFile) => {
+      writeFile(`build/pages/${entryFile}`, "export default {};\n");
+      writeFile("build/pages/BUILD_ID", "pages-build\n");
+      writeFile(
+        "pages/posts/[slug].tsx",
+        "export function getStaticPaths() { return { paths: [], fallback: false }; }\n" +
+          "export function getStaticProps() { return { props: {} }; }\n" +
+          "export default function Page() { return null; }\n",
+      );
+
+      const { emitPrerenderPathManifest } =
+        await import("../packages/vinext/src/build/prerender-paths.js");
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        routeRootConfig: { ssrOutDir: "build/pages" },
+      });
+
+      expect(manifest?.buildId).toBe("pages-build");
+      expect(startProdServerMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverDir: toSlash(path.join(tmpDir, "build/pages")),
+          serverEntryPath: toSlash(path.join(tmpDir, "build/pages", entryFile)),
+        }),
+      );
+    },
+  );
+
   it("loads next.config with the production build phase", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile(

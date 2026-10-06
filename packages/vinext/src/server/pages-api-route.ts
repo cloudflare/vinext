@@ -29,6 +29,8 @@ import {
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
+import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
+import { hasCdnResponsePolicy } from "./cache-control.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
 
 type PagesApiRouteConfig = {
@@ -144,10 +146,12 @@ function isNodeApiRouteModule(
 }
 
 export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
-  if (options.ctx) {
-    return runWithExecutionContext(options.ctx, () => _handlePagesApiRoute(options));
-  }
-  return _handlePagesApiRoute(options);
+  const run = async () => {
+    const response = await _handlePagesApiRoute(options);
+    if (hasCdnResponsePolicy(response.headers)) markRouteCacheabilityExplicitResponsePolicy();
+    return response;
+  };
+  return options.ctx ? runWithExecutionContext(options.ctx, run) : run();
 }
 
 async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {

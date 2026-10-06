@@ -1,6 +1,8 @@
 import { revalidatePath } from "next/cache";
 
 const RESETTABLE_ISR_PATHS = new Set([
+  "/api/storage-policy/no-store",
+  "/metadata-storage/no-store/opengraph-image",
   "/isr-test",
   "/client-isr-test",
   "/revalidate-test",

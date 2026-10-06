@@ -19,6 +19,11 @@ import {
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
+import {
+  finalizeGatewayResponse,
+  SHARED_RESPONSE_STAGE_HEADER,
+  type SharedResponseStage,
+} from "./browser-cache-policy.js";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import {
   applyRscCompatibilityIdHeader,
@@ -334,7 +339,7 @@ function isCacheable(response: Response): boolean {
     response.headers.get("Cache-Control");
   return (
     response.status >= 200 &&
-    response.status < 400 &&
+    (response.status < 400 || response.status === 404) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
   );
@@ -343,10 +348,15 @@ function isCacheable(response: Response): boolean {
 async function readStoredResponse(key: Request): Promise<Response | null> {
   try {
     const response = await responseStore.fetch(key);
-    // Redirects are valid cached responses even though Response.ok is false.
-    if (response.status >= 200 && response.status < 400) return response;
+    // The backend's marker distinguishes a stored 404 from its 404 cache miss.
+    const storeStatus = response.headers.get("X-Workers-Response-Store");
+    if (
+      (response.status >= 200 && response.status < 400) ||
+      (response.status === 404 && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
+    )
+      return response;
     void response.body?.cancel().catch(() => {});
-    if (response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS") {
+    if (response.status === 404 && storeStatus === "MISS") {
       return null;
     }
     throw new Error(`Workers Response Store returned ${response.status}`);
@@ -365,6 +375,7 @@ function publicResponse(
   response: Response,
   cacheStatus: string,
   responseStageProps: unknown,
+  pendingAdmission = false,
 ): Response {
   const headers = new Headers(response.headers);
   const publicCacheStatus =
@@ -393,7 +404,7 @@ function publicResponse(
     headers.set("X-Vinext-Cache", publicCacheStatus);
   }
   const cacheControl = headers.get("Cache-Control");
-  if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
+  if (pendingAdmission && (!cacheControl || !isNonCacheableCacheControl(cacheControl, "browser"))) {
     headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   }
   return traceCachedResponseStart(
@@ -520,7 +531,9 @@ const handler = {
               );
             }),
         );
-        return publicResponse(rendered, "MISS", props);
+        // The foreground can precede admission. Retain browser revalidation
+        // until the completed response has a proven policy.
+        return publicResponse(rendered, "MISS", props, true);
       }
       if (!isCacheable(rendered)) {
         void capture?.rscData?.catch(() => {});
@@ -582,6 +595,27 @@ const handler = {
       VinextResponseStoreEnv,
       StageContext
     >();
-    return handleRequestStage(request, env, context, dispatchResponseStage);
+    const sharedResponses = new Map<string, SharedResponseStage>();
+    const dispatch: VinextResponseStageTransport = async (stageRequest, props, options) => {
+      const response = await dispatchResponseStage(stageRequest, props, options);
+      if (options.cache !== "shared") return response;
+      // Record the normalized foreground response, never the persisted object.
+      const headers = new Headers(response.headers);
+      const token = crypto.randomUUID();
+      headers.set(SHARED_RESPONSE_STAGE_HEADER, token);
+      sharedResponses.set(token, {
+        headers: new Headers(headers),
+      });
+      return new Response(response.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
+    };
+    return finalizeGatewayResponse(
+      await handleRequestStage(request, env, context, dispatch),
+      sharedResponses,
+      "X-Vinext-Cache",
+    );
   },
 };

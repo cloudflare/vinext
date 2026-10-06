@@ -1,3 +1,4 @@
+import { testRouteHandlerStoragePolicies } from "../route-handler-storage-policy";
 import { test, expect, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 function baseUrl(): string {
@@ -739,3 +740,5 @@ async function readDraftCacheRoute(request: APIRequestContext) {
   expect(response.status()).toBe(200);
   return (await response.json()) as { data: string; draftMode: boolean };
 }
+
+testRouteHandlerStoragePolicies();

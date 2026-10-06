@@ -1,3 +1,4 @@
+import { isFullyBufferedBody } from "./fully-buffered-response.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import {
@@ -16,7 +17,8 @@ import {
   hasExplicitNonCacheableResponsePolicy,
   NEVER_CACHE_CONTROL,
 } from "./cache-control.js";
-import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
+import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
+import { isrCacheControl, resolveRouteExpireSeconds, type IsrWritePolicy } from "./isr-cache.js";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
@@ -49,6 +51,7 @@ import {
   isRouteCacheabilityEvaluation,
   markRouteCacheabilityExplicitResponsePolicy,
   markRouteCacheabilityResponseBodyComplete,
+  recordRouteCacheability,
 } from "vinext/shims/cacheability-classification";
 import {
   CACHEABILITY_ADMISSION_RESPONSE_BODY_LIMIT,
@@ -128,9 +131,12 @@ function hasExplicitCacheableResponsePolicy(headers: Headers): boolean {
   return !hasExplicitNonCacheableResponsePolicy(headers) && hasCdnResponsePolicy(headers);
 }
 
-async function completeAppRouteHandlerResponse(
+export async function completeAppRouteHandlerResponse(
   response: Response,
 ): Promise<CompletedAppRouteHandlerResponse> {
+  // Framework metadata serializers already completed their in-memory body.
+  // Keep its runtime length and close-tracking metadata instead of rewrapping.
+  if (isFullyBufferedBody(response)) return { completed: true, response };
   // Match Next.js static App Route generation: resolve only after clean EOF,
   // then rebuild the response from the completed body. Besides making the ISR
   // artifact deterministic, this keeps request tracking active for stream
@@ -233,6 +239,8 @@ type ExecuteAppRouteHandlerOptions = {
   initialDraftModeCookie?: string | null;
   isDraftMode?: boolean;
   isProduction: boolean;
+  /** An existing entry may require foreground regeneration after hard expiry. */
+  isRevalidation?: boolean;
   isrDebug?: AppRouteDebugLogger;
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
@@ -392,12 +400,6 @@ async function executeAppRouteHandlerImpl(
     const handlerResult = tracedResult.handlerResult;
     let { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
-    const handlerSetCachePolicy = hasCdnResponsePolicy(response.headers);
-    const hasExplicitCacheablePolicy = hasExplicitCacheableResponsePolicy(response.headers);
-    if (hasExplicitCacheablePolicy) {
-      markRouteCacheabilityExplicitResponsePolicy();
-    }
-
     const draftModeBeforeCompletion =
       options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
     const handlerDraftCookieBeforeCompletion =
@@ -406,8 +408,8 @@ async function executeAppRouteHandlerImpl(
       shouldCompleteAppRouteHandlerResponse({
         dynamicConfig: options.handler.dynamic,
         dynamicUsedInHandler,
-        hasExplicitCacheablePolicy,
-        handlerSetCachePolicy,
+        hasExplicitCacheablePolicy: hasExplicitCacheableResponsePolicy(response.headers),
+        handlerSetCachePolicy: hasCdnResponsePolicy(response.headers),
         isAutoHead: options.isAutoHead,
         isDraftMode: draftModeBeforeCompletion || handlerDraftCookieBeforeCompletion != null,
         isProduction: options.isProduction,
@@ -426,6 +428,12 @@ async function executeAppRouteHandlerImpl(
         dynamicUsedDuringCompletion ||
         dynamicUsedInHandler;
     }
+
+    // Stream producers may add, replace, or remove headers while completing.
+    // Snapshot user policy only after EOF and before framework ISR headers.
+    const browserCacheControl = response.headers.get("Cache-Control") ?? undefined;
+    const handlerSetCachePolicy = hasCdnResponsePolicy(response.headers);
+    if (handlerSetCachePolicy) markRouteCacheabilityExplicitResponsePolicy();
 
     const requestCacheabilityVeto = getRouteCacheabilityDynamicReason();
     const responseMustStayPrivate = Boolean(
@@ -460,6 +468,34 @@ async function executeAppRouteHandlerImpl(
       options.getCollectedFetchTags(),
     );
 
+    // Next.js stores ISR metadata separately from the handler's response headers.
+    // A browser policy cannot opt a dynamic route into ISR or change its lifetime.
+    const frameworkCacheable =
+      (options.isRevalidation === true || response.status < 400 || response.status === 404) &&
+      options.revalidateSeconds !== null &&
+      options.revalidateSeconds > 0 &&
+      !responseMustStayPrivate &&
+      !shouldApplyDraftPolicy &&
+      pendingCookies.length === 0 &&
+      !response.headers.has("set-cookie") &&
+      (options.method === "GET" || options.isAutoHead);
+    recordRouteCacheability(
+      frameworkCacheable
+        ? {
+            cacheable: true,
+            cacheControl: buildAppRouteMissIsrCacheControl(
+              options.revalidateSeconds!,
+              options.expireSeconds,
+            ),
+            tags: routeTags,
+          }
+        : {
+            cacheable: false,
+            dynamicUsage:
+              responseMustStayPrivate || shouldApplyDraftPolicy || options.revalidateSeconds === 0,
+          },
+    );
+
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
         dynamicUsedInHandler: responseMustStayPrivate,
@@ -483,9 +519,13 @@ async function executeAppRouteHandlerImpl(
     }
 
     if (
+      frameworkCacheable &&
       shouldWriteAppRouteHandlerCache({
         dynamicConfig: options.handler.dynamic,
-        dynamicUsedInHandler: responseMustStayPrivate,
+        dynamicUsedInHandler:
+          responseMustStayPrivate ||
+          pendingCookies.length > 0 ||
+          response.headers.has("set-cookie"),
         handlerSetCachePolicy,
         isAutoHead: options.isAutoHead,
         isDraftMode: shouldApplyDraftPolicy,
@@ -503,11 +543,17 @@ async function executeAppRouteHandlerImpl(
       }
       const routeWritePromise = (async () => {
         try {
-          const routeCacheValue = await buildAppRouteCacheValue(routeClone);
+          const routeCacheValue = await buildAppRouteCacheValue(routeClone, browserCacheControl);
           await options.isrSet(routeKey, routeCacheValue, {
-            cacheControl: isrCacheControl(revalidateSeconds, {
-              expireSeconds: options.expireSeconds,
-            }),
+            cacheControl: isrCacheControl(
+              revalidateSeconds === Infinity ? false : revalidateSeconds,
+              {
+                expireSeconds: resolveRouteExpireSeconds(
+                  options.revalidateSeconds,
+                  options.expireSeconds,
+                ),
+              },
+            ),
             tags: routeTags,
           });
           options.isrDebug?.("route cache written", routeKey);
@@ -533,9 +579,7 @@ async function executeAppRouteHandlerImpl(
     // Next.js preserves a Route Handler's explicit Cache-Control even when the
     // handler used request data. During CDN probe/admission the adapter still
     // owns fail-closed policy until the completed response is authorized.
-    const preserveHandlerPolicy = isRouteCacheabilityEvaluation()
-      ? hasExplicitCacheablePolicy
-      : handlerSetCachePolicy;
+    const preserveHandlerPolicy = handlerSetCachePolicy;
     if (options.bypassSharedCache === true || (responseMustStayPrivate && !preserveHandlerPolicy)) {
       const headers = new Headers(finalized.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });

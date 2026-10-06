@@ -651,6 +651,38 @@ describe("createAppRscHandler", () => {
     expect(new URL(mountedRequest.url).searchParams.get("_rsc")).not.toBe("");
   });
 
+  it("marks build-time hybrid Pages renders whose URL a rewrite changed", async () => {
+    const handler = createHandler({
+      configRewrites: {
+        afterFiles: [],
+        beforeFiles: [
+          {
+            source: "/account",
+            missing: [{ type: "cookie", key: "session" }],
+            destination: "/login",
+          },
+        ],
+        fallback: [],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async () => new Response("page"),
+    });
+    const marker = async (pathname: string) =>
+      (await handler(new Request(`https://example.test/docs${pathname}`), null)).headers.get(
+        "x-vinext-prerender-rewritten",
+      );
+
+    try {
+      expect(await marker("/account")).toBeNull();
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      expect(await marker("/account")).toBe("1");
+      expect(await marker("/about")).toBe("0");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   describe("query-free cache identity", () => {
     function useQueryFreeIdentityAdapter(
       overrides: Partial<Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission">> = {},
@@ -2119,7 +2151,7 @@ describe("createAppRscHandler", () => {
     },
   );
 
-  it("clears shared Pages stage metadata when outer config makes the response private", async () => {
+  it("retains shared Pages storage policy when outer config makes the browser response private", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
       responsePolicy: {
@@ -2176,8 +2208,8 @@ describe("createAppRscHandler", () => {
 
       expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
       expect(response.headers.get("cache-control")).toBe("private, no-store");
-      expect(response.headers.get("cdn-cache-control")).toBeNull();
-      expect(response.headers.get("cache-tag")).toBeNull();
+      expect(response.headers.get("cdn-cache-control")).toBe("public, max-age=60");
+      expect(response.headers.get("cache-tag")).toBe("pages");
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }

@@ -26,6 +26,7 @@ import {
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import {
   type AppPageModule,
+  type AppPageRouteHead,
   type AppPageSlotOverride,
   buildAppPageElements,
   createAppPageLayoutEntries,
@@ -81,6 +82,14 @@ function toSemanticSegments(segments: readonly string[]): AppPageSemanticSegment
       segment: marker === null ? segment : segment.slice(marker.length),
     };
   });
+}
+
+function createResolvedHead(): AppPageRouteHead {
+  return {
+    metadata: Promise.resolve(null),
+    outlet: Promise.resolve(null),
+    viewport: Promise.resolve({}),
+  };
 }
 
 function readNode(value: unknown): string {
@@ -674,8 +683,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: { category: "books", id: "hello-world" },
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null, null],
@@ -732,8 +739,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(params);
         },
         matchedParams: {},
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [],
@@ -764,8 +769,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: { slug: "post" },
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],
@@ -835,8 +838,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         childrenRouteSegments: ["dashboard"],
         error: null,
@@ -881,8 +882,6 @@ describe("app page route wiring helpers", () => {
       },
       matchedParams: {},
       mountedSlotIds: new Set(["slot:sidebar:/"]),
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -929,8 +928,6 @@ describe("app page route wiring helpers", () => {
       },
       matchedParams: {},
       mountedSlotIds: new Set(["slot:sidebar:/"]),
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -975,8 +972,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1020,8 +1015,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1049,8 +1042,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -1089,8 +1080,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -1137,8 +1126,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -1185,8 +1172,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -1240,8 +1225,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1274,8 +1257,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1318,8 +1299,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],
@@ -1361,8 +1340,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1427,8 +1404,6 @@ describe("app page route wiring helpers", () => {
             return Promise.resolve(params);
           },
           matchedParams: {},
-          resolvedMetadata: null,
-          resolvedViewport: {},
           route: {
             error: null,
             errors: [null, null],
@@ -1545,8 +1520,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(params);
         },
         matchedParams: {},
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -1697,8 +1670,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1743,8 +1714,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1789,8 +1758,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1815,6 +1782,108 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Page");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
+  it("leaves streamed generateMetadata() tags out of loading-shell prefetches without a loading boundary", () => {
+    const buildElements = (
+      renderMode: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL | undefined,
+      hasLoadingBoundary: boolean,
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        metadataPlacement: "body",
+        resolveHead: createResolvedHead,
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: hasLoadingBoundary ? { default: RouteLoadingProbe } : null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+        renderMode,
+      });
+    const bodyId = "__vinext_streaming_metadata_body:route:/dashboard";
+
+    // Next.js short-circuits a pre-PPR prefetch with no loading boundary to the
+    // router state and a [null, null] head.
+    const shell = buildElements(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL, false);
+    expect(Object.hasOwn(shell, bodyId)).toBe(false);
+    expect(findSlotById(shell["route:/dashboard"], bodyId)).toBeNull();
+
+    // A shell that renders a loading boundary carries the head, as
+    // walkTreeWithFlightRouterState() returns rscHead with it.
+    const loadingShell = buildElements(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL, true);
+    expect(loadingShell[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(Object.hasOwn(loadingShell, bodyId)).toBe(true);
+    expect(findSlotById(loadingShell["route:/dashboard"], bodyId)).not.toBeNull();
+
+    const full = buildElements(undefined, false);
+    expect(Object.hasOwn(full, bodyId)).toBe(true);
+    expect(findSlotById(full["route:/dashboard"], bodyId)).not.toBeNull();
+  });
+
+  it("treats a nested slot loading boundary as the loading shell when the slot override only carries params", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      metadataPlacement: "body",
+      resolveHead: createResolvedHead,
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            loadings: [{ default: SlotLoadingProbe }],
+            loadingTreePositions: [1],
+            name: "sidebar",
+            ownerTreePosition: 0,
+            page: { default: SlotPage },
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      // An inherited slot with its own param names gets a params-only
+      // override. It does not change the slot's tree, so the nested loading
+      // boundary still renders.
+      slotOverrides: { sidebar: { params: { team: "core" } } },
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html).toContain("Slot loading");
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(Object.hasOwn(elements, "__vinext_streaming_metadata_body:route:/dashboard")).toBe(true);
+  });
+
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
@@ -1822,8 +1891,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1851,8 +1918,8 @@ describe("app page route wiring helpers", () => {
       routePath: "/dashboard",
       rootNotFoundModule: null,
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
-      streamingMetadata: Promise.resolve(null),
-      streamingMetadataOutlet: Promise.resolve(null),
+      metadataPlacement: "body",
+      resolveHead: createResolvedHead,
     });
 
     const html = await renderRouteEntry(elements, "route:/dashboard");
@@ -1875,8 +1942,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1925,8 +1990,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -1983,8 +2046,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: {},
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -2124,8 +2185,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: {},
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -2247,8 +2306,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: { id: sourceId },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -2346,8 +2403,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(value);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -2407,8 +2462,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: { id: "42" },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -2496,8 +2549,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: { id: "42" },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -2593,8 +2644,6 @@ describe("app page route wiring helpers", () => {
               return Promise.resolve(value);
             },
             matchedParams: { catchAll: [catchAll], teamID },
-            resolvedMetadata: null,
-            resolvedViewport: {},
             route: {
               error: null,
               errors: [null],
@@ -2697,8 +2746,6 @@ describe("app page route wiring helpers", () => {
               return Promise.resolve(value);
             },
             matchedParams: { id },
-            resolvedMetadata: null,
-            resolvedViewport: {},
             route: {
               error: null,
               errors: [null],
@@ -2791,8 +2838,6 @@ describe("app page route wiring helpers", () => {
             return Promise.resolve(value);
           },
           matchedParams: { id },
-          resolvedMetadata: null,
-          resolvedViewport: {},
           route: {
             error: null,
             errors: [null],
@@ -2862,8 +2907,6 @@ describe("app page route wiring helpers", () => {
             return Promise.resolve(value);
           },
           matchedParams: { team },
-          resolvedMetadata: null,
-          resolvedViewport: {},
           route: {
             error: null,
             errors: [null],
@@ -2944,8 +2987,6 @@ describe("app page route wiring helpers", () => {
             return Promise.resolve(value);
           },
           matchedParams: {},
-          resolvedMetadata: null,
-          resolvedViewport: {},
           route: {
             error: null,
             errors: [null],
@@ -3025,8 +3066,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: { id: "42", sourceId },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -3126,8 +3165,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: {},
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -3211,8 +3248,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(value);
         },
         matchedParams: { id },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           childrenSlot: {
             id: "graph-slot:children",
@@ -3266,8 +3301,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -3329,8 +3362,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -3387,8 +3418,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],
@@ -3448,8 +3477,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],
@@ -3517,8 +3544,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -3563,8 +3588,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -3608,8 +3631,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -3663,8 +3684,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -3710,8 +3729,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -3742,8 +3759,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],
@@ -3786,8 +3801,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -3833,8 +3846,6 @@ describe("app page route wiring helpers", () => {
       },
       matchedParams: {},
       pageRenderDependency,
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -3899,8 +3910,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [],
@@ -3952,8 +3961,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -4006,8 +4013,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -4041,9 +4046,7 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
-      streamingMetadataOutlet: Promise.resolve(null),
+      resolveHead: createResolvedHead,
       streamingMetadataOutletSuspended: true,
       route: {
         error: null,
@@ -4087,8 +4090,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],
@@ -4143,8 +4144,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -4219,8 +4218,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(params);
         },
         matchedParams: { slug },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null, null],
@@ -4265,8 +4262,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(params);
         },
         matchedParams: { tenant },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null, null],
@@ -4306,8 +4301,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(params);
         },
         matchedParams: { id },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],
@@ -4371,8 +4364,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],
@@ -4422,8 +4413,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: { id: "alpha" },
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: { default: RouteError },
         errors: [null],
@@ -4471,8 +4460,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(params);
         },
         matchedParams: { id: "123" },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: { default: RouteError },
           errors: [null],
@@ -4527,8 +4514,6 @@ describe("app page route wiring helpers", () => {
           return Promise.resolve(params);
         },
         matchedParams: {},
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: { default: RouteError },
           errors: [null],
@@ -4575,8 +4560,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: { slug: "intro" },
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errorPaths: [{ default: SegmentError }],
@@ -4613,8 +4596,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -4645,8 +4626,6 @@ describe("app page route wiring helpers", () => {
       element: createElement(PageProbe),
       makeThenableParams: (params) => Promise.resolve(params),
       matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null],
@@ -4675,8 +4654,6 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: { slug: "post" },
-      resolvedMetadata: null,
-      resolvedViewport: {},
       route: {
         error: null,
         errors: [null, null],

@@ -409,106 +409,90 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
-  it("does not seed metadata artifacts for no-cache or no-store responses", async () => {
-    const root = tmpDir("vinext-prerender-metadata-cache-admission-");
-    const outDir = path.join(root, "out");
-    const server = createServer((req, res) => {
-      if (req.url === "/__vinext/prerender/metadata-routes") {
-        res.setHeader("content-type", "application/json");
-        res.end(
-          JSON.stringify([
+  it.each([0, 60])(
+    "uses metadata framework revalidate=%s independently of browser no-store",
+    async (revalidate) => {
+      const root = tmpDir("vinext-prerender-metadata-cache-admission-");
+      const outDir = path.join(root, "out");
+      const server = createServer((req, res) => {
+        if (req.url === "/__vinext/prerender/metadata-routes") {
+          res.setHeader("content-type", "application/json");
+          res.end(
+            JSON.stringify([
+              {
+                path: "/manifest.webmanifest",
+                routePattern: "/manifest.webmanifest",
+                routeSegments: [],
+              },
+              { path: "/icon", routePattern: "/icon", routeSegments: [] },
+            ]),
+          );
+          return;
+        }
+        if (req.url === "/manifest.webmanifest") {
+          res.setHeader("content-type", "application/manifest+json");
+          res.setHeader("cache-control", "no-cache");
+          res.setHeader("x-vinext-prerender-cache-life", JSON.stringify({ revalidate }));
+          res.end('{"name":"runtime"}');
+          return;
+        }
+        if (req.url === "/icon") {
+          res.setHeader("content-type", "image/png");
+          res.setHeader("cache-control", "no-store");
+          res.setHeader("x-vinext-prerender-cache-life", JSON.stringify({ revalidate }));
+          res.end("runtime image");
+          return;
+        }
+        res.statusCode = 404;
+        res.end("<html>not found</html>");
+      });
+
+      const port = await listen(server);
+      try {
+        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const config = await resolveNextConfig({});
+        const result = await prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(root, "dist", "server", "index.js"),
+          routes: [],
+          metadataRoutes: [
             {
-              path: "/manifest.webmanifest",
-              routePattern: "/manifest.webmanifest",
+              type: "manifest",
+              isDynamic: true,
+              filePath: path.join(root, "app", "manifest.ts"),
+              routePrefix: "",
               routeSegments: [],
+              servedUrl: "/manifest.webmanifest",
+              contentType: "application/manifest+json",
             },
-            { path: "/icon", routePattern: "/icon", routeSegments: [] },
-          ]),
-        );
-        return;
-      }
-      if (req.url === "/manifest.webmanifest") {
-        res.setHeader("content-type", "application/manifest+json");
-        res.setHeader("cache-control", "no-cache");
-        res.end('{"name":"runtime"}');
-        return;
-      }
-      if (req.url === "/icon") {
-        res.setHeader("content-type", "image/png");
-        res.setHeader("cache-control", "no-store");
-        res.end("runtime image");
-        return;
-      }
-      res.statusCode = 404;
-      res.end("<html>not found</html>");
-    });
+            {
+              type: "icon",
+              isDynamic: true,
+              filePath: path.join(root, "app", "icon.tsx"),
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/icon",
+              contentType: "image/png",
+            },
+          ],
+          outDir,
+          config,
+          _prodServer: { server, port },
+        });
 
-    const port = await listen(server);
-    try {
-      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
-      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-      const config = await resolveNextConfig({});
-      const result = await prerenderApp({
-        mode: "default",
-        rscBundlePath: path.join(root, "dist", "server", "index.js"),
-        routes: [],
-        metadataRoutes: [
-          {
-            type: "manifest",
-            isDynamic: true,
-            filePath: path.join(root, "app", "manifest.ts"),
-            routePrefix: "",
-            routeSegments: [],
-            servedUrl: "/manifest.webmanifest",
-            contentType: "application/manifest+json",
-          },
-          {
-            type: "icon",
-            isDynamic: true,
-            filePath: path.join(root, "app", "icon.tsx"),
-            routePrefix: "",
-            routeSegments: [],
-            servedUrl: "/icon",
-            contentType: "image/png",
-          },
-        ],
-        outDir,
-        config,
-        _prodServer: { server, port },
-      });
-
-      expect(findRoute(result.routes, "/manifest.webmanifest")).toMatchObject({
-        status: "skipped",
-        reason: "dynamic",
-      });
-      expect(findRoute(result.routes, "/icon")).toMatchObject({
-        status: "skipped",
-        reason: "dynamic",
-      });
-      expect(fs.existsSync(path.join(outDir, "manifest.webmanifest.route"))).toBe(false);
-      expect(fs.existsSync(path.join(outDir, "icon.route"))).toBe(false);
-
-      const manifest = JSON.parse(
-        fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"),
-      ) as { routes: Array<{ route: string; status: string }> };
-      expect(manifest.routes).toEqual(
-        expect.arrayContaining([
-          { route: "/manifest.webmanifest", status: "skipped", reason: "dynamic" },
-          { route: "/icon", status: "skipped", reason: "dynamic" },
-        ]),
-      );
-      expect(
-        manifest.routes.some(
-          (route) =>
-            route.status === "rendered" &&
-            (route.route === "/manifest.webmanifest" || route.route === "/icon"),
-        ),
-      ).toBe(false);
-    } finally {
-      await closeServer(server);
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+        for (const route of ["/manifest.webmanifest", "/icon"]) {
+          expect(findRoute(result.routes, route)).toMatchObject(
+            revalidate === 0 ? { status: "skipped", reason: "dynamic" } : { status: "rendered" },
+          );
+          expect(fs.existsSync(path.join(outDir, `${route.slice(1)}.route`))).toBe(revalidate > 0);
+        }
+      } finally {
+        await closeServer(server);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("writes the .rsc file from rendered HTML without a second RSC request", async () => {
     const root = tmpDir("vinext-prerender-rsc-dedupe-");

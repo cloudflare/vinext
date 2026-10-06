@@ -73,6 +73,7 @@ import {
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
+import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
@@ -206,7 +207,7 @@ export function handleRequestStageLocally(
       dispatchResponseStage(stageRequest, stageEnv, stageCtx, props),
     true,
     "worker",
-    env?.ASSETS,
+    ctx?.assets,
   ).then((response) => applyCdnResponseIdentityHeaders(response, originalRequest));
 }
 
@@ -275,6 +276,9 @@ async function handleRequestImpl(
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  assets ??=
+    getExplicitCdnCacheAdapter()?.assets ??
+    (defaultHostRuntime === "worker" ? env?.ASSETS : undefined);
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -609,7 +613,8 @@ async function handleRequestImpl(
           phase,
           (assetRequest) => Promise.resolve(assets.fetch(assetRequest)),
           publicFiles,
-          missingBuildAsset,
+          basePath,
+          assetPathPrefix,
         );
       },
     };

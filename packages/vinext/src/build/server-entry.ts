@@ -3,6 +3,15 @@ import path from "pathslash";
 
 const RSC_ENTRY_MANIFEST_KEY = "virtual:vinext-rsc-entry";
 
+/** Pages builds emit entry.js in Node or index.js when the host owns the Worker entry. */
+export function resolveBuiltPagesEntryPath(serverDir: string): string {
+  const nodeEntryPath = path.join(serverDir, "entry.js");
+  const workerEntryPath = path.join(serverDir, "index.js");
+  return fs.existsSync(nodeEntryPath) || !fs.existsSync(workerEntryPath)
+    ? nodeEntryPath
+    : workerEntryPath;
+}
+
 /** Resolve the built App handler even when a deployment host owns index.js. */
 export function resolveBuiltRscEntryPath(serverDir: string): string {
   const fallbackPath = path.join(serverDir, "index.js");

@@ -496,7 +496,7 @@ export async function resolveCloudflareInitOptions(
     }
     const cdnCache = await promptChoice(
       selectedCdnCache,
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only)\n  CDN cache [1]: ",
       {
         "1": "response-store",
         "response-store": "response-store",

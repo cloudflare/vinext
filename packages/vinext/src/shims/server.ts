@@ -116,19 +116,25 @@ export type RequestInit = globalThis.RequestInit & {
 
 /**
  * Workers can hand a GET/HEAD a non-null body (e.g. a GET sent with
- * Content-Length), which the Request constructor rejects when it reads the init
- * as a dictionary, as it does for the route handler's tracking Proxy. Next.js
- * nulls GET/HEAD bodies before user code runs, so drop the body here too.
- * Every other standard field, plus workerd's `cf` and `fetcher`, is copied so a
- * framed GET builds the same Request as an unframed one.
+ * Content-Length). Next.js nulls GET/HEAD bodies before user code runs, so a
+ * NextRequest never carries one either.
+ */
+function hasGetOrHeadBody(request: Request): boolean {
+  return (request.method === "GET" || request.method === "HEAD") && request.body !== null;
+}
+
+/**
+ * The Request constructor rejects such a body when it reads a Request init as
+ * a dictionary, as it does for the route handler's tracking Proxy, so rebuild
+ * the init without it. Every other standard field, plus workerd's `cf` and
+ * `fetcher`, is copied so a framed GET builds the same Request as an unframed
+ * one. (`duplex` only applies to a body.)
  */
 function requestInitFromRequest(request: Request): RequestInit {
-  if ((request.method !== "GET" && request.method !== "HEAD") || request.body === null) {
-    return request;
-  }
+  if (!hasGetOrHeadBody(request)) return request;
   const cf: unknown = Reflect.get(request, "cf");
   const fetcher: unknown = Reflect.get(request, "fetcher");
-  return {
+  const init: RequestInit & { cf?: unknown; fetcher?: unknown } = {
     method: request.method,
     headers: request.headers,
     // An absent body would inherit the input Request's body.
@@ -144,7 +150,26 @@ function requestInitFromRequest(request: Request): RequestInit {
     signal: request.signal,
     ...(cf !== undefined ? { cf } : {}),
     ...(fetcher !== undefined ? { fetcher } : {}),
-  } as RequestInit;
+  };
+  return init;
+}
+
+/**
+ * A Request input passes its body on unless the init replaces it, so drop a
+ * GET/HEAD input's body when the init keeps the input's method and body. This
+ * covers the requests vinext hands to middleware, route handlers and edge API
+ * routes.
+ */
+function initWithoutInputBody(input: Request, init: RequestInit): RequestInit {
+  if (
+    init instanceof Request ||
+    init.method !== undefined ||
+    init.body !== undefined ||
+    !hasGetOrHeadBody(input)
+  ) {
+    return init;
+  }
+  return { ...init, body: null };
 }
 
 export class NextRequest extends Request {
@@ -175,7 +200,7 @@ export class NextRequest extends Request {
       // body in memory because nothing reads or cancels it. Callers that need
       // the source request to stay readable must branch it themselves and
       // cancel the branch they do not consume.
-      super(input, requestInit);
+      super(input, initWithoutInputBody(input, requestInit));
       const cfDescriptor = Reflect.getOwnPropertyDescriptor(input, "cf");
       if (cfDescriptor) {
         Object.defineProperty(this, "cf", cfDescriptor);

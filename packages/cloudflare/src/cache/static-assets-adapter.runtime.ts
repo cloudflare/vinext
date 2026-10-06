@@ -1,6 +1,8 @@
 import type {
   CacheHandlerValue,
   CachedAppPageValue,
+  CachedPagesValue,
+  CachedRedirectValue,
   CachedRouteValue,
   IncrementalCacheValue,
 } from "vinext/shims/cache-handler";
@@ -31,17 +33,23 @@ function isMetadata(value: unknown): value is StaticAssetCacheMetadata {
     value !== null &&
     typeof value === "object" &&
     "kind" in value &&
-    (value.kind === "html" || value.kind === "rsc" || value.kind === "route") &&
+    (value.kind === "html" ||
+      value.kind === "rsc" ||
+      value.kind === "route" ||
+      value.kind === "pages" ||
+      value.kind === "redirect" ||
+      value.kind === "not-found") &&
     "lastModified" in value &&
     typeof value.lastModified === "number"
   );
 }
 
 export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
+  readonly hasPrerenderedPages = true;
   readonly ownsBackgroundRevalidation = false;
   private indexPromise: Promise<StaticAssetCacheIndex | null> | undefined;
 
-  constructor(private readonly assets: AssetFetcher) {}
+  constructor(readonly assets: AssetFetcher) {}
 
   private loadIndex(): Promise<StaticAssetCacheIndex | null> {
     return (this.indexPromise ??= this.assets
@@ -57,14 +65,37 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
     const metadata: unknown = (await this.loadIndex())?.[id];
     if (!isMetadata(metadata)) return null;
 
-    const extension = metadata.kind === "html" ? "html" : metadata.kind === "rsc" ? "rsc" : "route";
+    const extension = metadata.kind;
     const bodyResponse = await this.assets.fetch(
       `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/${id}.${extension}`,
     );
     if (!bodyResponse.ok) return null;
 
-    let value: CachedAppPageValue | CachedRouteValue;
-    if (metadata.kind === "html") {
+    let value:
+      | CachedAppPageValue
+      | CachedRouteValue
+      | CachedPagesValue
+      | CachedRedirectValue
+      | null;
+    if (metadata.kind === "not-found") {
+      // The artifact only proves the snapshot exists; release its unread body.
+      await bodyResponse.body?.cancel();
+      value = null;
+    } else if (metadata.kind === "redirect") {
+      value = { kind: "REDIRECT", props: (await bodyResponse.json()) as object };
+    } else if (metadata.kind === "pages") {
+      const { html, pageData } = (await bodyResponse.json()) as Pick<
+        CachedPagesValue,
+        "html" | "pageData"
+      >;
+      value = {
+        kind: "PAGES",
+        html,
+        pageData,
+        headers: metadata.headers,
+        status: metadata.status,
+      };
+    } else if (metadata.kind === "html") {
       value = {
         kind: "APP_PAGE",
         html: await bodyResponse.text(),

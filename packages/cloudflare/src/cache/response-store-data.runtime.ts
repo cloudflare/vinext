@@ -15,6 +15,7 @@ import { cacheForRequest } from "vinext/cache";
 import type { VinextCacheFunctionInvocation } from "vinext/server/multi-stage";
 
 import { encodeCloudflareCacheTag } from "./cdn-adapter.runtime.js";
+import { isStaleTagInvalidation } from "./workers-cache-invalidation.js";
 
 type StoredCacheEntry = {
   cacheControl?: CacheControlMetadata;
@@ -24,6 +25,8 @@ type StoredCacheEntry = {
 
 type RegenerationScope = {
   captured?: Response;
+  /** Other entries the regeneration stores; callers like cached fetch don't await them. */
+  sideWrites: Promise<void>[];
   targetKey: string;
 };
 
@@ -203,8 +206,13 @@ export async function captureResponseStoreDataRegeneration(
   key: string,
   callback: () => Promise<void>,
 ): Promise<Response> {
-  const scope: RegenerationScope = { targetKey: key };
-  await regenerationStorage.run(scope, callback);
+  const scope: RegenerationScope = { sideWrites: [], targetKey: key };
+  try {
+    await regenerationStorage.run(scope, callback);
+  } finally {
+    // Unawaited work can be cancelled once the Store's regeneration returns, even a failed one.
+    while (scope.sideWrites.length) await Promise.allSettled(scope.sideWrites.splice(0));
+  }
   if (!scope.captured) {
     throw new Error(`vinext response-store regeneration did not rewrite data key ${key}`);
   }
@@ -293,10 +301,11 @@ function cachePolicy(revalidate: number | false | undefined, expire: number | un
   if (revalidate === false || revalidate === undefined) {
     return `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
   }
-  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${Math.max(
-    0,
-    (expire ?? revalidate) - revalidate,
-  )}`;
+  // Like Next.js, an entry without `expire` (unstable_cache, cached fetch) never
+  // hard-expires: past `revalidate` it is served stale and refreshed in the background.
+  const staleSeconds =
+    expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, expire - revalidate);
+  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${staleSeconds}`;
 }
 
 export class WorkersResponseStoreCacheHandler implements CacheHandler {
@@ -374,7 +383,9 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         age > requestedRevalidate * 1000;
       let cacheState: string | undefined;
       if (response.headers.get(REPLAYABLE_HEADER) === "1") {
-        if (requestedStale) cacheState = "stale";
+        // A stale Store hit has already scheduled the Store's own refresh. Reporting it
+        // stale as well would make the caller (e.g. cached fetch) refresh it a second time.
+        if (requestedStale && storeStatus !== "BLOB-STALE") cacheState = "stale";
       } else if (
         typeof entry.cacheControl?.expire === "number" &&
         age > entry.cacheControl.expire * 1000
@@ -405,7 +416,18 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     }
   }
 
-  async set(
+  set(
+    key: string,
+    value: IncrementalCacheValue | null,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    const write = this.write(key, value, context);
+    const regeneration = regenerationStorage.getStore();
+    if (regeneration && regeneration.targetKey !== key) regeneration.sideWrites.push(write);
+    return write;
+  }
+
+  private async write(
     key: string,
     value: IncrementalCacheValue | null,
     context?: Record<string, unknown>,
@@ -467,14 +489,23 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       },
     );
 
+    // A regeneration returns its own entry to the Store; any other entry it recomputes is
+    // stored as usual, as Next.js stores every entry a revalidation recomputes. A cache
+    // function call has no page to replay, so an entry it recomputes without its own
+    // revalidator would replace one the Store can regenerate with one it can't: skip it.
     const regeneration = regenerationStorage.getStore();
-    if (regeneration) {
-      if (key === regeneration.targetKey) regeneration.captured = response;
+    if (regeneration?.targetKey === key) {
+      regeneration.captured = response;
       return;
     }
+    if (regeneration && !revalidator) return;
 
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
+      // A read that finds a page-replay entry expired must not wait for the replay: a page
+      // reading two such entries would replay itself for each in turn (A -> B -> A). The
+      // Store answers a miss and the caller recomputes, as in Next.js; refresh() still replays.
+      ...(revalidator?.id === DATA_REVALIDATOR_ID ? { expiryBehavior: "miss" as const } : {}),
       coalesce: true,
       purgeExisting: true,
     });
@@ -484,7 +515,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     const dataTags = Array.isArray(tags) ? tags : [tags];
     const encodedTags = dataTags.map(encodeCloudflareCacheTag);
     if (!encodedTags.length) return;
-    if (durations?.expire && durations.expire > 0) {
+    if (isStaleTagInvalidation(durations)) {
       await this.store.refresh({ tags: encodedTags });
     } else {
       await this.store.purge({

@@ -57,9 +57,6 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
-  if (cloudflare.cdnCache === "static-assets" && !context.isAppRouter) {
-    throw new Error("The Static Assets cache currently requires an App Router project.");
-  }
   if (!cloudflare.legacyWrangler) {
     const existingWrangler = [
       "wrangler.toml",
@@ -253,6 +250,8 @@ export function setupCloudflarePlatform(
           versionMetadataBinding,
           false,
           context.hasCssModules,
+          assetsBinding,
+          assetsDirectory,
         );
     fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
     generatedViteConfig = true;
@@ -1538,7 +1537,10 @@ export function generatePagesRouterViteConfig(
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
   serviceBinding = false,
   hasCssModules = false,
+  assetsBinding = "ASSETS",
+  assetsDirectory = "dist/client",
 ): string {
+  const legacyStaticAssets = options.legacyWrangler && options.cdnCache === "static-assets";
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
@@ -1577,15 +1579,18 @@ export function generatePagesRouterViteConfig(
   return `${imports.join("\n")}
 
 export default defineConfig({
-  plugins: [
+${legacyStaticAssets ? `  environments: { client: { build: { outDir: ${JSON.stringify(assetsDirectory)} } }, ssr: { build: { outDir: "dist/server" } } },\n` : ""}  plugins: [
 ${hasCssModules ? '    patchCssModules({ exportMode: "default" }),\n' : ""}    ${vinextExpression(
     options,
     "vinext",
     "imagesOptimizer",
     imagesBinding,
     versionMetadataBinding,
+    "responseStoreAdapter",
+    assetsBinding,
+    assetsDirectory,
   ).replace(/\n/g, "\n    ")},
-    cloudflare(${serviceBinding ? "{ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] }" : ""}),
+    cloudflare(${legacyStaticAssets ? '{ viteEnvironment: { name: "ssr" } }' : serviceBinding ? "{ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] }" : ""}),
   ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;

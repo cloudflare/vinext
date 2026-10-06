@@ -1,8 +1,10 @@
-import { Suspense, createElement } from "react";
+import { Suspense, cache, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { withUseCachePageMarker } from "vinext/shims/internal/app-page-props-cache-key";
 import { ClientPageRoot } from "vinext/shims/client-page-root";
 import {
+  collectAppPageSearchParams,
+  hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
   type ApplyAppPageFileBasedMetadata,
@@ -19,6 +21,7 @@ import {
   resolveAppPageLoadingModuleAtOrAbove,
   type AppPageErrorModule,
   type AppPageModule,
+  type AppPageRouteHead,
   type AppPageRouteWiringRoute,
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
@@ -426,7 +429,7 @@ export async function buildPageElements<
   const metadataSearchParamsObserver = observeMetadataSearchParamsAccess
     ? createAppPageSearchParamsObserver()
     : undefined;
-  const preparedHead = prepareAppPageHead({
+  const headOptions = {
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     layoutModules: route.layouts,
@@ -439,8 +442,9 @@ export async function buildPageElements<
     routeSegments: route.routeSegments ?? null,
     searchParams,
     searchParamsObserver: metadataSearchParamsObserver,
-  });
-  const { hasDynamicMetadata, pageSearchParams } = preparedHead;
+  };
+  const hasDynamicMetadata = hasAppPageDynamicMetadata(headOptions);
+  const { pageSearchParams } = collectAppPageSearchParams(searchParams);
   const streamGeneratedHead =
     serveStreamingMetadata ??
     shouldServeStreamingMetadata(
@@ -448,22 +452,6 @@ export async function buildPageElements<
       options.htmlLimitedBots,
     );
   const metadataPlacement = hasDynamicMetadata && streamGeneratedHead ? "body" : "head";
-  // Streaming HTML and Flight responses share the unresolved promise between
-  // the Suspense tag branch and its in-boundary error outlet. Late navigation
-  // signals remain encoded in the Flight digest; response headers are only an
-  // early optimization and must not make generated metadata block navigation.
-  const shouldDeferMetadata = metadataPlacement === "body";
-  const streamingMetadata = shouldDeferMetadata
-    ? isProduction
-      ? preparedHead.metadata.catch((error) => {
-          throw sanitizeErrorForClient(error, "production");
-        })
-      : preparedHead.metadata
-    : null;
-  // Viewport resolution can keep us below from wiring the paired outlet for
-  // another event-loop turn. Observe an early metadata rejection immediately;
-  // the original promise remains rejected for the real outlet consumer.
-  void streamingMetadata?.catch(() => null);
 
   const resolveNotFoundFallbackPlanOptions = () => {
     const routeBoundaryModule = route.notFound;
@@ -505,8 +493,6 @@ export async function buildPageElements<
     };
   };
 
-  let viewportErrorOutlet: Promise<never> | null = null;
-  let metadataErrorOutlet: Promise<never> | null = null;
   const resolveMetadataErrorTags = async (error: unknown) => {
     const specialError = resolveAppPageSpecialError(error);
     if (specialError?.kind !== "http-access-fallback") return null;
@@ -522,43 +508,37 @@ export async function buildPageElements<
       routePath: route.pattern,
     }).catch(() => null);
   };
-  const [resolvedMetadata, resolvedViewport] = await Promise.all([
-    shouldDeferMetadata
-      ? Promise.resolve(null)
-      : preparedHead.metadata.catch((error) => {
-          metadataErrorOutlet = Promise.reject(
-            isProduction ? sanitizeErrorForClient(error, "production") : error,
-          );
-          void metadataErrorOutlet.catch(() => null);
-          return resolveMetadataErrorTags(error);
-        }),
-    preparedHead.viewport.catch(async (error) => {
-      const specialError = resolveAppPageSpecialError(error);
-
-      viewportErrorOutlet = Promise.reject(
-        isProduction ? sanitizeErrorForClient(error, "production") : error,
-      );
-      void viewportErrorOutlet.catch(() => null);
-      return specialError?.kind === "http-access-fallback"
-        ? resolveHttpAccessFallbackViewport(resolveNotFoundFallbackPlanOptions()).catch(() => ({}))
-        : {};
-    }),
-  ]);
-  const streamingMetadataTags = shouldDeferMetadata
-    ? preparedHead.metadata.catch(resolveMetadataErrorTags)
-    : null;
-  const streamingMetadataOutletInputs = [
-    streamingMetadata,
-    metadataErrorOutlet,
-    viewportErrorOutlet,
-  ]
-    .filter((promise) => promise !== null)
-    .map((promise) => Promise.resolve(promise));
-  const streamingMetadataOutlet =
-    streamingMetadataOutletInputs.length > 0
-      ? Promise.all(streamingMetadataOutletInputs).then(() => null)
-      : null;
-  void streamingMetadataOutlet?.catch(() => null);
+  const toClientError = (error: unknown) =>
+    isProduction ? sanitizeErrorForClient(error, "production") : error;
+  // generateMetadata() and generateViewport() run when Flight first renders the
+  // head, inside the render rather than before it, as in Next.js. React's
+  // cache() memoises a value per Flight request, so the head, its streamed body
+  // tags and its error outlet share one resolution, and the cache() loaders it
+  // calls share their values with the page. A separate render (a PPR warm-up,
+  // a revalidation) gets its own.
+  const resolveHead = cache((): AppPageRouteHead => {
+    const preparedHead = prepareAppPageHead(headOptions);
+    // Late navigation signals reach the client through the outlet's Flight
+    // digest, inside the route's boundaries.
+    const outlet = Promise.all([preparedHead.metadata, preparedHead.viewport]).then(
+      () => null,
+      (error: unknown) => {
+        throw toClientError(error);
+      },
+    );
+    void outlet.catch(() => null);
+    return {
+      metadata: preparedHead.metadata.catch(resolveMetadataErrorTags),
+      outlet,
+      viewport: preparedHead.viewport.catch((error: unknown) =>
+        resolveAppPageSpecialError(error)?.kind === "http-access-fallback"
+          ? resolveHttpAccessFallbackViewport(resolveNotFoundFallbackPlanOptions()).catch(
+              () => ({}),
+            )
+          : {},
+      ),
+    };
+  });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
@@ -776,14 +756,10 @@ export async function buildPageElements<
       matchedParams: params,
       pageRenderDependency,
       metadataPlacement,
-      resolvedMetadata,
+      resolveHead,
       resolvedMetadataPathname: routePath,
-      resolvedViewport,
       scriptNonce: options.scriptNonce,
-      streamingMetadata,
-      streamingMetadataOutlet,
       streamingMetadataOutletSuspended: streamGeneratedHead,
-      streamingMetadataTags,
       renderIdentity,
       routePath,
       semanticPageIdentity,

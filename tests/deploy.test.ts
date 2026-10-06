@@ -1663,7 +1663,7 @@ describe("readPagesRouterEntrySource", () => {
     // handing the request to the middleware function, then delegates via
     // runPagesRequest.
     expect(content).toContain('typeof runMiddleware === "function"');
-    expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
+    expect(content).toContain("wrapMiddlewareWithBasePath(");
     expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
     expect(content).toContain("isDataRequest: isDataReq");
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -2238,6 +2238,52 @@ describe("readPagesRouterEntrySource", () => {
 });
 
 describe("fetchWorkerFilesystemRoute", () => {
+  // Like Next.js router-utils/filesystem.ts, rewrites resolve only public files
+  // and the build asset tree, not arbitrary files in the deployment binding.
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "rejects private destinations and encoded traversal during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("private"));
+      for (const pathname of [
+        "/_vinext/static-cache/index.json",
+        "/%5fvinext/static-cache/index.json",
+        "/_next/static/../../_vinext/static-cache/index.json",
+        "/_next/static/%2e%2e/%2e%2e/_vinext/static-cache/index.json",
+        "/_next/static/..%2f..%2f_vinext/static-cache/index.json",
+        "/_next/static/..%5c..%5c_vinext/static-cache/index.json",
+      ]) {
+        expect(
+          await fetchWorkerFilesystemRoute(
+            new Request("https://example.com/_next/static/original.js"),
+            pathname,
+            phase,
+            fetchAsset,
+            new Set(["/visible.txt"]),
+          ),
+        ).toBe(false);
+      }
+      expect(fetchAsset).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "allows rewritten build assets with basePath and assetPrefix during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("built asset"));
+      expect(
+        await fetchWorkerFilesystemRoute(
+          new Request("https://example.com/source"),
+          "/docs/cdn/_next/static/app.js",
+          phase,
+          fetchAsset,
+          new Set(),
+          "/docs",
+          "/cdn",
+        ),
+      ).toBeInstanceOf(Response);
+    },
+  );
+
   it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
     "fetches rewritten assets during %s",
     async (phase) => {
@@ -2252,6 +2298,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         "/file.txt",
         phase,
         fetchAsset,
+        new Set(["/file.txt"]),
       );
 
       expect(result).toBeInstanceOf(Response);
@@ -2272,6 +2319,7 @@ describe("fetchWorkerFilesystemRoute", () => {
       "/missing.txt",
       "afterFiles",
       fetchAsset,
+      new Set(["/missing.txt"]),
     );
 
     expect(result).toBe(false);
@@ -2369,7 +2417,6 @@ describe("fetchWorkerFilesystemRoute", () => {
       "direct",
       fetchAsset,
       new Set(),
-      true,
     );
 
     expect(result).toBeInstanceOf(Response);
@@ -2385,6 +2432,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         "/file.txt",
         "direct",
         fetchAsset,
+        new Set(["/file.txt"]),
       ),
     ).toBe(false);
     expect(
@@ -2393,6 +2441,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         "/api/hello",
         "fallback",
         fetchAsset,
+        new Set(["/file.txt"]),
       ),
     ).toBe(false);
     expect(fetchAsset).not.toHaveBeenCalled();

@@ -8,11 +8,11 @@ import {
 import {
   applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
-  hasExplicitNonCacheableResponsePolicy,
   isCdnResponsePolicyHeader,
+  hasExplicitNonCacheableResponsePolicy,
+  readCdnResponseCacheControl,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
-  readCdnResponseCacheControl,
   readCdnResponsePolicyHeaderName,
 } from "./cache-control.js";
 import {
@@ -604,14 +604,15 @@ function responseWithCachePolicy(
   response: Response,
   body: BodyInit | null,
   outcome: RouteCacheabilityOutcome | null,
+  browserCacheControl?: string,
 ): Response {
   const headers = new Headers(response.headers);
   if (typeof body === "string") headers.delete("Content-Length");
   applyCdnResponseHeaders(
     headers,
     outcome?.cacheable === true && outcome.cacheControl
-      ? { cacheControl: outcome.cacheControl, tags: outcome.tags }
-      : { cacheControl: NO_STORE_CACHE_CONTROL },
+      ? { cacheControl: outcome.cacheControl, tags: outcome.tags, browserCacheControl }
+      : { cacheControl: NO_STORE_CACHE_CONTROL, browserCacheControl },
   );
   return new Response(body, {
     headers,
@@ -630,44 +631,28 @@ async function stripSharedHtmlClientTraceMetadata(
   return stripClientTraceMetadataBlock(html, marker);
 }
 
-function inferFinalAppPageCacheability(
+/** Only an explicitly authored provider policy may override framework storage. */
+function explicitProviderOutcome(
   response: Response,
   state: RouteCacheabilityState,
 ): RouteCacheabilityOutcome | null {
-  if (!state.explicitConfigCachePolicy && !state.frameworkResponseCachePolicy) return null;
-
-  // Config headers run after the framework snapshots its provisional policy.
-  // Match Next.js by honoring a later explicit public policy instead of
-  // replacing it with the renderer-derived default during admission.
+  const name = readCdnResponsePolicyHeaderName(response.headers);
+  if (!name || name === "cache-control") return null;
+  const value = response.headers.get(name);
+  const isExplicit =
+    state.explicitResponseCachePolicy ||
+    state.configCdnCachePolicy?.get(name) === value ||
+    (state.frameworkResponseCachePolicy && state.frameworkResponseCachePolicy.get(name) !== value);
+  if (!isExplicit || !value) return null;
   const cacheControl = readCdnResponseCacheControl(response.headers);
-  if (
-    cacheControl === null ||
-    (!state.explicitConfigCachePolicy &&
-      cacheControl === readCdnResponseCacheControl(state.frameworkResponseCachePolicy))
-  ) {
-    return null;
-  }
-  if (isNonCacheableCacheControl(cacheControl)) return { cacheable: false };
-  return {
-    cacheable: true,
-    cacheControl,
-    ...(state.cdnCacheTags ? { tags: state.cdnCacheTags } : {}),
-  };
-}
-
-function inferPagesPageCacheability(
-  response: Response,
-  state: RouteCacheabilityState,
-): RouteCacheabilityOutcome {
-  const cacheControl = readCdnResponseCacheControl(response.headers);
-  if (!cacheControl || isNonCacheableCacheControl(cacheControl)) {
-    return { cacheable: false };
-  }
-  return {
-    cacheable: true,
-    cacheControl,
-    ...(state.cdnCacheTags ? { tags: state.cdnCacheTags } : {}),
-  };
+  if (!cacheControl) return null;
+  return isNonCacheableCacheControl(cacheControl)
+    ? { cacheable: false }
+    : {
+        cacheable: true,
+        cacheControl,
+        ...(state.cdnCacheTags ? { tags: state.cdnCacheTags } : {}),
+      };
 }
 
 function completedRouteOutcome(
@@ -680,30 +665,15 @@ function completedRouteOutcome(
   }
   const varyRejectionReason = cacheabilityVaryRejectionReason(response.headers, state);
   if (varyRejectionReason) return { cacheable: false, reason: varyRejectionReason };
-  if (state.route?.kind === "app-route") {
-    if (response.headers.has("set-cookie")) {
-      return { cacheable: false, reason: "response sets a cookie" };
-    }
-    return inferPagesPageCacheability(response, state);
+  if (response.headers.has("set-cookie")) {
+    return { cacheable: false, reason: "response sets a cookie" };
   }
-  if (state.route?.kind === "app-page") {
-    return inferFinalAppPageCacheability(response, state) ?? rendererOutcome;
-  }
-  if (state.route?.kind !== "pages-page") return rendererOutcome;
-  if (
-    response.headers.has("set-cookie") ||
-    hasExplicitNonCacheableResponsePolicy(response.headers)
-  ) {
-    return { cacheable: false };
-  }
-  // Pages request-time routes (GSSP/GIP) are dynamic by default, but Next.js
-  // deliberately honors an explicit public response policy. ASO/config-header
-  // responses likewise use the completed policy rather than a hardcoded TTL.
-  // Ported from Next.js:
-  // test/e2e/getserversideprops/test/index.test.ts
-  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
-  const responseOutcome = inferPagesPageCacheability(response, state);
-  return responseOutcome.cacheable ? responseOutcome : (rendererOutcome ?? responseOutcome);
+  if (rendererOutcome?.dynamicUsage) return rendererOutcome;
+  // Cache-Control is a wire header, not origin ISR metadata. This also keeps
+  // GSSP/Pages APIs dynamic when their browser response is explicitly public.
+  const outcome = explicitProviderOutcome(response, state) ?? rendererOutcome;
+  const tags = outcome?.tags ?? rendererOutcome?.tags ?? state.cdnCacheTags;
+  return outcome && tags && outcome.tags !== tags ? { ...outcome, tags } : outcome;
 }
 
 function staticToDynamicResponse(route: CacheabilityManifestRoute): Response {
@@ -725,11 +695,12 @@ function cacheabilityEvaluationFailureResponse(pattern: string): Response {
 }
 
 function hasStrictFinalResponseVeto(response: Response, state: RouteCacheabilityState): boolean {
-  if (state.finalResponseVetoReason || response.headers.has("set-cookie")) return true;
-
-  return hasExplicitNonCacheableResponsePolicy(
-    response.headers,
-    state.frameworkResponseCachePolicy,
+  const providerHeaders = new Headers(response.headers);
+  providerHeaders.delete("Cache-Control");
+  return Boolean(
+    state.finalResponseVetoReason ||
+    response.headers.has("set-cookie") ||
+    hasExplicitNonCacheableResponsePolicy(providerHeaders, state.frameworkResponseCachePolicy),
   );
 }
 
@@ -743,6 +714,14 @@ async function finalizeWorkerCacheabilityAdmission(
   // its own stack layer.
   if (state.preserveResponseCachePolicy) return response;
 
+  const browserCacheControl =
+    state.explicitResponseCachePolicy ||
+    state.configCdnCachePolicy?.has("cache-control") ||
+    state.route?.kind === "pages-api" ||
+    (state.route?.kind === "pages-page" && state.outcome?.cacheable !== true)
+      ? (response.headers.get("Cache-Control") ?? undefined)
+      : undefined;
+
   const admission = state.admission;
 
   // App Route Handlers normally prove body completion inside their execution
@@ -752,19 +731,16 @@ async function finalizeWorkerCacheabilityAdmission(
   // shared cache.
   if (state.route?.kind === "app-route" || state.route?.kind === "pages-api") {
     let manifestRoute: CacheabilityManifestRoute | null = null;
-    const responseOutcome = inferPagesPageCacheability(response, state);
+    const responseOutcome = completedRouteOutcome(response, state);
     const representation = admission?.representation
       ? resolveCacheabilityRepresentation(
           admission.representation as CacheabilityRepresentation,
           state.route.kind,
         )
       : null;
-    const hasExplicitRuntimePolicy =
-      state.explicitResponseCachePolicy === true ||
-      state.explicitConfigCachePolicy === true ||
-      (state.route.kind === "pages-api" && responseOutcome.cacheable);
+    const hasExplicitRuntimePolicy = responseOutcome?.cacheable === true;
     if (!admission || admission.policy === "deny" || !representation || !admission.requestKey) {
-      return responseWithCachePolicy(response, response.body, null);
+      return responseWithCachePolicy(response, response.body, null, browserCacheControl);
     }
     if (admission.policy === "manifest" && state.route.kind === "app-route") {
       const manifest = admission.manifest as CacheabilityManifest;
@@ -791,16 +767,19 @@ async function finalizeWorkerCacheabilityAdmission(
       hasStrictFinalResponseVeto(response, state) ||
       cacheabilityVaryRejectionReason(response.headers, state) !== null
     ) {
-      return responseWithCachePolicy(response, response.body, null);
+      return responseWithCachePolicy(response, response.body, null, browserCacheControl);
     }
 
     const outcome = responseOutcome;
-    if (!outcome.cacheable || !outcome.cacheControl) {
-      return responseWithCachePolicy(response, response.body, null);
-    }
+    // A manifest-backed candidate still owns an EOF boundary even when its
+    // runtime outcome denies storage. Preserve late-error handling without
+    // admitting the response or buffering ordinary dynamic APIs.
     if (state.completedResponseBody) {
+      if (!outcome?.cacheable || !outcome.cacheControl) {
+        return responseWithCachePolicy(response, response.body, null, browserCacheControl);
+      }
       if (!state.applyCompletedResponsePolicy) return response;
-      return responseWithCachePolicy(response, response.body, outcome);
+      return responseWithCachePolicy(response, response.body, outcome, browserCacheControl);
     }
 
     let captured: CapturedAdmissionBody;
@@ -815,9 +794,9 @@ async function finalizeWorkerCacheabilityAdmission(
       return cacheabilityEvaluationFailureResponse(state.route.pattern);
     }
     if (captured.kind === "fallback") {
-      return responseWithCachePolicy(response, captured.body, null);
+      return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
     }
-    return responseWithCachePolicy(response, captured.body, outcome);
+    return responseWithCachePolicy(response, captured.body, outcome, browserCacheControl);
   }
 
   if (
@@ -828,13 +807,13 @@ async function finalizeWorkerCacheabilityAdmission(
     !state.route ||
     response.status >= 500
   ) {
-    return responseWithCachePolicy(response, response.body, null);
+    return responseWithCachePolicy(response, response.body, null, browserCacheControl);
   }
   const pageRoute = { kind: state.route.kind, pattern: state.route.pattern };
   const requestRepresentation = admission.representation as CacheabilityRepresentation;
   const representation = resolveCacheabilityRepresentation(requestRepresentation, pageRoute.kind);
   if (!cacheabilityRepresentationMatchesPageRoute(pageRoute.kind, representation)) {
-    return responseWithCachePolicy(response, response.body, null);
+    return responseWithCachePolicy(response, response.body, null, browserCacheControl);
   }
 
   let manifestRoute: CacheabilityManifestRoute | null = null;
@@ -851,18 +830,27 @@ async function finalizeWorkerCacheabilityAdmission(
         )
       : null;
     if (!manifestRoute || !manifestRouteState) {
-      return responseWithCachePolicy(response, response.body, null);
+      return responseWithCachePolicy(response, response.body, null, browserCacheControl);
     }
   }
 
   if (state.forcedDynamicReason) {
-    return responseWithCachePolicy(response, response.body, null);
+    return responseWithCachePolicy(response, response.body, null, browserCacheControl);
   }
   if (hasStrictFinalResponseVeto(response, state)) {
-    return responseWithCachePolicy(response, response.body, null);
+    return responseWithCachePolicy(response, response.body, null, browserCacheControl);
   }
   if (cacheabilityVaryRejectionReason(response.headers, state) !== null) {
-    return responseWithCachePolicy(response, response.body, null);
+    return responseWithCachePolicy(response, response.body, null, browserCacheControl);
+  }
+  // GSSP/GIP already completed their data phase. Without a provider opt-in,
+  // their browser policy can leave immediately and their body stays streaming.
+  if (
+    state.route.kind === "pages-page" &&
+    !state.completion &&
+    completedRouteOutcome(response, state)?.cacheable !== true
+  ) {
+    return responseWithCachePolicy(response, response.body, null, browserCacheControl);
   }
   let captured: CapturedAdmissionBody;
   try {
@@ -876,7 +864,7 @@ async function finalizeWorkerCacheabilityAdmission(
     return cacheabilityEvaluationFailureResponse(state.route.pattern);
   }
   if (captured.kind === "fallback") {
-    return responseWithCachePolicy(response, captured.body, null);
+    return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
   }
 
   const rendererOutcome = state.completion ? await state.completion : (state.outcome ?? null);
@@ -897,7 +885,7 @@ async function finalizeWorkerCacheabilityAdmission(
       await captured.body?.cancel().catch(() => {});
       return staticToDynamicResponse(manifestRoute);
     }
-    return responseWithCachePolicy(response, captured.body, null);
+    return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
   }
   // Every query can share a rendered App page's response, so the renderer's
   // policy is admitted only with proof the render left searchParams unread. A
@@ -919,7 +907,7 @@ async function finalizeWorkerCacheabilityAdmission(
     !replacesRendererPolicy &&
     rendererOutcome?.searchParamsUnread !== true
   ) {
-    return responseWithCachePolicy(response, captured.body, null);
+    return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
   }
   return responseWithCachePolicy(
     response,
@@ -927,6 +915,7 @@ async function finalizeWorkerCacheabilityAdmission(
       ? await stripSharedHtmlClientTraceMetadata(captured.body, state.clientTraceMetadataMarker)
       : captured.body,
     outcome,
+    browserCacheControl,
   );
 }
 
@@ -982,11 +971,10 @@ export async function finalizeWorkerCacheabilityResponse(
   }
 
   if (state.patternDynamicReason && !state.explicitConfigCachePolicy) {
-    // Route configuration is pattern-wide, but Next.js lets a matching
-    // next.config public cache policy override force-dynamic/revalidate=0.
-    // Config headers are applied before this Worker finalizer, so only bypass
-    // the render body when no explicit policy still needs completed-response
-    // classification. A real route 5xx above must never be hidden by pruning.
+    // Route configuration is pattern-wide. An explicit provider policy may
+    // still require completed-response classification; ordinary Cache-Control
+    // cannot override framework storage. A real route 5xx above must never be
+    // hidden by pruning.
     await response.body?.cancel().catch(() => {});
     return probeResponse(
       state,

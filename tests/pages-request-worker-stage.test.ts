@@ -581,7 +581,7 @@ describe("Pages Worker request stage", () => {
     );
   });
 
-  it("lets an outer private config policy override a shared Pages artifact", async () => {
+  it("applies an outer private browser policy without changing shared Pages storage", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
       responsePolicy: {
@@ -627,7 +627,7 @@ describe("Pages Worker request stage", () => {
 
     expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cdn-cache-control")).toBe("public, max-age=60");
     await expect(response.text()).resolves.toBe("cached page");
   });
 

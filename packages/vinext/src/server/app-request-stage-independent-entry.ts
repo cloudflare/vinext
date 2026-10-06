@@ -12,6 +12,7 @@ import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims
 // @ts-expect-error -- virtual module resolved by vinext
 import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
 import { registerLazyDataCacheHandler } from "vinext/shims/cache-handler";
+import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
@@ -95,6 +96,9 @@ async function handleRequest(
       );
 
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  // Adapters can resolve their own asset binding. The revalidation context's
+  // closure reads this parameter at call time, so it sees the fallback too.
+  assets ??= getExplicitCdnCacheAdapter()?.assets;
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext

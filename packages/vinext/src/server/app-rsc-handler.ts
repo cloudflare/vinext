@@ -29,6 +29,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -2028,22 +2029,30 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
     }
 
-    if (!pagesDataRequest || resolvedUrl === originalResolvedUrl) {
+    const isRewritten = resolvedUrl !== originalResolvedUrl;
+    const isPrerender = typeof process !== "undefined" && process.env?.VINEXT_PRERENDER === "1";
+    if ((!pagesDataRequest || !isRewritten) && !isPrerender) {
       return dispatchPagesResponseStage
         ? markAppRscResponseConfigHeadersApplied(response)
         : response;
     }
 
     const headers = new Headers(response.headers);
-    headers.set("x-nextjs-rewrite", resolvedUrl);
-    const rewrittenResponse = new Response(response.body, {
+    if (pagesDataRequest && isRewritten) headers.set("x-nextjs-rewrite", resolvedUrl);
+    if (isPrerender) {
+      // Mirrors the Pages pipeline: a build request can satisfy a
+      // request-conditional rewrite that real visitors may not, so only an
+      // unrewritten Pages render may become a snapshot.
+      headers.set(VINEXT_PRERENDER_REWRITTEN_HEADER, isRewritten ? "1" : "0");
+    }
+    const markedResponse = new Response(response.body, {
       headers,
       status: response.status,
       statusText: response.statusText,
     });
     return dispatchPagesResponseStage
-      ? markAppRscResponseConfigHeadersApplied(rewrittenResponse)
-      : rewrittenResponse;
+      ? markAppRscResponseConfigHeadersApplied(markedResponse)
+      : markedResponse;
   };
   const staticPagesFallbackResponse = await renderPagesForMatchKind("static");
   if (staticPagesFallbackResponse) {

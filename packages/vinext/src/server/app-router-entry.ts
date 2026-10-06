@@ -77,6 +77,7 @@ import {
   createWorkerPrerenderReadinessResponse,
 } from "./worker-prerender-discovery.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
+import type { VinextRequestStageContext } from "./multi-stage.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -104,7 +105,7 @@ export default {
   async fetch(
     request: Request,
     env?: WorkerAssetEnv,
-    ctx?: ExecutionContextLike,
+    ctx?: ExecutionContextLike & VinextRequestStageContext,
   ): Promise<Response> {
     const handleFetch = async () => {
       await __ensureInstrumentation();
@@ -126,7 +127,7 @@ export default {
 async function handleRequest(
   request: Request,
   env: WorkerAssetEnv | undefined,
-  platformCtx: ExecutionContextLike | undefined,
+  platformCtx: (ExecutionContextLike & VinextRequestStageContext) | undefined,
 ): Promise<Response> {
   // The Node production server calls this Worker-style entry with a
   // server-owned loopback origin and must retain its HTTP revalidation path.
@@ -141,6 +142,7 @@ async function handleRequest(
   // whether a completed response is required before public cache headers.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   const cdnCacheAdapter = getCdnCacheAdapter();
+  const assets = platformCtx?.assets ?? cdnCacheAdapter.assets ?? env?.ASSETS;
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
@@ -205,12 +207,10 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
-    const assetFetcher = env.ASSETS;
+  if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
     return handleConfiguredImageOptimization(
       request,
-      (assetPath) =>
-        Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
+      (assetPath) => Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
       __rscImageAllowedWidths,
       __rscImageConfig,
     );
@@ -282,11 +282,10 @@ async function handleRequest(
 
   if (result instanceof Response) {
     let response = result;
-    if (env?.ASSETS) {
-      const assetFetcher = env.ASSETS;
+    if (assets) {
       const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path) =>
-          Promise.resolve(assetFetcher.fetch(createStaticAssetRequest(path, request))),
+          Promise.resolve(assets.fetch(createStaticAssetRequest(path, request))),
       });
       if (assetResponse) response = assetResponse;
     }

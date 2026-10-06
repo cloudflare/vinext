@@ -11,7 +11,10 @@ import {
   AppElementsWire,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
-import type { AppPageModule } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import type {
+  AppPageModule,
+  AppPageRouteHead,
+} from "../packages/vinext/src/server/app-page-route-wiring.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
@@ -251,6 +254,20 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
       ),
     ),
   );
+}
+
+/**
+ * Starts the head resolution an element entry renders. React's client build,
+ * which these tests load, doesn't memoise cache(), so every call resolves the
+ * head again.
+ */
+function resolveEntryHead(
+  elements: AppElements,
+  entryPrefix: "__vinext_streaming_metadata_body:" | "__vinext_streaming_metadata_outlet:",
+): AppPageRouteHead {
+  const entry = Object.entries(elements).find(([key]) => key.startsWith(entryPrefix))?.[1];
+  expect(React.isValidElement(entry)).toBe(true);
+  return (entry as React.ReactElement<{ resolveHead: () => AppPageRouteHead }>).props.resolveHead();
 }
 
 async function renderElementEntry(elements: AppElements, elementId: string): Promise<string> {
@@ -2320,16 +2337,8 @@ describe("buildPageElements", () => {
         searchParams: new URLSearchParams("source=query"),
       }),
     );
-    const record = result as Record<string, unknown>;
-    const streamingMetadataElement = Object.entries(record).find(([key]) =>
-      key.startsWith("__vinext_streaming_metadata_body:"),
-    )?.[1];
-    expect(React.isValidElement(streamingMetadataElement)).toBe(true);
-    const metadata = await (
-      streamingMetadataElement as React.ReactElement<{
-        metadata: Promise<{ title?: unknown } | null>;
-      }>
-    ).props.metadata;
+    expect(slotGenerateMetadata).not.toHaveBeenCalled();
+    const metadata = await resolveEntryHead(result, "__vinext_streaming_metadata_body:").metadata;
 
     expect(metadata).toMatchObject({
       description: "Not-found description",
@@ -2379,18 +2388,16 @@ describe("buildPageElements", () => {
     const streamingBody = Object.keys(record).find((key) =>
       key.startsWith("__vinext_streaming_metadata_body:"),
     );
-    const outletEntry = Object.entries(record).find(([key]) =>
+    const outletKey = Object.keys(record).find((key) =>
       key.startsWith("__vinext_streaming_metadata_outlet:"),
     );
-    const outlet = outletEntry?.[1];
 
     expect(streamingBody).toBeUndefined();
-    expect(React.isValidElement(outlet)).toBe(true);
     await expect(
-      (outlet as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata,
+      resolveEntryHead(result, "__vinext_streaming_metadata_outlet:").outlet,
     ).rejects.toBe(metadataError);
 
-    record[outletEntry![0]] = null;
+    record[outletKey!] = null;
     const html = await renderRouteEntry(result, record[APP_ROUTE_KEY] as string);
     expect(html).toContain("metadata page shell");
   });
@@ -2426,18 +2433,14 @@ describe("buildPageElements", () => {
       const resultPromise = buildPageElements(
         createBaseOptions({ route, routePath: "/early-metadata-error" }),
       );
+
+      const result = await resultPromise;
+      const head = resolveEntryHead(result, "__vinext_streaming_metadata_outlet:");
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(unhandledRejections).toEqual([]);
 
       releaseViewport();
-      const result = await resultPromise;
-      const outlet = Object.entries(result as Record<string, unknown>).find(([key]) =>
-        key.startsWith("__vinext_streaming_metadata_outlet:"),
-      )?.[1];
-      expect(React.isValidElement(outlet)).toBe(true);
-      await expect(
-        (outlet as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata,
-      ).rejects.toBe(metadataError);
+      await expect(head.outlet).rejects.toBe(metadataError);
     } finally {
       releaseViewport();
       process.off("unhandledRejection", captureUnhandledRejection);
@@ -2471,37 +2474,37 @@ describe("buildPageElements", () => {
     const streamingBody = Object.keys(record).find((key) =>
       key.startsWith("__vinext_streaming_metadata_body:"),
     );
-    const streamingOutletEntry = Object.entries(record).find(([key]) =>
+    const streamingOutletKey = Object.keys(record).find((key) =>
       key.startsWith("__vinext_streaming_metadata_outlet:"),
     );
-    const streamingOutlet = streamingOutletEntry?.[1];
 
     expect(streamingBody).toBeUndefined();
-    expect(React.isValidElement(streamingOutlet)).toBe(true);
-    await expect(
-      (streamingOutlet as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata,
-    ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    const head = resolveEntryHead(result, "__vinext_streaming_metadata_outlet:");
+    await expect(head.outlet).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    await expect(head.viewport).resolves.toMatchObject({ themeColor: [{ color: "#404404" }] });
     expect(throwingViewport).toHaveBeenCalledTimes(1);
     expect(fallbackViewport).toHaveBeenCalledTimes(1);
 
-    record[streamingOutletEntry![0]] = null;
+    record[streamingOutletKey!] = null;
     const html = await renderRouteEntry(result, record[APP_ROUTE_KEY] as string);
     expect(html).toContain('name="theme-color" content="#404404"');
 
+    fallbackViewport.mockClear();
     fallbackViewport.mockImplementation(() => {
       throw new Error("fallback viewport failed");
     });
     const fallbackFailureResult = await buildPageElements(
       createBaseOptions({ route, routePath: "/private" }),
     );
-    const fallbackFailureOutlet = Object.entries(
-      fallbackFailureResult as Record<string, unknown>,
-    ).find(([key]) => key.startsWith("__vinext_streaming_metadata_outlet:"))?.[1];
-    expect(React.isValidElement(fallbackFailureOutlet)).toBe(true);
-    await expect(
-      (fallbackFailureOutlet as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata,
-    ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
-    expect(fallbackViewport).toHaveBeenCalledTimes(2);
+    const fallbackFailureHead = resolveEntryHead(
+      fallbackFailureResult,
+      "__vinext_streaming_metadata_outlet:",
+    );
+    await expect(fallbackFailureHead.outlet).rejects.toMatchObject({
+      digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+    });
+    await expect(fallbackFailureHead.viewport).resolves.toEqual({});
+    expect(fallbackViewport).toHaveBeenCalledTimes(1);
   });
 
   it("streams ordinary viewport errors through the paired outlet", async () => {
@@ -2526,17 +2529,15 @@ describe("buildPageElements", () => {
       createBaseOptions({ route, routePath: "/viewport-error" }),
     );
     const record = result as Record<string, unknown>;
-    const streamingOutletEntry = Object.entries(record).find(([key]) =>
+    const streamingOutletKey = Object.keys(record).find((key) =>
       key.startsWith("__vinext_streaming_metadata_outlet:"),
     );
-    const streamingOutlet = streamingOutletEntry?.[1];
 
-    expect(React.isValidElement(streamingOutlet)).toBe(true);
     await expect(
-      (streamingOutlet as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata,
+      resolveEntryHead(result, "__vinext_streaming_metadata_outlet:").outlet,
     ).rejects.toBe(viewportError);
 
-    record[streamingOutletEntry![0]] = null;
+    record[streamingOutletKey!] = null;
     const html = await renderRouteEntry(result, record[APP_ROUTE_KEY] as string);
     expect(html).toContain("viewport page shell");
 
@@ -2571,13 +2572,8 @@ describe("buildPageElements", () => {
       ...baseOptions,
       pageRequest: { ...baseOptions.pageRequest, isProduction: true },
     });
-    const streamingOutlet = Object.entries(result as Record<string, unknown>).find(([key]) =>
-      key.startsWith("__vinext_streaming_metadata_outlet:"),
-    )?.[1];
-
-    expect(React.isValidElement(streamingOutlet)).toBe(true);
     await expect(
-      (streamingOutlet as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata,
+      resolveEntryHead(result, "__vinext_streaming_metadata_outlet:").outlet,
     ).rejects.toMatchObject({ message: expect.not.stringContaining("VIEWPORT SECRET") });
   });
 
@@ -2619,16 +2615,7 @@ describe("buildPageElements", () => {
         },
       }),
     );
-    const record = result as Record<string, unknown>;
-    const streamingMetadataElement = Object.entries(record).find(([key]) =>
-      key.startsWith("__vinext_streaming_metadata_body:"),
-    )?.[1];
-    expect(React.isValidElement(streamingMetadataElement)).toBe(true);
-    const metadata = await (
-      streamingMetadataElement as React.ReactElement<{
-        metadata: Promise<{ title?: unknown } | null>;
-      }>
-    ).props.metadata;
+    const metadata = await resolveEntryHead(result, "__vinext_streaming_metadata_body:").metadata;
 
     expect(metadata).toMatchObject({ title: "Intercept not found" });
     expect(boundaryParents).toEqual(["Intercept layout"]);
@@ -2669,7 +2656,7 @@ describe("buildPageElements", () => {
       },
     } as AppPageModule;
 
-    await buildPageElements(
+    const result = await buildPageElements(
       createBaseOptions({
         route,
         routePath: "/photo/42",
@@ -2681,6 +2668,8 @@ describe("buildPageElements", () => {
         },
       }),
     );
+    expect(viewportParents).toEqual([]);
+    await resolveEntryHead(result, "__vinext_streaming_metadata_outlet:").viewport;
 
     expect(viewportParents).toEqual([
       { source: "intercept", width: "device-width" },
@@ -2735,15 +2724,7 @@ describe("buildPageElements", () => {
         },
       }),
     );
-    const streamingMetadata = Object.entries(result as Record<string, unknown>).find(([key]) =>
-      key.startsWith("__vinext_streaming_metadata_body:"),
-    )?.[1];
-    expect(React.isValidElement(streamingMetadata)).toBe(true);
-    const metadata = await (
-      streamingMetadata as React.ReactElement<{
-        metadata: Promise<{ title?: unknown } | null>;
-      }>
-    ).props.metadata;
+    const metadata = await resolveEntryHead(result, "__vinext_streaming_metadata_body:").metadata;
 
     expect(metadata).toMatchObject({ title: "Primary not found" });
     expect(metadata).not.toMatchObject({ title: "Ordinary slot not found" });
@@ -2767,14 +2748,10 @@ describe("buildPageElements", () => {
         },
       }),
     );
-    const rootFallbackStreamingMetadata = Object.entries(
-      rootFallbackResult as Record<string, unknown>,
-    ).find(([key]) => key.startsWith("__vinext_streaming_metadata_body:"))?.[1];
-    const rootFallbackMetadata = await (
-      rootFallbackStreamingMetadata as React.ReactElement<{
-        metadata: Promise<{ title?: unknown } | null>;
-      }>
-    ).props.metadata;
+    const rootFallbackMetadata = await resolveEntryHead(
+      rootFallbackResult,
+      "__vinext_streaming_metadata_body:",
+    ).metadata;
     expect(rootFallbackMetadata).toMatchObject({ title: "Slot root not found" });
     expect(rootFallbackMetadata).not.toMatchObject({ title: "Ordinary slot not found" });
   });

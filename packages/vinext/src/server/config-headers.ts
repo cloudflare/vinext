@@ -78,7 +78,11 @@ function markExplicitConfigResponseVeto(
     if (isCdnResponsePolicyHeader(name)) {
       markRouteCacheabilityConfigCdnCachePolicy(name, header.value);
     }
-    if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, header.value)) {
+    if (
+      name !== "cache-control" &&
+      isCdnResponsePolicyHeader(name) &&
+      isNonCacheableCdnResponsePolicy(name, header.value)
+    ) {
       markRouteCacheabilityFinalResponseUncacheable(
         `next.config headers set a non-cacheable ${header.key} policy`,
       );

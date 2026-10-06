@@ -1,8 +1,197 @@
+import { testPagesStoragePolicies } from "../pages-storage-policy";
+import { testRouteHandlerStoragePolicies } from "../route-handler-storage-policy";
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
+import { waitForStablePromotion } from "./promotion.js";
 import { randomUUID } from "node:crypto";
 
 const backend = process.env.VINEXT_E2E_CACHE_BACKEND;
+const verificationStartedAt = Date.now();
+
+// Every deployed test must wait for stable promotion away from the seed Worker.
+test.beforeAll(async ({ baseURL, playwright }) => {
+  if (!backend || !baseURL?.startsWith("https://")) return;
+  test.setTimeout(150_000);
+  const buildId = fs
+    .readFileSync("examples/response-store-demo/dist/server/BUILD_ID", "utf-8")
+    .trim();
+  const rscBuildId = fs
+    .readFileSync("examples/response-store-demo/dist/server/RSC_BUILD_ID", "utf-8")
+    .trim();
+  await waitForStablePromotion({ baseURL, buildId, rscBuildId, playwright });
+});
+
+// Ported from Next.js custom-cache-control behavior and issue #3538's proxy repro.
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+const browserPolicies = {
+  browser: "max-age=10",
+  shared: "public, max-age=10, s-maxage=3600, stale-while-revalidate=60",
+  independent: "max-age=10, stale-while-revalidate=60",
+  private: "private, max-age=10",
+  "private-only": "private, max-age=10",
+  "no-cache": "public, max-age=10, no-cache",
+  "no-store": "no-store",
+  "edge-no-store": "public, max-age=10",
+  "bot-blocked": "max-age=10",
+  proxy: "public, max-age=10",
+};
+const hasResponseCache = backend === "response-store" || backend === "workers-cache";
+const cacheStatusHeader = backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache";
+
+for (const [policy, expected] of Object.entries(browserPolicies)) {
+  test(`preserves Next.js browser cache policy: ${policy}`, async ({ baseURL, request }) => {
+    test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
+    if (!baseURL) throw new Error("test requires a base URL");
+    const mayStore = !["no-store", "private-only", "edge-no-store", "shared"].includes(policy);
+    function expectPolicy(headers: Record<string, string>) {
+      expect(headers["cache-control"], JSON.stringify(headers)).toBe(expected);
+      if (!mayStore) expect(headers[cacheStatusHeader]).not.toBe("HIT");
+      if (hasResponseCache) {
+        expect(headers["cloudflare-cdn-cache-control"]).toBeUndefined();
+        expect(headers["cdn-cache-control"]).toBeUndefined();
+        expect(headers["x-vinext-cloudflare-shared-response-stage"]).toBeUndefined();
+      }
+    }
+    const renderIds: string[] = [];
+    for (const method of ["GET", "HEAD"]) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await request.fetch(`${baseURL}/api/browser-cache-policy/${policy}`, {
+          method,
+          headers:
+            policy === "private-only" ? { "x-private-visitor": `visitor-${attempt}` } : undefined,
+        });
+        expect(response.status()).toBe(200);
+        if (policy === "private-only")
+          expect(response.headers()["x-private-visitor"]).toBe(`visitor-${attempt}`);
+        expectPolicy(response.headers());
+        if (method === "GET") {
+          const body = await response.json();
+          expect(body).toMatchObject({ policy, renderId: expect.any(String) });
+          renderIds.push(body.renderId);
+        }
+        await response.dispose();
+      }
+    }
+    if (!mayStore) expect(new Set(renderIds).size).toBe(2);
+    if (
+      mayStore &&
+      hasResponseCache &&
+      (backend !== "workers-cache" || baseURL.startsWith("https://"))
+    ) {
+      let hitHeaders: Record<string, string> = {};
+      await expect
+        .poll(
+          async () => {
+            const response = await request.get(`${baseURL}/api/browser-cache-policy/${policy}`);
+            hitHeaders = response.headers();
+            await response.dispose();
+            return hitHeaders[cacheStatusHeader];
+          },
+          { timeout: 15_000 },
+        )
+        .toBe("HIT");
+      expectPolicy(hitHeaders);
+    }
+    if (policy === "bot-blocked") {
+      // A normal request has populated the shared entry before the bot arrives.
+      for (const method of ["GET", "HEAD"]) {
+        const response = await request.fetch(`${baseURL}/api/browser-cache-policy/${policy}`, {
+          method,
+          headers: { "User-Agent": "GPTBot/1.2" },
+        });
+        expect(response.status()).toBe(403);
+        expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+      }
+    }
+  });
+}
+
+test("browser caches private responses without putting them in the backing store", async ({
+  baseURL,
+  page,
+  request,
+}) => {
+  test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
+  await page.goto(`${baseURL}/api/browser-cache-policy/private-only`);
+  const read = () =>
+    page.evaluate(async () => {
+      const response = await fetch(location.href);
+      return { policy: response.headers.get("cache-control"), body: await response.json() };
+    });
+  const first = await read();
+  const second = await read();
+  expect(first.policy).toBe("private, max-age=10");
+  expect(second).toEqual(first);
+  const direct = await request.get(`${baseURL}/api/browser-cache-policy/private-only`);
+  expect(direct.headers()[cacheStatusHeader]).not.toBe("HIT");
+  expect((await direct.json()).renderId).not.toBe(first.body.renderId);
+});
+
+test("backing store freshness follows its own policy in both directions", async ({
+  baseURL,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
+  test.skip(
+    backend === "workers-cache" && !baseURL?.startsWith("https://"),
+    "local workerd has no Workers Cache",
+  );
+  const read = async (policy: string) => {
+    const response = await request.get(`${baseURL}/api/browser-cache-policy/${policy}`);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["cache-control"]).toBe(
+      policy === "short-browser" ? "max-age=1" : "max-age=3600",
+    );
+    return { body: await response.json(), cache: response.headers()[cacheStatusHeader] };
+  };
+  let first = await read("short-browser");
+  if (hasResponseCache) {
+    await expect
+      .poll(
+        async () => {
+          first = await read("short-browser");
+          return first.cache;
+        },
+        { timeout: 15_000 },
+      )
+      .toBe("HIT");
+  }
+  const shortStore = await read("short-store");
+  await new Promise((resolve) => setTimeout(resolve, 2_100));
+  const later = await read("short-browser");
+  if (hasResponseCache) {
+    expect(later.cache).toBe("HIT");
+    expect(later.body.renderId).toBe(first.body.renderId);
+  } else {
+    expect(later.body.renderId).not.toBe(first.body.renderId);
+  }
+  await expect
+    .poll(async () => (await read("short-store")).body.renderId, { timeout: 15_000 })
+    .not.toBe(shortStore.body.renderId);
+});
+
+for (const policy of ["middleware", "config"]) {
+  test(`preserves browser cache policy across ${policy} routing`, async ({ baseURL, request }) => {
+    test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
+    // The first request deliberately does not match the conditional config rule.
+    // The app owns its explicit browser policy; each network request still runs routing.
+    for (const visitor of ["anonymous", "config-a", "config-b"]) {
+      const response = await request.get(`${baseURL}/api/browser-cache-policy/${policy}`, {
+        headers: { "x-test-visitor-id": visitor, "x-test-config-visitor": visitor },
+      });
+      expect(response.status()).toBe(200);
+      expect(response.headers()["cache-control"]).toBe("max-age=10");
+      const header =
+        policy === "middleware" ? "x-workers-cache-visitor" : "x-workers-config-visitor";
+      expect(response.headers()[header]).toBe(
+        policy === "config" && visitor === "anonymous" ? undefined : visitor,
+      );
+      expect(await response.json()).toMatchObject({ policy });
+      await response.dispose();
+    }
+  });
+}
 
 test("deployment pre-warming and force-dynamic bypass work with the configured cache", async ({
   baseURL,
@@ -12,30 +201,9 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   if (!baseURL) throw new Error("deployed test requires a base URL");
   test.setTimeout(90_000);
 
-  const testStartedAt = Date.now();
-  const buildId = fs
-    .readFileSync("examples/response-store-demo/dist/server/BUILD_ID", "utf-8")
-    .trim();
   const rscBuildId = fs
     .readFileSync("examples/response-store-demo/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
-  const deadline = Date.now() + 60_000;
-  let consecutiveReady = 0;
-
-  do {
-    const readiness = await request.get(`${baseURL}/api/prewarm-version?readiness=${randomUUID()}`);
-    if (readiness.ok() && readiness.headers()["x-vinext-seed-worker"] !== "1") {
-      const body = (await readiness.json()) as { buildId?: string };
-      consecutiveReady = body.buildId === buildId ? consecutiveReady + 1 : 0;
-    } else {
-      consecutiveReady = 0;
-    }
-    await readiness.dispose();
-    if (consecutiveReady === 5) break;
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-  } while (Date.now() < deadline);
-
-  expect(consecutiveReady, `${backend} Worker did not finish promotion`).toBe(5);
 
   const warmed = await request.get(`${baseURL}/cached/intro`, {
     headers: { accept: "text/html" },
@@ -43,17 +211,22 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   const warmedHeaders = warmed.headers();
   expect(warmed.ok(), JSON.stringify(warmedHeaders)).toBe(true);
   if (backend === "workers-cache") {
-    expect(["HIT", "MISS"], JSON.stringify(warmedHeaders)).toContain(
+    expect(["HIT", "MISS", "UPDATING"], JSON.stringify(warmedHeaders)).toContain(
       warmedHeaders["cf-cache-status"],
     );
   } else {
-    expect(warmedHeaders["x-vinext-cache"], JSON.stringify(warmedHeaders)).toBe("HIT");
+    // The stability gate exceeds this page's 60-second ISR freshness.
+    // Stale reuse is valid; its 300-second data entry must still predate verification.
+    expect(
+      backend === "kv" ? ["HIT", "STALE"] : ["HIT", "UPDATING"],
+      JSON.stringify(warmedHeaders),
+    ).toContain(warmedHeaders["x-vinext-cache"]);
   }
   const warmedBody = await warmed.text();
   const warmedDataId = /data-cache-id[^>]*>([^<]+)</.exec(warmedBody)?.[1];
   expect(warmedDataId).toBeTruthy();
   const cachedAt = Number(/data-cache-created-at[^>]*>([^<]+)</.exec(warmedBody)?.[1]);
-  expect(cachedAt).toBeLessThan(testStartedAt + 1_000);
+  expect(cachedAt).toBeLessThan(verificationStartedAt + 1_000);
 
   if (backend === "workers-cache" && warmedHeaders["cf-cache-status"] === "MISS") {
     const reused = await request.get(`${baseURL}/cached/intro`, {
@@ -275,3 +448,8 @@ test("Workers Cache serves every query of a static page from one entry", async (
     (body) => /search-suspense-render-id[^>]*>([^<]+)</.exec(body)?.[1],
   );
 });
+
+if (backend) {
+  testRouteHandlerStoragePolicies();
+  testPagesStoragePolicies();
+}

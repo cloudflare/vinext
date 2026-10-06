@@ -2330,10 +2330,20 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 options?: PagesRenderOptions,
                 stagedHeaders?: Headers,
               ) =>
-                renderPage(request, resolvedUrl, ssrManifest, undefined, stagedHeaders, {
-                  ...options,
-                  originalUrl: originalRenderUrl,
-                })
+                renderPage(
+                  request,
+                  resolvedUrl,
+                  ssrManifest,
+                  undefined,
+                  stagedHeaders,
+                  {
+                    ...options,
+                    originalUrl: originalRenderUrl,
+                  },
+                  stagedHeaders?.has("Cache-Control")
+                    ? new Headers({ "Cache-Control": stagedHeaders.get("Cache-Control")! })
+                    : undefined,
+                )
             : null,
         handleApi:
           typeof handleApi === "function"

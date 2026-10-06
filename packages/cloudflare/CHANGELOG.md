@@ -1,5 +1,23 @@
 # @vinext/cloudflare
 
+## 1.0.1
+
+### Bug Fixes
+
+#### Cloudflare
+
+- serve prerendered Pages Router from Static Assets (#3603)
+- render CDN bypass requests inline (#3597)
+- support colon cache tags in KV (#3569)
+
+#### Misc
+
+- **Cache:** separate browser headers from framework storage policy (#3540)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0
 
 ### Features

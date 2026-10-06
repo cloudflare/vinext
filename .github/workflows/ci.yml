@@ -558,6 +558,10 @@ jobs:
             label: cloudflare-static-export
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-static-assets-pages
+            label: cloudflare-static-assets-pages
+            shardIndex: 1
+            shardTotal: 1
           - project: static-export-basepath
             label: static-export-basepath
             shardIndex: 1

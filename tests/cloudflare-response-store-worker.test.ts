@@ -7,6 +7,7 @@ import createResponseStoreDataCacheAdapter, {
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
 } from "../packages/cloudflare/src/cache/response-store-data.runtime.js";
+import createResponseStoreCdnCacheAdapter from "../packages/cloudflare/src/cache/response-store-cdn.runtime.js";
 import { createCanonicalRscRequestHeaders } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 
@@ -30,6 +31,67 @@ describe("Cloudflare Response Store Worker", () => {
       dispatchResponseStage(request, { kind: "app-page" }, { cache: "shared" }),
     );
   });
+
+  it("preserves explicit browser policy through the shared header builder", () => {
+    const adapter = createResponseStoreCdnCacheAdapter({});
+    expect(
+      adapter.buildResponseHeaders({
+        cacheControl: "max-age=3600",
+        browserCacheControl: "private, max-age=10",
+      }),
+    ).toMatchObject({
+      "Cache-Control": "private, max-age=10",
+      "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
+    });
+  });
+
+  it.each(["unchanged", "vary", "header", "cookie", "status", "marker"])(
+    "preserves browser policy after Response Store composition: %s",
+    async (mutation) => {
+      const store = {
+        fetch: vi.fn(
+          async () =>
+            new Response("cached", {
+              headers: {
+                "Cache-Control": "max-age=10, stale-while-revalidate=60",
+                Age: "2",
+              },
+            }),
+        ),
+        getTagExpiration: vi.fn(),
+        purge: vi.fn(),
+        put: vi.fn(),
+        refresh: vi.fn(),
+      };
+      stages.request.mockImplementation(async (request, _env, _context, dispatch) => {
+        const response = await dispatch(
+          request,
+          { kind: "app-route" },
+          {
+            cache: "shared",
+          },
+        );
+        const headers = new Headers(response.headers);
+        if (mutation === "vary") headers.set("Vary", "Accept");
+        if (mutation === "header") headers.set("X-Visitor", "alice");
+        if (mutation === "cookie") headers.set("Set-Cookie", "visitor=alice");
+        if (mutation === "marker")
+          headers.set("x-vinext-cloudflare-shared-response-stage", "forged");
+        return new Response(response.body, { headers, status: mutation === "status" ? 201 : 200 });
+      });
+      const response = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/api/policy"),
+        {} as never,
+        { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+      );
+      expect(response.headers.get("Cache-Control")).toBe(
+        mutation === "marker" ? "no-store" : "max-age=10, stale-while-revalidate=60",
+      );
+      expect(response.headers.get("X-Vinext-Cache")).toBe(mutation === "marker" ? null : "HIT");
+      expect(response.headers.get("x-vinext-cloudflare-shared-response-stage")).toBeNull();
+      expect(await response.text()).toBe("cached");
+    },
+  );
 
   it("seals framework variance in opaque requests without changing cached responses", async () => {
     const requests: Request[] = [];
@@ -234,6 +296,51 @@ describe("Cloudflare Response Store Worker", () => {
     expect(store.put).toHaveBeenCalledOnce();
   });
 
+  it.each(["BLOB-FRESH", "BLOB-STALE", "MISS"])(
+    "distinguishes a stored 404 from a 404 %s lookup",
+    async (marker) => {
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+      const store = {
+        fetch: vi.fn(
+          async () =>
+            new Response("stored not found", {
+              status: 404,
+              headers: {
+                "X-Workers-Response-Store": marker,
+                "Cache-Control": "private, max-age=300",
+              },
+            }),
+        ),
+        getTagExpiration: vi.fn(),
+        purge: vi.fn(),
+        put: vi.fn(),
+        refresh: vi.fn(),
+      };
+      stages.response.mockResolvedValue(
+        new Response("rendered not found", {
+          status: 404,
+          headers: {
+            "Cache-Control": "private, max-age=300",
+            "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+          },
+        }),
+      );
+      const response = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/metadata-404"),
+        {} as never,
+        { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+      );
+      const miss = marker === "MISS";
+      expect(response.status).toBe(404);
+      expect(response.headers.get("X-Vinext-Cache")).toBe(miss ? "MISS" : "HIT");
+      expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+      expect(await response.text()).toBe(miss ? "rendered not found" : "stored not found");
+      expect(stages.response).toHaveBeenCalledTimes(miss ? 1 : 0);
+      expect(store.put).toHaveBeenCalledTimes(miss ? 1 : 0);
+      expect(errorLog).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([301, 302, 307, 308])("preserves a cached %s redirect", async (status) => {
     const store = {
       fetch: vi.fn(async () => new Response(null, { status, headers: { Location: "/target" } })),
@@ -305,7 +412,9 @@ describe("Cloudflare Response Store Worker", () => {
     stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
       dispatchResponseStage(request, { toJSON }, { cache: "bypass" }),
     );
-    stages.response.mockResolvedValue(new Response("rendered"));
+    stages.response.mockResolvedValue(
+      new Response("rendered", { headers: { "Cache-Control": "private, max-age=10" } }),
+    );
     const store = {
       fetch: vi.fn(),
       getTagExpiration: vi.fn(),
@@ -322,6 +431,7 @@ describe("Cloudflare Response Store Worker", () => {
 
     expect(await response.text()).toBe("rendered");
     expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=10");
     expect(toJSON).toHaveBeenCalledOnce();
     expect(store.fetch).not.toHaveBeenCalled();
   });
@@ -509,6 +619,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     await miss.text();
     const [entry] = [...entries.values()];
     expect(entry?.headers.get("Cache-Control")).toBe("public, max-age=60");
+    expect(entry?.headers.has("x-vinext-cloudflare-shared-response-stage")).toBe(false);
     expect(entry?.headers.has("X-Vinext-Params")).toBe(false);
     expect(entry?.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
 
@@ -528,6 +639,42 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect(regenerated.headers.has("X-Vinext-Params")).toBe(false);
     expect(regenerated.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
   });
+
+  it.each(["private, max-age=10", "no-store", "no-cache"])(
+    "guards provisional browser policy before deferred admission: %s",
+    async (cacheControl) => {
+      dispatchWithIdentity(true, { kind: "app-page", isRscRequest: false });
+      stages.response.mockImplementation(async () => {
+        const response = new Response("provisional", {
+          headers: { "Cache-Control": cacheControl, "Cloudflare-CDN-Cache-Control": "max-age=60" },
+        });
+        return (
+          deferResponseStoreAdmission(response, async (admitted) => {
+            // Completion can discover a late dynamic API and reject admission.
+            await admitted.arrayBuffer();
+            return new Response(null, { headers: { "Cache-Control": "no-store" } });
+          }) ?? response
+        );
+      });
+      const { store } = createMemoryStore();
+      const ctx = context();
+      const response = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/provisional"),
+        {} as never,
+        ctx,
+      );
+      expect(response.headers.get("Cache-Control")).toBe(
+        cacheControl.startsWith("private")
+          ? "private, max-age=0, must-revalidate"
+          : cacheControl === "no-cache"
+            ? "no-cache"
+            : cacheControl,
+      );
+      await response.text();
+      await Promise.all(ctx.waitUntil.mock.calls.map(([promise]) => promise));
+      expect(store.put).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["an App route handler", "stored", { isRscRequest: false, kind: "app-route-handler" }],
@@ -559,6 +706,9 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         ctx,
       );
       expect(response.headers.get("X-Vinext-Cache")).toBe(expectedStatus);
+      if (path === "admitted" && expectedStatus === "MISS") {
+        expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
+      }
       expect(response.headers.get("X-Vinext-Params")).toBe(routeHeaders["X-Vinext-Params"]);
       expect(response.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
         routeHeaders["X-Vinext-Rendered-Path-And-Search"],

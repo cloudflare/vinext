@@ -25,11 +25,13 @@ import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-
 import {
   getRevalidateSecret,
   isrCacheKey,
+  pagesIsrCacheKey,
   isrSet,
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
+import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -240,6 +242,54 @@ describe("createPagesPageHandler — pre-render response headers", () => {
 // ---------------------------------------------------------------------------
 
 describe("createPagesPageHandler — route miss", () => {
+  it("preserves a forced error status when serving a prerendered page", async () => {
+    const adapter = Object.assign(new DefaultCdnCacheAdapter(), { hasPrerenderedPages: true });
+    vi.spyOn(adapter, "get").mockResolvedValue({
+      lastModified: 0,
+      cacheControl: { revalidate: false },
+      value: {
+        kind: "PAGES",
+        html: "prebuilt error",
+        pageData: {},
+        status: 200,
+        headers: undefined,
+      },
+    });
+    setCdnCacheAdapter(adapter);
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [makeRoute("/500")] }));
+    const response = await handler(makeRequest("/500"), "/500", null, null, { statusCode: 500 });
+    expect(response.status).toBe(500);
+    expect(await response.text()).toBe("prebuilt error");
+  });
+
+  it.each(["/404", "/_error"])(
+    "reads %s not-found HTML under its prerender key",
+    async (pattern) => {
+      const adapter = Object.assign(new DefaultCdnCacheAdapter(), { hasPrerenderedPages: true });
+      const get = vi.spyOn(adapter, "get").mockResolvedValue({
+        lastModified: 0,
+        cacheControl: { revalidate: false },
+        value: {
+          kind: "PAGES",
+          html: "prebuilt 404",
+          pageData: {},
+          status: 404,
+          headers: undefined,
+        },
+      });
+      setCdnCacheAdapter(adapter);
+      const route = makeRoute(pattern);
+      const handler = createPagesPageHandler(
+        makeOpts({ pageRoutes: [route], errorPageRoute: pattern === "/_error" ? route : null }),
+      );
+      const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
+      expect(get).toHaveBeenCalledExactlyOnceWith(pagesIsrCacheKey("/404", "test-build-id"));
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(await response.text()).toBe("prebuilt 404");
+    },
+  );
+
   it("returns default 404 when no custom 404 page and no _error page", async () => {
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: [] }));
     const res = await handler(makeRequest("/missing"), "/missing", null, null, null);
@@ -763,78 +813,208 @@ describe("createPagesPageHandler — preview responses", () => {
     ]);
   });
 
-  it("preserves headers set by getServerSideProps before a notFound result", async () => {
-    // Next.js keeps one ServerResponse while rendering the source and 404
-    // pages, so headers set before `notFound: true` remain on the response.
-    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
-    const pageRoute = makeRoute(
-      "/missing",
-      makePageModule({
-        getServerSideProps: async ({
-          res,
-        }: {
-          res: { setHeader(name: string, value: string | string[]): void };
-        }) => {
-          res.setHeader("Content-Length", "1");
-          res.setHeader("Content-Type", "application/vnd.atlas.not-found+html");
-          res.setHeader("Surrogate-Control", "max-age=600s, delta=noop");
-          res.setHeader("Transfer-Encoding", "chunked");
-          return { notFound: true };
+  it.each(
+    [false, true].flatMap((prerendered) => [false, true].map((gsp) => ({ prerendered, gsp }))),
+  )(
+    "preserves getServerSideProps notFound headers (prerendered: $prerendered, GSP: $gsp)",
+    async ({ prerendered, gsp }) => {
+      // Next.js keeps one ServerResponse while rendering the source and 404
+      // pages, so headers set before `notFound: true` remain on the response.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+      const pageRoute = makeRoute(
+        "/missing",
+        makePageModule({
+          getServerSideProps: async ({
+            res,
+          }: {
+            res: { setHeader(name: string, value: string | string[]): void };
+          }) => {
+            res.setHeader("Content-Length", "1");
+            res.setHeader("Content-Type", "application/vnd.atlas.not-found+html");
+            res.setHeader("Surrogate-Control", "max-age=600s, delta=noop");
+            res.setHeader("Transfer-Encoding", "chunked");
+            res.setHeader("Set-Cookie", ["session=expired; Path=/", "notice=missing; Path=/"]);
+            return { notFound: true };
+          },
+        }),
+      );
+      const notFoundRoute = makeRoute(
+        "/404",
+        makePageModule(gsp ? { getStaticProps: () => ({ props: {} }) } : {}),
+      );
+      if (prerendered) {
+        const adapter = Object.assign(new DefaultCdnCacheAdapter(), { hasPrerenderedPages: true });
+        vi.spyOn(adapter, "get").mockResolvedValue({
+          lastModified: 0,
+          cacheControl: { revalidate: false },
+          value: {
+            kind: "PAGES",
+            html: "prebuilt 404",
+            pageData: {},
+            status: 404,
+            headers: undefined,
+          },
+        });
+        setCdnCacheAdapter(adapter);
+      }
+      const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+
+      const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("content-length")).toBeNull();
+      expect(response.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
+      expect(response.headers.get("content-type")).toBe("application/vnd.atlas.not-found+html");
+      expect(response.headers.getSetCookie()).toEqual([
+        "session=expired; Path=/",
+        "notice=missing; Path=/",
+      ]);
+      expect(response.headers.get("transfer-encoding")).toBeNull();
+    },
+  );
+
+  it.each([
+    { gsp: false, stale: false },
+    { gsp: true, stale: false },
+    { gsp: true, stale: true },
+  ])(
+    "keeps cached notFound ETags consistent after source headers (GSP: $gsp, stale: $stale)",
+    async ({ gsp, stale }) => {
+      // Next.js overwrites the source ETag with the rendered payload's validator
+      // before testing freshness, while retaining the existing response headers.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-payload.ts
+      // Bot ETag coverage: test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts
+      const html = "prebuilt 404";
+      const etag = generatePagesETag(html);
+      const sourceEtag = '"source-page"';
+      const adapter = Object.assign(new DefaultCdnCacheAdapter(), {
+        hasPrerenderedPages: true,
+        ownsBackgroundRevalidation: false,
+      });
+      vi.spyOn(adapter, "get").mockResolvedValue({
+        lastModified: 0,
+        cacheState: stale ? "stale" : "fresh",
+        cacheControl: { revalidate: false },
+        value: {
+          kind: "PAGES",
+          html,
+          pageData: {},
+          status: 404,
+          headers: undefined,
         },
-      }),
-    );
-    const notFoundRoute = makeRoute("/404");
-    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+      });
+      setCdnCacheAdapter(adapter);
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: [
+            makeRoute(
+              "/missing",
+              makePageModule({
+                getServerSideProps: ({
+                  res,
+                }: {
+                  res: { setHeader(name: string, value: string): void };
+                }) => {
+                  res.setHeader("ETag", sourceEtag);
+                  res.setHeader("Cache-Control", "private, no-store");
+                  res.setHeader("Set-Cookie", "session=expired; Path=/");
+                  res.setHeader("X-Source", "missing");
+                  return { notFound: true };
+                },
+              }),
+            ),
+            makeRoute("/404", makePageModule(gsp ? { getStaticProps: () => ({ props: {} }) } : {})),
+          ],
+        }),
+      );
+      for (const [ifNoneMatch, requestCacheControl, status] of [
+        [undefined, undefined, 404],
+        [sourceEtag, undefined, 404],
+        [etag, undefined, 304],
+        [etag, "no-cache", 404],
+      ] as const) {
+        const headers = new Headers({ "User-Agent": "Googlebot" });
+        if (ifNoneMatch) headers.set("If-None-Match", ifNoneMatch);
+        if (requestCacheControl) headers.set("Cache-Control", requestCacheControl);
+        const response = await handler(
+          new Request("http://localhost/missing", { headers }),
+          "/missing",
+          null,
+          null,
+          null,
+        );
+        expect(response.status).toBe(status);
+        expect(response.headers.get("etag")).toBe(etag);
+        expect(response.headers.get("cache-control")).toBe("private, no-store");
+        expect(response.headers.getSetCookie()).toEqual(["session=expired; Path=/"]);
+        expect(response.headers.get("x-source")).toBe("missing");
+        expect(await response.text()).toBe(status === 304 ? "" : html);
+      }
 
-    const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
+      const unrelated = await handler(
+        makeRequest("/other-missing"),
+        "/other-missing",
+        null,
+        null,
+        null,
+      );
+      expect(unrelated.status).toBe(404);
+      expect(unrelated.headers.get("set-cookie")).toBeNull();
+      expect(unrelated.headers.get("x-source")).toBeNull();
+      expect(unrelated.headers.get("etag")).toBeNull();
+    },
+  );
 
-    expect(response.status).toBe(404);
-    expect(response.headers.get("content-length")).toBeNull();
-    expect(response.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
-    expect(response.headers.get("content-type")).toBe("application/vnd.atlas.not-found+html");
-    expect(response.headers.get("transfer-encoding")).toBeNull();
-  });
-
-  it("lets recursively rendered notFound headers replace source gSSP headers", async () => {
-    let appInitialPropsCalls = 0;
-    const AppComponent = Object.assign(() => null, {
-      getInitialProps({
-        ctx,
-      }: {
-        ctx: { res: { setHeader(name: string, value: string | string[]): void } };
-      }) {
-        appInitialPropsCalls += 1;
-        ctx.res.setHeader("X-Response-Phase", `app-${appInitialPropsCalls}`);
-        ctx.res.setHeader("Set-Cookie", [`app-${appInitialPropsCalls}=1; Path=/`]);
-        return { pageProps: {} };
-      },
-    });
-    const pageRoute = makeRoute(
-      "/missing",
-      makePageModule({
-        getServerSideProps: async ({
-          res,
+  it.each([false, true])(
+    "lets notFound headers replace source gSSP headers (res.end: %s)",
+    async (endResponse) => {
+      let appInitialPropsCalls = 0;
+      const AppComponent = Object.assign(() => null, {
+        getInitialProps({
+          ctx,
         }: {
-          res: { setHeader(name: string, value: string | string[]): void };
-        }) => {
-          res.setHeader("X-Response-Phase", "source-gssp");
-          res.setHeader("Set-Cookie", ["source-gssp=1; Path=/"]);
-          return { notFound: true };
+          ctx: {
+            res: {
+              setHeader(name: string, value: string | string[]): void;
+              end(body: string): void;
+            };
+          };
+        }) {
+          appInitialPropsCalls += 1;
+          ctx.res.setHeader("X-Response-Phase", `app-${appInitialPropsCalls}`);
+          ctx.res.setHeader("Set-Cookie", [`app-${appInitialPropsCalls}=1; Path=/`]);
+          if (endResponse && appInitialPropsCalls === 2) ctx.res.end("error handled");
+          return { pageProps: {} };
         },
-      }),
-    );
-    const notFoundRoute = makeRoute("/404");
-    const handler = createPagesPageHandler(
-      makeOpts({ AppComponent, pageRoutes: [pageRoute, notFoundRoute] }),
-    );
+      });
+      const pageRoute = makeRoute(
+        "/missing",
+        makePageModule({
+          getServerSideProps: async ({
+            res,
+          }: {
+            res: { setHeader(name: string, value: string | string[]): void };
+          }) => {
+            res.setHeader("X-Response-Phase", "source-gssp");
+            res.setHeader("Set-Cookie", ["source-gssp=1; Path=/"]);
+            return { notFound: true };
+          },
+        }),
+      );
+      const notFoundRoute = makeRoute("/404");
+      const handler = createPagesPageHandler(
+        makeOpts({ AppComponent, pageRoutes: [pageRoute, notFoundRoute] }),
+      );
 
-    const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
+      const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
 
-    expect(response.status).toBe(404);
-    expect(appInitialPropsCalls).toBe(2);
-    expect(response.headers.get("x-response-phase")).toBe("app-2");
-    expect(response.headers.getSetCookie()).toEqual(["app-2=1; Path=/"]);
-  });
+      expect(response.status).toBe(404);
+      expect(appInitialPropsCalls).toBe(2);
+      expect(response.headers.get("x-response-phase")).toBe("app-2");
+      expect(response.headers.getSetCookie()).toEqual(["app-2=1; Path=/"]);
+      if (endResponse) expect(await response.text()).toBe("error handled");
+    },
+  );
 
   it("preserves adapter-unowned headers on preview responses", () => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());

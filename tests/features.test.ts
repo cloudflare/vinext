@@ -666,7 +666,7 @@ describe("ISR (Pages Router)", () => {
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);
     expect(res.headers.get("x-vinext-cache")).toBeNull();
-    expect(res.headers.get("cache-control")).toBeNull();
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 });
 

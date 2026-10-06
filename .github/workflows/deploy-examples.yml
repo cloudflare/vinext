@@ -194,6 +194,14 @@ jobs:
           - name: static-assets-cache
             project: static-assets-cache
             working_directory: examples/static-assets-cache
+          - name: static-assets-pages
+            project: static-assets-pages
+            working_directory: examples/static-assets-pages
+            wrangler_config: dist/server/wrangler.json
+          - name: static-assets-pages-i18n
+            project: static-assets-pages-i18n
+            working_directory: examples/static-assets-pages-i18n
+            wrangler_config: dist/server/wrangler.json
           - name: static-export
             project: static-export
             working_directory: examples/static-export
@@ -425,6 +433,10 @@ jobs:
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
 
+      - name: Install browser for cache policy E2E
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        run: vp exec playwright install chromium
+
       - name: Verify deployed cache prewarm
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
         env:
@@ -503,6 +515,13 @@ jobs:
           VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-cache.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-cache.vinext.workers.dev' }}
         run: vp exec playwright test tests/e2e/cloudflare-static-assets
 
+      - name: Test deployed Pages Router Static Assets cache
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-static-assets-pages
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-pages.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-pages.vinext.workers.dev' }}
+          VINEXT_E2E_I18N_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-pages-i18n.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-pages-i18n.vinext.workers.dev' }}
+        run: vp exec playwright test tests/e2e/cloudflare-static-assets-pages
+
   cleanup-response-store:
     name: Clean up Workers Response Store services
     if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
@@ -567,6 +586,8 @@ jobs:
               { name: 'workers-cache', project: 'workers-cache' },
               { name: 'kv', project: 'kv' },
               { name: 'static-assets-cache', project: 'static-assets-cache' },
+              { name: 'static-assets-pages', project: 'static-assets-pages' },
+              { name: 'static-assets-pages-i18n', project: 'static-assets-pages-i18n' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];

@@ -99,12 +99,15 @@ describe("default cf init build", () => {
     ["workers-cache", "app", "workers-cache", undefined],
     ["workers-cache-kv", "app", "workers-cache", undefined],
     ["static-assets", "app", "static-assets", undefined],
+    ["pages-static-assets", "pages", "static-assets", undefined],
+    ["pages-static-assets-custom-assets", "pages", "static-assets", undefined],
     ["kv", "app", "data-cache", undefined],
     ["pages", "pages", "none", undefined],
   ] as const)(
     "builds generated %s config",
     async (name, router, cdnCache, responseStoreMode) => {
       const root = path.join(tempRoot, name);
+      const legacyWrangler = name === "pages-static-assets-custom-assets";
       fs.mkdirSync(path.join(root, router), { recursive: true });
       fs.writeFileSync(
         path.join(root, "package.json"),
@@ -114,6 +117,36 @@ describe("default cf init build", () => {
           dependencies: { react: "^19.0.0", "react-dom": "^19.0.0" },
         }),
       );
+      if (legacyWrangler) {
+        // Legacy init installs plugin v1; apps/web supplies v2 for typed cf configs.
+        fs.mkdirSync(path.join(root, "node_modules/@cloudflare"), { recursive: true });
+        fs.symlinkSync(
+          path.resolve(
+            import.meta.dirname,
+            "fixtures/cf-app-basic/node_modules/@cloudflare/vite-plugin",
+          ),
+          path.join(root, "node_modules/@cloudflare/vite-plugin"),
+          "junction",
+        );
+        fs.writeFileSync(
+          path.join(root, "wrangler.jsonc"),
+          JSON.stringify({
+            name: `init-cf-${name}`,
+            main: "vinext/server/fetch-handler",
+            compatibility_date: "2026-01-01",
+            compatibility_flags: ["nodejs_compat"],
+            assets: { directory: "build/client", binding: "STATIC", not_found_handling: "none" },
+          }),
+        );
+      }
+      if (legacyWrangler) {
+        fs.mkdirSync(path.join(root, "public"));
+        fs.writeFileSync(path.join(root, "public", "rewrite-target.txt"), "custom assets rewrite");
+        fs.writeFileSync(
+          path.join(root, "next.config.ts"),
+          'export default { async rewrites() { return [{ source: "/public-alias", destination: "/rewrite-target.txt" }]; } };',
+        );
+      }
       if (router === "app") {
         fs.writeFileSync(
           path.join(root, "app", "layout.tsx"),
@@ -176,6 +209,7 @@ describe("default cf init build", () => {
             dataCache: name === "workers-cache-kv" || name === "kv" ? "kv" : "none",
             cdnCache,
             responseStoreMode,
+            legacyWrangler,
             imageOptimization: router === "pages" ? "cloudflare-images" : "none",
           },
         });
@@ -193,24 +227,34 @@ describe("default cf init build", () => {
         env: { ...process.env, CI: "true" },
       });
       expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
-      expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(true);
+      expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(!legacyWrangler);
       expect(fs.existsSync(path.join(root, "worker-configuration.d.ts"))).toBe(false);
       if (responseStoreMode === "service-binding") typecheckProject(root);
       const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
-      expect(
-        fs.existsSync(path.join(workersDir, "default", "worker.config.json")),
-        `${build.stdout}\n${build.stderr}`,
-      ).toBe(true);
-      expect(fs.readdirSync(workersDir).includes(`init-cf-${name}-response-store`)).toBe(
-        responseStoreMode === "service-binding",
-      );
+      if (legacyWrangler) {
+        const workerConfig = JSON.parse(
+          fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
+        );
+        expect(workerConfig.assets.binding).toBe("STATIC");
+        expect(path.resolve(root, "dist/server", workerConfig.assets.directory)).toBe(
+          path.join(root, "build/client"),
+        );
+      } else {
+        expect(
+          fs.existsSync(path.join(workersDir, "default", "worker.config.json")),
+          `${build.stdout}\n${build.stderr}`,
+        ).toBe(true);
+        expect(fs.readdirSync(workersDir).includes(`init-cf-${name}-response-store`)).toBe(
+          responseStoreMode === "service-binding",
+        );
+      }
       const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
       expect(pkg.scripts["deploy:response-store"]).toBe(
         responseStoreMode === "service-binding"
           ? `cf deploy --prebuilt --mode production --worker init-cf-${name}-response-store`
           : undefined,
       );
-      if (name === "service-binding" || name === "pages" || name === "static-assets") {
+      if (name === "service-binding" || name === "pages" || cdnCache === "static-assets") {
         const preview = spawn(
           path.join(webRoot, "node_modules", ".bin", "vite"),
           ["preview", "--host", "127.0.0.1", "--port", "0"],
@@ -247,17 +291,34 @@ describe("default cf init build", () => {
           const html = await response.text();
           expect(html).toContain("cf init smoke test");
           if (hasCssModules) expect(html).toMatch(/class="_card_[a-f0-9]{7}"/);
-          if (name === "static-assets") {
+          if (legacyWrangler) {
+            // Next.js resolves public files after config rewrites; the Worker
+            // must use the same custom binding as its Static Assets cache.
+            // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
+            const rewritten = await fetch(new URL("/public-alias", url));
+            expect(rewritten.status).toBe(200);
+            expect(await rewritten.text()).toBe("custom assets rewrite");
+          }
+          if (cdnCache === "static-assets") {
             expect(response.headers.get("x-vinext-cache")).toBe("HIT");
-            const rsc = await fetch(url, { headers: { Accept: "text/x-component", RSC: "1" } });
-            expect(rsc.status).toBe(200);
-            expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
-            expect(await rsc.text()).toContain("cf init smoke test");
+            if (router === "app") {
+              const rsc = await fetch(url, { headers: { Accept: "text/x-component", RSC: "1" } });
+              expect(rsc.status).toBe(200);
+              expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
+              expect(await rsc.text()).toContain("cf init smoke test");
+            }
             const cachePath = "/_vinext/static-cache";
-            const artifacts = fs.readdirSync(path.join(workersDir, "default/assets", cachePath));
+            const assetsDir = legacyWrangler
+              ? path.join(root, "build/client")
+              : path.join(workersDir, "default/assets");
+            const artifacts = fs.readdirSync(path.join(assetsDir, cachePath));
             expect(artifacts).toContain("index.json");
-            expect(artifacts.some((file) => file.endsWith(".html"))).toBe(true);
-            expect(artifacts.some((file) => file.endsWith(".rsc"))).toBe(true);
+            if (router === "app") {
+              expect(artifacts.some((file) => file.endsWith(".html"))).toBe(true);
+              expect(artifacts.some((file) => file.endsWith(".rsc"))).toBe(true);
+            } else {
+              expect(artifacts.some((file) => file.endsWith(".pages"))).toBe(true);
+            }
             for (const file of artifacts) {
               const privateAsset = await fetch(new URL(`${cachePath}/${file}`, url));
               expect(privateAsset.status, file).toBe(404);

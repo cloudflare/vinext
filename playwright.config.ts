@@ -59,6 +59,7 @@ const projectServers = {
     testDir: "./tests/e2e",
     testMatch: [
       "app-router/isr.spec.ts",
+      "app-router/metadata-react-cache.spec.ts",
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
     ],
@@ -314,6 +315,34 @@ const projectServers = {
           reuseExistingServer: !process.env.CI,
           timeout: 180_000,
         },
+  },
+  "cloudflare-static-assets-pages": {
+    testDir: "./tests/e2e/cloudflare-static-assets-pages",
+    use: { baseURL: process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4218" },
+    // Deployed runs set VINEXT_E2E_I18N_BASE_URL for the companion example.
+    server: process.env.VINEXT_E2E_BASE_URL
+      ? null
+      : {
+          // Local builds enable the preview/revalidation test controls.
+          command:
+            "npx vp run vinext#build && npx vp run @vinext/cloudflare#build && VINEXT_E2E_CONTROLS=1 npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4218",
+          cwd: "./examples/static-assets-pages",
+          port: 4218,
+          reuseExistingServer: !process.env.CI,
+          timeout: 180_000,
+        },
+    additionalServers: process.env.VINEXT_E2E_BASE_URL
+      ? []
+      : [
+          {
+            command:
+              "npx vp run vinext#build && npx vp run @vinext/cloudflare#build && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4219",
+            cwd: "./examples/static-assets-pages-i18n",
+            port: 4219,
+            reuseExistingServer: !process.env.CI,
+            timeout: 180_000,
+          },
+        ],
   },
   "cloudflare-static-export": {
     testDir: "./tests/e2e/cloudflare-static-export",

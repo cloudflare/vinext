@@ -1,8 +1,10 @@
+import { recordRouteCacheability } from "vinext/shims/cacheability-classification";
 import type { ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { extractLocaleFromUrl } from "./pages-i18n.js";
 import type {
   CachedPagesValue,
   CachedRedirectValue,
@@ -266,8 +268,11 @@ export type ResolvePagesPageDataOptions = {
   createPageElement: (props: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
   i18n: PagesI18nRenderContext;
+  /** Build-time default locale, which can differ from a domain's render default. */
+  staticPathsDefaultLocale?: string;
   isrCacheKey: (router: string, pathname: string) => string;
   isrGet: (key: string) => Promise<ISRCacheEntry | null>;
+  hasPrerenderedPages?: boolean;
   isrSet: (
     key: string,
     data: CachedPagesValue | CachedRedirectValue | null,
@@ -337,6 +342,8 @@ export type ResolvePagesPageDataOptions = {
   sanitizeDestination: (destination: string) => string;
   scriptNonce?: string;
   statusCode?: number;
+  /** Request-local headers inherited when rendering a source page's notFound result. */
+  notFoundSourceHeaders?: Record<string, string | number | boolean | string[]>;
   triggerBackgroundRegeneration: (
     key: string,
     renderFn: () => Promise<void>,
@@ -490,6 +497,10 @@ function applyPagesTerminalMissHeaders(
   expireSeconds?: number,
 ): Response {
   const stem = isrCachePathname.endsWith("/") ? isrCachePathname.slice(0, -1) : isrCachePathname;
+  recordRouteCacheability({
+    cacheable: revalidateSeconds !== 0,
+    cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
+  });
   applyCdnResponseHeaders(response.headers, {
     cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
     tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
@@ -515,6 +526,7 @@ function applyCachedPagesRepresentationHeaders(
     expireSeconds: entry.cacheControl?.expire === undefined ? undefined : options.expireSeconds,
     cacheControlMeta: entry.cacheControl,
   });
+  recordRouteCacheability({ cacheable: true, cacheControl });
   applyCdnResponseHeaders(response.headers, { cacheControl });
   for (const [name, value] of Object.entries(buildCacheStateHeaders(cacheState))) {
     response.headers.set(name, value);
@@ -535,10 +547,10 @@ function buildCachedPagesNotFoundResult(
     entry.cacheControl?.expire,
   );
   if (result.kind === "response") {
-    return {
-      kind: "response",
-      response: applyCachedPagesRepresentationHeaders(result.response, cacheState, entry, options),
-    };
+    return finalizeCachedPagesResponse(
+      applyCachedPagesRepresentationHeaders(result.response, cacheState, entry, options),
+      options,
+    );
   }
   return result;
 }
@@ -743,6 +755,7 @@ function buildPagesRedirectResponse(
   options: Pick<
     ResolvePagesPageDataOptions,
     | "isDataReq"
+    | "isBuildTimePrerendering"
     | "sanitizeDestination"
     | "safeJsonStringify"
     | "deploymentId"
@@ -788,10 +801,16 @@ function buildPagesRedirectResponse(
   const headers = new Headers(responseHeaders);
   headers.set("Location", location);
   if (resolved.statusCode === 308) headers.set("Refresh", `0;url=${location}`);
-  return new Response(location, {
-    status: resolved.statusCode,
-    headers,
-  });
+  // The local prerenderer needs the original props for data-navigation parity;
+  // deriving them from Location would lose basePath flags and custom _app props.
+  if (options.isBuildTimePrerendering) headers.set("Content-Type", "application/json");
+  return new Response(
+    options.isBuildTimePrerendering ? options.safeJsonStringify(redirectProps) : location,
+    {
+      status: resolved.statusCode,
+      headers,
+    },
+  );
 }
 
 function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
@@ -915,7 +934,22 @@ export function matchesPagesStaticPath(
   params: Record<string, unknown>,
   routeParams: PagesRouteParam[],
   routeUrl: string,
+  i18n?: Pick<PagesI18nRenderContext, "locale" | "locales" | "defaultLocale">,
 ): boolean {
+  if (i18n?.locales && i18n.defaultLocale) {
+    let entryLocale = i18n.defaultLocale;
+    if (typeof pathEntry === "string") {
+      const localized = extractLocaleFromUrl(pathEntry, {
+        locales: i18n.locales,
+        defaultLocale: i18n.defaultLocale,
+      });
+      pathEntry = localized.url;
+      entryLocale = localized.locale;
+    } else {
+      entryLocale = pathEntry.locale ?? entryLocale;
+    }
+    if (entryLocale !== (i18n.locale ?? i18n.defaultLocale)) return false;
+  }
   if (typeof pathEntry === "string") {
     // Request routing intentionally preserves the raw encoded pathname until
     // dynamic captures are decoded. Compare string-form getStaticPaths entries
@@ -992,6 +1026,7 @@ function buildPagesCacheResponse(
     "Content-Type": "text/html; charset=utf-8",
     ...buildCacheStateHeaders(cacheState),
   });
+  recordRouteCacheability({ cacheable: true, cacheControl: cacheControlHeader });
   applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
 
   if (fontLinkHeader) {
@@ -1019,37 +1054,27 @@ function buildPagesCacheResponse(
   });
 }
 
-/**
- * For bot / crawler UAs, attach an ETag to a cached ISR response (HIT or
- * STALE) so it is consistent with the fresh-MISS path, then check for a
- * matching `If-None-Match`. When the check passes — and the request did NOT
- * carry `Cache-Control: no-cache` — returns a 304 response; otherwise returns
- * `null` so the caller can return the full response.
- *
- * Extracted to avoid duplicating the same three-line block across the HIT and
- * STALE branches.
- */
-function applyBotETagAndCheck(
-  cachedResponse: Response,
-  html: string,
-  options: Pick<ResolvePagesPageDataOptions, "userAgent" | "ifNoneMatch" | "requestCacheControl">,
-): ResolvePagesPageDataResponseResult | null {
-  if (!options.userAgent || !isPagesStreamingBot(options.userAgent)) {
-    return null;
+/** Merge source headers before the cached HTML's bot ETag and freshness check. */
+function finalizeCachedPagesResponse(
+  response: Response,
+  options: Pick<
+    ResolvePagesPageDataOptions,
+    "userAgent" | "ifNoneMatch" | "requestCacheControl" | "notFoundSourceHeaders"
+  >,
+  html?: string,
+): ResolvePagesPageDataResponseResult {
+  // Cache hits bypass the request/response context that normally inherits these
+  // headers. Merge once, before a generated validator can supersede a source ETag.
+  response = mergePagesNotFoundSourceHeaders(response, options.notFoundSourceHeaders);
+  if (html !== undefined && options.userAgent && isPagesStreamingBot(options.userAgent)) {
+    const etag = generatePagesETag(html);
+    response.headers.set("ETag", etag);
+    const noCacheRequested = requestsNoCache(options.requestCacheControl);
+    if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
+      response = new Response(null, { status: 304, headers: response.headers });
+    }
   }
-  const etag = generatePagesETag(html);
-  cachedResponse.headers.set("ETag", etag);
-  const noCacheRequested = requestsNoCache(options.requestCacheControl);
-  if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
-    return {
-      kind: "response",
-      response: new Response(null, {
-        status: 304,
-        headers: cachedResponse.headers,
-      }),
-    };
-  }
-  return null;
+  return { kind: "response", response };
 }
 
 /**
@@ -1209,19 +1234,103 @@ export async function resolvePagesPageData(
   // hydrate the page after the fallback shell ships.
   let isFallback = false;
   let shouldPersistFallbackData = false;
-  let onDemandPreviousCacheEntry: ISRCacheEntry | null | undefined;
+  let previousCacheEntry: ISRCacheEntry | null | undefined;
   const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
 
-  if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
+  // Automatically static pages have no getStaticProps/ISR write path, but a
+  // read-only adapter can supply their build-time HTML (including custom 404s).
+  if (
+    options.hasPrerenderedPages &&
+    options.nextData?.autoExport &&
+    !options.scriptNonce &&
+    !options.isOnDemandRevalidate &&
+    previewData === false
+  ) {
+    const cached = await options.isrGet(
+      options.isrCacheKey("pages", options.isrCachePathname ?? options.routeUrl.split("?")[0]),
+    );
+    const value = cached?.value.value;
+    if (cached && !cached.isStale && !cached.isExpired && value?.kind === "PAGES") {
+      const response = options.isDataReq
+        ? applyCachedPagesRepresentationHeaders(
+            buildNextDataPropsJsonResponse(
+              normalizePagesRenderProps(value.pageData as Record<string, unknown>),
+              options.safeJsonStringify,
+              options.deploymentId
+                ? { headers: { [NEXTJS_DEPLOYMENT_ID_HEADER]: options.deploymentId } }
+                : undefined,
+            ),
+            "HIT",
+            cached.value,
+            options,
+          )
+        : buildPagesCacheResponse(
+            value.html,
+            "HIT",
+            options.fontLinkHeader,
+            undefined,
+            options.expireSeconds,
+            cached.value.cacheControl,
+            options.statusCode ?? value.status,
+            value.headers,
+          );
+      return finalizeCachedPagesResponse(
+        response,
+        options,
+        options.isDataReq ? undefined : value.html,
+      );
+    }
+  }
+
+  // A packaged dynamic entry proves this path was generated at build time.
+  // getStaticPaths may depend on build-only data; reuse the existing cache
+  // response branches below before letting a runtime path list exclude it.
+  // Nonce requests still need this admission; the HTML replay branches below
+  // keep their own nonce guard and render fresh instead.
+  let hasFreshPrerenderedEntry = false;
+  if (
+    options.hasPrerenderedPages &&
+    options.route.isDynamic &&
+    typeof options.pageModule.getStaticProps === "function" &&
+    typeof options.pageModule.getServerSideProps !== "function" &&
+    !options.isOnDemandRevalidate &&
+    previewData === false
+  ) {
+    previousCacheEntry = await options.isrGet(
+      options.isrCacheKey("pages", options.isrCachePathname ?? options.routeUrl.split("?")[0]),
+    );
+    const value = previousCacheEntry?.value.value;
+    hasFreshPrerenderedEntry =
+      !!previousCacheEntry &&
+      !previousCacheEntry.isStale &&
+      !previousCacheEntry.isExpired &&
+      (value === null || value?.kind === "PAGES" || value?.kind === "REDIRECT");
+  }
+
+  if (
+    !hasFreshPrerenderedEntry &&
+    typeof options.pageModule.getStaticPaths === "function" &&
+    options.route.isDynamic
+  ) {
+    const staticPathsI18n = {
+      ...options.i18n,
+      defaultLocale: options.staticPathsDefaultLocale ?? options.i18n.defaultLocale,
+    };
     const pathsResult = await options.pageModule.getStaticPaths({
       locales: options.i18n.locales ?? [],
-      defaultLocale: options.i18n.defaultLocale ?? "",
+      defaultLocale: staticPathsI18n.defaultLocale ?? "",
     });
     const fallback = pathsResult?.fallback ?? false;
     const paths = pathsResult?.paths ?? [];
     const routeParams = getPagesRouteParams(options.routePattern);
     const isValidPath = paths.some((pathEntry) =>
-      matchesPagesStaticPath(pathEntry, options.params, routeParams, options.routeUrl),
+      matchesPagesStaticPath(
+        pathEntry,
+        options.params,
+        routeParams,
+        options.routeUrl,
+        staticPathsI18n,
+      ),
     );
 
     if (fallback === false && !isValidPath && previewData === false) {
@@ -1261,8 +1370,8 @@ export async function resolvePagesPageData(
     options.revalidateOnlyGenerated
   ) {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    onDemandPreviousCacheEntry = await options.isrGet(options.isrCacheKey("pages", pathname));
-    if (!onDemandPreviousCacheEntry) {
+    previousCacheEntry = await options.isrGet(options.isrCacheKey("pages", pathname));
+    if (!previousCacheEntry) {
       return {
         kind: "response",
         response: new Response("This page could not be found", {
@@ -1409,9 +1518,7 @@ export async function resolvePagesPageData(
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", pathname);
     const cached =
-      onDemandPreviousCacheEntry !== undefined
-        ? onDemandPreviousCacheEntry
-        : await options.isrGet(cacheKey);
+      previousCacheEntry !== undefined ? previousCacheEntry : await options.isrGet(cacheKey);
     const cachedValue = cached?.value.value;
     const isLegacyCachedNotFound =
       cachedValue?.kind === "PAGES" &&
@@ -1546,15 +1653,15 @@ export async function resolvePagesPageData(
         return buildCachedPagesNotFoundResult(options, cached.value, "HIT");
       }
       if (cachedRedirect) {
-        return {
-          kind: "response",
-          response: applyCachedPagesRepresentationHeaders(
+        return finalizeCachedPagesResponse(
+          applyCachedPagesRepresentationHeaders(
             buildCachedPagesRedirectResponse(cachedRedirect, options),
             "HIT",
             cached.value,
             options,
           ),
-        };
+          options,
+        );
       }
       if (options.isDataReq && cachedValue?.kind === "PAGES") {
         const response = buildNextDataPropsJsonResponse(
@@ -1564,10 +1671,10 @@ export async function resolvePagesPageData(
             ? { headers: { [NEXTJS_DEPLOYMENT_ID_HEADER]: options.deploymentId } }
             : undefined,
         );
-        return {
-          kind: "response",
-          response: applyCachedPagesRepresentationHeaders(response, "HIT", cached.value, options),
-        };
+        return finalizeCachedPagesResponse(
+          applyCachedPagesRepresentationHeaders(response, "HIT", cached.value, options),
+          options,
+        );
       }
     }
 
@@ -1598,16 +1705,7 @@ export async function resolvePagesPageData(
         cachedValue.status,
         cachedValue.headers,
       );
-      // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
-      // for bot UAs so they are consistent with fresh-MISS bot responses (which
-      // also carry an ETag via `renderPagesPageResponse`). When the incoming
-      // `If-None-Match` matches (and no `Cache-Control: no-cache`), return 304.
-      const hitBotResult = applyBotETagAndCheck(hitResponse, cachedValue.html, options);
-      if (hitBotResult) return hitBotResult;
-      return {
-        kind: "response",
-        response: hitResponse,
-      };
+      return finalizeCachedPagesResponse(hitResponse, options, cachedValue.html);
     }
 
     if (
@@ -1629,15 +1727,15 @@ export async function resolvePagesPageData(
         return buildCachedPagesNotFoundResult(options, cached.value, "STALE");
       }
       if (cachedRedirect) {
-        return {
-          kind: "response",
-          response: applyCachedPagesRepresentationHeaders(
+        return finalizeCachedPagesResponse(
+          applyCachedPagesRepresentationHeaders(
             buildCachedPagesRedirectResponse(cachedRedirect, options),
             "STALE",
             cached.value,
             options,
           ),
-        };
+          options,
+        );
       }
       if (cachedValue?.kind === "PAGES") {
         const response = buildNextDataPropsJsonResponse(
@@ -1647,10 +1745,10 @@ export async function resolvePagesPageData(
             ? { headers: { [NEXTJS_DEPLOYMENT_ID_HEADER]: options.deploymentId } }
             : undefined,
         );
-        return {
-          kind: "response",
-          response: applyCachedPagesRepresentationHeaders(response, "STALE", cached.value, options),
-        };
+        return finalizeCachedPagesResponse(
+          applyCachedPagesRepresentationHeaders(response, "STALE", cached.value, options),
+          options,
+        );
       }
     }
 
@@ -1677,14 +1775,7 @@ export async function resolvePagesPageData(
         cachedValue.status,
         cachedValue.headers,
       );
-      // Bot / crawler ETag consistency: same as the HIT branch — attach an
-      // ETag to STALE responses for bot UAs and honour If-None-Match / 304.
-      const staleBotResult = applyBotETagAndCheck(staleResponse, cachedValue.html, options);
-      if (staleBotResult) return staleBotResult;
-      return {
-        kind: "response",
-        response: staleResponse,
-      };
+      return finalizeCachedPagesResponse(staleResponse, options, cachedValue.html);
     }
 
     const generatedPageData =

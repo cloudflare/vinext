@@ -581,6 +581,11 @@ export type RegisterCachedFunctionOptions = {
   serverReferenceId?: string;
 };
 
+// Like Next.js, an entry past its `expire` is a miss: it is regenerated, never served.
+function isServableCacheState(cacheState: string | undefined): boolean {
+  return cacheState !== "stale" && cacheState !== "expired";
+}
+
 /**
  * Register a function as a cached function. This is called by the Vite
  * transform for each "use cache" function.
@@ -796,7 +801,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const redirectValue = existing?.value;
       if (
         isRootParamRedirect(existing) &&
-        existing?.cacheState !== "stale" &&
+        isServableCacheState(existing?.cacheState) &&
         rootParams &&
         redirectValue?.kind === "FETCH" &&
         !_hasPendingRevalidatedTag([...(redirectValue.tags ?? []), ...softTags])
@@ -814,7 +819,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (
         existing?.value &&
         existing.value.kind === "FETCH" &&
-        existing.cacheState !== "stale" &&
+        isServableCacheState(existing.cacheState) &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
         try {
