@@ -61,6 +61,7 @@ describe("Cloudflare Response Store Worker", () => {
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
         put: vi.fn(),
+        invalidate: vi.fn(),
         refresh: vi.fn(),
       };
       stages.request.mockImplementation(async (request, _env, _context, dispatch) => {
@@ -114,6 +115,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(async () => 0),
       purge: vi.fn(async () => mutationResult),
       put: vi.fn(async () => mutationResult),
+      invalidate: vi.fn(async () => mutationResult),
       refresh: vi.fn(async () => mutationResult),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -165,6 +167,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(async () => 0),
       purge: vi.fn(),
       put: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -206,6 +209,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(async () => 0),
       purge: vi.fn(async () => mutationResult),
       put,
+      invalidate: vi.fn(async () => mutationResult),
       refresh: vi.fn(async () => mutationResult),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -243,6 +247,7 @@ describe("Cloudflare Response Store Worker", () => {
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
         put: vi.fn(),
+        invalidate: vi.fn(),
         refresh: vi.fn(),
       };
       stages.response.mockResolvedValue(
@@ -270,6 +275,7 @@ describe("Cloudflare Response Store Worker", () => {
       fetch: vi.fn().mockRejectedValue(new Error("lookup unavailable")),
       getTagExpiration: vi.fn(),
       purge: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
       put: vi.fn().mockRejectedValue(new Error("fill unavailable")),
     };
@@ -314,6 +320,7 @@ describe("Cloudflare Response Store Worker", () => {
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
         put: vi.fn(),
+        invalidate: vi.fn(),
         refresh: vi.fn(),
       };
       stages.response.mockResolvedValue(
@@ -347,6 +354,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(),
       purge: vi.fn(),
       put: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
     };
     const response = await createVinextResponseStoreHandler(store).fetch(
@@ -387,6 +395,7 @@ describe("Cloudflare Response Store Worker", () => {
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
         put: vi.fn(),
+        invalidate: vi.fn(),
         refresh: vi.fn(),
       };
       stages.response.mockImplementation(async () => {
@@ -420,6 +429,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(),
       purge: vi.fn(),
       put: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -470,6 +480,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         getTagExpiration: vi.fn(async () => 0),
         purge: vi.fn(async () => mutationResult),
         put,
+        invalidate: vi.fn(async () => mutationResult),
         refresh: vi.fn(async () => mutationResult),
       },
     };
