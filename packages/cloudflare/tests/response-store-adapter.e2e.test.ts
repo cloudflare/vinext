@@ -113,16 +113,23 @@ async function bodiesStored(entries: StoredResponseEntry[]): Promise<boolean> {
 
 // Writes run in waitUntil after the response returns, so poll for them, then
 // fail unless exactly `count` entries were published and each body is readable.
-async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
-  let entries = await responseEntries(pathname);
+async function waitForStoredEntries(
+  load: () => Promise<StoredResponseEntry[]>,
+  count: number,
+): Promise<void> {
+  let entries = await load();
   let stored = entries.length >= count && (await bodiesStored(entries));
   for (let attempt = 0; attempt < 50 && !stored; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 50));
-    entries = await responseEntries(pathname);
+    entries = await load();
     stored = entries.length >= count && (await bodiesStored(entries));
   }
   assert.equal(entries.length, count, JSON.stringify(entries));
   assert.ok(stored, `R2 bodies not stored for ${JSON.stringify(entries)}`);
+}
+
+async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
+  await waitForStoredEntries(() => responseEntries(pathname), count);
 }
 
 beforeEach(async () => {
@@ -1138,36 +1145,34 @@ describe("Cloudflare Workers Response Store adapter", () => {
   }, 15_000);
 
   test("revalidating a tag replays the page on the value's next read", async () => {
-    const pathname = "/use-cache-unreplayable";
-    const firstValue = async () =>
-      htmlValue((await cacheStatus(pathname)).body, "unreplayable-first");
-    const before = await firstValue();
-    const replayEntries = async () =>
-      ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
-        (entry) =>
-          entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
-      );
-    for (let attempt = 0; attempt < 50 && (await replayEntries()).length < 2; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal((await replayEntries()).length, 2);
+    const pathname = "/use-cache-unreplayable-tagged";
+    const value = async () => htmlValue((await cacheStatus(pathname)).body, "unreplayable-tagged");
+    const before = await value();
+    await waitForStoredEntries(
+      async () =>
+        ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+          (entry) =>
+            entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
+        ),
+      1,
+    );
 
     // Like Next.js, revalidating the tag only marks the value stale: its next read still
     // serves it, and the Store replays the page in the background to regenerate it.
     const revalidate = await request("/api/revalidate-tag", {
-      body: JSON.stringify({ tag: "unreplayable-first" }),
+      body: JSON.stringify({ tag: "unreplayable-tagged" }),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
     assert.equal(revalidate.status, 200, await revalidate.text());
-    assert.equal(await firstValue(), before);
+    assert.equal(await value(), before);
     let regenerated = before;
     for (let attempt = 0; attempt < 40 && regenerated === before; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 25));
-      regenerated = await firstValue();
+      regenerated = await value();
     }
     assert.notEqual(regenerated, before);
-    assert.match(regenerated, /^first:unreplayable:/);
+    assert.match(regenerated, /^unreplayable-tagged:/);
   }, 15_000);
 
   test("never serves a hard-expired use-cache value", async () => {
@@ -1201,6 +1206,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("revalidates tags and purges paths through the unified store", async () => {
     const firstTagged = await cacheStatus("/cached/tagged");
     const firstId = htmlValue(firstTagged.body, "rendered-at");
+    await waitForResponseEntries("/cached/tagged", 1);
     const revalidate = await request("/api/revalidate-tag", {
       body: JSON.stringify({ tag: "post:tagged" }),
       headers: { "content-type": "application/json" },
