@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PACKAGES = 40;
 const MODULES_PER_PACKAGE = 80;
@@ -35,8 +36,7 @@ const random = mulberry32(42);
 const pick = (n) => Math.floor(random() * n);
 
 const repositoryRoot =
-  process.env.VINEXT_PERF_TARGET_ROOT ??
-  dirname(dirname(dirname(new URL(import.meta.url).pathname)));
+  process.env.VINEXT_PERF_TARGET_ROOT ?? dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const benchmarkRoot = join(repositoryRoot, "benchmarks");
 const APP = join(benchmarkRoot, "pages-large");
 
@@ -169,8 +169,10 @@ write("styles/globals.css", "body { margin: 0; font-family: system-ui, sans-seri
 write(
   "next.config.mjs",
   `
+import { fileURLToPath } from "node:url";
+
 // node_modules entries link into benchmarks/nextjs.
-export default { turbopack: { root: new URL("../..", import.meta.url).pathname } };
+export default { turbopack: { root: fileURLToPath(new URL("../..", import.meta.url)) } };
 `,
 );
 
