@@ -1,0 +1,19 @@
+pnpm-lock.yaml
+  s_7af273829cef80::t_2df05729382c6d 1071,2053-2054
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "469d13c18a5c4822f9ee748eb9de365ad42d609d",
+  "prompts": {},
+  "sessions": {
+    "s_7af273829cef80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4a1aee9-5fa0-47cc-b27a-49dfb91c2736",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
