@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
-import type { CacheMetadataStub } from "./metadata-do";
+import type { CacheMetadataStub, PurgeReservation } from "./metadata-do";
 
 type RevalidatorDescriptor = {
   id: string;
@@ -38,6 +38,14 @@ export type ResponseStoreRefreshOptions = {
   pathPrefixes?: string[];
 };
 
+export type ResponseStoreInvalidateOptions = ResponseStoreRefreshOptions & {
+  /**
+   * Seconds after the invalidation when matching entries stop being served
+   * stale. Without it, entries keep their stored stale-while-revalidate window.
+   */
+  expire?: number;
+};
+
 export type ResponseStorePurgeOptions = ResponseStoreRefreshOptions & {
   purgeEverything?: boolean;
 };
@@ -66,6 +74,7 @@ export type WorkersResponseStore = {
     options?: ResponseStorePutOptions,
   ): Promise<ResponseStoreMutationResult>;
   refresh(options: ResponseStoreRefreshOptions): Promise<ResponseStoreMutationResult>;
+  invalidate(options: ResponseStoreInvalidateOptions): Promise<ResponseStoreMutationResult>;
   purge(options: ResponseStorePurgeOptions): Promise<ResponseStoreMutationResult>;
 };
 
@@ -105,6 +114,8 @@ export type PurgedEntry = {
   cacheKey: string;
   objectKey: string;
   revision: number;
+  /** Invalidate rather than purge the edge response: the entry was marked stale. */
+  edgeInvalidate?: boolean;
 };
 
 export type RevalidationService = {
@@ -250,6 +261,13 @@ export class ResponseStoreService extends WorkerEntrypoint<
     return this.getStore(invocation).refresh(options);
   }
 
+  invalidate(
+    options: ResponseStoreInvalidateOptions,
+    invocation: ResponseStoreServiceInvocation,
+  ): Promise<ResponseStoreMutationResult> {
+    return this.getStore(invocation).invalidate(options);
+  }
+
   purge(
     options: ResponseStorePurgeOptions,
     invocation: ResponseStoreServiceInvocation,
@@ -260,7 +278,7 @@ export class ResponseStoreService extends WorkerEntrypoint<
 
 export type ResponseStoreServiceBinding = Pick<
   ResponseStoreService,
-  "read" | "getTagExpiration" | "put" | "refresh" | "purge"
+  "read" | "getTagExpiration" | "put" | "refresh" | "invalidate" | "purge"
 >;
 
 const MISS_HEADERS = {
@@ -591,8 +609,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return accepted;
   }
 
+  /**
+   * Update drained entries' edge responses. Stale entries with a revalidator
+   * are invalidated, so Workers Cache keeps serving them while it refetches.
+   * Tombstones are purged, as are stale entries the Store cannot regenerate,
+   * so their next read reaches R2 and sees `BLOB-STALE`.
+   */
   async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean> {
-    return await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry));
+    const invalidated = entries.filter((entry) => entry.edgeInvalidate);
+    const purged = entries.filter((entry) => !entry.edgeInvalidate);
+    const accepted = await Promise.all([
+      !purged.length || this.updateEdgeCacheByTags(purged.map(purgeTagForEntry)),
+      !invalidated.length ||
+        this.updateEdgeCacheByTags(invalidated.map(purgeTagForEntry), "invalidate"),
+    ]);
+    return accepted.every(Boolean);
   }
 
   private async purgePendingEdgeEntries(
@@ -605,7 +636,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         tombstoneSequence,
       );
       if (!entries.length) return true;
-      if (!(await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
+      if (!(await this.purgeR2TombstoneEdges(entries))) {
         return false;
       }
       await metadata.markTombstonesEdgePurged(entries);
@@ -1443,15 +1474,52 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     };
   }
 
-  async purge(options: ResponseStorePurgeOptions): Promise<ResponseStoreMutationResult> {
-    if (!options.purgeEverything && !options.tags?.length && !options.pathPrefixes?.length) {
-      throw new TypeError("purge() requires tags, pathPrefixes, or purgeEverything");
+  /**
+   * Marks matching entries stale. Reads keep serving them within their
+   * stale-while-revalidate window (capped by `expire`) while the next read
+   * regenerates them, instead of `refresh()` regenerating every match now.
+   */
+  async invalidate(options: ResponseStoreInvalidateOptions): Promise<ResponseStoreMutationResult> {
+    if (!options.tags?.length && !options.pathPrefixes?.length) {
+      throw new TypeError("invalidate() requires tags or pathPrefixes");
+    }
+    if (
+      options.expire !== undefined &&
+      !(typeof options.expire === "number" && options.expire >= 0)
+    ) {
+      throw new TypeError("invalidate() expire must be a non-negative number of seconds");
     }
 
     const invalidatedAt = Date.now();
-    const settled = await Promise.allSettled(
-      this.getMetadataShards().map((metadata) => metadata.purgeMatching(options, invalidatedAt)),
+    const expiresAt =
+      options.expire === undefined || !Number.isFinite(options.expire)
+        ? undefined
+        : invalidatedAt + Math.ceil(options.expire * 1000);
+    const selectors = { tags: options.tags, pathPrefixes: options.pathPrefixes };
+    const { failures, reservations } = await this.drainReservations(
+      await Promise.allSettled(
+        this.getMetadataShards().map((metadata) =>
+          metadata.invalidateMatching(selectors, invalidatedAt, expiresAt),
+        ),
+      ),
     );
+    const edgePurgeAccepted = await this.updatePendingEdges(reservations, failures);
+
+    if (failures.length) {
+      throw new AggregateError(failures, "One or more metadata shards failed to invalidate");
+    }
+
+    return {
+      backingStoreUpdated: reservations.some(({ reservation }) => reservation.backingStoreUpdated),
+      edgePurgeAccepted,
+    };
+  }
+
+  /** Write each shard's queued R2 tombstones and stale rewrites in bounded batches. */
+  private async drainReservations(settled: PromiseSettledResult<PurgeReservation>[]): Promise<{
+    failures: unknown[];
+    reservations: { metadata: CacheMetadataStub; reservation: PurgeReservation }[];
+  }> {
     const failures: unknown[] = settled.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
@@ -1478,6 +1546,43 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         }
       }
     }
+    return { failures, reservations };
+  }
+
+  /** Update the edge responses of drained entries, collecting failures. */
+  private async updatePendingEdges(
+    reservations: { metadata: CacheMetadataStub; reservation: PurgeReservation }[],
+    failures: unknown[],
+  ): Promise<boolean> {
+    let edgePurgeAccepted = true;
+    const acknowledged = await Promise.allSettled(
+      reservations
+        .filter(({ reservation }) => reservation.pendingTombstones > 0)
+        .map(({ metadata, reservation }) =>
+          this.purgePendingEdgeEntries(metadata, reservation.tombstoneSequence),
+        ),
+    );
+    for (const result of acknowledged) {
+      if (result.status === "rejected") {
+        failures.push(result.reason);
+      } else if (!result.value) {
+        edgePurgeAccepted = false;
+      }
+    }
+    return edgePurgeAccepted;
+  }
+
+  async purge(options: ResponseStorePurgeOptions): Promise<ResponseStoreMutationResult> {
+    if (!options.purgeEverything && !options.tags?.length && !options.pathPrefixes?.length) {
+      throw new TypeError("purge() requires tags, pathPrefixes, or purgeEverything");
+    }
+
+    const invalidatedAt = Date.now();
+    const { failures, reservations } = await this.drainReservations(
+      await Promise.allSettled(
+        this.getMetadataShards().map((metadata) => metadata.purgeMatching(options, invalidatedAt)),
+      ),
+    );
     let edgePurgeAccepted = true;
 
     if (options.purgeEverything && failures.length === 0) {
@@ -1498,21 +1603,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         failures.push(error);
       }
     } else {
-      if (options.purgeEverything) edgePurgeAccepted = false;
-      const acknowledged = await Promise.allSettled(
-        reservations
-          .filter(({ reservation }) => reservation.pendingTombstones > 0)
-          .map(({ metadata, reservation }) =>
-            this.purgePendingEdgeEntries(metadata, reservation.tombstoneSequence),
-          ),
-      );
-      for (const result of acknowledged) {
-        if (result.status === "rejected") {
-          failures.push(result.reason);
-        } else if (!result.value) {
-          edgePurgeAccepted = false;
-        }
-      }
+      edgePurgeAccepted =
+        (await this.updatePendingEdges(reservations, failures)) && !options.purgeEverything;
     }
 
     if (failures.length) {

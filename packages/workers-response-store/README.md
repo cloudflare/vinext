@@ -2,7 +2,7 @@
 
 `@cloudflare/workers-response-store` is a framework-agnostic, programmatic response store for Cloudflare Workers. It combines Workers Cache for edge delivery, R2 for response bodies, and a SQLite Durable Object for strongly consistent metadata, revisions, and tag invalidation.
 
-Use it to add persistent response caching, stale-while-revalidate (SWR), on-demand refresh, and purge APIs to a Worker or framework adapter. It supports either a dedicated cache Worker accessed through a service binding or a self-contained Worker deployment.
+Use it to add persistent response caching, stale-while-revalidate (SWR), on-demand refresh, invalidation, and purge APIs to a Worker or framework adapter. It supports either a dedicated cache Worker accessed through a service binding or a self-contained Worker deployment.
 
 ## Install
 
@@ -83,7 +83,7 @@ const responseStore = createWorkersResponseStoreClient<Env>({
 export const { ResponseStoreRevalidator, ResponseStoreClient } = responseStore.entrypoints;
 ```
 
-The client exposes the same read, write, refresh, and purge methods as self-contained mode. There is no reverse service binding or circular deployment: deploy the cache Worker, then deploy the application Worker.
+The client exposes the same read, write, refresh, invalidate, and purge methods as self-contained mode. There is no reverse service binding or circular deployment: deploy the cache Worker, then deploy the application Worker.
 
 ## Single-Worker setup
 
@@ -175,13 +175,14 @@ This is the minimum integration loop. A framework can add its own cacheability r
 
 The object returned by `createWorkersResponseStore()` and `createWorkersResponseStoreClient()` implements the same API:
 
-| Method                                           | Behavior                                                                                                                                                                                                                                                                                                                     |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch(request)`                                 | Reads a canonical `GET` cache key. Returns a stored response or a `404` Response Store miss. Unconditional stale reads return immediately and regenerate in the background; Workers Cache conditional revalidations and hard-expired reads wait for regeneration, unless the entry was stored with `expiryBehavior: "miss"`. |
-| `put(request, response, options?)`               | Stores a response under a canonical `GET` cache key. `options.revalidator` supplies `{ id, args }` for future regeneration. Set `purgeExisting: true` when replacing an entry that may already be in Workers Cache. Set `expiryBehavior: "miss"` to get a miss instead of a regeneration once the entry expires.             |
-| `refresh({ tags, pathPrefixes })`                | Regenerates matching entries, then invalidates their prior edge responses: Workers Cache marks them stale and refetches the committed revisions in the background. At least one selector is required.                                                                                                                        |
-| `purge({ tags, pathPrefixes, purgeEverything })` | Removes matching metadata, records tag invalidations, deletes response bodies, and purges corresponding edge responses. At least one selector or `purgeEverything: true` is required.                                                                                                                                        |
-| `getTagExpiration(tags)`                         | Returns the latest invalidation timestamp for a set of framework-managed soft tags. Most integrations do not need this low-level method.                                                                                                                                                                                     |
+| Method                                           | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch(request)`                                 | Reads a canonical `GET` cache key. Returns a stored response or a `404` Response Store miss. Unconditional stale reads return immediately and regenerate in the background; Workers Cache conditional revalidations and hard-expired reads wait for regeneration, unless the entry was stored with `expiryBehavior: "miss"`.                                                                                                                                              |
+| `put(request, response, options?)`               | Stores a response under a canonical `GET` cache key. `options.revalidator` supplies `{ id, args }` for future regeneration. Set `purgeExisting: true` when replacing an entry that may already be in Workers Cache. Set `expiryBehavior: "miss"` to get a miss instead of a regeneration once the entry expires.                                                                                                                                                          |
+| `refresh({ tags, pathPrefixes })`                | Regenerates matching entries, then invalidates their prior edge responses: Workers Cache marks them stale and refetches the committed revisions in the background. At least one selector is required.                                                                                                                                                                                                                                                                     |
+| `invalidate({ tags, pathPrefixes, expire })`     | Marks matching entries stale without regenerating them. Reads keep serving them through their stale-while-revalidate window, capped at `expire` seconds after the call when set, and regenerate them like any stale entry. Like Next.js, an `expire` deadline also caps entries with those tags published before it. Workers Cache refetches the edge responses of entries with a revalidator in the background and purges the others. At least one selector is required. |
+| `purge({ tags, pathPrefixes, purgeEverything })` | Removes matching metadata, records tag invalidations, deletes response bodies, and purges corresponding edge responses. At least one selector or `purgeEverything: true` is required.                                                                                                                                                                                                                                                                                     |
+| `getTagExpiration(tags)`                         | Returns the latest invalidation timestamp for a set of framework-managed soft tags. Most integrations do not need this low-level method.                                                                                                                                                                                                                                                                                                                                  |
 
 Mutation methods return:
 
@@ -192,7 +193,7 @@ type ResponseStoreMutationResult = {
 };
 ```
 
-`edgePurgeAccepted` reports whether Workers Cache accepted the edge update: a purge for `put()` and `purge()`, or an invalidation for `refresh()`. Local Miniflare does not implement `ctx.cache.invalidate()` yet, so `refresh()` purges there instead.
+`edgePurgeAccepted` reports whether Workers Cache accepted the edge update: a purge for `put()` and `purge()`, or an invalidation for `refresh()` and `invalidate()` (which purges entries without a revalidator). Local Miniflare does not implement `ctx.cache.invalidate()` yet, so `refresh()` and `invalidate()` purge there instead.
 
 ### Cache keys
 
@@ -208,7 +209,7 @@ Freshness is derived from `Cloudflare-CDN-Cache-Control`, then `CDN-Cache-Contro
 
 Stored responses preserve application-provided validators and include a revision-specific `ETag` when none is provided. A generated `Last-Modified` would conflate revisions written within the same second. Workers Cache sends validators back as `If-None-Match` or `If-Modified-Since` when revalidating. If the backing response is stale, that invocation claims regeneration and returns the committed response directly to Workers Cache, avoiding a second layer of SWR. If another invocation already holds the claim, the callback fails so Workers Cache can retain its stale response and retry. Fresh backing responses are reused without regeneration. Conditional headers identify revalidation, including foreground expiry; they do not identify background execution specifically.
 
-Set `Cache-Tag` on the response passed to `put()` to associate comma-separated purge tags. `refresh()` and `purge()` also accept pathname prefixes. Tags are matched case-insensitively for invalidation.
+Set `Cache-Tag` on the response passed to `put()` to associate comma-separated purge tags. `refresh()`, `invalidate()`, and `purge()` also accept pathname prefixes. Tags are matched case-insensitively for invalidation.
 
 The `regenerate` callback receives the stored `id` and `args`, a canonical cache-key request, and one of these reasons:
 
@@ -249,7 +250,7 @@ const responseStore = createWorkersResponseStore<Env>({
 
 `shards` must be an integer greater than one. Without it, all version-scoped metadata uses the original single Durable Object.
 
-Each cache key and all its revisions, claims, and pending objects route to one deterministic shard. Refresh and purge fan out across every shard, while tag invalidation timestamps are replicated so publication fencing and soft-tag checks remain correct. Soft-tag reads select a stable replica to distribute load.
+Each cache key and all its revisions, claims, and pending objects route to one deterministic shard. Refresh, invalidation, and purge fan out across every shard, while tag invalidation timestamps are replicated so publication fencing and soft-tag checks remain correct. Soft-tag reads select a stable replica to distribute load.
 
 Changing the shard count selects a new metadata and R2 layout. Treat it as a cache-cold deployment change, not an in-place scaling control.
 
@@ -282,6 +283,7 @@ application Worker
 - SQLite revisions and conditional publication prevent slow writes from replacing newer writes or resurrecting purged entries. User RPC, R2, and cache-purge I/O run outside SQLite transactions.
 - Purging replaces the active R2 object with a higher-revision tombstone. A later put can replace that tombstone, but an older delayed write cannot recreate purged content.
 - R2 tombstones are durably queued in SQLite and drained in bounded batches. A failed R2 operation leaves its tombstone queued so a later purge can retry it instead of losing the anti-resurrection fence.
+- Invalidation rewrites each matching R2 object as a stale copy under a higher revision through the same queue, so a write reserved before the invalidation cannot publish over it. If R2 does not hold the entry's committed revision yet, the key is tombstoned instead.
 - An unconditional read of stale R2 content returns immediately while `ctx.waitUntil()` runs one claimed regeneration. A conditional Workers Cache revalidation instead waits for regeneration and returns the committed replacement in that same invocation.
 - Hard-expired responses are never served. Reads wait for regeneration and therefore require a stored revalidator descriptor, unless the entry was stored with `expiryBehavior: "miss"`: such a read returns a Response Store miss and starts no regeneration, so the caller regenerates the value itself. `refresh()` still regenerates the entry through its revalidator.
 - Abandoned write reservations are retained for one hour before alarm-driven cleanup fences them from later publication. Response bodies are written only after Durable Object publication, so this cleanup does not perform R2 operations.

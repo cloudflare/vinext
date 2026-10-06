@@ -1521,6 +1521,30 @@ export function withFetchCache(): () => void {
 }
 
 /**
+ * Run `fn` with the request's fetch settings but its own record of the tags and
+ * URLs its fetches touch, so work done on the request's behalf after the fact
+ * (a background regeneration) leaves the request's response untouched.
+ */
+export function runWithDetachedFetchObservations<T>(fn: () => Promise<T>): Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.cacheableFetchUrls = new Set<string>();
+      uCtx.currentRequestTags = [];
+      uCtx.dynamicFetchUrls = new Set<string>();
+    }, fn);
+  }
+  return _als.run(
+    {
+      ..._getState(),
+      cacheableFetchUrls: new Set<string>(),
+      currentRequestTags: [],
+      dynamicFetchUrls: new Set<string>(),
+    },
+    fn,
+  );
+}
+
+/**
  * Run an async function with patched fetch caching enabled.
  * Uses `AsyncLocalStorage.run()` for proper per-request isolation
  * of collected fetch tags in concurrent server environments.
