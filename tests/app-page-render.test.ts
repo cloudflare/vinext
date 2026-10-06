@@ -3256,8 +3256,11 @@ describe("ISR storage of a page's special error", () => {
       expect(common.isrSet).not.toHaveBeenCalled();
     });
 
-    // As in Next.js, an html-limited bot's RSC request blocks on metadata.
-    it("stores generateMetadata()'s special error that rejects the shell with its status", async () => {
+    // An html-limited bot's RSC request blocks on metadata, so the error
+    // rejects the shell. Next.js stores the 404 document beside the RSC
+    // payload, but an RSC miss writes no document, and a later document
+    // request that streams metadata would store a 200 beside a 404 payload.
+    it("does not store generateMetadata()'s special error that rejects the shell", async () => {
       const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
       const { common, response } = await renderRscMiss({
         flightError: Object.assign(new Error(digest), {
@@ -3271,9 +3274,7 @@ describe("ISR storage of a page's special error", () => {
 
       await response.text();
       await Promise.all(common.waitUntilPromises);
-      expect(readStoredEntries(common.isrSet)).toEqual({
-        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
-      });
+      expect(common.isrSet).not.toHaveBeenCalled();
     });
 
     it("does not render the shell of a render without a special error", async () => {

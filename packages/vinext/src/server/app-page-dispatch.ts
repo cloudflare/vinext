@@ -1048,8 +1048,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 // html-limited bot does, and is then stored like the page's.
                 if (!specialError) return null;
                 // An RSC request regenerates only its RSC entry, so needs no
-                // document.
+                // document. generateMetadata()'s would leave its status beside
+                // a document that the request's user agent didn't decide, so
+                // the previous entry is kept.
                 if (options.isRscRequest) {
+                  if (specialError.fromMetadata === true) return null;
                   return {
                     headers: resolveAppPageSpecialErrorStoredHeaders(
                       specialError,

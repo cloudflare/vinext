@@ -258,6 +258,41 @@ test("stores the 404 document of an ISR page whose generateMetadata() calls notF
   expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
 });
 
+// Next.js stores the 404 document beside the payload of an html-limited bot's
+// RSC request too. An RSC miss writes no document, so a document request that
+// streams metadata would store a 200 beside that payload. The RSC miss stores
+// nothing instead, and the document request stores both entries.
+test("stores nothing from an html-limited bot's RSC request to an ISR page whose generateMetadata() calls notFound()", async ({
+  request,
+}) => {
+  const pathname = "/nextjs-compat/isr-special-error/metadata-not-found-rsc-first-bot";
+  const botRscOptions = { headers: { ...RSC_HEADERS, ...HTML_LIMITED_BOT }, maxRedirects: 0 };
+  const botMiss = await request.get(`${pathname}.rsc`, botRscOptions);
+  expect(botMiss.headers()["x-vinext-cache"]).toBe("MISS");
+  expect(await botMiss.text()).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+
+  // The bot's render stored nothing, so both requests miss.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const botRsc = await request.get(`${pathname}.rsc`, botRscOptions);
+  expect(botRsc.headers()["x-vinext-cache"]).toBe("MISS");
+  await botRsc.text();
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const miss = await request.get(pathname);
+  expect(miss.status()).toBe(200);
+  expect(miss.headers()["x-vinext-cache"]).toBe("MISS");
+  await miss.text();
+
+  await expect
+    .poll(async () => {
+      const response = await request.get(pathname);
+      return [response.headers()["x-vinext-cache"], response.status()];
+    })
+    .toEqual(["HIT", 200]);
+  const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
+  expect(rsc.status()).toBe(200);
+  expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
+});
+
 test("stores the 200 document of an ISR page whose generateMetadata() calls notFound()", async ({
   request,
 }) => {

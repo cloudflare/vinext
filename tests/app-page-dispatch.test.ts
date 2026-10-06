@@ -3974,6 +3974,69 @@ describe("app page dispatch", () => {
     ]);
   });
 
+  // An RSC regeneration writes only the RSC entry. Storing the bot's 404 there
+  // would leave it beside the previous document, so it keeps the entry.
+  it("keeps the entry when generateMetadata()'s special error rejects an RSC regeneration's shell", async () => {
+    const metadataNotFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isRscRequest: true,
+      request: new Request("https://example.test/posts/hello", {
+        headers: { "user-agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+      }),
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          throw Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+          });
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    // The regeneration fails, as one whose shell another error rejected does.
+    await expect(scheduledRender()).rejects.toMatchObject({ digest: metadataNotFoundDigest });
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   // As in Next.js, a regeneration streams metadata as the request that
   // triggered it does, so generateMetadata()'s special error rejects its
   // shell only for an html-limited bot.
