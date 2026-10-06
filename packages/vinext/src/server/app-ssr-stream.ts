@@ -153,11 +153,11 @@ export function createRscEmbedTransform(
   const reader = embedStream.getReader();
   let pendingChunks: RscEmbeddedChunk[] = [];
   const rawChunks: Uint8Array[] = [];
-  // The chunks already embedded, replayed into a mirror that starts
-  // mid-stream. getRawBuffer() can clear rawChunks first, so they're kept
-  // apart, and only until the mirror starts or the stream finalizes.
-  let chunksForLateMirror: RscEmbeddedChunk[] | null =
-    typeof options.mirrorNextFlight === "function" ? [] : null;
+  // How many of rawChunks have been embedded, to replay them into a mirror
+  // that starts mid-stream.
+  let embeddedRawChunkCount = 0;
+  let rawBufferTaken = false;
+  let finalized = false;
   let reading = false;
   let mirroredNextFlightBootstrap = false;
   const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -170,6 +170,14 @@ export function createRscEmbedTransform(
     }
   }
 
+  // getRawBuffer() keeps its own copy, but a mirror that may still start
+  // replays rawChunks, so they're released only once it can't.
+  function releaseRawChunks(): void {
+    const mayStartMirror =
+      typeof options.mirrorNextFlight === "function" && !mirroredNextFlightBootstrap && !finalized;
+    if (rawBufferTaken && !mayStartMirror) rawChunks.length = 0;
+  }
+
   function startNextFlightMirror(): string {
     if (mirroredNextFlightBootstrap) return "";
     const mirror = options.mirrorNextFlight;
@@ -178,10 +186,13 @@ export function createRscEmbedTransform(
     let scripts =
       createInlineScriptTag(createNextFlightBootstrapScript(), options.scriptNonce) +
       createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
-    for (const chunk of chunksForLateMirror ?? []) {
-      scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
+    for (let index = 0; index < embeddedRawChunkCount; index++) {
+      scripts += createInlineScriptTag(
+        createNextFlightChunkScript(decodeChunk(rawChunks[index])),
+        options.scriptNonce,
+      );
     }
-    chunksForLateMirror = null;
+    releaseRawChunks();
     return scripts;
   }
 
@@ -214,9 +225,7 @@ export function createRscEmbedTransform(
       const mirrorScripts = startNextFlightMirror();
       const chunks = pendingChunks;
       pendingChunks = [];
-      if (chunksForLateMirror && !mirroredNextFlightBootstrap) {
-        for (const chunk of chunks) chunksForLateMirror.push(chunk);
-      }
+      embeddedRawChunkCount += chunks.length;
 
       // React commonly emits one small Flight row per byte chunk. Embedding
       // each row in its own script makes large trees pay for thousands of
@@ -265,7 +274,8 @@ export function createRscEmbedTransform(
       await pumpPromise;
       let scripts = this.flush();
       scripts += startNextFlightMirror();
-      chunksForLateMirror = null;
+      finalized = true;
+      releaseRawChunks();
       scripts += createInlineScriptTag(
         createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
         options.scriptNonce,
@@ -276,7 +286,8 @@ export function createRscEmbedTransform(
     async getRawBuffer(): Promise<ArrayBuffer> {
       await pumpPromise;
       const buffer = concatUint8Arrays(rawChunks);
-      rawChunks.length = 0;
+      rawBufferTaken = true;
+      releaseRawChunks();
       return buffer.buffer;
     },
   };
