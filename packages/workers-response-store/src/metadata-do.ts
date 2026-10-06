@@ -1354,13 +1354,24 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   ): Promise<PurgeReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options, "refresh");
+      const active = new Set(matches.map((row) => row.key_hash));
+      // A path can also match a key whose first write is still in flight. Like
+      // purge, advance its revision so that write cannot publish.
+      const reserved = this.findMatchingEntryRows(options, "purge")
+        .map((row) => row.key_hash)
+        .filter((keyHash) => !active.has(keyHash));
+      const tags = normalizeTags(options.tags ?? []);
       const tombstoneSequence = this.tombstoneSequence(matches.length > 0);
-      this.recordInvalidations(
-        matches.map((row) => row.key_hash),
-        normalizeTags(options.tags ?? []),
-        0,
-        expiresAt ?? null,
-      );
+      this.recordInvalidations([...active, ...reserved], tags, 0, expiresAt ?? null);
+      for (const batch of batches(reserved, MAX_SQL_PARAMETERS)) {
+        this.ctx.storage.sql.exec(
+          `UPDATE entries SET
+            latest_revision = latest_revision + 1,
+            active_revision = latest_revision + 1
+          WHERE tombstoned = 1 AND key_hash IN (${batch.map(() => "?").join(", ")})`,
+          ...batch,
+        );
+      }
 
       // An undrained earlier invalidation's revision never reached R2, so keep
       // its source. A pending purge keeps its hard edge purge.
@@ -1422,7 +1433,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
 
       return {
-        backingStoreUpdated: matches.length > 0,
+        backingStoreUpdated: matches.length > 0 || reserved.length > 0 || tags.length > 0,
         pendingTombstones: matches.length,
         tombstoneSequence,
       };

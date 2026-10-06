@@ -571,6 +571,32 @@ test("invalidate prevents a pending tagged write from publishing over it", async
   assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
 });
 
+test("invalidate prevents a pending first write under a path prefix from publishing", async () => {
+  const write = put("/invalidate-cold/write", "too-late", { bodyDelayMs: 300 });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
+
+  assert.deepEqual((await invalidate({ pathPrefixes: ["/invalidate-cold/"] })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.deepEqual((await write).json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.equal((await read("/invalidate-cold/write")).status, 404);
+});
+
+test("a tag invalidation without matches still records its deadline", async () => {
+  assert.deepEqual((await invalidate({ tags: ["no-entries-yet"], expire: 60 })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+});
+
 test("invalidate tombstones an entry whose source revision is not in R2", async () => {
   await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
   await put("/invalidate-missing-r2", "seed", {
