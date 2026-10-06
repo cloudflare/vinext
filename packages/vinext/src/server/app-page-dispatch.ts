@@ -874,6 +874,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isStaticEligible &&
     options.pprRuntime === undefined &&
     !isNeverStoredPath;
+  // Next.js renders a page it may store whole before serving it, so the
+  // page's streamed metadata is ready for <head>. A mounted-slot RSC request
+  // is never read from or written to the cache.
+  const isMountedSlotsRscRequest = options.isRscRequest && Boolean(options.mountedSlotsHeader);
+  const placeStreamedMetadataInHead = isCacheCandidate && !isMountedSlotsRscRequest;
   if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
@@ -1228,6 +1233,23 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       setCurrentFetchRevalidate(sourceRevalidateSeconds);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
+      // This renders the source route, so its own config, under the request's
+      // storage gates, decides whether the response may be stored.
+      const isSourceCacheCandidate =
+        options.bypassInterceptionContextCache !== true &&
+        shouldReadAppPageCache({
+          isDraftMode,
+          isForceDynamic: sourceDynamicConfig === "force-dynamic",
+          isProgressiveActionRender: options.isProgressiveActionRender === true,
+          isProduction: options.isProduction,
+          isRscRequest: options.isRscRequest,
+          revalidateSeconds: sourceRevalidateSeconds,
+          scriptNonce: options.scriptNonce,
+        }) &&
+        options.pprRuntime === undefined &&
+        options.resolveRouteStaticEligible(interceptRoute) &&
+        !isNeverStoredPath &&
+        !isMountedSlotsRscRequest;
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
@@ -1239,7 +1261,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
           observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
           serveStreamingMetadata: placeGeneratedMetadataInBody,
-          placeStreamedMetadataInHead: isCacheCandidate,
+          placeStreamedMetadataInHead: isSourceCacheCandidate,
         },
       );
     },
@@ -1324,9 +1346,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
-            // Next.js renders a page it may store whole before serving it, so
-            // the page's streamed metadata is ready for <head>.
-            placeStreamedMetadataInHead: isCacheCandidate,
+            placeStreamedMetadataInHead,
           },
         );
       },
