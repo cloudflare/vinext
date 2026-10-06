@@ -20,7 +20,12 @@ type RscEmbedTransform = {
 };
 
 type RscEmbedTransformOptions = {
-  mirrorNextFlight?: boolean;
+  /**
+   * Mirror inline Flight chunks into Next.js's `self.__next_f` transport. A
+   * function is checked at each flush; once it returns true, the chunks
+   * already embedded are mirrored first.
+   */
+  mirrorNextFlight?: boolean | (() => boolean);
   scriptNonce?: string;
   getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
 };
@@ -148,9 +153,37 @@ export function createRscEmbedTransform(
   const reader = embedStream.getReader();
   let pendingChunks: RscEmbeddedChunk[] = [];
   const rawChunks: Uint8Array[] = [];
+  // How many of rawChunks have been embedded, to replay them into a mirror
+  // that starts mid-stream.
+  let embeddedRawChunkCount = 0;
   let reading = false;
   let mirroredNextFlightBootstrap = false;
   const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+  function decodeChunk(bytes: Uint8Array): RscEmbeddedChunk {
+    try {
+      return textDecoder.decode(bytes);
+    } catch {
+      return [RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(bytes)];
+    }
+  }
+
+  function startNextFlightMirror(): string {
+    if (mirroredNextFlightBootstrap) return "";
+    const mirror = options.mirrorNextFlight;
+    if (mirror !== true && (typeof mirror !== "function" || !mirror())) return "";
+    mirroredNextFlightBootstrap = true;
+    let scripts =
+      createInlineScriptTag(createNextFlightBootstrapScript(), options.scriptNonce) +
+      createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
+    for (let index = 0; index < embeddedRawChunkCount; index++) {
+      scripts += createInlineScriptTag(
+        createNextFlightChunkScript(decodeChunk(rawChunks[index])),
+        options.scriptNonce,
+      );
+    }
+    return scripts;
+  }
 
   async function pumpReader(): Promise<void> {
     if (reading) return;
@@ -160,11 +193,7 @@ export function createRscEmbedTransform(
         const result = await reader.read();
         if (result.done) break;
         rawChunks.push(result.value);
-        try {
-          pendingChunks.push(textDecoder.decode(result.value));
-        } catch {
-          pendingChunks.push([RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(result.value)]);
-        }
+        pendingChunks.push(decodeChunk(result.value));
       }
     } catch (error) {
       if (process.env.NODE_ENV !== "production") {
@@ -182,8 +211,10 @@ export function createRscEmbedTransform(
     flush(): string {
       if (pendingChunks.length === 0) return "";
 
+      const mirrorScripts = startNextFlightMirror();
       const chunks = pendingChunks;
       pendingChunks = [];
+      embeddedRawChunkCount += chunks.length;
 
       // React commonly emits one small Flight row per byte chunk. Embedding
       // each row in its own script makes large trees pay for thousands of
@@ -215,21 +246,13 @@ export function createRscEmbedTransform(
       }
       flushTextChunks();
 
-      let scripts = "";
+      let scripts = mirrorScripts;
       for (const chunk of embeddedChunks) {
         scripts += createInlineScriptTag(
           createNavigationRuntimeRscChunkScript(chunk),
           options.scriptNonce,
         );
-        if (options.mirrorNextFlight) {
-          if (!mirroredNextFlightBootstrap) {
-            scripts += createInlineScriptTag(
-              createNextFlightBootstrapScript(),
-              options.scriptNonce,
-            );
-            scripts += createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
-            mirroredNextFlightBootstrap = true;
-          }
+        if (mirroredNextFlightBootstrap) {
           scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
         }
       }
@@ -239,6 +262,7 @@ export function createRscEmbedTransform(
     async finalize(): Promise<string> {
       await pumpPromise;
       let scripts = this.flush();
+      scripts += startNextFlightMirror();
       scripts += createInlineScriptTag(
         createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
         options.scriptNonce,

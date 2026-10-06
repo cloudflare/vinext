@@ -149,6 +149,44 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts.match(/self\.__next_f=self\.__next_f\|\|\[\]/g)).toHaveLength(1);
   });
 
+  it("starts mirroring mid-stream once asked, replaying the chunks already embedded", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode("first"));
+      },
+    });
+    let mirror = false;
+    const transform = createRscEmbedTransform(stream, { mirrorNextFlight: () => mirror });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const firstScripts = transform.flush();
+    expect(firstScripts).not.toContain("self.__next_f");
+
+    mirror = true;
+    streamController.enqueue(new TextEncoder().encode("second"));
+    streamController.close();
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts.match(/self\.__next_f=self\.__next_f\|\|\[\]/g)).toHaveLength(1);
+    expect(finalScripts).toContain('self.addEventListener("DOMContentLoaded"');
+    const firstIndex = finalScripts.indexOf('self.__next_f.push([1,"first"])');
+    const secondIndex = finalScripts.indexOf('self.__next_f.push([1,"second"])');
+    expect(firstIndex).toBeGreaterThan(-1);
+    expect(secondIndex).toBeGreaterThan(firstIndex);
+  });
+
+  it("does not mirror when its predicate stays false", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), {
+      mirrorNextFlight: () => false,
+    });
+
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).not.toContain("self.__next_f");
+  });
+
   it("does not mirror Next.js inline Flight chunks by default", async () => {
     const transform = createRscEmbedTransform(createTextStream(["chunk"]));
 

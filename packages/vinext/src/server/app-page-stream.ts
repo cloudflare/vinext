@@ -155,8 +155,9 @@ export type AppPageSsrHandler = {
       initialDevServerError?: unknown;
       /** Report an SSR/Fizz render failure through instrumentation. */
       onSsrError?: (error: unknown) => unknown;
-      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
-      mirrorNextFlight?: boolean;
+      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
+       *  mirroring once a function returns true. */
+      mirrorNextFlight?: boolean | (() => boolean);
       /** When true, an SSR-phase-only shell render error resolves to the
        *  default `__next_error__` error-document shell (with the original
        *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
@@ -213,8 +214,9 @@ type RenderAppPageHtmlStreamOptions = {
   initialDevServerError?: unknown;
   /** Report an SSR/Fizz render failure through instrumentation. */
   onSsrError?: (error: unknown) => unknown;
-  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
-  mirrorNextFlight?: boolean;
+  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
+   *  mirroring once a function returns true. */
+  mirrorNextFlight?: boolean | (() => boolean);
   /** True when the app supplies a custom global-error.tsx. Disables the
    *  default error-document shell fallback so SSR shell errors keep driving
    *  the server-rendered global-error boundary re-render. */

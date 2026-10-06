@@ -1629,6 +1629,10 @@ async function renderAppPageLifecycleImpl(
         isForceStatic: options.isForceStatic,
         isCacheCandidate: isCacheCandidateHtmlRender,
         onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
+        // A document that streams a special error a boundary caught carries
+        // Next.js's `self.__next_f` Flight transport, as the boundary's own
+        // document does.
+        mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
       });
     },
     async renderSpecialErrorResponse(specialError) {
