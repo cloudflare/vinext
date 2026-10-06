@@ -413,9 +413,16 @@ export async function getPerformanceRuns(limit = 100): Promise<PerformanceRunDat
   if (results.length === 0) return [];
 
   const placeholders = results.map(() => "?").join(", ");
+  // Explicit columns: SELECT * would also return legacy flame_graph_json
+  // blobs, which the run list never uses.
   const measurements = await db
     .prepare(`
-      SELECT * FROM performance_measurements
+      SELECT
+        run_id, benchmark_id, scenario_id, suite, label, description,
+        implementation_id, implementation_label, unit, lower_is_better,
+        median_value, mean_value, standard_deviation_value, rounds,
+        min_value, max_value
+      FROM performance_measurements
       WHERE run_id IN (${placeholders})
       ORDER BY run_id, suite, label, implementation_label
     `)
@@ -512,12 +519,14 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
 
   const db = getD1();
   const normalizedSha = sha.toLowerCase();
+  // Listing both kinds lets SQLite seek the (kind, commit_sha) index instead
+  // of scanning every run.
   const currentRun =
     normalizedSha.length === 40
       ? await db
           .prepare(`
             SELECT * FROM performance_runs
-            WHERE commit_sha = ?
+            WHERE kind IN ('main', 'pull_request') AND commit_sha = ?
             ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, measured_at DESC
             LIMIT 1
           `)
@@ -526,7 +535,7 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
       : await db
           .prepare(`
             SELECT * FROM performance_runs
-            WHERE commit_sha >= ? AND commit_sha < ?
+            WHERE kind IN ('main', 'pull_request') AND commit_sha >= ? AND commit_sha < ?
             ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, measured_at DESC
             LIMIT 1
           `)
