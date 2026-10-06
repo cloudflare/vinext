@@ -303,6 +303,17 @@ const nextConfig: NextConfig = {
         has: [{ type: "query", key: "preview", value: "1" }],
         headers: [{ key: "X-Preview-Header", value: "true" }],
       },
+      // Used by Vitest: app-router-next-config-dev.test.ts — #3670 header
+      // sources compiled like `next build`: `/:path*` must match `/`, and the
+      // nested group must exclude only `/embed/*`.
+      {
+        source: "/:path*",
+        headers: [{ key: "X-Catch-All-Header", value: "all" }],
+      },
+      {
+        source: "/((?!embed/).*)",
+        headers: [{ key: "X-Not-Embed-Header", value: "not-embed" }],
+      },
       // Used by E2E: config-redirect.spec.ts (catch-all for e2e header test)
       {
         source: "/(.*)",

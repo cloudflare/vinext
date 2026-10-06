@@ -146,6 +146,25 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("x-page-header")).toBe("about-page");
   });
 
+  // Next.js parity (#3670): `next build` compiles header sources with
+  // path-to-regexp (buildCustomRoute("header", …)), so `/:path*` matches the
+  // root and `/((?!embed/).*)` keeps its nested group intact.
+  it("applies a /:path* header source to the root path", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.headers.get("x-catch-all-header")).toBe("all");
+    expect(res.headers.get("x-not-embed-header")).toBe("not-embed");
+  });
+
+  it("applies a nested-group header source to every path except /embed/*", async () => {
+    const about = await fetch(`${baseUrl}/about`);
+    expect(about.headers.get("x-catch-all-header")).toBe("all");
+    expect(about.headers.get("x-not-embed-header")).toBe("not-embed");
+
+    const embed = await fetch(`${baseUrl}/embed/widget`);
+    expect(embed.headers.get("x-catch-all-header")).toBe("all");
+    expect(embed.headers.get("x-not-embed-header")).toBeNull();
+  });
+
   it("preserves config Link headers alongside React preload links", async () => {
     const res = await fetch(`${baseUrl}/config-link-preload`);
     const link = res.headers.get("link") ?? "";

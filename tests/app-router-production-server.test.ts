@@ -1148,6 +1148,18 @@ describe("App Router Production server (startProdServer)", () => {
     expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
   });
 
+  // Next.js parity (#3670): header sources are compiled like `next build`
+  // (path-to-regexp via buildCustomRoute("header", …)) in production too.
+  it("compiles /:path* and nested-group header sources like next build in production", async () => {
+    const root = await fetch(`${baseUrl}/`);
+    expect(root.headers.get("x-catch-all-header")).toBe("all");
+    expect(root.headers.get("x-not-embed-header")).toBe("not-embed");
+
+    const embed = await fetch(`${baseUrl}/embed/widget`);
+    expect(embed.headers.get("x-catch-all-header")).toBe("all");
+    expect(embed.headers.get("x-not-embed-header")).toBeNull();
+  });
+
   // Regression test for issue 1487 — App Router page-segment `revalidate`
   // should produce a stable cached response. Two requests inside the
   // revalidate window must return identical HTML bytes (same Date.now()
