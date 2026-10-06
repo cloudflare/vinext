@@ -172,11 +172,13 @@ export function _rewriteCachedFontCssToServedUrls(
  *
  * Earlier versions wrote every reference as
  * `url(<cacheDir>/<fontDirName>/<file>)`, so the file is accepted only when
- * every `url(` in it is followed by exactly this checkout's
- * `<cacheDir>/<fontDirName>/`, which is then replaced. Anything else (a
- * file written from another path, including one that ends with this
- * checkout's path) returns `null` rather than ship a path that 404s:
- * recovering an arbitrary absolute path from an unquoted `url()` is
+ * every `url(` in it is the start of exactly this checkout's
+ * `url(<cacheDir>/<fontDirName>/`, which is then replaced. After splitting
+ * on that prefix, no `url(` may remain between the matches; one inside a
+ * matched prefix (a checkout path containing `url(`) is part of the match.
+ * Anything else (a file written from another path, including one that ends
+ * with this checkout's path) returns `null` rather than ship a path that
+ * 404s: recovering an arbitrary absolute path from an unquoted `url()` is
  * ambiguous, which is why the current format stores no path at all.
  *
  * Uses split/join rather than regex because `cacheDir` is an absolute
@@ -190,7 +192,7 @@ export function _legacyCachedFontCssToTokenForm(
   const normalizedCacheDir = toSlash(cacheDir);
   if (!normalizedCacheDir) return null;
   const parts = css.split(`url(${normalizedCacheDir}/${fontDirName}/`);
-  if (parts.length !== css.split("url(").length) return null;
+  if (parts.some((part) => part.includes("url("))) return null;
   return parts.join(`url(${CACHED_FONT_DIR_TOKEN}/${fontDirName}/`);
 }
 
@@ -500,12 +502,12 @@ async function fetchAndCacheFont(
     css = await downloadGoogleFont(cssUrl, family, fontDir, fontDirName);
   } catch (err) {
     // A `style.css` written by an earlier vinext holds absolute paths, so it
-    // is refetched rather than trusted. When that fails (offline, or Google
-    // rejects a URL it served before) the old file is what earlier versions
-    // would have used without asking Google at all, so fall back to it if it
-    // was written from this checkout. One written from another path would
-    // embed URLs that 404, so the error stands and the caller treats the
-    // font as uncached.
+    // is refetched rather than trusted. When that fails (offline, a font
+    // file download fails, or Google rejects a URL it served before) the old
+    // file is what earlier versions would have used without asking Google
+    // at all, so fall back to it if it was written from this checkout. One
+    // written from another path would embed URLs that 404, so the error
+    // stands and the caller treats the font as uncached.
     const legacyCSSPath = path.join(fontDir, LEGACY_CACHED_FONT_CSS_FILE);
     const legacyCSS = fs.existsSync(legacyCSSPath)
       ? _legacyCachedFontCssToTokenForm(
@@ -569,10 +571,17 @@ async function downloadGoogleFont(
     const filePath = path.join(fontDir, filename);
     if (!fs.existsSync(filePath)) {
       const fontResponse = await fetch(fontUrl);
-      if (fontResponse.ok) {
-        const buffer = Buffer.from(await fontResponse.arrayBuffer());
-        fs.writeFileSync(filePath, buffer);
+      // The stylesheet is cached only once every file it names is on disk,
+      // and a cached stylesheet is trusted from then on. Skipping a failed
+      // download would cache a reference to a missing file that 404s on
+      // every later build, so fail this attempt instead: the caller falls
+      // back to an earlier version's cache or the runtime CDN path, and the
+      // next build retries.
+      if (!fontResponse.ok) {
+        throw new Error(`Font file download failed with HTTP ${fontResponse.status}: ${fontUrl}`);
       }
+      const buffer = Buffer.from(await fontResponse.arrayBuffer());
+      fs.writeFileSync(filePath, buffer);
     }
     // Rewrite every remote Google Fonts CDN URL in the cached CSS to the
     // locally-downloaded file, named relative to the cache directory behind
@@ -982,8 +991,9 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
                   `[vinext:google-fonts] ${id}: Google Fonts returned HTTP ${err.status} for ${err.url}.\n${formatGoogleFontsErrorBody(err.responseBody)}`,
                 );
               }
-              // Network errors (offline, DNS, AbortError) are recoverable;
-              // skip self-hosting and let the runtime CDN path handle it.
+              // Network errors (offline, DNS, AbortError) and failed font
+              // file downloads are recoverable; skip self-hosting and let the
+              // runtime CDN path handle it.
               return;
             }
           }

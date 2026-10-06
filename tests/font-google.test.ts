@@ -1541,6 +1541,38 @@ describe("fetchAndCacheFont", () => {
       expect(result.code).not.toContain("selfHostedCSS");
       expect(result.code).not.toContain("/home/someone-else/");
     });
+
+    function failFontDownloads() {
+      server.use(
+        http.get("https://fonts.gstatic.com/*", () => new HttpResponse(null, { status: 503 })),
+      );
+    }
+
+    it("is not written when a font file fails to download", async () => {
+      // A cached stylesheet is trusted from then on, so one naming a file
+      // that never arrived would 404 on every later build.
+      mockGoogleFontsCSS(fontCSS);
+      failFontDownloads();
+
+      const result = await transformWithFreshPlugin();
+
+      expect(result.code).not.toContain("selfHostedCSS");
+      const fontDirName = fs.readdirSync(cacheDir).find((d) => d.startsWith("inter-"));
+      expect(fs.existsSync(path.join(cacheDir, fontDirName!, "style.v2.css"))).toBe(false);
+    });
+
+    it("keeps the earlier-version fallback when a refetched font file fails to download", async () => {
+      const fontDirName = await populateCache();
+      writeLegacyCache(fontDirName, toSlash(cacheDir));
+      // Google now serves a font file this cache has not downloaded yet.
+      mockGoogleFontsCSS(fontCSS.replaceAll("/v19/", "/v20/"));
+      failFontDownloads();
+
+      const result = await transformWithFreshPlugin();
+
+      expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
+      expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(false);
+    });
   });
 });
 
@@ -1623,6 +1655,7 @@ describe("_legacyCachedFontCssToTokenForm", () => {
     ["a plain path", "/home/user/project"],
     ["parentheses and a space", "/tmp/build (1)"],
     ["regex metacharacters", "/srv/app+$1[x]"],
+    ["url( in the path", "/tmp/url(project)"],
   ])("converts references written from this checkout at %s", (_label, root) => {
     const cacheDir = `${root}/.vinext/fonts`;
     const css = [
