@@ -15,12 +15,11 @@ const options = process.argv.slice(2).filter((argument) => argument.startsWith("
 const framework = positional[0];
 const route = positional[1] ?? "/";
 const appOption = options.find((option) => option.startsWith("--app="));
-const nextBundler = options.includes("--webpack") ? "--webpack" : "--turbopack";
 const expectedText = process.env.VINEXT_PERF_EXPECTED_TEXT ?? "Benchmark App";
 
 if (framework !== "vinext" && framework !== "nextjs") {
   console.error(
-    "Usage: node benchmarks/perf/cold-start.mjs <vinext|nextjs> [route] [--app=<name>] [--webpack]",
+    "Usage: node benchmarks/perf/cold-start.mjs <vinext|nextjs> [route] [--app=<name>]",
   );
   process.exit(1);
 }
@@ -92,7 +91,7 @@ function commandFor(port) {
   } else {
     command = {
       command: process.env.VINEXT_PERF_NEXT_BIN ?? join(projectDir, "node_modules/.bin/next"),
-      args: ["dev", nextBundler, "-H", "127.0.0.1", "-p", String(port)],
+      args: ["dev", "--turbopack", "-H", "127.0.0.1", "-p", String(port)],
     };
   }
   return targetUser && !profiling
