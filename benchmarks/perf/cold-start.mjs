@@ -111,7 +111,11 @@ async function waitForRoute(url, child, output, getSpawnError) {
     }
 
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+      // Let an accepted request run until the overall deadline. A large app can compile
+      // its first route for longer than any short per-request timeout, and aborting and
+      // retrying would measure overlapping cancelled requests instead of one cold request.
+      const signal = AbortSignal.timeout(Math.max(1, Math.ceil(deadline - performance.now())));
+      const response = await fetch(url, { signal });
       if (response.ok) {
         const body = await response.text();
         if (body.includes(expectedText)) return;
