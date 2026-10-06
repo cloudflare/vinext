@@ -4091,6 +4091,54 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("mirrors self.__next_f in a regenerated document that streams a caught special error", async () => {
+    let scheduledRender: unknown = null;
+    const mirrorPredicates: Array<unknown> = [];
+    const notFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          mirrorPredicates.push(captureOptions?.mirrorNextFlight);
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        // A loading.tsx caught the page's notFound(), so the shell rendered.
+        onError(
+          Object.assign(new Error(notFoundDigest), { digest: notFoundDigest }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(mirrorPredicates).toHaveLength(1);
+    const mirror = mirrorPredicates[0];
+    expect(typeof mirror).toBe("function");
+    expect((mirror as () => boolean)()).toBe(true);
+  });
+
   // Only a render vinext already completes before writing, such as a
   // background regeneration, waits for streamed metadata in <head>. A request
   // render streams it, even when the page may be stored.

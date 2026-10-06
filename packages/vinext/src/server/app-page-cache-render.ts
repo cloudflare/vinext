@@ -49,6 +49,8 @@ export type RenderAppPageCacheArtifactsOptions = {
   getNavigationContext: () => NavigationContext | null;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   mountedSlotsHeader?: string | null;
+  /** Start mirroring Flight into Next.js's `self.__next_f` once this returns true. */
+  mirrorNextFlight?: () => boolean;
   navigationParams: Record<string, unknown>;
   isCapturedRscError?: (error: unknown) => boolean;
   onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
@@ -138,6 +140,7 @@ async function renderAppPageCacheArtifactsImpl(
         reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         waitForAllReady: options.waitForAllReady,
+        mirrorNextFlight: options.mirrorNextFlight,
         isStaticGeneration: true,
         isForceStatic: options.isForceStatic,
         onSsrError:

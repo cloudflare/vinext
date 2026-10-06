@@ -1033,6 +1033,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               getNavigationContext: options.getNavigationContext,
               loadSsrHandler: options.loadSsrHandler,
               mountedSlotsHeader: options.mountedSlotsHeader,
+              // As in a request render, a stored document that streams a
+              // special error a boundary caught carries `self.__next_f`.
+              mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
               navigationParams: revalidationTarget.navigationParams,
               isCapturedRscError: rscErrorTracker.isCapturedError,
               onError: rscErrorTracker.onRenderError,
