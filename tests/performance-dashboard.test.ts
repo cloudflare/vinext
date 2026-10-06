@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { revalidateTag } from "next/cache";
 import { getPullComparison, uploadPerformanceRun } from "../apps/web/app/lib/benchmarks/server";
 
 const cloudflareEnv = vi.hoisted<{ DB: unknown; PERFORMANCE_PROFILES: unknown }>(() => ({
@@ -10,7 +11,10 @@ const cloudflareEnv = vi.hoisted<{ DB: unknown; PERFORMANCE_PROFILES: unknown }>
 let claimExecution: boolean;
 
 vi.mock("cloudflare:workers", () => ({ env: cloudflareEnv }));
-vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+vi.mock("next/cache", () => ({
+  revalidateTag: vi.fn(),
+  unstable_cache: <T>(fn: T) => fn,
+}));
 
 class MockStatement {
   values: unknown[] = [];
@@ -41,6 +45,7 @@ describe("performance dashboard uploads", () => {
   beforeEach(() => {
     batchedStatements = [];
     claimExecution = true;
+    vi.mocked(revalidateTag).mockClear();
     cloudflareEnv.DB = {
       prepare: (sql: string) => new MockStatement(sql),
       batch: async (statements: MockStatement[]) => {
@@ -117,6 +122,11 @@ describe("performance dashboard uploads", () => {
     );
     expect(measurementInsert?.values.slice(19, 28)).toEqual(Object.values(baselineSamples));
     expect(measurementInsert?.values[29]).toBe(1);
+    expect(vi.mocked(revalidateTag).mock.calls).toEqual([
+      ["benchmarks:runs", "max"],
+      [`benchmarks:commit:${"a".repeat(40)}`, "max"],
+      ["benchmarks:pull:42", "max"],
+    ]);
   });
 
   it("rejects schema 2 payloads without paired baseline statistics", async () => {

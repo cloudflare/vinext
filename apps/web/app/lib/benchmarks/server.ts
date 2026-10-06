@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { revalidatePath } from "next/cache";
+import { revalidateTag, unstable_cache } from "next/cache";
 
 type CloudflareEnv = {
   DB: D1Database;
@@ -64,6 +64,18 @@ function getD1() {
 
 function getProfilesBucket() {
   return (env as CloudflareEnv).PERFORMANCE_PROFILES;
+}
+
+// Matches the benchmark pages' `export const revalidate`.
+const BENCHMARK_REVALIDATE_SECONDS = 300;
+const RUNS_TAG = "benchmarks:runs";
+
+function commitTag(sha: string) {
+  return `benchmarks:commit:${sha.toLowerCase()}`;
+}
+
+function pullTag(pullRequest: number) {
+  return `benchmarks:pull:${pullRequest}`;
 }
 
 function executionOrder(executionId: string) {
@@ -297,10 +309,13 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
     console.error("Failed to delete obsolete performance profiles", error);
   }
   try {
-    revalidatePath("/benchmarks");
-    revalidatePath(`/benchmarks/commit/${body.run.commitSha}`);
+    // A cacheLife profile makes this stale-while-revalidate: visitors keep
+    // getting the cached page while it regenerates, instead of the next
+    // request blocking on a full render as revalidatePath would.
+    revalidateTag(RUNS_TAG, "max");
+    revalidateTag(commitTag(body.run.commitSha), "max");
     if (body.run.kind === "pull_request" && body.run.pullRequest !== null) {
-      revalidatePath(`/benchmarks/pull/${body.run.pullRequest}`);
+      revalidateTag(pullTag(body.run.pullRequest), "max");
     } else if (body.run.kind === "main") {
       const { results: matchingPullRequests } = await db
         .prepare(`
@@ -311,8 +326,8 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
         .bind(body.run.commitSha)
         .all<{ pull_request: number; commit_sha: string }>();
       for (const run of matchingPullRequests) {
-        revalidatePath(`/benchmarks/pull/${run.pull_request}`);
-        revalidatePath(`/benchmarks/commit/${run.commit_sha}`);
+        revalidateTag(pullTag(run.pull_request), "max");
+        revalidateTag(commitTag(run.commit_sha), "max");
       }
     }
   } catch (error) {
@@ -322,7 +337,7 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   try {
     comparisonData =
       body.run.kind === "pull_request" && body.run.pullRequest !== null
-        ? await getPullComparison(String(body.run.pullRequest))
+        ? await queryPullComparison(String(body.run.pullRequest))
         : null;
   } catch (error) {
     console.error("Failed to build performance comparison response", error);
@@ -396,7 +411,14 @@ type PerformanceComparisonMeasurementData = Omit<
   profileUrl: string | null;
 };
 
-export async function getPerformanceRuns(limit = 100): Promise<PerformanceRunData[]> {
+export function getPerformanceRuns(limit = 100): Promise<PerformanceRunData[]> {
+  return unstable_cache(queryPerformanceRuns, ["benchmarks:runs"], {
+    revalidate: BENCHMARK_REVALIDATE_SECONDS,
+    tags: [RUNS_TAG],
+  })(limit);
+}
+
+async function queryPerformanceRuns(limit: number): Promise<PerformanceRunData[]> {
   const boundedLimit = Math.max(1, Math.min(limit, 100));
   const db = getD1();
   const { results } = await db
@@ -462,9 +484,16 @@ export type PerformanceComparisonData = {
   measurements: PerformanceComparisonMeasurementData[];
 };
 
-export async function getPullComparison(
-  pullRequest: string,
-): Promise<PerformanceComparisonData | null> {
+export function getPullComparison(pullRequest: string): Promise<PerformanceComparisonData | null> {
+  const pullNumber = Number(pullRequest);
+  if (!Number.isInteger(pullNumber) || pullNumber <= 0) return Promise.resolve(null);
+  return unstable_cache(queryPullComparison, ["benchmarks:pull"], {
+    revalidate: BENCHMARK_REVALIDATE_SECONDS,
+    tags: [pullTag(pullNumber)],
+  })(String(pullNumber));
+}
+
+async function queryPullComparison(pullRequest: string): Promise<PerformanceComparisonData | null> {
   const pullNumber = Number(pullRequest);
   if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
     return null;
@@ -512,7 +541,16 @@ export async function getPullComparison(
   };
 }
 
-export async function getCommitComparison(sha: string): Promise<PerformanceComparisonData | null> {
+export function getCommitComparison(sha: string): Promise<PerformanceComparisonData | null> {
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return Promise.resolve(null);
+  const normalizedSha = sha.toLowerCase();
+  return unstable_cache(queryCommitComparison, ["benchmarks:commit"], {
+    revalidate: BENCHMARK_REVALIDATE_SECONDS,
+    tags: [commitTag(normalizedSha)],
+  })(normalizedSha);
+}
+
+async function queryCommitComparison(sha: string): Promise<PerformanceComparisonData | null> {
   if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
     return null;
   }
