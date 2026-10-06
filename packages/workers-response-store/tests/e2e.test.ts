@@ -591,10 +591,25 @@ test("invalidate prevents a pending first write under a path prefix from publish
 });
 
 test("a tag invalidation without matches still records its deadline", async () => {
-  assert.deepEqual((await invalidate({ tags: ["no-entries-yet"], expire: 60 })).json, {
+  assert.deepEqual((await invalidate({ tags: ["no-entries-yet"], expire: 1 })).json, {
     backingStoreUpdated: true,
     edgePurgeAccepted: true,
   });
+
+  // An entry published with the tag before the deadline expires at it, as in Next.js.
+  const path = "/invalidate-deadline-later-entry";
+  await put(path, "seed", {
+    cacheControl: "public, max-age=60",
+    tags: ["no-entries-yet"],
+    revalidator: { body: "regenerated", cacheControl: "public, max-age=60" },
+  });
+  const fresh = await read(path);
+  assert.equal(await fresh.text(), "seed");
+  assert.equal(fresh.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const expired = await read(path);
+  assert.equal(await expired.text(), "regenerated");
+  assert.equal(expired.headers.get("X-Revalidation-Reason"), "expired");
 });
 
 test("invalidate tombstones an entry whose source revision is not in R2", async () => {
