@@ -1542,37 +1542,71 @@ describe("fetchAndCacheFont", () => {
       expect(result.code).not.toContain("/home/someone-else/");
     });
 
-    function failFontDownloads() {
-      server.use(
-        http.get("https://fonts.gstatic.com/*", () => new HttpResponse(null, { status: 503 })),
-      );
+    const failedDownloads = [
+      ["an HTTP error", 503],
+      // `Response.ok` is true for a bodyless 204 too.
+      ["an empty body", 204],
+    ] as const;
+
+    function failFontDownloads(status: number) {
+      server.use(http.get("https://fonts.gstatic.com/*", () => new HttpResponse(null, { status })));
     }
 
-    it("is not written when a font file fails to download", async () => {
-      // A cached stylesheet is trusted from then on, so one naming a file
-      // that never arrived would 404 on every later build.
-      mockGoogleFontsCSS(fontCSS);
-      failFontDownloads();
+    it.each(failedDownloads)(
+      "is not written when a font file download returns %s",
+      async (_label, status) => {
+        // A cached stylesheet is trusted from then on, so one naming a file
+        // that never arrived would break that font on every later build.
+        mockGoogleFontsCSS(fontCSS);
+        failFontDownloads(status);
 
-      const result = await transformWithFreshPlugin();
+        const result = await transformWithFreshPlugin();
 
-      expect(result.code).not.toContain("selfHostedCSS");
-      const fontDirName = fs.readdirSync(cacheDir).find((d) => d.startsWith("inter-"));
-      expect(fs.existsSync(path.join(cacheDir, fontDirName!, "style.v2.css"))).toBe(false);
-    });
+        expect(result.code).not.toContain("selfHostedCSS");
+        const fontDirName = fs.readdirSync(cacheDir).find((d) => d.startsWith("inter-"));
+        const files = fs.readdirSync(path.join(cacheDir, fontDirName!));
+        expect(files).not.toContain("style.v2.css");
+        expect(files.filter((file) => file.endsWith(".woff2"))).toEqual([]);
+      },
+    );
 
-    it("keeps the earlier-version fallback when a refetched font file fails to download", async () => {
-      const fontDirName = await populateCache();
-      writeLegacyCache(fontDirName, toSlash(cacheDir));
-      // Google now serves a font file this cache has not downloaded yet.
-      mockGoogleFontsCSS(fontCSS.replaceAll("/v19/", "/v20/"));
-      failFontDownloads();
+    it.each(failedDownloads)(
+      "keeps the earlier-version fallback when a refetched font file download returns %s",
+      async (_label, status) => {
+        const fontDirName = await populateCache();
+        writeLegacyCache(fontDirName, toSlash(cacheDir));
+        // Google now serves a font file this cache has not downloaded yet.
+        mockGoogleFontsCSS(fontCSS.replaceAll("/v19/", "/v20/"));
+        failFontDownloads(status);
 
-      const result = await transformWithFreshPlugin();
+        const result = await transformWithFreshPlugin();
 
-      expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
-      expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(false);
-    });
+        expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
+        expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(false);
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "still self-hosts when the stylesheet cannot be cached",
+      async () => {
+        // A read-only cache (for example one mounted into a container) that
+        // already holds the font files: the refetch downloads nothing and
+        // only the stylesheet write fails.
+        const fontDirName = await populateCache();
+        writeLegacyCache(fontDirName, toSlash(cacheDir));
+        const fontDir = path.join(cacheDir, fontDirName);
+        mockGoogleFontsCSS(fontCSS);
+        fs.chmodSync(fontDir, 0o555);
+        try {
+          const result = await transformWithFreshPlugin();
+
+          expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
+          expect(fs.readdirSync(fontDir).filter((file) => file.includes(".tmp"))).toEqual([]);
+        } finally {
+          fs.chmodSync(fontDir, 0o755);
+        }
+      },
+    );
   });
 });
 

@@ -520,9 +520,29 @@ async function fetchAndCacheFont(
     return legacyCSS;
   }
 
-  // Cache the rewritten CSS
-  fs.writeFileSync(cachedCSSPath, css);
+  // Cache the rewritten CSS. Failing to (a read-only or full disk) loses
+  // only the cache: the CSS and every file it names are already on disk, so
+  // this build still self-hosts and the next one tries to cache it again.
+  try {
+    writeFileAtomically(cachedCSSPath, css);
+  } catch {}
   return css;
+}
+
+/**
+ * Write-then-rename, so a write that fails midway never leaves a partial
+ * file for a later build to trust: both font files and the stylesheet are
+ * reused as soon as they exist.
+ */
+function writeFileAtomically(filePath: string, data: string | Buffer): void {
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, data);
+    fs.renameSync(tempPath, filePath);
+  } catch (err) {
+    fs.rmSync(tempPath, { force: true });
+    throw err;
+  }
 }
 
 async function downloadGoogleFont(
@@ -573,15 +593,19 @@ async function downloadGoogleFont(
       const fontResponse = await fetch(fontUrl);
       // The stylesheet is cached only once every file it names is on disk,
       // and a cached stylesheet is trusted from then on. Skipping a failed
-      // download would cache a reference to a missing file that 404s on
-      // every later build, so fail this attempt instead: the caller falls
-      // back to an earlier version's cache or the runtime CDN path, and the
-      // next build retries.
+      // or empty download (`ok` is also true for a bodyless 204) would cache
+      // a reference to a file that 404s or fails to decode on every later
+      // build, so fail this attempt instead: the caller falls back to an
+      // earlier version's cache or the runtime CDN path, and the next build
+      // retries.
       if (!fontResponse.ok) {
         throw new Error(`Font file download failed with HTTP ${fontResponse.status}: ${fontUrl}`);
       }
       const buffer = Buffer.from(await fontResponse.arrayBuffer());
-      fs.writeFileSync(filePath, buffer);
+      if (buffer.byteLength === 0) {
+        throw new Error(`Font file download returned an empty body: ${fontUrl}`);
+      }
+      writeFileAtomically(filePath, buffer);
     }
     // Rewrite every remote Google Fonts CDN URL in the cached CSS to the
     // locally-downloaded file, named relative to the cache directory behind
