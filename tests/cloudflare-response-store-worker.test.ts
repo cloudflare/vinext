@@ -303,6 +303,10 @@ describe("Cloudflare Response Store Worker", () => {
       expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     }
     expect(store.put).toHaveBeenCalledOnce();
+    // No client waits on a warm-up, so it renders the document whole.
+    expect(stages.response.mock.calls[0]?.[5]).toEqual(
+      warmup ? { cache: "shared", renderWholeDocument: true } : { cache: "shared" },
+    );
   });
 
   // A page's notFound(), forbidden() and unauthorized() are stored with their
@@ -656,9 +660,11 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       } as never,
       { ctx: context(), env: {} } as never,
     );
-    const [replayedRequest, , , replayedProps] = stages.response.mock.calls[0]!;
+    const [replayedRequest, , , replayedProps, , replayedOptions] = stages.response.mock.calls[0]!;
     expect((replayedRequest as Request).url).toBe("https://example.com/page");
     expect(replayedProps).toMatchObject({ resolvedUrl: "/page" });
+    // No client waits on a regeneration, so it renders the document whole.
+    expect(replayedOptions).toEqual({ cache: "shared", renderWholeDocument: true });
     expect(regenerated.headers.has("X-Vinext-Params")).toBe(false);
     expect(regenerated.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
   });

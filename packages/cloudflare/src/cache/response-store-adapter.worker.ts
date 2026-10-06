@@ -172,7 +172,7 @@ async function invokeRequestStage(
     StageContext
   >();
   return handleRequestStage(request, env, stageContext(ctx, env), (request, props, options) =>
-    invokeResponseStage(request, props, env, ctx, options.cache),
+    invokeResponseStage(request, props, env, ctx, { cache: options.cache }),
   );
 }
 
@@ -181,7 +181,7 @@ async function invokeResponseStage(
   props: unknown,
   env: VinextResponseStoreEnv,
   ctx: WorkerExecutionContext,
-  cache: VinextResponseStageDispatchOptions["cache"],
+  stageOptions: Pick<VinextResponseStageDispatchOptions, "cache" | "renderWholeDocument">,
   capture?: ResponseStoreInvocationCapture,
   invocation?: SerializedInvocation,
 ): Promise<Response> {
@@ -199,7 +199,7 @@ async function invokeResponseStage(
   return runWithResponseStoreInvocation(
     storedInvocation.serialized,
     storedInvocation.replayable,
-    () => handleResponseStage(request, env, context, props, dispatchRequestStage, { cache }),
+    () => handleResponseStage(request, env, context, props, dispatchRequestStage, stageOptions),
     capture,
   );
 }
@@ -223,12 +223,14 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
         const invocation = parseInvocation(input.args.at(-1));
+        // No client waits on a regeneration, so it renders the document
+        // whole, as Next.js renders a static page.
         const response = await invokeResponseStage(
           restoreRequest(invocation),
           invocation.props,
           env,
           ctx,
-          "shared",
+          { cache: "shared", renderWholeDocument: true },
         );
         if (!isCacheable(response)) {
           await response.body?.cancel().catch(() => {});
@@ -276,7 +278,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
             invocation.props,
             env,
             ctx,
-            "bypass",
+            { cache: "bypass" },
           );
           await response.body?.pipeTo(new WritableStream());
         });
@@ -454,7 +456,7 @@ const handler = {
         (stageRequest.method !== "GET" && stageRequest.method !== "HEAD")
       ) {
         return publicResponse(
-          await invokeResponseStage(stageRequest, props, env, ctx, "bypass"),
+          await invokeResponseStage(stageRequest, props, env, ctx, { cache: "bypass" }),
           "BYPASS",
           props,
         );
@@ -514,12 +516,21 @@ const handler = {
       const serializedInvocation = JSON.stringify(invocation);
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
-      const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture, {
-        replayable: isReplayableInvocation(stageRequest, props),
-        serialized: options.cacheIdentity
-          ? serializeInvocation(stageRequest, props)
-          : serializedInvocation,
-      });
+      // No client waits on a warm-up either, so it renders the document whole.
+      const rendered = await invokeResponseStage(
+        stageRequest,
+        props,
+        env,
+        ctx,
+        isWarmup ? { cache: "shared", renderWholeDocument: true } : { cache: "shared" },
+        capture,
+        {
+          replayable: isReplayableInvocation(stageRequest, props),
+          serialized: options.cacheIdentity
+            ? serializeInvocation(stageRequest, props)
+            : serializedInvocation,
+        },
+      );
       if (capture.admittedResponse) {
         ctx.waitUntil(
           capture.admittedResponse

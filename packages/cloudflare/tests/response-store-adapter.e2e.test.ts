@@ -930,6 +930,44 @@ describe("Cloudflare Workers Response Store adapter", () => {
     await repairedRsc.body?.cancel();
   });
 
+  // Next.js renders a static page whole, so its streamed metadata is in <head>.
+  // vinext does so for a render no client waits on: a warm-up or regeneration.
+  test("puts generated metadata in <head> for a warm-up and a regeneration", async () => {
+    const titleIn = (html: string, id: string) => {
+      const index = html.indexOf(`<title>Metadata head ${id}</title>`);
+      assert.ok(index > -1, `missing the title for ${id}`);
+      return index < html.indexOf("</head>") ? "head" : "body";
+    };
+
+    const warmId = crypto.randomUUID();
+    const warmed = await request(`/metadata-head/${warmId}`, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    assert.equal(warmed.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(titleIn(await warmed.text(), warmId), "head");
+    const warmedHit = await cacheStatus(`/metadata-head/${warmId}`);
+    assert.equal(warmedHit.status, "HIT");
+    assert.equal(titleIn(warmedHit.body, warmId), "head");
+
+    const id = crypto.randomUUID();
+    const miss = await cacheStatus(`/metadata-head/${id}`);
+    assert.equal(miss.status, "MISS");
+    assert.equal(titleIn(miss.body, id), "body");
+    const storedTimestamp = htmlValue(miss.body, "timestamp");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await cacheStatus(`/metadata-head/${id}`);
+    assert.equal(htmlValue(stale.body, "timestamp"), storedTimestamp);
+    let regenerated = stale;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      regenerated = await cacheStatus(`/metadata-head/${id}`);
+      if (htmlValue(regenerated.body, "timestamp") !== storedTimestamp) break;
+    }
+    assert.notEqual(htmlValue(regenerated.body, "timestamp"), storedTimestamp);
+    assert.equal(titleIn(regenerated.body, id), "head");
+  });
+
   test("publishes non-App-page warmups before returning", async () => {
     for (const pathname of ["/api/now", "/pages-prewarm"]) {
       const key = `${pathname}?warmup=${crypto.randomUUID()}`;

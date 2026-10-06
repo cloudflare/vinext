@@ -13,6 +13,7 @@ import type {
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
+import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -67,6 +68,7 @@ const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CACHE_CONTROL_TRANSPORT_HEADER = "x-vinext-internal-request-cache-control";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
+const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const RESPONSE_STAGE_WIRE_CACHE = {
   bypass: "vinext-cloudflare-v1:bypass",
   shared: "vinext-cloudflare-v1:shared",
@@ -372,6 +374,46 @@ function restoreResponseStageRequest(
   };
 }
 
+function isAppPageDocumentInvocation(invocation: CloudflareResponseStageInvocation): boolean {
+  const props = invocation.props;
+  return (
+    props !== null &&
+    typeof props === "object" &&
+    Reflect.get(props, "kind") === "app-page" &&
+    Reflect.get(props, "isRscRequest") === false
+  );
+}
+
+/**
+ * No client waits on a deployment warm-up. Workers Cache revalidates an entry
+ * that has a validator with a conditional request, as it does the Response
+ * Store's, and serves the stale entry meanwhile or fills an expired one.
+ */
+function rendersWholeDocument(request: Request): boolean {
+  return (
+    request.headers.get("user-agent") === WARMUP_USER_AGENT ||
+    request.headers.has("If-None-Match") ||
+    request.headers.has("If-Modified-Since")
+  );
+}
+
+/** Give a cacheable document a validator, so Workers Cache revalidates it conditionally. */
+function withRevalidationValidator(response: Response): Response {
+  if (response.headers.has("ETag") || response.headers.has("Last-Modified")) return response;
+  const policy =
+    response.headers.get("Cloudflare-CDN-Cache-Control") ??
+    response.headers.get("CDN-Cache-Control") ??
+    response.headers.get("Cache-Control");
+  if (policy === null || isNonCacheableCacheControl(policy)) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Last-Modified", new Date().toUTCString());
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 function preventResponseCaching(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
@@ -563,7 +605,17 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
       invocation.requestUrl,
       invocation.requestMethod,
     );
-    const response = await invokeResponseStage(restored.request, this.env, context, invocation);
+    // As in Next.js, which renders a static page whole, a document no client
+    // waits on has its streamed metadata in <head>.
+    const isAppPageDocument = isAppPageDocumentInvocation(invocation);
+    const response = await invokeResponseStage(
+      restored.request,
+      this.env,
+      context,
+      isAppPageDocument && rendersWholeDocument(request)
+        ? { ...invocation, options: { ...invocation.options, renderWholeDocument: true } }
+        : invocation,
+    );
     // Workers Cache variants share one purge identity and therefore must carry
     // exactly the same Cache-Tag values. Application-defined Vary fields can
     // also influence cacheTag() calls, and this boundary cannot prove that the
@@ -573,7 +625,9 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     return stampResponseStageBuildIdentity(
       restored.didAccessRequestCf() || hasTaggedCustomVary(response)
         ? preventResponseCaching(response)
-        : response,
+        : isAppPageDocument
+          ? withRevalidationValidator(response)
+          : response,
     );
   }
 
