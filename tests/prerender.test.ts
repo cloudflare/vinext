@@ -864,6 +864,23 @@ describe("prerenderApp — special errors that escape the shell", () => {
     expect(rsc).toBe(pagePayload);
   });
 
+  // As runtime ISR does, a redirect("") keeps its empty location.
+  it("writes a redirect to an empty location", async () => {
+    const { route } = await prerenderSpecialErrorPage((res, isRsc) => {
+      if (isRsc) {
+        res.setHeader("content-type", "text/x-component");
+        res.end(pagePayload);
+        return;
+      }
+      res.statusCode = 307;
+      res.setHeader("cache-control", "s-maxage=60, stale-while-revalidate");
+      res.setHeader(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, JSON.stringify({ location: "" }));
+      res.end("");
+    });
+
+    expect(route).toMatchObject({ responseStatus: 307, headers: { location: "" } });
+  });
+
   it("still fails a 404 that isn't its page's special error", async () => {
     const { html, route, rsc } = await prerenderSpecialErrorPage((res) => {
       res.statusCode = 404;

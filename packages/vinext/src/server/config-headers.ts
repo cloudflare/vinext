@@ -11,10 +11,7 @@ import {
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import { isCdnResponsePolicyHeader, isNonCacheableCdnResponsePolicy } from "./cache-control.js";
-import {
-  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
-  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
-} from "./headers.js";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "./headers.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
@@ -183,13 +180,8 @@ export function applyConfigHeadersToResponse(
   if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
-    // vinext's own markers, which a config header can't forge.
-    if (
-      lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER ||
-      lowerName === VINEXT_PRERENDER_SPECIAL_ERROR_HEADER
-    ) {
-      continue;
-    }
+    // vinext's own marker, which a config header can't forge.
+    if (lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER) continue;
     if (lowerName === "link") {
       if (options.middlewareHeaders?.get(lowerName)) continue;
 

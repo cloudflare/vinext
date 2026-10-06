@@ -2142,11 +2142,11 @@ export async function prerenderApp({
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
-          ...(htmlRender.linkHeader || htmlRender.specialErrorLocation
+          ...(htmlRender.linkHeader || htmlRender.specialErrorLocation !== null
             ? {
                 headers: {
                   ...(htmlRender.linkHeader ? { link: htmlRender.linkHeader } : {}),
-                  ...(htmlRender.specialErrorLocation
+                  ...(htmlRender.specialErrorLocation !== null
                     ? { location: htmlRender.specialErrorLocation }
                     : {}),
                 },

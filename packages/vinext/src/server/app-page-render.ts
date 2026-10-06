@@ -4,6 +4,7 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
@@ -103,10 +104,7 @@ import {
   preserveFullyBufferedBodyMetadata,
 } from "vinext/shims/unified-request-context";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import {
-  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
-  VINEXT_RSC_COMPLETION_METADATA_HEADER,
-} from "./headers.js";
+import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import {
   applyPrerenderCacheLifeHeader,
   applyPrerenderCacheTagsHeader,
@@ -1408,27 +1406,40 @@ async function renderAppPageLifecycleImpl(
     shouldCaptureRscForCacheMetadata &&
     capturedRscDataRef.value !== null &&
     resolveEarlyResponseCacheControl(options) === null;
-  // Read while the request context is alive: a redirect's response clears it.
-  let prerenderedSpecialError: {
+  type PrerenderCacheMetadata = {
     cacheTags: string[];
-    dynamicUsed: boolean;
     requestCacheLife: AppPageRequestCacheLife | null;
+  };
+  const readPrerenderCacheMetadata = (): PrerenderCacheMetadata => ({
+    cacheTags: options.getPageTags(),
+    requestCacheLife: readRequestCacheLifeForPrerender(options),
+  });
+  // A redirect's metadata is read while the request context is alive, since
+  // its response clears it. A boundary's is read once it has rendered.
+  let prerenderedSpecialError: {
+    dynamicUsed: boolean;
+    redirectMetadata: PrerenderCacheMetadata | null;
   } | null = null;
 
   // The special-error response replaces the page's document. prerender.ts
   // writes it with its status and `location` when the header marks it, and
   // the page's RSC payload from an RSC request.
-  const finalizePrerenderedShellSpecialErrorResponse = (
+  const finalizePrerenderedShellSpecialErrorResponse = async (
     response: Response,
     specialError: AppPageSpecialError,
     prerendered: NonNullable<typeof prerenderedSpecialError>,
-  ): Response => {
+  ): Promise<Response> => {
     if (response.status !== specialError.statusCode) {
       return applyIneligibleRouteCachePolicy(response, options);
     }
+    // The boundary renders as its document streams, so its tagged fetches,
+    // cacheLife() and dynamic API use are known once the document is read.
+    const body = await response.arrayBuffer();
+    const { cacheTags, requestCacheLife } =
+      prerendered.redirectMetadata ?? readPrerenderCacheMetadata();
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,
-      requestCacheLife: prerendered.requestCacheLife,
+      requestCacheLife,
       revalidateSeconds,
     }));
     const { htmlResponsePolicy } = resolveHtmlCacheWrite(
@@ -1439,14 +1450,15 @@ async function renderAppPageLifecycleImpl(
     if (htmlResponsePolicy.cacheControl && !headers.has("cache-control")) {
       headers.set("Cache-Control", htmlResponsePolicy.cacheControl);
     }
-    applyPrerenderCacheLifeHeader(headers, prerendered.requestCacheLife);
-    applyPrerenderCacheTagsHeader(headers, prerendered.cacheTags);
-    // Carries the redirect's own location, which middleware can't replace.
-    headers.set(
-      VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
-      JSON.stringify(resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath) ?? {}),
-    );
-    const prerenderResponse = new Response(response.body, {
+    applyPrerenderCacheLifeHeader(headers, requestCacheLife);
+    applyPrerenderCacheTagsHeader(headers, cacheTags);
+    // Recorded outside the response, which middleware can also produce, with
+    // the redirect's own location. The prerender server marks the response.
+    getRequestExecutionContext()?.recordPrerenderSpecialError?.({
+      headers: resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath) ?? {},
+      status: response.status,
+    });
+    const prerenderResponse = new Response(body, {
       headers,
       status: response.status,
       statusText: response.statusText,
@@ -1636,9 +1648,8 @@ async function renderAppPageLifecycleImpl(
       }
       if (mayPrerender) {
         prerenderedSpecialError = {
-          cacheTags: options.getPageTags(),
           dynamicUsed: consumeRenderDynamicUsage(),
-          requestCacheLife: readRequestCacheLifeForPrerender(options),
+          redirectMetadata: specialError.kind === "redirect" ? readPrerenderCacheMetadata() : null,
         };
       }
       return options.renderPageSpecialError(specialError, {

@@ -1,7 +1,4 @@
-import {
-  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
-  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
-} from "./headers.js";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "./headers.js";
 
 const ADDITIVE_RESPONSE_HEADER_NAMES = new Set(["set-cookie", "vary"]);
 
@@ -50,13 +47,8 @@ export function mergeMiddlewareResponseHeaders(
 
   for (const [key, value] of middlewareHeaders) {
     const lowerName = key.toLowerCase();
-    // vinext's own markers, which middleware can't forge.
-    if (
-      lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER ||
-      lowerName === VINEXT_PRERENDER_SPECIAL_ERROR_HEADER
-    ) {
-      continue;
-    }
+    // vinext's own marker, which middleware can't forge.
+    if (lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER) continue;
     // Next.js only stages truthy middleware response-header values. Keep an
     // empty Link from erasing config or renderer-owned Link values.
     if (lowerName === "link" && !value) {

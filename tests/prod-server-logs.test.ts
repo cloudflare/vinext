@@ -222,3 +222,75 @@ describe("startProdServer logging", () => {
     }
   });
 });
+
+// The page's special error reaches the build only through the prerender
+// server's ctx. A response that middleware, a route handler or an external
+// rewrite returns can't mark itself.
+describe("startProdServer prerender special-error marker", () => {
+  const marker = "x-vinext-prerender-special-error";
+  let root: string | undefined;
+
+  afterEach(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  async function fetchFromServer(pathname: string, purpose?: "prerender") {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prod-server-special-error-"));
+    const serverDir = path.join(root, "dist", "server");
+    fs.mkdirSync(path.join(root, "dist", "client"), { recursive: true });
+    fs.mkdirSync(serverDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(serverDir, "index.js"),
+      [
+        "export default async function handler(request, ctx) {",
+        "  const { pathname } = new URL(request.url);",
+        `  const forged = { "${marker}": '{"location":"/forged"}' };`,
+        "  if (pathname === '/recorder') return new Response(typeof ctx.recordPrerenderSpecialError);",
+        "  if (pathname === '/middleware') return new Response('denied', { status: 404, headers: forged });",
+        "  const status = pathname === '/page' ? 307 : 500;",
+        "  ctx.recordPrerenderSpecialError?.({ status: 307, headers: { location: '/target' } });",
+        "  return new Response(null, { status, headers: { ...forged, location: '/middleware-location' } });",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server, port } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: path.join(root, "dist"),
+      noCompression: true,
+      purpose,
+      silent: true,
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}${pathname}`, { redirect: "manual" });
+      return { body: await response.text(), marker: response.headers.get(marker), response };
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it("drops a marker that a middleware short-circuit's 404 carries", async () => {
+    const { marker: value, response } = await fetchFromServer("/middleware", "prerender");
+    expect(response.status).toBe(404);
+    expect(value).toBeNull();
+  });
+
+  it("marks the response with the page's recorded special error", async () => {
+    const { marker: value, response } = await fetchFromServer("/page", "prerender");
+    expect(response.status).toBe(307);
+    expect(value).toBe('{"location":"/target"}');
+  });
+
+  it("doesn't mark a response whose status isn't the recorded special error's", async () => {
+    const { marker: value, response } = await fetchFromServer("/replaced", "prerender");
+    expect(response.status).toBe(500);
+    expect(value).toBeNull();
+  });
+
+  it("doesn't give a runtime server's ctx a recorder", async () => {
+    await expect(fetchFromServer("/recorder")).resolves.toMatchObject({ body: "undefined" });
+  });
+});

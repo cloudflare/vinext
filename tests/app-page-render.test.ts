@@ -47,7 +47,11 @@ import {
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
 import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
-import type { ExecutionContextLike } from "../packages/vinext/src/shims/request-context.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+  type PrerenderSpecialErrorMarker,
+} from "../packages/vinext/src/shims/request-context.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -58,7 +62,6 @@ import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
-  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -2709,42 +2712,53 @@ describe("ISR storage of a page's special error", () => {
   });
 
   // As in Next.js's build, a prerender writes the special error that escaped
-  // the shell with its status and location. A prerender-only header tells
-  // prerender.ts the response is the page's own special error, and carries the
-  // redirect's own location, not the one middleware merged into the response.
+  // the shell with its status and location. The render records it on the
+  // prerender server's ctx, which marks the response for prerender.ts, with
+  // the redirect's own location, not the one middleware merged into it.
+  const recordPrerenderSpecialErrors = async (render: () => Promise<Response>) => {
+    const markers: PrerenderSpecialErrorMarker[] = [];
+    const ctx: ExecutionContextLike = {
+      recordPrerenderSpecialError: (marker) => markers.push(marker),
+      waitUntil() {},
+    };
+    return { markers, response: await runWithExecutionContext(ctx, render) };
+  };
+
   it.each([
-    { name: "notFound()", error: notFoundError, status: 404, marker: "{}", body: "page:404" },
+    { name: "notFound()", error: notFoundError, status: 404, headers: {}, body: "page:404" },
     {
       name: "redirect()",
       error: redirectError,
       status: 307,
-      marker: '{"location":"/target"}',
+      headers: { location: "/target" },
       body: "",
     },
   ])(
     "prerenders a page's $name that rejects the shell with its status",
-    async ({ error, status, marker, body }) => {
+    async ({ error, status, headers, body }) => {
       const common = createCommonOptions();
 
-      const response = await renderAppPageLifecycle({
-        ...common.options,
-        isPrerender: true,
-        isProduction: true,
-        loadSsrHandler: shellRejectingSsrHandler(error),
-        renderPageSpecialError: async (specialError) =>
-          new Response(
-            specialError.kind === "redirect" ? null : `page:${specialError.statusCode}`,
-            {
-              headers: { Location: "/middleware-location" },
-              status: specialError.statusCode,
-            },
-          ),
-        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
-        revalidateSeconds: 60,
-      });
+      const { markers, response } = await recordPrerenderSpecialErrors(() =>
+        renderAppPageLifecycle({
+          ...common.options,
+          isPrerender: true,
+          isProduction: true,
+          loadSsrHandler: shellRejectingSsrHandler(error),
+          renderPageSpecialError: async (specialError) =>
+            new Response(
+              specialError.kind === "redirect" ? null : `page:${specialError.statusCode}`,
+              {
+                headers: { Location: "/middleware-location" },
+                status: specialError.statusCode,
+              },
+            ),
+          renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+          revalidateSeconds: 60,
+        }),
+      );
 
       expect(response.status).toBe(status);
-      expect(response.headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER)).toBe(marker);
+      expect(markers).toEqual([{ headers, status }]);
       expect(response.headers.get("cache-control")).toContain("s-maxage=60");
       expect(response.headers.get(NEXT_CACHE_TAGS_HEADER)).toBe("_N_T_/posts/post");
       await expect(response.text()).resolves.toBe(body);
@@ -2753,20 +2767,62 @@ describe("ISR storage of a page's special error", () => {
     },
   );
 
-  it("doesn't mark a special error from a speculative prerender", async () => {
+  // The boundary renders as its document streams, so its tagged fetches and
+  // cacheLife() are known only once the document has been read.
+  it("prerenders a notFound() boundary's tags and cacheLife", async () => {
     const common = createCommonOptions();
+    const tags = ["_N_T_/posts/post"];
+    let requestCacheLife: { revalidate: number } | null = null;
 
     const response = await renderAppPageLifecycle({
       ...common.options,
+      getPageTags: () => [...tags],
+      getRequestCacheLife: () => requestCacheLife,
       isPrerender: true,
       isProduction: true,
-      isSpeculativePrerender: true,
       loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      peekRequestCacheLife: () => requestCacheLife,
+      renderPageSpecialError: async (specialError) =>
+        new Response(
+          new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                tags.push("boundary-tag");
+                requestCacheLife = { revalidate: 30 };
+                controller.enqueue(new TextEncoder().encode("page:404"));
+                controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+          { status: specialError.statusCode },
+        ),
       renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
     });
 
     expect(response.status).toBe(404);
-    expect(response.headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER)).toBeNull();
+    expect(response.headers.get(NEXT_CACHE_TAGS_HEADER)).toBe("_N_T_/posts/post,boundary-tag");
+    expect(response.headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe('{"revalidate":30}');
+    await expect(response.text()).resolves.toBe("page:404");
+  });
+
+  it("doesn't mark a special error from a speculative prerender", async () => {
+    const common = createCommonOptions();
+
+    const { markers, response } = await recordPrerenderSpecialErrors(() =>
+      renderAppPageLifecycle({
+        ...common.options,
+        isPrerender: true,
+        isProduction: true,
+        isSpeculativePrerender: true,
+        loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(markers).toEqual([]);
     await response.text();
   });
 
