@@ -5433,6 +5433,56 @@ describe("next/server shim", () => {
     });
   });
 
+  it("completed connection probes do not keep their caller's async context alive", async () => {
+    // Async resources created inside a probe keep the probe's scope state, and
+    // through it the probe, alive after it returns. On workerd every async
+    // context store value is held by a strong handle, so whatever the probe
+    // still references from there is never collected. A completed probe left
+    // its `interrupted` promise pending forever with Promise.race's reaction
+    // on it, and that reaction captured the caller's async context (with the
+    // request, its headers and streams): every request leaked ~20 KB until the
+    // isolate ran out of heap. Holding the scope state here plays the part of
+    // workerd's handle; the caller's context must still be collectable.
+    const { AsyncLocalStorage } = await import("node:async_hooks");
+    const v8 = await import("node:v8");
+    const vm = await import("node:vm");
+    const { runWithConnectionProbe, suspendConnectionProbe } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, getRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    v8.setFlagsFromString("--expose-gc");
+    const gc = vm.runInNewContext("gc") as () => void;
+    const callerContext = new AsyncLocalStorage<{ request: object }>();
+
+    const probe = async (interrupt: boolean) => {
+      let scope: object | null = null;
+      let request: WeakRef<object> | null = null;
+      await callerContext.run({ request: {} }, () => {
+        request = new WeakRef(callerContext.getStore()!.request);
+        return runWithRequestContext(createRequestContext(), () =>
+          runWithConnectionProbe(async () => {
+            scope = getRequestContext();
+            // connection() inside a probe suspends on the probe's pending promise.
+            if (interrupt) await suspendConnectionProbe();
+            return "completed";
+          }),
+        );
+      });
+      return { scope: scope!, request: request! };
+    };
+
+    for (const interrupt of [false, true]) {
+      const { scope, request } = await probe(interrupt);
+      for (let round = 0; round < 3 && request.deref(); round += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        gc();
+      }
+      expect(scope).toBeTruthy();
+      expect(request.deref(), interrupt ? "interrupted probe" : "completed probe").toBeUndefined();
+    }
+  });
+
   it("connection probes propagate invalid dynamic usage from late work", async () => {
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
     const { consumeInvalidDynamicUsageError, runWithConnectionProbe } =

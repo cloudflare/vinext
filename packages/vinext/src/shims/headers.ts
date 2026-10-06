@@ -194,6 +194,12 @@ export async function runWithIsolatedDynamicUsage<T>(
   return await _als.run(childState, () => runInChildState(childState));
 }
 
+/**
+ * What a completed probe keeps as `pending`. Only an active probe hands out
+ * `pending` (`suspendConnectionProbe`), so nothing ever waits on this one.
+ */
+const RELEASED_PROBE_PENDING: Promise<never> = new Promise<never>(() => {});
+
 export async function runWithConnectionProbe<T>(
   fn: () => T | Promise<T>,
 ): Promise<ConnectionProbeResult<T>> {
@@ -227,11 +233,21 @@ export async function runWithConnectionProbe<T>(
       return await Promise.race([completed, interrupted]);
     } finally {
       probe.active = false;
-      // Async resources created inside this ALS scope retain `childState` after
-      // the probe returns. Restore the inherited probe when nested; otherwise
-      // retain this inactive probe so late dynamic usage can still propagate
-      // to its parent without suspending. Reading the parent at cleanup time
-      // preserves the right lifecycle if an outer probe completed separately.
+      // Async resources created inside this ALS scope retain `childState`, and
+      // through it this probe, after the probe returns. Release what the probe
+      // still holds that would hold the caller's async context in turn:
+      // `interrupted` stays pending when the probe completes, and Promise.race's
+      // reaction on it captured the context; code that `connection()` suspended
+      // waits on `pending`. On workerd, async context values are held by strong
+      // handles, so that cycle is never collected and every request's context
+      // (request, headers, streams) leaked. The race is already decided here,
+      // and an inactive probe never hands out `pending` again.
+      interruptProbe();
+      probe.pending = RELEASED_PROBE_PENDING;
+      // Restore the inherited probe when nested; otherwise retain this inactive
+      // probe so late dynamic usage can still propagate to its parent without
+      // suspending. Reading the parent at cleanup time preserves the right
+      // lifecycle if an outer probe completed separately.
       childState.connectionProbe = parentState.connectionProbe ?? probe;
 
       // Dynamic usage discovered by a speculative probe still classifies the
