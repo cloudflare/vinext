@@ -2537,9 +2537,8 @@ describe("app page dispatch", () => {
     } satisfies ExecutionContextLike;
 
     try {
-      const buildRscPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => element);
       const { options: rscOptions } = createDispatchOptions({
-        buildPageElement: buildRscPageElement,
+        buildPageElement: async () => element,
         clientReuseManifest,
         isProduction: true,
         isRscRequest: true,
@@ -2562,10 +2561,6 @@ describe("app page dispatch", () => {
       expect(capturedRscPayloads).toHaveLength(1);
       expect(Object.hasOwn(capturedRscPayloads[0], layoutId)).toBe(false);
       expect(capturedRscPayloads[0][pageId]).toBe("profile-page");
-      // The per-client response is never stored, so metadata keeps streaming.
-      expect(buildRscPageElement.mock.calls[0]?.[5]).toMatchObject({
-        placeStreamedMetadataInHead: false,
-      });
 
       const capturedDynamicPayloads: Record<string, unknown>[] = [];
       const { options: dynamicOptions } = createDispatchOptions({
@@ -2954,83 +2949,6 @@ describe("app page dispatch", () => {
     expect(devResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await devResponse.text();
   });
-
-  // The intercepted response renders the source route, so the source's own
-  // config decides whether it may be stored, and so where its metadata goes.
-  it.each<{
-    name: string;
-    dynamicConfig?: "force-dynamic";
-    revalidate: number | null;
-    staticEligible: boolean;
-    placeStreamedMetadataInHead: boolean;
-  }>([
-    {
-      name: "a static source",
-      revalidate: null,
-      staticEligible: true,
-      placeStreamedMetadataInHead: true,
-    },
-    {
-      name: "a force-dynamic source",
-      dynamicConfig: "force-dynamic",
-      revalidate: null,
-      staticEligible: true,
-      placeStreamedMetadataInHead: false,
-    },
-    {
-      name: "a revalidate = 0 source",
-      revalidate: 0,
-      staticEligible: true,
-      placeStreamedMetadataInHead: false,
-    },
-    {
-      name: "a source that can't be static",
-      revalidate: null,
-      staticEligible: false,
-      placeStreamedMetadataInHead: false,
-    },
-  ])(
-    "builds the intercepted RSC of $name with placeStreamedMetadataInHead $placeStreamedMetadataInHead",
-    async ({ dynamicConfig, revalidate, staticEligible, placeStreamedMetadataInHead }) => {
-      const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
-      const currentRoute = createRoute({
-        params: ["id"],
-        pattern: "/photos/[id]",
-        routeSegments: ["photos", "[id]"],
-      });
-      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
-        async (route) => route.pattern,
-      );
-      const { options } = createDispatchOptions({
-        buildPageElement,
-        cleanPathname: "/photos/123",
-        findIntercept: () => ({
-          matchedParams: { id: "123" },
-          page: { default: "modal-page" },
-          slotKey: "modal@app/feed/@modal",
-          sourceRouteIndex: 1,
-        }),
-        generateStaticParams: async () => [{ id: "123" }],
-        getSourceRoute(sourceRouteIndex) {
-          return sourceRouteIndex === 1 ? sourceRoute : undefined;
-        },
-        isProduction: true,
-        isRscRequest: true,
-        renderToReadableStream(element) {
-          return createStream([typeof element === "string" ? element : "unexpected-element"]);
-        },
-        resolveRouteDynamicConfig: (route) => (route === sourceRoute ? dynamicConfig : undefined),
-        resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? revalidate : null),
-        resolveRouteStaticEligible: (route) => route !== sourceRoute || staticEligible,
-        route: currentRoute,
-      });
-
-      const response = await dispatchAppPage(options);
-
-      await expect(response.text()).resolves.toBe("/feed");
-      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({ placeStreamedMetadataInHead });
-    },
-  );
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
@@ -3601,7 +3519,6 @@ describe("app page dispatch", () => {
         isForceStatic: false,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
-        placeStreamedMetadataInHead: false,
         serveStreamingMetadata: true,
       },
     ]);
@@ -4174,58 +4091,40 @@ describe("app page dispatch", () => {
     },
   );
 
-  // Next.js renders a page it may store whole before serving it, so the page's
-  // streamed metadata is ready for <head>. Other pages stream it into <body>.
+  // Only a render vinext already completes before writing, such as a
+  // background regeneration, waits for streamed metadata in <head>. A request
+  // render streams it, even when the page may be stored.
   it.each([
-    { name: "a cache candidate", overrides: {}, placeStreamedMetadataInHead: true },
-    {
-      name: "a force-dynamic page",
-      overrides: { dynamicConfig: "force-dynamic" },
-      placeStreamedMetadataInHead: false,
-    },
-    {
-      name: "a dev render",
-      overrides: { isProduction: false },
-      placeStreamedMetadataInHead: false,
-    },
-    {
-      // Never read from or written to the cache.
-      name: "a mounted-slot RSC request",
-      overrides: { isRscRequest: true, mountedSlotsHeader: "slot:modal:/" },
-      placeStreamedMetadataInHead: false,
-    },
-  ] as const)(
-    "builds $name with placeStreamedMetadataInHead $placeStreamedMetadataInHead",
-    async ({ overrides, placeStreamedMetadataInHead }) => {
-      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
-        React.createElement("main", null, "page"),
-      );
-      const { options } = createDispatchOptions({
-        buildPageElement,
-        isProduction: true,
-        loadSsrHandler: async () => ({
-          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
-            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
-              captureOptions.capturedRscDataRef.value = new Response(
-                captureOptions.sideStream,
-              ).arrayBuffer();
-            }
-            return createStream(["<html>page</html>"]);
-          },
-        }),
-        revalidateSeconds: 60,
-        ...overrides,
-      });
+    { name: "a cache candidate", overrides: {} },
+    { name: "a force-dynamic page", overrides: { dynamicConfig: "force-dynamic" } },
+    { name: "a dev render", overrides: { isProduction: false } },
+  ] as const)("streams the metadata of $name rendered for a request", async ({ overrides }) => {
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+      ...overrides,
+    });
 
-      const response = await dispatchAppPage(options);
-      await response.text();
+    const response = await dispatchAppPage(options);
+    await response.text();
 
-      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
-        placeStreamedMetadataInHead,
-        serveStreamingMetadata: true,
-      });
-    },
-  );
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({ serveStreamingMetadata: true });
+    expect(buildPageElement.mock.calls[0]?.[5]?.placeStreamedMetadataInHead).not.toBe(true);
+  });
 
   it("stores an intercepted RSC regeneration whose shell ended in a 404", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });

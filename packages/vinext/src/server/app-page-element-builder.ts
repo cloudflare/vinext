@@ -170,9 +170,10 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   /** Whether generated metadata may stream into the response body. */
   serveStreamingMetadata?: boolean;
   /**
-   * Wait for streamed metadata in `<head>`, as Next.js does in a document it
-   * renders whole before serving it (a static or ISR render). Its errors still
-   * reach the route's boundaries through the outlet.
+   * Wait for streamed metadata in `<head>`, for a document rendered whole
+   * before it's written, such as a background regeneration. Next.js does this
+   * for every static or ISR render. Its errors still reach the route's
+   * boundaries through the outlet.
    */
   placeStreamedMetadataInHead?: boolean;
   /** Whether streamed render errors must be sanitized for client transport. */

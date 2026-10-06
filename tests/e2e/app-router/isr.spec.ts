@@ -360,29 +360,29 @@ test.describe("App Router ISR", () => {
   });
 });
 
-/**
- * OpenNext Compat: ISR dynamicParams cache header tests
- *
- * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
- *
- * OpenNext verifies that `dynamicParams=true` pages return HIT for prebuilt paths,
- * MISS for non-prebuilt, and 404 for notFound(). `dynamicParams=false` returns 404
- * for unknown params. These tests verify the same cache header semantics in vinext.
- */
-// Next.js renders an ISR page whole before serving it, so the title that its
-// generateMetadata() streams is in <head>, on a miss and on a regeneration.
+// A background regeneration renders the document whole, so the title that its
+// generateMetadata() streams is in <head>, as in Next.js. A miss streams the
+// document to its request, so the title streams into <body>.
 test.describe("ISR generated metadata placement", () => {
+  function titleIndex(html: string, title: string): number {
+    const index = html.indexOf(`<title>${title}</title>`);
+    expect(index).toBeGreaterThan(-1);
+    return index;
+  }
+
   function expectTitleInHead(html: string, title: string): void {
-    const titleIndex = html.indexOf(`<title>${title}</title>`);
-    expect(titleIndex).toBeGreaterThan(-1);
-    expect(titleIndex).toBeLessThan(html.indexOf("</head>"));
+    expect(titleIndex(html, title)).toBeLessThan(html.indexOf("</head>"));
+  }
+
+  function expectTitleInBody(html: string, title: string): void {
+    expect(titleIndex(html, title)).toBeGreaterThan(html.indexOf("</head>"));
   }
 
   function readTimestamp(html: string): string | undefined {
     return html.match(/data-testid="timestamp">(\d+)</)?.[1];
   }
 
-  test("puts the generated title in <head> on a miss and on a regeneration", async ({
+  test("streams the generated title on a miss and puts it in <head> on a regeneration", async ({
     request,
   }) => {
     const id = crypto.randomUUID();
@@ -391,11 +391,11 @@ test.describe("ISR generated metadata placement", () => {
 
     const miss = await request.get(`${baseUrl()}${path}`);
     expect(miss.headers()["x-vinext-cache"]).toBe("MISS");
-    expectTitleInHead(await miss.text(), title);
+    expectTitleInBody(await miss.text(), title);
 
     const hit = await waitForCacheHit(request, path);
     const hitHtml = await hit.text();
-    expectTitleInHead(hitHtml, title);
+    expectTitleInBody(hitHtml, title);
     const storedTimestamp = readTimestamp(hitHtml);
     expect(storedTimestamp).toBeDefined();
 
@@ -422,6 +422,15 @@ test.describe("ISR generated metadata placement", () => {
   });
 });
 
+/**
+ * OpenNext Compat: ISR dynamicParams cache header tests
+ *
+ * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
+ *
+ * OpenNext verifies that `dynamicParams=true` pages return HIT for prebuilt paths,
+ * MISS for non-prebuilt, and 404 for notFound(). `dynamicParams=false` returns 404
+ * for unknown params. These tests verify the same cache header semantics in vinext.
+ */
 test.describe("ISR dynamicParams cache headers", () => {
   test.describe("dynamicParams=false (products)", () => {
     // Ref: opennextjs-cloudflare isr.test.ts "dynamicParams set to false"
