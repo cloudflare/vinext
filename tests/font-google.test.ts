@@ -1623,6 +1623,36 @@ describe("_rewriteCachedFontCssToServedUrls", () => {
           "src: url('/_next/static/_vinext_fonts/geist-abc/geist-ghi.woff2');",
       );
     });
+
+    it("rewrites paths from a checkout whose path contains url(", () => {
+      const css = [
+        "src: url(/tmp/url(project)/.vinext/fonts/geist-abc/a.woff2) format('woff2');",
+        "src: url(/tmp/url(project)/.vinext/fonts/geist-abc/b.woff2) format('woff2');",
+      ].join("\n");
+
+      expect(rewriteCachedFontCssToServedUrls(css, cacheDir)).toBe(
+        [
+          "src: url(/_next/static/_vinext_fonts/geist-abc/a.woff2) format('woff2');",
+          "src: url(/_next/static/_vinext_fonts/geist-abc/b.woff2) format('woff2');",
+        ].join("\n"),
+      );
+    });
+
+    it("does not rewrite the served prefix again when assetsDir contains .vinext/fonts", () => {
+      // `assetPrefix: "/.vinext/fonts"` resolves to this assetsDir.
+      const assetsDir = ".vinext/fonts/_next/static";
+      const css = [
+        "src: url(/home/user/new/.vinext/fonts/geist-abc/a.woff2);",
+        "src: url(/home/user/old/.vinext/fonts/geist-abc/b.woff2);",
+      ].join("\n");
+
+      expect(rewriteCachedFontCssToServedUrls(css, cacheDir, assetsDir)).toBe(
+        [
+          "src: url(/.vinext/fonts/_next/static/_vinext_fonts/geist-abc/a.woff2);",
+          "src: url(/.vinext/fonts/_next/static/_vinext_fonts/geist-abc/b.woff2);",
+        ].join("\n"),
+      );
+    });
   });
 
   it("is a no-op when cacheDir is empty", () => {

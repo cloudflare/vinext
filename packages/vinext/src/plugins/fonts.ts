@@ -133,19 +133,21 @@ function formatGoogleFontsErrorBody(body: string): string {
  *
  * The cached `style.css` is never rewritten once present, so it can hold the
  * cache directory of a different checkout: one that was moved or copied, or
- * a `.vinext/` restored from a CI or Docker cache. After replacing this
- * checkout's `cacheDir`, any remaining `<dir>/.vinext/fonts/` path is
- * resolved back to the directory it was written with, read from its
- * enclosing `url(`, and replaced the same way.
+ * a `.vinext/` restored from a CI or Docker cache. Every `url()` in it was
+ * written by `fetchAndCacheFont()` as `<cacheDir>/<font dir>/<file>`, so the
+ * CSS is scanned once, front to back, and each `url(` value's cache
+ * directory is replaced: this checkout's `cacheDir` when the value starts
+ * with it, otherwise everything up to the first `/.vinext/fonts/` after the
+ * opener. Matching only at the start of a value keeps this checkout's
+ * `cacheDir` from matching inside a longer written path that ends with it
+ * (a Docker `WORKDIR /app` reading a cache written from `/home/me/app`).
+ * Resuming the scan after the replaced directory skips any `url(` inside the
+ * path itself and never re-reads the served prefix, so an `assetsDir` that
+ * contains `.vinext/fonts` is not rewritten again.
  *
- * Each directory is only replaced where it starts a `url(` value, so this
- * checkout's `cacheDir` is not replaced inside a longer written path that
- * ends with it (e.g. a Docker `WORKDIR /app` reading a cache written from
- * `/home/me/app`).
- *
- * Uses split/join rather than regex because either cache directory is an
- * absolute filesystem path that may contain regex metacharacters, quotes,
- * or parentheses.
+ * Uses plain string search rather than regex because either cache
+ * directory is an absolute filesystem path that may contain regex
+ * metacharacters, quotes, or parentheses.
  */
 export function _rewriteCachedFontCssToServedUrls(
   css: string,
@@ -155,33 +157,28 @@ export function _rewriteCachedFontCssToServedUrls(
   const normalizedCacheDir = toSlash(cacheDir);
   if (!normalizedCacheDir) return css;
   const servedPrefix = `/${assetsDir || DEFAULT_ASSETS_DIR}/${VINEXT_FONT_URL_NAMESPACE}`;
-  let rewritten = replaceCachedFontUrlPrefix(css, normalizedCacheDir, servedPrefix);
 
+  let rewritten = "";
+  let cursor = 0;
   for (
-    let segmentIndex = rewritten.indexOf(`${CACHED_FONT_DIR_SEGMENT}/`);
-    segmentIndex !== -1;
-    segmentIndex = rewritten.indexOf(`${CACHED_FONT_DIR_SEGMENT}/`)
+    let urlIndex = css.indexOf("url(");
+    urlIndex !== -1;
+    urlIndex = css.indexOf("url(", cursor)
   ) {
-    const urlIndex = rewritten.lastIndexOf("url(", segmentIndex);
-    if (urlIndex === -1) break;
     let pathStart = urlIndex + "url(".length;
-    if (rewritten[pathStart] === '"' || rewritten[pathStart] === "'") pathStart++;
-    const writtenCacheDir = rewritten.slice(
-      pathStart,
-      segmentIndex + CACHED_FONT_DIR_SEGMENT.length,
-    );
-    const next = replaceCachedFontUrlPrefix(rewritten, writtenCacheDir, servedPrefix);
-    if (next === rewritten) break;
-    rewritten = next;
+    if (css[pathStart] === '"' || css[pathStart] === "'") pathStart++;
+    let pathEnd: number;
+    if (css.startsWith(`${normalizedCacheDir}/`, pathStart)) {
+      pathEnd = pathStart + normalizedCacheDir.length;
+    } else {
+      const segmentIndex = css.indexOf(`${CACHED_FONT_DIR_SEGMENT}/`, pathStart);
+      if (segmentIndex === -1) break;
+      pathEnd = segmentIndex + CACHED_FONT_DIR_SEGMENT.length;
+    }
+    rewritten += css.slice(cursor, pathStart) + servedPrefix;
+    cursor = pathEnd;
   }
-  return rewritten;
-}
-
-function replaceCachedFontUrlPrefix(css: string, dir: string, servedPrefix: string): string {
-  for (const quote of ["", '"', "'"]) {
-    css = css.split(`url(${quote}${dir}/`).join(`url(${quote}${servedPrefix}/`);
-  }
-  return css;
+  return rewritten + css.slice(cursor);
 }
 
 /**
