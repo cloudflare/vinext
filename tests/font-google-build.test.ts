@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
+import { toSlash } from "pathslash";
 import { createBuilder } from "vite-plus";
 import { http, HttpResponse } from "msw";
 import { server } from "./_msw/server.js";
@@ -109,18 +110,21 @@ describe("font-google build integration", () => {
   }, 120000);
 });
 
-describe("font-google build from a moved checkout", () => {
-  let tmpDir: string | undefined;
+describe("font-google build with a font cache written elsewhere", () => {
+  const tmpDirs: string[] = [];
 
   afterAll(async () => {
-    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
+    await Promise.all(tmpDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
-  it("serves fonts cached by the checkout's previous location from its served URL", async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-font-moved-checkout-"));
-    const firstRoot = path.join(tmpDir, "project (copy)");
-    const movedRoot = path.join(tmpDir, "moved");
-    await fs.cp(APP_FIXTURE_DIR, firstRoot, {
+  // Copy the fixture to `<tmp>/project (copy)` (the name macOS gives a
+  // duplicated folder) and build it once with Google Fonts reachable, so
+  // `.vinext/fonts/` holds a real cache.
+  async function buildCopyOnline(): Promise<{ tmpDir: string; root: string }> {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-font-cache-elsewhere-"));
+    tmpDirs.push(tmpDir);
+    const root = path.join(tmpDir, "project (copy)");
+    await fs.cp(APP_FIXTURE_DIR, root, {
       recursive: true,
       filter: (src) => {
         const name = path.basename(src);
@@ -142,22 +146,21 @@ describe("font-google build from a moved checkout", () => {
         }),
       ),
     );
-    await buildFixtureAt(firstRoot, path.join(tmpDir, "out-first"));
+    await buildFixtureAt(root, path.join(tmpDir, "out-first"));
+    return { tmpDir, root };
+  }
 
-    await fs.rename(firstRoot, movedRoot);
-    // A refetch would write this checkout's own paths and hide the bug, so the
-    // second build must be served entirely from the moved `.vinext/fonts/` cache.
+  // A refetch would write this checkout's own cache and hide the bug, so
+  // the next build must be served entirely from the existing cache.
+  function goOffline() {
     server.use(http.get("https://fonts.googleapis.com/*", () => HttpResponse.error()));
-    const movedOutDir = path.join(tmpDir, "out-moved");
-    await buildFixtureAt(movedRoot, movedOutDir);
+  }
 
-    const serverJs = await readAllJs(path.join(movedOutDir, "server"));
-    expect(serverJs).toContain("/_next/static/_vinext_fonts/geist-");
-    expect(serverJs).not.toContain("/.vinext/fonts/");
-    expect(serverJs).not.toContain("project (copy)");
-
-    // writeBundle copies `.vinext/fonts/<relative>` to `_vinext_fonts/<relative>`,
-    // so every served URL must name a file in the moved checkout's cache.
+  // Assert that the server output self-hosts fonts and that every served URL
+  // names a file in `root`'s cache: `writeBundle` copies
+  // `.vinext/fonts/<relative>` to `_vinext_fonts/<relative>`.
+  async function expectServedFontUrls(outDir: string, root: string): Promise<void> {
+    const serverJs = await readAllJs(path.join(outDir, "server"));
     const servedFiles = [
       ...new Set(
         [...serverJs.matchAll(/\/_next\/static\/_vinext_fonts\/([\w./-]+?\.woff2)/g)].map(
@@ -167,9 +170,62 @@ describe("font-google build from a moved checkout", () => {
     ];
     expect(servedFiles.length).toBeGreaterThan(0);
     for (const file of servedFiles) {
-      await expect(
-        fs.access(path.join(movedRoot, ".vinext", "fonts", file)),
-      ).resolves.toBeUndefined();
+      await expect(fs.access(path.join(root, ".vinext", "fonts", file))).resolves.toBeUndefined();
     }
+  }
+
+  it("serves fonts cached by the checkout's previous location", async () => {
+    const { tmpDir, root } = await buildCopyOnline();
+    const movedRoot = path.join(tmpDir, "moved");
+    await fs.rename(root, movedRoot);
+    goOffline();
+
+    const outDir = path.join(tmpDir, "out-moved");
+    await buildFixtureAt(movedRoot, outDir);
+
+    const serverJs = await readAllJs(path.join(outDir, "server"));
+    expect(serverJs).not.toContain("/.vinext/fonts/");
+    expect(serverJs).not.toContain("project (copy)");
+    expect(serverJs).not.toContain("__VINEXT_FONT_CACHE_DIR__");
+    await expectServedFontUrls(outDir, movedRoot);
   }, 240000);
+
+  it("falls back to an earlier version's cache offline only when this checkout wrote it", async () => {
+    const { tmpDir, root } = await buildCopyOnline();
+
+    // Rewrite the cache into the format earlier vinext versions wrote:
+    // `style.css` holding the absolute path of the checkout that fetched it,
+    // as Vite resolved it (through symlinks such as macOS's `/var`).
+    const cacheDir = path.join(root, ".vinext", "fonts");
+    const writtenCacheDir = toSlash(await fs.realpath(cacheDir));
+    const fontDirs = await fs.readdir(cacheDir);
+    expect(fontDirs.length).toBeGreaterThan(0);
+    for (const fontDirName of fontDirs) {
+      const fontDir = path.join(cacheDir, fontDirName);
+      const css = await fs.readFile(path.join(fontDir, "style.v2.css"), "utf-8");
+      await fs.rm(path.join(fontDir, "style.v2.css"));
+      await fs.writeFile(
+        path.join(fontDir, "style.css"),
+        css.replaceAll("__VINEXT_FONT_CACHE_DIR__", writtenCacheDir),
+      );
+    }
+    goOffline();
+
+    // Written from this checkout: self-hosted from the old cache.
+    const fallbackOutDir = path.join(tmpDir, "out-fallback");
+    await buildFixtureAt(root, fallbackOutDir);
+    await expectServedFontUrls(fallbackOutDir, root);
+    expect(await readAllJs(path.join(fallbackOutDir, "server"))).not.toContain("/.vinext/fonts/");
+
+    // Written from another path: its URLs would 404, so the font is treated
+    // as uncached and the runtime falls back to the Google Fonts CDN.
+    const movedRoot = path.join(tmpDir, "moved");
+    await fs.rename(root, movedRoot);
+    const movedOutDir = path.join(tmpDir, "out-moved");
+    await buildFixtureAt(movedRoot, movedOutDir);
+    const movedJs = await readAllJs(path.join(movedOutDir, "server"));
+    expect(movedJs).not.toContain("/_next/static/_vinext_fonts/");
+    expect(movedJs).not.toContain("/.vinext/fonts/");
+    expect(movedJs).not.toContain("project (copy)");
+  }, 360000);
 });
