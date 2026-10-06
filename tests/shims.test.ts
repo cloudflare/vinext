@@ -13414,6 +13414,54 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       warn.mockRestore();
     }
   });
+
+  // Each token is safe on its own, but adjacent overlapping groups backtrack
+  // catastrophically on a near miss, so the whole source is refused.
+  it("ignores a source whose adjacent groups overlap", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const source = "/(a*)(a*)(a*)(a*)(a*)(a*)(a*)(a*)/end";
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      expect(matchHeaders(`/${"a".repeat(28)}!`, rules, ctx)).toEqual([]);
+      expect(matchHeaders("/aa/end", rules, ctx)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("overlapping sequential repetition"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Next.js limits the regex tryToParsePath() builds with default
+  // path-to-regexp options to 4096 characters, not the source text.
+  it("applies Next's 4096-character limit to the built regex, not the source", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const params = (count: number) =>
+        Array.from({ length: count }, (_, index) => `/:p${index}`).join("");
+      const longName = {
+        source: `/:${"a".repeat(5000)}`,
+        headers: [{ key: "x-long", value: "1" }],
+      };
+      // 227 params build a 4096-character regex; 228 build 4114 characters.
+      const atLimit = { source: params(227), headers: [{ key: "x-at-limit", value: "1" }] };
+      const overLimit = { source: params(228), headers: [{ key: "x-over-limit", value: "1" }] };
+
+      expect(matchHeaders("/x", [longName], ctx)).toEqual([{ key: "x-long", value: "1" }]);
+      expect(matchHeaders("/x".repeat(227), [atLimit], ctx)).toEqual([
+        { key: "x-at-limit", value: "1" },
+      ]);
+      expect(matchHeaders("/x".repeat(228), [overLimit], ctx)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("source exceeds max built length of 4096"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("matchConfigPattern rejects ReDoS patterns", () => {

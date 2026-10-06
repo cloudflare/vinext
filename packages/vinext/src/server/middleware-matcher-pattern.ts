@@ -245,20 +245,30 @@ function validateTokens(tokens: MiddlewarePathToken[]): string | null {
   return null;
 }
 
+const MAX_BUILT_SOURCE_LENGTH = 4096;
+
 type SourcePatternOptions = {
   delimiter?: string;
   normalizeUnprefixedRepeats: boolean;
+  checkSourceLength: boolean;
 };
+
+type CompiledSourcePattern =
+  | { regexp: RegExp; tokens: MiddlewarePathToken[]; error?: never }
+  | { regexp?: never; error: string; kind: "invalid" | "unsafe" };
 
 function compileSourcePattern(
   source: string,
-  { delimiter, normalizeUnprefixedRepeats }: SourcePatternOptions,
-): CompiledMiddlewareMatcherPattern {
+  { delimiter, normalizeUnprefixedRepeats, checkSourceLength }: SourcePatternOptions,
+): CompiledSourcePattern {
   if (!source.startsWith("/")) {
     return { kind: "invalid", error: "source must start with /" };
   }
-  if (source.length > 4096) {
-    return { kind: "invalid", error: "source exceeds max built length of 4096" };
+  if (checkSourceLength && source.length > MAX_BUILT_SOURCE_LENGTH) {
+    return {
+      kind: "invalid",
+      error: `source exceeds max built length of ${MAX_BUILT_SOURCE_LENGTH}`,
+    };
   }
 
   let tokens: MiddlewarePathToken[];
@@ -275,7 +285,7 @@ function compileSourcePattern(
   if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
 
   try {
-    return { regexp: middlewarePathTokensToRegExp(tokens, delimiter) };
+    return { regexp: middlewarePathTokensToRegExp(tokens, delimiter), tokens };
   } catch (error) {
     if (!normalizeUnprefixedRepeats) {
       return {
@@ -289,7 +299,10 @@ function compileSourcePattern(
     const normalizedUnsafeReason = validateTokens(normalizedTokens);
     if (normalizedUnsafeReason) return { kind: "unsafe", error: normalizedUnsafeReason };
     try {
-      return { regexp: middlewarePathTokensToRegExp(normalizedTokens, delimiter) };
+      return {
+        regexp: middlewarePathTokensToRegExp(normalizedTokens, delimiter),
+        tokens: normalizedTokens,
+      };
     } catch (error) {
       return {
         kind: "invalid",
@@ -300,7 +313,11 @@ function compileSourcePattern(
 }
 
 export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
-  return compileSourcePattern(source, { normalizeUnprefixedRepeats: true });
+  const compiled = compileSourcePattern(source, {
+    normalizeUnprefixedRepeats: true,
+    checkSourceLength: true,
+  });
+  return compiled.regexp ? { regexp: compiled.regexp } : compiled;
 }
 
 /**
@@ -312,7 +329,46 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
  * @see .nextjs-ref/packages/next/src/lib/build-custom-route.ts
  */
 export function compileHeaderSourcePattern(source: string): CompiledMiddlewareMatcherPattern {
-  return compileSourcePattern(source, { delimiter: "/", normalizeUnprefixedRepeats: false });
+  // Next first validates the source with tryToParsePath(): default
+  // path-to-regexp options plus the unprefixed-repeat normalization, rejecting
+  // a source whose built regex is longer than 4096 characters.
+  // @see .nextjs-ref/packages/next/src/lib/load-custom-routes.ts (checkCustomRoutes)
+  const validated = compileSourcePattern(source, {
+    normalizeUnprefixedRepeats: true,
+    checkSourceLength: false,
+  });
+  if (!validated.regexp) return validated;
+  if (validated.regexp.source.length > MAX_BUILT_SOURCE_LENGTH) {
+    return {
+      kind: "invalid",
+      error: `source exceeds max built length of ${MAX_BUILT_SOURCE_LENGTH}`,
+    };
+  }
+
+  const compiled = compileSourcePattern(source, {
+    delimiter: "/",
+    normalizeUnprefixedRepeats: false,
+    checkSourceLength: false,
+  });
+  if (!compiled.regexp) return compiled;
+
+  // Tokens are safety-checked one at a time, which misses adjacent tokens
+  // that overlap, such as `/(a*)(a*)(a*)/end`. Check the whole regex as well,
+  // with each repeated token reduced to a single occurrence: the repetition
+  // itself was already validated per token, and keeping it would trip the
+  // nested-repetition rule on every `:path*`.
+  const singleOccurrenceTokens = compiled.tokens.map((token) =>
+    typeof token === "object" && (token.modifier === "*" || token.modifier === "+")
+      ? { ...token, modifier: token.modifier === "*" ? "?" : "" }
+      : token,
+  );
+  const issue = analyzeRegexSafety(
+    middlewarePathTokensToRegExp(singleOccurrenceTokens, "/").source,
+    { ignoreCase: true },
+  );
+  if (issue) return { kind: "unsafe", error: `source contains ${issue}` };
+
+  return { regexp: compiled.regexp };
 }
 
 export function validateMiddlewareMatcherPatterns(value: unknown): void {
