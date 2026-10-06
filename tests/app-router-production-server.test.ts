@@ -1172,6 +1172,16 @@ describe("App Router Production server (startProdServer)", () => {
     expect(embed.headers.get("x-not-embed-header")).toBeNull();
   });
 
+  it("matches a repeated .+ header source and ignores an exponential one in production", async () => {
+    const nested = await fetch(`${baseUrl}/header-repeat/a/b`);
+    expect(nested.headers.get("x-repeated-wildcard-header")).toBe("matched");
+
+    const start = performance.now();
+    const redos = await fetch(`${baseUrl}/header-redos/${"a".repeat(48)}!`);
+    expect(performance.now() - start).toBeLessThan(5_000);
+    expect(redos.headers.get("x-redos-header")).toBeNull();
+  }, 60_000);
+
   // Regression test for issue 1487 — App Router page-segment `revalidate`
   // should produce a stable cached response. Two requests inside the
   // revalidate window must return identical HTML bytes (same Date.now()

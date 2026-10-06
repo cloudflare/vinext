@@ -9,7 +9,7 @@
  */
 type RegexNode =
   | { kind: "atom"; symbol: RegexSymbol | null; fixedWidth: boolean }
-  | { kind: "assertion"; child: RegexNode }
+  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean }
   | { kind: "sequence"; children: RegexNode[] }
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
@@ -89,9 +89,19 @@ function unionNonAscii(left: NonAsciiDomain, right: NonAsciiDomain): NonAsciiDom
   return "all";
 }
 
+const NON_ASCII_COMPLEMENT: Record<NonAsciiDomain, NonAsciiDomain> = {
+  none: "all",
+  all: "none",
+  whitespace: "non-whitespace",
+  "non-whitespace": "whitespace",
+};
+
 function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null {
   const end = raw.length - 1;
-  if (raw[0] !== "[" || raw[end] !== "]" || raw[1] === "^") return null;
+  if (raw[0] !== "[" || raw[end] !== "]") return null;
+  // A negated class such as path-to-regexp's `[^\/]` matches every character
+  // whose canonical form is outside the listed set.
+  const negated = raw[1] === "^";
   const values = new Set<string>();
   let nonAscii: NonAsciiDomain = "none";
 
@@ -108,15 +118,18 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
     return true;
   };
 
-  for (let index = 1; index < end; index++) {
+  for (let index = negated ? 2 : 1; index < end; index++) {
     const start = raw[index];
     if (start === "\\") {
       const escaped = raw[++index];
       if (escaped === undefined) return null;
+      // An escaped range endpoint such as `[\.-z]` is not modeled.
+      if (raw[index + 1] === "-" && index + 2 < end) return null;
       const shorthand = shorthandClassSymbol(escaped, ignoreCase);
       if (shorthand) {
         if (!addClass(shorthand)) return null;
-      } else if ("\\-]".includes(escaped)) {
+      } else if (!/[\dA-Za-z]/.test(escaped)) {
+        // Identity escapes such as `\/` or `\.` match the escaped character.
         if (!add(escaped)) return null;
       } else {
         return null;
@@ -138,6 +151,17 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
     }
   }
 
+  if (negated) {
+    const complement = new Set<string>();
+    for (let code = 0; code <= 0x7f; code++) {
+      const character = String.fromCharCode(code);
+      const key = ignoreCase ? canonicalizeIgnoreCase(character) : character;
+      if (!values.has(key)) complement.add(key);
+    }
+    const complementNonAscii = NON_ASCII_COMPLEMENT[nonAscii];
+    if (complement.size === 0 && complementNonAscii === "none") return null;
+    return createClassSymbol(complement, complementNonAscii);
+  }
   if (values.size === 0 && nonAscii === "none") return null;
   return createClassSymbol(values, nonAscii);
 }
@@ -230,12 +254,14 @@ class RegexParser {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
     }
     let assertion = false;
+    let negativeLookahead = false;
     if (this.pattern[this.index] === "?") {
       const marker = this.pattern[this.index + 1];
       if (marker === ":") {
         this.index += 2;
       } else if (marker === "=" || marker === "!") {
         assertion = true;
+        negativeLookahead = marker === "!";
         this.index += 2;
       } else if (
         marker === "<" &&
@@ -259,7 +285,7 @@ class RegexParser {
     const child = this.parseAlternation();
     if (this.pattern[this.index] === ")") this.index++;
     this.depth--;
-    return assertion ? this.node({ kind: "assertion", child }) : child;
+    return assertion ? this.node({ kind: "assertion", child, negativeLookahead }) : child;
   }
 
   private skipGroup(): void {
@@ -444,6 +470,42 @@ function containsConsumingAlternation(node: RegexNode): boolean {
       return true;
     case "repeat":
       return containsConsumingAlternation(node.child);
+  }
+}
+
+function containsUnboundedRepetition(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+      return false;
+    case "assertion":
+      return containsUnboundedRepetition(node.child);
+    case "sequence":
+      return node.children.some(containsUnboundedRepetition);
+    case "alternation":
+      return node.branches.some(containsUnboundedRepetition);
+    case "repeat":
+      return node.max === Infinity || containsUnboundedRepetition(node.child);
+  }
+}
+
+/**
+ * A lookaround consumes nothing, so width and repetition checks treat it as
+ * free. It still scans the input each time it runs: one with an unbounded
+ * repetition, such as `(?=a*b)`, does linear work per evaluation and turns a
+ * surrounding repetition quadratic.
+ */
+function containsUnboundedLookaround(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+      return false;
+    case "assertion":
+      return containsUnboundedRepetition(node.child);
+    case "sequence":
+      return node.children.some(containsUnboundedLookaround);
+    case "alternation":
+      return node.branches.some(containsUnboundedLookaround);
+    case "repeat":
+      return containsUnboundedLookaround(node.child);
   }
 }
 
@@ -638,8 +700,17 @@ function ambiguousExpansionFactor(node: RegexNode): number {
     case "alternation": {
       const result = hasPrefixFreeFiniteLanguage(node);
       if (result.safe) return 1;
-      if (result.budgetExceeded || result.wordCount === 0) return MAX_SEQUENCE_EXPANSIONS + 1;
-      return result.wordCount;
+      if (result.budgetExceeded) return MAX_SEQUENCE_EXPANSIONS + 1;
+      if (result.wordCount > 0) return result.wordCount;
+      // A branch with an unbounded repetition has no finite word set. Count
+      // each branch's own paths; findSequenceIssue() checks the branch's
+      // variable width against its neighbours like a variable repetition.
+      let factor = 0;
+      for (const branch of node.branches) {
+        factor += ambiguousExpansionFactor(branch);
+        if (factor > MAX_SEQUENCE_EXPANSIONS) return factor;
+      }
+      return factor;
     }
     case "sequence": {
       let factor = 1;
@@ -765,7 +836,10 @@ function findSequenceIssue(
   let overlappingBoundaryCount = 0;
   for (const child of node.children) {
     const variableRepetition =
-      child.kind === "repeat" && (child.min !== child.max || !Number.isFinite(child.max));
+      child.kind === "repeat"
+        ? child.min !== child.max || !Number.isFinite(child.max)
+        : child.kind === "alternation" &&
+          fixedWords(child, { words: 0, symbols: 0, exceeded: false }) === null;
     if (variableRepetition) {
       const starts = firstSymbols(child);
       const overlappingBoundaries = pendingRepetitionEnds.filter((ends) =>
@@ -819,6 +893,9 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       if (node.max > 1 && nestedRepetition && exactWidth(node.child) === null) {
         return "nested repetition";
       }
+      if (node.max > 1 && containsUnboundedLookaround(node.child)) {
+        return "nested repetition";
+      }
       if (node.max > 1 && containsConsumingAlternation(node.child)) {
         const prefixFree = hasPrefixFreeFiniteLanguage(node.child);
         if (!prefixFree.safe) {
@@ -855,4 +932,95 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   const rightSymbol = rightWords[0][0];
   if (!leftSymbol || !rightSymbol) return true;
   return symbolsMayOverlap(leftSymbol, rightSymbol);
+}
+
+/**
+ * How many times `separator` occurs in every match of `node`, or null when
+ * that number can vary (or cannot be determined).
+ */
+function fixedSeparatorCount(node: RegexNode, separator: RegexSymbol): number | null {
+  switch (node.kind) {
+    case "atom": {
+      if (!node.symbol) return null;
+      if (!symbolsMayOverlap(node.symbol, separator)) return 0;
+      const onlySeparator =
+        node.symbol.kind === "literal" ||
+        (node.symbol.kind === "class" &&
+          node.symbol.values.size === 1 &&
+          node.symbol.nonAscii === "none");
+      return onlySeparator ? 1 : null;
+    }
+    case "assertion":
+      return 0;
+    case "sequence": {
+      let count = 0;
+      for (let index = 0; index < node.children.length; index++) {
+        const child = node.children[index];
+        const previous = node.children[index - 1];
+        // `(?!\.)[^\/]`, path-to-regexp's default pattern after a `.` prefix,
+        // excludes the separator from the atom it guards.
+        if (
+          child.kind === "atom" &&
+          previous?.kind === "assertion" &&
+          previous.negativeLookahead &&
+          previous.child.kind === "atom" &&
+          previous.child.symbol?.kind === "literal" &&
+          previous.child.symbol.key === separator.key
+        ) {
+          continue;
+        }
+        const childCount = fixedSeparatorCount(child, separator);
+        if (childCount === null) return null;
+        count += childCount;
+      }
+      return count;
+    }
+    case "alternation": {
+      let count: number | undefined;
+      for (const branch of node.branches) {
+        const branchCount = fixedSeparatorCount(branch, separator);
+        if (branchCount === null || (count !== undefined && branchCount !== count)) return null;
+        count = branchCount;
+      }
+      return count ?? 0;
+    }
+    case "repeat": {
+      const childCount = fixedSeparatorCount(node.child, separator);
+      if (childCount === null) return null;
+      if (childCount === 0) return 0;
+      return node.min === node.max && Number.isFinite(node.max) ? childCount * node.min : null;
+    }
+  }
+}
+
+export type SeparatedRepetitionIssue =
+  | "unbounded lookaround"
+  | "separator overlap"
+  | "analysis budget exceeded";
+
+/**
+ * Check a pattern that is repeated with a literal separator between
+ * occurrences, as path-to-regexp compiles `:name*` and `:name+`:
+ * `P(?:separator P)*`. The pattern itself is checked by analyzeRegexSafety.
+ *
+ * The repetition has a single partition of its input only if every match of
+ * the pattern contains the separator's first character the same number of
+ * times. Otherwise a pattern such as `a+` with separator `a`, or `a/a|a` with
+ * separator `/`, splits the same text many ways and backtracks exponentially.
+ */
+export function analyzeSeparatedRepetitionSafety(
+  pattern: string,
+  separator: string,
+  options: { ignoreCase?: boolean } = {},
+): SeparatedRepetitionIssue | null {
+  if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
+  const ignoreCase = options.ignoreCase === true;
+  const parser = new RegexParser(pattern, ignoreCase);
+  const node = parser.parse();
+  if (parser.exceededBudget) return "analysis budget exceeded";
+  if (containsUnboundedLookaround(node)) return "unbounded lookaround";
+  if (separator && fixedSeparatorCount(node, literalSymbol(separator[0], ignoreCase)) === null) {
+    return "separator overlap";
+  }
+  return null;
 }

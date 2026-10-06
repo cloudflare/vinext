@@ -79,3 +79,34 @@ if (analysisIssue) throw new Error(`Safe large alternation was rejected: ${analy
 if (analysisDuration > 1_000) {
   throw new Error(`Large alternation analysis took ${analysisDuration.toFixed(1)}ms`);
 }
+
+// A repeated param whose pattern can also consume its separator (`a+` joined
+// by `a`, or `a/a|a` joined by `/`) splits the same text many ways.
+for (const [matcher, nearMiss] of [
+  ["/{a:x(a+)}*/end", `/${"a".repeat(3_000)}!`],
+  ["/:x(a/a|a)*/end", `/${"a/".repeat(1_500)}a!`],
+  ["/{:x-}*/end", `/${"a-".repeat(1_500)}a!`],
+]) {
+  if (!matchPattern(nearMiss, matcher)) {
+    throw new Error(`Unsafe separated repeat did not fail closed: ${matcher}`);
+  }
+}
+
+// A lookaround that scans unboundedly is re-run for every repetition.
+for (const matcher of ["/:x((?:(?=a*b)a)+b)", "/:x((?!.*c)[^/]+)*"]) {
+  if (!matchPattern(`/${"a".repeat(3_000)}!`, matcher)) {
+    throw new Error(`Unsafe repeated lookaround did not fail closed: ${matcher}`);
+  }
+}
+
+// An alternation with an unbounded branch is checked at its boundaries like a
+// repetition, so a chain of overlapping ones is still rejected.
+for (const pattern of ["(?:a*|b)".repeat(8) + "c", ".*(\\d+|x)\\d+"]) {
+  if (!analyzeRegexSafety(pattern, { ignoreCase: true })) {
+    throw new Error(`Unsafe alternation sequence was accepted: ${pattern}`);
+  }
+}
+for (const pattern of ["x(?:\\d+|new)y", "(?:foo.*|bar)baz", "[^/]+(?:\\.(?:[^/.]+))?"]) {
+  const issue = analyzeRegexSafety(pattern, { ignoreCase: true });
+  if (issue) throw new Error(`Safe pattern was rejected: ${pattern} (${issue})`);
+}

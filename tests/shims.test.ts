@@ -13320,6 +13320,13 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ["/:path*.md", { "/docs/intro.md": true, "/docs/intro": false }],
     ["/blog-:slug", { "/blog-hello": true, "/blog-hello/x": false }],
     ["/About", { "/about": true }],
+    // A repeated `.*`/`.+` param matches the same paths as a single one.
+    ["/(.*)*", { "/": true, "/about": true, "/a/b": true }],
+    ["/:path(.+)+", { "/": false, "/about": true, "/a/b": true }],
+    ["/:path(.*)*/end", { "/end": true, "/a/end": true, "/a/b/end": true, "/a/b": false }],
+    ["/:name.:ext?", { "/file": true, "/file.txt": true, "/a.b.c": true, "/a/b": false }],
+    ["/:id(\\d+|new)", { "/12": true, "/new": true, "/abc": false, "/12/x": false }],
+    ["/:path(.*)/:lang?", { "/a": true, "/a/en": true, "/a/b/c": true, "/": true }],
   ];
 
   for (const [source, expected] of cases) {
@@ -13401,15 +13408,34 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     }
   });
 
-  // Next.js accepts these, but a repeated group that can match an empty value is a
-  // backtracking hazard, so vinext refuses them as it does middleware matchers.
-  it.each(["/(.*)*", "/:path(.+)+"])("ignores %s as an unsafe repeated group", async (source) => {
+  // A repeated `.*`/`.+` param compiles to the single-occurrence regex, which
+  // matches the same paths without path-to-regexp's exponential repeat.
+  it("matches a near miss for /:path(.*)*/end without backtracking", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [{ source: "/:path(.*)*/end", headers: [{ key: "x-matched", value: "1" }] }];
+    const start = performance.now();
+    expect(matchHeaders(`/${"a/".repeat(2_000)}not-end`, rules, ctx)).toEqual([]);
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  // Next.js accepts these, but each backtracks exponentially (or, for the
+  // lookarounds, quadratically) on a request path, so vinext refuses them as
+  // it does middleware matchers.
+  it.each([
+    ["/{a:x(a+)}*/end", `may match its separator "a"`, `/${"a".repeat(48)}!`],
+    ["/{:x-}*", `may match its separator "-"`, `/${"a-".repeat(30)}a`],
+    ["/:x(a/a|a)*/end", `may match its separator "/"`, `/${"a/".repeat(40)}a!`],
+    ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
+    ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
+  ])("ignores %s as an unsafe source", async (source, reason, pathname) => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
-      expect(matchHeaders("/about", rules, ctx)).toEqual([]);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("may match an empty value"));
+      const start = performance.now();
+      expect(matchHeaders(pathname, rules, ctx)).toEqual([]);
+      expect(performance.now() - start).toBeLessThan(1_000);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(reason));
     } finally {
       warn.mockRestore();
     }
