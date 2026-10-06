@@ -269,7 +269,7 @@ async function main() {
     exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
     exec("rm -rf .next", { cwd: nextjsDir });
 
-    console.log("  Warmup: vinext build...");
+    console.log("  Warmup: Vite build...");
     exec("./node_modules/.bin/vp build", { cwd: vinextDir, timeout: 120000 });
     exec("rm -rf dist", { cwd: vinextDir });
 

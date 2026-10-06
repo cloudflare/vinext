@@ -28,14 +28,21 @@
  */
 
 import { describe, it, expect, afterAll } from "vite-plus/test";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { build, createBuilder } from "vite";
+import { pathToFileURL } from "node:url";
+import { build, createBuilder, createServer, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+const NITRO_NODE_MODULES = path.resolve(
+  import.meta.dirname,
+  "../examples/app-router-nitro/node_modules",
+);
 
 // ── App Router (production) ─────────────────────────────────────────────────
 
@@ -339,4 +346,239 @@ describe("Pages Router invalid `_next/static/*` 404", () => {
       server.close();
     }
   }, 180_000);
+});
+
+// ── App Router on Nitro (production) ────────────────────────────────────────
+
+async function getAvailablePort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  return port;
+}
+
+async function startNitroServer(root: string): Promise<{ baseUrl: string; server: ChildProcess }> {
+  const port = await getAvailablePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn(process.execPath, [path.join(root, ".output/server/index.mjs")], {
+    cwd: root,
+    env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) },
+    stdio: "ignore",
+  });
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(baseUrl);
+      return { baseUrl, server };
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  server.kill("SIGTERM");
+  throw new Error(`Timed out waiting for ${baseUrl}`);
+}
+
+describe("App Router on Nitro invalid `_next/static/*` 404", () => {
+  const cleanups: Array<() => void> = [];
+  afterAll(() => {
+    for (const c of cleanups) c();
+  });
+
+  // Ported from Next.js:
+  //   - test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app.test.ts
+  //   - test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app-base-path.test.ts
+  //   - test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app-asset-prefix.test.ts
+  // https://github.com/vercel/next.js/tree/canary/test/e2e/invalid-static-asset-404-app
+  it.each([
+    ["{}", "/_next/static/invalid-path", "/invalid-path", true],
+    [`{ basePath: "/base" }`, "/base/_next/static/invalid-path", "/base/invalid-path", true],
+    [`{ assetPrefix: "/assets" }`, "/assets/_next/static/invalid-path", "/invalid-path", true],
+    [
+      `{ basePath: "/base", assetPrefix: "/assets" }`,
+      "/assets/_next/static/invalid-path",
+      "/base/invalid-path",
+      false,
+    ],
+  ] as const)(
+    "returns plain-text `Not Found` 404 for invalid `_next/static/*` with next.config %s",
+    async (config, assetPath, pagePath, withMiddleware) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-invalid-static-404-nitro-"));
+      cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+      fs.mkdirSync(path.join(root, "app"));
+      fs.symlinkSync(NITRO_NODE_MODULES, path.join(root, "node_modules"), "junction");
+      fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(path.join(root, "next.config.mjs"), `export default ${config};\n`);
+      fs.writeFileSync(
+        path.join(root, "app/layout.tsx"),
+        `export default function Root({ children }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(root, "app/page.tsx"),
+        `export default function Page() {
+  return <p>hello world</p>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(root, "app/not-found.tsx"),
+        `export default function NotFound() {
+  return <p>Custom Not Found</p>;
+}
+`,
+      );
+
+      const routePrefix = pagePath.slice(0, -"/invalid-path".length);
+      if (withMiddleware)
+        fs.writeFileSync(
+          path.join(root, "middleware.ts"),
+          `import { NextResponse } from "next/server";
+export function middleware(request) {
+  const pathname = request.nextUrl.pathname;
+  if (pathname.endsWith("/middleware-404")) {
+    return NextResponse.json({ error: "middleware not found" }, { status: 404 });
+  }
+  if (pathname.endsWith("/rewrite-missing")) {
+    return NextResponse.rewrite(new URL(${JSON.stringify(pagePath)}, request.url));
+  }
+  if (pathname.endsWith("/rewrite-asset")) {
+    return NextResponse.rewrite(new URL(${JSON.stringify(assetPath)}, request.url));
+  }
+  if (pathname.endsWith("/rewrite-ok")) {
+    return NextResponse.rewrite(new URL(${JSON.stringify(routePrefix + "/")}, request.url));
+  }
+  const response = NextResponse.next();
+  response.headers.set("x-static-middleware", "ran");
+  return response;
+}
+`,
+        );
+
+      const nitroModule = (await import(
+        pathToFileURL(path.join(NITRO_NODE_MODULES, "nitro/dist/vite.mjs")).href
+      )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [
+          vinext({ appDir: root }),
+          nitroModule.nitro({ buildDir: path.join(root, ".nitro") }),
+        ],
+      });
+      await builder.buildApp();
+
+      const { baseUrl, server } = await startNitroServer(root);
+      try {
+        // Nitro serves emitted assets itself; a miss reaches vinext's handler.
+        const res = await fetch(`${baseUrl}${assetPath}`);
+        expect(res.status).toBe(404);
+        expect(res.headers.get("content-type")).toMatch(/^text\/plain/);
+        expect(await res.text()).toBe("Not Found");
+        expect(res.headers.get("cache-control")).toContain("no-store");
+        if (withMiddleware) {
+          expect(res.headers.get("x-static-middleware")).toBe("ran");
+
+          // Next.js resolves middleware and rewrites before classifying an
+          // unmatched pathname as a static-asset miss (router-server.ts).
+          const assetRoot = assetPath.slice(0, -"invalid-path".length);
+          const middleware404 = await fetch(`${baseUrl}${assetRoot}middleware-404`);
+          expect(middleware404.status).toBe(404);
+          expect(middleware404.headers.get("content-type")).toMatch(/^application\/json/);
+          expect(await middleware404.json()).toEqual({ error: "middleware not found" });
+
+          const rewritten404 = await fetch(`${baseUrl}${assetRoot}rewrite-missing`);
+          expect(rewritten404.status).toBe(404);
+          expect(rewritten404.headers.get("content-type")).toMatch(/^text\/html/);
+          expect(await rewritten404.text()).toContain("Custom Not Found");
+
+          const rewrittenAsset = await fetch(`${baseUrl}${routePrefix}/rewrite-asset`);
+          expect(rewrittenAsset.status).toBe(404);
+          expect(await rewrittenAsset.text()).toBe("Not Found");
+
+          const rewrittenPage = await fetch(`${baseUrl}${assetRoot}rewrite-ok`);
+          expect(rewrittenPage.status).toBe(200);
+          expect(await rewrittenPage.text()).toContain("hello world");
+        }
+
+        const htmlRes = await fetch(`${baseUrl}${pagePath}`);
+        expect(htmlRes.status).toBe(404);
+        expect(await htmlRes.text()).toContain("Custom Not Found");
+      } finally {
+        server.kill("SIGTERM");
+      }
+    },
+    180_000,
+  );
+});
+
+// Next.js resolves both router trees before its missing-static fallback.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+describe("development static misses", () => {
+  it.each([
+    { name: "Pages", hybrid: false, catchAll: false },
+    { name: "hybrid", hybrid: true, catchAll: false },
+    { name: "hybrid App catch-all", hybrid: true, catchAll: true },
+  ])("preserves routing and cache policy for $name", async ({ hybrid, catchAll }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-static-dev-"));
+    fs.symlinkSync(ROOT_NODE_MODULES, path.join(root, "node_modules"), "junction");
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+    fs.mkdirSync(path.join(root, "pages"));
+    fs.writeFileSync(
+      path.join(root, "pages/index.tsx"),
+      "export default function Page() { return <p>Pages home</p>; }",
+    );
+    fs.writeFileSync(
+      path.join(root, "pages/404.tsx"),
+      "export default function Page() { return <p>Pages custom 404</p>; }",
+    );
+    if (hybrid) {
+      fs.mkdirSync(path.join(root, "app"));
+      fs.writeFileSync(
+        path.join(root, "app/layout.tsx"),
+        "export default function Layout({children}) { return <html><body>{children}</body></html>; }",
+      );
+      fs.mkdirSync(path.join(root, "app", catchAll ? "[...slug]" : "app-page"));
+      fs.writeFileSync(
+        path.join(root, "app", catchAll ? "[...slug]" : "app-page", "page.tsx"),
+        "export default function Page() { return <p>App owns this path</p>; }",
+      );
+    }
+    const server = await createServer({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: 0 },
+    });
+    try {
+      await server.listen();
+      const address = server.httpServer!.address();
+      if (!address || typeof address === "string") throw new Error("missing server address");
+      for (const pathname of ["/_next/static/missing", "/_next/static/missing.js"]) {
+        const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`);
+        if (catchAll) {
+          expect(response.status).toBe(200);
+          expect(await response.text()).toContain("App owns this path");
+        } else {
+          expect(response.status).toBe(404);
+          expect(response.headers.get("content-type")).toMatch(/^text\/plain/);
+          expect(response.headers.get("cache-control")).toContain("no-store");
+          expect(await response.text()).toBe("Not Found");
+        }
+      }
+    } finally {
+      await server.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

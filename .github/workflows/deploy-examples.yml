@@ -191,6 +191,17 @@ jobs:
             cache_backend: kv
             prewarm_e2e: true
             warm_cdn_cache: true
+          - name: static-assets-cache
+            project: static-assets-cache
+            working_directory: examples/static-assets-cache
+          - name: static-assets-pages
+            project: static-assets-pages
+            working_directory: examples/static-assets-pages
+            wrangler_config: dist/server/wrangler.json
+          - name: static-assets-pages-i18n
+            project: static-assets-pages-i18n
+            working_directory: examples/static-assets-pages-i18n
+            wrangler_config: dist/server/wrangler.json
           - name: static-export
             project: static-export
             working_directory: examples/static-export
@@ -199,7 +210,7 @@ jobs:
           - name: web
             project: vinext-web
             working_directory: apps/web
-            wrangler_config: dist/server/wrangler.json
+            response_store_worker: vinext-web-response-store
             warm_cdn_cache: true
             warm_cdn_target: https://vinext.dev
     steps:
@@ -239,7 +250,7 @@ jobs:
           '
 
       - name: Deploy configured Response Store service
-        if: matrix.example.name == 'response-store-demo' || (matrix.example.name == 'web' && github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: matrix.example.name == 'response-store-demo'
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -248,12 +259,17 @@ jobs:
 
       - name: Build example
         if: matrix.example.static_export != true
-        run: vp build
+        run: |
+          if [[ -f cloudflare.config.ts ]]; then
+            vp run build
+          else
+            vp build
+          fi
         working-directory: ${{ matrix.example.working_directory }}
 
       - name: Build static export
         if: matrix.example.static_export == true
-        run: vp exec vinext build
+        run: vp build
         working-directory: ${{ matrix.example.working_directory }}
 
       - name: Verify static export artifact
@@ -263,7 +279,7 @@ jobs:
 
       - name: Apply D1 migrations (benchmarks only)
         if: matrix.example.name == 'benchmarks' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -272,21 +288,37 @@ jobs:
 
       - name: Apply D1 migrations (web only)
         if: matrix.example.name == 'web' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/web
-          command: d1 migrations apply vinext-metrics --remote
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp run db:migrate:remote
+
+      - name: Deploy configured Response Store service with cf
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.response_store_worker && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RESPONSE_STORE_WORKER_NAME: ${{ matrix.example.response_store_worker }}
+        run: vp exec cf deploy --prebuilt --mode production --worker "$RESPONSE_STORE_WORKER_NAME"
 
       - name: Deploy to Cloudflare Workers (Production)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == ''
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: deploy --config ${{ matrix.example.wrangler_config }}
+
+      - name: Deploy Build Output with cf (Production)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp exec cf deploy --prebuilt --mode production
 
       - name: Bootstrap CDN warmup Worker (Production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.bootstrap_warm_cdn == true
@@ -319,26 +351,37 @@ jobs:
           WARM_CDN_TARGET: ${{ matrix.example.warm_cdn_target }}
           WORKER_NAME: ${{ matrix.example.worker_name }}
         run: |
-          args=(--skip-build --config "${{ matrix.example.wrangler_config }}" --experimental-warm-cdn-cache)
-          if [[ -n "$WORKER_NAME" ]]; then
-            args+=(--name "$WORKER_NAME")
+          args=(--skip-build --warm-cache)
+          if [[ ! -f cloudflare.config.ts ]]; then
+            args+=(--config "${{ matrix.example.wrangler_config }}")
+            if [[ -n "$WORKER_NAME" ]]; then
+              args+=(--name "$WORKER_NAME")
+            fi
           fi
           if [[ -n "$WARM_CDN_TARGET" ]]; then
-            args+=(--warm-cdn-target "$WARM_CDN_TARGET")
+            args+=(--warm-cache-target "$WARM_CDN_TARGET")
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
 
       - name: Deploy Preview Version
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !matrix.example.worker_name
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == '' && !matrix.example.worker_name
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
+      - name: Deploy Build Output Preview Version with cf
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp exec cf workers versions create --prebuilt --mode production --preview-alias pr-${{ github.event.pull_request.number }}
+
       - name: Deploy Named Preview Worker
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_name
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == '' && matrix.example.worker_name
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -350,7 +393,7 @@ jobs:
       # settings. A newly added assets-only Worker has no routes until this runs.
       - name: Apply Static Export Preview Routes
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.static_export == true
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -380,15 +423,19 @@ jobs:
             --skip-build
             --config "${{ matrix.example.wrangler_config }}"
             --name "$WORKER_NAME"
-            --experimental-warm-cdn-cache
+            --warm-cache
           )
           # The shared demo contains an intentionally late-dynamic page. The
           # origin-managed KV adapter cannot classify that streamed MISS as a
           # BYPASS, so its live E2E proves the prewarmed data hit directly.
           if [[ "$WARM_CDN_CERTIFY" == "true" ]]; then
-            args+=(--warm-cdn-certify)
+            args+=(--warm-cache-certify)
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
+
+      - name: Install browser for cache policy E2E
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        run: vp exec playwright install chromium
 
       - name: Verify deployed cache prewarm
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
@@ -462,6 +509,19 @@ jobs:
           tests/e2e/cloudflare-workers/web-worker.spec.ts
           tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
 
+      - name: Test deployed Static Assets cache
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-static-assets
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-cache.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-cache.vinext.workers.dev' }}
+        run: vp exec playwright test tests/e2e/cloudflare-static-assets
+
+      - name: Test deployed Pages Router Static Assets cache
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-static-assets-pages
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-pages.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-pages.vinext.workers.dev' }}
+          VINEXT_E2E_I18N_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-pages-i18n.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-pages-i18n.vinext.workers.dev' }}
+        run: vp exec playwright test tests/e2e/cloudflare-static-assets-pages
+
   cleanup-response-store:
     name: Clean up Workers Response Store services
     if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
@@ -525,6 +585,9 @@ jobs:
               { name: 'response-store-demo', project: 'response-store-demo' },
               { name: 'workers-cache', project: 'workers-cache' },
               { name: 'kv', project: 'kv' },
+              { name: 'static-assets-cache', project: 'static-assets-cache' },
+              { name: 'static-assets-pages', project: 'static-assets-pages' },
+              { name: 'static-assets-pages-i18n', project: 'static-assets-pages-i18n' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];

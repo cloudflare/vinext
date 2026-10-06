@@ -8,7 +8,7 @@ type CloudflareEnv = {
 };
 
 /**
- * Drizzle client bound to the D1 binding declared in wrangler.jsonc.
+ * Drizzle client bound to the D1 binding declared in cloudflare.config.ts.
  *
  * Both server components (RSC) and route handlers import this. The Cloudflare
  * vite plugin makes `cloudflare:workers` available in dev and production.

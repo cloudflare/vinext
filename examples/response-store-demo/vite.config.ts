@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
 import type { ResponseStoreLocationHint } from "@cloudflare/workers-response-store";
@@ -19,7 +19,7 @@ export default defineConfig({
     vinext({
       cache: kv
         ? {
-            ...(cacheBackend === "workers-cache" ? { cdn: cdnAdapter() } : {}),
+            ...(cacheBackend === "workers-cache" ? { cdn: workersCacheCdnAdapter() } : {}),
             data: kvDataAdapter({ appPrefix: process.env.VINEXT_KV_APP_PREFIX ?? cacheBackend }),
           }
         : responseStoreAdapter({

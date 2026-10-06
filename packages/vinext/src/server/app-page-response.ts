@@ -1,5 +1,6 @@
 import {
   buildRevalidateCacheControl,
+  NEVER_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -54,6 +55,11 @@ type ResolveAppPageResponsePolicyBaseOptions = {
   isForceDynamic: boolean;
   isForceStatic: boolean;
   isProduction: boolean;
+  /**
+   * `false` for routes Next.js classifies as dynamic (ƒ). Their responses are
+   * never cached, whatever their revalidate.
+   */
+  isStaticEligible: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
 };
@@ -148,15 +154,28 @@ function applyPrerenderCacheTagsHeader(headers: Headers, cacheTags: readonly str
   }
 }
 
+/**
+ * Next.js sends `private, no-cache, no-store, max-age=0, must-revalidate` for
+ * an App page response it knows is dynamic. Dev responses never cache, so they
+ * keep vinext's dev `no-store` header.
+ */
+export function resolveUncacheableCacheControl(isProduction: boolean): string {
+  return isProduction ? NEVER_CACHE_CONTROL : NO_STORE_CACHE_CONTROL;
+}
+
 export function resolveAppPageRscResponsePolicy(
   options: ResolveAppPageRscResponsePolicyOptions,
 ): AppPageResponsePolicy {
   if (options.isDraftMode) {
-    return { cacheControl: NO_STORE_CACHE_CONTROL };
+    return { cacheControl: resolveUncacheableCacheControl(options.isProduction) };
+  }
+
+  if (options.isStaticEligible === false) {
+    return { cacheControl: resolveUncacheableCacheControl(options.isProduction) };
   }
 
   if (options.isForceDynamic || options.dynamicUsedDuringBuild) {
-    return { cacheControl: NO_STORE_CACHE_CONTROL };
+    return { cacheControl: resolveUncacheableCacheControl(options.isProduction) };
   }
 
   // revalidate = 0 means "always dynamic, never cache" — equivalent to
@@ -164,16 +183,27 @@ export function resolveAppPageRscResponsePolicy(
   // isForceStatic/isDynamicError branch below, which uses !revalidateSeconds
   // and would incorrectly catch 0 as a falsy value.
   if (options.revalidateSeconds === 0) {
-    return { cacheControl: NO_STORE_CACHE_CONTROL };
+    return { cacheControl: resolveUncacheableCacheControl(options.isProduction) };
   }
 
+  // Only force-static and dynamic = "error" renders can't turn dynamic while
+  // streaming, so only they keep their static headers unconditionally.
   if (
-    ((options.isForceStatic || options.isDynamicError) && !options.revalidateSeconds) ||
-    options.revalidateSeconds === Infinity
+    (options.isForceStatic || options.isDynamicError) &&
+    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity)
   ) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
       cacheState: "STATIC",
+    };
+  }
+
+  if (options.revalidateSeconds === Infinity) {
+    return {
+      cacheControl: STATIC_CACHE_CONTROL,
+      // Like a finite revalidate, a production MISS lets the finalizer apply
+      // pending-dynamic headers in case the render reaches a dynamic API late.
+      cacheState: options.isProduction ? "MISS" : "STATIC",
     };
   }
 
@@ -196,14 +226,21 @@ export function resolveAppPageHtmlResponsePolicy(
 ): AppPageHtmlResponsePolicy {
   if (options.isDraftMode) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: resolveUncacheableCacheControl(options.isProduction),
+      shouldWriteToCache: false,
+    };
+  }
+
+  if (options.isStaticEligible === false) {
+    return {
+      cacheControl: resolveUncacheableCacheControl(options.isProduction),
       shouldWriteToCache: false,
     };
   }
 
   if (options.isForceDynamic) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: resolveUncacheableCacheControl(options.isProduction),
       shouldWriteToCache: false,
     };
   }
@@ -228,12 +265,15 @@ export function resolveAppPageHtmlResponsePolicy(
   // === 0 and would incorrectly return a static Cache-Control.
   if (options.revalidateSeconds === 0) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: resolveUncacheableCacheControl(options.isProduction),
       shouldWriteToCache: false,
     };
   }
 
-  if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
+  if (
+    (options.isForceStatic || options.isDynamicError) &&
+    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity)
+  ) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
       cacheState: options.isProduction ? "MISS" : "STATIC",
@@ -243,7 +283,7 @@ export function resolveAppPageHtmlResponsePolicy(
 
   if (options.dynamicUsedDuringRender) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: resolveUncacheableCacheControl(options.isProduction),
       shouldWriteToCache: false,
     };
   }

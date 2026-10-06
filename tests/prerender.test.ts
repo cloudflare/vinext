@@ -22,10 +22,13 @@ import {
 import {
   extractRscPayloadFromPrerenderedHtml,
   resolveParentParams,
+  routeStaticParamSets,
   writePrerenderIndex,
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
+import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
+import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
@@ -406,106 +409,90 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
-  it("does not seed metadata artifacts for no-cache or no-store responses", async () => {
-    const root = tmpDir("vinext-prerender-metadata-cache-admission-");
-    const outDir = path.join(root, "out");
-    const server = createServer((req, res) => {
-      if (req.url === "/__vinext/prerender/metadata-routes") {
-        res.setHeader("content-type", "application/json");
-        res.end(
-          JSON.stringify([
+  it.each([0, 60])(
+    "uses metadata framework revalidate=%s independently of browser no-store",
+    async (revalidate) => {
+      const root = tmpDir("vinext-prerender-metadata-cache-admission-");
+      const outDir = path.join(root, "out");
+      const server = createServer((req, res) => {
+        if (req.url === "/__vinext/prerender/metadata-routes") {
+          res.setHeader("content-type", "application/json");
+          res.end(
+            JSON.stringify([
+              {
+                path: "/manifest.webmanifest",
+                routePattern: "/manifest.webmanifest",
+                routeSegments: [],
+              },
+              { path: "/icon", routePattern: "/icon", routeSegments: [] },
+            ]),
+          );
+          return;
+        }
+        if (req.url === "/manifest.webmanifest") {
+          res.setHeader("content-type", "application/manifest+json");
+          res.setHeader("cache-control", "no-cache");
+          res.setHeader("x-vinext-prerender-cache-life", JSON.stringify({ revalidate }));
+          res.end('{"name":"runtime"}');
+          return;
+        }
+        if (req.url === "/icon") {
+          res.setHeader("content-type", "image/png");
+          res.setHeader("cache-control", "no-store");
+          res.setHeader("x-vinext-prerender-cache-life", JSON.stringify({ revalidate }));
+          res.end("runtime image");
+          return;
+        }
+        res.statusCode = 404;
+        res.end("<html>not found</html>");
+      });
+
+      const port = await listen(server);
+      try {
+        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const config = await resolveNextConfig({});
+        const result = await prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(root, "dist", "server", "index.js"),
+          routes: [],
+          metadataRoutes: [
             {
-              path: "/manifest.webmanifest",
-              routePattern: "/manifest.webmanifest",
+              type: "manifest",
+              isDynamic: true,
+              filePath: path.join(root, "app", "manifest.ts"),
+              routePrefix: "",
               routeSegments: [],
+              servedUrl: "/manifest.webmanifest",
+              contentType: "application/manifest+json",
             },
-            { path: "/icon", routePattern: "/icon", routeSegments: [] },
-          ]),
-        );
-        return;
-      }
-      if (req.url === "/manifest.webmanifest") {
-        res.setHeader("content-type", "application/manifest+json");
-        res.setHeader("cache-control", "no-cache");
-        res.end('{"name":"runtime"}');
-        return;
-      }
-      if (req.url === "/icon") {
-        res.setHeader("content-type", "image/png");
-        res.setHeader("cache-control", "no-store");
-        res.end("runtime image");
-        return;
-      }
-      res.statusCode = 404;
-      res.end("<html>not found</html>");
-    });
+            {
+              type: "icon",
+              isDynamic: true,
+              filePath: path.join(root, "app", "icon.tsx"),
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/icon",
+              contentType: "image/png",
+            },
+          ],
+          outDir,
+          config,
+          _prodServer: { server, port },
+        });
 
-    const port = await listen(server);
-    try {
-      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
-      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-      const config = await resolveNextConfig({});
-      const result = await prerenderApp({
-        mode: "default",
-        rscBundlePath: path.join(root, "dist", "server", "index.js"),
-        routes: [],
-        metadataRoutes: [
-          {
-            type: "manifest",
-            isDynamic: true,
-            filePath: path.join(root, "app", "manifest.ts"),
-            routePrefix: "",
-            routeSegments: [],
-            servedUrl: "/manifest.webmanifest",
-            contentType: "application/manifest+json",
-          },
-          {
-            type: "icon",
-            isDynamic: true,
-            filePath: path.join(root, "app", "icon.tsx"),
-            routePrefix: "",
-            routeSegments: [],
-            servedUrl: "/icon",
-            contentType: "image/png",
-          },
-        ],
-        outDir,
-        config,
-        _prodServer: { server, port },
-      });
-
-      expect(findRoute(result.routes, "/manifest.webmanifest")).toMatchObject({
-        status: "skipped",
-        reason: "dynamic",
-      });
-      expect(findRoute(result.routes, "/icon")).toMatchObject({
-        status: "skipped",
-        reason: "dynamic",
-      });
-      expect(fs.existsSync(path.join(outDir, "manifest.webmanifest.route"))).toBe(false);
-      expect(fs.existsSync(path.join(outDir, "icon.route"))).toBe(false);
-
-      const manifest = JSON.parse(
-        fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"),
-      ) as { routes: Array<{ route: string; status: string }> };
-      expect(manifest.routes).toEqual(
-        expect.arrayContaining([
-          { route: "/manifest.webmanifest", status: "skipped", reason: "dynamic" },
-          { route: "/icon", status: "skipped", reason: "dynamic" },
-        ]),
-      );
-      expect(
-        manifest.routes.some(
-          (route) =>
-            route.status === "rendered" &&
-            (route.route === "/manifest.webmanifest" || route.route === "/icon"),
-        ),
-      ).toBe(false);
-    } finally {
-      await closeServer(server);
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+        for (const route of ["/manifest.webmanifest", "/icon"]) {
+          expect(findRoute(result.routes, route)).toMatchObject(
+            revalidate === 0 ? { status: "skipped", reason: "dynamic" } : { status: "rendered" },
+          );
+          expect(fs.existsSync(path.join(outDir, `${route.slice(1)}.route`))).toBe(revalidate > 0);
+        }
+      } finally {
+        await closeServer(server);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("writes the .rsc file from rendered HTML without a second RSC request", async () => {
     const root = tmpDir("vinext-prerender-rsc-dedupe-");
@@ -1357,6 +1344,30 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(html).toContain('"staleTimeSeconds":30');
   });
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  // A "use cache" page, and its "use cache" generateMetadata/generateViewport,
+  // receive `{ params, searchParams }`. Next.js leaves searchParams out of a
+  // public page cache's key and serialized arguments, so reading them must not
+  // turn the build-time render dynamic. That holds whether the cache functions
+  // are defined in the page file, re-exported from another module, or bound.
+  it.each(["inline", "file", "reexport", "bound"])(
+    'prerenders %s "use cache" pages that receive page props',
+    (directive) => {
+      const r = findRoute(results, `/use-cache-page-props/${directive}/prerendered`);
+      expect(r).toMatchObject({
+        route: `/use-cache-page-props/${directive}/:slug`,
+        status: "rendered",
+      });
+      const html = fs.readFileSync(
+        path.join(outDir, `use-cache-page-props/${directive}/prerendered.html`),
+        "utf-8",
+      );
+      expect(html).toContain("prerendered");
+      expect(html).toContain("<title>use cache page props prerendered</title>");
+    },
+  );
+
   it("renders inline server actions during the production build phase", () => {
     const r = findRoute(results, "/prerender-inline-server-action");
     expect(r).toMatchObject({
@@ -1521,6 +1532,21 @@ describe("prerenderApp — default mode (app-basic)", () => {
   it("renders /dashboard speculatively", () => {
     const r = findRoute(results, "/dashboard");
     expect(r).toMatchObject({ route: "/dashboard", status: "rendered", revalidate: false });
+  });
+
+  it("skips a client page that reads searchParams in SSR", () => {
+    // Next.js's build makes a client page that reads searchParams dynamic.
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    expect(findRoute(results, "/client-page-search-params")).toMatchObject({
+      route: "/client-page-search-params",
+      status: "skipped",
+      reason: "dynamic",
+    });
+    // force-static reads an empty query, which isn't a read.
+    expect(findRoute(results, "/client-page-search-params/force-static")).toMatchObject({
+      status: "rendered",
+      revalidate: false,
+    });
   });
 
   it("renders layout-only routes whose content comes from parallel slots", () => {
@@ -1935,6 +1961,484 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
   });
 });
 
+describe("prerenderApp — layout generateStaticParams", () => {
+  // Next.js walks every segment of a route's loader tree top-down, passing each
+  // parent param set to the next generateStaticParams, layouts included
+  // (build/static-paths/app.ts generateRouteStaticParams).
+  it("composes the last dynamic segment's layout with the layouts above it under output: 'export'", async () => {
+    const root = tmpDir("vinext-prerender-layout-gsp-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    const writeAppFile = (relativePath: string, content: string) => {
+      const filePath = path.join(appDir, relativePath);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    };
+    const layout = (params: string) =>
+      [
+        `export function generateStaticParams() { return [${params}]; }`,
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n");
+    const page = "export default function Page() { return null; }\n";
+    writeAppFile("[lang]/layout.tsx", layout("{ lang: 'en' }"));
+    writeAppFile("[lang]/[category]/layout.tsx", layout("{ category: 'news' }"));
+    writeAppFile("[lang]/[category]/details/page.tsx", page);
+    writeAppFile("single/[topic]/layout.tsx", layout("{ topic: 'sport' }"));
+    writeAppFile("single/[topic]/details/page.tsx", page);
+
+    const staticParamsByKey: Record<string, unknown> = {
+      "layouts:[lang]": [{ lang: "en" }],
+      "layouts:[lang]/[category]": [{ category: "news" }],
+      "layouts:single/[topic]": [{ topic: "sport" }],
+    };
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(staticParamsByKey[url.searchParams.get("pattern") ?? ""] ?? null));
+        return;
+      }
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<html><body>" +
+          runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "export",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({ output: "export" }),
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(result.routes, "/en/news/details")).toMatchObject({
+        route: "/:lang/:category/details",
+        status: "rendered",
+      });
+      expect(findRoute(result.routes, "/single/sport/details")).toMatchObject({
+        route: "/single/:topic/details",
+        status: "rendered",
+      });
+      expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Next.js validates the composed layout params against the route's pathname
+  // params (build/static-paths/app.ts validateParams), so a non-string value
+  // for a single dynamic segment is rejected rather than rendered.
+  it("rejects a layout-only param set whose values do not fit the route pattern", async () => {
+    const root = tmpDir("vinext-prerender-layout-gsp-invalid-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(path.join(appDir, "[id]", "details"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "[id]", "layout.tsx"),
+      [
+        "export function generateStaticParams() { return [{ id: ['a', 'b'] }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(appDir, "[id]", "details", "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+
+    const renderedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        res.setHeader("content-type", "application/json");
+        const pattern = url.searchParams.get("pattern");
+        res.end(JSON.stringify(pattern === "layouts:[id]" ? [{ id: ["a", "b"] }] : null));
+        return;
+      }
+      renderedPaths.push(url.pathname);
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<html><body>" +
+          runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "export",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({ output: "export" }),
+        _prodServer: { server, port },
+      });
+
+      expect(result.routes.find((route) => route.route === "/:id/details")).toMatchObject({
+        status: "error",
+        error: expect.stringContaining(
+          "Parameter id from generateStaticParams for /:id/details must be a string.",
+        ),
+      });
+      expect(renderedPaths.filter((pathname) => pathname.endsWith("/details"))).toEqual([]);
+      expect(fs.existsSync(path.join(outDir, "a%2Cb"))).toBe(false);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("prerenderApp — layout generateStaticParams contract", () => {
+  async function prerenderLayoutApp(
+    files: Record<string, string>,
+    staticParamsByKey: Record<string, unknown>,
+    mode: "default" | "export" = "default",
+  ) {
+    const root = tmpDir("vinext-prerender-layout-contract-");
+    const appDir = path.join(root, "app");
+    for (const [relativePath, content] of Object.entries(files)) {
+      const filePath = path.join(appDir, relativePath);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    }
+    const renderedPaths: string[] = [];
+    const staticParamRequests: { pattern: string | null; parentParams: string | null }[] = [];
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        staticParamRequests.push({
+          pattern: url.searchParams.get("pattern"),
+          parentParams: url.searchParams.get("parentParams"),
+        });
+        const staticParams = staticParamsByKey[url.searchParams.get("pattern") ?? ""];
+        res.setHeader("content-type", "application/json");
+        // A resolver runs through the real endpoint, as in a built server.
+        if (typeof staticParams === "function") {
+          void handleAppPrerenderEndpoint(new Request(url), {
+            isPrerenderEnabled: () => true,
+            pathname: url.pathname,
+            staticParamsMap: { [url.searchParams.get("pattern") ?? ""]: staticParams as never },
+          }).then(async (response) => {
+            res.statusCode = response?.status ?? 404;
+            res.end(await response?.text());
+          });
+          return;
+        }
+        res.end(JSON.stringify(staticParams ?? null));
+        return;
+      }
+      // The raw request target, so an empty segment ("//details") shows.
+      renderedPaths.push((req.url ?? "").split("?")[0]);
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<html><body>" +
+          runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode,
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir: path.join(root, "out"),
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+      return { result, renderedPaths, staticParamRequests };
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+  const layout = "export default function Layout({ children }) { return children; }\n";
+  const page = "export default function Page() { return null; }\n";
+
+  // Outside a partial prerender, Next.js skips a set whose required pathname
+  // value is empty rather than building a path with an empty segment
+  // (build/static-paths/app.ts buildAppStaticPaths).
+  it("skips a layout-only set with an empty required value", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[id]/layout.tsx": layout, "[id]/details/page.tsx": page },
+      { "layouts:[id]": [{ id: "" }, { id: "a" }] },
+    );
+
+    expect(renderedPaths.filter((pathname) => pathname.endsWith("/details"))).toEqual([
+      "/a/details",
+    ]);
+    expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+  });
+
+  // Next.js's validateParams throws, failing `next build` in every mode.
+  it("fails a default build when a layout-only set breaks the route's param contract", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[id]/layout.tsx": layout, "[id]/details/page.tsx": page },
+      { "layouts:[id]": [{ id: ["a"] }] },
+    );
+
+    expect(result.routes.find((route) => route.route === "/:id/details")).toMatchObject({
+      status: "error",
+      fatal: true,
+      error: expect.stringContaining(
+        "Parameter id from generateStaticParams for /:id/details must be a string.",
+      ),
+    });
+    expect(renderedPaths.filter((pathname) => pathname.endsWith("/details"))).toEqual([]);
+  });
+
+  // Next.js validates the final params composed from the layouts and the page
+  // (build/static-paths/app.ts validateParams), not only layout-only sets.
+  it("rejects a layout-plus-page set that breaks the route's param contract", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[id]/mid/layout.tsx": layout, "[id]/mid/[slug]/page.tsx": page },
+      {
+        "layouts:[id]/mid": [{ id: ["a", "b"] }],
+        "/:id/mid/:slug": [{ slug: "ok" }],
+      },
+    );
+
+    expect(result.routes.find((route) => route.route === "/:id/mid/:slug")).toMatchObject({
+      status: "error",
+      fatal: true,
+      error: expect.stringContaining(
+        "Parameter id from generateStaticParams for /:id/mid/:slug must be a string.",
+      ),
+    });
+    expect(renderedPaths.filter((pathname) => pathname.includes("/mid/"))).toEqual([]);
+  });
+
+  // Next.js fails an export build whose generated params leave out a pathname
+  // param (build/static-paths/app.ts buildAppStaticPaths), instead of
+  // prerendering none of them as a normal build does.
+  it("fails a static export whose composed sets are incomplete", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[lang]/layout.tsx": layout, "[lang]/[slug]/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/:slug": [{ slug: "x" }, {}] },
+      "export",
+    );
+
+    expect(result.routes.find((route) => route.route === "/:lang/:slug")).toMatchObject({
+      status: "error",
+      error: expect.stringContaining(
+        'Page "/:lang/:slug" returned incomplete params from "generateStaticParams()". With "output: export", every params object must include all dynamic route parameters. Missing: "slug".',
+      ),
+    });
+    expect(renderedPaths.filter((pathname) => pathname.startsWith("/en"))).toEqual([]);
+  });
+
+  // Next.js calls each loader-tree segment's generateStaticParams as its own
+  // step, and calls the next one once with `{}` while no parent sets exist
+  // (build/static-paths/app.ts generateRouteStaticParams), so a route group's
+  // layout at the same prefix still runs after the layout above returns [].
+  it("calls a same-prefix route group layout once with no params after an empty layout", async () => {
+    const { result, renderedPaths, staticParamRequests } = await prerenderLayoutApp(
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/(group)/layout.tsx": layout,
+        "[lang]/(group)/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": [],
+        "layouts:[lang]/(group)": [{ lang: "en" }],
+        "/:lang/:slug": [{ slug: "x" }],
+      },
+    );
+
+    expect(staticParamRequests).toEqual([
+      { pattern: "layouts:[lang]", parentParams: null },
+      { pattern: "layouts:[lang]/(group)", parentParams: null },
+      { pattern: "/:lang/:slug", parentParams: JSON.stringify({ lang: "en" }) },
+    ]);
+    expect(renderedPaths).toContain("/en/x");
+    expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+  });
+
+  // Outside a partial prerender and export, Next.js passes each parent set
+  // through a generateStaticParams that returns no params, the route's own
+  // included (build/static-paths/app.ts generateRouteStaticParams).
+  it("keeps a layout's params when the route's own generateStaticParams returns none", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[lang]/layout.tsx": layout, "[lang]/details/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/details": [] },
+    );
+
+    expect(renderedPaths).toContain("/en/details");
+    expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+  });
+
+  it("passes parents through an empty layout at the route's own pattern", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/[slug]/layout.tsx": layout,
+        "[lang]/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": [{ lang: "en" }],
+        "/:lang/:slug": createAppPrerenderStaticParamsResolver([() => [], () => [{ slug: "x" }]]),
+      },
+    );
+
+    expect(renderedPaths).toContain("/en/x");
+    expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+  });
+
+  // Next.js skips a set whose required scalar param is empty
+  // (build/static-paths/app.ts), so a page reached after an empty layout at
+  // the same pattern can't queue `/` for `/:id`.
+  it("skips an empty required param reached after an empty layout at the route's own pattern", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[id]/layout.tsx": layout, "[id]/page.tsx": page },
+      { "/:id": createAppPrerenderStaticParamsResolver([() => [], () => [{ id: "" }]]) },
+    );
+
+    expect(renderedPaths).not.toContain("/");
+    expect(result.routes.find((route) => route.route === "/:id")).toMatchObject({
+      status: "skipped",
+    });
+  });
+
+  // A passed-through set that leaves a pathname param out is incomplete, so
+  // Next.js prerenders none of the route's paths (hadAllParamsGenerated) and
+  // leaves them to on-demand generation.
+  it("still skips an incomplete set passed through an empty own result", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[lang]/layout.tsx": layout, "[lang]/[slug]/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/:slug": [] },
+    );
+
+    expect(result.routes.find((route) => route.route === "/:lang/:slug")).toMatchObject({
+      status: "skipped",
+      reason: "empty-static-params",
+    });
+    expect(renderedPaths.filter((pathname) => pathname.startsWith("/en"))).toEqual([]);
+  });
+
+  // Next.js rejects malformed generateStaticParams output in every mode
+  // (build/static-paths/app.ts callGenerateStaticParams), so a later layout
+  // must not run as if the malformed one had returned [].
+  it("fails the build when a layout's malformed output precedes a valid route group layout", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/(group)/layout.tsx": layout,
+        "[lang]/(group)/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": createAppPrerenderStaticParamsResolver([() => undefined]),
+        "layouts:[lang]/(group)": createAppPrerenderStaticParamsResolver([() => [{ lang: "en" }]]),
+        "/:lang/:slug": createAppPrerenderStaticParamsResolver([() => [{ slug: "x" }]]),
+      },
+    );
+
+    expect(result.routes.find((route) => route.route === "/:lang/:slug")).toMatchObject({
+      status: "error",
+      fatal: true,
+      error: expect.stringContaining("generateStaticParams must return an array"),
+    });
+    expect(renderedPaths.filter((pathname) => pathname.startsWith("/en"))).toEqual([]);
+  });
+
+  // Next.js fails an export build on any generateStaticParams call that
+  // returns no params (build/static-paths/app.ts callGenerateStaticParams),
+  // including the route's own segments, whether or not layouts above it
+  // supplied parent sets.
+  it.each([
+    [
+      "after its layouts supply parent sets",
+      { "[lang]/layout.tsx": layout, "[lang]/[slug]/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/:slug": [] },
+      "/:lang/:slug",
+    ],
+    ["with no parent sets", { "[slug]/page.tsx": page }, { "/:slug": [] }, "/:slug"],
+    [
+      "from a layout at its own pattern",
+      {
+        "[lang]/layout.tsx": layout,
+        "[lang]/[slug]/layout.tsx": layout,
+        "[lang]/[slug]/page.tsx": page,
+      },
+      {
+        "layouts:[lang]": [{ lang: "en" }],
+        "/:lang/:slug": createAppPrerenderStaticParamsResolver([() => [], () => [{ slug: "x" }]]),
+      },
+      "/:lang/:slug",
+    ],
+  ])(
+    "fails a static export when the route's own generateStaticParams returns no params %s",
+    async (_label, files, staticParamsByKey, pattern) => {
+      const { result, renderedPaths } = await prerenderLayoutApp(
+        files,
+        staticParamsByKey,
+        "export",
+      );
+
+      expect(result.routes.find((route) => route.route === pattern)).toMatchObject({
+        status: "error",
+        error: expect.stringContaining(
+          `Page "${pattern}" returned an empty array from "generateStaticParams()". With "output: export", at least one route must be generated.`,
+        ),
+      });
+      expect(result.routes.some((route) => route.status === "skipped")).toBe(false);
+      expect(renderedPaths.filter((pathname) => !pathname.startsWith("/__vinext"))).toEqual([]);
+    },
+  );
+});
+
+describe("routeStaticParamSets", () => {
+  // Ported from Next.js build/static-paths/app.ts buildAppStaticPaths.
+  it("skips sets with an empty required value but keeps an empty optional catch-all", () => {
+    expect(
+      routeStaticParamSets({ pattern: "/:id/docs/:path*" }, [
+        { id: "", path: ["a"] },
+        { id: "b", path: null },
+        { id: "c", path: [] },
+      ]),
+    ).toEqual([
+      { id: "b", path: [] },
+      { id: "c", path: [] },
+    ]);
+  });
+
+  it("prerenders none of the sets unless every set names every pathname param", () => {
+    expect(routeStaticParamSets({ pattern: "/:a/:b" }, [{ a: "x", b: "y" }, { a: "z" }])).toEqual(
+      [],
+    );
+    expect(() =>
+      routeStaticParamSets({ pattern: "/:a/:b" }, [{ a: "x", b: "y" }, { a: "z" }], {
+        staticExport: true,
+      }),
+    ).toThrow('Missing: "b".');
+  });
+
+  it("rejects a set whose value does not fit its segment", () => {
+    expect(() => routeStaticParamSets({ pattern: "/:id" }, [{ id: 1 }])).toThrow(
+      "Parameter id from generateStaticParams for /:id must be a string.",
+    );
+  });
+});
+
 describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => {
   async function prerenderDynamicRootParamRoute(
     cacheComponents: boolean,
@@ -2335,13 +2839,17 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
 
 // ─── resolveParentParams unit tests ─────────────────────────────────────────
 
-function mockRoute(pattern: string, opts: { pagePath?: string | null } = {}): AppRoute {
+function mockRoute(
+  pattern: string,
+  opts: { layoutPrefixes?: string[]; pagePath?: string | null } = {},
+): AppRoute {
   const parts = pattern.split("/").filter(Boolean);
+  const layoutPrefixes = opts.layoutPrefixes ?? [];
   return {
     pattern,
     pagePath: opts.pagePath ?? `/app${pattern}/page.tsx`,
     routePath: null,
-    layouts: [],
+    layouts: layoutPrefixes.map((prefix) => `/app${prefix}/layout.tsx`),
     templates: [],
     parallelSlots: [],
     loadingPath: null,
@@ -2353,8 +2861,16 @@ function mockRoute(pattern: string, opts: { pagePath?: string | null } = {}): Ap
     forbiddenPath: null,
     unauthorizedPaths: [],
     unauthorizedPath: null,
-    routeSegments: [],
-    layoutTreePositions: [],
+    routeSegments: parts.map((part) =>
+      part.startsWith(":")
+        ? part.endsWith("+")
+          ? `[...${part.slice(1, -1)}]`
+          : part.endsWith("*")
+            ? `[[...${part.slice(1, -1)}]]`
+            : `[${part.slice(1)}]`
+        : part,
+    ),
+    layoutTreePositions: layoutPrefixes.map((prefix) => prefix.split("/").filter(Boolean).length),
     isDynamic: parts.some((p) => p.startsWith(":")),
     params: parts
       .filter((p) => p.startsWith(":"))
@@ -2380,9 +2896,9 @@ describe("resolveParentParams", () => {
   it("resolves layout-level parent generateStaticParams without requiring a parent page", async () => {
     // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
-    const child = mockRoute("/:lang/:locale/other/:slug");
+    const child = mockRoute("/:lang/:locale/other/:slug", { layoutPrefixes: ["/:lang/:locale"] });
     const staticParamsMap: StaticParamsMap = {
-      "/:lang/:locale": async () => [
+      "layouts:[lang]/[locale]": async () => [
         { lang: "en", locale: "us" },
         { lang: "es", locale: "es" },
       ],
@@ -2396,6 +2912,26 @@ describe("resolveParentParams", () => {
     ]);
   });
 
+  it("resolves parent params from layouts, never from a sibling page at the same prefix", async () => {
+    // Next.js composes a route's params from the generateStaticParams of the
+    // segments in its own loader tree only (build/static-paths/app.ts).
+    const child = mockRoute("/shop/:category/:item", { layoutPrefixes: ["/shop/:category"] });
+    const staticParamsMap: StaticParamsMap = {
+      "/shop/:category": async () => [{ category: "sibling" }],
+      "layouts:shop/[category]": async () => [{ category: "layout" }],
+    };
+
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([
+      { category: "layout" },
+    ]);
+    await expect(
+      resolveParentParams(mockRoute("/:category/details", { layoutPrefixes: ["/:category"] }), {
+        "/:category": async () => [],
+        "layouts:[category]": async () => [{ category: "layout" }],
+      }),
+    ).resolves.toEqual([{ category: "layout" }]);
+  });
+
   it("returns empty array when parent has no generateStaticParams", async () => {
     const child = mockRoute("/shop/:category/:item");
     const staticParamsMap: StaticParamsMap = {};
@@ -2404,7 +2940,9 @@ describe("resolveParentParams", () => {
   });
 
   it("skips missing parent providers but bails on malformed non-array results", async () => {
-    const child = mockRoute("/shop/:category/:item/:slug");
+    const child = mockRoute("/shop/:category/:item/:slug", {
+      layoutPrefixes: ["/shop/:category", "/shop/:category/:item"],
+    });
     const calls: Record<string, string | string[]>[] = [];
     const itemGenerateStaticParams = async ({
       params,
@@ -2415,8 +2953,8 @@ describe("resolveParentParams", () => {
       return [{ item: "shoes" }];
     };
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => null,
-      "/shop/:category/:item": itemGenerateStaticParams,
+      "layouts:shop/[category]": async () => null,
+      "layouts:shop/[category]/[item]": itemGenerateStaticParams,
     };
 
     const missingProviderResult = await resolveParentParams(child, staticParamsMap);
@@ -2426,8 +2964,8 @@ describe("resolveParentParams", () => {
 
     calls.length = 0;
     const malformedProviderResult = await resolveParentParams(child, {
-      "/shop/:category": async () => undefined,
-      "/shop/:category/:item": itemGenerateStaticParams,
+      "layouts:shop/[category]": async () => undefined,
+      "layouts:shop/[category]/[item]": itemGenerateStaticParams,
     });
 
     expect(malformedProviderResult).toEqual([]);
@@ -2435,30 +2973,138 @@ describe("resolveParentParams", () => {
   });
 
   it("resolves single parent dynamic segment", async () => {
-    const child = mockRoute("/shop/:category/:item");
+    const child = mockRoute("/shop/:category/:item", { layoutPrefixes: ["/shop/:category"] });
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => [{ category: "electronics" }, { category: "clothing" }],
+      "layouts:shop/[category]": async () => [
+        { category: "electronics" },
+        { category: "clothing" },
+      ],
     };
     const result = await resolveParentParams(child, staticParamsMap);
     expect(result).toEqual([{ category: "electronics" }, { category: "clothing" }]);
   });
 
-  it("can include a provider for the last dynamic segment", async () => {
-    const child = mockRoute("/:category/foo");
+  it("includes the last dynamic segment's layout when static segments follow it", async () => {
+    const child = mockRoute("/:category/foo", { layoutPrefixes: ["/:category"] });
     const staticParamsMap: StaticParamsMap = {
-      "/:category": async () => [{ category: "news" }],
+      "layouts:[category]": async () => [{ category: "news" }],
     };
 
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([
+      { category: "news" },
+    ]);
+  });
+
+  it("composes every layout above the route's own pattern top-down", async () => {
+    // Next.js walks every segment of the route's loader tree top-down, passing
+    // each parent param set to the next generateStaticParams, static segments
+    // included (build/static-paths/app.ts generateRouteStaticParams).
+    const child = mockRoute("/:lang/:category/details/more", {
+      layoutPrefixes: [
+        "/:lang",
+        "/:lang/:category",
+        "/:lang/:category/details",
+        "/:lang/:category/details/more",
+      ],
+    });
+    const calls: Record<string, Record<string, string | string[]>[]> = {};
+    const record =
+      (key: string, result: Record<string, string>[]) =>
+      async ({ params }: { params: Record<string, string | string[]> }) => {
+        (calls[key] ??= []).push(params);
+        return result;
+      };
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": record("lang", [{ lang: "en" }, { lang: "fr" }]),
+      "layouts:[lang]/[category]": record("category", [{ category: "news" }]),
+      "layouts:[lang]/[category]/details": record("details", [{ extra: "x" }]),
+      // The route's own layout composes with its page instead.
+      "layouts:[lang]/[category]/details/more": record("own", [{ own: "no" }]),
+    };
+
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([
+      { lang: "en", category: "news", extra: "x" },
+      { lang: "fr", category: "news", extra: "x" },
+    ]);
+    expect(calls.category).toEqual([{ lang: "en" }, { lang: "fr" }]);
+    expect(calls.details).toEqual([
+      { lang: "en", category: "news" },
+      { lang: "fr", category: "news" },
+    ]);
+    expect(calls.own).toBeUndefined();
+  });
+
+  it("passes parent params through a layout that returns none", async () => {
+    // Outside Cache Components, Next.js keeps each parent set when a later
+    // generateStaticParams returns [] (build/static-paths/app.ts).
+    const child = mockRoute("/:lang/section/:slug", {
+      layoutPrefixes: ["/:lang", "/:lang/section"],
+    });
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": async () => [{ lang: "en" }],
+      "layouts:[lang]/section": async () => [],
+    };
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([{ lang: "en" }]);
+  });
+
+  it("still calls later layouts with no parent params after an empty result", async () => {
+    // With no parent sets, Next.js calls the next generateStaticParams once
+    // with `{}` (build/static-paths/app.ts generateRouteStaticParams).
+    const child = mockRoute("/:lang/section/:category/:slug", {
+      layoutPrefixes: ["/:lang/section", "/:lang/section/:category"],
+    });
+    const categoryCalls: Record<string, string | string[]>[] = [];
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]/section": async () => [],
+      "layouts:[lang]/section/[category]": async ({ params }) => {
+        categoryCalls.push(params);
+        return [{ lang: "en", category: "news" }];
+      },
+    };
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([
+      { lang: "en", category: "news" },
+    ]);
+    expect(categoryCalls).toEqual([{}]);
+  });
+
+  it("rejects a layout that returns no params under static export", async () => {
+    // With output: "export", Next.js fails any generateStaticParams that
+    // returns [] before passing parent sets through (build/static-paths/app.ts
+    // callGenerateStaticParams).
+    const child = mockRoute("/:lang/section/:slug", {
+      layoutPrefixes: ["/:lang", "/:lang/section"],
+    });
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": async () => [{ lang: "en" }],
+      "layouts:[lang]/section": async () => [],
+    };
     await expect(
-      resolveParentParams(child, staticParamsMap, { includeLastDynamicSegment: true }),
-    ).resolves.toEqual([{ category: "news" }]);
+      resolveParentParams(child, staticParamsMap, { staticExport: true }),
+    ).rejects.toThrow(
+      'Page "/:lang/section/:slug" returned an empty array from "generateStaticParams()". With "output: export", at least one route must be generated.',
+    );
+  });
+
+  it("gives an App Route handler no layout params", async () => {
+    // Next.js builds a route handler's segments from route.ts alone
+    // (collectAppRouteSegments), so its layouts never supply params.
+    const handler: AppRoute = {
+      ...mockRoute("/:lang/api/:id", { layoutPrefixes: ["/:lang", "/:lang/api"] }),
+      pagePath: null,
+      routePath: "/app/[lang]/api/[id]/route.ts",
+    };
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": async () => [{ lang: "fr" }],
+      "layouts:[lang]/api": async () => [{ extra: "x" }],
+    };
+    await expect(resolveParentParams(handler, staticParamsMap)).resolves.toEqual([]);
   });
 
   it("resolves two levels of parent dynamic segments", async () => {
-    const child = mockRoute("/a/:b/c/:d/:e");
+    const child = mockRoute("/a/:b/c/:d/:e", { layoutPrefixes: ["/a/:b", "/a/:b/c/:d"] });
     const staticParamsMap: StaticParamsMap = {
-      "/a/:b": async () => [{ b: "1" }, { b: "2" }],
-      "/a/:b/c/:d": async ({ params }) => {
+      "layouts:a/[b]": async () => [{ b: "1" }, { b: "2" }],
+      "layouts:a/[b]/c/[d]": async ({ params }) => {
         if (params.b === "1") return [{ d: "x" }];
         return [{ d: "y" }, { d: "z" }];
       },
@@ -2472,9 +3118,11 @@ describe("resolveParentParams", () => {
   });
 
   it("skips static segments between dynamic parents", async () => {
-    const child = mockRoute("/shop/:category/details/:item");
+    const child = mockRoute("/shop/:category/details/:item", {
+      layoutPrefixes: ["/shop/:category"],
+    });
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => [{ category: "shoes" }],
+      "layouts:shop/[category]": async () => [{ category: "shoes" }],
     };
     const result = await resolveParentParams(child, staticParamsMap);
     expect(result).toEqual([{ category: "shoes" }]);
@@ -2493,9 +3141,9 @@ describe("resolveParentParams", () => {
   });
 
   it("resolves parent with catch-all child segment", async () => {
-    const child = mockRoute("/shop/:category/:rest+");
+    const child = mockRoute("/shop/:category/:rest+", { layoutPrefixes: ["/shop/:category"] });
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => [{ category: "electronics" }],
+      "layouts:shop/[category]": async () => [{ category: "electronics" }],
     };
     const result = await resolveParentParams(child, staticParamsMap);
     expect(result).toEqual([{ category: "electronics" }]);

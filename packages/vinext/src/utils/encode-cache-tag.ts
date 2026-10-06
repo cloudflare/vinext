@@ -26,6 +26,7 @@
 
 const OUT_OF_CLASS_CHAR = /[^\t\x20-\x7e]/;
 const OUT_OF_CLASS_RUN = /[^\t\x20-\x7e]+/g;
+const MAX_TAG_LENGTH = 256;
 
 export function encodeCacheTag(tag: string): string {
   return OUT_OF_CLASS_CHAR.test(tag)
@@ -33,6 +34,17 @@ export function encodeCacheTag(tag: string): string {
     : tag;
 }
 
+/** Validate raw public tag types and lengths before header encoding. */
 export function encodeCacheTags(tags: readonly string[]): string[] {
-  return tags.map(encodeCacheTag);
+  const encoded: string[] = [];
+  for (const tag of tags) {
+    if (typeof tag !== "string" || tag.length > MAX_TAG_LENGTH) {
+      console.warn(
+        `[vinext] Cache tags must be strings of at most ${MAX_TAG_LENGTH} characters; invalid tag ignored.`,
+      );
+      continue;
+    }
+    encoded.push(encodeCacheTag(tag));
+  }
+  return encoded;
 }

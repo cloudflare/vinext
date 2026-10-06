@@ -185,6 +185,15 @@ describe("pregenerated concrete paths", () => {
               fallback: false,
             },
             {
+              route: "/docs/:slug",
+              path: "/docs/missing",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              notFound: true,
+              responseStatus: 404,
+            },
+            {
               route: "/404",
               status: "rendered",
               router: "pages",

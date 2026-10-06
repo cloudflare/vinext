@@ -29,6 +29,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -82,7 +83,12 @@ import {
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
-import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
+import {
+  badRequestResponse,
+  notFoundResponse,
+  notFoundStaticAssetResponse,
+} from "./http-error-responses.js";
+import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
@@ -140,15 +146,21 @@ import {
   markRouteCacheabilityDynamic,
   preserveRouteCacheabilityResponsePolicy,
 } from "vinext/shims/cacheability-classification";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+  createSharedAppPageCacheIdentity,
+  isStaticCandidateAppPageDispatch,
   prepareSharedAppPageDispatch,
+  withoutAppPageDispatchQuery,
   type AppMatchedWorkerResponseStageProps,
+  type AppWorkerResponseStageProps,
   type DispatchAppWorkerResponseStage,
   type RenderAppWorkerResponseStageLocally,
 } from "./app-worker-stages.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
+import { parseCacheabilityManifest, type CacheabilityManifest } from "./cacheability-manifest.js";
 import {
   consumePagesResponseStagePolicyOwner,
   withoutResponseStageVary,
@@ -245,6 +257,41 @@ function requestOptsOutOfWorkerResponseStage(
   if (isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER))) return true;
   if (request.headers.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)) return true;
   return false;
+}
+
+let parsedCacheabilityRequestProjection:
+  | { buildId: string; manifest: CacheabilityManifest | null; raw: string }
+  | undefined;
+
+function readCacheabilityRequestProjection(
+  options: Pick<
+    CreateAppRscHandlerOptions<AppRscHandlerRoute>,
+    "buildId" | "cacheabilityRequestProjection"
+  >,
+): CacheabilityManifest | null {
+  const raw = options.cacheabilityRequestProjection;
+  if (!raw || !options.buildId) return null;
+  if (
+    parsedCacheabilityRequestProjection?.raw !== raw ||
+    parsedCacheabilityRequestProjection.buildId !== options.buildId
+  ) {
+    parsedCacheabilityRequestProjection = {
+      buildId: options.buildId,
+      manifest: parseCacheabilityManifest(raw, options.buildId),
+      raw,
+    };
+  }
+  return parsedCacheabilityRequestProjection.manifest;
+}
+
+function adapterUsesQueryFreeCacheIdentity(): boolean {
+  const adapter = getCdnCacheAdapter();
+  // The identity is query-free, so it is safe only behind completed-response
+  // admission, which refuses App pages without a negative searchParams proof.
+  return (
+    adapter.requiresCompletedResponseAdmission === true &&
+    adapter.responseStageCacheIdentity === "query-free"
+  );
 }
 
 function hasUrlParserDotSegment(pathname: string): boolean {
@@ -464,8 +511,15 @@ type NavigationContextValue = {
 };
 
 export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
+  assetPrefix?: string;
   basePath: string;
   buildId: string | null;
+  /**
+   * Serialized request-stage projection of the Workers Cache manifest. Shared
+   * App page dispatches whose manifest state is `static-candidate` drop the
+   * user query. Null outside a `vinext deploy` artifact.
+   */
+  cacheabilityRequestProjection?: string | null;
   clearRequestContext: () => void;
   configHeaders: NextHeader[];
   configRedirects: NextRedirect[];
@@ -761,7 +815,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ...options.configRewrites.fallback,
       ...options.configHeaders,
     ].some((rule) => rule.basePath === false);
-  const normalized = normalizeRscRequest(request, options.basePath, canHandleOutsideBasePath);
+  const normalized = normalizeRscRequest(
+    request,
+    options.basePath,
+    canHandleOutsideBasePath,
+    options.assetPrefix,
+  );
   if (normalized instanceof Response) {
     if (
       request.headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
@@ -1130,6 +1189,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.kind === "app-page"
               ? prepareSharedAppPageDispatch(stageRequest, cache)
               : stageRequest;
+          let canonicalRsc: { headers: Headers; navigation: boolean } | null = null;
           if (
             cache === "shared" &&
             props.kind === "app-page" &&
@@ -1147,26 +1207,65 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                   ? canonicalizeLoadingShellRscRequestHeaders(headers)
                   : false;
             if (canonicalized) {
-              const rscPath =
-                props.renderMode === "navigation"
-                  ? createCanonicalRscRequestUrl(dispatchRequest.url)
-                  : await createRscRequestUrl(dispatchRequest.url, headers);
-              dispatchRequest = cloneRequestWithUrl(
-                cloneRequestWithHeaders(dispatchRequest, headers),
-                new URL(rscPath, dispatchRequest.url).toString(),
-              );
+              canonicalRsc = { headers, navigation: props.renderMode === "navigation" };
+              dispatchRequest = cloneRequestWithHeaders(dispatchRequest, headers);
             }
           }
+          let stageProps: AppWorkerResponseStageProps = {
+            ...props,
+            cacheability: {
+              ...props.cacheability,
+              policyHeaders: responseStagePolicy,
+            },
+          };
+          // Workers Cache keys a dispatch by its URL and props, and a hit runs
+          // no code, so a static-candidate path drops the user query from the
+          // dispatch itself. A next.config public policy keeps the full URL,
+          // as the query-free cache identity below does. The canonical RSC
+          // URL is built afterwards, because it keeps the request's search.
+          if (
+            cache === "shared" &&
+            responseStagePolicy === null &&
+            stageProps.kind === "app-page"
+          ) {
+            const projection = readCacheabilityRequestProjection(options);
+            if (
+              projection &&
+              isStaticCandidateAppPageDispatch(projection, dispatchRequest, stageProps)
+            ) {
+              const queryFree = withoutAppPageDispatchQuery(dispatchRequest.url, stageProps);
+              dispatchRequest = cloneRequestWithUrl(dispatchRequest, queryFree.url);
+              stageProps = queryFree.props;
+            }
+          }
+          if (canonicalRsc) {
+            const rscPath = canonicalRsc.navigation
+              ? createCanonicalRscRequestUrl(dispatchRequest.url)
+              : await createRscRequestUrl(dispatchRequest.url, canonicalRsc.headers);
+            dispatchRequest = cloneRequestWithUrl(
+              dispatchRequest,
+              new URL(rscPath, dispatchRequest.url).toString(),
+            );
+          }
+          // Shared dispatches are GET/HEAD only. A next.config public policy
+          // is admitted whatever the render read, so it keeps the full-URL
+          // identity, as Next.js CDN caching does. Interception and mounted-slot
+          // payloads stay contextual, as the RSC canonicalization above does.
+          const cacheIdentity =
+            cache === "shared" &&
+            responseStagePolicy === null &&
+            stageProps.kind === "app-page" &&
+            stageProps.matchKind !== "interception" &&
+            stageProps.interceptionContext === null &&
+            stageProps.interceptionId === null &&
+            stageProps.mountedSlotsHeader === null &&
+            adapterUsesQueryFreeCacheIdentity()
+              ? createSharedAppPageCacheIdentity(dispatchRequest, stageProps)
+              : undefined;
           let response = await dispatchResponseStage(
             dispatchRequest,
-            {
-              ...props,
-              cacheability: {
-                ...props.cacheability,
-                policyHeaders: responseStagePolicy,
-              },
-            },
-            { cache },
+            stageProps,
+            cacheIdentity ? { cache, cacheIdentity } : { cache },
           );
           if (stageRequest.method.toUpperCase() === "HEAD" && response.body) {
             await response.body.cancel();
@@ -1930,22 +2029,30 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
     }
 
-    if (!pagesDataRequest || resolvedUrl === originalResolvedUrl) {
+    const isRewritten = resolvedUrl !== originalResolvedUrl;
+    const isPrerender = typeof process !== "undefined" && process.env?.VINEXT_PRERENDER === "1";
+    if ((!pagesDataRequest || !isRewritten) && !isPrerender) {
       return dispatchPagesResponseStage
         ? markAppRscResponseConfigHeadersApplied(response)
         : response;
     }
 
     const headers = new Headers(response.headers);
-    headers.set("x-nextjs-rewrite", resolvedUrl);
-    const rewrittenResponse = new Response(response.body, {
+    if (pagesDataRequest && isRewritten) headers.set("x-nextjs-rewrite", resolvedUrl);
+    if (isPrerender) {
+      // Mirrors the Pages pipeline: a build request can satisfy a
+      // request-conditional rewrite that real visitors may not, so only an
+      // unrewritten Pages render may become a snapshot.
+      headers.set(VINEXT_PRERENDER_REWRITTEN_HEADER, isRewritten ? "1" : "0");
+    }
+    const markedResponse = new Response(response.body, {
       headers,
       status: response.status,
       statusText: response.statusText,
     });
     return dispatchPagesResponseStage
-      ? markAppRscResponseConfigHeadersApplied(rewrittenResponse)
-      : rewrittenResponse;
+      ? markAppRscResponseConfigHeadersApplied(markedResponse)
+      : markedResponse;
   };
   const staticPagesFallbackResponse = await renderPagesForMatchKind("static");
   if (staticPagesFallbackResponse) {
@@ -2089,6 +2196,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     bypassInterceptionContextCache = !hasVerifiedFinalInterceptionSource;
     setInterceptionResponseUncacheable(bypassInterceptionContextCache);
+  }
+
+  // Classify the resolved, unmatched path after middleware and rewrites.
+  // An explicit middleware/route 404 or a rewrite to a missing page keeps its
+  // own response, matching Next.js's router-server.ts static-asset fallback.
+  if (
+    (!filesystemRouteEligible || !match) &&
+    isNextStaticPath(cleanPathname, "", assetPrefixPathname(options.assetPrefix ?? ""))
+  ) {
+    options.clearRequestContext();
+    const headers = new Headers();
+    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+    return notFoundStaticAssetResponse(headers);
   }
 
   if (!filesystemRouteEligible) {
@@ -2478,13 +2599,16 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // requestContextFromRequest() so the captured context never contains
     // attacker-controlled internal headers. This is the correct boundary
     // for pure App Router requests; in hybrid app+pages mode the connect
-    // handler already filtered headers upstream and x-vinext-mw-ctx
-    // (not in INTERNAL_HEADERS) carries the forwarded middleware context.
+    // handler already filtered headers upstream and x-vinext-mw-ctx carries
+    // the forwarded middleware context.
     // srvx's NodeRequestHeaders reads from rawHeaders for iteration but falls
     // back to req.headers for .get() / .has(). In the dev server we add
     // x-vinext-mw-ctx to req.headers after the Request is built, so it is
     // visible to .get() but lost when filterInternalHeaders iterates. Read it
     // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
+    // Only that .get() value is trusted: the dev server deletes any client copy
+    // from req.headers on ingress, the Worker and production entries filter it,
+    // and filterInternalHeaders drops the copy still present in rawHeaders.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
     const pagesDataUrl = new URL(rawRequest.url);
     const pagesDataInScope =

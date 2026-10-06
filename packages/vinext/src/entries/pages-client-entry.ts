@@ -27,6 +27,25 @@ import { findFileWithExts } from "./pages-entry-helpers.js";
 import { toSlash } from "pathslash";
 import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 import { resolveClientRuntimeModule } from "./runtime-entry-module.js";
+import { compileMiddlewareMatcherPattern } from "../server/middleware-matcher-pattern.js";
+
+export function compileClientMiddlewareMatchers(
+  matcher: StaticMiddlewareMatcher | undefined,
+): unknown[] | undefined {
+  if (matcher === undefined) return undefined;
+
+  const entries = typeof matcher === "string" ? [matcher] : matcher;
+  return entries.map((entry) => {
+    const source = typeof entry === "string" ? entry : entry.source;
+    const compiled = compileMiddlewareMatcherPattern(source);
+    if (!compiled.regexp) return entry;
+    return {
+      ...(typeof entry === "string" ? { source } : entry),
+      regexp: compiled.regexp.source,
+      flags: compiled.regexp.flags,
+    };
+  });
+}
 
 /**
  * Project a Pages `Route` down to the public `VinextPagesLinkPrefetchRoute`
@@ -94,6 +113,7 @@ export async function generateClientEntry(
   ).filter((pattern): pattern is string => pattern !== null);
   const instrumentationClientPath = options.instrumentationClientPath ?? null;
   const clientRewrites = toClientRewrites(nextConfig.rewrites);
+  const clientMiddlewareMatchers = compileClientMiddlewareMatchers(options.middlewareMatcher);
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
 
   // Build a map of route pattern -> dynamic import.
@@ -188,7 +208,7 @@ window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
 window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictModeEnabled)};
 window.__VINEXT_PAGES_SSG_PATTERNS__ = ${JSON.stringify(pagesSsgPatterns)};
 window.__VINEXT_PAGES_SSP_PATTERNS__ = ${JSON.stringify(pagesSspPatterns)};
-window.__VINEXT_MIDDLEWARE_MATCHER__ = ${JSON.stringify(options.middlewareMatcher)};
+window.__VINEXT_MIDDLEWARE_MATCHER__ = ${JSON.stringify(clientMiddlewareMatchers)};
 window.__VINEXT_APP_LOADER__ = appLoader;
 // Expose the App Router prefetch manifest so Pages Router \`<Link>\`s and
 // \`Router.prefetch\` can detect when a prefetch target is actually an App

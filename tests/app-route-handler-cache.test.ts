@@ -1,3 +1,12 @@
+import {
+  createWorkerCacheabilityAdmissionContext,
+  createCacheabilityAdmissionCaptureBudget,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { readAppRouteHandlerCacheResponse } from "../packages/vinext/src/server/app-route-handler-cache.js";
 import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
@@ -216,6 +225,112 @@ describe("app route handler cache helpers", () => {
     await expect(response?.text()).resolves.toBe("from-cache");
     expect(didClearRequestContext).toBe(true);
   });
+
+  // Next caches error responses produced after a successful initial prerender.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
+  it.each([400, 500])("stores status %s during existing route ISR regeneration", async (status) => {
+    const writes = vi.fn();
+    let regenerate: (() => Promise<void>) | undefined;
+    await readAppRouteHandlerCacheResponse(
+      createReadOptions({
+        isrGet: async () => buildISRCacheEntry(buildCachedRouteValue("original"), true),
+        handlerFn: () => new Response("regenerated error", { status }),
+        isrSet: writes,
+        scheduleBackgroundRegeneration: (_key, render) => {
+          regenerate = render;
+        },
+      }),
+    );
+    await regenerate!();
+    expect(writes).toHaveBeenCalledOnce();
+    expect(writes.mock.calls[0][1].status).toBe(status);
+  });
+
+  it("does not store a regeneration that reads request data while streaming", async () => {
+    const usage = createDynamicUsageState();
+    const writes = vi.fn();
+    let regenerate: (() => Promise<void>) | undefined;
+    const response = await readAppRouteHandlerCacheResponse(
+      createReadOptions({
+        ...usage,
+        routePattern: "/api/late-dynamic-regeneration",
+        isrGet: async () =>
+          buildISRCacheEntry(
+            buildCachedRouteValue("original", { "cache-control": "private, max-age=300" }),
+            true,
+          ),
+        handlerFn: (request) =>
+          new Response(
+            new ReadableStream({
+              async pull(controller) {
+                await Promise.resolve();
+                controller.enqueue(
+                  new TextEncoder().encode(request.headers.get("x-visitor") ?? "anonymous"),
+                );
+                controller.close();
+              },
+            }),
+            { headers: { "Cache-Control": "public, max-age=3600" } },
+          ),
+        isrSet: writes,
+        scheduleBackgroundRegeneration: (_key, render) => {
+          regenerate = render;
+        },
+      }),
+    );
+    expect(response?.headers.get("Cache-Control")).toBe("private, max-age=300");
+    await expect(response?.text()).resolves.toBe("original");
+    await regenerate!();
+    expect(writes).not.toHaveBeenCalled();
+    expect(isKnownDynamicAppRoute("/api/late-dynamic-regeneration")).toBe(true);
+  });
+
+  it.each(["dynamic", "capture-limit"])(
+    "releases rejected regeneration captures: %s",
+    async (reason) => {
+      const budget = createCacheabilityAdmissionCaptureBudget(
+        reason === "capture-limit" ? 1 : 1024,
+      );
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/api/cleanup"),
+        null,
+        "build",
+        true,
+      );
+      (Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState).captureBudget =
+        budget;
+      const writes = vi.fn();
+      const routePattern = `/api/regeneration-cleanup-${reason}`;
+      let regenerate: (() => Promise<void>) | undefined;
+      const response = await readAppRouteHandlerCacheResponse(
+        createReadOptions({
+          routePattern,
+          isrGet: async () => buildISRCacheEntry(buildCachedRouteValue("previous"), true),
+          handlerFn: (request) =>
+            new Response(
+              new ReadableStream({
+                pull(controller) {
+                  if (reason === "dynamic") request.headers.get("x-visitor");
+                  controller.enqueue(new TextEncoder().encode("body"));
+                  controller.close();
+                },
+              }),
+            ),
+          isrSet: writes,
+          runInRevalidationContext: (render) => runWithExecutionContext(context, render),
+          scheduleBackgroundRegeneration: (_key, render) => {
+            regenerate = render;
+          },
+        }),
+      );
+      await response?.body?.cancel();
+      await regenerate!();
+      expect(writes).not.toHaveBeenCalled();
+      expect(budget.reservedBytes).toBe(0);
+      expect(isKnownDynamicAppRoute(routePattern)).toBe(reason === "dynamic");
+    },
+  );
 
   it("returns STALE responses and regenerates cached route handlers in the background", async () => {
     const dynamicUsage = createDynamicUsageState();

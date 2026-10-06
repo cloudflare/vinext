@@ -1,5 +1,152 @@
 # vinext
 
+## 1.0.1
+
+### Bug Fixes
+
+#### Dev
+
+- keep vite-plugin-commonjs out of vinext's inlined deps during the dep scan (#3620)
+- ignore client-supplied forwarded middleware context (#3617)
+- pre-bundle use-sync-external-store in the App Router client (#3542)
+- ignore generated .vinext files in the watcher (#3556)
+
+#### Shims
+
+- null a framed GET/HEAD body on a NextRequest's Request input (#3649)
+- drop a framed GET/HEAD body from a Request init in NextRequest (#3621)
+- keep a Request init's method, headers and body in NextRequest (#3612)
+- support stable catchError and retry APIs (#3566)
+
+#### Misc
+
+- **Cache:** separate browser headers from framework storage policy (#3540)
+- **Cloudflare:** serve prerendered Pages Router from Static Assets (#3603)
+- **Nitro:** serve App Router apps in Nitro dev and preview (#3608)
+- **Pages:** include locale in domain ISR cache identity (#3598)
+- **App Router:** release the refresh abort handle once supplemental requests settle (#3572)
+- **Build:** prerender before emitting standalone output (#3579)
+- **CLI:** recognize symlinked vite entrypoints (#3571) (#3573)
+- **Config:** preserve quoted JSON in dotenv files (#3568)
+- **Router:** preserve middleware and rewrites for missing static assets (#3541)
+- **Cloudflare:** support colon cache tags in KV (#3569)
+- **Plugins:** accept HTML comment end variants in request prescan (#3574)
+- **Tracing:** forward native Workers span metadata (#3564)
+- **Init:** list Response Store deployment in next steps (#3536)
+
+### Performance
+
+#### Build
+
+- skip vite-plugin-commonjs for modules it never rewrites (#3594)
+- skip the scan-time typeof window fold when it cannot change imports (#3596)
+- reuse OG HarfBuzz patch and jsx-in-js transforms across passes (#3590)
+- skip stylesheet processing in RSC scan builds (#3589)
+- prefilter optimize-imports matcher on quoted package source (#3550)
+- skip unused sourcemaps in vinext source transforms (#3552)
+- avoid repeated realpath calls in middleware export validation (#3553)
+
+#### SSR
+
+- track dynamic usage without loading the next/headers implementation (#3558)
+- stop loading browser runtime modules for shared helpers (#3559)
+- import the render abort check without server-only modules (#3549)
+
+#### Misc
+
+- **Pages:** stop the export-all transform filter from backtracking (#3606)
+- **Pages:** avoid repeated SSR asset manifest scans (#3599)
+- **OG:** speed up OG asset readFileSync scan and package-root lookups (#3588)
+- **Plugins:** prescan for require.context calls before parsing (#3562)
+- **App Router:** keep the route scanner out of the RSC runtime graph (#3557)
+- **Plugins:** skip parsing modules without rewritable dynamic requests (#3555)
+- **Dev:** keep the App Router combined handler external in dev (#3548)
+
+### Contributors
+
+- @ash1day
+- @h-a-n-a
+- @james-elicx
+- @jantimon
+- @NriotHrreion
+- @SammyTourani
+- @Yi-111-a
+
+## 1.0.0
+
+### Features
+
+- share one cached HTML, RSC and loading-shell entry across the query strings of a static App Router page, as Next.js does, on KV, in-memory, Workers Response Store and Static Assets, and on Workers Cache for paths its deploy manifest marks static (#3462, #3463, #3465, #3490, #3531)
+- match Next.js for `useSearchParams()` and client page `searchParams` on cacheable App Router pages: server rendering shows the nearest `<Suspense>` fallback and the browser renders the real query after hydration (#3455, #3457)
+- cache App Router pages only when Next.js would treat the route as static or SSG, default them to `revalidate = false`, never store a render that used a dynamic API, and send Next.js's never-cache header on pages that can't be static (#3451, #3452, #3453, #3454, #3456, #3461, #3489, #3500)
+- **Init:** default Cloudflare projects to cf (#3504)
+- **Init:** detect css modules and auto-install compatibility workarounds (#3059)
+- **Cloudflare:** add read-only Static Assets prerender cache (#3344)
+- **CLI:** stabilize cache warming flags (#3502)
+
+### Bug Fixes
+
+#### Check
+
+- report next.config options vinext ignores or honours (#3508)
+- refresh import and library support entries (#3507)
+- stop false positives in the project structure scan (#3506)
+
+#### Cloudflare
+
+- use cf/config for typed configuration (#3535)
+- remove manual binding provisioning steps (#3529)
+- allow KV namespace autoprovisioning (#3528)
+- replace deploy prerendering with cache warming (#3340)
+- rename cdnAdapter to workersCacheCdnAdapter (#3503)
+
+#### Misc
+
+- **App Router:** keep cached export Flight URLs out of navigation (#3522)
+- pass `generateStaticParams` the parent params from a route's own layouts rather than from a sibling page (#3493)
+- keep serving the previous entry when an App Router page regeneration fails, and send the request's params and pathname on cached RSC responses (#3459, #3460)
+- **Metadata:** keep streamed icon keys opaque (#3518)
+- **Init:** tidy edits to existing Vite configs (#3515)
+- **Dev:** stabilize next-intl cold rendering and hydration (#3513)
+- **Prerender:** surface render errors in build output (#3514)
+- **Vinext:** support Worker imports during prerender and test Static Assets (#3405)
+
+### Contributors
+
+- @james-elicx
+- @NriotHrreion
+
+## 1.0.0-beta.13
+
+### Features
+
+- support direct `vite dev` and `vite build` commands with vinext's development, prerendering, and Cloudflare deployment lifecycle (#3381)
+- **Cloudflare:** support cf Build Output deployments (#3230)
+
+### Bug Fixes
+
+#### Cache
+
+- admit metadata routes to the CDN cache on their own Cache-Control (#3449)
+- replay "use cache" params under the original cache key (#3430)
+- keep "use cache" pages with props prerenderable (#3421)
+
+#### Misc
+
+- **OG:** support @vercel/og 1.0.3 on Node and Workers (#3409)
+- align Pages Router navigation with Next.js for URL objects, repeated slashes, dynamic routes, and browser history in development and production (#3354, #3367, #3368)
+- **Build:** keep browser client out of multi-stage server outputs (#3440)
+
+### Performance
+
+- **Build:** look up action owner modules once per build pass (#3415)
+
+### Contributors
+
+- @james-elicx
+- @mhsnook
+- @shortstuffsushi
+
 ## 1.0.0-beta.12
 
 ### Bug Fixes

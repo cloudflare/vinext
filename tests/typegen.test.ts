@@ -22,15 +22,6 @@ async function withTempProject<T>(run: (root: string) => Promise<T>): Promise<T>
   }
 }
 
-async function withPreservedFile<T>(filePath: string, run: () => Promise<T>): Promise<T> {
-  const original = await readFile(filePath);
-  try {
-    return await run();
-  } finally {
-    await writeFile(filePath, original);
-  }
-}
-
 async function writeProjectFile(root: string, relPath: string, content: string): Promise<void> {
   const fullPath = path.join(root, relPath);
   await mkdir(path.dirname(fullPath), { recursive: true });
@@ -145,6 +136,47 @@ const invalidLink: LinkProps = {};
 void [metadata, config, image, link, font];
 `,
   );
+  if (!withNext) {
+    // Next.js 16.3 stable API, consumed through vinext/types without Next installed.
+    // https://github.com/vercel/next.js/blob/v16.3.6/packages/next/src/client/components/catch-error.tsx
+    await writeProjectFile(
+      root,
+      "app/error-boundary.ts",
+      `
+import ErrorPage, { catchError, unstable_catchError, type ErrorInfo, type ErrorProps } from "next/error";
+interface Props { title: string }
+const Boundary = catchError((props: Props, info: ErrorInfo) => {
+  info.retry();
+  info.reset();
+  return props.title;
+});
+const LegacyBoundary = unstable_catchError((props: Props, info) => {
+  info.unstable_retry();
+  return props.title;
+});
+const InferredBoundary = catchError((props: Props, info) => {
+  info.retry();
+  // @ts-expect-error retry does not accept arguments.
+  info.retry("unexpected");
+  return props.title;
+});
+// Next.js ErrorInfo can be constructed without the former unstable field.
+const info: ErrorInfo = { error: null, reset() {}, retry() {} };
+// The stable public shape must have exactly the upstream keys.
+type Assert<T extends true> = T;
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
+  (<T>() => T extends B ? 1 : 2) ? true : false;
+type UpstreamErrorInfo = { error: unknown; reset: () => void; retry: () => void };
+type UpstreamCatchError = <P extends Record<string, any>>(
+  fallback: (props: P, errorInfo: UpstreamErrorInfo) => import("react").ReactNode,
+) => import("react").ComponentType<P & { children?: import("react").ReactNode }>;
+type ErrorInfoContract = Assert<Equal<ErrorInfo, UpstreamErrorInfo>>;
+type CatchErrorContract = Assert<Equal<typeof catchError, UpstreamCatchError>>;
+const errorProps: ErrorProps = { statusCode: 500 };
+void [Boundary, LegacyBoundary, InferredBoundary, ErrorPage, errorProps, info];
+`,
+    );
+  }
   await writeProjectFile(root, "app/icon.png", "not-an-image");
   await generateRouteTypes({ root });
 
@@ -166,6 +198,7 @@ void [metadata, config, image, link, font];
       "es2022",
       path.join(root, "next-env.d.ts"),
       path.join(root, "app/page.ts"),
+      ...(!withNext ? [path.join(root, "app/error-boundary.ts")] : []),
     ],
     { cwd: root, encoding: "utf-8" },
   );
@@ -375,95 +408,99 @@ describe("generateRouteTypes", () => {
 
   it("installs @vinext/types transitively from packed vinext without Next.js", async () => {
     await withTempProject(async (root) => {
-      const vinextReadme = path.resolve("packages/vinext/README.md");
-      await withPreservedFile(vinextReadme, async () => {
-        const packDir = path.join(root, "packs");
-        const consumer = path.join(root, "consumer");
-        await mkdir(packDir, { recursive: true });
-        await mkdir(consumer, { recursive: true });
+      const packDir = path.join(root, "packs");
+      const consumer = path.join(root, "consumer");
+      await mkdir(packDir, { recursive: true });
+      await mkdir(consumer, { recursive: true });
 
-        const pnpm = "pnpm";
-        runCommand(pnpm, ["pack", "--pack-destination", packDir], path.resolve("packages/types"));
-        runCommand(pnpm, ["pack", "--pack-destination", packDir], path.resolve("packages/vinext"));
+      const pnpm = "pnpm";
+      runCommand(pnpm, ["pack", "--pack-destination", packDir], path.resolve("packages/types"));
+      // Skip prepack: it rebuilds vinext with `clean: true`, wiping
+      // packages/vinext/dist while unit files running in parallel resolve
+      // vinext's package exports from it. Pack the dist the install built.
+      runCommand(
+        pnpm,
+        ["pack", "--config.ignore-scripts=true", "--pack-destination", packDir],
+        path.resolve("packages/vinext"),
+      );
 
-        const tarballs = await readdir(packDir);
-        const typesTarball = tarballs.find((name) => name.startsWith("vinext-types-"));
-        const vinextTarball = tarballs.find(
-          (name) => name.startsWith("vinext-") && !name.startsWith("vinext-types-"),
-        );
-        expect(typesTarball).toBeDefined();
-        expect(vinextTarball).toBeDefined();
+      const tarballs = await readdir(packDir);
+      const typesTarball = tarballs.find((name) => name.startsWith("vinext-types-"));
+      const vinextTarball = tarballs.find(
+        (name) => name.startsWith("vinext-") && !name.startsWith("vinext-types-"),
+      );
+      expect(typesTarball).toBeDefined();
+      expect(vinextTarball).toBeDefined();
 
-        const typesVersion = await readPackageVersion(path.resolve("packages/types/package.json"));
+      const typesVersion = await readPackageVersion(path.resolve("packages/types/package.json"));
 
-        await writeProjectFile(
-          consumer,
-          "package.json",
-          JSON.stringify({
-            private: true,
-            dependencies: { vinext: `file:${path.join(packDir, vinextTarball!)}` },
-          }),
-        );
-        await writeProjectFile(
-          consumer,
-          ".pnpmfile.cjs",
-          `module.exports = { hooks: { readPackage(pkg) {\n` +
-            `  if (pkg.name === "vinext") {\n` +
-            `    const declared = pkg.dependencies?.["@vinext/types"];\n` +
-            `    if (declared !== ${JSON.stringify(`^${typesVersion}`)}) throw new Error("packed vinext does not declare the matching @vinext/types version");\n` +
-            `    pkg.dependencies = { "@vinext/types": ${JSON.stringify(`file:${path.join(packDir, typesTarball!)}`)} };\n` +
-            `    pkg.peerDependencies = {};\n` +
-            `  }\n` +
-            `  return pkg;\n` +
-            `} } };\n`,
-        );
-        runCommand(pnpm, ["install", "--offline", "--ignore-scripts"], consumer);
-        for (const packageName of ["@types/node", "@types/react", "@types/react-dom"]) {
-          await linkPackage(consumer, packageName);
-        }
+      await writeProjectFile(
+        consumer,
+        "package.json",
+        JSON.stringify({
+          private: true,
+          dependencies: { vinext: `file:${path.join(packDir, vinextTarball!)}` },
+        }),
+      );
+      await writeProjectFile(
+        consumer,
+        ".pnpmfile.cjs",
+        `module.exports = { hooks: { readPackage(pkg) {\n` +
+          `  if (pkg.name === "vinext") {\n` +
+          `    const declared = pkg.dependencies?.["@vinext/types"];\n` +
+          `    if (declared !== ${JSON.stringify(`^${typesVersion}`)}) throw new Error("packed vinext does not declare the matching @vinext/types version");\n` +
+          `    pkg.dependencies = { "@vinext/types": ${JSON.stringify(`file:${path.join(packDir, typesTarball!)}`)} };\n` +
+          `    pkg.peerDependencies = {};\n` +
+          `  }\n` +
+          `  return pkg;\n` +
+          `} } };\n`,
+      );
+      runCommand(pnpm, ["install", "--offline", "--ignore-scripts"], consumer);
+      for (const packageName of ["@types/node", "@types/react", "@types/react-dom"]) {
+        await linkPackage(consumer, packageName);
+      }
 
-        const virtualStore = path.join(consumer, "node_modules/.pnpm");
-        const typesStoreEntry = (await readdir(virtualStore)).find((entry) =>
-          entry.startsWith("@vinext+types@"),
-        );
-        expect(typesStoreEntry).toBeDefined();
-        const installedTypesManifest = path.join(
-          virtualStore,
-          typesStoreEntry!,
-          "node_modules/@vinext/types/package.json",
-        );
-        expect(JSON.parse(await readFile(installedTypesManifest, "utf-8"))).toMatchObject({
-          name: "@vinext/types",
-        });
-
-        await writeProjectFile(
-          consumer,
-          "app/page.ts",
-          'import type { NextConfig } from "next";\nconst config: NextConfig = {};\nvoid config;\n',
-        );
-        await generateRouteTypes({ root: consumer });
-        expect(await readFile(path.join(consumer, "next-env.d.ts"), "utf-8")).toContain(
-          'import "vinext/types";',
-        );
-        runCommand(
-          process.execPath,
-          [
-            path.resolve("node_modules/typescript/bin/tsc"),
-            "--ignoreConfig",
-            "--strict",
-            "--noEmit",
-            "--module",
-            "esnext",
-            "--moduleResolution",
-            "bundler",
-            "--target",
-            "esnext",
-            path.join(consumer, "next-env.d.ts"),
-            path.join(consumer, "app/page.ts"),
-          ],
-          consumer,
-        );
+      const virtualStore = path.join(consumer, "node_modules/.pnpm");
+      const typesStoreEntry = (await readdir(virtualStore)).find((entry) =>
+        entry.startsWith("@vinext+types@"),
+      );
+      expect(typesStoreEntry).toBeDefined();
+      const installedTypesManifest = path.join(
+        virtualStore,
+        typesStoreEntry!,
+        "node_modules/@vinext/types/package.json",
+      );
+      expect(JSON.parse(await readFile(installedTypesManifest, "utf-8"))).toMatchObject({
+        name: "@vinext/types",
       });
+
+      await writeProjectFile(
+        consumer,
+        "app/page.ts",
+        'import type { NextConfig } from "next";\nconst config: NextConfig = {};\nvoid config;\n',
+      );
+      await generateRouteTypes({ root: consumer });
+      expect(await readFile(path.join(consumer, "next-env.d.ts"), "utf-8")).toContain(
+        'import "vinext/types";',
+      );
+      runCommand(
+        process.execPath,
+        [
+          path.resolve("node_modules/typescript/bin/tsc"),
+          "--ignoreConfig",
+          "--strict",
+          "--noEmit",
+          "--module",
+          "esnext",
+          "--moduleResolution",
+          "bundler",
+          "--target",
+          "esnext",
+          path.join(consumer, "next-env.d.ts"),
+          path.join(consumer, "app/page.ts"),
+        ],
+        consumer,
+      );
     });
   }, 30_000);
 

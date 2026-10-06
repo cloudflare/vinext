@@ -44,12 +44,24 @@ export default {
         "tests/e2e/web-worker/fixtures/**/{vite.config.ts,*.worker.ts}",
         "tests/e2e/nextjs-worker/fixture/**/*.{js,ts,tsx}",
         "tests/e2e/cacheability-components/fixture/{next.config.ts,vite.config.ts,app/**/{page,route}.{ts,tsx}}",
+        "tests/e2e/cloudflare-static-export/fixture/{vite.config.ts,app/**/route.ts}",
       ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
       ignoreDependencies: [
         // Loaded dynamically by @vitejs/plugin-react when the React Compiler
         // integration test enables `react: { compiler: true }`.
         "oxc-transform-react",
+        // OG tests resolve these from vinext's @vercel/og install, not the root workspace.
+        "@vercel/og",
+        // The CommonJS syntax tests resolve this from vinext's install, not the root workspace.
+        "vite-plugin-commonjs",
+        // scripts/version.mts resolves release APIs from the pinned Changesets CLI,
+        // keeping its dependency tree authoritative instead of installing separate copies.
+        "@manypkg/get-packages",
+        "@changesets/config",
+        "@changesets/get-release-plan",
+        "@changesets/apply-release-plan",
+        "@changesets/should-skip-package",
       ],
     },
     "packages/vinext": {
@@ -125,12 +137,6 @@ export default {
       ],
       project: ["src/**/*.{ts,tsx}", "example/**/*.ts"],
     },
-    "apps/web": {
-      ignoreDependencies: [
-        // Referenced by path from wrangler.response-store.jsonc.
-        "@cloudflare/workers-response-store",
-      ],
-    },
     "packages/create-vinext-app": {
       entry: [...entriesFromPackageJson("packages/create-vinext-app/package.json")],
       project: ["src/**/*.{ts,tsx}"],
@@ -142,6 +148,11 @@ export default {
         // Kept as an explicit package-local Vite+ toolchain dependency.
         "vite",
       ],
+    },
+    "apps/web": {
+      entry: ["cloudflare.config.ts", "worker/index.ts"],
+      // Resolved by the Vite plugin from the auxiliary Worker's config entrypoint.
+      ignoreDependencies: ["@cloudflare/workers-response-store"],
     },
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "tests/e2e/**/fixture", "benchmarks/**"],
@@ -177,7 +188,8 @@ export default {
     "cloudflare",
   ],
   ignoreBinaries: [
-    // workspace's own bin, invoked in CI
+    // Consumer-project bins invoked in CI after installing into a cloned repo.
+    "vite",
     "vinext",
     // system/user-project binaries invoked by runtime scripts
     "ps",
@@ -187,7 +199,7 @@ export default {
     "jq",
   ],
   ignoreFiles: [
-    "apps/web/dist/**",
+    "tests/e2e/cloudflare-static-export/fixture/dist/**",
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
     "tests/e2e/app-front-redirect-issue/fixture/**/*.{js,ts,tsx}",
     // stub module loaded via `path.resolve()` as a Vite alias target

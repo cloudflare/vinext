@@ -368,6 +368,8 @@ jobs:
         with:
           name: deploy-debug-${{ strategy.job-index }}
           path: reports/nextjs-deploy-debug/
+          # e2e-deploy.sh and e2e-cleanup.sh preserve .vinext-deploy-*.log files.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 

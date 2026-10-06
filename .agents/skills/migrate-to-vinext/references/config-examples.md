@@ -186,10 +186,11 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 
 ## @vinext/cloudflare deploy flags
 
-| Flag                 | Description                              |
-| -------------------- | ---------------------------------------- |
-| `--preview`          | Deploy to preview environment            |
-| `--name <name>`      | Override worker name                     |
-| `--skip-build`       | Skip build step (deploy existing output) |
-| `--dry-run`          | Generate config without deploying        |
-| `--experimental-tpr` | Enable Traffic-aware Pre-Rendering       |
+| Flag                         | Description                              |
+| ---------------------------- | ---------------------------------------- |
+| `--preview`                  | Deploy to preview environment            |
+| `--name <name>`              | Override worker name                     |
+| `--skip-build`               | Skip build step (deploy existing output) |
+| `--dry-run`                  | Generate config without deploying        |
+| `--warm-cache`               | Warm discovered routes before promotion  |
+| `--traffic-aware-warm-cache` | Enable traffic-aware cache warming       |

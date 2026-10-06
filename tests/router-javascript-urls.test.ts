@@ -227,6 +227,25 @@ describe("Pages Router next/router blocks dangerous URI schemes", () => {
     }
   });
 
+  // Vinext defense-in-depth: Next.js 16.2.7 checks UrlObject.toString() and
+  // does not catch this object-form javascript: URL before formatting it.
+  it("Router.push blocks a formatted object-form `as` URL synchronously", async () => {
+    const restoreBrowserGlobals = installFakeBrowserGlobals();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      expect(() => Router.push("/safe", { pathname: "javascript:alert(1)" })).toThrow(
+        BLOCK_MESSAGE,
+      );
+      expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
+    } finally {
+      consoleError.mockRestore();
+      restoreBrowserGlobals();
+    }
+  });
+
   it("Router.replace throws synchronously when only `as` is a javascript: URL", async () => {
     const restoreBrowserGlobals = installFakeBrowserGlobals();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { SearchParamsGate } from "./search-params-gate.js";
 
 const LAYOUT_SEGMENT_CONTEXT_KEY = Symbol.for("vinext.layoutSegmentContext");
 const SERVER_INSERTED_HTML_CONTEXT_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
@@ -23,6 +24,15 @@ export type NavigationContext = {
   isStaticGeneration?: boolean;
   /** `dynamic = "force-static"` suppresses the static useSearchParams bailout. */
   isForceStatic?: boolean;
+  /** SSR-only: set for a cache-candidate render. See `search-params-gate.ts`. */
+  searchParamsGate?: SearchParamsGate;
+  /**
+   * SSR-only: the `searchParams` a client page receives, one promise per page
+   * for the render, so `use()` keeps seeing the same promise and React's
+   * bookkeeping from one page's `use()` never reaches another. See
+   * `client-page-root.tsx`.
+   */
+  getClientPageSearchParams?: (pageProps: object) => Promise<Record<string, string | string[]>>;
 };
 
 type NavigationContextsGlobal = typeof globalThis & {

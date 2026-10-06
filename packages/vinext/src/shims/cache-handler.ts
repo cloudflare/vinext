@@ -49,6 +49,13 @@ export type CachedAppPageValue = {
   rscData: ArrayBuffer | undefined;
   headers: Record<string, string | string[]> | undefined;
   postponed: string | undefined;
+  /**
+   * Set by a read-only adapter whose entries are build-time prerenders. A
+   * prerender that reads the query is skipped as dynamic, so such an entry
+   * serves every query without a render observation, as Next.js serves its
+   * static output.
+   */
+  prerendered?: true;
   renderObservation?: RenderObservation;
   status: number | undefined;
 };

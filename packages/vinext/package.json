@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "1.0.0-beta.12",
+  "version": "1.0.1",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
@@ -90,6 +90,10 @@
       "types": "./dist/server/pages-router-entry.d.ts",
       "import": "./dist/server/pages-router-entry.js"
     },
+    "./internal/client/vinext-next-data": {
+      "types": "./dist/client/vinext-next-data.d.ts",
+      "import": "./dist/client/vinext-next-data.js"
+    },
     "./internal/server/headers": {
       "types": "./dist/server/headers.d.ts",
       "import": "./dist/server/headers.js"
@@ -137,6 +141,14 @@
     "./internal/build/prerender-paths": {
       "types": "./dist/build/prerender-paths.d.ts",
       "import": "./dist/build/prerender-paths.js"
+    },
+    "./internal/build/lifecycle": {
+      "types": "./dist/build/lifecycle.d.ts",
+      "import": "./dist/build/lifecycle.js"
+    },
+    "./internal/build/report": {
+      "types": "./dist/build/report.d.ts",
+      "import": "./dist/build/report.js"
     },
     "./internal/cache-adapters": {
       "types": "./dist/cache/cache-adapters-virtual.d.ts",

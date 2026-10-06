@@ -35,6 +35,9 @@ export function hasServerExportCandidate(code: string): boolean {
   return false;
 }
 
+/** Transform prefilter; must admit every module `hasExportAllCandidate` accepts */
+export const EXPORT_ALL_CANDIDATE_FILTER = /\bexport\s*[*/]/;
+
 export function hasExportAllCandidate(code: string): boolean {
   let searchFrom = 0;
   while (searchFrom < code.length) {

@@ -63,6 +63,10 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   );
 
   if (cacheTags) headers.set("Cache-Tag", cacheTags);
+  for (const name of ["ETag", "Last-Modified"]) {
+    const value = request.headers.get(`X-Response-${name}`);
+    if (value) headers.set(name, value);
+  }
   if (age) headers.set("Age", age);
   if (cloudflareCacheControl) {
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
@@ -122,6 +126,9 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     coalesce: request.headers.get("X-Coalesce") === "1",
     revalidator,
     purgeExisting: request.headers.get("X-Purge-Existing") === "1",
+    ...(request.headers.get("X-Expiry-Behavior") === "miss"
+      ? { expiryBehavior: "miss" as const }
+      : {}),
   });
   await new Response(teeSibling).arrayBuffer();
 

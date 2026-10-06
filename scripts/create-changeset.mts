@@ -395,7 +395,9 @@ function firstCommit(): string {
  *
  * The changeset body *also overrides the commit's changelog message*: when the
  * body is non-empty it becomes the entry text for that commit (rendered as a
- * plain bullet, replacing the commit subject's description). An empty body keeps
+ * plain bullet, replacing the commit subject's description). A Conventional
+ * Commit body can select a patch category (`fix`, `perf`, or `revert`) without
+ * changing the declared bump. An empty body keeps
  * the original subject description and just reclassifies the type.
  */
 export type CommitOverride = {
@@ -407,6 +409,8 @@ export type CommitOverride = {
   breaking?: boolean;
   /** Changelog entry text from the changeset body; overrides the commit subject. */
   message?: string;
+  /** Scope supplied by an explicit Conventional Commit changeset body. */
+  scope?: string;
 };
 
 /** Shortest SHA prefix accepted as a changeset override filename (git's default). */
@@ -477,17 +481,19 @@ export function findOverride(sha: string, overrides: CommitOverride[]): CommitOv
  * `!` breaking marker when asked). With no `message`, the scope, description, and
  * any trailing ` (#123)` PR ref are preserved (a non-conventional subject is
  * prefixed as-is). With a `message`, it replaces the description and the scope is
- * dropped, so the changelog renders a plain `- <message>` bullet the author fully
- * controls. Pure.
+ * replaced by `messageScope` when supplied (otherwise dropped). Pure.
  */
 export function rewriteSubjectType(
   subject: string,
   type: string,
   breaking: boolean,
   message?: string,
+  messageScope?: string,
 ): string {
   const bang = breaking ? "!" : "";
-  if (message != null && message !== "") return `${type}${bang}: ${message}`;
+  if (message != null && message !== "") {
+    return `${type}${messageScope ? `(${messageScope})` : ""}${bang}: ${message}`;
+  }
   const parts = conventionalParts(subject);
   if (!parts) return `${type}${bang}: ${subject.trim()}`;
   const scope = parts.scope ? `(${parts.scope})` : "";
@@ -510,7 +516,7 @@ export function applyOverrides(commits: Commit[], overrides: CommitOverride[]): 
     if (!o) return c;
     return {
       ...c,
-      subject: rewriteSubjectType(c.subject, o.type, o.breaking === true, o.message),
+      subject: rewriteSubjectType(c.subject, o.type, o.breaking === true, o.message, o.scope),
       body: "",
     };
   });
@@ -519,7 +525,8 @@ export function applyOverrides(commits: Commit[], overrides: CommitOverride[]): 
 /**
  * Discover per-commit overrides from SHA-named changeset files in `.changeset/`.
  * Each `<sha>.md` reclassifies commit `<sha>` to the conventional type implied by
- * its frontmatter bump; a package-less one suppresses the commit (`chore`).
+ * its frontmatter bump, or a compatible patch-type body. A package-less
+ * one suppresses the commit (`chore`).
  * Returns [] when the directory is absent. CI glue.
  */
 export function loadOverrides(dir: string = CHANGESET_DIR): CommitOverride[] {
@@ -531,13 +538,23 @@ export function loadOverrides(dir: string = CHANGESET_DIR): CommitOverride[] {
     if (!commit) continue;
     const md = readFileSync(join(dir, entry.name), "utf8");
     const bump = changesetFrontmatterBump(md);
-    const { type, breaking } = bump ? bumpToOverride(bump) : { type: "chore", breaking: false }; // package-less changeset → suppress
-    const message = changesetBodyMessage(md);
+    const override = bump ? bumpToOverride(bump) : { type: "chore", breaking: false };
+    let message = changesetBodyMessage(md);
+    let scope: string | null = null;
+    // A non-breaking patch-type body can distinguish fix/perf/revert without
+    // changing the frontmatter's semver bump.
+    const parts = message ? conventionalParts(message) : null;
+    if (bump === "patch" && parts && !parts.breaking && TYPE_BUMP[parts.type] === "patch") {
+      override.type = parts.type;
+      message = parts.description;
+      scope = parts.scope;
+    }
     overrides.push({
       commit,
-      type,
-      ...(breaking ? { breaking: true } : {}),
+      type: override.type,
+      ...(override.breaking ? { breaking: true } : {}),
       ...(message ? { message } : {}),
+      ...(scope ? { scope } : {}),
     });
   }
   return overrides;

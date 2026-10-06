@@ -279,12 +279,9 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       dispatch(request, { kind: "app-route" }, { cache: "bypass" }),
     );
     stages.response.mockResolvedValue(Response.error());
-    const stageResponses: Response[] = [];
     const binding = vi.fn(({ props }: { props: unknown }) => ({
-      async fetch(request: Request) {
-        const response = await createUncachedEntrypoint(props).fetch(request);
-        stageResponses.push(response);
-        return response;
+      fetch(request: Request) {
+        return createUncachedEntrypoint(props).fetch(request);
       },
     }));
 
@@ -296,9 +293,8 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
     expect(response.status).toBe(503);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(stageResponses).toHaveLength(1);
-    expect(stageResponses[0]!.status).toBe(503);
-    expect(stageResponses[0]!.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
+    expect(binding).not.toHaveBeenCalled();
+    expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
@@ -565,6 +561,17 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     await expect(response.text()).resolves.toBe("rendered");
     expect(cachedBinding).toHaveBeenCalledWith({ props: {} });
     expect(purge).toHaveBeenCalledWith({ tags: ["updated-tag"] });
+
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route" }, { cache: "bypass" }),
+    );
+    const inlineResponse = await worker.fetch(
+      new Request("https://example.com/action", { method: "POST" }),
+      {},
+      { exports: { VinextCachedResponse: cachedBinding } },
+    );
+    await expect(inlineResponse.text()).resolves.toBe("rendered");
+    expect(purge).toHaveBeenCalledTimes(2);
   });
 
   it("rejects unversioned cache intent when an expected identity is present", async () => {
@@ -746,7 +753,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       { exports: { VinextCachedResponse: binding } },
     );
 
-    expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("Cache-Tag")).toBeNull();
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("X-Vinext-Cache")).toBeNull();
@@ -790,6 +797,58 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     });
   });
 
+  // The request stage keeps the query of a runtime-check path's dispatch, and
+  // drops it only for a static-candidate one (app-rsc-handler.test.ts). So two
+  // requests to a runtime-check path that differ only in the query get
+  // different Workers Cache keys, and each render sees its own query.
+  it("keys runtime-check dispatches by their query and static-candidate dispatches without it", async () => {
+    const cacheFacingRequests: Request[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        cacheFacingRequests.push(request);
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request: Request, _env, _ctx, dispatch) => {
+      const url = new URL(request.url);
+      // A static-candidate path's dispatch drops the query.
+      if (url.pathname === "/static") url.search = "";
+      return dispatch(new Request(url, request), { kind: "app-page" }, { cache: "shared" });
+    });
+    stages.response.mockImplementation((request: Request) => Response.json({ url: request.url }));
+
+    const digests: Record<string, (string | null)[]> = { runtime: [], static: [] };
+    const rendered: string[] = [];
+    for (const [kind, pathname] of [
+      ["runtime", "/runtime"],
+      ["static", "/static"],
+    ] as const) {
+      for (const q of ["a", "b"]) {
+        const response = await worker.fetch(
+          new Request(`https://example.com${pathname}?q=${q}`),
+          {},
+          { exports: { VinextCachedResponse: binding } },
+        );
+        rendered.push(((await response.json()) as { url: string }).url);
+        digests[kind]!.push(
+          new URL(cacheFacingRequests.at(-1)!.url).searchParams.get("__vinext_cache_key"),
+        );
+      }
+    }
+
+    expect(digests.runtime![0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(digests.runtime![1]).toMatch(/^[0-9a-f]{64}$/);
+    expect(digests.runtime![0]).not.toBe(digests.runtime![1]);
+    expect(digests.static![0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(digests.static![0]).toBe(digests.static![1]);
+    expect(rendered).toEqual([
+      "https://example.com/runtime?q=a",
+      "https://example.com/runtime?q=b",
+      "https://example.com/static",
+      "https://example.com/static",
+    ]);
+  });
+
   it("promotes framework Vary selectors into the primary cache identity", async () => {
     const cacheFacingRequests: Request[] = [];
     const binding = vi.fn(() => ({
@@ -820,7 +879,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       fetch: vi.fn().mockResolvedValue(
         new Response("shared", {
           headers: {
-            "Cache-Control": "public, max-age=0, must-revalidate",
+            "Cache-Control": "private, max-age=0, must-revalidate",
             "Cloudflare-CDN-Cache-Control": "public, max-age=300",
           },
         }),
@@ -846,6 +905,124 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     await expect(response.text()).resolves.toBe("shared");
+  });
+
+  it.each([
+    ["MISS", "max-age=10", "max-age=10"],
+    ["HIT", "max-age=10", "max-age=10"],
+    ["MISS", "private, max-age=10", "private, max-age=10"],
+    ["HIT", "private, max-age=10", "private, max-age=10"],
+    ["MISS", "public, max-age=10, no-cache", "public, max-age=10, no-cache"],
+    ["HIT", "public, max-age=10, no-cache", "public, max-age=10, no-cache"],
+    ["HIT", 'private="ETag", max-age=10', 'private="ETag", max-age=10'],
+  ])(
+    "preserves browser policy on an unchanged %s with %s",
+    async (cacheStatus, cacheControl, expected) => {
+      const binding = vi.fn(() => ({
+        fetch: vi.fn().mockResolvedValue(
+          new Response("shared", {
+            headers: {
+              "Cache-Control": cacheControl,
+              "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
+              "CF-Cache-Status": cacheStatus,
+            },
+          }),
+        ),
+      }));
+      stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+        dispatch(request, { kind: "app-route" }, { cache: "shared" }),
+      );
+
+      const response = await worker.fetch(
+        new Request("https://example.com/api/data"),
+        {},
+        {
+          exports: { VinextCachedResponse: binding },
+        },
+      );
+      expect(response.headers.get("Cache-Control")).toBe(expected);
+      expect(response.headers.get("X-Vinext-Cache")).toBe(cacheStatus);
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("x-vinext-cloudflare-shared-response-stage")).toBeNull();
+    },
+  );
+
+  it("preserves browser policy when config restores a consumed edge header", async () => {
+    const binding = vi.fn(() => ({
+      fetch: vi.fn().mockResolvedValue(
+        new Response("shared", {
+          headers: { "Cache-Control": "public, max-age=300", "CF-Cache-Status": "HIT" },
+        }),
+      ),
+    }));
+    stages.request.mockImplementation(async (request, _env, _ctx, dispatch) => {
+      const response = await dispatch(request, { kind: "app-route" }, { cache: "shared" });
+      response.headers.set("Cloudflare-CDN-Cache-Control", "max-age=3600");
+      return response;
+    });
+    const response = await worker.fetch(
+      new Request("https://example.com/api/data"),
+      {},
+      {
+        exports: { VinextCachedResponse: binding },
+      },
+    );
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=300");
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+  });
+
+  it.each([
+    "add",
+    "change",
+    "remove",
+    "cookie",
+    "status",
+    "remove-vary",
+    "qualified-no-cache",
+    "private",
+  ])("preserves an explicit browser policy after gateway %s", async (mutation) => {
+    const binding = vi.fn(() => ({
+      fetch: vi.fn().mockResolvedValue(
+        new Response("shared", {
+          headers: {
+            "Cache-Control":
+              mutation === "qualified-no-cache"
+                ? 'public, max-age=300, no-cache="ETag"'
+                : mutation === "private"
+                  ? "private, max-age=300"
+                  : "max-age=10",
+            "X-Route": "shared",
+            Vary: "Accept",
+          },
+        }),
+      ),
+    }));
+    stages.request.mockImplementation(async (request, _env, _ctx, dispatch) => {
+      const response = await dispatch(request, { kind: "app-route" }, { cache: "shared" });
+      const headers = new Headers(response.headers);
+      if (["add", "qualified-no-cache", "private"].includes(mutation))
+        headers.set("X-Visitor", "alice");
+      if (mutation === "change") headers.set("X-Route", "alice");
+      if (mutation === "remove") headers.delete("X-Route");
+      if (mutation === "remove-vary") headers.delete("Vary");
+      if (mutation === "cookie") headers.set("Set-Cookie", "visitor=alice");
+      return new Response(response.body, { headers, status: mutation === "status" ? 201 : 200 });
+    });
+
+    const response = await worker.fetch(
+      new Request("https://example.com/api/data"),
+      {},
+      {
+        exports: { VinextCachedResponse: binding },
+      },
+    );
+    expect(response.headers.get("Cache-Control")).toBe(
+      mutation === "qualified-no-cache"
+        ? 'public, max-age=300, no-cache="ETag"'
+        : mutation === "private"
+          ? "private, max-age=300"
+          : "max-age=10",
+    );
   });
 
   it("does not rewrite an unrelated fallback after a speculative shared dispatch", async () => {
@@ -1124,7 +1301,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     stages.response.mockResolvedValue(
       new Response("variant", {
         headers: {
-          "Cache-Control": "public, max-age=0, must-revalidate",
+          "Cache-Control": "private, max-age=0, must-revalidate",
           "CDN-Cache-Control": "public, max-age=300",
           "Cache-Tag": "variant-specific-tag",
           Vary: "RSC, Accept-Language",
@@ -1277,37 +1454,62 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response.mock.calls.map(([request]) => request.method)).toEqual(["GET", "HEAD"]);
   });
 
-  it("renders bypass work through the uncached entrypoint", async () => {
+  it.each(["GET", "HEAD", "POST"])("renders %s bypass work in the gateway", async (method) => {
+    // No Next.js test port applies: ctx.exports is a Cloudflare transport detail.
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
     const rendered = new Response("private");
     const cachedBinding = vi.fn();
-    const uncachedBinding = vi.fn(({ props }: { props: unknown }) => ({
-      fetch(request: Request) {
-        return createUncachedEntrypoint(props).fetch(request);
-      },
-    }));
+    const uncachedBinding = vi.fn();
+    const stageRequest = new Request("https://example.com/render", {
+      method,
+      headers: { Authorization: "Bearer private", Cookie: "session=private" },
+      ...(method === "POST" ? { body: "action body" } : {}),
+    });
+    const props = { route: "/private" };
+    const env = { binding: "value" };
+    const waitUntil = vi.fn();
     stages.response.mockResolvedValue(rendered);
     stages.request.mockImplementation((_request, _env, _ctx, dispatch) =>
-      dispatch(
-        new Request("https://example.com/render"),
-        { route: "/private" },
-        { cache: "bypass" },
-      ),
+      dispatch(stageRequest, props, { cache: "bypass" }),
     );
 
-    const result = await worker.fetch(
-      new Request("https://example.com/private"),
-      {},
-      {
-        exports: {
-          VinextCachedResponse: cachedBinding,
-          VinextUncachedResponse: uncachedBinding,
-        },
+    const result = await worker.fetch(new Request("https://example.com/private"), env, {
+      waitUntil,
+      exports: {
+        VinextCachedResponse: cachedBinding,
+        VinextUncachedResponse: uncachedBinding,
       },
-    );
+    });
 
     expect(result).toBe(rendered);
+    expect(result.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
     expect(cachedBinding).not.toHaveBeenCalled();
-    expect(uncachedBinding).toHaveBeenCalledOnce();
+    expect(uncachedBinding).not.toHaveBeenCalled();
+    expect(stages.response).toHaveBeenCalledOnce();
+    expect(stages.response).toHaveBeenCalledWith(
+      stageRequest,
+      env,
+      expect.objectContaining({ hostRuntime: "worker", waitUntil: expect.any(Function) }),
+      props,
+      expect.any(Function),
+      { cache: "bypass" },
+    );
+    expect(stages.response.mock.calls[0]![0]).toBe(stageRequest);
+    const pending = Promise.resolve();
+    stages.response.mock.calls[0]![2].waitUntil(pending);
+    expect(waitUntil).toHaveBeenCalledWith(pending);
+    await expect(stageRequest.text()).resolves.toBe(method === "POST" ? "action body" : "");
+  });
+
+  it("renders bypass work without response entrypoint bindings", async () => {
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "bypass" }),
+    );
+    stages.response.mockResolvedValue(new Response("private"));
+
+    const response = await worker.fetch(new Request("https://example.com/private"), {}, {});
+
+    await expect(response.text()).resolves.toBe("private");
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
@@ -1440,6 +1642,46 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("X-Vinext-Cache")).toBeNull();
     expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
     expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("routes gateway invalidations through the cache-bearing entrypoint", async () => {
+    const invalidate = vi.fn().mockResolvedValue({ success: true });
+    const defaultInvalidate = vi.fn();
+    const binding = vi.fn(() => ({ fetch: vi.fn(), purge: vi.fn(), invalidate }));
+    stages.request.mockImplementation((_request, _env, context) =>
+      context.cache.invalidate({ tags: ["encoded-tag"] }).then(() => new Response("invalidated")),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/revalidate"),
+      {},
+      {
+        cache: { purge: vi.fn(), invalidate: defaultInvalidate },
+        exports: { VinextCachedResponse: binding },
+      },
+    );
+
+    expect(await response.text()).toBe("invalidated");
+    expect(binding).toHaveBeenCalledWith({ props: {} });
+    expect(invalidate).toHaveBeenCalledWith({ tags: ["encoded-tag"] });
+    expect(defaultInvalidate).not.toHaveBeenCalled();
+  });
+
+  it("invalidates from the cache-bearing entrypoint, purging when the runtime cannot", async () => {
+    const invalidate = vi.fn().mockResolvedValue({ success: true });
+    const purge = vi.fn().mockResolvedValue({ success: true });
+    const createWithCache = (cache: unknown) =>
+      Object.assign(Object.create(VinextCachedResponse.prototype), {
+        ctx: { cache },
+        env: {},
+      }) as VinextCachedResponse;
+
+    await createWithCache({ purge, invalidate }).invalidate({ tags: ["soft"] });
+    await createWithCache({ purge }).invalidate({ tags: ["fallback"] });
+
+    expect(invalidate).toHaveBeenCalledWith({ tags: ["soft"] });
+    expect(purge).toHaveBeenCalledWith({ tags: ["fallback"] });
+    expect(purge).toHaveBeenCalledTimes(1);
   });
 
   it("routes gateway purges through the cache-bearing entrypoint", async () => {

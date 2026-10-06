@@ -68,6 +68,91 @@ async function cacheabilityReasonFor(
   return state.forcedDynamicReason;
 }
 
+// Ported from Next.js: test/e2e/invalid-static-asset-404-pages
+// https://github.com/vercel/next.js/tree/canary/test/e2e/invalid-static-asset-404-pages
+describe("missing static assets after routing", () => {
+  it("does not cache missing assets outside basePath", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/cdn/_next/static/missing.js"),
+      baseDeps({
+        basePath: "/app",
+        assetPrefix: "/cdn",
+        hadBasePath: false,
+      }),
+    );
+    if (result.type !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("cache-control")).toContain("no-store");
+  });
+  it.each([false, true])(
+    "preserves terminal middleware 404s (render adapter: %s)",
+    async (render) => {
+      const result = await runPagesRequest(
+        makeRequest("/_next/static/missing.js"),
+        baseDeps({
+          renderPage: render ? makeRenderPage(404, "custom page") : undefined,
+          runMiddleware: makeMiddleware({
+            continue: false,
+            response: Response.json({ missing: true }, { status: 404 }),
+          }),
+        }),
+      );
+      expect(result.type).toBe("response");
+      if (result.type !== "response") throw new Error("expected response");
+      expect(result.response.status).toBe(404);
+      expect(await result.response.json()).toEqual({ missing: true });
+    },
+  );
+
+  it.each(["", "/assets", "https://cdn.example.test/assets"])(
+    "classifies middleware rewrite destinations with assetPrefix %s",
+    async (assetPrefix) => {
+      const prefix = assetPrefix ? "/assets" : "";
+      for (const render of [false, true]) {
+        for (const [source, destination, staticMiss] of [
+          [`${prefix}/_next/static/to-page`, "/missing-page", false],
+          ["/to-asset", `${prefix}/_next/static/missing.js`, true],
+        ] as const) {
+          const result = await runPagesRequest(
+            makeRequest(source),
+            baseDeps({
+              assetPrefix,
+              matchPageRoute: () => null,
+              renderPage: render ? makeRenderPage(404, "custom page") : undefined,
+              runMiddleware: makeMiddleware({
+                rewriteUrl: destination,
+                responseHeaders: [["x-middleware", "kept"]],
+              }),
+            }),
+          );
+          if (!render) {
+            expect(result.type).toBe("render");
+            if (result.type === "render") expect(result.resolvedUrl).toBe(destination);
+            continue;
+          }
+          expect(result.type).toBe("response");
+          if (result.type !== "response") throw new Error("expected response");
+          expect(result.response.status).toBe(404);
+          expect(result.response.headers.get("x-middleware")).toBe("kept");
+          expect(await result.response.text()).toBe(staticMiss ? "Not Found" : "custom page");
+        }
+      }
+    },
+  );
+
+  it("preserves a matched page's intentional 404 under an asset-shaped URL", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/_next/static/custom"),
+      baseDeps({
+        matchPageRoute: () => ({ route: { isDynamic: false } }),
+        renderPage: makeRenderPage(404, "owned by page"),
+      }),
+    );
+    if (result.type !== "response") throw new Error("expected response");
+    expect(await result.response.text()).toBe("owned by page");
+  });
+});
+
 describe("on-demand revalidation middleware bypass", () => {
   it("uses the runtime adapter's authoritative credential verifier", async () => {
     const runMiddleware = makeMiddleware({});
@@ -1001,6 +1086,33 @@ describe("beforeFiles rewrites", () => {
       expect(reason).toBe("next.config rewrite depends on request headers, cookies, or hostnames");
     },
   );
+
+  it("marks build-time renders whose URL a rewrite changed", async () => {
+    const deps = baseDeps({
+      configRewrites: {
+        beforeFiles: [
+          { source: "/account", destination: "/login", missing: [{ type: "cookie", key: "s" }] },
+        ],
+        afterFiles: [],
+        fallback: [],
+      },
+      renderPage: makeRenderPage(),
+    });
+    const markerFor = async (pathname: string) => {
+      const result = await runPagesRequest(makeRequest(pathname), deps);
+      if (result.type !== "response") throw new Error("Expected a response");
+      return result.response.headers.get("x-vinext-prerender-rewritten");
+    };
+
+    expect(await markerFor("/account")).toBeNull();
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      expect(await markerFor("/account")).toBe("1");
+      expect(await markerFor("/about")).toBe("0");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("does not match decoded literal aliases from the normalized route pathname", async () => {
     const renderPage = makeRenderPage();

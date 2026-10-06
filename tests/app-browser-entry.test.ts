@@ -4,13 +4,14 @@ import {
   createDevOnCaughtError,
   createOnUncaughtError,
   createProdOnCaughtError,
-  prodOnRecoverableError,
+  createProdOnRecoverableError,
 } from "../packages/vinext/src/server/app-browser-error.js";
 import {
   clearAppNavigationFailureTarget,
   handleAppNavigationFailure,
   stageAppNavigationFailureTarget,
 } from "../packages/vinext/src/client/app-nav-failure-handler.js";
+import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import { applyServerActionResultDecision } from "../packages/vinext/src/server/app-browser-server-action-navigation.js";
 import {
   createDiscardedServerActionRefreshScheduler,
@@ -24,11 +25,12 @@ import {
   shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
+import { RSC_FORM_STATE_GLOBAL } from "../packages/vinext/src/client/browser-globals.js";
 import {
-  RSC_FORM_STATE_GLOBAL,
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
+  resolveFetchedHydrationLocation,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
@@ -88,7 +90,10 @@ import {
   type AppElementsInterception,
   type AppElementsSlotBinding,
 } from "../packages/vinext/src/server/app-elements.js";
-import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
+import {
+  createClientNavigationRenderSnapshot,
+  type ClientNavigationRenderSnapshot,
+} from "../packages/vinext/src/shims/navigation.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -3058,6 +3063,52 @@ describe("app browser entry state helpers", () => {
       await secondHmrPromise;
 
       expect(stateRef.current.routeId).toBe("route:/hmr-b");
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not commit an older decoding HMR payload while a newer update awaits its response headers", async () => {
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveFirstHmrPayload!: (elements: AppElements) => void;
+    let resolveSecondHmrPayload!: (elements: AppElements) => void;
+    let resolveSecondSnapshot!: (snapshot: ClientNavigationRenderSnapshot) => void;
+    const firstHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveFirstHmrPayload = resolve;
+    });
+    const secondHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveSecondHmrPayload = resolve;
+    });
+    const secondSnapshot = new Promise<ClientNavigationRenderSnapshot>((resolve) => {
+      resolveSecondSnapshot = resolve;
+    });
+
+    try {
+      const firstHmrPromise = controller.hmrReplaceTree(
+        firstHmrPayload,
+        stateRef.current.navigationSnapshot,
+      );
+      // The newer update enters before its response (and so its snapshot) arrives.
+      const secondHmrPromise = controller.hmrReplaceTree(secondHmrPayload, secondSnapshot);
+
+      resolveFirstHmrPayload(createResolvedElements("route:/hmr-a", "/"));
+      await firstHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/initial");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+
+      const renderedSnapshot = createClientNavigationRenderSnapshot(
+        "https://example.com/initial",
+        {},
+        "/initial?rewritten=1",
+      );
+      resolveSecondSnapshot(renderedSnapshot);
+      resolveSecondHmrPayload(createResolvedElements("route:/hmr-b", "/"));
+      await secondHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/hmr-b");
+      expect(stateRef.current.navigationSnapshot).toBe(renderedSnapshot);
       expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
     } finally {
       detach();
@@ -9274,7 +9325,7 @@ describe("prodOnCaughtError (hydrateRoot prod handler)", () => {
   });
 });
 
-describe("prodOnRecoverableError (hydrateRoot prod handler)", () => {
+describe("createProdOnRecoverableError (hydrateRoot prod handler)", () => {
   function withFakeReportError<T>(fn: (reportErrorSpy: ReturnType<typeof vi.fn>) => T): T {
     const reportErrorSpy = vi.fn();
     const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "reportError");
@@ -9296,18 +9347,38 @@ describe("prodOnRecoverableError (hydrateRoot prod handler)", () => {
 
   it("reports recoverable hydration errors through reportError", () => {
     withFakeReportError((reportErrorSpy) => {
+      const onReportedError = vi.fn();
       const err = new Error("Minified React error #418");
-      prodOnRecoverableError(err);
+      createProdOnRecoverableError(onReportedError)(err);
       expect(reportErrorSpy).toHaveBeenCalledWith(err);
+      expect(onReportedError).toHaveBeenCalledTimes(1);
     });
   });
 
   it("reports the underlying cause when React provides one", () => {
     withFakeReportError((reportErrorSpy) => {
+      const onReportedError = vi.fn();
       const cause = new Error("server/client text mismatch");
       const err = new Error("recoverable", { cause });
-      prodOnRecoverableError(err);
+      createProdOnRecoverableError(onReportedError)(err);
       expect(reportErrorSpy).toHaveBeenCalledWith(cause);
+      expect(onReportedError).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("ignores a server bail-out to client rendering", () => {
+    withFakeReportError((reportErrorSpy) => {
+      const onReportedError = vi.fn();
+      const handler = createProdOnRecoverableError(onReportedError);
+      // React's production error for a Suspense boundary the server left to
+      // client-render carries the server's onError digest on the error itself.
+      const clientRenderedBoundary = Object.assign(new Error("Minified React error #419"), {
+        digest: "BAILOUT_TO_CLIENT_SIDE_RENDERING",
+      });
+      handler(clientRenderedBoundary);
+      handler(new Error("recoverable", { cause: new BailoutToCSRError("useSearchParams()") }));
+      expect(reportErrorSpy).not.toHaveBeenCalled();
+      expect(onReportedError).not.toHaveBeenCalled();
     });
   });
 });
@@ -9383,6 +9454,30 @@ describe("app browser form-state hydration", () => {
     ).toEqual({
       formState: null,
       onUncaughtError,
+    });
+  });
+});
+
+describe("fetched initial Flight payload hydration", () => {
+  const location = {
+    origin: "https://example.com",
+    pathname: "/alias",
+    search: "?q=public",
+  };
+
+  it("keeps the public pathname under a rewrite's rendered query", () => {
+    // /alias rewrites to /page?q=rewritten. SSR rendered usePathname() as
+    // /alias, so hydration must too, while client pages read the rewrite's query.
+    expect(resolveFetchedHydrationLocation("/page?q=rewritten", location)).toEqual({
+      pathname: "/alias",
+      search: "?q=rewritten",
+    });
+  });
+
+  it("keeps the browser URL without a rendered path header", () => {
+    expect(resolveFetchedHydrationLocation(null, location)).toEqual({
+      pathname: "/alias",
+      search: "?q=public",
     });
   });
 });

@@ -22,7 +22,16 @@ export type ResponseStorePutOptions = {
   coalesce?: boolean;
   revalidator?: RevalidatorDescriptor;
   purgeExisting?: boolean;
+  /**
+   * What a read does once the entry is past its stale-while-revalidate window.
+   * `"regenerate"` (the default) waits for the revalidator. `"miss"` returns a
+   * Response Store miss so the caller regenerates the value itself; `refresh()`
+   * still regenerates the entry through its revalidator.
+   */
+  expiryBehavior?: ExpiryBehavior;
 };
+
+export type ExpiryBehavior = "regenerate" | "miss";
 
 export type ResponseStoreRefreshOptions = {
   tags?: string[];
@@ -67,6 +76,7 @@ type EntryMetadata = {
   freshUntil: number;
   swrUntil: number;
   revalidator: RevalidatorDescriptor | null;
+  expiryBehavior: ExpiryBehavior;
   cacheTags: string[];
 };
 
@@ -126,6 +136,8 @@ type PublicationResult = {
   entry: StoredEntry | null;
   published: boolean;
 };
+
+type EdgeCacheOperation = "purge" | "invalidate";
 
 class R2PublicationError extends Error {
   constructor(cause: unknown) {
@@ -268,7 +280,7 @@ const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
-const STORAGE_LAYOUT_VERSION = "r2-v1";
+const STORAGE_LAYOUT_VERSION = "r2-v2";
 const pendingPuts = new Map<string, Promise<StoreResult>>();
 const pendingR2Reads = new Map<string, Promise<boolean>>();
 const entryReads = new IsolateNegativeCache<string>(
@@ -516,14 +528,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return { cacheKey, keyHash };
   }
 
-  private async purgeEdgeCache(options: CachePurgeOptions): Promise<boolean> {
+  /**
+   * `purge` deletes matching edge responses. `invalidate` marks them stale so
+   * Workers Cache keeps serving them while it refetches from this binding in
+   * the background.
+   */
+  private async updateEdgeCache(
+    options: CachePurgeOptions,
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     if (this.env.WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE === "disabled") {
       return false;
     }
-    if (!this.ctx.cache) {
+    const cache = this.ctx.cache;
+    if (!cache) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge is unavailable",
+          message: `Workers Response Store cache ${operation} is unavailable`,
           reason: "ctx.cache is absent",
         }),
       );
@@ -531,30 +552,38 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     try {
-      const result = await this.ctx.cache.purge(options);
+      // Local Miniflare does not implement invalidate() yet, so fall back to a
+      // hard purge there.
+      const result =
+        operation === "invalidate" && typeof cache.invalidate === "function"
+          ? await cache.invalidate(options)
+          : await cache.purge(options);
       if (!result.success) {
         throw new Error(
           result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ") ||
-            "Workers Response Store cache purge was rejected",
+            `Workers Response Store cache ${operation} was rejected`,
         );
       }
       return true;
     } catch (error) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge failed",
+          message: `Workers Response Store cache ${operation} failed`,
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-      throw error;
+      return false;
     }
   }
 
-  private async purgeEdgeCacheByTags(tags: string[]): Promise<boolean> {
+  private async updateEdgeCacheByTags(
+    tags: string[],
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     let accepted = true;
 
     for (const batch of batches(tags, CACHE_PURGE_BATCH_SIZE)) {
-      if (!(await this.purgeEdgeCache({ tags: batch }))) {
+      if (!(await this.updateEdgeCache({ tags: batch }, operation))) {
         accepted = false;
       }
     }
@@ -563,7 +592,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean> {
-    return await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
+    return await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry));
   }
 
   private async purgePendingEdgeEntries(
@@ -576,7 +605,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         tombstoneSequence,
       );
       if (!entries.length) return true;
-      if (!(await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
+      if (!(await this.updateEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
         return false;
       }
       await metadata.markTombstonesEdgePurged(entries);
@@ -637,6 +666,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       freshUntil,
       swrUntil,
       revalidator: null,
+      expiryBehavior: metadata.expiryBehavior === "miss" ? "miss" : "regenerate",
       cacheTags: [],
       activeRevision: latestRevision,
       latestRevision,
@@ -740,6 +770,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         freshUntil: String(entry.freshUntil),
         swrUntil: String(entry.swrUntil),
         latestRevision: String(entry.activeRevision),
+        ...(entry.expiryBehavior === "miss" ? { expiryBehavior: "miss" } : {}),
       };
       if (customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES) {
         const responseMetadata = new TextEncoder().encode(
@@ -754,6 +785,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           freshUntil: String(entry.freshUntil),
           swrUntil: String(entry.swrUntil),
           latestRevision: String(entry.activeRevision),
+          ...(entry.expiryBehavior === "miss" ? { expiryBehavior: "miss" } : {}),
         };
       }
       return await this.writeR2Revision(
@@ -814,6 +846,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     now = Date.now(),
   ): Response {
     const headers = new Headers(entry.responseHeaders);
+    // Workers Cache echoes this as If-None-Match when it revalidates. A revision
+    // validator also distinguishes writes that share Last-Modified's second.
+    if (!headers.has("ETag")) {
+      headers.set("ETag", `W/"${encodeURIComponent(entry.objectKey)}:${entry.activeRevision}"`);
+    }
     headers.set(AGE_BASIS_HEADER, `${createdAt}:${initialAge}`);
     headers.set("Age", String(representationAge(createdAt, initialAge, now)));
     headers.set(
@@ -896,6 +933,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     request: Request,
     response: Response,
     revalidator: ResponseStorePutOptions["revalidator"],
+    expiryBehavior: ExpiryBehavior,
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
@@ -927,6 +965,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         freshUntil: policy.freshUntil,
         swrUntil: policy.swrUntil,
         revalidator: revalidator ?? null,
+        expiryBehavior,
         cacheTags,
       };
 
@@ -980,8 +1019,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
         if (reconciliation.purged.length) {
           try {
-            await this.purgeEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry));
-            await metadata.markTombstonesEdgePurged(reconciliation.purged);
+            if (await this.updateEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
+              await metadata.markTombstonesEdgePurged(reconciliation.purged);
+            }
           } catch (reconciliationError) {
             reconciliationFailures.push(
               reconciliationError instanceof Error
@@ -1068,17 +1108,18 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       cacheRequest,
       response,
       entry.revalidator,
+      entry.expiryBehavior,
       writeReservation,
       undefined,
       expectedR2Etag,
     );
   }
 
-  private async revalidateEntryInBackground(
+  private async revalidateEntry(
     metadata: CacheMetadataStub,
     entry: StoredEntry,
     expectedR2Etag?: string | null,
-  ): Promise<void> {
+  ): Promise<StoreResult | null> {
     const claim = await metadata.claimRevalidation(
       entry.keyHash,
       entry.activeRevision,
@@ -1088,24 +1129,32 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       BACKGROUND_REVALIDATION_LEASE_MS,
     );
     if (!claim) {
-      return;
+      return null;
     }
 
+    return this.regenerateEntry(
+      metadata,
+      claim.entry,
+      "swr",
+      {
+        cacheKey: claim.entry.cacheKey,
+        claimId: claim.claimId,
+        fenceTags: claim.entry.cacheTags,
+        keyHash: claim.entry.keyHash,
+        objectKey: claim.objectKey,
+        revision: claim.revision,
+      },
+      expectedR2Etag,
+    );
+  }
+
+  private async revalidateEntryInBackground(
+    metadata: CacheMetadataStub,
+    entry: StoredEntry,
+    expectedR2Etag?: string | null,
+  ): Promise<void> {
     try {
-      await this.regenerateEntry(
-        metadata,
-        claim.entry,
-        "swr",
-        {
-          cacheKey: claim.entry.cacheKey,
-          claimId: claim.claimId,
-          fenceTags: claim.entry.cacheTags,
-          keyHash: claim.entry.keyHash,
-          objectKey: claim.objectKey,
-          revision: claim.revision,
-        },
-        expectedR2Etag,
-      );
+      await this.revalidateEntry(metadata, entry, expectedR2Etag);
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -1128,7 +1177,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const now = Date.now();
-    if (now < entry.swrUntil) {
+    // Workers Cache already owns stale serving for conditional revalidations
+    // (both background SWR and blocking expiry). Return its fresh replacement
+    // instead of starting another SWR cycle. A fresh R2 revision can still fill
+    // the edge immediately; unconditional reads retain the stale fast path.
+    const revalidateStale =
+      now >= entry.freshUntil &&
+      (request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since"));
+    if (now < entry.swrUntil && !revalidateStale) {
       const stored = await this.readStoredResponse(entry, now, r2Read?.object);
       if (stored) {
         if (now < entry.freshUntil) {
@@ -1146,29 +1202,45 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     await r2Read?.object?.body.cancel().catch(() => {});
-    const metadata = this.getMetadata(keyHash);
-    const regeneration = await metadata.reserveRegeneration(
-      keyHash,
-      cacheKey.cacheKey,
-      this.objectKeyPrefix(keyHash),
-      now,
-    );
-    if (!regeneration) {
+    // The writer asked for a miss instead of a regeneration once the entry expires.
+    if (now >= entry.swrUntil && entry.expiryBehavior === "miss") {
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
     }
-    const regenerated = await this.regenerateEntry(
-      metadata,
-      regeneration.entry,
-      now >= entry.swrUntil ? "expired" : "missing",
-      regeneration.reservation
-        ? {
-            ...cacheKey,
-            fenceTags: regeneration.entry.cacheTags,
-            ...regeneration.reservation,
-          }
-        : undefined,
-      expectedR2Etag,
-    );
+    const metadata = this.getMetadata(keyHash);
+    let regenerated: StoreResult;
+    if (revalidateStale && now < entry.swrUntil) {
+      const result = await this.revalidateEntry(metadata, entry, expectedR2Etag);
+      if (!result?.published) {
+        // Another cache location or an unconditional stale read owns the claim.
+        // A claim that expired mid-render also cannot return its old R2 body.
+        // Fail this callback so Workers Cache retains stale and can retry.
+        throw new Error("Cache entry revalidation is already in progress or was superseded");
+      }
+      regenerated = result;
+    } else {
+      const regeneration = await metadata.reserveRegeneration(
+        keyHash,
+        cacheKey.cacheKey,
+        this.objectKeyPrefix(keyHash),
+        now,
+      );
+      if (!regeneration) {
+        return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+      }
+      regenerated = await this.regenerateEntry(
+        metadata,
+        regeneration.entry,
+        now >= entry.swrUntil ? "expired" : "missing",
+        regeneration.reservation
+          ? {
+              ...cacheKey,
+              fenceTags: regeneration.entry.cacheTags,
+              ...regeneration.reservation,
+            }
+          : undefined,
+        expectedR2Etag,
+      );
+    }
     if (!regenerated.entry) {
       throw new Error("Regeneration was superseded and no active entry remains");
     }
@@ -1245,7 +1317,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             backingStoreUpdated: true,
             edgePurgeAccepted:
               options.purgeExisting && result.edgePurgeRequired
-                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
                 : true,
           };
         }
@@ -1262,6 +1334,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         request,
         response,
         options.revalidator,
+        options.expiryBehavior === "miss" ? "miss" : "regenerate",
         reservation,
         cacheTags,
       );
@@ -1276,7 +1349,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         backingStoreUpdated: true,
         edgePurgeAccepted:
           options.purgeExisting && result.edgePurgeRequired
-            ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
             : true,
       };
     } finally {
@@ -1351,8 +1424,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
     }
 
+    // Refresh is stale-while-revalidate: R2 already holds the new revisions,
+    // so let Workers Cache keep serving the prior responses while it refills.
     const edgePurgeAccepted = refreshed.length
-      ? await this.purgeEdgeCacheByTags(refreshed.map((entry) => purgeTagForEntry(entry)))
+      ? await this.updateEdgeCacheByTags(
+          refreshed.map((entry) => purgeTagForEntry(entry)),
+          "invalidate",
+        )
       : false;
 
     if (failures.length) {
@@ -1404,7 +1482,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     if (options.purgeEverything && failures.length === 0) {
       try {
-        edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
+        edgePurgeAccepted = await this.updateEdgeCache({ purgeEverything: true });
         if (edgePurgeAccepted) {
           const acknowledged = await Promise.allSettled(
             reservations.map(({ metadata, reservation }) =>

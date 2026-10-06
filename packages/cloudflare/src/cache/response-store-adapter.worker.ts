@@ -12,9 +12,18 @@ import type {
   VinextResponseStageDispatchOptions,
   VinextResponseStageTransport,
 } from "vinext/server/multi-stage";
+import {
+  VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "vinext/internal/server/headers";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
+import {
+  finalizeGatewayResponse,
+  SHARED_RESPONSE_STAGE_HEADER,
+  type SharedResponseStage,
+} from "./browser-cache-policy.js";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import {
   applyRscCompatibilityIdHeader,
@@ -224,7 +233,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
           await response.body?.cancel().catch(() => {});
           throw new Error("Vinext response-stage regeneration was not cacheable");
         }
-        return response;
+        return withoutRequestScopedHeaders(response, invocation.props);
       }
       if (
         input.id === CACHE_FUNCTION_REVALIDATOR_ID &&
@@ -298,6 +307,31 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
   return new Request(url, { headers: CACHE_REQUEST_VARY_HEADERS, method: "GET" });
 }
 
+/**
+ * The request stage recomposes the routed params and path on every App page
+ * RSC response, HITs included, so such an entry shared across queries must not
+ * carry the values of the request that filled it. Every other response kind
+ * (route handlers, metadata routes, HTML, Pages) keeps its headers as rendered.
+ */
+function withoutRequestScopedHeaders(response: Response, responseStageProps: unknown): Response {
+  if (
+    responseStageProps === null ||
+    typeof responseStageProps !== "object" ||
+    Reflect.get(responseStageProps, "kind") !== "app-page" ||
+    Reflect.get(responseStageProps, "isRscRequest") !== true
+  ) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete(VINEXT_PARAMS_HEADER);
+  headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 function isCacheable(response: Response): boolean {
   const policy =
     response.headers.get("Cloudflare-CDN-Cache-Control") ??
@@ -305,20 +339,43 @@ function isCacheable(response: Response): boolean {
     response.headers.get("Cache-Control");
   return (
     response.status >= 200 &&
-    response.status < 400 &&
+    (response.status < 400 || response.status === 404) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
   );
 }
 
-function isResponseStoreMiss(response: Response): boolean {
-  return response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS";
+async function readStoredResponse(key: Request): Promise<Response | null> {
+  try {
+    const response = await responseStore.fetch(key);
+    // The backend's marker distinguishes a stored 404 from its 404 cache miss.
+    const storeStatus = response.headers.get("X-Workers-Response-Store");
+    if (
+      (response.status >= 200 && response.status < 400) ||
+      (response.status === 404 && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
+    )
+      return response;
+    void response.body?.cancel().catch(() => {});
+    if (response.status === 404 && storeStatus === "MISS") {
+      return null;
+    }
+    throw new Error(`Workers Response Store returned ${response.status}`);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        message: "Vinext response-store response lookup failed; treating as a cache miss",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return null;
+  }
 }
 
 function publicResponse(
   response: Response,
   cacheStatus: string,
   responseStageProps: unknown,
+  pendingAdmission = false,
 ): Response {
   const headers = new Headers(response.headers);
   const publicCacheStatus =
@@ -347,7 +404,7 @@ function publicResponse(
     headers.set("X-Vinext-Cache", publicCacheStatus);
   }
   const cacheControl = headers.get("Cache-Control");
-  if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
+  if (pendingAdmission && (!cacheControl || !isNonCacheableCacheControl(cacheControl, "browser"))) {
     headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   }
   return traceCachedResponseStart(
@@ -392,6 +449,12 @@ const handler = {
         );
       }
 
+      // Core supplies a query-free identity only for shared App page dispatches,
+      // whose admission requires a negative searchParams proof. The render
+      // still receives the real request; the key, route replay and RSC seed
+      // use the identity.
+      const identityRequest = options.cacheIdentity?.request ?? stageRequest;
+      const identityProps = options.cacheIdentity?.props ?? props;
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
       const canSeedRsc =
         isWarmup &&
@@ -406,30 +469,30 @@ const handler = {
       const rscSeed = canSeedRsc
         ? {
             props: {
-              ...(props as Record<string, unknown>),
+              ...(identityProps as Record<string, unknown>),
               isRscRequest: true,
               renderMode: "navigation",
             },
             request: new Request(
-              new URL(createCanonicalRscRequestUrl(stageRequest.url), stageRequest.url),
+              new URL(createCanonicalRscRequestUrl(identityRequest.url), identityRequest.url),
               { headers: createCanonicalRscRequestHeaders() },
             ),
           }
         : undefined;
-      const invocation = prepareInvocation(stageRequest, props);
+      const invocation = prepareInvocation(identityRequest, identityProps);
       const rscInvocation = rscSeed ? prepareInvocation(rscSeed.request, rscSeed.props) : undefined;
       const rscKey = rscInvocation ? await cacheRequest(rscInvocation) : undefined;
       const key = await cacheRequest(invocation);
-      const stored = await responseStore.fetch(key);
-      if (!isResponseStoreMiss(stored)) {
+      const stored = await readStoredResponse(key);
+      if (stored) {
         if (!rscKey) return publicResponse(stored, "HIT", props);
 
-        const storedRsc = await responseStore.fetch(rscKey);
-        if (!isResponseStoreMiss(storedRsc)) {
-          await storedRsc.body?.cancel();
+        const storedRsc = await readStoredResponse(rscKey);
+        if (storedRsc) {
+          void storedRsc.body?.cancel().catch(() => {});
           return publicResponse(stored, "HIT", props);
         }
-        await Promise.all([stored.body?.cancel(), storedRsc.body?.cancel()]);
+        void stored.body?.cancel().catch(() => {});
       }
 
       const capture: ResponseStoreInvocationCapture = rscSeed
@@ -438,9 +501,13 @@ const handler = {
           ? {}
           : { streamResponse: true };
       const serializedInvocation = JSON.stringify(invocation);
+      // Data-cache writes replay the render that produced them, real query
+      // included, so they keep the full invocation.
       const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture, {
         replayable: isReplayableInvocation(stageRequest, props),
-        serialized: serializedInvocation,
+        serialized: options.cacheIdentity
+          ? serializeInvocation(stageRequest, props)
+          : serializedInvocation,
       });
       if (capture.admittedResponse) {
         ctx.waitUntil(
@@ -450,7 +517,7 @@ const handler = {
                 await admitted.body?.cancel().catch(() => {});
                 return;
               }
-              await responseStore.put(key, admitted, {
+              await responseStore.put(key, withoutRequestScopedHeaders(admitted, props), {
                 coalesce: true,
                 revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
               });
@@ -464,7 +531,9 @@ const handler = {
               );
             }),
         );
-        return publicResponse(rendered, "MISS", props);
+        // The foreground can precede admission. Retain browser revalidation
+        // until the completed response has a proven policy.
+        return publicResponse(rendered, "MISS", props, true);
       }
       if (!isCacheable(rendered)) {
         void capture?.rscData?.catch(() => {});
@@ -476,11 +545,23 @@ const handler = {
       }
 
       const [foreground, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
-      const cacheResponse = new Response(cacheBody, rendered);
-      await responseStore.put(key, cacheResponse, {
-        coalesce: true,
-        revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
-      });
+      const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
+      try {
+        await responseStore.put(key, cacheResponse, {
+          coalesce: true,
+          revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
+        });
+      } catch (error) {
+        // Warming must confirm persistence; ordinary requests can serve the render.
+        if (isWarmup) throw error;
+        void cacheResponse.body?.cancel().catch(() => {});
+        console.error(
+          JSON.stringify({
+            message: "Vinext response-store response fill failed; serving the rendered response",
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
 
       if (rscSeed && rscInvocation && rscKey && capture?.rscData) {
         const rscData = await capture.rscData;
@@ -488,6 +569,8 @@ const handler = {
         rscHeaders.delete("Content-Length");
         rscHeaders.delete("Link");
         rscHeaders.delete("X-Vinext-Response-Store-Replayable");
+        rscHeaders.delete(VINEXT_PARAMS_HEADER);
+        rscHeaders.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
         rscHeaders.set("Content-Type", VINEXT_RSC_CONTENT_TYPE);
         rscHeaders.set("Vary", VINEXT_RSC_VARY_HEADER);
         applyRscCompatibilityIdHeader(rscHeaders);
@@ -512,6 +595,27 @@ const handler = {
       VinextResponseStoreEnv,
       StageContext
     >();
-    return handleRequestStage(request, env, context, dispatchResponseStage);
+    const sharedResponses = new Map<string, SharedResponseStage>();
+    const dispatch: VinextResponseStageTransport = async (stageRequest, props, options) => {
+      const response = await dispatchResponseStage(stageRequest, props, options);
+      if (options.cache !== "shared") return response;
+      // Record the normalized foreground response, never the persisted object.
+      const headers = new Headers(response.headers);
+      const token = crypto.randomUUID();
+      headers.set(SHARED_RESPONSE_STAGE_HEADER, token);
+      sharedResponses.set(token, {
+        headers: new Headers(headers),
+      });
+      return new Response(response.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
+    };
+    return finalizeGatewayResponse(
+      await handleRequestStage(request, env, context, dispatch),
+      sharedResponses,
+      "X-Vinext-Cache",
+    );
   },
 };

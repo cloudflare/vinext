@@ -1,15 +1,53 @@
 import { test, expect } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 /**
  * Standalone output E2E tests.
  *
- * These tests run against `vinext build` output with `output: "standalone"`,
+ * These tests run against `vite build` output with `output: "standalone"`,
  * started via `node dist/standalone/server.js`. The production server runs
  * on port 4182 via the webServer config in playwright.config.ts.
  */
 const BASE = "http://localhost:4182";
 
 test.describe("Standalone Output", () => {
+  test("packages prerendered HTML and manifests from the real fixture", async ({ request }) => {
+    // Adapted from Next.js: test/e2e/app-dir/app/standalone-gsp.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/standalone-gsp.test.ts
+    // A successful HTTP response alone also passes when standalone skips prerendering.
+    // Verify the actual build artifacts, including evaluated getStaticProps output.
+    const output = path.resolve("tests/fixtures/standalone-output/dist");
+    for (const [file, content] of [
+      ["index.html", "Hello, standalone!"],
+      ["about.html", "Static props from the standalone fixture."],
+    ]) {
+      const artifact = `server/prerendered-routes/${file}`;
+      const html = await readFile(path.join(output, "standalone/dist", artifact), "utf8");
+      expect(html).toContain(content);
+      expect(html).toBe(await readFile(path.join(output, artifact), "utf8"));
+    }
+
+    for (const file of ["vinext-prerender.json", "vinext-prerender-paths.json"]) {
+      const manifest = await readFile(path.join(output, "standalone/dist/server", file), "utf8");
+      expect(manifest).toBe(await readFile(path.join(output, "server", file), "utf8"));
+      expect(JSON.parse(manifest)).toMatchObject(
+        file === "vinext-prerender.json"
+          ? {
+              routes: expect.arrayContaining([
+                expect.objectContaining({ route: "/about", status: "rendered" }),
+              ]),
+            }
+          : { pagesPaths: expect.arrayContaining(["/", "/about"]) },
+      );
+    }
+
+    // Playwright starts the packaged server outside the repo, with only its own dependencies.
+    const response = await request.get(`${BASE}/about`);
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain("Static props from the standalone fixture.");
+  });
+
   test("index page renders with correct content", async ({ page }) => {
     const response = await page.goto(`${BASE}/`);
     expect(response?.status()).toBe(200);

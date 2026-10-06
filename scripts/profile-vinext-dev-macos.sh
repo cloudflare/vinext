@@ -9,7 +9,7 @@ export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:${HOME}/.vite-plus/bin:${PATH
 #   ./scripts/profile-vinext-dev-macos.sh
 #   ./scripts/profile-vinext-dev-macos.sh --route /dashboard
 #   ./scripts/profile-vinext-dev-macos.sh --raw-dev
-#   ./scripts/profile-vinext-dev-macos.sh --out-dir /tmp/vinext-profile -- vp exec vinext dev --host 127.0.0.1
+#   ./scripts/profile-vinext-dev-macos.sh --out-dir /tmp/vinext-profile -- vp dev --host 127.0.0.1
 #
 # Environment:
 #   VINEXT_PROFILE_DURATION=60       Raw-dev/custom capture duration in seconds.
@@ -37,7 +37,7 @@ Options:
       --benchmark         Profile this repo's generated benchmark fixture instead of the current app
       --clear-cache       Clear the current app's Vite caches before profiling
       --require-route     Fail if the profile route does not return 2xx before timeout
-      --raw-dev           Profile an interactive `vinext dev` server for the current app
+      --raw-dev           Profile an interactive Vite dev server for the current app
   -d, --duration SECONDS  Raw-dev/custom capture duration before stopping the command (default: 60)
       --no-duration       Keep recording until the profiled command exits or you press Ctrl-C
   -o, --out-dir DIR       Output root or exact run directory (default: .vinext-profiles)
@@ -318,26 +318,14 @@ set_app_dev_command() {
   local cwd="$1"
   shift
   local dev_args=("$@")
-  local repo_root_candidate=""
+  local vite_cli="${cwd}/node_modules/vite/bin/vite.js"
 
-  if [[ -f "${cwd}/node_modules/vinext/dist/cli.js" ]]; then
-    command_args=("node" "${cwd}/node_modules/vinext/dist/cli.js" "dev" "${dev_args[@]}")
+  if [[ -f "${vite_cli}" ]]; then
+    command_args=("node" "${vite_cli}" "dev" "${dev_args[@]}")
     return
   fi
 
-  if [[ -x "${cwd}/node_modules/.bin/vinext" ]]; then
-    command_args=("${cwd}/node_modules/.bin/vinext" "dev" "${dev_args[@]}")
-    return
-  fi
-
-  repo_root_candidate="$(git -C "${cwd}" rev-parse --show-toplevel 2>/dev/null || true)"
-  if [[ -n "${repo_root_candidate}" && -f "${repo_root_candidate}/packages/vinext/dist/cli.js" ]]; then
-    info "node_modules/vinext is missing; using built workspace CLI"
-    command_args=("node" "${repo_root_candidate}/packages/vinext/dist/cli.js" "dev" "${dev_args[@]}")
-    return
-  fi
-
-  command_args=("vp" "exec" "vinext" "dev" "${dev_args[@]}")
+  command_args=("vp" "dev" "${dev_args[@]}")
 }
 
 wait_for_profiled_route() {
@@ -889,19 +877,6 @@ EOF
       return 0
     fi
     echo "error: profiled command exited with status ${status}; profile is for the failed startup." >&2
-    if grep -q "Command .*vinext.* not found in node_modules/.bin" "${command_log}"; then
-      cat >&2 <<'EOF'
-
-The default command is `vp exec vinext dev`, but `vinext` is missing from
-node_modules/.bin in the directory where you ran the script.
-
-Fix the local workspace bins, then rerun:
-  vp install
-
-If the package was installed before packages/vinext/dist/cli.js existed, rerun
-the install after building vinext so the bin symlink is recreated.
-EOF
-    fi
     return "${status}"
   fi
 }

@@ -4,7 +4,7 @@
  * Uses a pre-populated barrel export map cache so no real packages need to be
  * installed. Each test uses a unique fake entry path to avoid cache collisions.
  */
-import { describe, it, expect, afterEach } from "vite-plus/test";
+import { describe, it, expect, afterEach, vi } from "vite-plus/test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -89,6 +89,44 @@ describe("vinext:optimize-imports plugin", () => {
     expect(hasOptimizedImport(`import "lucide-react";`)).toBe(false);
     expect(hasOptimizedImport(`import { Sun /*; */ } from "lucide-react";`)).toBe(true);
     expect(hasOptimizedImport(`function f(){}import { Sun } from "lucide-react";`)).toBe(true);
+  });
+
+  it("rejects unquoted, partial or non-import mentions of optimized packages", () => {
+    const hasOptimizedImport = createOptimizedImportSourceMatcher(["lucide-react", "radix-ui"]);
+
+    // "import" and "from" present, but no optimized package as a quoted string.
+    expect(hasOptimizedImport(`import { a } from "./a";\n// uses lucide-react icons`)).toBe(false);
+    expect(hasOptimizedImport(`import { a } from "lucide-react-extra";`)).toBe(false);
+    expect(hasOptimizedImport(`import { a } from "@scope/radix-ui";`)).toBe(false);
+    // Quoted package present but not as a static import source: still rejected.
+    expect(hasOptimizedImport(`import { a } from "./a";\nconst pkg = "radix-ui";`)).toBe(false);
+    expect(hasOptimizedImport(`import { a } from "./a";\nawait import("radix-ui");`)).toBe(false);
+    // Quoted package alongside a real import from it: still detected.
+    expect(
+      hasOptimizedImport(`const pkg = 'lucide-react';\nimport { Sun } from 'lucide-react';`),
+    ).toBe(true);
+  });
+
+  it("skips the full import scan when no optimized package appears as a quoted source", () => {
+    const hasOptimizedImport = createOptimizedImportSourceMatcher(["lucide-react"]);
+    // The prefilter can't change the result, so count calls to the expensive
+    // import regex (the only one whose source contains "import") instead.
+    const testSpy = vi.spyOn(RegExp.prototype, "test");
+    const importScans = () =>
+      testSpy.mock.contexts.filter((re) => re instanceof RegExp && re.source.includes("import"))
+        .length;
+
+    try {
+      expect(hasOptimizedImport(`import { a } from "./a";\nconst s = "import b from c";`)).toBe(
+        false,
+      );
+      expect(importScans()).toBe(0);
+
+      expect(hasOptimizedImport(`import { Sun } from "lucide-react";`)).toBe(true);
+      expect(importScans()).toBe(1);
+    } finally {
+      testSpy.mockRestore();
+    }
   });
 
   it("returns null when barrel package mentioned but no resolvable entry", async () => {

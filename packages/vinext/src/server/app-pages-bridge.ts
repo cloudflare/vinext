@@ -171,11 +171,14 @@ export async function renderPagesFallback(
         return null;
       }
     }
+    if (apiMatch !== null) {
+      beginRouteCacheability("pages-api", apiMatch.route.pattern);
+    }
     const executionContext = getRequestExecutionContext();
     const apiArgs = [
       pagesRequest,
       pagesUrl,
-      undefined,
+      executionContext ?? undefined,
       executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
       executionContext?.hostRuntime ?? "node",
     ] as const;
@@ -216,7 +219,7 @@ export async function renderPagesFallback(
     renderRequest,
     pagesUrl,
     {},
-    undefined,
+    getRequestExecutionContext() ?? undefined,
     middlewareContext.requestHeaders,
   ] as const;
   const pagesRes = isDataRequest

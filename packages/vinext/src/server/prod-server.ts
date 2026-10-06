@@ -1,7 +1,7 @@
 /**
  * Production server for vinext.
  *
- * Serves the built output from `vinext build`. Handles:
+ * Serves the built output from `vite build`. Handles:
  * - Static asset serving from client build output
  * - Pages Router: SSR rendering + API route handling
  * - App Router: RSC/SSR rendering, route handlers, server actions
@@ -37,6 +37,7 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
+import { registerPrerenderCloudflareLoader } from "../build/prerender-cloudflare-loader.js";
 import {
   canonicalizeRequestPathname,
   filterInternalHeaders,
@@ -49,7 +50,7 @@ import {
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
-import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
+import { mergeHeaders } from "./worker-utils.js";
 import {
   normalizeNextDataPagePathname,
   isNextDataPathname,
@@ -1301,6 +1302,12 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     silent = false,
   } = options;
 
+  if (purpose === "prerender") {
+    // Build-time servers (prerendering and path discovery) import the built
+    // Worker graph in Node, which may reference workerd-native modules.
+    registerPrerenderCloudflareLoader();
+  }
+
   const compress = !noCompression;
   // Always resolve outDir to absolute to ensure dynamic import() works
   const resolvedOutDir = path.resolve(outDir);
@@ -1320,7 +1327,7 @@ export async function startProdServer(options: ProdServerOptions = {}) {
 
   if (!isAppRouter && !fs.existsSync(serverEntryPath)) {
     console.error(`[vinext] No build output found in ${outDir}`);
-    console.error("Run `vinext build` first.");
+    console.error("Run `vite build` first.");
     process.exit(1);
   }
 
@@ -1759,10 +1766,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // branch is the Node fallback.
     //
     // Existing build assets bypass middleware. Missing asset-shaped requests
-    // must still reach middleware so it can rewrite or respond; if routing
-    // ultimately returns 404, convert it back to the canonical plain-text
-    // static-file response below.
-    let missingBuildAsset = false;
+    // must still reach middleware so it can rewrite or respond. The shared
+    // router classifies unmatched static paths after resolving rewrites.
     {
       const assetLookupPath = resolveAppRouterAssetPath(
         pathname,
@@ -1773,7 +1778,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
           return;
         }
-        missingBuildAsset = true;
       }
     }
 
@@ -1837,19 +1841,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         request,
         createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
       );
-
-      // Preserve the canonical build-asset 404 even when the RSC handler also
-      // identifies the request as a public/static-file lookup. Middleware may
-      // still handle or rewrite the request by returning a non-404 response.
-      if (missingBuildAsset && response.status === 404) {
-        await sendWebResponse(
-          finalizeMissingStaticAssetResponse(response, true),
-          req,
-          res,
-          compress,
-        );
-        return;
-      }
 
       const staticFileSignal = readStaticFileSignal(response);
       if (staticFileSignal) {
@@ -2187,11 +2178,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // so stripping `basePath` first would make `resolveAppRouterAssetPath`'s
     // path-prefix branch miss the match and return null → 404.
     // Existing build assets bypass middleware. Missing asset-shaped requests
-    // must still reach middleware so it can rewrite or respond; if routing
-    // ultimately returns 404, convert it back to the canonical plain-text
-    // static-file response below.
+    // must still reach middleware so it can rewrite or respond. The shared
+    // router classifies unmatched static paths after resolving rewrites.
     const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
-    const missingBuildAsset = pagesAssetLookup !== null;
     if (pagesAssetLookup) {
       if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
         return;
@@ -2303,6 +2292,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── Delegate steps 3–11 to the shared Pages Router pipeline ──
       const deps: PagesPipelineDeps = {
+        assetPrefix,
         basePath,
         trailingSlash,
         i18nConfig,
@@ -2340,10 +2330,20 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 options?: PagesRenderOptions,
                 stagedHeaders?: Headers,
               ) =>
-                renderPage(request, resolvedUrl, ssrManifest, undefined, stagedHeaders, {
-                  ...options,
-                  originalUrl: originalRenderUrl,
-                })
+                renderPage(
+                  request,
+                  resolvedUrl,
+                  ssrManifest,
+                  undefined,
+                  stagedHeaders,
+                  {
+                    ...options,
+                    originalUrl: originalRenderUrl,
+                  },
+                  stagedHeaders?.has("Cache-Control")
+                    ? new Headers({ "Cache-Control": stagedHeaders.get("Cache-Control")! })
+                    : undefined,
+                )
             : null,
         handleApi:
           typeof handleApi === "function"
@@ -2440,15 +2440,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       if (result.type === "response") {
         const { response } = result;
-        if (missingBuildAsset && response.status === 404) {
-          await sendWebResponse(
-            finalizeMissingStaticAssetResponse(response, true),
-            req,
-            res,
-            compress,
-          );
-          return;
-        }
         const streamedApi = isVinextStreamedApiResponse(response);
         const shouldStream = isVinextStreamedHtmlResponse(response) || streamedApi;
         // Passthrough responses (middleware short-circuits, external proxies, redirects)

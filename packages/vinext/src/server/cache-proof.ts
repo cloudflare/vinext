@@ -1299,6 +1299,17 @@ export function hasCompleteNegativeRequestApiProof(
   return true;
 }
 
+/**
+ * Whether a stored App page's render is proven not to have read the request's
+ * query, so one entry may serve every query. Core only writes and reads
+ * entries with this proof.
+ */
+export function hasQueryInvariantRenderProof(observation: RenderObservation | undefined): boolean {
+  return (
+    observation !== undefined && hasCompleteNegativeRequestApiProof(observation, ["searchParams"])
+  );
+}
+
 function isStaticLayoutOutputScope(
   output: CacheProofOutputScope,
 ): output is StaticLayoutCacheProofOutputScope {

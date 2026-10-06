@@ -1,5 +1,5 @@
 /**
- * Prerendering phase for vinext build.
+ * Prerendering phase for vite build.
  *
  * Classifies every route, renders static and ISR routes to HTML/JSON/RSC files,
  * and writes a `vinext-prerender.json` build index.
@@ -21,7 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
-import type { AppRoute } from "../routing/app-router.js";
+import { appRouteLayoutStaticParamsGroups, type AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
@@ -37,11 +37,15 @@ import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
+import { extractLocaleFromUrl } from "../server/pages-i18n.js";
+import { isUnknownRecord } from "../utils/record.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
   NEXT_CACHE_TAGS_HEADER,
+  VINEXT_CACHE_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -75,7 +79,6 @@ import {
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
-import { isMetadataResponseCacheable } from "../server/metadata-route-cache-policy.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
 const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
@@ -120,6 +123,12 @@ async function startOptionalPrerenderServerPool(
 // server, connection reset) so only genuine user-function errors are marked
 // fatal to the build. Refs cloudflare/vinext#1982
 class PrerenderUserFunctionError extends Error {}
+
+// A generateStaticParams/getStaticPaths result that breaks the route's param
+// contract (a non-string single segment, a non-array catch-all, a dot
+// segment). Next.js throws from build/static-paths/app.ts validateParams,
+// which fails `next build` in every mode, so prerenderApp marks it fatal too.
+class InvalidStaticParamsError extends Error {}
 
 // The prerender static-params / static-paths endpoints return the real error
 // thrown by a user's generateStaticParams/getStaticPaths as `{ error }` in a 500
@@ -170,8 +179,14 @@ export type PrerenderRouteResult =
       router: "app" | "pages" | "metadata";
       /** Response headers that must be replayed with the prerendered artifact. */
       headers?: Record<string, string | string[]>;
-      /** Original HTTP status for prerendered App Route-style responses. */
+      /** Original HTTP status for prerendered route responses. */
       responseStatus?: number;
+      /** Pages source returned notFound, distinct from the custom 404 document. */
+      notFound?: true;
+      /** Original Pages redirect props, including client navigation semantics. */
+      redirectProps?: object;
+      /** Pages locale rendered for this public pathname. */
+      locale?: string;
       /** Cache tags collected while rendering this route. */
       tags?: string[];
       /** Raw app-tree segments used to derive App Route implicit tags. */
@@ -547,44 +562,55 @@ export type StaticParamsMap = Record<
 >;
 
 /**
- * Resolve parent dynamic segment params for a route.
+ * Next.js fails `output: "export"` on any generateStaticParams call that
+ * returns no params (build/static-paths/app.ts callGenerateStaticParams).
+ */
+function emptyStaticExportParamsError(pattern: string): Error {
+  return new Error(
+    `Page "${pattern}" returned an empty array from "generateStaticParams()". ` +
+      `With "output: export", at least one route must be generated. ` +
+      `See more info here: https://nextjs.org/docs/messages/generate-static-params`,
+  );
+}
+
+/**
+ * Resolve the params a route's layouts above its own pattern generate.
  * Handles top-down generateStaticParams resolution for nested dynamic routes.
  *
  * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
- * the production bundle.
+ * the production bundle. As in Next.js, which walks every segment of the
+ * route's own loader tree top-down and passes each parent param set to the
+ * next generateStaticParams (build/static-paths/app.ts
+ * generateRouteStaticParams), every layout of the route contributes, including
+ * one at the last dynamic segment when static segments follow it. The layouts
+ * at the route's full pattern compose with its page under
+ * `staticParamsMap[route.pattern]`, so they're left to the caller. A page or a
+ * route group's layout at the same prefix belongs to a sibling route and never
+ * supplies params.
+ *
+ * An App Route handler inherits no layouts: Next.js builds its segments from
+ * the route module alone (build/segment-config/app/app-segments.ts
+ * collectAppRouteSegments), so it has no parent params. A layout that returns
+ * no params passes each parent set through unchanged, as Next.js does outside
+ * Cache Components, except under `output: "export"`, where Next.js rejects any
+ * generateStaticParams that returns no params (build/static-paths/app.ts
+ * callGenerateStaticParams).
  */
 export async function resolveParentParams(
   childRoute: AppRoute,
   staticParamsMap: StaticParamsMap,
-  options: { includeLastDynamicSegment?: boolean } = {},
+  options: { staticExport?: boolean } = {},
 ): Promise<Record<string, string | string[]>[]> {
-  const { patternParts } = childRoute;
-
-  // The last dynamic segment belongs to the child route itself — its params
-  // are resolved by the child's own generateStaticParams. We only collect
-  // params from earlier (parent) dynamic segments.
-  let lastDynamicIdx = -1;
-  for (let i = patternParts.length - 1; i >= 0; i--) {
-    if (patternParts[i].startsWith(":")) {
-      lastDynamicIdx = i;
-      break;
-    }
-  }
-
   type GenerateStaticParamsFn = (opts: {
     params: Record<string, string | string[]>;
   }) => Promise<unknown>;
 
+  if (childRoute.routePath && !childRoute.pagePath) return [];
+
   const parentSegments: GenerateStaticParamsFn[] = [];
-
-  let prefixPattern = "";
-  const prefixEnd = options.includeLastDynamicSegment ? lastDynamicIdx + 1 : lastDynamicIdx;
-  for (let i = 0; i < prefixEnd; i++) {
-    const part = patternParts[i];
-    prefixPattern += "/" + part;
-    if (!part.startsWith(":")) continue;
-
-    const fn = staticParamsMap[prefixPattern];
+  for (const group of appRouteLayoutStaticParamsGroups(childRoute)) {
+    if (group.pattern === childRoute.pattern) continue;
+    const fn = staticParamsMap[group.key];
     if (typeof fn === "function") {
       parentSegments.push(fn);
     }
@@ -592,22 +618,31 @@ export async function resolveParentParams(
 
   if (parentSegments.length === 0) return [];
 
-  let currentParams: Record<string, string | string[]>[] = [{}];
-  let resolvedAnyParent = false;
+  let currentParams: Record<string, string | string[]>[] = [];
 
   for (const generateStaticParams of parentSegments) {
     const nextParams: Record<string, string | string[]>[] = [];
     let resolvedThisParent = false;
+    // With no parent sets yet (no earlier provider, or every earlier one
+    // returned []), Next.js calls the next generateStaticParams once with `{}`
+    // (build/static-paths/app.ts generateRouteStaticParams).
+    const hasParentSets = currentParams.length > 0;
 
-    for (const parentParams of currentParams) {
+    for (const parentParams of hasParentSets ? currentParams : [{}]) {
       const results = await generateStaticParams({ params: parentParams });
       // `null` is the CF Workers Proxy sentinel: the proxy has no
       // generateStaticParams for this pattern. Skip and let later providers run.
       if (results === null) continue;
       if (!Array.isArray(results)) return [];
+      if (options.staticExport && results.length === 0) {
+        throw emptyStaticExportParamsError(childRoute.pattern);
+      }
 
       resolvedThisParent = true;
-      resolvedAnyParent = true;
+      if (results.length === 0 && hasParentSets) {
+        nextParams.push(parentParams);
+        continue;
+      }
       for (const result of results) {
         nextParams.push({ ...parentParams, ...result });
       }
@@ -618,10 +653,143 @@ export async function resolveParentParams(
     }
   }
 
-  return resolvedAnyParent ? currentParams : [];
+  return currentParams;
+}
+
+type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
+
+function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
+  return pattern
+    .split("/")
+    .filter((segment) => segment.startsWith(":"))
+    .map((segment) => ({
+      name: segment.slice(1, segment.endsWith("+") || segment.endsWith("*") ? -1 : undefined),
+      optional: segment.endsWith("*"),
+      repeat: segment.endsWith("+") || segment.endsWith("*"),
+    }));
+}
+
+export function validateDiscoveredParams(
+  value: unknown,
+  pattern: string,
+  source: "generateStaticParams" | "getStaticPaths",
+): Record<string, string | string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new InvalidStaticParamsError(`${source} must return parameter objects for ${pattern}.`);
+  }
+
+  const params = { ...(value as Record<string, unknown>) };
+  for (const { name, optional, repeat } of getDynamicPatternParams(pattern)) {
+    const hasValue = Object.prototype.hasOwnProperty.call(params, name);
+    let paramValue = params[name];
+    if (
+      optional &&
+      hasValue &&
+      (paramValue === null || paramValue === undefined || paramValue === false)
+    ) {
+      paramValue = [];
+      params[name] = paramValue;
+    }
+    const valid = repeat
+      ? Array.isArray(paramValue) && paramValue.every((entry) => typeof entry === "string")
+      : typeof paramValue === "string";
+    if (!valid) {
+      throw new InvalidStaticParamsError(
+        `Parameter ${name} from ${source} for ${pattern} must be ${repeat ? "an array of strings" : "a string"}.`,
+      );
+    }
+    const values = Array.isArray(paramValue) ? paramValue : [paramValue];
+    if (values.some((entry) => entry === "." || entry === "..")) {
+      throw new InvalidStaticParamsError(
+        `Parameter ${name} from ${source} for ${pattern} must not contain dot path segments.`,
+      );
+    }
+  }
+  return params as Record<string, string | string[]>;
+}
+
+/**
+ * The param sets of an App route that become concrete paths, following
+ * Next.js's buildAppStaticPaths (build/static-paths/app.ts). Unless every set
+ * names every pathname param (hadAllParamsGenerated), none is prerendered.
+ * Otherwise every set is checked against the route's pathname params
+ * (validateParams), and, outside a partial prerender, a set with an empty
+ * required value is skipped rather than built into a path with an empty
+ * segment. An array, including an optional catch-all's empty one, is never
+ * empty in that sense. Under `output: "export"` incomplete sets fail the
+ * build instead, as Next.js requires every export path to be generated.
+ */
+export function routeStaticParamSets(
+  route: Pick<AppRoute, "pattern">,
+  paramSets: readonly unknown[],
+  options: { staticExport?: boolean } = {},
+): Record<string, string | string[]>[] {
+  const patternParams = getDynamicPatternParams(route.pattern);
+  const objects = paramSets.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new InvalidStaticParamsError(
+        `generateStaticParams must return parameter objects for ${route.pattern}.`,
+      );
+    }
+    return value;
+  });
+  const missingParamNames = patternParams
+    .filter(({ name }) => objects.some((params) => !(name in params)))
+    .map(({ name }) => name);
+  if (missingParamNames.length > 0) {
+    if (options.staticExport && objects.length > 0) {
+      throw new InvalidStaticParamsError(
+        `Page "${route.pattern}" returned incomplete params from "generateStaticParams()". With "output: export", every params object must include all dynamic route parameters. Missing: ${missingParamNames.map((name) => `"${name}"`).join(", ")}. See more info here: https://nextjs.org/docs/messages/generate-static-params`,
+      );
+    }
+    return [];
+  }
+
+  const materializable: Record<string, string | string[]>[] = [];
+  for (const value of objects) {
+    const params = validateDiscoveredParams(value, route.pattern, "generateStaticParams");
+    if (patternParams.some(({ name, repeat }) => !repeat && params[name] === "")) continue;
+    materializable.push(params);
+  }
+  return materializable;
+}
+
+/**
+ * The param sets a route's layouts generate, standing in for the route's own
+ * when none of the segments at its full pattern has generateStaticParams.
+ * Next.js prerenders none of a route's paths unless every set fills every
+ * pathname param (build/static-paths/app.ts hadAllParamsGenerated), so
+ * incomplete sets leave the route without static params (`null`). Complete
+ * sets still go through routeStaticParamSets.
+ */
+export function layoutOnlyParamSets(
+  route: Pick<AppRoute, "params" | "pattern">,
+  parentParamSets: Record<string, string | string[]>[],
+): Record<string, string | string[]>[] | null {
+  const complete =
+    parentParamSets.length > 0 &&
+    parentParamSets.every((params) => route.params.every((name) => name in params));
+  return complete ? parentParamSets : null;
 }
 
 // ─── Pages Router Prerender ───────────────────────────────────────────────────
+
+export function localizePagesPath(
+  pathname: string,
+  locale: string | undefined,
+  i18n: ResolvedNextConfig["i18n"],
+): string {
+  if (!i18n || !locale) return pathname;
+  if (locale === i18n.defaultLocale) {
+    // Keep the canonical public URL unless its first segment names a locale:
+    // /fr is French home, whereas /en/fr is the English page named fr.
+    const firstSegment = pathname.split("/")[1]?.toLowerCase();
+    if (!i18n.locales.some((candidate) => candidate.toLowerCase() === firstSegment)) {
+      return pathname;
+    }
+  }
+  return pathname === "/" ? `/${locale}` : `/${locale}${pathname}`;
+}
 
 /**
  * Run the prerender phase for Pages Router.
@@ -687,7 +855,7 @@ export async function prerenderPages({
       console.warn(
         "[vinext] Warning: prerender secret not found. " +
           "/__vinext/prerender/* endpoints will return 403 and dynamic routes will produce no paths. " +
-          "Run `vinext build` to regenerate the secret.",
+          "Run `vite build` to regenerate the secret.",
       );
     }
 
@@ -701,6 +869,8 @@ export async function prerenderPages({
             // pagesBundlePath is guaranteed non-null: the guard above ensures
             // either _prodServer or pagesBundlePath is provided.
             outDir: path.dirname(path.dirname(pagesBundlePath!)),
+            serverDir: path.dirname(pagesBundlePath!),
+            serverEntryPath: pagesBundlePath,
             noCompression: true,
             purpose: "prerender",
           });
@@ -809,6 +979,8 @@ export async function prerenderPages({
       urlPath: string;
       params: Record<string, string | string[]>;
       revalidate: number | false;
+      hasStaticProps: boolean;
+      locale?: string;
     };
     const pagesToRender: PageToRender[] = [];
 
@@ -820,7 +992,11 @@ export async function prerenderPages({
       // that non-2xx response as a prerender failure.
       if (route.pattern === "/404") continue;
 
-      const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
+      const {
+        type,
+        revalidate: classifiedRevalidate,
+        hasStaticProps = false,
+      } = classifyPagesRoute(route.filePath);
 
       // Route type detection uses static file analysis (classifyPagesRoute).
       // Rendering is always done via HTTP through a local prod server, so we
@@ -866,7 +1042,10 @@ export async function prerenderPages({
         // the whole prerender, matching Next.js. Refs cloudflare/vinext#1982
         let pathsResult: { paths?: Array<StaticPathsEntry>; fallback?: unknown } | undefined;
         try {
-          pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
+          pathsResult = await route.module.getStaticPaths({
+            locales: [...(config.i18n?.locales ?? [])],
+            defaultLocale: config.i18n?.defaultLocale ?? "",
+          });
         } catch (e) {
           results.push({
             route: route.pattern,
@@ -895,16 +1074,37 @@ export async function prerenderPages({
         // the whole prerender.
         const paths: Array<StaticPathsEntry> = pathsResult?.paths ?? [];
         let entryError: string | null = null;
+        const seenPaths = new Set<string>();
         for (const item of paths) {
-          const normalized = normalizeStaticPathsEntry(item, route.pattern);
+          let locale = config.i18n?.defaultLocale;
+          let pathEntry = item;
+          if (config.i18n && typeof item === "string") {
+            const localized = extractLocaleFromUrl(item, config.i18n);
+            locale = localized.locale;
+            pathEntry = localized.url;
+          } else if (item && typeof item === "object" && item.locale !== undefined) {
+            locale = item.locale;
+          }
+          const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
           if ("error" in normalized) {
             entryError = normalized.error;
             break;
           }
+          if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
+            entryError = `Invalid locale returned from getStaticPaths for ${route.pattern}: ${locale}`;
+            break;
+          }
           const { params } = normalized;
           try {
-            const urlPath = buildUrlFromParams(route.pattern, params);
-            pagesToRender.push({ route, urlPath, params, revalidate });
+            const urlPath = localizePagesPath(
+              buildUrlFromParams(route.pattern, params),
+              locale,
+              config.i18n,
+            );
+            if (!seenPaths.has(urlPath)) {
+              seenPaths.add(urlPath);
+              pagesToRender.push({ route, urlPath, params, revalidate, hasStaticProps, locale });
+            }
           } catch (e) {
             entryError = (e as Error).message;
             break;
@@ -915,7 +1115,16 @@ export async function prerenderPages({
           continue;
         }
       } else {
-        pagesToRender.push({ route, urlPath: route.pattern, params: {}, revalidate });
+        for (const locale of config.i18n?.locales ?? [undefined]) {
+          pagesToRender.push({
+            route,
+            urlPath: localizePagesPath(route.pattern, locale, config.i18n),
+            params: {},
+            revalidate,
+            hasStaticProps,
+            locale,
+          });
+        }
       }
     }
 
@@ -928,7 +1137,12 @@ export async function prerenderPages({
       const poolSize = resolvePrerenderPoolSize(pagesToRender.length, concurrency);
       if (poolSize > 1) {
         const poolOutDir = path.dirname(path.dirname(pagesBundlePath));
-        renderPool = await startOptionalPrerenderServerPool(poolOutDir, poolSize);
+        renderPool = await startOptionalPrerenderServerPool(
+          poolOutDir,
+          poolSize,
+          undefined,
+          path.dirname(pagesBundlePath),
+        );
         if (renderPool) renderPorts = renderPool.ports;
       }
     }
@@ -938,10 +1152,56 @@ export async function prerenderPages({
     const pageResults = await runWithConcurrency(
       pagesToRender,
       concurrency,
-      async ({ route, urlPath, revalidate }) => {
+      async ({ route, urlPath, revalidate, hasStaticProps, locale }) => {
         let result: PrerenderRouteResult;
         try {
           const response = await renderPage(urlPath);
+          // Only the page render for this exact URL confirms "0". Rewrites to other
+          // pages, files, API routes, or proxies may be request-conditional, so
+          // leave those paths to runtime rather than freezing the build result.
+          if (
+            mode === "default" &&
+            response.headers.get(VINEXT_PRERENDER_REWRITTEN_HEADER) !== "0"
+          ) {
+            void response.body?.cancel().catch(() => {});
+            const skipped: PrerenderRouteResult = {
+              route: route.pattern,
+              status: "skipped",
+              reason: "dynamic",
+            };
+            onProgress?.({
+              completed: ++completed,
+              total: pagesToRender.length,
+              route: urlPath,
+              status: skipped.status,
+            });
+            return skipped;
+          }
+          const contentType = response.headers.get("content-type");
+          // getStaticProps terminal responses carry the framework's MISS marker.
+          // A middleware/config/_app early response must not become a snapshot.
+          const isStaticPropsResponse =
+            mode === "default" &&
+            hasStaticProps &&
+            response.headers.get(VINEXT_CACHE_HEADER) === "MISS";
+          const notFound = isStaticPropsResponse && response.status === 404;
+          const redirect =
+            isStaticPropsResponse && [301, 302, 303, 307, 308].includes(response.status);
+          let redirectProps: object | undefined;
+          if (redirect) {
+            const props: unknown = await response.json();
+            if (
+              !isUnknownRecord(props) ||
+              !isUnknownRecord(props.pageProps) ||
+              typeof props.pageProps.__N_REDIRECT !== "string" ||
+              props.pageProps.__N_REDIRECT_STATUS !== response.status ||
+              (props.pageProps.__N_REDIRECT_BASE_PATH !== undefined &&
+                typeof props.pageProps.__N_REDIRECT_BASE_PATH !== "boolean")
+            ) {
+              throw new Error(`Invalid prerendered Pages redirect props for ${urlPath}`);
+            }
+            redirectProps = props;
+          }
           const outputFiles: string[] = [];
           const htmlOutputPath = getOutputPath(
             urlPath,
@@ -964,7 +1224,7 @@ export async function prerenderPages({
             fs.writeFileSync(htmlFullPath, html, "utf-8");
             outputFiles.push(htmlOutputPath);
           } else {
-            if (!response.ok) {
+            if (!response.ok && !notFound) {
               throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
             }
             const html = await response.text();
@@ -983,6 +1243,17 @@ export async function prerenderPages({
             ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
             router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
+            ...(locale ? { locale } : {}),
+            ...(response.ok ? { responseStatus: response.status } : {}),
+            ...(response.ok && contentType ? { headers: { "content-type": contentType } } : {}),
+            ...(notFound ? { notFound: true, responseStatus: 404 } : {}),
+            ...(redirect
+              ? {
+                  responseStatus: response.status,
+                  redirectProps,
+                  headers: { location: response.headers.get("location") ?? "/" },
+                }
+              : {}),
           };
         } catch (e) {
           renderPool?.recordRenderError(e);
@@ -1012,18 +1283,44 @@ export async function prerenderPages({
     // ── Render 404 page ───────────────────────────────────────────────────
     const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
     const hasErrorPage = findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
-    if (hasCustom404 || hasErrorPage) {
+    for (const locale of config.i18n?.locales ?? [undefined]) {
+      if (!hasCustom404 && !hasErrorPage) break;
       try {
-        const notFoundRes = await renderPage(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH);
+        const notFoundRes = await renderPage(
+          localizePagesPath(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH, locale, config.i18n),
+        );
+        // Same rule as the page loop: a conditional rewrite of the 404 path to
+        // another file, API, or page must not become the deployment-wide 404.
+        if (
+          mode === "default" &&
+          notFoundRes.headers.get(VINEXT_PRERENDER_REWRITTEN_HEADER) !== "0"
+        ) {
+          void notFoundRes.body?.cancel().catch(() => {});
+          continue;
+        }
         const contentType = notFoundRes.headers.get("content-type") ?? "";
         if (notFoundRes.status === 404 && contentType.includes("text/html")) {
           const html404 = await notFoundRes.text();
+          const pathname = localizePagesPath("/404", locale, config.i18n);
+          let outputFiles: string[];
+          if (pathname === "/404") {
+            outputFiles = emitStatic404Files(outDir, html404, config.trailingSlash);
+          } else {
+            const outputPath = getOutputPath(pathname, config.trailingSlash);
+            const fullPath = path.join(outDir, outputPath);
+            fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+            fs.writeFileSync(fullPath, html404, "utf8");
+            outputFiles = [outputPath];
+          }
           results.push({
             route: "/404",
             status: "rendered",
-            outputFiles: emitStatic404Files(outDir, html404, config.trailingSlash),
+            outputFiles,
             revalidate: false,
             router: "pages",
+            headers: { "content-type": contentType },
+            ...(pathname !== "/404" ? { path: pathname } : {}),
+            ...(locale ? { locale } : {}),
           });
         }
       } catch (e) {
@@ -1066,7 +1363,7 @@ export async function prerenderPages({
  * `vinext-prerender.json` to `outDir`.
  *
  * If the bundle does not exist, an error is thrown directing the user to run
- * `vinext build` first.
+ * `vite build` first.
  *
  * Speculative static rendering: routes classified as 'unknown' (no explicit
  * config, non-dynamic URL) are attempted with an empty headers/cookies context.
@@ -1125,7 +1422,7 @@ export async function prerenderApp({
       console.warn(
         "[vinext] Warning: prerender secret not found. " +
           "/__vinext/prerender/* endpoints will return 403 and generateStaticParams will not be called. " +
-          "Run `vinext build` to regenerate the secret.",
+          "Run `vite build` to regenerate the secret.",
       );
     }
 
@@ -1204,6 +1501,9 @@ export async function prerenderApp({
             if (Object.keys(params).length > 0) {
               search.set("parentParams", JSON.stringify(params));
             }
+            // Next.js fails an export on any empty generateStaticParams result,
+            // so a composed resolver must not pass parents through one.
+            if (mode === "export") search.set("rejectEmptyResults", "1");
             const res = await fetch(`${baseUrl}/__vinext/prerender/static-params?${search}`, {
               headers: secretHeaders,
             });
@@ -1328,19 +1628,32 @@ export async function prerenderApp({
             continue;
           }
 
-          const parentParamSets = await resolveParentParams(route, staticParamsMap);
+          const parentParamSets = await resolveParentParams(route, staticParamsMap, {
+            staticExport: mode === "export",
+          });
           let paramSets: Record<string, string | string[]>[] | null;
 
           if (parentParamSets.length > 0) {
             paramSets = [];
             for (const parentParams of parentParamSets) {
               const childResults = await generateStaticParamsFn({ params: parentParams });
-              // null means route has no generateStaticParams (CF Workers Proxy case)
+              // null means the route's own segments have no generateStaticParams
+              // (CF Workers Proxy case), so its layouts' params stand alone.
               if (childResults === null) {
-                paramSets = null;
+                paramSets = layoutOnlyParamSets(route, parentParamSets);
                 break;
               }
               if (Array.isArray(childResults)) {
+                if (mode === "export" && childResults.length === 0) {
+                  throw emptyStaticExportParamsError(route.pattern);
+                }
+                // As for a layout, an empty own result passes the parent set
+                // through (build/static-paths/app.ts generateRouteStaticParams);
+                // routeStaticParamSets below still drops it if incomplete.
+                if (childResults.length === 0) {
+                  (paramSets as Record<string, string | string[]>[]).push(parentParams);
+                  continue;
+                }
                 for (const childParams of childResults) {
                   (paramSets as Record<string, string | string[]>[]).push({
                     ...parentParams,
@@ -1352,9 +1665,26 @@ export async function prerenderApp({
                 break;
               }
             }
+            // Check every final set, layout-only or composed with the page,
+            // against the route before building its URL.
+            if (paramSets !== null) {
+              paramSets = routeStaticParamSets(route, paramSets, {
+                staticExport: mode === "export",
+              });
+            }
           } else {
             const results = await generateStaticParamsFn({ params: {} });
-            paramSets = Array.isArray(results) || results === null ? results : [];
+            if (mode === "export" && Array.isArray(results) && results.length === 0) {
+              throw emptyStaticExportParamsError(route.pattern);
+            }
+            // The resolver can reach the page after an empty layout result at
+            // the same pattern, so check these sets against the route too.
+            paramSets =
+              results === null
+                ? null
+                : routeStaticParamSets(route, Array.isArray(results) ? results : [], {
+                    staticExport: mode === "export",
+                  });
           }
 
           // null: route has no generateStaticParams (CF Workers Proxy returned null)
@@ -1446,9 +1776,12 @@ export async function prerenderApp({
             route: route.pattern,
             status: "error",
             error: `Failed to call generateStaticParams(): ${detail}`,
-            // Only a thrown user generateStaticParams (a 500 from the endpoint) is
-            // fatal to the build; transport/fetch failures stay non-fatal. #1982
-            ...(e instanceof PrerenderUserFunctionError ? { fatal: true as const } : {}),
+            // Only a thrown user generateStaticParams (a 500 from the endpoint) or
+            // a result that breaks the route's param contract is fatal to the
+            // build; transport/fetch failures stay non-fatal. #1982
+            ...(e instanceof PrerenderUserFunctionError || e instanceof InvalidStaticParamsError
+              ? { fatal: true as const }
+              : {}),
           });
         }
       } else if (type === "unknown") {
@@ -1558,14 +1891,14 @@ export async function prerenderApp({
             };
           }
           const cacheControl = response.headers.get("cache-control") ?? "";
-          if (!isMetadataResponseCacheable(response)) {
+          const requestCacheLife = readPrerenderCacheLifeHeader(response.headers);
+          if (requestCacheLife?.revalidate === 0) {
             await response.body?.cancel();
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
 
-          const requestCacheLife = readPrerenderCacheLifeHeader(response.headers);
           const collectedTags = readPrerenderCacheTagsHeader(response.headers);
-          const cacheValue = await buildAppRouteCacheValue(response);
+          const cacheValue = await buildAppRouteCacheValue(response, cacheControl);
           cacheValue.headers[VINEXT_METADATA_ROUTE_CACHE_HEADER] = "1";
           const outputPath = getAppRouteOutputPath(urlPath);
           const fullPath = path.join(outDir, outputPath);
@@ -1574,7 +1907,7 @@ export async function prerenderApp({
 
           const renderedCacheControl = resolveRenderedCacheControl(
             requestCacheLife ?? {},
-            cacheControl,
+            "",
             config.expireTime,
           );
           const renderedRevalidate = renderedCacheControl.revalidate ?? false;
@@ -2024,6 +2357,9 @@ export function writePrerenderIndex(
         ...(r.routeSegments ? { routeSegments: r.routeSegments } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
         ...(typeof r.responseStatus === "number" ? { responseStatus: r.responseStatus } : {}),
+        ...(r.notFound ? { notFound: true as const } : {}),
+        ...(r.redirectProps ? { redirectProps: r.redirectProps } : {}),
+        ...(r.locale ? { locale: r.locale } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
       };

@@ -75,56 +75,45 @@ export function renameCJSConfigs(root: string): Array<[string, string]> {
   return renamed;
 }
 
-/**
- * Ensure the project is configured for ESM before Vite loads vite.config.ts.
- *
- * This mirrors what `vinext init` does, but is applied lazily at dev/build
- * time for projects that were set up before `vinext init` added the step.
- *
- * Side effects: may rename `.js` CJS config files to `.cjs` and add
- * `"type": "module"` to package.json.
- *
- * @returns Object describing what was changed, or null if nothing was done.
- */
+/** Preserve the old CLI's ESM migration for projects with a legacy Vite config. */
 export function ensureViteConfigCompatibility(
   root: string,
 ): { renamed: Array<[string, string]>; addedTypeModule: boolean } | null {
-  // Only act when there is a vite.config — auto-config mode sets
-  // configFile: false and doesn't go through Vite's file-loading path.
-  if (!hasViteConfig(root)) return null;
+  const config = findViteConfigPath(root);
+  if (!config || !/\.(?:ts|js)$/.test(config)) return null;
 
   const pkgPath = path.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return null;
-
-  let pkg: Record<string, unknown>;
   try {
-    pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-  } catch {
-    return null;
-  }
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
+    if (pkg.type !== undefined) return null;
+    // A CommonJS vite.config.js is already valid; changing its package boundary breaks it.
+    if (
+      config.endsWith(".js") &&
+      /\b(?:module\.exports|require\s*\()/.test(fs.readFileSync(config, "utf-8"))
+    )
+      return null;
 
-  // Already correct — nothing to do.
-  if (pkg.type === "module") return null;
+    // Don't replace an existing .cjs file while preserving legacy CommonJS configs.
+    for (const fileName of CJS_CONFIG_FILES) {
+      const source = path.join(root, fileName);
+      const destination = path.join(root, fileName.replace(/\.js$/, ".cjs"));
+      if (
+        fs.existsSync(source) &&
+        fs.existsSync(destination) &&
+        /\bmodule\.exports\b|\brequire\s*\(/.test(fs.readFileSync(source, "utf-8"))
+      )
+        return null;
+    }
 
-  // Respect explicit "type" values (e.g. "commonjs") — the user chose this deliberately.
-  if (pkg.type !== undefined) return null;
-
-  // Rename any `.js` CJS config files first so they don't break after we
-  // add "type": "module".
-  const renamed = renameCJSConfigs(root);
-
-  // Write type:module directly using the already-parsed pkg object to avoid
-  // a redundant re-read inside ensureESModule.
-  let addedTypeModule = false;
-  try {
+    const renamed = renameCJSConfigs(root);
     pkg.type = "module";
     fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
-    addedTypeModule = true;
+    return { renamed, addedTypeModule: true };
   } catch {
-    // If we can't write, Vite will fail with a clearer error downstream.
+    // Let Vite report config or filesystem errors in its normal way.
+    return null;
   }
-
-  return { renamed, addedTypeModule };
 }
 
 // ─── Ancestor Directory Walking ──────────────────────────────────────────────
@@ -576,7 +565,7 @@ export function getMissingDeps(
   if (!info.hasCloudflarePlugin) {
     missing.push({ name: "@cloudflare/vite-plugin", version: "latest" });
   }
-  if (!info.hasWrangler) {
+  if (!info.hasWrangler && !fs.existsSync(path.join(info.root, "cloudflare.config.ts"))) {
     missing.push({ name: "wrangler", version: "latest" });
   }
   if (!_isResolvable(info.root, "@vitejs/plugin-react")) {

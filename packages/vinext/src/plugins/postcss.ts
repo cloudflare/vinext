@@ -11,7 +11,7 @@ async function loadPluginExport(resolvedPath: string): Promise<unknown> {
  * PostCSS config file names to search for, in priority order.
  * Matches the same search order as postcss-load-config / lilconfig.
  */
-const POSTCSS_CONFIG_FILES = [
+export const POSTCSS_CONFIG_FILES = [
   "postcss.config.js",
   "postcss.config.cjs",
   "postcss.config.mjs",

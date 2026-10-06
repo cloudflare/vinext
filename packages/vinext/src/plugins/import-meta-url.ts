@@ -34,7 +34,11 @@ import {
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
 } from "./ast-utils.js";
-import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
+import {
+  magicStringTransformResult,
+  omitUnusedBuildSourcemap,
+  type MagicStringTransformResult,
+} from "./transform-result.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 type ModuleIdentityTransformKind =
@@ -206,11 +210,14 @@ export function createImportMetaUrlPlugin(options: {
                   : emittedModuleIdentity.cjsGlobalInitializers
                 : undefined;
             if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
-              return rewriteModuleIdentity(code, {
-                id: dependency.canonicalId,
-                importMetaUrlReplacement,
-                cjsGlobalInitializers,
-              });
+              return omitUnusedBuildSourcemap(
+                this.environment,
+                rewriteModuleIdentity(code, {
+                  id: dependency.canonicalId,
+                  importMetaUrlReplacement,
+                  cjsGlobalInitializers,
+                }),
+              );
             }
           }
         }
@@ -251,7 +258,7 @@ export function createImportMetaUrlPlugin(options: {
         }
 
         const cached = entry.results.get(transformKind);
-        if (cached) return cached.value;
+        if (cached) return omitUnusedBuildSourcemap(this.environment, cached.value);
 
         const value = rewriteCanonicalSourceIdentity(
           code,
@@ -263,7 +270,7 @@ export function createImportMetaUrlPlugin(options: {
             : sourcePathCjsGlobalInitializers(canonicalId),
         );
         entry.results.set(transformKind, { value });
-        return value;
+        return omitUnusedBuildSourcemap(this.environment, value);
       },
     },
     renderChunk: {
@@ -276,10 +283,9 @@ export function createImportMetaUrlPlugin(options: {
           this.environment?.name,
           chunk.fileName,
         );
-        return finalizeEmittedModuleIdentity(
-          code,
-          emittedModuleIdentity.replacements,
-          emittedFileName,
+        return omitUnusedBuildSourcemap(
+          this.environment,
+          finalizeEmittedModuleIdentity(code, emittedModuleIdentity.replacements, emittedFileName),
         );
       },
     },

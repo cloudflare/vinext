@@ -2,8 +2,6 @@
 
 import "./server-globals.js";
 import requestRscHandler, {
-  __assetPrefix,
-  __basePath,
   __ensureHybridPagesApplication,
   __ensureInstrumentation,
   __imageAllowedWidths,
@@ -14,6 +12,7 @@ import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims
 // @ts-expect-error -- virtual module resolved by vinext
 import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
 import { registerLazyDataCacheHandler } from "vinext/shims/cache-handler";
+import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
@@ -23,11 +22,7 @@ import {
   handleConfiguredImageOptimization,
   isImageOptimizationPath,
 } from "./image-optimization.js";
-import {
-  createStaticAssetRequest,
-  finalizeMissingStaticAssetResponse,
-  resolveStaticAssetSignal,
-} from "./worker-utils.js";
+import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -43,7 +38,6 @@ import {
 } from "./headers.js";
 import { readTrustedPrerenderStateFromHeaders } from "./prerender-route-params.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
-import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
   createWorkerPrerenderDiscoveryContext,
@@ -59,11 +53,6 @@ import { consumeFrameworkRequestRoute, traceFrameworkRequest } from "./request-t
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
-
-const workerBasePath = typeof __basePath === "string" ? __basePath : "";
-const workerAssetPathPrefix = assetPrefixPathname(
-  typeof __assetPrefix === "string" ? __assetPrefix : "",
-);
 
 export function handleRequestStage(
   request: Request,
@@ -107,6 +96,9 @@ async function handleRequest(
       );
 
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  // Adapters can resolve their own asset binding. The revalidation context's
+  // closure reads this parameter at call time, so it sees the fallback too.
+  assets ??= getExplicitCdnCacheAdapter()?.assets;
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext
@@ -165,7 +157,6 @@ async function handleRequest(
     return badRequestResponse();
   }
 
-  const missingBuildAsset = isNextStaticPath(url.pathname, workerBasePath, workerAssetPathPrefix);
   const trustedPrerenderState = readTrustedPrerenderStateFromHeaders(
     request.headers,
     __prerenderSecret,
@@ -216,7 +207,6 @@ async function handleRequest(
     });
     if (assetResponse) response = assetResponse;
   }
-  response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
   if (probeMode && probeRoute && !responseStageDispatched) {
     const { finalizeRequestStageCacheabilityProbe } = await import("./cacheability-request.js");
     response = finalizeRequestStageCacheabilityProbe(response, {

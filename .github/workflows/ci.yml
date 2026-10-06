@@ -58,6 +58,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Build vinext for command-level unit tests
+        run: vp run vinext#build
       - run: vp test run --project unit --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
 
   test-integration:
@@ -276,7 +278,7 @@ jobs:
           exit 1
 
   create-next-app-cloudflare:
-    name: create-next-app (cloudflare init)
+    name: create-next-app (legacy Wrangler init)
     runs-on: ubuntu-latest
     env:
       CNA_CLOUDFLARE_WORKER: create-next-app-cloudflare
@@ -335,6 +337,7 @@ jobs:
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: >-
           vp exec vinext init --skip-check --platform=cloudflare
+          --legacy-wrangler-cloudflare-init
           --cdn-cache=response-store
           --image-optimization=cloudflare-images
 
@@ -352,7 +355,7 @@ jobs:
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cna-cloudflare
-        run: vp exec vinext build
+        run: vp exec vite build
 
       - name: Verify generated Cloudflare build output
         working-directory: ${{ runner.temp }}/cna-cloudflare
@@ -363,8 +366,6 @@ jobs:
   create-vinext-app-cloudflare:
     name: create-vinext-app (Cloudflare build)
     runs-on: ubuntu-latest
-    env:
-      CVA_CLOUDFLARE_WORKER: create-vinext-app-cloudflare
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -428,27 +429,19 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
-      - name: Configure generated Cloudflare deployment
-        working-directory: ${{ runner.temp }}/cva-cloudflare
-        run: |
-          node -e '
-            const fs = require("node:fs");
-            const configPath = "wrangler.jsonc";
-            const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-            config.name = process.env.CVA_CLOUDFLARE_WORKER;
-            config.preview_urls = true;
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-          '
-
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cva-cloudflare
-        run: vp exec vinext build
+        run: vp exec vite build
 
       - name: Verify generated Cloudflare build output
         working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
-          test -f dist/server/wrangler.json
-          test -f wrangler.response-store.jsonc
+          test -f cloudflare.config.ts
+          test -f .cloudflare/output/v0/config.json
+          test -f .cloudflare/output/v0/workers/default/worker.config.json
+          test -f .cloudflare/output/v0/workers/cva-cloudflare-response-store/worker.config.json
+          test ! -f wrangler.jsonc
+          test ! -f wrangler.response-store.jsonc
 
   e2e:
     name: E2E (${{ matrix.label }})
@@ -557,12 +550,32 @@ jobs:
             label: static-export
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-static-assets
+            label: cloudflare-static-assets
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-static-export
+            label: cloudflare-static-export
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-static-assets-pages
+            label: cloudflare-static-assets-pages
+            shardIndex: 1
+            shardTotal: 1
           - project: static-export-basepath
             label: static-export-basepath
             shardIndex: 1
             shardTotal: 1
           - project: app-with-src
             label: app-with-src
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-nitro
+            label: app-router-nitro
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-nitro-dev
+            label: app-router-nitro-dev
             shardIndex: 1
             shardTotal: 1
           - project: standalone-output

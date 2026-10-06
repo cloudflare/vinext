@@ -94,6 +94,30 @@ body {
   text-decoration-color: var(--color-kumo-contrast);
 }
 
+.docs-copy :is(h1, h2, h3, h4, h5, h6) {
+  position: relative;
+  scroll-margin-top: 2rem;
+}
+
+.docs-copy .docs-heading-link {
+  position: absolute;
+  inset-inline-start: -1.5rem;
+  width: 1.5rem;
+  text-align: center;
+  text-decoration: none;
+  opacity: 0;
+}
+
+.docs-copy :is(h1, h2, h3, h4, h5, h6):is(:hover, :focus-within) > .docs-heading-link {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .docs-copy .docs-heading-link {
+    opacity: 1;
+  }
+}
+
 .docs-copy blockquote {
   margin-block: 1.5rem;
   border: 1px solid var(--color-kumo-line);

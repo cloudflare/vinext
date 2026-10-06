@@ -53,6 +53,7 @@ function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
       cacheControl && isNonCacheableCacheControl(cacheControl)
         ? cacheControl
         : NO_STORE_CACHE_CONTROL,
+    browserCacheControl: cacheControl ?? undefined,
   });
 }
 

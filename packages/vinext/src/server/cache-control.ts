@@ -67,6 +67,15 @@ export function readCdnResponseCacheControl(headers: Headers | undefined): strin
   return policy ? policy.readCacheControl(headers) : headers.get("Cache-Control");
 }
 
+/** Name the lowercased policy header whose value `readCdnResponseCacheControl` read. */
+export function readCdnResponsePolicyHeaderName(headers: Headers): string | null {
+  const policy = getCdnCacheAdapter().responsePolicy;
+  if (!policy) return headers.has("Cache-Control") ? "cache-control" : null;
+  // Only the adapter knows which header its precedence picked; an adapter
+  // that does not say leaves the policy unattributed.
+  return policy.readCacheControlHeaderName?.(headers)?.toLowerCase() ?? null;
+}
+
 /** Ask the active adapter whether one policy header explicitly disables storage. */
 export function isNonCacheableCdnResponsePolicy(name: string, value: string): boolean {
   if (name.toLowerCase() === "cache-control") return isNonCacheableCacheControl(value);
@@ -129,7 +138,7 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
     headers.set(name, value);
   }
   if (useNextDeployPolicy) {
-    headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+    headers.set("Cache-Control", input.browserCacheControl ?? BROWSER_REVALIDATE_CACHE_CONTROL);
   }
 }
 
@@ -153,24 +162,16 @@ export function reconcileCdnResponseHeadersAfterOuterPolicy(
     return;
   }
   const cacheControl = outerPolicyHeaders.get("cache-control");
-  if (cacheControl !== null) {
-    applyCdnResponseHeaders(headers, { cacheControl });
-    // Preserve any explicit provider-specific policy authored alongside the
-    // generic middleware policy after the adapter has derived its defaults.
-    for (const [name, value] of outerPolicyHeaders) {
-      if (name === "cache-control") continue;
-      if (isCdnResponsePolicyHeader(name)) headers.set(name, value);
-    }
-    return;
-  }
+  if (cacheControl !== null) headers.set("Cache-Control", cacheControl);
   for (const [name, value] of outerPolicyHeaders) {
-    if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, value)) {
+    if (
+      name !== "cache-control" &&
+      isCdnResponsePolicyHeader(name) &&
+      isNonCacheableCdnResponsePolicy(name, value)
+    ) {
       applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
       return;
     }
-  }
-  if (hasExplicitNonCacheableResponsePolicy(outerPolicyHeaders)) {
-    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   }
 }
 

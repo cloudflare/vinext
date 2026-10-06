@@ -9,6 +9,8 @@ export {
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
   cacheWarmupStatusSource,
+  hasCacheAdapterPrerenderOutput,
+  finalizeCacheAdapterPrerenderOutput,
   requiresRouteCacheabilityProbeManifest,
   loadVinextCacheConfigFromViteConfig,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
@@ -25,10 +27,13 @@ export type VinextPrerenderConfig =
        * App Router and Pages Router route that vinext can statically render.
        */
       routes: "*";
+      /** Maximum number of routes to render concurrently. */
+      concurrency?: number;
     };
 
 export type ResolvedVinextPrerenderConfig = {
   routes: "*";
+  concurrency?: number;
 };
 
 export type VinextPrerenderDecisionReason = "flag" | "next-export" | "vinext-config";
@@ -44,6 +49,7 @@ export const VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY = "__vinextRouteRootConfig
 
 export type VinextRouteRootConfig = {
   appDir?: string;
+  clientOutDir?: string;
   disableAppRouter?: boolean;
   rscOutDir?: string;
   ssrOutDir?: string;
@@ -68,7 +74,18 @@ export function normalizeVinextPrerenderConfig(
     throw new Error('[vinext] Invalid `prerender` config. Use `true` or `{ routes: "*" }`.');
   }
 
-  if (config.routes === "*") return { routes: "*" };
+  if (config.routes === "*") {
+    if (
+      config.concurrency !== undefined &&
+      (!Number.isInteger(config.concurrency) || config.concurrency <= 0)
+    ) {
+      throw new Error("[vinext] `prerender.concurrency` must be a positive integer.");
+    }
+    return {
+      routes: "*",
+      ...(config.concurrency === undefined ? {} : { concurrency: config.concurrency }),
+    };
+  }
 
   throw new Error(
     '[vinext] Unsupported `prerender.routes` config. Currently only `routes: "*"` is supported.',
@@ -139,7 +156,7 @@ export function resolveVinextPrerenderDecision(options: {
   if (options.prerenderAllFlag) return { routes: "*", reason: "flag" };
   if (options.nextOutput === "export") return { routes: "*", reason: "next-export" };
   if (options.vinextPrerenderConfig?.routes === "*") {
-    return { routes: "*", reason: "vinext-config" };
+    return { ...options.vinextPrerenderConfig, reason: "vinext-config" };
   }
   return null;
 }

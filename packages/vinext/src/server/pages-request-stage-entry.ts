@@ -26,7 +26,6 @@ import {
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
@@ -74,6 +73,7 @@ import {
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
+import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
@@ -207,7 +207,7 @@ export function handleRequestStageLocally(
       dispatchResponseStage(stageRequest, stageEnv, stageCtx, props),
     true,
     "worker",
-    env?.ASSETS,
+    ctx?.assets,
   ).then((response) => applyCdnResponseIdentityHeaders(response, originalRequest));
 }
 
@@ -276,6 +276,9 @@ async function handleRequestImpl(
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  assets ??=
+    getExplicitCdnCacheAdapter()?.assets ??
+    (defaultHostRuntime === "worker" ? env?.ASSETS : undefined);
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -388,7 +391,7 @@ async function handleRequestImpl(
 
     // Valid assets are served by Cloudflare's ASSETS binding before the worker
     // is invoked. Missing asset-shaped requests still need to reach middleware
-    // so it can rewrite/respond; a final 404 is converted back below.
+    // so it can rewrite/respond before the pipeline classifies the miss.
     const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
 
     // Track basePath presence on the original request so matcher gating can
@@ -431,6 +434,7 @@ async function handleRequestImpl(
     let speculativeRenderRequest: Request | null = null;
 
     const deps: PagesPipelineDeps = {
+      assetPrefix: vinextConfig?.assetPrefix,
       basePath,
       trailingSlash,
       i18nConfig,
@@ -609,14 +613,15 @@ async function handleRequestImpl(
           phase,
           (assetRequest) => Promise.resolve(assets.fetch(assetRequest)),
           publicFiles,
-          missingBuildAsset,
+          basePath,
+          assetPathPrefix,
         );
       },
     };
 
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
-      let response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      let response = result.response;
       if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
       }

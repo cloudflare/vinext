@@ -279,6 +279,76 @@ describe("app RSC error primitives", () => {
     }
   });
 
+  it.each(["plain", "digested", "sanitized", "frozen"])(
+    "logs the original %s error and route once during production prerender",
+    (kind) => {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const onError = createRscOnErrorHandler({
+          errorContext: renderErrorContext("/posts/[slug]"),
+          nodeEnv: "production",
+          reportRequestError() {},
+          requestInfo: { path: "/posts/intro", method: "GET", headers: {} },
+        });
+        const original = new Error("Cloudflare bindings are unavailable");
+        if (kind === "digested") Object.assign(original, { digest: "custom-digest" });
+        if (kind === "frozen") Object.freeze(original);
+        const error =
+          kind === "sanitized" ? sanitizeErrorForClient(original, "production") : original;
+
+        onError(error);
+        onError(error);
+
+        expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+          '[vinext] Error prerendering route "/posts/intro":',
+          original,
+        );
+        // Terminal diagnostics must not alter production error sanitization.
+        expect(expectDigestError(sanitizeErrorForClient(original, "production")).message).toContain(
+          "omitted in production",
+        );
+      } finally {
+        consoleError.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it("keeps navigation, dynamic bailouts and aborts quiet during prerender", () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const reportRequestError = vi.fn();
+      const onError = createRscOnErrorHandler({
+        errorContext: renderErrorContext("/feed"),
+        nodeEnv: "production",
+        reportRequestError,
+        requestInfo: { path: "/feed", method: "GET", headers: {} },
+      });
+      for (const digest of [
+        "NEXT_NOT_FOUND",
+        "NEXT_REDIRECT;push;%2Ffeed;307",
+        "BAILOUT_TO_CLIENT_SIDE_RENDERING",
+        "DYNAMIC_SERVER_USAGE",
+      ]) {
+        const error = Object.assign(new Error("control flow"), { digest });
+        expect(onError(error)).toBe(digest);
+        expect(onError(sanitizeErrorForClient(error, "production"))).toBe(digest);
+      }
+      for (const name of ["AbortError", "ResponseAborted"]) {
+        const error = Object.assign(new Error("cancelled"), { name });
+        expect(onError(error)).toBeUndefined();
+        expect(onError(sanitizeErrorForClient(error, "production"))).toBeUndefined();
+      }
+      expect(reportRequestError).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("does not re-log a digest-bearing error as it bubbles through nested onError passes", () => {
     // The same error object reaches this handler on both the RSC and SSR/HTML
     // render passes; the first pass stamps a digest, so a digest-bearing error

@@ -24,6 +24,19 @@ describe("vinext prerender config", () => {
     expect(normalizeVinextPrerenderConfig({ routes: "*" })).toEqual({ routes: "*" });
   });
 
+  it("accepts configured concurrency", () => {
+    expect(normalizeVinextPrerenderConfig({ routes: "*", concurrency: 4 })).toEqual({
+      routes: "*",
+      concurrency: 4,
+    });
+  });
+
+  it("rejects invalid concurrency", () => {
+    expect(() => normalizeVinextPrerenderConfig({ routes: "*", concurrency: 0 })).toThrow(
+      "must be a positive integer",
+    );
+  });
+
   it("treats undefined as disabled", () => {
     expect(normalizeVinextPrerenderConfig(undefined)).toBeNull();
   });
@@ -56,9 +69,14 @@ describe("vinext prerender config", () => {
   });
 
   it("discovers route-root config through promised plugin composition", async () => {
-    const plugins = [Promise.resolve(vinext({ appDir: "custom-app", disableAppRouter: true }))];
+    const plugins = [
+      Promise.resolve(
+        vinext({ appDir: "custom-app", clientOutDir: "custom-client", disableAppRouter: true }),
+      ),
+    ];
     expect(await findVinextRouteRootConfigInPlugins(plugins)).toMatchObject({
       appDir: "custom-app",
+      clientOutDir: "custom-client",
       disableAppRouter: true,
     });
   });
@@ -127,6 +145,14 @@ describe("vinext prerender config", () => {
         vinextPrerenderConfig: { routes: "*" },
       }),
     ).toEqual({ routes: "*", reason: "vinext-config" });
+  });
+
+  it("keeps config-owned concurrency in the prerender decision", () => {
+    expect(
+      resolveVinextPrerenderDecision({
+        vinextPrerenderConfig: { routes: "*", concurrency: 4 },
+      }),
+    ).toEqual({ routes: "*", concurrency: 4, reason: "vinext-config" });
   });
 
   it("returns no decision when prerendering is not configured", () => {
