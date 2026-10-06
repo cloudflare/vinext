@@ -138,6 +138,11 @@ function formatGoogleFontsErrorBody(body: string): string {
  * resolved back to the directory it was written with, read from its
  * enclosing `url(`, and replaced the same way.
  *
+ * Each directory is only replaced where it starts a `url(` value, so this
+ * checkout's `cacheDir` is not replaced inside a longer written path that
+ * ends with it (e.g. a Docker `WORKDIR /app` reading a cache written from
+ * `/home/me/app`).
+ *
  * Uses split/join rather than regex because either cache directory is an
  * absolute filesystem path that may contain regex metacharacters, quotes,
  * or parentheses.
@@ -150,7 +155,7 @@ export function _rewriteCachedFontCssToServedUrls(
   const normalizedCacheDir = toSlash(cacheDir);
   if (!normalizedCacheDir) return css;
   const servedPrefix = `/${assetsDir || DEFAULT_ASSETS_DIR}/${VINEXT_FONT_URL_NAMESPACE}`;
-  let rewritten = css.split(normalizedCacheDir).join(servedPrefix);
+  let rewritten = replaceCachedFontUrlPrefix(css, normalizedCacheDir, servedPrefix);
 
   for (
     let segmentIndex = rewritten.indexOf(`${CACHED_FONT_DIR_SEGMENT}/`);
@@ -165,11 +170,18 @@ export function _rewriteCachedFontCssToServedUrls(
       pathStart,
       segmentIndex + CACHED_FONT_DIR_SEGMENT.length,
     );
-    const next = rewritten.split(writtenCacheDir).join(servedPrefix);
+    const next = replaceCachedFontUrlPrefix(rewritten, writtenCacheDir, servedPrefix);
     if (next === rewritten) break;
     rewritten = next;
   }
   return rewritten;
+}
+
+function replaceCachedFontUrlPrefix(css: string, dir: string, servedPrefix: string): string {
+  for (const quote of ["", '"', "'"]) {
+    css = css.split(`url(${quote}${dir}/`).join(`url(${quote}${servedPrefix}/`);
+  }
+  return css;
 }
 
 /**

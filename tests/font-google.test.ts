@@ -1609,6 +1609,20 @@ describe("_rewriteCachedFontCssToServedUrls", () => {
         "src: url(/_next/static/_vinext_fonts/geist-abc/geist-def.woff2);",
       );
     });
+
+    it("rewrites paths from a checkout whose path ends with this checkout's path", () => {
+      // A Docker build with `WORKDIR /app` that copies in a host `.vinext/`
+      // written from `/home/me/app`: this checkout's cacheDir is a suffix
+      // of the written one and must not be replaced inside it.
+      const css =
+        "src: url(/home/me/app/.vinext/fonts/geist-abc/geist-def.woff2);\n" +
+        "src: url('/home/me/app/.vinext/fonts/geist-abc/geist-ghi.woff2');";
+
+      expect(rewriteCachedFontCssToServedUrls(css, "/app/.vinext/fonts")).toBe(
+        "src: url(/_next/static/_vinext_fonts/geist-abc/geist-def.woff2);\n" +
+          "src: url('/_next/static/_vinext_fonts/geist-abc/geist-ghi.woff2');",
+      );
+    });
   });
 
   it("is a no-op when cacheDir is empty", () => {
