@@ -119,6 +119,60 @@ describe("staticAssetsAdapter", () => {
     },
   );
 
+  // As in Next.js, a page's special error that escaped the shell is packaged
+  // with its status on both entries, and a redirect with its location.
+  it.each([
+    { status: 404, headers: undefined },
+    { status: 307, headers: { location: "/target" } },
+  ])(
+    "packages a prerendered $status special error on both entries",
+    async ({ status, headers }) => {
+      const root = createRoot();
+      write(
+        root,
+        "dist/server/vinext-prerender.json",
+        JSON.stringify({
+          buildId: "build-a",
+          routes: [
+            {
+              route: "/special-error",
+              status: "rendered",
+              revalidate: 60,
+              router: "app",
+              responseStatus: status,
+              ...(headers ? { headers } : {}),
+            },
+          ],
+        }),
+      );
+      write(
+        root,
+        "dist/server/prerendered-routes/special-error.html",
+        headers ? "" : "<h1>404</h1>",
+      );
+      write(root, "dist/server/prerendered-routes/special-error.rsc", "rsc payload with digest");
+
+      await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+      const adapter = createStaticAssetsCacheAdapter({
+        env: {
+          ASSETS: {
+            async fetch(input: string) {
+              const file = path.join(root, "dist/client", new URL(input).pathname);
+              return fs.existsSync(file)
+                ? new Response(fs.readFileSync(file))
+                : new Response(null, { status: 404 });
+            },
+          },
+        },
+      });
+
+      for (const kind of ["html", "rsc"] as const) {
+        const cached = await adapter.get(appIsrCacheKey("/special-error", kind, "build-a"));
+        expect(cached?.value).toMatchObject({ kind: "APP_PAGE", status, headers });
+      }
+    },
+  );
+
   it.each(
     [false, true].flatMap((trailingSlash) =>
       ["first", "café", "with space"].flatMap((slug) =>

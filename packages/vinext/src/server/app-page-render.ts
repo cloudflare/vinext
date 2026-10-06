@@ -103,7 +103,14 @@ import {
   preserveFullyBufferedBodyMetadata,
 } from "vinext/shims/unified-request-context";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
+  VINEXT_RSC_COMPLETION_METADATA_HEADER,
+} from "./headers.js";
+import {
+  applyPrerenderCacheLifeHeader,
+  applyPrerenderCacheTagsHeader,
+} from "./prerender-cache-life-header.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
@@ -1392,6 +1399,58 @@ async function renderAppPageLifecycleImpl(
     capturedRscDataRef.value !== null &&
     resolveEarlyResponseCacheControl(options) === null;
 
+  // Whether a prerender writes a special error that escaped the shell, as
+  // Next.js's build does. A speculative or fallback-shell prerender doesn't.
+  const mayPrerenderShellSpecialError = (): boolean =>
+    options.isPrerender === true &&
+    options.isSpeculativePrerender !== true &&
+    options.pprFallbackShellSignal === undefined &&
+    shouldCaptureRscForCacheMetadata &&
+    capturedRscDataRef.value !== null &&
+    resolveEarlyResponseCacheControl(options) === null;
+  // Read while the request context is alive: a redirect's response clears it.
+  let prerenderedSpecialError: {
+    cacheTags: string[];
+    dynamicUsed: boolean;
+    requestCacheLife: AppPageRequestCacheLife | null;
+  } | null = null;
+
+  // The special-error response replaces the page's document. prerender.ts
+  // writes it with its status and `location` when the header marks it, and
+  // the page's RSC payload from an RSC request.
+  const finalizePrerenderedShellSpecialErrorResponse = (
+    response: Response,
+    specialError: AppPageSpecialError,
+    prerendered: NonNullable<typeof prerenderedSpecialError>,
+  ): Response => {
+    if (response.status !== specialError.statusCode) {
+      return applyIneligibleRouteCachePolicy(response, options);
+    }
+    ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
+      expireSeconds,
+      requestCacheLife: prerendered.requestCacheLife,
+      revalidateSeconds,
+    }));
+    const { htmlResponsePolicy } = resolveHtmlCacheWrite(
+      prerendered.dynamicUsed || consumeRenderDynamicUsage(),
+    );
+    const headers = new Headers(response.headers);
+    // Middleware's merged policy wins, as on a normal response.
+    if (htmlResponsePolicy.cacheControl && !headers.has("cache-control")) {
+      headers.set("Cache-Control", htmlResponsePolicy.cacheControl);
+    }
+    applyPrerenderCacheLifeHeader(headers, prerendered.requestCacheLife);
+    applyPrerenderCacheTagsHeader(headers, prerendered.cacheTags);
+    headers.set(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, "1");
+    const prerenderResponse = new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+    copyLinkHeaderProvenance(response.headers, prerenderResponse.headers);
+    return prerenderResponse;
+  };
+
   // The special-error response replaces the page's document, and is stored as
   // a normal render would be, with its status and redirect `location`. The
   // RSC entry is the page's own payload, captured from the same render.
@@ -1558,7 +1617,8 @@ async function renderAppPageLifecycleImpl(
     },
     async renderSpecialErrorResponse(specialError) {
       shellSpecialError = specialError;
-      if (mayStoreShellSpecialError()) {
+      const mayPrerender = mayPrerenderShellSpecialError();
+      if (mayStoreShellSpecialError() || mayPrerender) {
         // The page's Flight render goes on after its shell rejected, such as
         // a layout's Suspense boundary reading cookies(). Let it finish while
         // the request context is alive, before the special-error response
@@ -1569,6 +1629,13 @@ async function renderAppPageLifecycleImpl(
           capturedRscDataRef.value,
           peekRenderDynamicUsage,
         );
+      }
+      if (mayPrerender) {
+        prerenderedSpecialError = {
+          cacheTags: options.getPageTags(),
+          dynamicUsed: consumeRenderDynamicUsage(),
+          requestCacheLife: readRequestCacheLifeForPrerender(options),
+        };
       }
       return options.renderPageSpecialError(specialError, {
         isCacheCandidate: isCacheCandidateHtmlRender,
@@ -1593,6 +1660,13 @@ async function renderAppPageLifecycleImpl(
       resolveEarlyResponseCacheControl(options) === null
     ) {
       return finalizeShellSpecialErrorResponse(htmlRender.response, shellSpecialError);
+    }
+    if (shellSpecialError && prerenderedSpecialError) {
+      return finalizePrerenderedShellSpecialErrorResponse(
+        htmlRender.response,
+        shellSpecialError,
+        prerenderedSpecialError,
+      );
     }
     return applyIneligibleRouteCachePolicy(htmlRender.response, options);
   }

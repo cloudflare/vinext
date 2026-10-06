@@ -110,10 +110,10 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
         kind: "APP_PAGE",
         html: "",
         rscData: await bodyResponse.arrayBuffer(),
-        headers: undefined,
+        headers: metadata.headers,
         postponed: undefined,
         prerendered: true,
-        status: undefined,
+        status: metadata.status,
       };
     } else {
       value = {

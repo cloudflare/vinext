@@ -29,7 +29,10 @@ import {
 } from "../packages/vinext/src/build/prerender.js";
 import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import {
@@ -763,6 +766,119 @@ describe("prerenderApp — RSC extraction", () => {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// As in Next.js's build, a page whose notFound(), forbidden(), unauthorized()
+// or redirect() escapes the shell is written with its status and location.
+describe("prerenderApp — special errors that escape the shell", () => {
+  async function prerenderSpecialErrorPage(
+    respond: (res: import("node:http").ServerResponse, isRsc: boolean) => void,
+  ) {
+    const root = tmpDir("vinext-prerender-special-error-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export const revalidate = 60;\nexport default function Page() { return null; }\n",
+    );
+    const server = createServer((req, res) => {
+      if (req.url === "/__vinext_nonexistent_for_404__") {
+        res.statusCode = 404;
+        res.end("<html><body>not found</body></html>");
+        return;
+      }
+      respond(res, req.headers.rsc === "1");
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+      const read = (file: string) =>
+        fs.existsSync(path.join(outDir, file))
+          ? fs.readFileSync(path.join(outDir, file), "utf8")
+          : null;
+      return {
+        html: read("index.html"),
+        route: findRoute(result.routes, "/"),
+        rsc: read("index.rsc"),
+      };
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // The document embeds its boundary's payload; the page's own RSC payload,
+  // with the digest, is what an RSC request gets.
+  const boundaryDocument =
+    "<html><body>not found" +
+    runtimeRscChunkScript('0:["$","p",null,{"children":"boundary"}]\n') +
+    runtimeRscDoneScript() +
+    "</body></html>";
+  const pagePayload = '0:["$","p",null,{"children":"page with digest"}]\n';
+
+  it.each([
+    { status: 404, location: undefined },
+    { status: 403, location: undefined },
+    { status: 401, location: undefined },
+    { status: 307, location: "/target" },
+  ])("writes the $status document and the page's RSC payload", async ({ status, location }) => {
+    const { html, route, rsc } = await prerenderSpecialErrorPage((res, isRsc) => {
+      if (isRsc) {
+        res.setHeader("content-type", "text/x-component");
+        res.end(pagePayload);
+        return;
+      }
+      res.statusCode = status;
+      res.setHeader("content-type", "text/html");
+      res.setHeader("cache-control", "s-maxage=60, stale-while-revalidate");
+      res.setHeader(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, "1");
+      if (location) res.setHeader("location", location);
+      res.end(location ? "" : boundaryDocument);
+    });
+
+    expect(route).toMatchObject({
+      status: "rendered",
+      responseStatus: status,
+      revalidate: 60,
+      ...(location ? { headers: { location } } : {}),
+    });
+    expect(html).toBe(location ? "" : boundaryDocument);
+    expect(rsc).toBe(pagePayload);
+  });
+
+  it("still fails a 404 that isn't its page's special error", async () => {
+    const { html, route, rsc } = await prerenderSpecialErrorPage((res) => {
+      res.statusCode = 404;
+      res.setHeader("cache-control", "s-maxage=60, stale-while-revalidate");
+      res.end(boundaryDocument);
+    });
+
+    expect(route).toMatchObject({ status: "error", error: "RSC handler returned 404" });
+    expect(html).toBeNull();
+    expect(rsc).toBeNull();
+  });
+
+  it("skips a special error whose render turned dynamic", async () => {
+    const { route } = await prerenderSpecialErrorPage((res) => {
+      res.statusCode = 404;
+      res.setHeader("cache-control", "private, no-cache, no-store, max-age=0, must-revalidate");
+      res.setHeader(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, "1");
+      res.end(boundaryDocument);
+    });
+
+    expect(route).toMatchObject({ status: "skipped", reason: "dynamic" });
   });
 });
 
@@ -1600,6 +1716,40 @@ describe("prerenderApp — default mode (app-basic)", () => {
     // every document request to /redirect-test.
     expect(fs.existsSync(path.join(outDir, "redirect-test.html"))).toBe(false);
     expect(fs.existsSync(path.join(outDir, "redirect-test.rsc"))).toBe(false);
+  });
+
+  // As in Next.js's build, a page's special error that escapes the shell is
+  // written with its status and location, beside the page's RSC payload.
+  it.each([
+    {
+      route: "/nextjs-compat/isr-special-error/not-found",
+      responseStatus: 404,
+      location: undefined,
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    },
+    {
+      route: "/nextjs-compat/isr-special-error/redirect",
+      responseStatus: 307,
+      location: "/nextjs-compat/nav-redirect-result",
+      digest: "NEXT_REDIRECT;",
+    },
+  ])(
+    "writes $route's special error with status $responseStatus",
+    ({ route, responseStatus, location, digest }) => {
+      const r = findRoute(results, route);
+      expect(r).toMatchObject({ status: "rendered", revalidate: 60, responseStatus });
+      if (r?.status !== "rendered") throw new Error(`expected ${route} to render`);
+      expect(r.headers?.location).toBe(location);
+      const rsc = fs.readFileSync(path.join(outDir, `${route.slice(1)}.rsc`), "utf8");
+      expect(rsc).toContain(digest);
+    },
+  );
+
+  // A Suspense boundary caught the special error, so the shell rendered.
+  it("writes a special error caught under loading.tsx as a 200", () => {
+    const r = findRoute(results, "/nextjs-compat/isr-special-error/loading-not-found");
+    expect(r).toMatchObject({ status: "rendered", revalidate: 60 });
+    expect(r).not.toHaveProperty("responseStatus");
   });
 
   // ── API routes — always skipped ────────────────────────────────────────────

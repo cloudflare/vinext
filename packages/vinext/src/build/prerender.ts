@@ -40,6 +40,7 @@ import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/rou
 import { extractLocaleFromUrl } from "../server/pages-i18n.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
+import { createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import {
   NEXT_CACHE_TAGS_HEADER,
   VINEXT_CACHE_HEADER,
@@ -48,6 +49,7 @@ import {
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -1975,17 +1977,25 @@ export async function prerenderApp({
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
             const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
-            if (!response.ok || cacheControl.includes("no-store")) {
+            // As in Next.js's build, the page's own special error that
+            // escaped the shell is written with its status and location.
+            const isSpecialError =
+              mode !== "export" &&
+              response.headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER) === "1";
+            const ok = response.ok || isSpecialError;
+            if (!ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
                 cacheControl,
                 linkHeader,
                 html: null,
-                ok: response.ok,
+                ok,
                 requestCacheLife: null,
                 tags: [],
                 status: response.status,
                 fatal,
+                specialErrorLocation: null,
+                isSpecialError,
               };
             }
 
@@ -2003,6 +2013,8 @@ export async function prerenderApp({
               status: response.status,
               tags: cacheTags,
               fatal: false,
+              specialErrorLocation: isSpecialError ? response.headers.get("location") : null,
+              isSpecialError,
             };
           },
         );
@@ -2049,7 +2061,9 @@ export async function prerenderApp({
         // no chunk scripts at all — covers cases where middleware
         // short-circuits the App Router pipeline with a custom 200 HTML
         // response that never went through createRscEmbedTransform.
-        let rscData = extractRscPayloadFromPrerenderedHtml(html);
+        // A special error's document embeds its boundary's payload, not the
+        // page's, so the page's comes from an RSC request, as on a runtime miss.
+        let rscData = htmlRender.isSpecialError ? null : extractRscPayloadFromPrerenderedHtml(html);
         if (rscData === null) {
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
           if (prerenderRouteParamsHeader !== null) {
@@ -2058,9 +2072,12 @@ export async function prerenderApp({
           if (isSpeculative) {
             rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
           }
-          const rscRequest = new Request(`http://localhost${requestPath}`, {
-            headers: rscHeaders,
-          });
+          // The RSC request carries its cache-busting `_rsc` param, which an
+          // App page's RSC request otherwise redirects to add.
+          const rscRequest = new Request(
+            `http://localhost${await createRscRequestUrl(requestPath, rscHeaders)}`,
+            { headers: rscHeaders },
+          );
           const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
             rscHandler(rscRequest),
           );
@@ -2125,7 +2142,17 @@ export async function prerenderApp({
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
-          ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
+          ...(htmlRender.linkHeader || htmlRender.specialErrorLocation
+            ? {
+                headers: {
+                  ...(htmlRender.linkHeader ? { link: htmlRender.linkHeader } : {}),
+                  ...(htmlRender.specialErrorLocation
+                    ? { location: htmlRender.specialErrorLocation }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(htmlRender.isSpecialError ? { responseStatus: htmlRender.status } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
         };
