@@ -153,9 +153,11 @@ export function createRscEmbedTransform(
   const reader = embedStream.getReader();
   let pendingChunks: RscEmbeddedChunk[] = [];
   const rawChunks: Uint8Array[] = [];
-  // How many of rawChunks have been embedded, to replay them into a mirror
-  // that starts mid-stream.
-  let embeddedRawChunkCount = 0;
+  // The chunks already embedded, replayed into a mirror that starts
+  // mid-stream. getRawBuffer() can clear rawChunks first, so they're kept
+  // apart, and only until the mirror starts or the stream finalizes.
+  let chunksForLateMirror: RscEmbeddedChunk[] | null =
+    typeof options.mirrorNextFlight === "function" ? [] : null;
   let reading = false;
   let mirroredNextFlightBootstrap = false;
   const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -176,12 +178,10 @@ export function createRscEmbedTransform(
     let scripts =
       createInlineScriptTag(createNextFlightBootstrapScript(), options.scriptNonce) +
       createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
-    for (let index = 0; index < embeddedRawChunkCount; index++) {
-      scripts += createInlineScriptTag(
-        createNextFlightChunkScript(decodeChunk(rawChunks[index])),
-        options.scriptNonce,
-      );
+    for (const chunk of chunksForLateMirror ?? []) {
+      scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
     }
+    chunksForLateMirror = null;
     return scripts;
   }
 
@@ -214,7 +214,9 @@ export function createRscEmbedTransform(
       const mirrorScripts = startNextFlightMirror();
       const chunks = pendingChunks;
       pendingChunks = [];
-      embeddedRawChunkCount += chunks.length;
+      if (chunksForLateMirror && !mirroredNextFlightBootstrap) {
+        for (const chunk of chunks) chunksForLateMirror.push(chunk);
+      }
 
       // React commonly emits one small Flight row per byte chunk. Embedding
       // each row in its own script makes large trees pay for thousands of
@@ -263,6 +265,7 @@ export function createRscEmbedTransform(
       await pumpPromise;
       let scripts = this.flush();
       scripts += startNextFlightMirror();
+      chunksForLateMirror = null;
       scripts += createInlineScriptTag(
         createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
         options.scriptNonce,
