@@ -462,6 +462,12 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     searchParams: URLSearchParams;
   }) => void;
   renderMode?: AppRscRenderMode;
+  /**
+   * Render the document whole before its first byte, with streamed metadata in
+   * `<head>`, as a background regeneration does. The adapter sets this for a
+   * render no client is waiting on, such as its regeneration or a warm-up.
+   */
+  renderWholeDocument?: boolean;
 };
 
 /**
@@ -1242,6 +1248,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
           observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
           serveStreamingMetadata: placeGeneratedMetadataInBody,
+          placeStreamedMetadataInHead: options.renderWholeDocument === true,
         },
       );
     },
@@ -1326,6 +1333,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
+            placeStreamedMetadataInHead: options.renderWholeDocument === true,
           },
         );
       },
@@ -1430,6 +1438,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isPrerender,
     isRoutePPREnabled: options.pprRuntime !== undefined,
     isSpeculativePrerender,
+    // An RSC payload streams either way; only a document waits for SSR.
+    renderWholeDocument: options.renderWholeDocument === true && !options.isRscRequest,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
     traceOperation,

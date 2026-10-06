@@ -1333,6 +1333,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     scriptNonce,
     searchParams,
     renderMode,
+    renderWholeDocument,
   }) {
     const PageComponent = route.page?.default;
     const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
@@ -1518,6 +1519,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       searchParams,
       setNavigationContext,
       renderMode,
+      renderWholeDocument,
     });
   },
   async dispatchMatchedRouteHandler({

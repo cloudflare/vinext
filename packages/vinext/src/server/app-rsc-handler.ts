@@ -431,6 +431,8 @@ type DispatchMatchedPageOptions<TRoute> = {
   scriptNonce?: string;
   searchParams: URLSearchParams;
   renderMode: AppRscRenderMode;
+  /** Render the document whole before its first byte (a regeneration or warm-up). */
+  renderWholeDocument?: boolean;
 };
 
 type DispatchMatchedRouteHandlerOptions<TRoute> = {

@@ -209,6 +209,8 @@ type RenderAppPageLifecycleOptionsBase = {
   /** PPR routes send every RSC response as a 200. */
   isRoutePPREnabled?: boolean;
   isSpeculativePrerender?: boolean;
+  /** Wait for the whole document before its first byte, as a prerender does. */
+  renderWholeDocument?: boolean;
   isProduction: boolean;
   omitPendingDynamicCacheState?: boolean;
   isRscRequest: boolean;
@@ -1021,7 +1023,8 @@ async function renderAppPageLifecycleImpl(
   let revalidateSeconds = options.revalidateSeconds;
   let expireSeconds = options.expireSeconds;
   const shouldWaitForAllReady =
-    options.isPrerender === true && options.isSpeculativePrerender !== true;
+    (options.isPrerender === true && options.isSpeculativePrerender !== true) ||
+    options.renderWholeDocument === true;
   const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
   // A cache candidate's cacheLife can still lower its lifetime after headers,
   // including under the default `revalidate = false`.

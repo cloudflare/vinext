@@ -361,6 +361,7 @@ function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
 
 type CreateDispatchOptionsOverrides = {
   buildPageElement?: DispatchOptions["buildPageElement"];
+  renderWholeDocument?: DispatchOptions["renderWholeDocument"];
   bypassInterceptionContextCache?: DispatchOptions["bypassInterceptionContextCache"];
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
@@ -502,6 +503,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     renderToReadableStream,
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
+    renderWholeDocument: overrides.renderWholeDocument,
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
     resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
     resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
@@ -3519,6 +3521,7 @@ describe("app page dispatch", () => {
         isForceStatic: false,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
+        placeStreamedMetadataInHead: false,
         serveStreamingMetadata: true,
       },
     ]);
@@ -4173,6 +4176,53 @@ describe("app page dispatch", () => {
     expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({ serveStreamingMetadata: true });
     expect(buildPageElement.mock.calls[0]?.[5]?.placeStreamedMetadataInHead).not.toBe(true);
   });
+
+  // An adapter asks for this when no client waits on the render, such as its
+  // regeneration or a deployment warm-up.
+  it.each([
+    { name: "a document", isRscRequest: false, waitForAllReady: true },
+    { name: "an RSC payload", isRscRequest: true, waitForAllReady: undefined },
+  ])(
+    "renders $name whole, with its streamed metadata in <head>, when asked",
+    async ({ isRscRequest, waitForAllReady }) => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const ssrOptions: unknown[] = [];
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        isRscRequest,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            ssrOptions.push(captureOptions);
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        renderWholeDocument: true,
+        revalidateSeconds: 60,
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+
+      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead: true,
+        serveStreamingMetadata: true,
+      });
+      // An RSC payload streams either way; only a document waits for SSR.
+      if (isRscRequest) {
+        expect(ssrOptions).toEqual([]);
+      } else {
+        expect(ssrOptions[0]).toMatchObject({ waitForAllReady });
+      }
+    },
+  );
 
   it("stores an intercepted RSC regeneration whose shell ended in a 404", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
