@@ -10,7 +10,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -118,10 +117,13 @@ export function ${component(p, m)}({ depth = 0, label = "${component(p, m)}" }: 
 // ─── Pages ─────────────────────────────────────────────────────────────────────
 // Pages import from the upper half of the packages, like feature code.
 for (let i = 0; i < PAGES; i++) {
-  const used = Array.from({ length: 8 }, () => {
+  // A Map drops repeated picks, which would otherwise be duplicate imports.
+  const imports = new Map();
+  for (let n = 0; n < 8; n++) {
     const p = PACKAGES / 2 + pick(PACKAGES / 2);
-    return [component(p, pick(MODULES_PER_PACKAGE)), pkg(p)];
-  });
+    imports.set(component(p, pick(MODULES_PER_PACKAGE)), pkg(p));
+  }
+  const used = [...imports];
   write(
     i === 0 ? "pages/index.tsx" : `pages/section-${i}.tsx`,
     `
@@ -163,7 +165,6 @@ write(
   "package.json",
   JSON.stringify({ name: "pages-large", private: true, dependencies }, null, 2),
 );
-write("tsconfig.json", readFileSync(join(benchmarkRoot, "vinext", "tsconfig.json"), "utf8"));
 write("styles/globals.css", "body { margin: 0; font-family: system-ui, sans-serif; }");
 write(
   "next.config.mjs",
@@ -175,6 +176,10 @@ export default { turbopack: { root: new URL("../..", import.meta.url).pathname }
 
 // ─── Copy to each benchmark project ────────────────────────────────────────────
 cpSync(join(APP, "nextjs"), join(APP, "vinext"), { recursive: true });
+// Each copy takes its project's tsconfig, so Next.js does not rewrite it on the first round.
+for (const project of ["nextjs", "vinext"]) {
+  cpSync(join(benchmarkRoot, project, "tsconfig.json"), join(APP, project, "tsconfig.json"));
+}
 writeFileSync(
   join(APP, "vinext", "vite.config.mjs"),
   `import vinext from "vinext";\n\nexport default { plugins: [vinext()] };\n`,
