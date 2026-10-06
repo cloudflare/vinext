@@ -5971,6 +5971,38 @@ describe("next/cache shim", () => {
     setCacheHandler(originalHandler);
   });
 
+  it("unstable_cache returns the computed value when the cache write fails", async () => {
+    // Next.js IncrementalCache.set catches cache handler errors and only warns:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/index.ts
+    const { setCacheHandler, getCacheHandler, unstable_cache } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    const writeError = new Error("cache write failed");
+    const failingHandler = {
+      async get() {
+        return null;
+      },
+      async set() {
+        throw writeError;
+      },
+      async revalidateTag() {},
+      resetRequestCache() {},
+    };
+
+    const originalHandler = getCacheHandler();
+    setCacheHandler(failingHandler);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const cached = unstable_cache(async () => 42, ["write-failure-test"]);
+      await expect(cached()).resolves.toBe(42);
+      expect(consoleError).toHaveBeenCalledWith("[vinext] unstable_cache write error:", writeError);
+    } finally {
+      consoleError.mockRestore();
+      setCacheHandler(originalHandler);
+    }
+  });
+
   it("MemoryCacheHandler.get/set round-trips values", async () => {
     const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
 
