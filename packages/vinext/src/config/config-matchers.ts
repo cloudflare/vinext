@@ -1320,17 +1320,15 @@ export function matchHeaders(
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
   onRuleSourceMatch?: (rule: NextHeader) => void,
 ): Array<{ key: string; value: string }> {
-  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
-  pathname = stripTrailingSlashForConfigMatch(pathname);
-
+  // No trailing-slash normalization here: like Next.js, the compiled source
+  // accepts an optional trailing slash, so `/about` matches `/about/` while
+  // a constraint such as `/((?!embed/).*)` still sees the request's slash.
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
     // Cache the compiled source regex — compileHeaderSourcePattern() is a pure
     // function of rule.source and the result never changes between requests.
-    const source = pathnameHadTrailingSlash
-      ? stripTrailingSlashForConfigMatch(rule.source)
-      : rule.source;
+    const source = rule.source;
     const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () => {
       const compiled = compileHeaderSourcePattern(source);
       if (compiled.regexp) return compiled.regexp;

@@ -14184,7 +14184,8 @@ describe("matchHeaders", () => {
 
   // Regression for #1331: under `trailingSlash: true` the incoming pathname
   // arrives as `/about/`, but header source patterns are written without a
-  // trailing slash. `matchHeaders` must strip the slash before matching.
+  // trailing slash. Like Next.js, the compiled source accepts an optional
+  // trailing slash.
   it("matches when the request pathname has a trailing slash", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const rules: any[] = [
@@ -14210,6 +14211,20 @@ describe("matchHeaders", () => {
     const docsMatched = matchHeaders("/docs/", rules, makeCtx());
     expect(docsMatched).toEqual([{ key: "x-docs-header", value: "1" }]);
     expect(matchHeaders("/docs", rules, makeCtx())).toEqual([]);
+  });
+
+  // Next.js matches the compiled source against the pathname as requested:
+  // `^(?:/((?!embed/).*))(?:/)?$` rejects `/embed/`, so the slash must not be
+  // stripped before matching.
+  it("keeps the trailing slash visible to source constraints", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules: any[] = [
+      { source: "/((?!embed/).*)", headers: [{ key: "x-not-embed", value: "1" }] },
+    ];
+
+    expect(matchHeaders("/embed/", rules, makeCtx())).toEqual([]);
+    expect(matchHeaders("/embed", rules, makeCtx())).toEqual([{ key: "x-not-embed", value: "1" }]);
+    expect(matchHeaders("/about/", rules, makeCtx())).toEqual([{ key: "x-not-embed", value: "1" }]);
   });
 });
 
