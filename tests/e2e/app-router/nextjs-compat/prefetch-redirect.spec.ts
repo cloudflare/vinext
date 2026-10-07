@@ -4,8 +4,8 @@
  *
  * A page's redirect() streams inside its Flight payload. A layout's redirect()
  * is answered early with the `X-Vinext-Rsc-Redirect` side channel, which a
- * replayed prefetch must keep and which must not outlive `staleTimes.dynamic`
- * when the layout read a dynamic API.
+ * replayed prefetch must keep. An auto prefetch of such a redirect must not
+ * outlive `staleTimes.dynamic` when the layout read a dynamic API.
  *
  * Next.js parity: `next start` (16.2.7) follows each redirect as a client
  * navigation with the per-variant request counts below. Upstream has no Link +

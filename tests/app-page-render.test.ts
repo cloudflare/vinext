@@ -1166,24 +1166,21 @@ describe("app page render lifecycle", () => {
     expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
     expect(withMiddlewarePolicy.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
 
-    // A fresh request scope keeps the render latch clear for the static cases.
-    await runWithHeadersContext(
-      headersContextFromRequest(new Request("https://example.test/static")),
-      async () => {
-        // A static redirect keeps the static prefetch window.
-        const staticRedirect = await renderRedirect({});
-        expect(staticRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    // A static redirect keeps the static prefetch window, including a
+    // force-static route after a dynamic API read.
+    const staticRedirect = await renderRedirect({});
+    expect(staticRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    const forceStatic = await renderRedirect({
+      isForceStatic: true,
+      peekDynamicUsage: () => true,
+    });
+    expect(forceStatic.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
 
-        // Only RSC redirects carry the client bound.
-        const notRedirect = await renderRedirect({ isForceDynamic: true, redirectHeader: null });
-        expect(notRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
-        const documentRedirect = await renderRedirect({
-          isForceDynamic: true,
-          isRscRequest: false,
-        });
-        expect(documentRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
-      },
-    );
+    // Only RSC redirects carry the client bound.
+    const notRedirect = await renderRedirect({ isForceDynamic: true, redirectHeader: null });
+    expect(notRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    const documentRedirect = await renderRedirect({ isForceDynamic: true, isRscRequest: false });
+    expect(documentRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
 
     // A layout that reads cookies() and then redirects: the layout probe's
     // dynamic usage classifies the redirect, as in the real lifecycle.
