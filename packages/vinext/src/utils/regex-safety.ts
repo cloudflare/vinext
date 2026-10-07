@@ -493,19 +493,49 @@ function containsUnboundedRepetition(node: RegexNode): boolean {
  * free. It still scans the input each time it runs: one with an unbounded
  * repetition, such as `(?=a*b)`, does linear work per evaluation and turns a
  * surrounding repetition quadratic.
+ *
+ * With a `separator`, a lookaround that can never match the separator stops
+ * scanning at the next occurrence of it, so it is not counted.
  */
-function containsUnboundedLookaround(node: RegexNode): boolean {
+function containsUnboundedLookaround(node: RegexNode, separator?: RegexSymbol): boolean {
   switch (node.kind) {
     case "atom":
       return false;
     case "assertion":
-      return containsUnboundedRepetition(node.child);
+      return (
+        containsUnboundedRepetition(node.child) &&
+        !(separator && fixedSeparatorCount(node.child, separator) === 0)
+      );
     case "sequence":
-      return node.children.some(containsUnboundedLookaround);
+      return node.children.some((child) => containsUnboundedLookaround(child, separator));
     case "alternation":
-      return node.branches.some(containsUnboundedLookaround);
+      return node.branches.some((branch) => containsUnboundedLookaround(branch, separator));
     case "repeat":
-      return containsUnboundedLookaround(node.child);
+      return containsUnboundedLookaround(node.child, separator);
+  }
+}
+
+/** Variable-width elements a match passes through in sequence, capped at 2. */
+function variableWidthElements(node: RegexNode): number {
+  switch (node.kind) {
+    case "atom":
+      return node.fixedWidth ? 0 : 1;
+    case "assertion":
+      return 0;
+    case "sequence":
+      return Math.min(
+        2,
+        node.children.reduce((count, child) => count + variableWidthElements(child), 0),
+      );
+    case "alternation":
+      return Math.max(0, ...node.branches.map(variableWidthElements));
+    case "repeat": {
+      const inner = variableWidthElements(node.child);
+      if (node.min === node.max && Number.isFinite(node.max)) {
+        return Math.min(2, inner * node.min);
+      }
+      return Math.min(2, 1 + inner);
+    }
   }
 }
 
@@ -694,15 +724,17 @@ function hasPrefixFreeFiniteLanguage(node: RegexNode): {
 
 /**
  * An alternation such as `(\d+|new)`, where every branch without a finite
- * word set has an unbounded repetition. Sequence analysis treats it like a
- * variable repetition with the alternation's first and last symbols.
+ * word set has an unbounded repetition and passes through only one
+ * variable-width element. Sequence analysis treats it like a single variable
+ * repetition with the alternation's first and last symbols; a branch such as
+ * `a*a*` would hide a second overlapping boundary, so it still fails closed.
  */
 function isUnboundedAlternation(node: RegexNode): boolean {
   if (node.kind !== "alternation") return false;
   let unbounded = false;
   for (const branch of node.branches) {
     if (fixedWords(branch, { words: 0, symbols: 0, exceeded: false })) continue;
-    if (!containsUnboundedRepetition(branch)) return false;
+    if (!containsUnboundedRepetition(branch) || variableWidthElements(branch) > 1) return false;
     unbounded = true;
   }
   return unbounded;
@@ -908,7 +940,7 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       if (node.max > 1 && nestedRepetition && exactWidth(node.child) === null) {
         return "nested repetition";
       }
-      if (node.max > 1 && containsUnboundedLookaround(node.child)) {
+      if (node.max === Infinity && containsUnboundedLookaround(node.child)) {
         return "nested repetition";
       }
       if (node.max > 1 && containsConsumingAlternation(node.child)) {
@@ -1018,10 +1050,11 @@ export type SeparatedRepetitionIssue =
  * occurrences, as path-to-regexp compiles `:name*` and `:name+`:
  * `P(?:separator P)*`. The pattern itself is checked by analyzeRegexSafety.
  *
- * The repetition has a single partition of its input only if every match of
- * the pattern contains the separator's first character the same number of
- * times. Otherwise a pattern such as `a+` with separator `a`, or `a/a|a` with
- * separator `/`, splits the same text many ways and backtracks exponentially.
+ * The repetition has a single partition of its input if every occurrence has
+ * the same width, or if every match of the pattern contains the separator's
+ * first character the same number of times. Otherwise a pattern such as `a+`
+ * with separator `a`, or `a/a|a` with separator `/`, splits the same text many
+ * ways and backtracks exponentially.
  */
 export function analyzeSeparatedRepetitionSafety(
   pattern: string,
@@ -1033,8 +1066,13 @@ export function analyzeSeparatedRepetitionSafety(
   const parser = new RegexParser(pattern, ignoreCase);
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
-  if (containsUnboundedLookaround(node)) return "unbounded lookaround";
-  if (separator && fixedSeparatorCount(node, literalSymbol(separator[0], ignoreCase)) === null) {
+  const separatorSymbol = separator ? literalSymbol(separator[0], ignoreCase) : undefined;
+  if (containsUnboundedLookaround(node, separatorSymbol)) return "unbounded lookaround";
+  if (
+    separatorSymbol &&
+    exactWidth(node) === null &&
+    fixedSeparatorCount(node, separatorSymbol) === null
+  ) {
     return "separator overlap";
   }
   return null;

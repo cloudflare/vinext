@@ -13458,6 +13458,14 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ["/:name.:ext?", { "/file": true, "/file.txt": true, "/a.b.c": true, "/a/b": false }],
     ["/:id(\\d+|new)", { "/12": true, "/new": true, "/abc": false, "/12/x": false }],
     ["/:path(.*)/:lang?", { "/a": true, "/a/en": true, "/a/b/c": true, "/": true }],
+    // A lookahead that cannot cross the separator stays within one segment.
+    ["/:x((?![^/]*foo)[^/]+)*", { "/": true, "/a/b": true, "/a/foo": false, "/xfoo": false }],
+    // A fixed-width repeated param splits its input one way, even if it can
+    // match its separator.
+    [
+      "/{a:x([ab])}*/end",
+      { "/ab/end": true, "/abab/end": true, "/aaab/end": true, "/aba/end": false },
+    ],
   ];
 
   for (const [source, expected] of cases) {
