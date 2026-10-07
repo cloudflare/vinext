@@ -51,7 +51,6 @@ export type ConnectionProbeState = {
   dynamicUsageTarget: VinextHeadersShimState;
   interrupted: boolean;
   interrupt: () => void;
-  pending: Promise<never>;
 };
 
 export type ConnectionProbeResult<T> =

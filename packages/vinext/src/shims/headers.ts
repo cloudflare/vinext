@@ -194,12 +194,6 @@ export async function runWithIsolatedDynamicUsage<T>(
   return await _als.run(childState, () => runInChildState(childState));
 }
 
-/**
- * What a completed probe keeps as `pending`. Only an active probe hands out
- * `pending` (`suspendConnectionProbe`), so nothing ever waits on this one.
- */
-const RELEASED_PROBE_PENDING: Promise<never> = new Promise<never>(() => {});
-
 export async function runWithConnectionProbe<T>(
   fn: () => T | Promise<T>,
 ): Promise<ConnectionProbeResult<T>> {
@@ -219,10 +213,6 @@ export async function runWithConnectionProbe<T>(
       probe.interrupted = true;
       interruptProbe();
     },
-    // `connection()` suspends forever inside speculative probes, matching
-    // Next.js's prerender/probe contract: code after `await connection()`
-    // must not run while classifying a route.
-    pending: new Promise<never>(() => {}),
   };
 
   const runInChildState = async (childState: VinextHeadersShimState) => {
@@ -234,16 +224,13 @@ export async function runWithConnectionProbe<T>(
     } finally {
       probe.active = false;
       // Async resources created inside this ALS scope retain `childState`, and
-      // through it this probe, after the probe returns. Release what the probe
-      // still holds that would hold the caller's async context in turn:
-      // `interrupted` stays pending when the probe completes, and Promise.race's
-      // reaction on it captured the context; code that `connection()` suspended
-      // waits on `pending`. On workerd, async context values are held by strong
-      // handles, so that cycle is never collected and every request's context
-      // (request, headers, streams) leaked. The race is already decided here,
-      // and an inactive probe never hands out `pending` again.
+      // through it this probe, after the probe returns. A completed probe would
+      // otherwise leave `interrupted` pending forever, holding Promise.race's
+      // reaction, which captured the caller's async context. workerd holds
+      // async context values through strong handles, so that cycle is never
+      // collected and retained every request's context. The race is already
+      // decided here, so settling `interrupted` only drops the reaction.
       interruptProbe();
-      probe.pending = RELEASED_PROBE_PENDING;
       // Restore the inherited probe when nested; otherwise retain this inactive
       // probe so late dynamic usage can still propagate to its parent without
       // suspending. Reading the parent at cleanup time preserves the right
@@ -297,7 +284,12 @@ export function suspendConnectionProbe(): Promise<never> | null {
   if (!probe?.active) return null;
 
   probe.interrupt();
-  return probe.pending;
+  // `connection()` suspends forever inside speculative probes, matching
+  // Next.js's prerender/probe contract: code after `await connection()` must
+  // not run while classifying a route. Each call gets its own promise that
+  // the probe does not keep, so the suspended code (and the async context its
+  // continuation captured) is collected with the request.
+  return new Promise<never>(() => {});
 }
 
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {

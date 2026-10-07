@@ -255,7 +255,6 @@ describe("render dynamic latch", () => {
         dynamicUsageTarget: parent,
         interrupted: false,
         interrupt() {},
-        pending: new Promise<never>(() => {}),
       };
       const child: Partial<typeof parent> = { ...parent, connectionProbe: probe };
       delete child.renderDynamicLatch;

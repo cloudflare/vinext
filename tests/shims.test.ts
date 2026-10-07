@@ -5463,7 +5463,7 @@ describe("next/server shim", () => {
         return runWithRequestContext(createRequestContext(), () =>
           runWithConnectionProbe(async () => {
             scope = getRequestContext();
-            // connection() inside a probe suspends on the probe's pending promise.
+            // connection() inside a probe suspends until the probe is dropped.
             if (interrupt) await suspendConnectionProbe();
             return "completed";
           }),
