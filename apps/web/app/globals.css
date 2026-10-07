@@ -12,12 +12,7 @@
 
 html,
 body {
-  font-family:
-    var(--font-sans),
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 .vinext-code-block pre {
