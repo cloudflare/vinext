@@ -47,6 +47,8 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+  VINEXT_RSC_REDIRECT_TYPE_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
@@ -325,6 +327,13 @@ export type CachedRscResponse = {
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
   preparedElements?: AppElements;
+  /**
+   * Streamed `redirect()` side-channel headers. A replayed snapshot must keep
+   * them so the navigation follows the redirect instead of decoding the
+   * redirect payload as a page.
+   */
+  redirectHeader?: string;
+  redirectTypeHeader?: string;
   renderedPathAndSearch: string | null;
   serverStaleTime?: ServerStaleTime;
   url: string;
@@ -1276,6 +1285,8 @@ export function createCachedRscResponseSnapshot(
       ? undefined
       : { kind: "resolved" as const, seconds: extracted.metadata!.serverStaleTimeSeconds! }
     : parsedServerStaleTime;
+  const redirectHeader = response.headers.get(VINEXT_RSC_REDIRECT_HEADER);
+  const redirectTypeHeader = response.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER);
   return {
     compatibilityIdHeader: response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
     buffer: extracted.buffer,
@@ -1284,6 +1295,8 @@ export function createCachedRscResponseSnapshot(
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
+    ...(redirectHeader === null ? {} : { redirectHeader }),
+    ...(redirectTypeHeader === null ? {} : { redirectTypeHeader }),
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
       response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
     ),
@@ -1366,6 +1379,12 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   }
   if (cached.paramsHeader != null) {
     headers.set(VINEXT_PARAMS_HEADER, cached.paramsHeader);
+  }
+  if (cached.redirectHeader !== undefined) {
+    headers.set(VINEXT_RSC_REDIRECT_HEADER, cached.redirectHeader);
+  }
+  if (cached.redirectTypeHeader !== undefined) {
+    headers.set(VINEXT_RSC_REDIRECT_TYPE_HEADER, cached.redirectTypeHeader);
   }
   if (cached.renderedPathAndSearch != null) {
     headers.set(
@@ -1531,7 +1550,9 @@ export function prefetchRscResponse(
             : (behavior.dynamicStaleTime ??
                 (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
         );
-        if (behavior.prepareSnapshot) {
+        // A redirect payload never decodes into elements; navigation follows
+        // its redirect headers instead.
+        if (behavior.prepareSnapshot && snapshot.redirectHeader === undefined) {
           try {
             const preparedElements = await behavior.prepareSnapshot(snapshot);
             if (cache.get(cacheKey) !== entry) return;

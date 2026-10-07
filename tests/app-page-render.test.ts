@@ -63,6 +63,7 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
@@ -1102,6 +1103,104 @@ describe("app page render lifecycle", () => {
       },
     });
     expect(devRecovered.headers.get("cache-control")).toBe("no-store, must-revalidate");
+  });
+
+  it("bounds client reuse of a known-dynamic streamed RSC redirect (#3745)", async () => {
+    const { element: _element, ...options } = createCommonOptions().options;
+    const renderRedirect = (overrides: {
+      dynamicStaleTimeSeconds?: number;
+      isForceDynamic?: boolean;
+      isForceStatic?: boolean;
+      isRscRequest?: boolean;
+      peekDynamicUsage?: () => boolean;
+      redirectHeader?: string | null;
+    }) => {
+      const { redirectHeader = "/target", ...lifecycleOverrides } = overrides;
+      return renderAppPageLifecycle({
+        ...options,
+        isProduction: true,
+        isRscRequest: true,
+        isStaticEligible: true,
+        peekDynamicUsage: () => false,
+        ...lifecycleOverrides,
+        async prepareElement() {
+          const headers = new Headers();
+          if (redirectHeader !== null) headers.set(VINEXT_RSC_REDIRECT_HEADER, redirectHeader);
+          return { response: new Response("flight", { headers }) };
+        },
+      });
+    };
+
+    const forceDynamic = await renderRedirect({ isForceDynamic: true });
+    expect(forceDynamic.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
+
+    const configured = await renderRedirect({
+      dynamicStaleTimeSeconds: 30,
+      peekDynamicUsage: () => true,
+    });
+    expect(configured.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("30");
+
+    // Middleware's Cache-Control still wins; the client bound is added alongside.
+    const middlewareCacheControl = "public, max-age=60";
+    const withMiddlewarePolicy = await renderAppPageLifecycle({
+      ...options,
+      isForceDynamic: true,
+      isProduction: true,
+      isRscRequest: true,
+      isStaticEligible: true,
+      middlewareContext: {
+        headers: new Headers({ "cache-control": middlewareCacheControl }),
+        status: null,
+      },
+      async prepareElement() {
+        return {
+          response: new Response("flight", {
+            headers: {
+              "cache-control": middlewareCacheControl,
+              [VINEXT_RSC_REDIRECT_HEADER]: "/target",
+            },
+          }),
+        };
+      },
+    });
+    expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+    expect(withMiddlewarePolicy.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
+
+    // A fresh request scope keeps the render latch clear for the static cases.
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/static")),
+      async () => {
+        // A static redirect keeps the static prefetch window.
+        const staticRedirect = await renderRedirect({});
+        expect(staticRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+
+        // Only RSC redirects carry the client bound.
+        const notRedirect = await renderRedirect({ isForceDynamic: true, redirectHeader: null });
+        expect(notRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+        const documentRedirect = await renderRedirect({
+          isForceDynamic: true,
+          isRscRequest: false,
+        });
+        expect(documentRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+      },
+    );
+
+    // A layout that reads cookies() and then redirects does so inside the
+    // isolated layout probe, which leaves only the render latch set.
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/dashboard")),
+      async () => {
+        await runWithIsolatedDynamicUsage(() => {
+          markDynamicUsage();
+        });
+
+        const layoutGuard = await renderRedirect({});
+        expect(layoutGuard.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
+        // force-static stays static after a dynamic API read.
+        const forceStatic = await renderRedirect({ isForceStatic: true });
+        expect(forceStatic.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+      },
+    );
   });
 
   it("fails a candidate render with a 500 when useSearchParams() bails out outside Suspense", async () => {

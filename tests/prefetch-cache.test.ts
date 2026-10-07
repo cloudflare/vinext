@@ -24,6 +24,8 @@ import {
   VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+  VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
@@ -640,6 +642,29 @@ describe("prefetch cache eviction", () => {
     expect(restored.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
     expect(restored.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"id":"2"}'));
     await expect(restored.text()).resolves.toBe("flight");
+  });
+
+  it("carries streamed redirect headers through snapshot and replay (#3745)", async () => {
+    const response = new Response('0:E{"digest":"NEXT_REDIRECT;push;/about;307;"}', {
+      headers: {
+        "content-type": "text/x-component",
+        [VINEXT_RSC_REDIRECT_HEADER]: "/about",
+        [VINEXT_RSC_REDIRECT_TYPE_HEADER]: "push",
+      },
+    });
+
+    const snapshot = await snapshotRscResponse(response);
+    const restored = restoreRscResponse(snapshot, false);
+
+    expect(restored.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/about");
+    expect(restored.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER)).toBe("push");
+
+    const plain = await snapshotRscResponse(
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    expect(plain).not.toHaveProperty("redirectHeader");
+    expect(plain).not.toHaveProperty("redirectTypeHeader");
+    expect(restoreRscResponse(plain).headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBeNull();
   });
 
   it("carries the server-resolved cacheLife stale time through snapshot and replay", async () => {
@@ -2679,6 +2704,33 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse("/prepared", null, null)?.preparedElements).toBe(
       preparedElements,
     );
+  });
+
+  it("does not prepare elements from a prefetched redirect (#3745)", async () => {
+    const rscUrl = "/redirecting?_rsc=redirect";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RSC_REDIRECT_HEADER]: "/about",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).not.toHaveBeenCalled();
+    const consumed = consumePrefetchResponse("/redirecting", null, null);
+    expect(consumed?.redirectHeader).toBe("/about");
+    expect(consumed?.preparedElements).toBeUndefined();
   });
 
   it("preserves the original expiry when consuming a prefetched response", () => {
