@@ -13733,21 +13733,16 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
   // A chain of repeated params is only slow when the rest of the source can
   // fail; a trailing catch-all matches on the first split.
   it.each([
-    ["/:a*/:b*/:c*/:rest(.*)", `/${"a/".repeat(4_000)}`],
-    ["/:a*/:b(.*){/:c}*", `/${"a/".repeat(4_000)}!`],
-    ["/:a(a)*/:b(b)*/:c(c)*/end", `/${"a/b/c/".repeat(1_400)}!`],
-  ])("matches %s on an 8 KB path in linear time", async (source, pathname) => {
+    ["/:a*/:b*/:c*/:rest(.*)", `/${"a/".repeat(4_000)}`, "/a/b"],
+    ["/:a*/:b(.*){/:c}*", `/${"a/".repeat(4_000)}!`, "/a"],
+    ["/:a(a)*/:b(b)*/:c(c)*/end", `/${"a/b/c/".repeat(1_400)}!`, "/a/b/c/end"],
+  ])("matches %s on an 8 KB path in linear time", async (source, pathname, matching) => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
-      const start = performance.now();
-      matchHeaders(pathname, rules, ctx);
-      expect(performance.now() - start).toBeLessThan(1_000);
-      expect(warn).not.toHaveBeenCalled();
-    } finally {
-      warn.mockRestore();
-    }
+    const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+    const start = performance.now();
+    matchHeaders(pathname, rules, ctx);
+    expect(performance.now() - start).toBeLessThan(1_000);
+    expect(matchHeaders(matching, rules, ctx)).toEqual([{ key: "x-matched", value: "1" }]);
   });
 
   // Each token is safe on its own, but adjacent overlapping groups backtrack
