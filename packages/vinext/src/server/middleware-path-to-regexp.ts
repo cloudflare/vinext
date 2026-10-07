@@ -120,11 +120,16 @@ function lexer(value: string): LexerToken[] {
   return tokens;
 }
 
-export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
+const MIDDLEWARE_DELIMITER = "/#?";
+
+export function parseMiddlewarePath(
+  value: string,
+  delimiter: string = MIDDLEWARE_DELIMITER,
+): MiddlewarePathToken[] {
   const tokens = lexer(value);
   const result: MiddlewarePathToken[] = [];
   const prefixes = "./";
-  const delimiter = "/#?";
+  const segmentCharacter = `[^${escapeRegex(delimiter)}]`;
   let key = 0;
   let index = 0;
   let path = "";
@@ -166,8 +171,8 @@ export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
       const name = typeof previous === "string" ? previous : previous.name;
       throw new TypeError(`Must have text between two parameters, missing text after "${name}"`);
     }
-    if (!previousText || containsDelimiter(previousText)) return "[^\\/#\\?]+?";
-    return `(?:(?!${escapeRegex(previousText)})[^\\/#\\?])+?`;
+    if (!previousText || containsDelimiter(previousText)) return `${segmentCharacter}+?`;
+    return `(?:(?!${escapeRegex(previousText)})${segmentCharacter})+?`;
   };
 
   while (index < tokens.length) {
@@ -224,7 +229,7 @@ export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
   return result;
 }
 
-function escapeRegex(value: string): string {
+export function escapeRegex(value: string): string {
   return value.replace(/([.+*?=^!:${}()[\]|/\\])/g, "\\$1");
 }
 
@@ -244,8 +249,10 @@ export function normalizeMiddlewarePathTokens(
   });
 }
 
-export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): RegExp {
-  const delimiter = "/#?";
+export function middlewarePathTokensToRegExp(
+  tokens: MiddlewarePathToken[],
+  delimiter: string = MIDDLEWARE_DELIMITER,
+): RegExp {
   const delimiterRegex = `[${escapeRegex(delimiter)}]`;
   let route = "^";
 

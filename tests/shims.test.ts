@@ -13419,7 +13419,9 @@ describe("safeRegExp", () => {
   });
 });
 
-describe("escapeHeaderSource", () => {
+// escapeHeaderSource is deprecated and no longer used by matchHeaders, but it
+// stays exported from vinext/config/config-matchers for compatibility.
+describe("escapeHeaderSource (deprecated)", () => {
   it("passes through literal paths unchanged", async () => {
     const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(escapeHeaderSource("/api/users")).toBe("/api/users");
@@ -13464,6 +13466,363 @@ describe("escapeHeaderSource", () => {
   it("handles multiple groups and params", async () => {
     const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(escapeHeaderSource("/:lang(en|fr)/:id(\\d+)/page")).toBe("/(en|fr)/(\\d+)/page");
+  });
+});
+
+describe("matchHeaders source compilation (Next.js parity)", () => {
+  // Expectations come from `next build`'s compiler for header sources:
+  // buildCustomRoute("header", { source }) in next/dist/lib/build-custom-route.js
+  // (Next.js 16.3), i.e. path-to-regexp 6 with { strict: true, sensitive: false,
+  // delimiter: "/" } plus an optional trailing slash.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/build-custom-route.ts
+  const ctx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
+
+  const cases: Array<[source: string, expected: Record<string, boolean>]> = [
+    ["/:path*", { "/": true, "/about": true, "/a/b": true, "/.well-known": true }],
+    ["/:path+", { "/": false, "/about": true, "/a/b": true }],
+    [
+      "/((?!embed/).*)",
+      { "/": true, "/about": true, "/embed": true, "/embed/x": false, "/.well-known": true },
+    ],
+    [
+      "/embed/:path*",
+      { "/embed": true, "/embed/x": true, "/embed/x/y": true, "/embedded": false, "/": false },
+    ],
+    ["/file.txt", { "/file.txt": true, "/fileXtxt": false }],
+    ["/user/:id", { "/user/1": true, "/user/1/2": false, "/user": false }],
+    ["/api/:version(\\d+)/users", { "/api/2/users": true, "/api/v2/users": false }],
+    ["/:lang(en|fr)/:id(\\d+)/page", { "/en/1/page": true, "/de/1/page": false }],
+    ["/api/(v1|v2)/users", { "/api/v1/users": true, "/api/v3/users": false }],
+    ["/:path*.md", { "/docs/intro.md": true, "/docs/intro": false }],
+    ["/blog-:slug", { "/blog-hello": true, "/blog-hello/x": false }],
+    ["/About", { "/about": true }],
+    // A repeated `.*`/`.+` param matches the same paths as a single one.
+    ["/(.*)*", { "/": true, "/about": true, "/a/b": true }],
+    ["/:path(.+)+", { "/": false, "/about": true, "/a/b": true }],
+    ["/:path(.*)*/end", { "/end": true, "/a/end": true, "/a/b/end": true, "/a/b": false }],
+    ["/:name.:ext?", { "/file": true, "/file.txt": true, "/a.b.c": true, "/a/b": false }],
+    ["/:id(\\d+|new)", { "/12": true, "/new": true, "/abc": false, "/12/x": false }],
+    ["/:path(.*)/:lang?", { "/a": true, "/a/en": true, "/a/b/c": true, "/": true }],
+    // A lookahead that cannot cross the separator stays within one segment.
+    ["/:x((?![^/]*foo)[^/]+)*", { "/": true, "/a/b": true, "/a/foo": false, "/xfoo": false }],
+    // A fixed-width repeated param splits its input one way, even if it can
+    // match its separator.
+    [
+      "/{a:x([ab])}*/end",
+      { "/ab/end": true, "/abab/end": true, "/aaab/end": true, "/aba/end": false },
+    ],
+    // Alternatives with different numbers of separators still split one way.
+    [
+      "/:x(foo/bar|baz)*/end",
+      { "/end": true, "/baz/foo/bar/baz/end": true, "/foo/end": false, "/bar/end": false },
+    ],
+    ["/:x(a|a/b)*/end", { "/a/b/a/end": true, "/b/end": false, "/a/b/b/end": false }],
+    // Repeated patterns that match each text one way.
+    ["/:x(a|aa)*/end", { "/end": true, "/a/aa/end": true, "/aaa/end": false, "/b/end": false }],
+    ["/:p(\\w+-\\w+)*", { "/": true, "/a-b/c-d": true, "/a-b-c": false, "/ab": false }],
+    [
+      "/:x(ab+|ac+)*/end",
+      { "/end": true, "/abb/acc/end": true, "/abc/end": false, "/a/end": false },
+    ],
+    [
+      "/:x(a+(?:ab|cd)c+)*/end",
+      { "/aabc/end": true, "/acdc/aaabcc/end": true, "/abc/end": false, "/aab/end": false },
+    ],
+    [
+      "/:x(a+b|a+c)*/end",
+      { "/end": true, "/aab/ac/end": true, "/abc/end": false, "/a/end": false, "/b/end": false },
+    ],
+    [
+      "/:x(x?a+(?:ab|cd)c+)*/end",
+      { "/xaabc/end": true, "/acdc/aaabcc/end": true, "/xabc/end": false, "/xaab/end": false },
+    ],
+    [
+      "/:x(a*b+|a+c+)*/end",
+      { "/end": true, "/aab/acc/b/end": true, "/abc/end": false, "/a/end": false, "/c/end": false },
+    ],
+    [
+      "/:x((?!foo)[^/]+|foo)*/end",
+      { "/end": true, "/foo/bar/end": true, "/foobar/end": false, "/fo/end": true },
+    ],
+    // Two adjacent repeated params share one boundary.
+    ["/x{/:a}*{/:b}*/end", { "/x/end": true, "/x/a/b/c/end": true, "/x": false, "/y/end": false }],
+    // A catch-all followed by a constrained param shares one boundary.
+    [
+      "/:path(.*)/:id(\\d+|new)",
+      {
+        "/a/b/12": true,
+        "/a/new": true,
+        "/a/NEW": true,
+        "/12": false,
+        "/a/b/x": false,
+        "/a/12/x": false,
+      },
+    ],
+    ["/:slug(.*)/:id(\\d+)", { "/a/b/12": true, "/12": false, "/a/b/x": false, "/a/12/x": false }],
+    [
+      "/:a(.*)/b/:c(.*)",
+      { "/x/b/y": true, "/x/y/b/z/w": true, "/b/y": false, "/x/b": false, "/x/c/y": false },
+    ],
+    // Repeated params whose segments start differently never share a boundary.
+    [
+      "/:a(a)*/:b(b)*/:c(c)*/end",
+      {
+        "/end": true,
+        "/a/a/b/c/c/end": true,
+        "/A/B/end": true,
+        "/b/a/end": false,
+        "/a/c/b/end": false,
+        "/d/end": false,
+      },
+    ],
+    [
+      "/:a-:b-:c(\\d+|new)",
+      {
+        "/x-y-12": true,
+        "/x-y-z-new": true,
+        "/x-y-NEW": true,
+        "/x-y-z": false,
+        "/x-12": false,
+        "/x/y-z-12": false,
+      },
+    ],
+    // Non-ASCII classes are compared by the characters they match.
+    [
+      "/:x([一-鿿]|[가-힣])*/end",
+      { "/end": true, "/一/가/end": true, "/一가/end": false, "/a/end": false, "/一": false },
+    ],
+  ];
+
+  for (const [source, expected] of cases) {
+    it(`matches ${source} like next build`, async () => {
+      const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      const actual = Object.fromEntries(
+        Object.keys(expected).map((pathname) => [
+          pathname,
+          matchHeaders(pathname, rules, ctx).length > 0,
+        ]),
+      );
+      expect(actual).toEqual(expected);
+    });
+  }
+
+  // Next.js fails the build on these sources; vinext warns and never applies them.
+  it.each(["/api/*", "/(?!embed/)(.*)", "/foo-:id*", "about"])(
+    "ignores %s, which next build rejects",
+    async (source) => {
+      const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+        for (const pathname of ["/", "/api/x", "/about", "/foo-1"]) {
+          expect(matchHeaders(pathname, rules, ctx)).toEqual([]);
+        }
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining(`Ignoring headers() source "${source}"`),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  // Ported from Next.js: test/e2e/custom-routes/custom-routes.test.ts (routes-manifest `headers`)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
+  // Each source is paired with the regex Next.js writes to routes-manifest.json for it.
+  it.each([
+    ["/add-header", String.raw`^\/add-header(?:\/)?$`],
+    ["/my-headers/(.*)", String.raw`^\/my-headers(?:\/(.*))(?:\/)?$`],
+    ["/my-other-header/:path", String.raw`^\/my-other-header(?:\/([^\/]+?))(?:\/)?$`],
+    ["/without-params/url", String.raw`^\/without-params\/url(?:\/)?$`],
+    [
+      "/with-params/url/:path*",
+      String.raw`^\/with-params\/url(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`,
+    ],
+    ["/:path*", String.raw`^(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`],
+    ["/named-pattern/:path(.*)", String.raw`^\/named-pattern(?:\/(.*))(?:\/)?$`],
+    [
+      "/catchall-header/:path*",
+      String.raw`^\/catchall-header(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`,
+    ],
+  ])("matches %s where the routes-manifest regex does", async (source, manifestRegex) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+    const expected = new RegExp(manifestRegex, "i");
+    for (const pathname of [
+      "/",
+      "/add-header",
+      "/my-headers",
+      "/my-headers/first",
+      "/my-headers/a/b",
+      "/my-other-header/first",
+      "/my-other-header/a/b",
+      "/without-params/url",
+      "/with-params/url",
+      "/with-params/url/first",
+      "/with-params/url/a/b",
+      "/named-pattern",
+      "/named-pattern/hello",
+      "/catchall-header",
+      "/catchall-header/hello/world",
+      "/Add-Header",
+      "/other",
+    ]) {
+      expect(matchHeaders(pathname, rules, ctx).length > 0, pathname).toBe(expected.test(pathname));
+    }
+  });
+
+  // A repeated `.*`/`.+` param compiles to the single-occurrence regex, which
+  // matches the same paths without path-to-regexp's exponential repeat.
+  it("matches a near miss for /:path(.*)*/end without backtracking", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [{ source: "/:path(.*)*/end", headers: [{ key: "x-matched", value: "1" }] }];
+    const start = performance.now();
+    expect(matchHeaders(`/${"a/".repeat(2_000)}not-end`, rules, ctx)).toEqual([]);
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  // Next.js accepts these, but each backtracks exponentially (or, for the
+  // lookarounds, quadratically) on a request path, so vinext refuses them as
+  // it does middleware matchers.
+  it.each([
+    ["/{a:x(a+)}*/end", `may match its separator "a"`, `/${"a".repeat(48)}!`],
+    ["/{:x-}*", `may match its separator "-"`, `/${"a-".repeat(30)}a`],
+    ["/:x(a/a|a)*/end", `may match its separator "/"`, `/${"a/".repeat(40)}a!`],
+    ["/:x(a|b|a/b)*/end", `may match its separator "/"`, `/${"a/b/".repeat(30)}!`],
+    ["/{😀:x(a|😀a|a😀)}*/end", `may match its separator "😀"`, `/${"😀a".repeat(26)}!`],
+    ["/:x((?i:(?:a+)+b))", "exceeds the regex analysis budget", `/${"a".repeat(28)}!`],
+    ["/:x(a|a)*/end", "can match the same text in more than one way", `/${"a/".repeat(30)}!`],
+    ["/:x([a-z]+|new)*/end", "more than one way", `/${"new/".repeat(30)}!`],
+    ["/:x([^/]+b[^/]+)*/end", "more than one way", `/${"abba/".repeat(30)}!`],
+    ["/:x((?=(?!.*Z)a)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
+    [
+      "/:id((?:a+|x)a(?:a+|x)a(?:a+|x))/Z",
+      "overlapping sequential repetition",
+      `/${"a".repeat(40)}!`,
+    ],
+    ["/:id(a+aa+a(?:a+|x))/Z", "overlapping sequential repetition", `/${"a".repeat(40)}!`],
+    ["/x{/:a}*{/:b}*{/:c}*{/:d}*/end", "can split the same text", `/x${"/s".repeat(40)}`],
+    ["/:a(a)*/:b(a)*/:c(a)*/end", "can split the same text", `/${"a/".repeat(40)}!`],
+    // A catch-all after a required param does not save the chain before it.
+    ["/:a(a)*/:b(a)*/:c(a)*/:d(\\d+)/(.*)", "can split the same text", `/${"a/".repeat(40)}!`],
+    // Header paths are matched decoded, so `.*` cannot take a `%0A` and a
+    // trailing catch-all does not save the chain before it.
+    ["/x{/:a}*{/:b}*{/:c}*/:rest(.*)", "can split the same text", `/x${"/s".repeat(40)}\n`],
+    ["/:x((?!a(?=a))a+|a)*/end", "more than one way", `/${"a/".repeat(40)}!`],
+    // `b+` and the optional `a*` after it shift the fixed `ba` together.
+    ["/:x(b+a*ba[ab]+)*/end", "more than one way", `/${"bbabaa/".repeat(30)}!`],
+    // `\cA` is the control character U+0001, the same text as `\x01`.
+    ["/:x(\\cA|\\x01)*/end", "more than one way", `/${"\x01/".repeat(30)}!`],
+    ["/:x((?=.{0,65535}e)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
+    ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
+    ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
+  ])("ignores %s as an unsafe source", async (source, reason, pathname) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      const start = performance.now();
+      expect(matchHeaders(pathname, rules, ctx)).toEqual([]);
+      expect(performance.now() - start).toBeLessThan(1_000);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(reason));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Repeated params whose segments start differently never share a split.
+  it.each([["/:a(a)*/:b(b)*/:c(c)*/end", `/${"a/b/c/".repeat(1_400)}!`, "/a/b/c/end"]])(
+    "matches %s on an 8 KB path in linear time",
+    async (source, pathname, matching) => {
+      const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      const start = performance.now();
+      matchHeaders(pathname, rules, ctx);
+      expect(performance.now() - start).toBeLessThan(1_000);
+      expect(matchHeaders(matching, rules, ctx)).toEqual([{ key: "x-matched", value: "1" }]);
+    },
+  );
+
+  // Compiling one source must not depend on how many others were analyzed
+  // first, or on the non-ASCII class sets they computed.
+  it("compiles non-ASCII class sources regardless of earlier sources", async () => {
+    const { compileHeaderSourcePattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const char = (code: number) => String.fromCharCode(code);
+    for (let index = 0; index < 150; index++) {
+      const source = `/:x([${char(0x4e00 + index)}]|[${char(0xac00 + index)}])*/end`;
+      expect(compileHeaderSourcePattern(source).regexp).toBeDefined();
+    }
+    expect(compileHeaderSourcePattern("/:x([一]|[가])*/end").regexp).toBeDefined();
+  });
+
+  // One source with 300 distinct non-ASCII classes builds each class's code
+  // unit set once per analysis instead of rebuilding evicted sets.
+  it("compiles a source with many distinct non-ASCII classes", async () => {
+    const { compileHeaderSourcePattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const char = (code: number) => String.fromCharCode(code);
+    const pairs = Array.from(
+      { length: 150 },
+      (_, index) => `(?:[${char(0x4e00 + index)}]|[${char(0xac00 + index)}])`,
+    ).join("");
+    const start = performance.now();
+    expect(compileHeaderSourcePattern(`/:x(${pairs})*/end`).regexp).toBeDefined();
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  // Each token is safe on its own, but adjacent overlapping groups backtrack
+  // catastrophically on a near miss, so the whole source is refused.
+  it("ignores a source whose adjacent groups overlap", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const source = "/(a*)(a*)(a*)(a*)(a*)(a*)(a*)(a*)/end";
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      expect(matchHeaders(`/${"a".repeat(28)}!`, rules, ctx)).toEqual([]);
+      expect(matchHeaders("/aa/end", rules, ctx)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("overlapping sequential repetition"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Next.js limits the regex tryToParsePath() builds with default
+  // path-to-regexp options to 4096 characters, not the source text.
+  it("applies Next's 4096-character limit to the built regex, not the source", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const params = (count: number) =>
+        Array.from({ length: count }, (_, index) => `/:p${index}`).join("");
+      const longName = {
+        source: `/:${"a".repeat(5000)}`,
+        headers: [{ key: "x-long", value: "1" }],
+      };
+      // 227 params build a 4096-character regex; 228 build 4114 characters.
+      const atLimit = { source: params(227), headers: [{ key: "x-at-limit", value: "1" }] };
+      const overLimit = { source: params(228), headers: [{ key: "x-over-limit", value: "1" }] };
+
+      expect(matchHeaders("/x", [longName], ctx)).toEqual([{ key: "x-long", value: "1" }]);
+      expect(matchHeaders("/x".repeat(227), [atLimit], ctx)).toEqual([
+        { key: "x-at-limit", value: "1" },
+      ]);
+      expect(matchHeaders("/x".repeat(228), [overLimit], ctx)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("source exceeds max built length of 4096"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -14187,7 +14546,8 @@ describe("matchHeaders", () => {
 
   // Regression for #1331: under `trailingSlash: true` the incoming pathname
   // arrives as `/about/`, but header source patterns are written without a
-  // trailing slash. `matchHeaders` must strip the slash before matching.
+  // trailing slash. Like Next.js, the compiled source accepts an optional
+  // trailing slash.
   it("matches when the request pathname has a trailing slash", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const rules: any[] = [
@@ -14214,12 +14574,26 @@ describe("matchHeaders", () => {
     expect(docsMatched).toEqual([{ key: "x-docs-header", value: "1" }]);
     expect(matchHeaders("/docs", rules, makeCtx())).toEqual([]);
   });
+
+  // Next.js matches the compiled source against the pathname as requested:
+  // `^(?:/((?!embed/).*))(?:/)?$` rejects `/embed/`, so the slash must not be
+  // stripped before matching.
+  it("keeps the trailing slash visible to source constraints", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules: any[] = [
+      { source: "/((?!embed/).*)", headers: [{ key: "x-not-embed", value: "1" }] },
+    ];
+
+    expect(matchHeaders("/embed/", rules, makeCtx())).toEqual([]);
+    expect(matchHeaders("/embed", rules, makeCtx())).toEqual([{ key: "x-not-embed", value: "1" }]);
+    expect(matchHeaders("/about/", rules, makeCtx())).toEqual([{ key: "x-not-embed", value: "1" }]);
+  });
 });
 
 describe("matchHeaders compiled source cache", () => {
-  // Regression test: escapeHeaderSource() + safeRegExp() were re-run on every
-  // request for every header rule. The result is now cached in _compiledHeaderSourceCache
-  // keyed by rule.source so subsequent calls skip the tokeniser and isSafeRegex.
+  // Regression test: header sources were recompiled on every request for every
+  // header rule. The result is now cached in _compiledHeaderSourceCache keyed by
+  // rule.source so subsequent calls skip the parse and regex safety scan.
   function makeCtx(h: Record<string, string> = {}) {
     return {
       headers: new Headers(h),

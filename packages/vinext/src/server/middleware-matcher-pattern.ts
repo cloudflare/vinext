@@ -1,6 +1,12 @@
 import type { HasCondition } from "../config/next-config.js";
-import { analyzeRegexSafety, regexAtomsMayOverlap } from "../utils/regex-safety.js";
 import {
+  analyzeRegexSafety,
+  analyzeSeparatedRepetitionSafety,
+  regexAtomsMayOverlap,
+  regexStartsMayOverlap,
+} from "../utils/regex-safety.js";
+import {
+  escapeRegex,
   middlewarePathTokensToRegExp,
   normalizeMiddlewarePathTokens,
   parseMiddlewarePath,
@@ -233,6 +239,26 @@ function unsafeTokenReason(token: MiddlewarePathKey): string | null {
     return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
   }
 
+  // The same applies to a custom prefix/suffix: `{a:x(a+)}*` repeats `a+`
+  // with the separator `a`. A lookaround inside the repeated pattern is also
+  // re-evaluated for every occurrence.
+  const separator = `${token.suffix}${token.prefix}`;
+  const repetitionIssue = analyzeSeparatedRepetitionSafety(token.pattern, separator, {
+    ignoreCase: true,
+  });
+  if (repetitionIssue === "separator overlap") {
+    return `repeated parameter "${token.name}" may match its separator "${separator}"`;
+  }
+  if (repetitionIssue === "unbounded lookaround") {
+    return `repeated parameter "${token.name}" contains a lookaround with unbounded repetition`;
+  }
+  if (repetitionIssue === "ambiguous pattern") {
+    return `repeated parameter "${token.name}" can match the same text in more than one way`;
+  }
+  if (repetitionIssue) {
+    return `repeated parameter "${token.name}" exceeds the regex analysis budget`;
+  }
+
   return null;
 }
 
@@ -245,17 +271,67 @@ function validateTokens(tokens: MiddlewarePathToken[]): string | null {
   return null;
 }
 
-export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
+const MAX_BUILT_SOURCE_LENGTH = 4096;
+
+type SourcePatternOptions = {
+  delimiter?: string;
+  normalizeUnprefixedRepeats: boolean;
+  checkSourceLength: boolean;
+  collapseUniversalRepeats?: boolean;
+};
+
+type CompiledSourcePattern =
+  | { regexp: RegExp; tokens: MiddlewarePathToken[]; builtLength: number; error?: never }
+  | { regexp?: never; error: string; kind: "invalid" | "unsafe" };
+
+const UNIVERSAL_PATTERN = /^\.[*+]\??$/;
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+const TRAILING_DELIMITER = "[\\/]?$";
+
+/**
+ * `.*` and `.+` match any text their own separated repetition can match, so
+ * `/(.*)*` and `/:path(.+)+` match exactly the paths `/(.*)?` and `/:path(.+)`
+ * match. path-to-regexp's repeated form of them backtracks exponentially, so
+ * compile the single-occurrence form instead. The token keeps one capture
+ * group spanning the same text.
+ */
+function collapseUniversalRepeats(tokens: MiddlewarePathToken[]): MiddlewarePathToken[] {
+  return tokens.map((token) => {
+    if (
+      typeof token !== "object" ||
+      (token.modifier !== "*" && token.modifier !== "+") ||
+      !UNIVERSAL_PATTERN.test(token.pattern) ||
+      (!token.prefix && !token.suffix) ||
+      LINE_TERMINATOR.test(token.suffix + token.prefix)
+    ) {
+      return token;
+    }
+    return { ...token, modifier: token.modifier === "*" ? "?" : "" };
+  });
+}
+
+function compileSourcePattern(
+  source: string,
+  {
+    delimiter,
+    normalizeUnprefixedRepeats,
+    checkSourceLength,
+    collapseUniversalRepeats: collapse = false,
+  }: SourcePatternOptions,
+): CompiledSourcePattern {
   if (!source.startsWith("/")) {
     return { kind: "invalid", error: "source must start with /" };
   }
-  if (source.length > 4096) {
-    return { kind: "invalid", error: "source exceeds max built length of 4096" };
+  if (checkSourceLength && source.length > MAX_BUILT_SOURCE_LENGTH) {
+    return {
+      kind: "invalid",
+      error: `source exceeds max built length of ${MAX_BUILT_SOURCE_LENGTH}`,
+    };
   }
 
   let tokens: MiddlewarePathToken[];
   try {
-    tokens = parseMiddlewarePath(source);
+    tokens = parseMiddlewarePath(source, delimiter);
   } catch (error) {
     return {
       kind: "invalid",
@@ -263,26 +339,199 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
     };
   }
 
-  const unsafeReason = validateTokens(tokens);
-  if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
+  // Length limits apply to the regex path-to-regexp builds from the source as
+  // written, before any collapsing.
+  const compile = (built: MiddlewarePathToken[]) => {
+    const analyzed = collapse ? collapseUniversalRepeats(built) : built;
+    const regexp = middlewarePathTokensToRegExp(analyzed, delimiter);
+    const builtLength = collapse
+      ? middlewarePathTokensToRegExp(built, delimiter).source.length
+      : regexp.source.length;
+    return { regexp, tokens: analyzed, builtLength };
+  };
 
+  const unsafeReason = validateTokens(collapse ? collapseUniversalRepeats(tokens) : tokens);
+
+  // Building the RegExp does not run it, so it is safe before validation.
+  let compiled: ReturnType<typeof compile>;
   try {
-    return { regexp: middlewarePathTokensToRegExp(tokens) };
-  } catch {
+    compiled = compile(tokens);
+  } catch (error) {
+    if (!normalizeUnprefixedRepeats) {
+      return {
+        kind: "invalid",
+        error: error instanceof Error ? error.message : "source could not be compiled",
+      };
+    }
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
+    // The repeated-token checks depend on that prefix (it is the separator),
+    // so the normalized tokens are the ones validated.
     const normalizedTokens = normalizeMiddlewarePathTokens(tokens);
-    const normalizedUnsafeReason = validateTokens(normalizedTokens);
+    const normalizedUnsafeReason = validateTokens(
+      collapse ? collapseUniversalRepeats(normalizedTokens) : normalizedTokens,
+    );
     if (normalizedUnsafeReason) return { kind: "unsafe", error: normalizedUnsafeReason };
     try {
-      return { regexp: middlewarePathTokensToRegExp(normalizedTokens) };
+      return compile(normalizedTokens);
     } catch (error) {
+      if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
       return {
         kind: "invalid",
         error: error instanceof Error ? error.message : "matcher could not be compiled",
       };
     }
   }
+  if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
+  return compiled;
+}
+
+const MAX_OVERLAPPING_REPEATED_TOKENS = 1;
+
+/**
+ * Whether one more occurrence of a repeated token and the next token can start
+ * on the same text. Their shared prefix (usually `/`) says nothing, so compare
+ * what follows it: for `/:a(a)+` followed by `/:b(b)+`, the first character
+ * after each `/` decides.
+ */
+function repeatedOccurrencesMayOverlap(
+  earlier: MiddlewarePathKey,
+  next: MiddlewarePathKey,
+): boolean {
+  let shared = 0;
+  while (
+    shared < earlier.prefix.length &&
+    shared < next.prefix.length &&
+    earlier.prefix[shared] === next.prefix[shared]
+  ) {
+    shared++;
+  }
+  const rest = (token: MiddlewarePathKey) =>
+    `${escapeRegex(token.prefix.slice(shared))}(?:${token.pattern})${escapeRegex(token.suffix)}`;
+  return regexStartsMayOverlap(rest(earlier), rest(next), "first", true);
+}
+
+/**
+ * Repeated tokens are reduced to one occurrence for the whole-source check, so
+ * check their repetition boundaries here. A repeated token can take one more
+ * occurrence where the next token starts, and a token whose pattern spans the
+ * delimiter (`(.*)`) can take the next token's text. Like adjacent variable
+ * repetitions, one such boundary is linear per split, but each further one in
+ * a chain raises the backtracking degree: `/x{/:a}*{/:b}*{/:c}*` is refused.
+ * Boundaries between two spanning tokens keep the whole-source rule.
+ */
+function repeatedTokenChainIssue(tokens: MiddlewarePathToken[]): string | null {
+  const occurrence = (token: MiddlewarePathKey) =>
+    `${escapeRegex(token.prefix)}(?:${token.pattern})${escapeRegex(token.suffix)}`;
+  let pending: Array<{ token: MiddlewarePathKey; repeated: boolean }> = [];
+  let chained = 0;
+  for (const token of tokens) {
+    if (typeof token === "string") {
+      if (token) {
+        pending = [];
+        chained = 0;
+      }
+      continue;
+    }
+    const repeated = token.modifier === "*" || token.modifier === "+";
+    const nullable = token.modifier === "*" || token.modifier === "?";
+    if (!repeated && !regexStartsMayOverlap(token.pattern, "\\/", "any", true)) {
+      if (!nullable) {
+        pending = [];
+        chained = 0;
+      }
+      continue;
+    }
+    const start = occurrence(token);
+    const overlaps = pending.some(
+      (earlier) =>
+        (earlier.repeated || repeated) &&
+        (earlier.repeated
+          ? repeatedOccurrencesMayOverlap(earlier.token, token)
+          : regexStartsMayOverlap(earlier.token.pattern, start, "any", true)),
+    );
+    if (overlaps) {
+      chained++;
+      if (chained > MAX_OVERLAPPING_REPEATED_TOKENS) {
+        return `repeated parameter "${token.name}" can split the same text with an earlier parameter`;
+      }
+    } else if (!nullable) {
+      chained = 0;
+    }
+    const entry = { token, repeated };
+    pending = nullable ? [...pending, entry] : [entry];
+  }
+  return null;
+}
+
+export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
+  const compiled = compileSourcePattern(source, {
+    normalizeUnprefixedRepeats: true,
+    checkSourceLength: true,
+  });
+  return compiled.regexp ? { regexp: compiled.regexp } : compiled;
+}
+
+/**
+ * Compile a `headers()` source the way `next build` does
+ * (`buildCustomRoute("header", …)`): path-to-regexp 6 with `delimiter: "/"`,
+ * case-insensitive, and an optional trailing slash. Unlike middleware
+ * matchers, an unprefixed repeat such as `/foo-:id*` is a config error.
+ *
+ * @see .nextjs-ref/packages/next/src/lib/build-custom-route.ts
+ */
+export function compileHeaderSourcePattern(source: string): CompiledMiddlewareMatcherPattern {
+  // Next first validates the source with tryToParsePath(): default
+  // path-to-regexp options plus the unprefixed-repeat normalization, rejecting
+  // a source whose built regex is longer than 4096 characters.
+  // @see .nextjs-ref/packages/next/src/lib/load-custom-routes.ts (checkCustomRoutes)
+  const validated = compileSourcePattern(source, {
+    normalizeUnprefixedRepeats: true,
+    checkSourceLength: false,
+    collapseUniversalRepeats: true,
+  });
+  if (!validated.regexp) return validated;
+  if (validated.builtLength > MAX_BUILT_SOURCE_LENGTH) {
+    return {
+      kind: "invalid",
+      error: `source exceeds max built length of ${MAX_BUILT_SOURCE_LENGTH}`,
+    };
+  }
+
+  const compiled = compileSourcePattern(source, {
+    delimiter: "/",
+    normalizeUnprefixedRepeats: false,
+    checkSourceLength: false,
+    collapseUniversalRepeats: true,
+  });
+  if (!compiled.regexp) return compiled;
+
+  const chainIssue = repeatedTokenChainIssue(compiled.tokens);
+  if (chainIssue) return { kind: "unsafe", error: chainIssue };
+
+  // Tokens are safety-checked one at a time, which misses adjacent tokens
+  // that overlap, such as `/(a*)(a*)(a*)/end`. Check the whole regex as well,
+  // with each repeated token reduced to a single occurrence: the repetition
+  // itself, including its separator, was already validated per token by
+  // analyzeSeparatedRepetitionSafety(), and keeping it would trip the
+  // nested-repetition rule on every `:path*`.
+  const singleOccurrenceTokens = compiled.tokens.map((token) =>
+    typeof token === "object" && (token.modifier === "*" || token.modifier === "+")
+      ? { ...token, modifier: token.modifier === "*" ? "?" : "" }
+      : token,
+  );
+  // path-to-regexp ends every regex with an optional delimiter before `$`.
+  // Trying it costs at most two steps wherever a match attempt reaches it, so
+  // it cannot raise the backtracking degree. Counted as a variable repetition
+  // it would refuse ordinary sources such as `/:path(.*)/:lang?`.
+  const singleOccurrenceSource = middlewarePathTokensToRegExp(singleOccurrenceTokens, "/").source;
+  const analyzedSource = singleOccurrenceSource.endsWith(TRAILING_DELIMITER)
+    ? `${singleOccurrenceSource.slice(0, -TRAILING_DELIMITER.length)}$`
+    : singleOccurrenceSource;
+  const issue = analyzeRegexSafety(analyzedSource, { ignoreCase: true });
+  if (issue) return { kind: "unsafe", error: `source contains ${issue}` };
+
+  return { regexp: compiled.regexp };
 }
 
 export function validateMiddlewareMatcherPatterns(value: unknown): void {
