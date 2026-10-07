@@ -502,3 +502,20 @@ vinext follows Next.js-style cache semantics:
 With the KV or in-memory cache, when a background regeneration of an App Router page fails, the previous entry is kept and regeneration is retried later, as in Next.js.
 
 The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.
+
+## Where generated metadata goes
+
+`generateMetadata()` can resolve after the rest of the page. Next.js streams a dynamic page, so its generated tags (`<title>`, canonical, robots and so on) arrive in `<body>` once they resolve. It renders a static or ISR page whole before serving it, so that page has them in `<head>`. Browsers and most crawlers read metadata in either place. Bots that match `htmlLimitedBots` wait for the metadata and get it in `<head>`, in both.
+
+vinext streams every render that a visitor waits on, including the miss that stores a page, so the first byte doesn't wait for the whole page. Renders that no visitor waits on are rendered whole, and store generated metadata in `<head>`:
+
+- **Static Assets and the opt-in prerender:** the build renders every page whole.
+- **KV and in-memory:** background regenerations.
+- **Workers Response Store:** regenerations and [cache-warming](#cache-warming) fills.
+- **Workers Cache:** cache-warming fills and revalidations. vinext adds `Last-Modified` to a cacheable App Router page that has no validator of its own, so Workers Cache revalidates it with a conditional request (`If-Modified-Since`). vinext renders any conditional request for an App Router page whole.
+
+This differs from Next.js in these cases:
+
+- **A page stored from a miss has generated metadata in `<body>`.** Its first regeneration replaces it with a `<head>` document. A `revalidate = false` page keeps it until it's invalidated or the cache drops it. With Workers Response Store or Workers Cache, deploying with `--warm-cache` stores the warmed pages with metadata in `<head>`.
+- **A miss streams its first byte sooner.** Next.js waits for the whole page.
+- **On Workers Cache, a browser's own conditional request that misses the cache waits for the whole page,** like a revalidation.
