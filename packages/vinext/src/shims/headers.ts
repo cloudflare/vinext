@@ -23,6 +23,7 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import type { CacheLifeConfig, CacheLifeSink } from "./cache-request-state.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -198,15 +199,20 @@ export async function runWithIsolatedDynamicUsage<T>(
  * Run a pre-render probe without letting its dynamic API usage classify the
  * request. Next.js has no probe: only the render decides whether a page is
  * dynamic, and the render runs the probed layouts and page again. Returns the
- * probe's own usage for a caller whose probe response replaces the render.
+ * probe's own usage and cacheLife for a caller whose probe response replaces
+ * the render.
  */
 export async function runWithDetachedDynamicUsage<T>(
   fn: () => T | Promise<T>,
-): Promise<{ result: T; dynamicDetected: boolean }> {
-  const runInChildState = async (childState: VinextHeadersShimState) => {
+): Promise<{ result: T; dynamicDetected: boolean; cacheLife: CacheLifeConfig | null }> {
+  const runInChildState = async (
+    childState: VinextHeadersShimState,
+    cacheLifeSink: CacheLifeSink | null,
+  ) => {
     const result = await fn();
     return {
       result,
+      cacheLife: cacheLifeSink?.cacheLife ?? null,
       // Nested isolated scopes latch without setting this scope's flag.
       dynamicDetected: childState.dynamicUsageDetected || childState.renderDynamicLatch.dynamic,
     };
@@ -214,8 +220,11 @@ export async function runWithDetachedDynamicUsage<T>(
 
   if (isInsideUnifiedScope()) {
     let childState: VinextHeadersShimState | null = null;
+    // Layout probes run in further isolated scopes that reset the slot.
+    const cacheLifeSink: CacheLifeSink = { cacheLife: null };
     return await runWithUnifiedStateMutation(
       (context) => {
+        context.cacheLifeSink = cacheLifeSink;
         context.dynamicUsageDetected = false;
         context.renderDynamicLatch = createRenderDynamicLatch();
         context.renderRequestApiUsage = new Set();
@@ -234,7 +243,7 @@ export async function runWithDetachedDynamicUsage<T>(
         if (!childState) {
           throw new Error("Dynamic usage scope was not initialized");
         }
-        return runInChildState(childState);
+        return runInChildState(childState, cacheLifeSink);
       },
     );
   }
@@ -245,7 +254,9 @@ export async function runWithDetachedDynamicUsage<T>(
     renderDynamicLatch: createRenderDynamicLatch(),
     renderRequestApiUsage: new Set(),
   };
-  return await _als.run(childState, () => runInChildState(childState));
+  // Outside the unified scope the probe's claims stay on the request's cache
+  // state, which the probe does not detach.
+  return await _als.run(childState, () => runInChildState(childState, null));
 }
 
 export async function runWithConnectionProbe<T>(

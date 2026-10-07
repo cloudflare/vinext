@@ -86,7 +86,11 @@ import {
   _consumeRequestScopedCacheLife,
   _peekRequestScopedCacheLife,
 } from "../packages/vinext/src/shims/cache-request-state.js";
-import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
+import {
+  cacheLife,
+  MemoryCacheHandler,
+  setCacheHandler,
+} from "../packages/vinext/src/shims/cache.js";
 import {
   setCurrentFetchRevalidate,
   withFetchCache,
@@ -1212,6 +1216,45 @@ describe("app page render lifecycle", () => {
         expect(layoutGuard.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
       },
     );
+  });
+
+  it("bounds client reuse of a layout redirect by the probe's cacheLife (#3745)", async () => {
+    // A layout reads a completed cacheLife claim and then redirects. The
+    // probe's claim must reach the redirect that replaces the render.
+    const renderLayoutRedirect = async (isRscRequest: boolean, redirectHeader: string | null) => {
+      const common = createCommonOptions();
+      common.renderLayoutSpecialError.mockImplementation(
+        async () =>
+          new Response("flight", {
+            headers:
+              redirectHeader === null ? {} : { [VINEXT_RSC_REDIRECT_HEADER]: redirectHeader },
+          }),
+      );
+      return runWithRequestContext(createRequestContext(), () =>
+        renderAppPageLifecycle({
+          ...common.options,
+          isProduction: true,
+          isRscRequest,
+          layoutCount: 1,
+          // Production layout probes run in the param tracker's isolated scope.
+          probeLayoutAt() {
+            return createAppLayoutParamAccessTracker().runLayoutProbe("layout:/", () => {
+              cacheLife({ stale: 45, revalidate: 60, expire: 300 });
+              throw { digest: "NEXT_REDIRECT;replace;/login;307;" };
+            });
+          },
+        }),
+      );
+    };
+
+    const redirect = await renderLayoutRedirect(true, "/login");
+    expect(redirect.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/login");
+    expect(redirect.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("45");
+
+    const documentRedirect = await renderLayoutRedirect(false, "/login");
+    expect(documentRedirect.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
+    const notRedirect = await renderLayoutRedirect(true, null);
+    expect(notRedirect.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
   });
 
   it("fails a candidate render with a 500 when useSearchParams() bails out outside Suspense", async () => {

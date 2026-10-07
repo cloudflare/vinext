@@ -38,8 +38,16 @@ export type UnstableCacheObservation = Readonly<{
   tagHash: string | null;
 }>;
 
+/**
+ * Collects the cacheLife claims made anywhere below the scope that installed
+ * it, including nested scopes that reset `requestScopedCacheLife`. Shallow
+ * scope clones share it by reference.
+ */
+export type CacheLifeSink = { cacheLife: CacheLifeConfig | null };
+
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
+  cacheLifeSink: CacheLifeSink | null;
   pendingRevalidatedTags: Set<string>;
   pendingRevalidations: Set<Promise<void>>;
   requestScopedCacheLife: CacheLifeConfig | null;
@@ -57,6 +65,7 @@ export const ACTION_DID_REVALIDATE_DYNAMIC_ONLY = 2 satisfies ActionRevalidation
 
 const fallbackState = (globalState[FALLBACK_KEY] ??= {
   actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
+  cacheLifeSink: null,
   pendingRevalidatedTags: new Set<string>(),
   pendingRevalidations: new Set<Promise<void>>(),
   requestScopedCacheLife: null,
@@ -77,6 +86,7 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((context) => {
       context.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
+      context.cacheLifeSink = null;
       context.requestScopedCacheLife = null;
       context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
       context.unstableCacheRevalidation = "foreground";
@@ -84,6 +94,7 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
+    cacheLifeSink: null,
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     requestScopedCacheLife: null,
@@ -183,30 +194,31 @@ export async function _drainPendingRevalidations(): Promise<void> {
   if (didReject) throw firstRejection;
 }
 
-export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
-  const state = getCacheState();
-  if (state.requestScopedCacheLife === null) {
-    state.requestScopedCacheLife = { ...config };
-    return;
-  }
+function mergeCacheLife(current: CacheLifeConfig | null, config: CacheLifeConfig): CacheLifeConfig {
+  if (current === null) return { ...config };
 
   if (config.stale !== undefined) {
-    state.requestScopedCacheLife.stale =
-      state.requestScopedCacheLife.stale !== undefined
-        ? Math.min(state.requestScopedCacheLife.stale, config.stale)
-        : config.stale;
+    current.stale =
+      current.stale !== undefined ? Math.min(current.stale, config.stale) : config.stale;
   }
   if (config.revalidate !== undefined) {
-    state.requestScopedCacheLife.revalidate =
-      state.requestScopedCacheLife.revalidate !== undefined
-        ? Math.min(state.requestScopedCacheLife.revalidate, config.revalidate)
+    current.revalidate =
+      current.revalidate !== undefined
+        ? Math.min(current.revalidate, config.revalidate)
         : config.revalidate;
   }
   if (config.expire !== undefined) {
-    state.requestScopedCacheLife.expire =
-      state.requestScopedCacheLife.expire !== undefined
-        ? Math.min(state.requestScopedCacheLife.expire, config.expire)
-        : config.expire;
+    current.expire =
+      current.expire !== undefined ? Math.min(current.expire, config.expire) : config.expire;
+  }
+  return current;
+}
+
+export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
+  const state = getCacheState();
+  state.requestScopedCacheLife = mergeCacheLife(state.requestScopedCacheLife, config);
+  if (state.cacheLifeSink) {
+    state.cacheLifeSink.cacheLife = mergeCacheLife(state.cacheLifeSink.cacheLife, config);
   }
 }
 

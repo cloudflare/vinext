@@ -30,6 +30,7 @@ import {
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
 import { createAppPageRscRenderStatusResolver } from "./app-page-rsc-render-status.js";
 import {
+  applyClientStaleTimeHeader,
   applyEdgeRuntimeHeader,
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
@@ -425,6 +426,33 @@ export function applyIneligibleRouteCachePolicy(
   if (dynamicStaleTimeSeconds !== undefined) {
     stamped.headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(dynamicStaleTimeSeconds));
   }
+  return stamped;
+}
+
+/**
+ * A probe has completed by the time it answers, so a streamed RSC redirect
+ * carries the probe's cacheLife stale bound like a completed render, and a
+ * prefetched redirect is not replayed past it.
+ */
+function applyProbeRedirectStaleTime(
+  response: Response,
+  isRscRequest: boolean,
+  cacheLife: AppPageRequestCacheLife | null,
+): Response {
+  const staleTimeSeconds = resolveClientStaleTimeSeconds(cacheLife);
+  if (
+    !isRscRequest ||
+    staleTimeSeconds === undefined ||
+    !response.headers.has(VINEXT_RSC_REDIRECT_HEADER)
+  ) {
+    return response;
+  }
+  const stamped = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, response as ResponseInit),
+  );
+  copyLinkHeaderProvenance(response.headers, stamped.headers);
+  applyClientStaleTimeHeader(stamped.headers, staleTimeSeconds);
   return stamped;
 }
 
@@ -935,7 +963,14 @@ async function renderAppPageLifecycleImpl(
   if (preRenderResult.response) {
     // This response replaces the render, so the probe's usage classifies it.
     if (probeOutcome.dynamicDetected) markDynamicUsage();
-    return applyIneligibleRouteCachePolicy(preRenderResult.response, options);
+    return applyIneligibleRouteCachePolicy(
+      applyProbeRedirectStaleTime(
+        preRenderResult.response,
+        options.isRscRequest,
+        probeOutcome.cacheLife,
+      ),
+      options,
+    );
   }
 
   const layoutFlags = preRenderResult.layoutFlags;
