@@ -400,15 +400,24 @@ export function applyIneligibleRouteCachePolicy(
   probeCacheLife: AppPageRequestCacheLife | null = null,
 ): Response {
   const cacheControl = resolveEarlyResponseCacheControl(options);
+  const isRscRedirect = options.isRscRequest && response.headers.has(VINEXT_RSC_REDIRECT_HEADER);
   if (!cacheControl) {
-    return applyStaticRedirectStaleTime(response, options.isRscRequest, probeCacheLife);
+    // A probe has completed by the time it answers, so a static RSC redirect
+    // carries the probe's cacheLife stale bound like a prerender. As in
+    // Next.js, a known-dynamic redirect carries only `staleTimes.dynamic`.
+    const staleTimeSeconds = isRscRedirect
+      ? resolveClientStaleTimeSeconds(probeCacheLife)
+      : undefined;
+    if (staleTimeSeconds === undefined) return response;
+    const stamped = cloneForStamping(response);
+    applyClientStaleTimeHeader(stamped.headers, staleTimeSeconds);
+    return stamped;
   }
   // A streamed RSC redirect from a known-dynamic render carries the
   // `staleTimes.dynamic` bound, so a prefetched redirect is not replayed past it.
-  const dynamicStaleTimeSeconds =
-    options.isRscRequest && response.headers.has(VINEXT_RSC_REDIRECT_HEADER)
-      ? (options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds())
-      : undefined;
+  const dynamicStaleTimeSeconds = isRscRedirect
+    ? (options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds())
+    : undefined;
   // Middleware's own cache policy wins, as in the normal response builders.
   // Only keep what this response already carries from it.
   const middlewarePolicy = [...(options.middlewareContext.headers ?? [])].filter(
@@ -416,12 +425,7 @@ export function applyIneligibleRouteCachePolicy(
   );
   const keepsMiddlewareCacheControl = middlewarePolicy.some(([name]) => name === "cache-control");
   if (keepsMiddlewareCacheControl && dynamicStaleTimeSeconds === undefined) return response;
-  // Some early responses have immutable headers, so stamp a copy.
-  const stamped = preserveFullyBufferedBodyMetadata(
-    response,
-    new Response(response.body, response as ResponseInit),
-  );
-  copyLinkHeaderProvenance(response.headers, stamped.headers);
+  const stamped = cloneForStamping(response);
   if (!keepsMiddlewareCacheControl) {
     applyCdnResponseHeaders(stamped.headers, { cacheControl });
     for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
@@ -432,42 +436,14 @@ export function applyIneligibleRouteCachePolicy(
   return stamped;
 }
 
-/**
- * A probe has completed by the time it answers, so a static streamed RSC
- * redirect carries the probe's cacheLife stale bound like a prerender, and a
- * prefetched redirect is not replayed past it. As in Next.js, a known-dynamic
- * redirect carries only the `staleTimes.dynamic` bound.
- */
-function applyStaticRedirectStaleTime(
-  response: Response,
-  isRscRequest: boolean,
-  cacheLife: AppPageRequestCacheLife | null,
-): Response {
-  const staleTimeSeconds = resolveClientStaleTimeSeconds(cacheLife);
-  if (
-    !isRscRequest ||
-    staleTimeSeconds === undefined ||
-    !response.headers.has(VINEXT_RSC_REDIRECT_HEADER)
-  ) {
-    return response;
-  }
+/** Some early responses have immutable headers, so stamp a copy. */
+function cloneForStamping(response: Response): Response {
   const stamped = preserveFullyBufferedBodyMetadata(
     response,
     new Response(response.body, response as ResponseInit),
   );
   copyLinkHeaderProvenance(response.headers, stamped.headers);
-  applyClientStaleTimeHeader(stamped.headers, staleTimeSeconds);
   return stamped;
-}
-
-/** Claims made before the probe, such as blocking metadata, bound it too. */
-function mergeProbeCacheLife(
-  probe: AppPageRequestCacheLife | null,
-  request: AppPageRequestCacheLife | null,
-): AppPageRequestCacheLife | null {
-  if (probe?.stale === undefined) return request;
-  if (request?.stale === undefined) return probe;
-  return { stale: Math.min(probe.stale, request.stale) };
 }
 
 /** The known-dynamic branches of the RSC and HTML response policies, in their order. */
@@ -980,7 +956,7 @@ async function renderAppPageLifecycleImpl(
     return applyIneligibleRouteCachePolicy(
       preRenderResult.response,
       options,
-      mergeProbeCacheLife(probeOutcome.cacheLife, options.peekRequestCacheLife?.() ?? null),
+      probeOutcome.cacheLife,
     );
   }
 

@@ -9,7 +9,8 @@
  * `cacheLife` stale time of a cached value the layout read.
  *
  * Next.js parity: `next start` (16.2.7) follows each redirect as a client
- * navigation with the per-variant request counts below. Upstream has no Link +
+ * navigation with the per-variant request counts below, except the cacheLife
+ * variants noted there. Upstream has no Link +
  * prefetch test for a route calling redirect(); the closest is the
  * production-only prefetch + click case for a middleware redirect in
  * test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
@@ -45,7 +46,10 @@ const VARIANTS = [
   { name: "layout-guard", refetchesOnClick: true },
   // A layout that redirects after a `"use cache"` read with `stale: 45`
   // carries that bound. Once the layout also reads cookies(), only
-  // `staleTimes.dynamic` bounds it.
+  // `staleTimes.dynamic` bounds it. Real Next.js needs `cacheComponents` for
+  // these fixtures, so their expectations follow its source instead: only a
+  // prerender result sets `x-nextjs-stale-time` (applyMetadataFromPrerenderResult
+  // in packages/next/src/server/app-render/app-render.tsx).
   { name: "layout-cache-life", refetchesOnClick: false, serverStaleTime: "45" },
   { name: "layout-guard-cache-life", refetchesOnClick: true, serverStaleTime: null },
 ] as const;
