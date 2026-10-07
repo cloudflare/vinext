@@ -13668,6 +13668,7 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       "overlapping sequential repetition",
       `/${"a".repeat(40)}!`,
     ],
+    ["/:id(a+aa+a(?:a+|x))/Z", "overlapping sequential repetition", `/${"a".repeat(40)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
   ])("ignores %s as an unsafe source", async (source, reason, pathname) => {

@@ -119,6 +119,8 @@ for (const pattern of [
   "^(?:a+|x)(?:a+|x)Z$",
   // Fixed text that the variable branch can consume does not end its boundary.
   "^(?:a+|x)a(?:a+|x)a(?:a+|x)Z$",
+  // Two boundaries across consumable literals, one of them an alternation.
+  "^a+aa+a(?:a+|x)Z$",
 ]) {
   if (!analyzeRegexSafety(pattern, { ignoreCase: true })) {
     throw new Error(`Unsafe alternation sequence was accepted: ${pattern}`);
@@ -144,6 +146,16 @@ if (!matchPattern(`/${"1/".repeat(2_000)}new`, catchAllWithId)) {
 }
 if (matchPattern(`/${"1/".repeat(2_000)}x!`, catchAllWithId)) {
   throw new Error(`Safe catch-all matcher matched a near miss: ${catchAllWithId}`);
+}
+
+// An unprefixed repeat is checked with the `/` prefix Next's normalization
+// adds, which is its real separator.
+const unprefixedRepeat = "/foo-:x((?![^/]*foo)[^/]+)*";
+if (!matchPattern(`/foo-${"/a".repeat(1_500)}`, unprefixedRepeat)) {
+  throw new Error(`Normalized repeat did not match: ${unprefixedRepeat}`);
+}
+if (matchPattern(`/foo-${"/a".repeat(1_500)}foo`, unprefixedRepeat)) {
+  throw new Error(`Normalized repeat matched a near miss: ${unprefixedRepeat}`);
 }
 
 // A lookaround that cannot match the separator stops at the next one, a

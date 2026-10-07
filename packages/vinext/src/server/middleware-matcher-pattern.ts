@@ -349,10 +349,11 @@ function compileSourcePattern(
   };
 
   const unsafeReason = validateTokens(collapse ? collapseUniversalRepeats(tokens) : tokens);
-  if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
 
+  // Building the RegExp does not run it, so it is safe before validation.
+  let compiled: ReturnType<typeof compile>;
   try {
-    return compile(tokens);
+    compiled = compile(tokens);
   } catch (error) {
     if (!normalizeUnprefixedRepeats) {
       return {
@@ -362,6 +363,8 @@ function compileSourcePattern(
     }
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
+    // The repeated-token checks depend on that prefix (it is the separator),
+    // so the normalized tokens are the ones validated.
     const normalizedTokens = normalizeMiddlewarePathTokens(tokens);
     const normalizedUnsafeReason = validateTokens(
       collapse ? collapseUniversalRepeats(normalizedTokens) : normalizedTokens,
@@ -370,12 +373,15 @@ function compileSourcePattern(
     try {
       return compile(normalizedTokens);
     } catch (error) {
+      if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
       return {
         kind: "invalid",
         error: error instanceof Error ? error.message : "matcher could not be compiled",
       };
     }
   }
+  if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
+  return compiled;
 }
 
 export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {

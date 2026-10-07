@@ -942,6 +942,11 @@ function findSequenceIssue(
   const comparisons = { count: 0 };
   const carriedComparisons = { count: 0 };
   let overlappingBoundaryCount = 0;
+  // Overlapping boundaries counted through carried fixed text as well, and
+  // whether an unbounded alternation is part of that chain. A chain without
+  // one keeps the established per-literal reset above.
+  let chainedBoundaryCount = 0;
+  let chainHasAlternation = false;
   for (const child of node.children) {
     const alternation = child.kind !== "repeat";
     const variableRepetition =
@@ -955,11 +960,10 @@ function findSequenceIssue(
       // consume (`(.*)/(\d+|new)`), so it shares the overlapping-boundary
       // budget below. Two of them may never overlap: `(?:a+|x)(?:a+|x)` and
       // `(?:a+|x)a(?:a+|x)` still fail closed.
-      const carriedOverlaps = carried.filter(
-        (boundary) =>
-          (alternation || boundary.alternation) &&
-          boundariesMayOverlap(boundary.consumed, starts, carriedComparisons),
+      const carriedHits = carried.filter((boundary) =>
+        boundariesMayOverlap(boundary.consumed, starts, carriedComparisons),
       );
+      const carriedOverlaps = carriedHits.filter((boundary) => alternation || boundary.alternation);
       const overlapping = pending.map((boundary) =>
         boundariesMayOverlap(boundary.ends, starts, comparisons),
       );
@@ -984,6 +988,19 @@ function findSequenceIssue(
       if (overlappingBoundaryCount > MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES) {
         return "overlapping sequential repetition";
       }
+      if (overlapping.some(Boolean) || carriedHits.length > 0) {
+        chainedBoundaryCount++;
+        chainHasAlternation ||= alternation;
+      } else if (!isNullable(child)) {
+        chainedBoundaryCount = 0;
+        chainHasAlternation = alternation;
+      } else {
+        chainHasAlternation ||= alternation;
+      }
+      // `a+aa+a(?:a+|x)` has two boundaries across consumable literals.
+      if (chainHasAlternation && chainedBoundaryCount > MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES) {
+        return "overlapping sequential repetition";
+      }
       const boundary = {
         ends: lastSymbols(child),
         consumed: consumedSymbols(child),
@@ -1003,6 +1020,10 @@ function findSequenceIssue(
       );
       pending = [];
       overlappingBoundaryCount = 0;
+      if (carried.length === 0) {
+        chainedBoundaryCount = 0;
+        chainHasAlternation = false;
+      }
     }
   }
   return null;
