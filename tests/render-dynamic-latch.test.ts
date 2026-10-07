@@ -12,7 +12,12 @@ import {
   runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
-import { cacheLife } from "../packages/vinext/src/shims/cache.js";
+import {
+  cacheLife,
+  MemoryCacheHandler,
+  setCacheHandler,
+  unstable_cache,
+} from "../packages/vinext/src/shims/cache.js";
 import { runWithDetachedCacheObservations } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   createRequestContext,
@@ -346,6 +351,53 @@ describe("render dynamic latch", () => {
         expect(outcome.cacheLife?.stale).toBe(45);
         expect(getRequestContext().requestScopedCacheLife).toBeNull();
       });
+    });
+
+    it("keeps an unstable_cache background refresh's cacheLife out of the probe's", async () => {
+      setCacheHandler({
+        async get() {
+          return {
+            cacheState: "stale",
+            lastModified: Date.now() - 2_000,
+            value: {
+              kind: "FETCH",
+              data: { body: JSON.stringify({ v: "stale" }), headers: {}, url: "" },
+              revalidate: 1,
+              tags: [],
+            },
+          };
+        },
+        async set() {},
+        async revalidateTag() {},
+      });
+      try {
+        const refreshes: Promise<unknown>[] = [];
+        const getValue = unstable_cache(
+          async () => {
+            cacheLife({ stale: 10, revalidate: 60, expire: 300 });
+            return "fresh";
+          },
+          ["probe-sink-refresh"],
+          { revalidate: 1 },
+        );
+        const context = createRequestContext({
+          executionContext: { waitUntil: (promise) => refreshes.push(promise) },
+          unstableCacheRevalidation: "background",
+        });
+        await runWithRequestContext(context, async () => {
+          const outcome = await runWithDetachedDynamicUsage(async () => {
+            cacheLife({ stale: 45, revalidate: 60, expire: 300 });
+            expect(await getValue()).toBe("stale");
+            await Promise.all(refreshes);
+          });
+
+          expect(refreshes).toHaveLength(1);
+          expect(outcome.cacheLife?.stale).toBe(45);
+          expect(getRequestContext().requestScopedCacheLife).toBeNull();
+        });
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
     });
 
     it("lets the render rerun a cacheForRequest factory the probe called", async () => {

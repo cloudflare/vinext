@@ -45,6 +45,7 @@ import {
   getRegisteredCacheContext,
   markActionRevalidation,
   recordUnstableCacheObservation,
+  runWithDetachedCacheObservations,
   shouldServeStaleUnstableCacheEntry,
   type CacheLifeConfig,
 } from "./cache-request-state.js";
@@ -552,7 +553,9 @@ function scheduleUnstableCacheBackgroundRevalidation(
   const pending = getPendingUnstableCacheRevalidations();
   if (pending.has(cacheKey)) return;
 
-  const revalidation = refresh()
+  // As with a "use cache" regeneration, the refresh feeds its cache life back
+  // into neither the request nor a layout probe.
+  const revalidation = runWithDetachedCacheObservations(refresh)
     .then(() => undefined)
     .catch((err) => {
       console.error(`[vinext] unstable_cache background revalidation failed for ${cacheKey}:`, err);
