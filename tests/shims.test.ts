@@ -13752,6 +13752,19 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     expect(matchHeaders(matching, rules, ctx)).toEqual([{ key: "x-matched", value: "1" }]);
   });
 
+  // Compiling one source must not depend on how many others were analyzed
+  // first, even past the bounded cache of non-ASCII class sets.
+  it("compiles non-ASCII class sources regardless of earlier sources", async () => {
+    const { compileHeaderSourcePattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const char = (code: number) => String.fromCharCode(code);
+    for (let index = 0; index < 150; index++) {
+      const source = `/:x([${char(0x4e00 + index)}]|[${char(0xac00 + index)}])*/end`;
+      expect(compileHeaderSourcePattern(source).regexp).toBeDefined();
+    }
+    expect(compileHeaderSourcePattern("/:x([一]|[가])*/end").regexp).toBeDefined();
+  });
+
   // Each token is safe on its own, but adjacent overlapping groups backtrack
   // catastrophically on a near miss, so the whole source is refused.
   it("ignores a source whose adjacent groups overlap", async () => {

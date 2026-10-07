@@ -734,7 +734,9 @@ const codeUnitSets = new Map<string, Uint32Array | null>();
  * The UTF-16 code units a class or `.` can match, as a bit set, so classes the
  * parser does not model (non-ASCII ranges such as `[一-鿿]`) can still be
  * compared. Without the `u` flag a class matches one code unit. Other opaque
- * escapes, such as backreferences, stay unknown.
+ * escapes, such as backreferences, stay unknown. A set depends only on the
+ * symbol, so the bounded cache drops its oldest entry when full instead of
+ * letting earlier analyses change later results.
  */
 function codeUnitSet(symbol: RegexSymbol): Uint32Array | null {
   if (symbol.kind === "opaque" && symbol.pattern !== "." && !symbol.pattern.startsWith("[")) {
@@ -743,7 +745,6 @@ function codeUnitSet(symbol: RegexSymbol): Uint32Array | null {
   const cacheKey = symbol.kind === "opaque" ? `${symbol.ignoreCase}:${symbol.key}` : symbol.key;
   const cached = codeUnitSets.get(cacheKey);
   if (cached !== undefined) return cached;
-  if (codeUnitSets.size >= MAX_CODE_UNIT_SETS) return null;
   let matches: (character: string) => boolean;
   if (symbol.kind === "opaque") {
     try {
@@ -764,6 +765,10 @@ function codeUnitSet(symbol: RegexSymbol): Uint32Array | null {
   }
   // An empty set means the symbol is not a plain character after all.
   if (set.every((word) => word === 0)) set = null;
+  if (codeUnitSets.size >= MAX_CODE_UNIT_SETS) {
+    const oldest = codeUnitSets.keys().next().value;
+    if (oldest !== undefined) codeUnitSets.delete(oldest);
+  }
   codeUnitSets.set(cacheKey, set);
   return set;
 }
