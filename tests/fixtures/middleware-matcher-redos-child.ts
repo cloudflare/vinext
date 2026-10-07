@@ -90,6 +90,8 @@ for (const [matcher, nearMiss] of [
   ["/:x(a/a|a)*/end", `/${"a/".repeat(1_500)}a!`],
   ["/{:x-}*/end", `/${"a-".repeat(1_500)}a!`],
   ["/:x(a|b|a/b)*/end", `/${"a/b/".repeat(1_000)}!`],
+  // An astral separator is two UTF-16 code units, as the RegExp sees it.
+  ["/{😀:x(a|😀a|a😀)}*/end", `/${"😀a".repeat(1_000)}!`],
 ]) {
   if (!matchPattern(nearMiss, matcher)) {
     throw new Error(`Unsafe separated repeat did not fail closed: ${matcher}`);
@@ -151,4 +153,12 @@ const unparsedIssue = analyzeSeparatedRepetitionSafety("(?i:(?:a))|aa", "/", {
 });
 if (unparsedIssue !== "analysis budget exceeded") {
   throw new Error(`Partially parsed separated repeat was not refused: ${unparsedIssue}`);
+}
+
+// Inline modifier groups are not modeled, so their contents cannot be
+// checked: fail closed instead of skipping them.
+for (const pattern of ["(?i:(?:a+)+b)", "(?i:a*a*a*a*a*a*a*a*b)", "(?i:(?:x))(?:a|aa)+c"]) {
+  if (analyzeRegexSafety(pattern, { ignoreCase: true }) !== "analysis budget exceeded") {
+    throw new Error(`Inline modifier group was not refused: ${pattern}`);
+  }
 }

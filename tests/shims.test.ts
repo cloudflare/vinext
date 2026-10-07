@@ -13621,6 +13621,8 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ["/{:x-}*", `may match its separator "-"`, `/${"a-".repeat(30)}a`],
     ["/:x(a/a|a)*/end", `may match its separator "/"`, `/${"a/".repeat(40)}a!`],
     ["/:x(a|b|a/b)*/end", `may match its separator "/"`, `/${"a/b/".repeat(30)}!`],
+    ["/{😀:x(a|😀a|a😀)}*/end", `may match its separator "😀"`, `/${"😀a".repeat(26)}!`],
+    ["/:x((?i:(?:a+)+b))", "exceeds the regex analysis budget", `/${"a".repeat(28)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
   ])("ignores %s as an unsafe source", async (source, reason, pathname) => {

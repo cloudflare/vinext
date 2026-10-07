@@ -273,10 +273,11 @@ class RegexParser {
         const nameEnd = this.pattern.indexOf(">", this.index + 2);
         this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
       } else {
-        // Unsupported group prefixes will be rejected by RegExp compilation.
-        // Keep analysis conservative if this parser is asked to inspect one.
-        while (this.index < this.pattern.length && this.pattern[this.index] !== ")") this.index++;
-        if (this.pattern[this.index] === ")") this.index++;
+        // Inline modifier groups such as `(?i:...)` are not modeled: skipping
+        // them would hide their contents (and anything after a nested `)`)
+        // from the analysis, so fail closed.
+        this.exceededBudget = true;
+        this.skipGroup();
         this.depth--;
         return this.node({ kind: "atom", symbol: null, fixedWidth: false });
       }
@@ -1107,7 +1108,8 @@ function hasUnambiguousSeparatedWords(
   if (hasPrefixFreeFiniteLanguage(node).safe) return true;
   const words = fixedWords(node, { words: 0, symbols: 0, exceeded: false });
   if (!words) return false;
-  const prefix = Array.from(separator, (character) => literalSymbol(character, ignoreCase));
+  // Split by UTF-16 code unit, as RegexParser and non-`u` RegExps do.
+  const prefix = separator.split("").map((character) => literalSymbol(character, ignoreCase));
   return isUniquelyDecodable(words.map((word) => [...prefix, ...word]));
 }
 
