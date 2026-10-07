@@ -505,7 +505,7 @@ function containsUnboundedLookaround(node: RegexNode, separator?: RegexSymbol): 
     case "assertion":
       return (
         containsUnboundedRepetition(node.child) &&
-        !(separator && fixedSeparatorCount(node.child, separator) === 0)
+        !(separator && scanStopsAtSeparator(node.child, separator))
       );
     case "sequence":
       return node.children.some((child) => containsUnboundedLookaround(child, separator));
@@ -513,6 +513,32 @@ function containsUnboundedLookaround(node: RegexNode, separator?: RegexSymbol): 
       return node.branches.some((branch) => containsUnboundedLookaround(branch, separator));
     case "repeat":
       return containsUnboundedLookaround(node.child, separator);
+  }
+}
+
+/**
+ * Whether every match of `node` avoids `separator`, including the text that
+ * nested lookarounds with unbounded repetition scan: `(?=(?!.*Z)a)` consumes
+ * no separator, but its inner lookahead still scans to the end of the input.
+ */
+function scanStopsAtSeparator(node: RegexNode, separator: RegexSymbol): boolean {
+  return fixedSeparatorCount(node, separator) === 0 && nestedScansStopAtSeparator(node, separator);
+}
+
+function nestedScansStopAtSeparator(node: RegexNode, separator: RegexSymbol): boolean {
+  switch (node.kind) {
+    case "atom":
+      return true;
+    case "assertion":
+      return (
+        !containsUnboundedRepetition(node.child) || scanStopsAtSeparator(node.child, separator)
+      );
+    case "sequence":
+      return node.children.every((child) => nestedScansStopAtSeparator(child, separator));
+    case "alternation":
+      return node.branches.every((branch) => nestedScansStopAtSeparator(branch, separator));
+    case "repeat":
+      return nestedScansStopAtSeparator(node.child, separator);
   }
 }
 
@@ -881,18 +907,31 @@ function findSequenceIssue(
   }
 
   let pendingRepetitionEnds: Array<RegexSymbol[] | null> = [];
+  // Whether each pending entry is an unbounded alternation (see below).
+  let pendingAlternations: boolean[] = [];
   const comparisons = { count: 0 };
   let overlappingBoundaryCount = 0;
   for (const child of node.children) {
+    const alternation = child.kind !== "repeat";
     const variableRepetition =
       child.kind === "repeat"
         ? child.min !== child.max || !Number.isFinite(child.max)
         : isUnboundedAlternation(child);
     if (variableRepetition) {
       const starts = firstSymbols(child);
-      const overlappingBoundaries = pendingRepetitionEnds.filter((ends) =>
+      const overlapping = pendingRepetitionEnds.map((ends) =>
         boundariesMayOverlap(ends, starts, comparisons),
-      ).length;
+      );
+      const overlappingBoundaries = overlapping.filter(Boolean).length;
+      // An unbounded alternation is only accepted where no neighbouring
+      // repetition can take its text: `(?:a+|x)(?:a+|x)` still fails closed.
+      if (
+        overlappingBoundaries > 0 &&
+        (alternation ||
+          overlapping.some((overlaps, index) => overlaps && pendingAlternations[index]))
+      ) {
+        return "overlapping sequential repetition";
+      }
       if (overlappingBoundaries > 0) {
         overlappingBoundaryCount++;
       } else if (!isNullable(child)) {
@@ -907,8 +946,12 @@ function findSequenceIssue(
       }
       const ends = lastSymbols(child);
       pendingRepetitionEnds = isNullable(child) ? [...pendingRepetitionEnds, ends] : [ends];
+      pendingAlternations = isNullable(child)
+        ? [...pendingAlternations, alternation]
+        : [alternation];
     } else if (!isNullable(child)) {
       pendingRepetitionEnds = [];
+      pendingAlternations = [];
       overlappingBoundaryCount = 0;
     }
   }
@@ -1091,9 +1134,24 @@ function branchesMayShareText(
     }
     return false;
   }
-  // Shared non-empty text starts with a symbol both alternatives can start with.
-  if (isNullable(left) && isNullable(right)) return true;
-  return boundariesMayOverlap(firstSymbols(left), firstSymbols(right), comparisons);
+  // Shared text must agree symbol by symbol, so walk the single-symbol prefix
+  // both alternatives start with (`ab+` and `ac+` differ after `a`), then
+  // compare the first symbols of what remains.
+  const leftItems = left.kind === "sequence" ? left.children : [left];
+  const rightItems = right.kind === "sequence" ? right.children : [right];
+  let index = 0;
+  for (; index < leftItems.length && index < rightItems.length; index++) {
+    const leftItem = leftItems[index];
+    const rightItem = rightItems[index];
+    if (leftItem.kind !== "atom" || !leftItem.symbol || !leftItem.fixedWidth) break;
+    if (rightItem.kind !== "atom" || !rightItem.symbol || !rightItem.fixedWidth) break;
+    if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return true;
+    if (!symbolsMayOverlap(leftItem.symbol, rightItem.symbol)) return false;
+  }
+  const leftRest: RegexNode = { kind: "sequence", children: leftItems.slice(index) };
+  const rightRest: RegexNode = { kind: "sequence", children: rightItems.slice(index) };
+  if (isNullable(leftRest) && isNullable(rightRest)) return true;
+  return boundariesMayOverlap(firstSymbols(leftRest), firstSymbols(rightRest), comparisons);
 }
 
 /**
@@ -1103,6 +1161,99 @@ function branchesMayShareText(
  * element it cannot start into (the `-` in `\w+-\w+`) fixes the split.
  */
 function hasAmbiguousSplit(children: RegexNode[], comparisons: { count: number }): boolean {
+  if (children.some((child) => exactWidth(child) === null && isNullable(child))) {
+    return hasAmbiguousSplitWithOptionalElements(children, comparisons);
+  }
+  // Symbols the next variable-width element must not start with: the body of
+  // the previous one, or the split frontier through the fixed block between.
+  let pending: RegexSymbol[] | null | undefined;
+  let body: RegexSymbol[] | null | undefined;
+  let index = 0;
+  while (index < children.length) {
+    if (exactWidth(children[index]) !== null) {
+      let end = index + 1;
+      while (end < children.length && exactWidth(children[end]) !== null) end++;
+      pending = body === undefined ? undefined : splitFrontier(body, children.slice(index, end));
+      body = undefined;
+      index = end;
+      continue;
+    }
+    const child = children[index];
+    const next = pending === undefined ? body : pending;
+    if (next !== undefined && boundariesMayOverlap(next, firstSymbols(child), comparisons)) {
+      return true;
+    }
+    body = consumedSymbols(child);
+    pending = undefined;
+    index++;
+  }
+  return false;
+}
+
+/**
+ * The symbols that can start the element after `block` when a variable-width
+ * element with `body` before it takes a different amount of text. It either
+ * swallows a whole block word (then the next element starts with a body or
+ * block symbol), or takes part of one and the block shifts onto itself (then
+ * the next element starts with the shifted word's remaining symbol).
+ */
+function splitFrontier(body: RegexSymbol[] | null, block: RegexNode[]): RegexSymbol[] | null {
+  const words = fixedWords(
+    { kind: "sequence", children: block },
+    {
+      words: 0,
+      symbols: 0,
+      exceeded: false,
+    },
+  );
+  if (!body || !words) return null;
+  let comparisons = 0;
+  const overlaps = (left: RegexSymbol, right: RegexSymbol): boolean | null =>
+    ++comparisons > MAX_OPAQUE_COMPARISONS ? null : symbolsMayOverlap(left, right);
+  const frontier: RegexSymbol[] = [];
+  for (const word of words) {
+    let absorbed = 0;
+    for (; absorbed < word.length; absorbed++) {
+      let any = false;
+      for (const symbol of body) {
+        const result = overlaps(symbol, word[absorbed]);
+        if (result === null) return null;
+        if (result) {
+          any = true;
+          break;
+        }
+      }
+      if (!any) break;
+    }
+    if (absorbed === word.length) {
+      frontier.push(...body);
+      for (const other of words) if (other[0]) frontier.push(other[0]);
+    }
+    for (let shift = 1; shift <= absorbed && shift < word.length; shift++) {
+      for (const other of words) {
+        if (other.length !== word.length) return null;
+        let aligned = true;
+        for (let offset = 0; shift + offset < word.length && aligned; offset++) {
+          const result = overlaps(word[shift + offset], other[offset]);
+          if (result === null) return null;
+          aligned = result;
+        }
+        if (aligned) frontier.push(other[word.length - shift]);
+      }
+    }
+  }
+  return frontier;
+}
+
+/**
+ * Conservative split check for sequences with an optional variable-width
+ * element: a later element may start where an earlier one could have taken
+ * text, so carry every symbol each earlier element may still consume.
+ */
+function hasAmbiguousSplitWithOptionalElements(
+  children: RegexNode[],
+  comparisons: { count: number },
+): boolean {
   // Symbols each earlier variable-width element may still consume.
   let pending: Array<RegexSymbol[] | null> = [];
   for (const child of children) {

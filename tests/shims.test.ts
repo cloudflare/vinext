@@ -13525,6 +13525,14 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     // Repeated patterns that match each text one way.
     ["/:x(a|aa)*/end", { "/end": true, "/a/aa/end": true, "/aaa/end": false, "/b/end": false }],
     ["/:p(\\w+-\\w+)*", { "/": true, "/a-b/c-d": true, "/a-b-c": false, "/ab": false }],
+    [
+      "/:x(ab+|ac+)*/end",
+      { "/end": true, "/abb/acc/end": true, "/abc/end": false, "/a/end": false },
+    ],
+    [
+      "/:x(a+(?:ab|cd)c+)*/end",
+      { "/aabc/end": true, "/acdc/aaabcc/end": true, "/abc/end": false, "/aab/end": false },
+    ],
   ];
 
   for (const [source, expected] of cases) {
@@ -13629,6 +13637,7 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ["/:x(a|a)*/end", "can match the same text in more than one way", `/${"a/".repeat(30)}!`],
     ["/:x([a-z]+|new)*/end", "more than one way", `/${"new/".repeat(30)}!`],
     ["/:x([^/]+b[^/]+)*/end", "more than one way", `/${"abba/".repeat(30)}!`],
+    ["/:x((?=(?!.*Z)a)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
   ])("ignores %s as an unsafe source", async (source, reason, pathname) => {

@@ -102,7 +102,7 @@ for (const [matcher, nearMiss] of [
 }
 
 // A lookaround that scans unboundedly is re-run for every repetition.
-for (const matcher of ["/:x((?:(?=a*b)a)+b)", "/:x((?!.*c)[^/]+)*"]) {
+for (const matcher of ["/:x((?:(?=a*b)a)+b)", "/:x((?!.*c)[^/]+)*", "/:x((?=(?!.*Z)a)a)*/end"]) {
   if (!matchPattern(`/${"a".repeat(3_000)}!`, matcher)) {
     throw new Error(`Unsafe repeated lookaround did not fail closed: ${matcher}`);
   }
@@ -112,7 +112,12 @@ for (const matcher of ["/:x((?:(?=a*b)a)+b)", "/:x((?!.*c)[^/]+)*"]) {
 // repetition, so a chain of overlapping ones is still rejected. A branch with
 // two variable-width elements, such as `a*a*`, hides a second overlapping
 // boundary, so that alternation is not treated as one repetition.
-for (const pattern of ["(?:a*|b)".repeat(8) + "c", ".*(\\d+|x)\\d+", "^(?:a*a*|x)(?:a*a*|x)Z$"]) {
+for (const pattern of [
+  "(?:a*|b)".repeat(8) + "c",
+  ".*(\\d+|x)\\d+",
+  "^(?:a*a*|x)(?:a*a*|x)Z$",
+  "^(?:a+|x)(?:a+|x)Z$",
+]) {
   if (!analyzeRegexSafety(pattern, { ignoreCase: true })) {
     throw new Error(`Unsafe alternation sequence was accepted: ${pattern}`);
   }
@@ -141,6 +146,12 @@ for (const [matcher, match, nearMiss] of [
   ],
   ["/:x(a|a/b)*/end", `/${"a/b/a/".repeat(500)}end`, `/${"a/b/".repeat(1_000)}b!`],
   ["/:p(\\w+-\\w+)*/end", `/${"a-b/".repeat(1_000)}end`, `/${"a-b/".repeat(1_000)}a-!`],
+  ["/:x(ab+|ac+)*/end", `/${"abb/acc/".repeat(500)}end`, `/${"abb/acc/".repeat(500)}a!`],
+  [
+    "/:x(a+(?:ab|cd)c+)*/end",
+    `/${"aabc/acdcc/".repeat(500)}end`,
+    `/${"aabc/acdcc/".repeat(500)}aab!`,
+  ],
 ]) {
   if (!matchPattern(match, matcher)) {
     throw new Error(`Safe separated repeat did not match: ${matcher}`);
