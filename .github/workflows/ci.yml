@@ -149,7 +149,7 @@ jobs:
       # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
       # coverage data embedded in each shard's blob, producing a unified report.
       # Only enabled on push-to-main, matching the shard config above.
-      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
+      - run: vp test run --merge-reports=.vitest-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
         env:
           CI: true
       - name: Publish coverage matrix to job summary
