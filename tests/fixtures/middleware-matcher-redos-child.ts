@@ -117,6 +117,9 @@ for (const pattern of [
   ".*(\\d+|x)\\d+",
   "^(?:a*a*|x)(?:a*a*|x)Z$",
   "^(?:a+|x)(?:a+|x)Z$",
+  // Fixed text that the variable branch can consume does not end its boundary.
+  "^(?:a+|x)a(?:a+|x)a(?:a+|x)Z$",
+  "^a+aa+a(?:a+|x)Z$",
 ]) {
   if (!analyzeRegexSafety(pattern, { ignoreCase: true })) {
     throw new Error(`Unsafe alternation sequence was accepted: ${pattern}`);
@@ -151,6 +154,12 @@ for (const [matcher, match, nearMiss] of [
     "/:x(a+(?:ab|cd)c+)*/end",
     `/${"aabc/acdcc/".repeat(500)}end`,
     `/${"aabc/acdcc/".repeat(500)}aab!`,
+  ],
+  ["/:x(a+b|a+c)*/end", `/${"aab/ac/".repeat(500)}end`, `/${"aab/ac/".repeat(500)}a!`],
+  [
+    "/:x(x?a+(?:ab|cd)c+)*/end",
+    `/${"xaabc/acdcc/".repeat(500)}end`,
+    `/${"xaabc/acdcc/".repeat(500)}xaab!`,
   ],
 ]) {
   if (!matchPattern(match, matcher)) {

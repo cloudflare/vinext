@@ -13533,6 +13533,14 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       "/:x(a+(?:ab|cd)c+)*/end",
       { "/aabc/end": true, "/acdc/aaabcc/end": true, "/abc/end": false, "/aab/end": false },
     ],
+    [
+      "/:x(a+b|a+c)*/end",
+      { "/end": true, "/aab/ac/end": true, "/abc/end": false, "/a/end": false, "/b/end": false },
+    ],
+    [
+      "/:x(x?a+(?:ab|cd)c+)*/end",
+      { "/xaabc/end": true, "/acdc/aaabcc/end": true, "/xabc/end": false, "/xaab/end": false },
+    ],
   ];
 
   for (const [source, expected] of cases) {
@@ -13638,6 +13646,11 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ["/:x([a-z]+|new)*/end", "more than one way", `/${"new/".repeat(30)}!`],
     ["/:x([^/]+b[^/]+)*/end", "more than one way", `/${"abba/".repeat(30)}!`],
     ["/:x((?=(?!.*Z)a)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
+    [
+      "/:id((?:a+|x)a(?:a+|x)a(?:a+|x))/Z",
+      "overlapping sequential repetition",
+      `/${"a".repeat(40)}!`,
+    ],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
   ])("ignores %s as an unsafe source", async (source, reason, pathname) => {

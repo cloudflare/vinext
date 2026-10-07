@@ -899,6 +899,34 @@ function boundariesMayOverlap(
   return false;
 }
 
+type PendingBoundary = {
+  ends: RegexSymbol[] | null;
+  consumed: RegexSymbol[] | null;
+  repeatable: RegexSymbol[] | null;
+  alternation: boolean;
+};
+
+/** Symbols an unbounded repetition inside `node` can consume, or null if unknown. */
+function repeatableSymbols(node: RegexNode): RegexSymbol[] | null {
+  switch (node.kind) {
+    case "atom":
+    case "assertion":
+      return [];
+    case "repeat":
+      return node.max === Infinity ? consumedSymbols(node.child) : repeatableSymbols(node.child);
+    case "sequence":
+    case "alternation": {
+      const symbols: RegexSymbol[] = [];
+      for (const child of node.kind === "sequence" ? node.children : node.branches) {
+        const childSymbols = repeatableSymbols(child);
+        if (!childSymbols) return null;
+        symbols.push(...childSymbols);
+      }
+      return symbols;
+    }
+  }
+}
+
 function findSequenceIssue(
   node: Extract<RegexNode, { kind: "sequence" }>,
 ): RegexSafetyIssue | null {
@@ -906,10 +934,15 @@ function findSequenceIssue(
     return "ambiguous sequence expansion";
   }
 
-  let pendingRepetitionEnds: Array<RegexSymbol[] | null> = [];
-  // Whether each pending entry is an unbounded alternation (see below).
-  let pendingAlternations: boolean[] = [];
+  let pending: PendingBoundary[] = [];
+  // Earlier elements whose unbounded repetition may also have consumed the
+  // fixed text since, so their variable boundary is still open. Repetitions
+  // keep the established rule (a fixed element resets them), but an unbounded
+  // alternation may not overlap any of these: `(?:a+|x)a(?:a+|x)` still fails
+  // closed.
+  let carried: PendingBoundary[] = [];
   const comparisons = { count: 0 };
+  const carriedComparisons = { count: 0 };
   let overlappingBoundaryCount = 0;
   for (const child of node.children) {
     const alternation = child.kind !== "repeat";
@@ -919,8 +952,17 @@ function findSequenceIssue(
         : isUnboundedAlternation(child);
     if (variableRepetition) {
       const starts = firstSymbols(child);
-      const overlapping = pendingRepetitionEnds.map((ends) =>
-        boundariesMayOverlap(ends, starts, comparisons),
+      if (
+        carried.some(
+          (boundary) =>
+            (alternation || boundary.alternation) &&
+            boundariesMayOverlap(boundary.consumed, starts, carriedComparisons),
+        )
+      ) {
+        return "overlapping sequential repetition";
+      }
+      const overlapping = pending.map((boundary) =>
+        boundariesMayOverlap(boundary.ends, starts, comparisons),
       );
       const overlappingBoundaries = overlapping.filter(Boolean).length;
       // An unbounded alternation is only accepted where no neighbouring
@@ -928,7 +970,7 @@ function findSequenceIssue(
       if (
         overlappingBoundaries > 0 &&
         (alternation ||
-          overlapping.some((overlaps, index) => overlaps && pendingAlternations[index]))
+          overlapping.some((overlaps, index) => overlaps && pending[index].alternation))
       ) {
         return "overlapping sequential repetition";
       }
@@ -944,14 +986,24 @@ function findSequenceIssue(
       if (overlappingBoundaryCount > MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES) {
         return "overlapping sequential repetition";
       }
-      const ends = lastSymbols(child);
-      pendingRepetitionEnds = isNullable(child) ? [...pendingRepetitionEnds, ends] : [ends];
-      pendingAlternations = isNullable(child)
-        ? [...pendingAlternations, alternation]
-        : [alternation];
+      const boundary = {
+        ends: lastSymbols(child),
+        consumed: consumedSymbols(child),
+        repeatable: repeatableSymbols(child),
+        alternation,
+      };
+      if (isNullable(child)) {
+        pending = [...pending, boundary];
+      } else {
+        pending = [boundary];
+        carried = [];
+      }
     } else if (!isNullable(child)) {
-      pendingRepetitionEnds = [];
-      pendingAlternations = [];
+      const symbols = consumedSymbols(child);
+      carried = [...carried, ...pending].filter((boundary) =>
+        boundariesMayOverlap(boundary.repeatable, symbols, carriedComparisons),
+      );
+      pending = [];
       overlappingBoundaryCount = 0;
     }
   }
@@ -1112,6 +1164,41 @@ function consumedSymbols(node: RegexNode): RegexSymbol[] | null {
   }
 }
 
+/** Whether two parsed elements are structurally identical. */
+function sameNode(left: RegexNode, right: RegexNode): boolean {
+  switch (left.kind) {
+    case "atom":
+      return (
+        right.kind === "atom" &&
+        left.fixedWidth === right.fixedWidth &&
+        left.symbol !== null &&
+        left.symbol.key === right.symbol?.key
+      );
+    case "assertion":
+      // Lookaheads and lookbehinds share this node shape.
+      return false;
+    case "repeat":
+      return (
+        right.kind === "repeat" &&
+        left.min === right.min &&
+        left.max === right.max &&
+        sameNode(left.child, right.child)
+      );
+    case "sequence":
+      return (
+        right.kind === "sequence" &&
+        left.children.length === right.children.length &&
+        left.children.every((child, index) => sameNode(child, right.children[index]))
+      );
+    case "alternation":
+      return (
+        right.kind === "alternation" &&
+        left.branches.length === right.branches.length &&
+        left.branches.every((branch, index) => sameNode(branch, right.branches[index]))
+      );
+  }
+}
+
 /** Whether two alternatives may both match some text. */
 function branchesMayShareText(
   left: RegexNode,
@@ -1134,25 +1221,49 @@ function branchesMayShareText(
     }
     return false;
   }
-  // Shared text must agree symbol by symbol, so walk the single-symbol prefix
-  // both alternatives start with (`ab+` and `ac+` differ after `a`), then
-  // compare the first symbols of what remains.
+  // Shared text must agree symbol by symbol, so walk the prefix both
+  // alternatives start with (`ab+` and `ac+` differ after `a`), then compare
+  // the first symbols of what remains.
   const leftItems = left.kind === "sequence" ? left.children : [left];
   const rightItems = right.kind === "sequence" ? right.children : [right];
   let index = 0;
   for (; index < leftItems.length && index < rightItems.length; index++) {
     const leftItem = leftItems[index];
     const rightItem = rightItems[index];
-    if (leftItem.kind !== "atom" || !leftItem.symbol || !leftItem.fixedWidth) break;
-    if (rightItem.kind !== "atom" || !rightItem.symbol || !rightItem.fixedWidth) break;
-    if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return true;
-    if (!symbolsMayOverlap(leftItem.symbol, rightItem.symbol)) return false;
+    if (
+      leftItem.kind === "atom" &&
+      leftItem.symbol &&
+      leftItem.fixedWidth &&
+      rightItem.kind === "atom" &&
+      rightItem.symbol &&
+      rightItem.fixedWidth
+    ) {
+      if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return true;
+      if (!symbolsMayOverlap(leftItem.symbol, rightItem.symbol)) return false;
+      continue;
+    }
+    // An identical element (`a+` in `a+b|a+c`) takes the same text in both
+    // when neither remainder can start with a symbol it consumes: it must
+    // stop where the remainder begins.
+    if (!sameNode(leftItem, rightItem)) break;
+    const leftAfter: RegexNode = { kind: "sequence", children: leftItems.slice(index + 1) };
+    const rightAfter: RegexNode = { kind: "sequence", children: rightItems.slice(index + 1) };
+    if (isNullable(leftAfter) || isNullable(rightAfter)) break;
+    const consumed = consumedSymbols(leftItem);
+    if (
+      boundariesMayOverlap(consumed, firstSymbols(leftAfter), comparisons) ||
+      boundariesMayOverlap(consumed, firstSymbols(rightAfter), comparisons)
+    ) {
+      break;
+    }
   }
   const leftRest: RegexNode = { kind: "sequence", children: leftItems.slice(index) };
   const rightRest: RegexNode = { kind: "sequence", children: rightItems.slice(index) };
   if (isNullable(leftRest) && isNullable(rightRest)) return true;
   return boundariesMayOverlap(firstSymbols(leftRest), firstSymbols(rightRest), comparisons);
 }
+
+const MAX_OPTIONAL_SPLIT_ELEMENTS = 8;
 
 /**
  * Whether a sequence may split some text between its elements in more than one
@@ -1161,31 +1272,35 @@ function branchesMayShareText(
  * element it cannot start into (the `-` in `\w+-\w+`) fixes the split.
  */
 function hasAmbiguousSplit(children: RegexNode[], comparisons: { count: number }): boolean {
-  if (children.some((child) => exactWidth(child) === null && isNullable(child))) {
-    return hasAmbiguousSplitWithOptionalElements(children, comparisons);
-  }
-  // Symbols the next variable-width element must not start with: the body of
-  // the previous one, or the split frontier through the fixed block between.
-  let pending: RegexSymbol[] | null | undefined;
-  let body: RegexSymbol[] | null | undefined;
-  let index = 0;
-  while (index < children.length) {
-    if (exactWidth(children[index]) !== null) {
-      let end = index + 1;
-      while (end < children.length && exactWidth(children[end]) !== null) end++;
-      pending = body === undefined ? undefined : splitFrontier(body, children.slice(index, end));
-      body = undefined;
-      index = end;
+  // Earlier variable-width elements the next one may directly follow: the
+  // previous one, and those before it when only optional elements are
+  // between. Each keeps the fixed elements since, to compute the split
+  // frontier through them.
+  let pending: Array<{ body: RegexSymbol[] | null; block: RegexNode[] }> = [];
+  for (const child of children) {
+    const width = exactWidth(child);
+    if (width === 0) continue;
+    if (width !== null) {
+      for (const entry of pending) entry.block.push(child);
       continue;
     }
-    const child = children[index];
-    const next = pending === undefined ? body : pending;
-    if (next !== undefined && boundariesMayOverlap(next, firstSymbols(child), comparisons)) {
-      return true;
+    const starts = firstSymbols(child);
+    for (const earlier of pending) {
+      const next =
+        earlier.block.length === 0 ? earlier.body : splitFrontier(earlier.body, earlier.block);
+      if (boundariesMayOverlap(next, starts, comparisons)) return true;
     }
-    body = consumedSymbols(child);
-    pending = undefined;
-    index++;
+    const entry: { body: RegexSymbol[] | null; block: RegexNode[] } = {
+      body: consumedSymbols(child),
+      block: [],
+    };
+    if (!isNullable(child)) {
+      pending = [entry];
+    } else if (pending.length < MAX_OPTIONAL_SPLIT_ELEMENTS) {
+      pending = [...pending, entry];
+    } else {
+      return hasAmbiguousSplitWithOptionalElements(children, comparisons);
+    }
   }
   return false;
 }
