@@ -195,6 +195,7 @@ export default {
     "ps",
     "taskkill",
     "eslint",
+    "oxlint",
     "gh",
     "jq",
   ],
