@@ -361,6 +361,16 @@ describe("render dynamic latch", () => {
     describe("an unstable_cache background refresh", () => {
       // Serves every unstable_cache entry stale, so each call schedules a refresh.
       class StaleUnstableCacheHandler extends MemoryCacheHandler {
+        readonly refreshedBodies: string[] = [];
+
+        override async set(...args: Parameters<MemoryCacheHandler["set"]>) {
+          const [key, data] = args;
+          if (key.startsWith("unstable_cache:") && data?.kind === "FETCH") {
+            this.refreshedBodies.push(data.data.body);
+          }
+          return super.set(...args);
+        }
+
         override async get(key: string, ctx?: Record<string, unknown>) {
           if (!key.startsWith("unstable_cache:")) return super.get(key, ctx);
           return {
@@ -377,7 +387,8 @@ describe("render dynamic latch", () => {
       }
 
       const runScenario = async (scenario: (refreshes: Promise<unknown>[]) => Promise<void>) => {
-        setCacheHandler(new StaleUnstableCacheHandler());
+        const handler = new StaleUnstableCacheHandler();
+        setCacheHandler(handler);
         try {
           const refreshes: Promise<unknown>[] = [];
           const context = createRequestContext({
@@ -385,6 +396,8 @@ describe("render dynamic latch", () => {
             unstableCacheRevalidation: "background",
           });
           await runWithRequestContext(context, () => scenario(refreshes));
+          // The refresh ran to completion and stored its result.
+          expect(handler.refreshedBodies).toEqual([JSON.stringify({ v: "short" })]);
         } finally {
           setCacheHandler(new MemoryCacheHandler());
         }
