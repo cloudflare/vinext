@@ -567,6 +567,13 @@ async function downloadGoogleFont(
     throw new GoogleFontsHttpError(cssUrl, cssResponse.status, body);
   }
   let css = await cssResponse.text();
+  // `ok` is also true for a bodyless 204. Caching an empty stylesheet would
+  // be trusted by every later build (and shadow an earlier version's cache),
+  // so treat it like a failed fetch: the caller falls back and the next
+  // build retries.
+  if (!css.trim()) {
+    throw new Error(`Google Fonts returned an empty stylesheet: ${cssUrl}`);
+  }
 
   // Extract all font file URLs
   const urlRe = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g;

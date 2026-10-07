@@ -1586,6 +1586,48 @@ describe("fetchAndCacheFont", () => {
       },
     );
 
+    const emptyStylesheets = [
+      ["an empty 200", 200],
+      ["a bodyless 204", 204],
+    ] as const;
+
+    function serveEmptyStylesheet(status: number) {
+      server.use(
+        http.get(
+          "https://fonts.googleapis.com/*",
+          () => new HttpResponse(status === 204 ? null : "", { status }),
+        ),
+      );
+    }
+
+    it.each(emptyStylesheets)("is not written when Google returns %s", async (_label, status) => {
+      serveEmptyStylesheet(status);
+
+      const result = await transformWithFreshPlugin();
+
+      expect(result.code).not.toContain("selfHostedCSS");
+      const cachedStylesheets = fs.existsSync(cacheDir)
+        ? fs
+            .readdirSync(cacheDir, { recursive: true })
+            .filter((file) => String(file).endsWith("style.v2.css"))
+        : [];
+      expect(cachedStylesheets).toEqual([]);
+    });
+
+    it.each(emptyStylesheets)(
+      "keeps the earlier-version fallback when Google returns %s",
+      async (_label, status) => {
+        const fontDirName = await populateCache();
+        writeLegacyCache(fontDirName, toSlash(cacheDir));
+        serveEmptyStylesheet(status);
+
+        const result = await transformWithFreshPlugin();
+
+        expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
+        expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(false);
+      },
+    );
+
     it.skipIf(process.platform === "win32")(
       "still self-hosts when the stylesheet cannot be cached",
       async () => {
