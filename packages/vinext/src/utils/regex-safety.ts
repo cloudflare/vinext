@@ -692,6 +692,22 @@ function hasPrefixFreeFiniteLanguage(node: RegexNode): {
   return { safe: true, budgetExceeded: false, wordCount: words.length };
 }
 
+/**
+ * An alternation such as `(\d+|new)`, where every branch without a finite
+ * word set has an unbounded repetition. Sequence analysis treats it like a
+ * variable repetition with the alternation's first and last symbols.
+ */
+function isUnboundedAlternation(node: RegexNode): boolean {
+  if (node.kind !== "alternation") return false;
+  let unbounded = false;
+  for (const branch of node.branches) {
+    if (fixedWords(branch, { words: 0, symbols: 0, exceeded: false })) continue;
+    if (!containsUnboundedRepetition(branch)) return false;
+    unbounded = true;
+  }
+  return unbounded;
+}
+
 function ambiguousExpansionFactor(node: RegexNode): number {
   switch (node.kind) {
     case "atom":
@@ -702,9 +718,9 @@ function ambiguousExpansionFactor(node: RegexNode): number {
       if (result.safe) return 1;
       if (result.budgetExceeded) return MAX_SEQUENCE_EXPANSIONS + 1;
       if (result.wordCount > 0) return result.wordCount;
-      // A branch with an unbounded repetition has no finite word set. Count
-      // each branch's own paths; findSequenceIssue() checks the branch's
-      // variable width against its neighbours like a variable repetition.
+      if (!isUnboundedAlternation(node)) return MAX_SEQUENCE_EXPANSIONS + 1;
+      // Count each branch's own paths; findSequenceIssue() checks the
+      // unbounded branch's variable width against its neighbours.
       let factor = 0;
       for (const branch of node.branches) {
         factor += ambiguousExpansionFactor(branch);
@@ -838,8 +854,7 @@ function findSequenceIssue(
     const variableRepetition =
       child.kind === "repeat"
         ? child.min !== child.max || !Number.isFinite(child.max)
-        : child.kind === "alternation" &&
-          fixedWords(child, { words: 0, symbols: 0, exceeded: false }) === null;
+        : isUnboundedAlternation(child);
     if (variableRepetition) {
       const starts = firstSymbols(child);
       const overlappingBoundaries = pendingRepetitionEnds.filter((ends) =>
