@@ -30,14 +30,15 @@ function readMarker(page: Page): Promise<unknown> {
 const VARIANTS = [
   // Page redirect() (the issue's reproduction). Static and full-prefetched
   // dynamic pages are replayed from the prefetch cache; an auto prefetch of a
-  // dynamic page is fetched again on click, as Next.js does not prefetch
-  // dynamic page data on auto.
+  // dynamic page is fetched again by the click or its hover prefetch, as
+  // Next.js does not prefetch dynamic page data on auto.
   { name: "static", refetchesOnClick: false },
   { name: "dynamic", refetchesOnClick: false },
   { name: "dynamic-auto", refetchesOnClick: true },
   // Layout redirect(). A static layout redirect and a full prefetch replay the
   // prefetched redirect; a layout that read cookies() bounds an auto prefetch
-  // by `staleTimes.dynamic` (0 by default), so the click fetches it again.
+  // by `staleTimes.dynamic` (0 by default), so the click or its hover
+  // prefetch fetches it again.
   { name: "layout-redirect", refetchesOnClick: false },
   { name: "layout-guard-full", refetchesOnClick: false },
   { name: "layout-guard", refetchesOnClick: true },
