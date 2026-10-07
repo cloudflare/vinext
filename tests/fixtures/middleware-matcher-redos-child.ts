@@ -92,6 +92,9 @@ for (const [matcher, nearMiss] of [
   ["/:x(a|b|a/b)*/end", `/${"a/b/".repeat(1_000)}!`],
   // An astral separator is two UTF-16 code units, as the RegExp sees it.
   ["/{😀:x(a|😀a|a😀)}*/end", `/${"😀a".repeat(1_000)}!`],
+  // Ambiguity inside the pattern is multiplied by every occurrence.
+  ["/:x(a|a)*/end", `/${"a/".repeat(1_500)}!`],
+  ["/:x([^/]+b[^/]+)*/end", `/${"abba/".repeat(1_000)}!`],
 ]) {
   if (!matchPattern(nearMiss, matcher)) {
     throw new Error(`Unsafe separated repeat did not fail closed: ${matcher}`);
@@ -137,6 +140,7 @@ for (const [matcher, match, nearMiss] of [
     `/${"foo/bar/baz/".repeat(500)}foo!`,
   ],
   ["/:x(a|a/b)*/end", `/${"a/b/a/".repeat(500)}end`, `/${"a/b/".repeat(1_000)}b!`],
+  ["/:p(\\w+-\\w+)*/end", `/${"a-b/".repeat(1_000)}end`, `/${"a-b/".repeat(1_000)}a-!`],
 ]) {
   if (!matchPattern(match, matcher)) {
     throw new Error(`Safe separated repeat did not match: ${matcher}`);

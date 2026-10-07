@@ -250,6 +250,9 @@ function unsafeTokenReason(token: MiddlewarePathKey): string | null {
   if (repetitionIssue === "unbounded lookaround") {
     return `repeated parameter "${token.name}" contains a lookaround with unbounded repetition`;
   }
+  if (repetitionIssue === "ambiguous pattern") {
+    return `repeated parameter "${token.name}" can match the same text in more than one way`;
+  }
   if (repetitionIssue) {
     return `repeated parameter "${token.name}" exceeds the regex analysis budget`;
   }

@@ -1044,7 +1044,117 @@ function fixedSeparatorCount(node: RegexNode, separator: RegexSymbol): number | 
 export type SeparatedRepetitionIssue =
   | "unbounded lookaround"
   | "separator overlap"
+  | "ambiguous pattern"
   | "analysis budget exceeded";
+
+/** Every symbol `node` can consume, or null when one is unknown. */
+function consumedSymbols(node: RegexNode): RegexSymbol[] | null {
+  switch (node.kind) {
+    case "atom":
+      return node.symbol ? [node.symbol] : null;
+    case "assertion":
+      return [];
+    case "repeat":
+      return consumedSymbols(node.child);
+    case "sequence":
+    case "alternation": {
+      const symbols: RegexSymbol[] = [];
+      for (const child of node.kind === "sequence" ? node.children : node.branches) {
+        const childSymbols = consumedSymbols(child);
+        if (!childSymbols) return null;
+        symbols.push(...childSymbols);
+      }
+      return symbols;
+    }
+  }
+}
+
+/** Whether two alternatives may both match some text. */
+function branchesMayShareText(
+  left: RegexNode,
+  right: RegexNode,
+  comparisons: { count: number },
+): boolean {
+  const leftWords = fixedWords(left, { words: 0, symbols: 0, exceeded: false });
+  const rightWords = fixedWords(right, { words: 0, symbols: 0, exceeded: false });
+  if (leftWords && rightWords) {
+    for (const leftWord of leftWords) {
+      for (const rightWord of rightWords) {
+        if (leftWord.length !== rightWord.length) continue;
+        let shared = true;
+        for (let index = 0; index < leftWord.length && shared; index++) {
+          if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return true;
+          shared = symbolsMayOverlap(leftWord[index], rightWord[index]);
+        }
+        if (shared) return true;
+      }
+    }
+    return false;
+  }
+  // Shared non-empty text starts with a symbol both alternatives can start with.
+  if (isNullable(left) && isNullable(right)) return true;
+  return boundariesMayOverlap(firstSymbols(left), firstSymbols(right), comparisons);
+}
+
+/**
+ * Whether a sequence may split some text between its elements in more than one
+ * way. A variable-width element followed by others can only take text from
+ * the next element if it can consume that element's first symbol, so a fixed
+ * element it cannot start into (the `-` in `\w+-\w+`) fixes the split.
+ */
+function hasAmbiguousSplit(children: RegexNode[], comparisons: { count: number }): boolean {
+  // Symbols each earlier variable-width element may still consume.
+  let pending: Array<RegexSymbol[] | null> = [];
+  for (const child of children) {
+    const width = exactWidth(child);
+    if (width === 0) continue;
+    const starts = firstSymbols(child);
+    if (width !== null) {
+      const symbols = consumedSymbols(child);
+      pending = pending
+        .filter((body) => boundariesMayOverlap(body, starts, comparisons))
+        .map((body) => (body && symbols ? [...body, ...symbols] : null));
+      continue;
+    }
+    if (pending.some((body) => boundariesMayOverlap(body, starts, comparisons))) return true;
+    const body = consumedSymbols(child);
+    pending = isNullable(child) ? [...pending, body] : [body];
+  }
+  return false;
+}
+
+/**
+ * Conservative check that every text `node` matches has one parse. A repeated
+ * param multiplies any ambiguity in its pattern by every occurrence, so
+ * `(a|a)` or `[^/]+b[^/]+` repeated backtracks exponentially. Repetitions are
+ * already limited by analyzeRegexSafety() to fixed-width or prefix-free
+ * children, which repeat unambiguously.
+ */
+function isUnambiguous(node: RegexNode, comparisons: { count: number }): boolean {
+  switch (node.kind) {
+    case "atom":
+    case "assertion":
+      return true;
+    case "repeat":
+      return isUnambiguous(node.child, comparisons);
+    case "alternation": {
+      if (!node.branches.every((branch) => isUnambiguous(branch, comparisons))) return false;
+      for (let left = 0; left < node.branches.length; left++) {
+        for (let right = left + 1; right < node.branches.length; right++) {
+          if (branchesMayShareText(node.branches[left], node.branches[right], comparisons)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    case "sequence":
+      return (
+        node.children.every((child) => isUnambiguous(child, comparisons)) &&
+        !hasAmbiguousSplit(node.children, comparisons)
+      );
+  }
+}
 
 const MAX_DECODING_COMPARISONS = 65_536;
 
@@ -1118,6 +1228,9 @@ function hasUnambiguousSeparatedWords(
  * occurrences, as path-to-regexp compiles `:name*` and `:name+`:
  * `P(?:separator P)*`. The pattern itself is checked by analyzeRegexSafety.
  *
+ * Any ambiguity in the pattern is multiplied by every occurrence, so the
+ * pattern must match each text one way.
+ *
  * The repetition has a single partition of its input if every occurrence has
  * the same width, if every match of the pattern contains the separator's
  * first character the same number of times, or if the pattern is a finite set
@@ -1138,6 +1251,7 @@ export function analyzeSeparatedRepetitionSafety(
   if (parser.exceededBudget || parser.index < pattern.length) return "analysis budget exceeded";
   const separatorSymbol = separator ? literalSymbol(separator[0], ignoreCase) : undefined;
   if (containsUnboundedLookaround(node, separatorSymbol)) return "unbounded lookaround";
+  if (!isUnambiguous(node, { count: 0 })) return "ambiguous pattern";
   if (
     separatorSymbol &&
     exactWidth(node) === null &&
