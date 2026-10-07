@@ -1045,16 +1045,83 @@ export type SeparatedRepetitionIssue =
   | "separator overlap"
   | "analysis budget exceeded";
 
+const MAX_DECODING_COMPARISONS = 65_536;
+
+/**
+ * Sardinas–Patterson test: whether every concatenation of `codewords` has a
+ * single factorization. Dangling suffixes are tracked as (codeword, offset)
+ * positions, so the work is bounded by the total codeword length. Symbols are
+ * compared with symbolsMayOverlap(), which only errs towards ambiguity.
+ */
+function isUniquelyDecodable(codewords: RegexSymbol[][]): boolean {
+  const seen = new Set<string>();
+  const queue: Array<[number, number]> = [];
+  let comparisons = 0;
+
+  // Compares the rest of codewords[word] from `offset` with `candidate`.
+  // Returns false if both may match the same text (an empty dangling suffix)
+  // or the budget runs out; otherwise queues any new dangling suffix.
+  const compare = (word: number, offset: number, candidate: number): boolean => {
+    const rest = codewords[word].length - offset;
+    const other = codewords[candidate];
+    const length = Math.min(rest, other.length);
+    for (let index = 0; index < length; index++) {
+      if (++comparisons > MAX_DECODING_COMPARISONS) return false;
+      if (!symbolsMayOverlap(codewords[word][offset + index], other[index])) return true;
+    }
+    if (rest === other.length) return false;
+    const next: [number, number] =
+      rest > other.length ? [word, offset + other.length] : [candidate, rest];
+    const key = `${next[0]}:${next[1]}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      queue.push(next);
+    }
+    return true;
+  };
+
+  for (let word = 0; word < codewords.length; word++) {
+    for (let candidate = word + 1; candidate < codewords.length; candidate++) {
+      if (!compare(word, 0, candidate)) return false;
+    }
+  }
+  for (let index = 0; index < queue.length; index++) {
+    const [word, offset] = queue[index];
+    for (let candidate = 0; candidate < codewords.length; candidate++) {
+      if (!compare(word, offset, candidate)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether a finite pattern such as `foo/bar|baz`, repeated as
+ * `P(?:separator P)*`, splits every input one way: the words with the
+ * separator in front must form a uniquely decodable code.
+ */
+function hasUnambiguousSeparatedWords(
+  node: RegexNode,
+  separator: string,
+  ignoreCase: boolean,
+): boolean {
+  if (hasPrefixFreeFiniteLanguage(node).safe) return true;
+  const words = fixedWords(node, { words: 0, symbols: 0, exceeded: false });
+  if (!words) return false;
+  const prefix = Array.from(separator, (character) => literalSymbol(character, ignoreCase));
+  return isUniquelyDecodable(words.map((word) => [...prefix, ...word]));
+}
+
 /**
  * Check a pattern that is repeated with a literal separator between
  * occurrences, as path-to-regexp compiles `:name*` and `:name+`:
  * `P(?:separator P)*`. The pattern itself is checked by analyzeRegexSafety.
  *
  * The repetition has a single partition of its input if every occurrence has
- * the same width, or if every match of the pattern contains the separator's
- * first character the same number of times. Otherwise a pattern such as `a+`
- * with separator `a`, or `a/a|a` with separator `/`, splits the same text many
- * ways and backtracks exponentially.
+ * the same width, if every match of the pattern contains the separator's
+ * first character the same number of times, or if the pattern is a finite set
+ * of words such as `foo/bar|baz` that the separator splits one way. Otherwise
+ * a pattern such as `a+` with separator `a`, or `a/a|a` with separator `/`,
+ * splits the same text many ways and backtracks exponentially.
  */
 export function analyzeSeparatedRepetitionSafety(
   pattern: string,
@@ -1071,7 +1138,8 @@ export function analyzeSeparatedRepetitionSafety(
   if (
     separatorSymbol &&
     exactWidth(node) === null &&
-    fixedSeparatorCount(node, separatorSymbol) === null
+    fixedSeparatorCount(node, separatorSymbol) === null &&
+    !hasUnambiguousSeparatedWords(node, separator, ignoreCase)
   ) {
     return "separator overlap";
   }

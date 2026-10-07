@@ -318,6 +318,85 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
 }
 
 /**
+ * Convert a Next.js header/rewrite/redirect source pattern into a regex string.
+ *
+ * Regex groups in the source (e.g. `(\d+)`) are extracted first, the remaining
+ * text is escaped/converted in a **single pass** (avoiding chained `.replace()`
+ * which CodeQL flags as incomplete sanitization), then groups are restored.
+ *
+ * @deprecated No longer used by `matchHeaders`, which now compiles header
+ * sources like `next build`. This conversion does not match Next.js semantics
+ * (`/:path*` misses `/`, and nested groups are split at the first `)`). Kept
+ * only for compatibility with existing imports; it will be removed in a future
+ * major release.
+ */
+export function escapeHeaderSource(source: string): string {
+  // Sentinel character for group placeholders. Uses a Unicode private-use-area
+  // codepoint that will never appear in real source patterns.
+  const S = "\uE000";
+
+  // Step 1: extract regex groups and replace with numbered placeholders.
+  const groups: string[] = [];
+  const withPlaceholders = source.replace(/\(([^)]+)\)/g, (_m, inner) => {
+    groups.push(inner);
+    return `${S}G${groups.length - 1}${S}`;
+  });
+
+  // Step 2: single-pass conversion of the placeholder-bearing string.
+  // Match named params (:[\w-]+), sentinel group placeholders, metacharacters, and literal text.
+  // The regex uses non-overlapping alternatives to avoid backtracking:
+  //   :[\w-]+  — named parameter (constraint sentinel is checked procedurally;
+  //              param names may contain hyphens, e.g. :auth-method)
+  //   sentinel group — standalone regex group placeholder
+  //   [.+?*] — single metachar to escape/convert
+  //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
+  let result = "";
+  const re = new RegExp(
+    `${S}G(\\d+)${S}|:[\\w-]+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
+    "g",
+  );
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(withPlaceholders)) !== null) {
+    if (m[1] !== undefined) {
+      // Standalone regex group — restore as-is
+      result += `(${groups[Number(m[1])]})`;
+    } else if (m[0].startsWith(":")) {
+      // Named parameter — check if followed by a constraint group placeholder
+      const afterParam = withPlaceholders.slice(re.lastIndex);
+      const constraintMatch = afterParam.match(new RegExp(`^${S}G(\\d+)${S}`));
+      if (constraintMatch) {
+        // :param(constraint) — use the constraint as the capture group
+        re.lastIndex += constraintMatch[0].length;
+        result += `(${groups[Number(constraintMatch[1])]})`;
+      } else {
+        // Plain named parameter → match one segment
+        result += "[^/]+";
+      }
+    } else {
+      switch (m[0]) {
+        case ".":
+          result += "\\.";
+          break;
+        case "+":
+          result += "\\+";
+          break;
+        case "?":
+          result += "\\?";
+          break;
+        case "*":
+          result += ".*";
+          break;
+        default:
+          result += m[0];
+          break;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * basePath gating state passed alongside the pathname to every matcher.
  *
  * Rewrites/redirects/headers run with default `basePath: true` semantics in

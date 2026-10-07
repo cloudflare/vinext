@@ -86,6 +86,7 @@ for (const [matcher, nearMiss] of [
   ["/{a:x(a+)}*/end", `/${"a".repeat(3_000)}!`],
   ["/:x(a/a|a)*/end", `/${"a/".repeat(1_500)}a!`],
   ["/{:x-}*/end", `/${"a-".repeat(1_500)}a!`],
+  ["/:x(a|b|a/b)*/end", `/${"a/b/".repeat(1_000)}!`],
 ]) {
   if (!matchPattern(nearMiss, matcher)) {
     throw new Error(`Unsafe separated repeat did not fail closed: ${matcher}`);
@@ -119,11 +120,18 @@ for (const pattern of [
   if (issue) throw new Error(`Safe pattern was rejected: ${pattern} (${issue})`);
 }
 
-// A lookaround that cannot match the separator stops at the next one, and a
-// fixed-width param splits its input one way even if it matches the separator.
+// A lookaround that cannot match the separator stops at the next one, a
+// fixed-width param splits its input one way even if it matches the separator,
+// and so do finite alternatives that the separator decodes uniquely.
 for (const [matcher, match, nearMiss] of [
   ["/:x((?![^/]*foo)[^/]+)*", `/${"a/".repeat(1_500)}a`, `/${"a/".repeat(1_500)}afoo`],
   ["/{a:x([ab])}*/end", `/${"ab".repeat(1_500)}/end`, `/${"ab".repeat(1_500)}a/end`],
+  [
+    "/:x(foo/bar|baz)*/end",
+    `/${"foo/bar/baz/".repeat(500)}end`,
+    `/${"foo/bar/baz/".repeat(500)}foo!`,
+  ],
+  ["/:x(a|a/b)*/end", `/${"a/b/a/".repeat(500)}end`, `/${"a/b/".repeat(1_000)}b!`],
 ]) {
   if (!matchPattern(match, matcher)) {
     throw new Error(`Safe separated repeat did not match: ${matcher}`);

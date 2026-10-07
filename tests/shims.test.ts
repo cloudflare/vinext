@@ -13419,6 +13419,56 @@ describe("safeRegExp", () => {
   });
 });
 
+// escapeHeaderSource is deprecated and no longer used by matchHeaders, but it
+// stays exported from vinext/config/config-matchers for compatibility.
+describe("escapeHeaderSource (deprecated)", () => {
+  it("passes through literal paths unchanged", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/api/users")).toBe("/api/users");
+  });
+
+  it("escapes dots", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/file.txt")).toBe("/file\\.txt");
+  });
+
+  it("converts named param to [^/]+", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/user/:id")).toBe("/user/[^/]+");
+  });
+
+  it("converts glob * to .*", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/api/*")).toBe("/api/.*");
+  });
+
+  it("escapes + and ?", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/path+query")).toBe("/path\\+query");
+    expect(escapeHeaderSource("/maybe?")).toBe("/maybe\\?");
+  });
+
+  it("handles constrained param :param(constraint)", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/api/:version(\\d+)/users")).toBe("/api/(\\d+)/users");
+  });
+
+  it("handles constrained param with alternation", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/:lang(en|fr)/page")).toBe("/(en|fr)/page");
+  });
+
+  it("preserves standalone regex groups", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/api/(v1|v2)/users")).toBe("/api/(v1|v2)/users");
+  });
+
+  it("handles multiple groups and params", async () => {
+    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(escapeHeaderSource("/:lang(en|fr)/:id(\\d+)/page")).toBe("/(en|fr)/(\\d+)/page");
+  });
+});
+
 describe("matchHeaders source compilation (Next.js parity)", () => {
   // Expectations come from `next build`'s compiler for header sources:
   // buildCustomRoute("header", { source }) in next/dist/lib/build-custom-route.js
@@ -13466,6 +13516,12 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       "/{a:x([ab])}*/end",
       { "/ab/end": true, "/abab/end": true, "/aaab/end": true, "/aba/end": false },
     ],
+    // Alternatives with different numbers of separators still split one way.
+    [
+      "/:x(foo/bar|baz)*/end",
+      { "/end": true, "/baz/foo/bar/baz/end": true, "/foo/end": false, "/bar/end": false },
+    ],
+    ["/:x(a|a/b)*/end", { "/a/b/a/end": true, "/b/end": false, "/a/b/b/end": false }],
   ];
 
   for (const [source, expected] of cases) {
@@ -13564,6 +13620,7 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ["/{a:x(a+)}*/end", `may match its separator "a"`, `/${"a".repeat(48)}!`],
     ["/{:x-}*", `may match its separator "-"`, `/${"a-".repeat(30)}a`],
     ["/:x(a/a|a)*/end", `may match its separator "/"`, `/${"a/".repeat(40)}a!`],
+    ["/:x(a|b|a/b)*/end", `may match its separator "/"`, `/${"a/b/".repeat(30)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
   ])("ignores %s as an unsafe source", async (source, reason, pathname) => {
