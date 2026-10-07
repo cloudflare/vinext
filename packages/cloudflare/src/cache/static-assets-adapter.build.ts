@@ -58,14 +58,20 @@ function writeCacheAsset(
   const id = cacheAssetId(key);
   const extension = kind;
   const policy = cacheControl(route);
+  // A page's special error that escaped the shell keeps its status on the RSC
+  // entry too, and a redirect its location, as runtime ISR stores it.
+  const headers =
+    kind !== "rsc"
+      ? route.headers
+      : route.responseStatus !== undefined && route.headers?.location !== undefined
+        ? { location: route.headers.location }
+        : undefined;
   const metadata: StaticAssetCacheMetadata = {
     kind,
     lastModified: fs.statSync(sourcePath).mtimeMs,
     ...(policy ? { cacheControl: policy } : {}),
-    ...(kind !== "rsc" && route.headers ? { headers: route.headers } : {}),
-    ...(kind !== "rsc" && route.responseStatus !== undefined
-      ? { status: route.responseStatus }
-      : {}),
+    ...(headers ? { headers } : {}),
+    ...(route.responseStatus !== undefined ? { status: route.responseStatus } : {}),
   };
 
   fs.mkdirSync(outputDir, { recursive: true });

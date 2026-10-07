@@ -152,6 +152,11 @@ export async function seedMemoryCacheFromPrerender(
     // prerender so revalidatePath()/revalidateTag() can invalidate the seeded
     // page artifact, not only its nested data-cache entries (#1486).
     const tags = buildAppPageCacheTags(cachePathname, route.tags ?? []);
+    // A page's special error that escaped the shell is seeded with its status
+    // on both entries, and a redirect with its location, as runtime ISR stores it.
+    const status = route.responseStatus;
+    const location = route.headers?.location;
+    const rscHeaders = status !== undefined && location !== undefined ? { location } : undefined;
 
     if (
       await seedHtml(
@@ -161,6 +166,7 @@ export async function seedMemoryCacheFromPrerender(
         artifactPathname,
         trailingSlash,
         route.headers,
+        status,
         revalidateSeconds,
         expireSeconds,
         staleSeconds,
@@ -172,6 +178,8 @@ export async function seedMemoryCacheFromPrerender(
         prerenderDir,
         rscKey,
         artifactPathname,
+        rscHeaders,
+        status,
         revalidateSeconds,
         expireSeconds,
         staleSeconds,
@@ -232,6 +240,7 @@ async function seedHtml(
   pathname: string,
   trailingSlash: boolean,
   headers: Record<string, string | string[]> | undefined,
+  status: number | undefined,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
@@ -247,7 +256,7 @@ async function seedHtml(
     rscData: undefined,
     headers,
     postponed: undefined,
-    status: undefined,
+    status,
   };
 
   await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds, staleSeconds, tags });
@@ -264,6 +273,8 @@ async function seedRsc(
   prerenderDir: string,
   key: string,
   pathname: string,
+  headers: Record<string, string | string[]> | undefined,
+  status: number | undefined,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
@@ -281,9 +292,9 @@ async function seedRsc(
       rscBuffer.byteOffset,
       rscBuffer.byteOffset + rscBuffer.byteLength,
     ),
-    headers: undefined,
+    headers,
     postponed: undefined,
-    status: undefined,
+    status,
   };
 
   await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds, staleSeconds, tags });

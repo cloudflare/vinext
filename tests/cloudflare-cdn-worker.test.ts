@@ -481,6 +481,94 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("public, max-age=300");
   });
 
+  it.each<{ name: string; headers: Record<string, string> }>([
+    { name: "a deployment warm-up", headers: { "User-Agent": "vinext-cloudflare-cdn-warm" } },
+    { name: "an ETag revalidation", headers: { "If-None-Match": 'W/"stored"' } },
+    {
+      name: "a Last-Modified revalidation",
+      headers: { "If-Modified-Since": "Tue, 06 Oct 2026 00:00:00 GMT" },
+    },
+  ])("renders an App page document whole for $name", async ({ headers }) => {
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    await createEntrypoint(
+      responseStageInvocation({ kind: "app-page", isRscRequest: false }),
+    ).fetch(new Request("https://example.com/page", { headers }));
+
+    expect(stages.response.mock.calls[0]?.[5]).toEqual({
+      cache: "shared",
+      renderWholeDocument: true,
+    });
+  });
+
+  it.each<{ name: string; props: Record<string, unknown>; headers: Record<string, string> }>([
+    {
+      name: "a browser request for an App page document",
+      props: { kind: "app-page", isRscRequest: false },
+      headers: {},
+    },
+    {
+      name: "a warm-up of an App page RSC payload",
+      props: { kind: "app-page", isRscRequest: true },
+      headers: { "User-Agent": "vinext-cloudflare-cdn-warm" },
+    },
+    {
+      name: "a revalidation of a route handler",
+      props: { kind: "app-route-handler" },
+      headers: { "If-None-Match": 'W/"stored"' },
+    },
+  ])("streams $name", async ({ props, headers }) => {
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    await createEntrypoint(responseStageInvocation(props)).fetch(
+      new Request("https://example.com/page", { headers }),
+    );
+
+    expect(stages.response.mock.calls[0]?.[5]).toEqual({ cache: "shared" });
+  });
+
+  it("gives a cacheable App page document a Last-Modified validator", async () => {
+    stages.response.mockResolvedValue(
+      new Response("rendered", {
+        headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+      }),
+    );
+
+    const response = await createEntrypoint(
+      responseStageInvocation({ kind: "app-page", isRscRequest: false }),
+    ).fetch(new Request("https://example.com/page"));
+
+    const lastModified = response.headers.get("Last-Modified");
+    expect(lastModified).not.toBeNull();
+    expect(Number.isNaN(Date.parse(lastModified!))).toBe(false);
+  });
+
+  it.each<{ name: string; props: Record<string, unknown>; headers: Record<string, string> }>([
+    {
+      name: "an uncacheable document",
+      props: { kind: "app-page", isRscRequest: false },
+      headers: { "Cache-Control": "private, no-store" },
+    },
+    {
+      name: "a document with its own validator",
+      props: { kind: "app-page", isRscRequest: false },
+      headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300", ETag: '"page"' },
+    },
+    {
+      name: "an RSC payload",
+      props: { kind: "app-page", isRscRequest: true },
+      headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+    },
+  ])("adds no Last-Modified to $name", async ({ props, headers }) => {
+    stages.response.mockResolvedValue(new Response("rendered", { headers }));
+
+    const response = await createEntrypoint(responseStageInvocation(props)).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.headers.get("Last-Modified")).toBeNull();
+  });
+
   it("rejects an expected build identity when the named stage has no identity", async () => {
     const response = await createEntrypoint({
       ...responseStageInvocation({ kind: "app-page" }),

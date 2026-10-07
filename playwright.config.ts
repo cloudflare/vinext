@@ -60,6 +60,7 @@ const projectServers = {
     testMatch: [
       "app-router/isr.spec.ts",
       "app-router/metadata-react-cache.spec.ts",
+      "app-router-prod/special-error-navigation.spec.ts",
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
     ],

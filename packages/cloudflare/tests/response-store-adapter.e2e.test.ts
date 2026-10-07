@@ -10,6 +10,8 @@ import {
   type Request as MiniflareRequest,
 } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { createRscRequestUrl } from "vinext/internal/server/app-rsc-cache-busting";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "vinext/internal/server/headers";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const appOutput = path.join(root, "examples/response-store-demo/dist/server");
@@ -443,6 +445,55 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  // Next.js stores a page's notFound() with its 404 and answers a Link's
+  // segment prefetch of it with a 200, so the router renders the fallback
+  // without loading the document. The prefetch shares the navigation's entry.
+  test("sends a stored notFound() page's RSC entry to a Link's segment prefetch as a 200", async () => {
+    const pathname = "/special-error/not-found";
+    const navigationHeaders = { Accept: "text/x-component", RSC: "1" };
+    // A client navigation's URL, whose cache identity the prefetch shares.
+    const miss = await request(`${pathname}?_rsc`, { headers: navigationHeaders });
+    await miss.arrayBuffer();
+    await waitForResponseEntries(pathname, 1);
+
+    const navigation = await request(`${pathname}?_rsc`, { headers: navigationHeaders });
+    assert.equal(navigation.status, 404);
+    assert.equal(navigation.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(navigation.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER), null);
+    assert.match(await navigation.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
+
+    const prefetchHeaders = new Headers({
+      ...navigationHeaders,
+      "Next-Router-Prefetch": "1",
+      "Next-Router-Segment-Prefetch": "/__PAGE__",
+    });
+    const prefetch = await request(await createRscRequestUrl(pathname, prefetchHeaders), {
+      headers: Object.fromEntries(prefetchHeaders),
+    });
+    assert.equal(prefetch.status, 200);
+    assert.equal(prefetch.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(prefetch.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER), null);
+    assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
+  });
+
+  // An html-limited bot blocks on metadata, so generateMetadata()'s notFound()
+  // rejects the shell. As in Next.js, its 404 is stored and served to every
+  // user agent.
+  test("stores the 404 an html-limited bot gets from generateMetadata()'s notFound()", async () => {
+    const pathname = "/special-error/metadata-not-found";
+    const miss = await request(pathname, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+    });
+    assert.equal(miss.status, 404);
+    await miss.arrayBuffer();
+    await waitForResponseEntries(pathname, 1);
+
+    const hit = await request(pathname);
+    assert.equal(hit.status, 404);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    await hit.arrayBuffer();
+  });
+
   test("serves a request without a query from the entries a canary query filled", async () => {
     const pathname = "/static-default";
     const canary = crypto.randomUUID();
@@ -502,8 +553,14 @@ describe("Cloudflare Workers Response Store adapter", () => {
     for (const response of [first, second, rsc]) {
       assert.equal(response.status, 200);
       assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    // The HTML shell waits for the page, so its cookies() read comes first.
+    for (const response of [first, second]) {
       assert.match(response.headers.get("cache-control") ?? "", /no-store/);
     }
+    // The RSC response streams before the page reads cookies(), so it carries
+    // the pending policy, which is no-store like Next.js's dynamic render.
+    assert.equal(rsc.headers.get("cache-control"), "no-store, must-revalidate");
     // The dynamic page, rendered per request.
     assert.notEqual(
       htmlValue(firstBody, "generated-cookies-render-id"),
@@ -871,6 +928,44 @@ describe("Cloudflare Workers Response Store adapter", () => {
     });
     assert.equal(repairedRsc.headers.get("x-vinext-cache"), "HIT");
     await repairedRsc.body?.cancel();
+  });
+
+  // Next.js renders a static page whole, so its streamed metadata is in <head>.
+  // vinext does so for a render no client waits on: a warm-up or regeneration.
+  test("puts generated metadata in <head> for a warm-up and a regeneration", async () => {
+    const titleIn = (html: string, id: string) => {
+      const index = html.indexOf(`<title>Metadata head ${id}</title>`);
+      assert.ok(index > -1, `missing the title for ${id}`);
+      return index < html.indexOf("</head>") ? "head" : "body";
+    };
+
+    const warmId = crypto.randomUUID();
+    const warmed = await request(`/metadata-head/${warmId}`, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    assert.equal(warmed.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(titleIn(await warmed.text(), warmId), "head");
+    const warmedHit = await cacheStatus(`/metadata-head/${warmId}`);
+    assert.equal(warmedHit.status, "HIT");
+    assert.equal(titleIn(warmedHit.body, warmId), "head");
+
+    const id = crypto.randomUUID();
+    const miss = await cacheStatus(`/metadata-head/${id}`);
+    assert.equal(miss.status, "MISS");
+    assert.equal(titleIn(miss.body, id), "body");
+    const storedTimestamp = htmlValue(miss.body, "timestamp");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await cacheStatus(`/metadata-head/${id}`);
+    assert.equal(htmlValue(stale.body, "timestamp"), storedTimestamp);
+    let regenerated = stale;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      regenerated = await cacheStatus(`/metadata-head/${id}`);
+      if (htmlValue(regenerated.body, "timestamp") !== storedTimestamp) break;
+    }
+    assert.notEqual(htmlValue(regenerated.body, "timestamp"), storedTimestamp);
+    assert.equal(titleIn(regenerated.body, id), "head");
   });
 
   test("publishes non-App-page warmups before returning", async () => {

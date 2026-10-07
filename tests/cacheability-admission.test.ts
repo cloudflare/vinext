@@ -20,6 +20,7 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { finalizeAppPageCacheabilityEvaluationResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import type { AppPageRenderObservationState } from "../packages/vinext/src/server/app-page-render-observation.js";
@@ -447,6 +448,111 @@ describe("single-request cacheability admission", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=30");
     await expect(response.text()).resolves.toBe("static");
+  });
+
+  describe("an App page RSC render whose special error rejected its shell", () => {
+    // Next.js sends a buffered ISR entry with its stored status, so a completed
+    // RSC response takes the status its render resolved, with the redirect's
+    // `location`.
+    const rscRequest = new Request("https://example.com/page", {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+
+    function rscAdmissionContext(
+      outcome: NonNullable<ReturnType<typeof cacheabilityState>["outcome"]>,
+    ) {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        rscRequest,
+        null,
+        "build-a",
+        true,
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      state.outcome = outcome;
+      return { context, state };
+    }
+
+    const rscResponse = () =>
+      new Response("flight-with-digest", {
+        headers: { "Cache-Control": "no-store, must-revalidate" },
+      });
+
+    // The request stage sends a marked status to a Link's segment prefetch as
+    // a 200, as Next.js does.
+    it.each([401, 403, 404])("sends a completed render with its %s, marked", async (status) => {
+      const { context } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        searchParamsUnread: true,
+        status,
+      });
+
+      const response = await finalizeWorkerCacheabilityResponse(rscResponse(), context);
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(String(status));
+      expect(response.headers.get("Cache-Control")).toBe(
+        "s-maxage=60, stale-while-revalidate=31535940",
+      );
+      await expect(response.text()).resolves.toBe("flight-with-digest");
+    });
+
+    it("sends a completed redirect() render as a 200 with its location", async () => {
+      const { context } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        headers: { location: "/target" },
+        searchParamsUnread: true,
+        status: 200,
+      });
+
+      const response = await finalizeWorkerCacheabilityResponse(rscResponse(), context);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Location")).toBe("/target");
+      expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+      await expect(response.text()).resolves.toBe("flight-with-digest");
+    });
+
+    // As on a fresh render or an ISR replay, middleware's Location wins.
+    it("keeps middleware's Location over a completed redirect() render's", async () => {
+      const { context } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        headers: { location: "/target" },
+        searchParamsUnread: true,
+        status: 200,
+      });
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("flight-with-digest", {
+          headers: { "Cache-Control": "no-store, must-revalidate", Location: "/middleware" },
+        }),
+        context,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Location")).toBe("/middleware");
+    });
+
+    it("keeps the streamed status when the response could not be captured", async () => {
+      const { context, state } = rscAdmissionContext({
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=31535940",
+        searchParamsUnread: true,
+        status: 404,
+      });
+      state.captureBudget = createCacheabilityAdmissionCaptureBudget(3);
+
+      const response = await finalizeWorkerCacheabilityResponse(rscResponse(), context);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cache-Control")).toContain("no-store");
+      expect(response.headers.has(VINEXT_SPECIAL_ERROR_STATUS_HEADER)).toBe(false);
+      await expect(response.text()).resolves.toBe("flight-with-digest");
+    });
   });
 
   it("keeps a completed dynamic response private without a build manifest", async () => {

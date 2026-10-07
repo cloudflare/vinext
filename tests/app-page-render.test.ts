@@ -47,7 +47,11 @@ import {
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
 import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
-import type { ExecutionContextLike } from "../packages/vinext/src/shims/request-context.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+  type PrerenderSpecialErrorMarker,
+} from "../packages/vinext/src/shims/request-context.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -220,7 +224,6 @@ function createCommonOptions() {
         return null;
       },
       handlerStart: 10,
-      hasLoadingBoundary: false,
       isDynamicError: false,
       isDraftMode: false,
       isForceDynamic: false,
@@ -245,9 +248,6 @@ function createCommonOptions() {
       navigationParams: { slug: "post" },
       params: { slug: "post" },
       probeLayoutAt() {
-        return null;
-      },
-      probePage() {
         return null;
       },
       revalidateSeconds: null,
@@ -464,40 +464,64 @@ describe("form state rendering", () => {
 });
 
 describe("app page render lifecycle", () => {
-  it("returns pre-render special responses before starting the render stream", async () => {
+  it("returns layout special responses before starting the render stream", async () => {
     const common = createCommonOptions();
 
     const response = await renderAppPageLifecycle({
       ...common.options,
       isRscRequest: true,
-      probePage() {
+      layoutCount: 1,
+      probeLayoutAt() {
         throw { digest: "NEXT_NOT_FOUND" };
       },
     });
 
     expect(response.status).toBe(404);
-    await expect(response.text()).resolves.toBe("page:404");
+    await expect(response.text()).resolves.toBe("layout:404");
     expect(common.renderToReadableStream).not.toHaveBeenCalled();
-    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
+    expect(common.renderLayoutSpecialError).toHaveBeenCalledTimes(1);
   });
 
-  it("does not run the page probe before normal HTML rendering", async () => {
+  it("streams an RSC page's notFound() as part of the Flight payload", async () => {
     const common = createCommonOptions();
-    const probePage = vi.fn(() => {
-      throw new Error("page probe should not execute for HTML");
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      renderToReadableStream(_element, opts) {
+        opts.onError(notFoundError, null, null);
+        return createStream(["flight-with-digest"]);
+      },
+    });
+
+    // As in Next.js, the client router renders the not-found boundary from the digest.
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("flight-with-digest");
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+  });
+
+  it("stores an RSC render whose page called redirect(), as Next.js does", async () => {
+    const common = createCommonOptions();
+    const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/target;307;",
     });
 
     const response = await renderAppPageLifecycle({
       ...common.options,
-      isRscRequest: false,
-      probePage,
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream(_element, opts) {
+        opts.onError(redirectError, null, null);
+        return createStream(["flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
     });
 
-    expect(probePage).not.toHaveBeenCalled();
-    expect(common.renderToReadableStream).toHaveBeenCalledTimes(1);
-    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
     expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenCalledOnce();
   });
 
   it("streams lazy HTML while pending dynamic usage determines the cache write", async () => {
@@ -548,14 +572,16 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("recovers HTML page special errors from the real render when the page probe is skipped", async () => {
+  // A Suspense boundary, such as a loading.tsx, caught the page's notFound()
+  // before the shell finished, so the shell rendered. Next.js streams that
+  // document as a 200 with the digest, in dev as in production.
+  it("streams a special error a Suspense boundary caught as the page's 200 document", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
     let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
 
     const response = await renderAppPageLifecycle({
       ...common.options,
-      hasLoadingBoundary: false,
       isRscRequest: false,
       loadSsrHandler: async () => ({
         async handleSsr() {
@@ -563,21 +589,15 @@ describe("app page render lifecycle", () => {
           return createStream(["<html>fallback</html>"]);
         },
       }),
-      probePage() {
-        throw new Error("page probe should not execute for HTML");
-      },
       renderToReadableStream(_element, opts) {
         capturedOnError = opts.onError;
         return createStream(["flight-data"]);
       },
     });
 
-    expect(response.status).toBe(404);
-    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
-    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
-      kind: "http-access-fallback",
-      statusCode: 404,
-    });
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("<html>fallback</html>");
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
 
   it("returns RSC responses and schedules an ISR cache write through waitUntil", async () => {
@@ -953,7 +973,8 @@ describe("app page render lifecycle", () => {
       isRscRequest: true,
       isProduction: true,
       isStaticEligible: false,
-      probePage() {
+      layoutCount: 1,
+      probeLayoutAt() {
         throw { digest: "NEXT_NOT_FOUND" };
       },
     });
@@ -1153,9 +1174,9 @@ describe("app page render lifecycle", () => {
   });
 
   it("never stores a candidate render that latched dynamic outside its own scope", async () => {
-    // A dynamic API in an isolated scope (the layout probe) or in SSR opens the
-    // useSearchParams() gate with the real query, but never reaches the
-    // render's own dynamic flag.
+    // A dynamic API in an isolated scope or in SSR opens the useSearchParams()
+    // gate with the real query, but never reaches the render's own dynamic
+    // flag.
     const common = createCommonOptions();
     await runWithHeadersContext(
       headersContextFromRequest(new Request("https://example.test/posts/post?q=secret")),
@@ -1178,6 +1199,66 @@ describe("app page render lifecycle", () => {
         await response.text();
         await Promise.all(common.waitUntilPromises);
         expect(common.isrSet).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it("stores a render whose layout probe alone used a dynamic API", async () => {
+    // The probe calls layouts outside React's render, where a value a layout
+    // stores through cache() is missing, so a component can fall back to a
+    // dynamic API the render never calls (#3671). Only the render counts.
+    const common = createCommonOptions();
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/posts/post")),
+      async () => {
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage,
+          isCacheCandidate: true,
+          isProduction: true,
+          layoutCount: 1,
+          peekDynamicUsage,
+          probeLayoutAt() {
+            markDynamicUsage();
+            markRenderRequestApiUsage("headers");
+            return null;
+          },
+          revalidateSeconds: 30,
+        });
+
+        expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+        await response.text();
+        await Promise.all(common.waitUntilPromises);
+        expect(common.isrSet).toHaveBeenCalledTimes(2);
+        expect(peekDynamicUsage()).toBe(false);
+      },
+    );
+  });
+
+  it("classifies a layout probe's special-error response by the probe's dynamic usage", async () => {
+    // The render never runs, so the probe is the only evidence.
+    const common = createCommonOptions();
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/posts/post")),
+      async () => {
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage,
+          isProduction: true,
+          layoutCount: 1,
+          peekDynamicUsage,
+          probeLayoutAt() {
+            markDynamicUsage();
+            throw { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+          },
+          revalidateSeconds: 30,
+        });
+
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        expect(common.renderToReadableStream).not.toHaveBeenCalled();
       },
     );
   });
@@ -2499,7 +2580,8 @@ describe("app page render lifecycle", () => {
     expect(response.status).toBe(200);
   });
 
-  it("captures special errors thrown during the full prerender SSR pass and converts them to 307/404 response", async () => {
+  // As in Next.js, whose prerender writes such a page with a 200.
+  it("prerenders a special error a Suspense boundary caught as the page's 200 document", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
     let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
@@ -2507,7 +2589,6 @@ describe("app page render lifecycle", () => {
     const response = await renderAppPageLifecycle({
       ...common.options,
       isPrerender: true,
-      hasLoadingBoundary: true,
       loadSsrHandler: async () => ({
         async handleSsr(_rscStream, _navContext, _fontData, _options) {
           // Trigger the captured onError callback representing a component throw
@@ -2527,11 +2608,833 @@ describe("app page render lifecycle", () => {
       },
     });
 
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("<html>fallback</html>");
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+  });
+});
+
+describe("ISR storage of a page's special error", () => {
+  // Next.js stores the render of a special error that escapes the shell under
+  // the route's own key: the fallback or redirect document with its status and
+  // `location`, and the page's RSC payload carrying the digest.
+  const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+    digest: "NEXT_REDIRECT;replace;/target;307;",
+  });
+
+  function shellRejectingSsrHandler(error: unknown) {
+    return async () => ({
+      async handleSsr(
+        _rscStream: ReadableStream<Uint8Array>,
+        _navContext: unknown,
+        _fontData: unknown,
+        options?: {
+          sideStream?: ReadableStream<Uint8Array>;
+          capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+        },
+      ): Promise<ReadableStream<Uint8Array>> {
+        if (options?.capturedRscDataRef && options.sideStream) {
+          options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+        }
+        throw error;
+      },
+    });
+  }
+
+  function readStoredEntries(isrSet: ReturnType<typeof createCommonOptions>["isrSet"]) {
+    return Object.fromEntries(
+      isrSet.mock.calls.map(([key, value, policy]) => [
+        key,
+        {
+          headers: value.headers,
+          html: value.html,
+          policy,
+          rsc: value.rscData ? new TextDecoder().decode(value.rscData) : undefined,
+          status: value.status,
+        },
+      ]),
+    );
+  }
+
+  it("stores a page's notFound() that rejects the shell with its status", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+    });
+
     expect(response.status).toBe(404);
-    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
-    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
-      kind: "http-access-fallback",
-      statusCode: 404,
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("page:404");
+    await Promise.all(common.waitUntilPromises);
+
+    const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
+    expect(readStoredEntries(common.isrSet)).toEqual({
+      "html:/posts/post": { html: "page:404", policy, status: 404 },
+      "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
+    });
+  });
+
+  it("stores a page's redirect() that rejects the shell with its status and location", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(redirectError),
+      renderPageSpecialError: async (specialError) =>
+        new Response(null, {
+          headers: { Location: "/target" },
+          status: specialError.statusCode,
+        }),
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/target");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("");
+    await Promise.all(common.waitUntilPromises);
+
+    const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
+    const headers = { location: "/target" };
+    expect(readStoredEntries(common.isrSet)).toEqual({
+      "html:/posts/post": { headers, html: "", policy, status: 307 },
+      "rsc:/posts/post": { headers, html: "", policy, rsc: "page-flight-with-digest", status: 307 },
+    });
+  });
+
+  // As in Next.js's build, a prerender writes the special error that escaped
+  // the shell with its status and location. The render records it on the
+  // prerender server's ctx, which marks the response for prerender.ts, with
+  // the redirect's own location, not the one middleware merged into it.
+  const recordPrerenderSpecialErrors = async (render: () => Promise<Response>) => {
+    const markers: PrerenderSpecialErrorMarker[] = [];
+    const ctx: ExecutionContextLike = {
+      recordPrerenderSpecialError: (marker) => markers.push(marker),
+      waitUntil() {},
+    };
+    return { markers, response: await runWithExecutionContext(ctx, render) };
+  };
+
+  it.each([
+    { name: "notFound()", error: notFoundError, status: 404, headers: {}, body: "page:404" },
+    {
+      name: "redirect()",
+      error: redirectError,
+      status: 307,
+      headers: { location: "/target" },
+      body: "",
+    },
+  ])(
+    "prerenders a page's $name that rejects the shell with its status",
+    async ({ error, status, headers, body }) => {
+      const common = createCommonOptions();
+
+      const { markers, response } = await recordPrerenderSpecialErrors(() =>
+        renderAppPageLifecycle({
+          ...common.options,
+          isPrerender: true,
+          isProduction: true,
+          loadSsrHandler: shellRejectingSsrHandler(error),
+          renderPageSpecialError: async (specialError) =>
+            new Response(
+              specialError.kind === "redirect" ? null : `page:${specialError.statusCode}`,
+              {
+                headers: { Location: "/middleware-location" },
+                status: specialError.statusCode,
+              },
+            ),
+          renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+          revalidateSeconds: 60,
+        }),
+      );
+
+      expect(response.status).toBe(status);
+      expect(markers).toEqual([{ headers, status }]);
+      expect(response.headers.get("cache-control")).toContain("s-maxage=60");
+      expect(response.headers.get(NEXT_CACHE_TAGS_HEADER)).toBe("_N_T_/posts/post");
+      await expect(response.text()).resolves.toBe(body);
+      await Promise.all(common.waitUntilPromises);
+      expect(common.isrSet).not.toHaveBeenCalled();
+    },
+  );
+
+  // The boundary renders as its document streams, so its tagged fetches and
+  // cacheLife() are known only once the document has been read.
+  it("prerenders a notFound() boundary's tags and cacheLife", async () => {
+    const common = createCommonOptions();
+    const tags = ["_N_T_/posts/post"];
+    let requestCacheLife: { revalidate: number } | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getPageTags: () => [...tags],
+      getRequestCacheLife: () => requestCacheLife,
+      isPrerender: true,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      peekRequestCacheLife: () => requestCacheLife,
+      renderPageSpecialError: async (specialError) =>
+        new Response(
+          new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                tags.push("boundary-tag");
+                requestCacheLife = { revalidate: 30 };
+                controller.enqueue(new TextEncoder().encode("page:404"));
+                controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+          { status: specialError.statusCode },
+        ),
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get(NEXT_CACHE_TAGS_HEADER)).toBe("_N_T_/posts/post,boundary-tag");
+    expect(response.headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe('{"revalidate":30}');
+    await expect(response.text()).resolves.toBe("page:404");
+  });
+
+  it("doesn't mark a special error from a speculative prerender", async () => {
+    const common = createCommonOptions();
+
+    const { markers, response } = await recordPrerenderSpecialErrors(() =>
+      renderAppPageLifecycle({
+        ...common.options,
+        isPrerender: true,
+        isProduction: true,
+        isSpeculativePrerender: true,
+        loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(markers).toEqual([]);
+    await response.text();
+  });
+
+  it("prerenders a special error whose page reads a dynamic API after its shell rejected as no-store", async () => {
+    const common = createCommonOptions();
+    let dynamicUsed = false;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: () => dynamicUsed,
+      isPrerender: true,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      peekDynamicUsage: () => dynamicUsed,
+      renderToReadableStream: () =>
+        lateFlightStream(() => {
+          dynamicUsed = true;
+        }),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await response.text();
+  });
+
+  // Below a loading boundary the shell renders, so Next.js streams and stores
+  // a 200 document with the digest, and the page's RSC payload beside it.
+  it("stores a special error a Suspense boundary caught before the shell as a 200", async () => {
+    const common = createCommonOptions();
+    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        // The SSR handler captures the page's Flight payload for the store.
+        async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
+          capturedOnError?.(notFoundError, null, null);
+          if (ssrOptions?.capturedRscDataRef && ssrOptions.sideStream) {
+            ssrOptions.capturedRscDataRef.value = new Response(ssrOptions.sideStream).arrayBuffer();
+          }
+          return {
+            htmlStream: createStream(["<html>loading</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: ssrOptions?.capturedRscDataRef?.value ?? null,
+          };
+        },
+      }),
+      renderToReadableStream(_element, opts) {
+        capturedOnError = opts.onError;
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("<html>loading</html>");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+    const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
+    expect(readStoredEntries(common.isrSet)).toEqual({
+      "html:/posts/post": { html: "<html>loading</html>", policy, status: 200 },
+      "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 200 },
+    });
+  });
+
+  it("streams a special error a Suspense boundary caught on a force-dynamic page as a 200", async () => {
+    const common = createCommonOptions();
+    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isForceDynamic: true,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          capturedOnError?.(redirectError, null, null);
+          return createStream(["<html>loading</html>"]);
+        },
+      }),
+      renderToReadableStream(_element, opts) {
+        capturedOnError = opts.onError;
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await expect(response.text()).resolves.toBe("<html>loading</html>");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("does not store a special error from a force-dynamic page", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isForceDynamic: true,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("does not store a special error from a render that used a dynamic API", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: () => true,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      peekDynamicUsage: () => true,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("renders the special-error document as a cache candidate", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isCacheCandidate: true,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      revalidateSeconds: 60,
+    });
+    await response.text();
+
+    expect(common.renderPageSpecialError).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 404 }),
+      { isCacheCandidate: true },
+    );
+  });
+
+  // A root layout's `<Suspense><Session /></Suspense>` doing
+  // `await fetch(); await cookies()` reads cookies() after the page's shell
+  // rejected, and after a redirect's response cleared the request context.
+  function lateFlightStream(onLateRead: () => void) {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("page-flight-with-digest"));
+        setTimeout(() => {
+          onLateRead();
+          controller.close();
+        }, 5);
+      },
+    });
+  }
+
+  it("does not store a redirect whose page reads a dynamic API after its shell rejected", async () => {
+    const common = createCommonOptions();
+    let requestContextCleared = false;
+    let dynamicUsed = false;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: () => dynamicUsed,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(redirectError),
+      peekDynamicUsage: () => dynamicUsed,
+      renderPageSpecialError: async (specialError) => {
+        requestContextCleared = true;
+        return new Response(null, {
+          headers: { Location: "/target" },
+          status: specialError.statusCode,
+        });
+      },
+      renderToReadableStream: () =>
+        lateFlightStream(() => {
+          // Without a request context, cookies() rejects instead.
+          if (!requestContextCleared) dynamicUsed = true;
+        }),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(dynamicUsed).toBe(true);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("stores the fetch tags and cacheLife the page resolves after its shell rejected", async () => {
+    const common = createCommonOptions();
+    let flightEnded = false;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getPageTags: () => (flightEnded ? ["_N_T_/posts/post", "late"] : ["_N_T_/posts/post"]),
+      getRequestCacheLife: () => (flightEnded ? { revalidate: 30 } : null),
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      renderToReadableStream: () =>
+        lateFlightStream(() => {
+          flightEnded = true;
+        }),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(404);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    const policy = { cacheControl: { revalidate: 30 }, tags: ["_N_T_/posts/post", "late"] };
+    expect(readStoredEntries(common.isrSet)).toEqual({
+      "html:/posts/post": { html: "page:404", policy, status: 404 },
+      "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
+    });
+  });
+
+  it("sends a special error that SSR alone made dynamic as uncacheable", async () => {
+    // SSR's child scope reaches only the render's dynamic latch, which the
+    // early policy doesn't read.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: () => true,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      peekDynamicUsage: () => false,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it('stores the empty location of a redirect("")', async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(
+        Object.assign(new Error("NEXT_REDIRECT"), { digest: "NEXT_REDIRECT;replace;;307;" }),
+      ),
+      renderPageSpecialError: async (specialError) =>
+        new Response(null, { headers: { Location: "" }, status: specialError.statusCode }),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(307);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["html:/posts/post", { location: "" }],
+      ["rsc:/posts/post", { location: "" }],
+    ]);
+  });
+
+  it("stores only the renderer's Link when middleware also sets one", async () => {
+    const common = createCommonOptions();
+    const frameworkLink = "</font.woff2>; rel=preload";
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      middlewareContext: { headers: new Headers({ link: "</mw.css>; rel=preload" }), status: null },
+      renderPageSpecialError: async (specialError) => {
+        // The fallback merges middleware's Link before the renderer's.
+        const fallback = new Response("page:404", {
+          headers: { link: `</mw.css>; rel=preload, ${frameworkLink}` },
+          status: specialError.statusCode,
+        });
+        markFrameworkLinkHeaders(fallback.headers, frameworkLink);
+        return fallback;
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("link")).toBe(`</mw.css>; rel=preload, ${frameworkLink}`);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["html:/posts/post", { link: frameworkLink }],
+      ["rsc:/posts/post", undefined],
+    ]);
+  });
+
+  it("stores the redirect's own location, not middleware's", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      basePath: "/base",
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(redirectError),
+      middlewareContext: { headers: new Headers({ location: "/from-middleware" }), status: null },
+      // Middleware's headers merge after the redirect's own Location.
+      renderPageSpecialError: async (specialError) =>
+        new Response(null, {
+          headers: { Location: "/from-middleware" },
+          status: specialError.statusCode,
+        }),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("location")).toBe("/from-middleware");
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["html:/posts/post", { location: "/base/target" }],
+      ["rsc:/posts/post", { location: "/base/target" }],
+    ]);
+  });
+
+  it("stores generateMetadata()'s special error that rejects the shell with its status", async () => {
+    // As in Next.js, an html-limited bot blocks on metadata, so the error
+    // rejects the shell, and the render is stored as a 404 for everyone.
+    const common = createCommonOptions();
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const metadataNotFoundError = Object.assign(new Error(digest), {
+      digest,
+      [Symbol.for("vinext.appPage.metadataError")]: true,
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      // The shell rejects with SSR's copy of the error, decoded from its
+      // Flight digest, without the server-side metadata marker.
+      loadSsrHandler: shellRejectingSsrHandler(Object.assign(new Error(digest), { digest })),
+      renderToReadableStream(_element, { onError }) {
+        onError(metadataNotFoundError, undefined, undefined);
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.status])).toEqual([
+      ["html:/posts/post", 404],
+      ["rsc:/posts/post", 404],
+    ]);
+  });
+
+  it("keeps the request context for the page's render after generateMetadata()'s redirect", async () => {
+    const common = createCommonOptions();
+    const digest = "NEXT_REDIRECT;replace;/target;307;";
+    let requestContextCleared = false;
+    let lateReadSawContext: boolean | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(Object.assign(new Error(digest), { digest })),
+      renderPageSpecialError: async (specialError) => {
+        // The special-error response clears the request context.
+        requestContextCleared = true;
+        return new Response(null, {
+          headers: { Location: "/target" },
+          status: specialError.statusCode,
+        });
+      },
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(digest), {
+            digest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        // A sibling server component reads headers() after the shell rejected.
+        return lateFlightStream(() => {
+          lateReadSawContext = !requestContextCleared;
+        });
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(307);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(lateReadSawContext).toBe(true);
+    // As in Next.js, it's stored like the page's redirect.
+    expect(common.isrSet.mock.calls.map(([key, value]) => [key, value.status])).toEqual([
+      ["html:/posts/post", 307],
+      ["rsc:/posts/post", 307],
+    ]);
+  });
+
+  it("does not store a response the boundary replaced", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: shellRejectingSsrHandler(notFoundError),
+      renderPageSpecialError: async () => new Response("boundary failed", { status: 500 }),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  describe("on an RSC request", () => {
+    // Next.js renders HTML beside RSC for an ISR entry, so an RSC-first miss
+    // stores the status its document's shell gives it, as an HTML miss does.
+    // vinext renders that shell from the captured payload.
+    async function renderRscMiss(options: {
+      flightError: unknown;
+      handleSsr: (...args: unknown[]) => Promise<ReadableStream<Uint8Array>>;
+      isForceStatic?: boolean;
+    }) {
+      const common = createCommonOptions();
+      const handleSsr = vi.fn(options.handleSsr);
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isForceStatic: options.isForceStatic ?? false,
+        isProduction: true,
+        isRscRequest: true,
+        loadSsrHandler: async () => ({ handleSsr }),
+        renderToReadableStream(_element, { onError }) {
+          onError(options.flightError, undefined, undefined);
+          return createStream(["page-flight-with-digest"]);
+        },
+        revalidateSeconds: 60,
+      });
+      return { common, handleSsr, response };
+    }
+
+    const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
+
+    it("stores a notFound() that rejects the shell with its status", async () => {
+      const { common, handleSsr, response } = await renderRscMiss({
+        flightError: notFoundError,
+        handleSsr: async () => {
+          throw notFoundError;
+        },
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("page-flight-with-digest");
+      await Promise.all(common.waitUntilPromises);
+      expect(handleSsr).toHaveBeenCalledOnce();
+      expect(handleSsr.mock.calls[0]?.[3]).toMatchObject({ isStaticGeneration: true });
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
+      });
+    });
+
+    // As the HTML render does, the shell keeps force-static's exemption, so a
+    // client component that reads useSearchParams() doesn't bail out.
+    it("renders a force-static page's shell as force-static", async () => {
+      const { common, response } = await renderRscMiss({
+        flightError: notFoundError,
+        handleSsr: async (...args) => {
+          const ssrOptions = args[3] as { isForceStatic?: boolean };
+          if (ssrOptions.isForceStatic !== true) throw new Error("Bail out to client rendering");
+          throw notFoundError;
+        },
+        isForceStatic: true,
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
+      });
+    });
+
+    it("stores a forbidden() that rejects the shell with its status", async () => {
+      const forbiddenError = Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;403"), {
+        digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+      });
+      const { common, response } = await renderRscMiss({
+        flightError: forbiddenError,
+        handleSsr: async () => {
+          throw forbiddenError;
+        },
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 403 },
+      });
+    });
+
+    it("stores a redirect() that rejects the shell with its status and location", async () => {
+      const { common, response } = await renderRscMiss({
+        flightError: redirectError,
+        handleSsr: async () => {
+          throw redirectError;
+        },
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "rsc:/posts/post": {
+          headers: { location: "/target" },
+          html: "",
+          policy,
+          rsc: "page-flight-with-digest",
+          status: 307,
+        },
+      });
+    });
+
+    it("stores a special error a Suspense boundary caught as a 200", async () => {
+      let cancelled = false;
+      const { common, response } = await renderRscMiss({
+        flightError: notFoundError,
+        handleSsr: async () =>
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              cancelled = true;
+            },
+          }),
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(cancelled).toBe(true);
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 200 },
+      });
+    });
+
+    it("does not store a render whose shell another error rejected", async () => {
+      const { common, response } = await renderRscMiss({
+        flightError: notFoundError,
+        handleSsr: async () => {
+          throw new Error("layout failed");
+        },
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(common.isrSet).not.toHaveBeenCalled();
+    });
+
+    // An html-limited bot's RSC request blocks on metadata, so the error
+    // rejects the shell. Next.js stores the 404 document beside the RSC
+    // payload, but an RSC miss writes no document, and a later document
+    // request that streams metadata would store a 200 beside a 404 payload.
+    it("does not store generateMetadata()'s special error that rejects the shell", async () => {
+      const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+      const { common, response } = await renderRscMiss({
+        flightError: Object.assign(new Error(digest), {
+          digest,
+          [Symbol.for("vinext.appPage.metadataError")]: true,
+        }),
+        handleSsr: async () => {
+          throw Object.assign(new Error(digest), { digest });
+        },
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(common.isrSet).not.toHaveBeenCalled();
+    });
+
+    it("does not render the shell of a render without a special error", async () => {
+      const common = createCommonOptions();
+
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        isRscRequest: true,
+        revalidateSeconds: 60,
+      });
+
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      expect(common.loadSsrHandler).not.toHaveBeenCalled();
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "rsc:/posts/post": { html: "", policy, rsc: "flight-data", status: 200 },
+      });
     });
   });
 });
@@ -2857,7 +3760,6 @@ describe("layoutFlags injection into RSC payload", () => {
       getPageTags: () => overrides.pageTags ?? [],
       getRequestCacheLife: () => null,
       handlerStart: 0,
-      hasLoadingBoundary: false,
       isDynamicError: false,
       isDraftMode: false,
       isForceDynamic: false,
@@ -2875,7 +3777,6 @@ describe("layoutFlags injection into RSC payload", () => {
       navigationParams: {},
       params: {},
       probeLayoutAt: overrides.probeLayoutAt ?? (() => null),
-      probePage: () => null,
       revalidateSeconds: null,
       renderErrorBoundaryResponse: async () => null,
       renderLayoutSpecialError: async () => new Response("error", { status: 500 }),

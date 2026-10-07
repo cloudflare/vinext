@@ -138,6 +138,8 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
       boundaryComponent?: AppPageComponent | null;
       boundaryModule?: TModule | null;
       intercept?: AppPageInterceptOptions<TModule> | null;
+      /** The document may be stored, so it must not carry the request's query. */
+      isCacheCandidate?: boolean;
       layouts?: readonly (TModule | null | undefined)[] | null;
       matchedParams?: AppPageParams;
     },
@@ -325,6 +327,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
         intercept: opts?.intercept ?? null,
+        isCacheCandidate: opts?.isCacheCandidate,
         isEdgeRuntime: callContext?.isEdgeRuntime,
         isRscRequest,
         layoutModules: useGlobalNotFound ? [] : (opts?.layouts ?? null),

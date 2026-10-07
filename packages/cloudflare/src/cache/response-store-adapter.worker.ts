@@ -15,6 +15,7 @@ import type {
 import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "vinext/internal/server/headers";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
@@ -171,7 +172,7 @@ async function invokeRequestStage(
     StageContext
   >();
   return handleRequestStage(request, env, stageContext(ctx, env), (request, props, options) =>
-    invokeResponseStage(request, props, env, ctx, options.cache),
+    invokeResponseStage(request, props, env, ctx, { cache: options.cache }),
   );
 }
 
@@ -180,7 +181,7 @@ async function invokeResponseStage(
   props: unknown,
   env: VinextResponseStoreEnv,
   ctx: WorkerExecutionContext,
-  cache: VinextResponseStageDispatchOptions["cache"],
+  stageOptions: Pick<VinextResponseStageDispatchOptions, "cache" | "renderWholeDocument">,
   capture?: ResponseStoreInvocationCapture,
   invocation?: SerializedInvocation,
 ): Promise<Response> {
@@ -198,7 +199,7 @@ async function invokeResponseStage(
   return runWithResponseStoreInvocation(
     storedInvocation.serialized,
     storedInvocation.replayable,
-    () => handleResponseStage(request, env, context, props, dispatchRequestStage, { cache }),
+    () => handleResponseStage(request, env, context, props, dispatchRequestStage, stageOptions),
     capture,
   );
 }
@@ -222,12 +223,14 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
         const invocation = parseInvocation(input.args.at(-1));
+        // No client waits on a regeneration, so it renders the document
+        // whole, as Next.js renders a static page.
         const response = await invokeResponseStage(
           restoreRequest(invocation),
           invocation.props,
           env,
           ctx,
-          "shared",
+          { cache: "shared", renderWholeDocument: true },
         );
         if (!isCacheable(response)) {
           await response.body?.cancel().catch(() => {});
@@ -275,7 +278,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
             invocation.props,
             env,
             ctx,
-            "bypass",
+            { cache: "bypass" },
           );
           await response.body?.pipeTo(new WritableStream());
         });
@@ -332,6 +335,12 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
   });
 }
 
+// A page's notFound(), forbidden() and unauthorized() are stored with their
+// status, as in Next.js.
+function isStoredErrorStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 404;
+}
+
 function isCacheable(response: Response): boolean {
   const policy =
     response.headers.get("Cloudflare-CDN-Cache-Control") ??
@@ -339,7 +348,7 @@ function isCacheable(response: Response): boolean {
     response.headers.get("Cache-Control");
   return (
     response.status >= 200 &&
-    (response.status < 400 || response.status === 404) &&
+    (response.status < 400 || isStoredErrorStatus(response.status)) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
   );
@@ -352,7 +361,8 @@ async function readStoredResponse(key: Request): Promise<Response | null> {
     const storeStatus = response.headers.get("X-Workers-Response-Store");
     if (
       (response.status >= 200 && response.status < 400) ||
-      (response.status === 404 && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
+      (isStoredErrorStatus(response.status) &&
+        (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
     )
       return response;
     void response.body?.cancel().catch(() => {});
@@ -404,8 +414,11 @@ function publicResponse(
     headers.set("X-Vinext-Cache", publicCacheStatus);
   }
   const cacheControl = headers.get("Cache-Control");
+  // Admission can still find a late dynamic API, so the browser must not keep
+  // this response: a dynamic render is no-store in Next.js. This is the same
+  // pending policy the framework sends when it caches the response itself.
   if (pendingAdmission && (!cacheControl || !isNonCacheableCacheControl(cacheControl, "browser"))) {
-    headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    headers.set("Cache-Control", "no-store, must-revalidate");
   }
   return traceCachedResponseStart(
     new Response(response.body, {
@@ -443,7 +456,7 @@ const handler = {
         (stageRequest.method !== "GET" && stageRequest.method !== "HEAD")
       ) {
         return publicResponse(
-          await invokeResponseStage(stageRequest, props, env, ctx, "bypass"),
+          await invokeResponseStage(stageRequest, props, env, ctx, { cache: "bypass" }),
           "BYPASS",
           props,
         );
@@ -503,12 +516,21 @@ const handler = {
       const serializedInvocation = JSON.stringify(invocation);
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
-      const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture, {
-        replayable: isReplayableInvocation(stageRequest, props),
-        serialized: options.cacheIdentity
-          ? serializeInvocation(stageRequest, props)
-          : serializedInvocation,
-      });
+      // No client waits on a warm-up either, so it renders the document whole.
+      const rendered = await invokeResponseStage(
+        stageRequest,
+        props,
+        env,
+        ctx,
+        isWarmup ? { cache: "shared", renderWholeDocument: true } : { cache: "shared" },
+        capture,
+        {
+          replayable: isReplayableInvocation(stageRequest, props),
+          serialized: options.cacheIdentity
+            ? serializeInvocation(stageRequest, props)
+            : serializedInvocation,
+        },
+      );
       if (capture.admittedResponse) {
         ctx.waitUntil(
           capture.admittedResponse
@@ -575,12 +597,18 @@ const handler = {
         rscHeaders.set("Vary", VINEXT_RSC_VARY_HEADER);
         applyRscCompatibilityIdHeader(rscHeaders);
         applyRscDeploymentIdHeader(rscHeaders);
+        // The request stage sends it to a Link's segment prefetch as a 200.
+        if (isStoredErrorStatus(rendered.status)) {
+          rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(rendered.status));
+        }
         const serializedRscInvocation = JSON.stringify(rscInvocation);
         await responseStore.put(
           rscKey,
           new Response(rscData, {
             headers: rscHeaders,
-            status: 200,
+            // As in Next.js, the page's RSC payload takes its document's
+            // status, except that it carries a redirect as a 200.
+            status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
           }),
           {
             coalesce: true,

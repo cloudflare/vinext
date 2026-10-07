@@ -11,6 +11,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -67,11 +68,15 @@ type AppPageCacheOutcomeRecorder = (metric: AppPageCacheOutcomeMetric) => void;
 
 type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
+  /** Response headers stored with both entries, such as a redirect's `location`. */
+  headers?: Record<string, string>;
   html: string;
   htmlRenderObservation: RenderObservation;
   linkHeader?: string;
   rscData: ArrayBuffer;
   rscRenderObservation: RenderObservation;
+  /** The status of a render whose shell ended in a special error. */
+  status?: number;
   /**
    * The route-level revalidate of the route this render regenerated, or null
    * when it has none and the render's cacheLife sets it. Undefined keeps the
@@ -87,6 +92,7 @@ type BuildAppPageCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   expireSeconds?: number;
   isEdgeRuntime?: boolean;
+  isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
@@ -200,6 +206,7 @@ function buildAppPageCachedHeaders(options: {
   mountedSlotsHeader?: string | null;
   params?: Record<string, string | string[]>;
   staleTimeSeconds?: number;
+  storedHeaders?: CachedAppPageValue["headers"];
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
@@ -221,6 +228,14 @@ function buildAppPageCachedHeaders(options: {
   }
 
   applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
+
+  // The page's stored headers, such as a redirect's `location`, precede this
+  // request's middleware headers, as on a fresh special-error response.
+  for (const [name, value] of Object.entries(options.storedHeaders ?? {})) {
+    // The renderer's Link is appended after middleware's, below.
+    if (name.toLowerCase() === "link") continue;
+    for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
+  }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
   if (options.linkHeader) {
@@ -289,13 +304,29 @@ function resolveRegenerationFailureCacheControl(
   };
 }
 
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
 ): Response | null {
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
-  const status = options.middlewareStatus ?? (cachedValue.status || 200);
+  const storedStatus = cachedValue.status || 200;
+  const isRedirect = isRedirectStatus(storedStatus);
+  const isHttpErrorFallbackStatus =
+    storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
+  // As in Next.js, an RSC response carries a redirect in its payload, so a
+  // stored redirect is sent as a 200 with its `location`. With PPR, an RSC
+  // response is always a 200.
+  const replayStatus =
+    options.isRscRequest && (isRedirect || options.isRoutePPREnabled === true) ? 200 : storedStatus;
+  // The status of a stored special error is the page's own, which middleware
+  // can't override, as on a fresh render.
+  const isSpecialErrorStatus = isRedirect || isHttpErrorFallbackStatus;
+  const status = isSpecialErrorStatus ? replayStatus : (options.middlewareStatus ?? replayStatus);
   const { cacheControl } = decideIsr({
     cacheState: options.cacheState,
     kind: "app-page",
@@ -323,6 +354,7 @@ export function buildAppPageCachedResponse(
       // bytes, so a hit composes them as a fresh render does.
       params: options.params,
       staleTimeSeconds,
+      storedHeaders: cachedValue.headers,
     });
     if (options.renderedPathAndSearch) {
       rscHeaders.set(
@@ -332,6 +364,10 @@ export function buildAppPageCachedResponse(
     }
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
+    // The request stage sends it to a Link's segment prefetch as a 200.
+    if (isHttpErrorFallbackStatus && status === storedStatus) {
+      rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(storedStatus));
+    }
 
     return new Response(cachedValue.rscData, {
       status,
@@ -339,7 +375,8 @@ export function buildAppPageCachedResponse(
     });
   }
 
-  if (typeof cachedValue.html !== "string" || cachedValue.html.length === 0) {
+  // A redirect's document is empty.
+  if (typeof cachedValue.html !== "string" || (cachedValue.html.length === 0 && !isRedirect)) {
     return null;
   }
 
@@ -351,6 +388,7 @@ export function buildAppPageCachedResponse(
     linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
+    storedHeaders: cachedValue.headers,
   });
 
   const response = new Response(cachedValue.html, {
@@ -497,6 +535,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached?.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -624,13 +663,15 @@ export async function readAppPageCacheResponse(
             return false;
           }
         };
+        const status = revalidatedPage.status ?? 200;
         const storedRsc = await store(
           rscKey,
           buildAppPageCacheValue(
             "",
             revalidatedPage.rscData,
-            200,
+            status,
             revalidatedPage.rscRenderObservation,
+            revalidatedPage.headers,
           ),
         );
         // A failed RSC write leaves the previous page untouched, so the HTML
@@ -647,9 +688,11 @@ export async function readAppPageCacheResponse(
             buildAppPageCacheValue(
               revalidatedPage.html,
               undefined,
-              200,
+              status,
               revalidatedPage.htmlRenderObservation,
-              revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
+              revalidatedPage.linkHeader
+                ? { ...revalidatedPage.headers, link: revalidatedPage.linkHeader }
+                : revalidatedPage.headers,
             ),
           );
           // A failed HTML write leaves this regeneration's RSC beside the
@@ -677,6 +720,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,

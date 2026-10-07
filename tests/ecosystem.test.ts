@@ -216,6 +216,16 @@ describe("next-intl", () => {
     expect(html).toMatch(/data-testid="client-greeting"[^>]*>Hallo Welt</);
     expect(html).not.toContain("Hello World");
   });
+
+  it("renders a server component below a layout that sets the request locale", async () => {
+    // next-intl's static rendering setup (#3671): Nav reads the locale the
+    // layout stored through React cache().
+    const { html, status } = await fetchPage("/ssg/de/about");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="de"');
+    expect(html).toMatch(/data-testid="nav"[^>]*>Startseite</);
+    expect(html).toMatch(/data-testid="about-title"[^>]*>Über</);
+  });
 });
 
 // ─── better-auth ──────────────────────────────────────────────────────────────

@@ -288,6 +288,42 @@ describe("seedMemoryCacheFromPrerender", () => {
     });
   });
 
+  // As in Next.js, a page's special error that escaped the shell is seeded
+  // with its status, and a redirect with its location, on both entries.
+  it.each([
+    { status: 404, headers: undefined },
+    { status: 307, headers: { location: "/target" } },
+  ])("seeds a prerendered $status special error on both entries", async ({ status, headers }) => {
+    const buildId = `test-build-special-error-${status}`;
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/special-error",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            responseStatus: status,
+            ...(headers ? { headers } : {}),
+          },
+        ],
+      },
+      {
+        "special-error.html": headers ? "" : "<html><body>not found</body></html>",
+        "special-error.rsc": "RSC payload with digest",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    for (const kind of ["html", "rsc"] as const) {
+      const entry = await getCacheHandler().get(appIsrCacheKey("/special-error", kind, buildId));
+      expect(entry?.value).toMatchObject({ kind: "APP_PAGE", status, headers });
+    }
+  });
+
   it("seeds the index route correctly", async () => {
     const buildId = "test-build-002";
     setupPrerenderFixture(

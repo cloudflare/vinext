@@ -11,7 +11,7 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   copyLinkHeaderProvenance,
-  hasFrameworkLinkHeaders,
+  getFrameworkLinkHeader,
   markFrameworkLinkHeaders,
 } from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
@@ -19,6 +19,7 @@ import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
+import { isThrownNavigationError } from "vinext/shims/navigation-errors";
 
 export type { LayoutFlags };
 
@@ -181,18 +182,6 @@ type ProbeAppPageLayoutsOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
-type ProbeAppPageComponentOptions = {
-  awaitAsyncResult: boolean;
-  onError: (error: unknown) => Promise<Response | null>;
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
-type ProbeAppPageThrownErrorOptions = {
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
 function getAppPageStatusText(statusCode: number): string {
   return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
 }
@@ -201,9 +190,7 @@ function mergeAppPageSpecialErrorHeaders(
   response: Response,
   middlewareContext: { headers: Headers | null } | undefined,
 ): Response {
-  const frameworkLink = hasFrameworkLinkHeaders(response.headers)
-    ? response.headers.get("link")
-    : null;
+  const frameworkLink = getFrameworkLinkHeader(response.headers);
   const headers = new Headers(response.headers);
   if (frameworkLink) headers.delete("link");
   mergeMiddlewareResponseHeaders(headers, middlewareContext?.headers ?? null);
@@ -250,6 +237,29 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
 }
 
 /**
+ * Resolve the special error that rejected an SSR shell. An error from the RSC
+ * render reaches the shell decoded from its Flight digest, so whether
+ * generateMetadata() threw it comes from the errors the RSC render threw with
+ * that digest. When the page threw one too, the page's decides. An error a
+ * client component threw during SSR is the page's, since generateMetadata()
+ * runs only in the RSC render.
+ */
+export function resolveAppPageShellSpecialError(
+  error: unknown,
+  renderedSpecialErrors: readonly unknown[],
+): AppPageSpecialError | null {
+  const specialError = resolveAppPageSpecialError(error);
+  if (!specialError || specialError.fromMetadata === true) return specialError;
+  if (isThrownNavigationError(error)) return specialError;
+  const fromMetadata =
+    renderedSpecialErrors.length > 0 &&
+    renderedSpecialErrors.every(
+      (rendered) => resolveAppPageSpecialError(rendered)?.fromMetadata === true,
+    );
+  return fromMetadata ? { ...specialError, fromMetadata: true } : specialError;
+}
+
+/**
  * Resolves a redirect() target against the request URL and prepends the
  * configured basePath when the target is an app-internal absolute path.
  *
@@ -270,6 +280,19 @@ function applyAppPageRedirectBasePath(location: string, basePath: string | undef
   const pathname = suffixIndex === -1 ? location : location.slice(0, suffixIndex);
   const suffix = suffixIndex === -1 ? "" : location.slice(suffixIndex);
   return `${basePath}${pathname}${suffix}`;
+}
+
+/**
+ * The response headers stored with a page's special-error entries: a
+ * redirect's own `location`, not the response's, which middleware may have
+ * replaced for this request.
+ */
+export function resolveAppPageSpecialErrorStoredHeaders(
+  specialError: AppPageSpecialError,
+  basePath: string | undefined,
+): Record<string, string> | undefined {
+  if (specialError.kind !== "redirect") return undefined;
+  return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
 /**
@@ -584,52 +607,6 @@ async function probeLayoutForErrors(
   });
 
   return outcome.completed ? outcome.result : null;
-}
-
-export async function probeAppPageComponent(
-  options: ProbeAppPageComponentOptions,
-): Promise<Response | null> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          if (options.awaitAsyncResult) {
-            await pageResult;
-          } else {
-            void Promise.resolve(pageResult).catch(() => {});
-          }
-        }
-      } catch (error) {
-        return options.onError(error);
-      }
-
-      return null;
-    });
-
-    return outcome.completed ? outcome.result : null;
-  });
-}
-
-export async function probeAppPageThrownError(
-  options: ProbeAppPageThrownErrorOptions,
-): Promise<unknown> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          await pageResult;
-        }
-      } catch (error) {
-        return { error, thrown: true } as const;
-      }
-
-      return { error: null, thrown: false } as const;
-    });
-
-    return outcome.completed && outcome.result.thrown ? outcome.result.error : null;
-  });
 }
 
 export async function readAppPageBinaryStream(

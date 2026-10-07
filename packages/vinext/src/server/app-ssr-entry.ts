@@ -405,8 +405,9 @@ export async function handleSsr(
     initialDevServerError?: unknown;
     /** Report an SSR/Fizz render failure through instrumentation. */
     onSsrError?: (error: unknown) => unknown;
-    /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
-    mirrorNextFlight?: boolean;
+    /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
+     *  mirroring once a function returns true. */
+    mirrorNextFlight?: boolean | (() => boolean);
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */

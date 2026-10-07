@@ -324,6 +324,41 @@ describe("app fallback renderer factory", () => {
     expect(response?.status).toBe(404);
   });
 
+  it.each([true, undefined])(
+    "renders a page's HTTP fallback with isCacheCandidate %s",
+    async (isCacheCandidate) => {
+      // A fallback stored as the page's entry must keep the request's query out
+      // of its SSR, like a cache candidate's render.
+      const { renderer, ssrLoader } = createRenderer();
+      let ssrOptions: { isCacheCandidate?: boolean } | undefined;
+      ssrLoader.mockImplementation(async () => ({
+        async handleSsr(
+          rscStream: ReadableStream<Uint8Array>,
+          _navigationContext?: unknown,
+          _fontData?: unknown,
+          options?: { isCacheCandidate?: boolean },
+        ) {
+          ssrOptions = options;
+          return rscStream;
+        },
+      }));
+
+      const response = await renderer.renderHttpAccessFallback(
+        { layouts: [], notFound: notFoundModule, params: {}, pattern: "/posts/[slug]" },
+        404,
+        false,
+        new Request("https://example.com/posts/missing?token=secret"),
+        { isCacheCandidate, matchedParams: {} },
+        undefined,
+        { headers: null, status: null },
+      );
+      await response?.text();
+
+      expect(response?.status).toBe(404);
+      expect(ssrOptions?.isCacheCandidate).toBe(isCacheCandidate);
+    },
+  );
+
   it("falls back matchedParams to route.params when not provided", async () => {
     const { renderer } = createRenderer();
     const request = new Request("https://example.com/posts/missing");

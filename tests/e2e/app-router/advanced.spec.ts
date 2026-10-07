@@ -962,6 +962,26 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     await expect(page.locator("#time")).toHaveText(refreshedTime!);
   });
 
+  test("replaceState from a destination layout effect lands on the destination entry", async ({
+    page,
+  }) => {
+    // Next.js writes the navigation URL in an insertion effect, before the
+    // destination's layout effects, so their relative history writes resolve
+    // against and replace the destination entry (verified against next@16.2.7).
+    await page.goto(`${BASE}/shallow-test`);
+    await waitForAppRouterHydration(page);
+    const initialLength = await page.evaluate(() => window.history.length);
+
+    await page.locator('[data-testid="on-mount-link"]').click();
+    await expect(page.locator('[data-testid="on-mount-search"]')).toHaveText("search: x=1");
+    await expect(page).toHaveURL(`${BASE}/shallow-test/on-mount?x=1`);
+    expect(await page.evaluate(() => window.history.length)).toBe(initialLength + 1);
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/shallow-test`);
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: ");
+  });
+
   test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 

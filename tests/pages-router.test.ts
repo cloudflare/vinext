@@ -8616,6 +8616,26 @@ export default class CustomDocument extends Document {
     },
   );
 
+  it("does not watch the filesystem root for a root URL with a query in dev", async () => {
+    // Vite 8.3.3 maps transformIndexHtml("/?q") onto the project root and then
+    // watches `/` for each inline <style> proxy module, crawling the whole disk.
+    const watcher = devServer.watcher;
+    const add = watcher.add.bind(watcher);
+    const watchedPaths: unknown[] = [];
+    const addSpy = vi.spyOn(watcher, "add").mockImplementation((paths) => {
+      watchedPaths.push(paths);
+      return paths === "/" ? watcher : add(paths);
+    });
+    try {
+      const response = await fetch(`${devUrl}/?manualDocumentHtml=true`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("data-manual-document-style");
+    } finally {
+      addSpy.mockRestore();
+    }
+    expect(watchedPaths).not.toContain("/");
+  });
+
   it.each(["dev", "prod"] as const)(
     // Next.js builds a base context with req/res and passes `{ ...ctx, renderPage }`
     // to `_document.getInitialProps` in packages/next/src/server/render.tsx.

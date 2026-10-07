@@ -70,13 +70,17 @@ import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.j
 import { setPagesClientAssets, type AssetCrossOrigin } from "./pages-client-assets.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
-import type { ExecutionContextLike } from "vinext/shims/request-context";
+import type {
+  ExecutionContextLike,
+  PrerenderSpecialErrorMarker,
+} from "vinext/shims/request-context";
 import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "./headers.js";
 import {
@@ -427,6 +431,8 @@ const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   "content-length",
   "content-range",
   "content-type",
+  // Only a page's recorded special error carries it; see markPrerenderSpecialError.
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
 
 function omitHeadersCaseInsensitive(
@@ -1387,6 +1393,27 @@ function createNodeExecutionContext(trustedRevalidateOrigin?: string): Execution
   };
 }
 
+/**
+ * Sets the prerender special-error marker only from the page's recorded
+ * special error, which middleware, route handlers and external rewrites can't
+ * reach, and drops one they set.
+ */
+function markPrerenderSpecialError(
+  response: Response,
+  marker: PrerenderSpecialErrorMarker | undefined,
+): Response {
+  const trusted = marker !== undefined && marker.status === response.status;
+  if (!trusted && !response.headers.has(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER)) return response;
+  const headers = new Headers(response.headers);
+  headers.delete(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER);
+  if (trusted) headers.set(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER, JSON.stringify(marker.headers));
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 function resolveTrustedNodeRevalidateOrigin(
   req: IncomingMessage,
   configuredHost: string,
@@ -1837,10 +1864,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         appRouterI18nConfig,
         appRouterAuthorizeOnDemandRevalidate,
       );
-      const response = await rscHandler(
-        request,
-        createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
-      );
+      const ctx = createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port));
+      const recorded: { marker?: PrerenderSpecialErrorMarker } = {};
+      if (purpose === "prerender") {
+        ctx.recordPrerenderSpecialError = (marker) => {
+          recorded.marker = marker;
+        };
+      }
+      const response = await rscHandler(request, ctx);
 
       const staticFileSignal = readStaticFileSignal(response);
       if (staticFileSignal) {
@@ -1880,7 +1911,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
 
       // Stream the Web Response back to the Node.js response
-      await sendWebResponse(response, req, res, compress);
+      await sendWebResponse(
+        // A page's special error is never a public-file signal, which a
+        // reconstructed response would lose.
+        purpose === "prerender" ? markPrerenderSpecialError(response, recorded.marker) : response,
+        req,
+        res,
+        compress,
+      );
     } catch (e) {
       console.error("[vinext] Server error:", e);
       if (!res.headersSent) {

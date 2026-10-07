@@ -35,6 +35,14 @@ export type VinextResponseStageDispatchOptions = {
    */
   cache: "shared" | "bypass";
   /**
+   * Render an App page document whole before its first byte, as Next.js
+   * renders a static page, so its streamed metadata is in `<head>`. An adapter
+   * sets this for a render no client is waiting on, such as a regeneration or
+   * a deployment warm-up. It is not a cache selector: a transport must not
+   * partition its lookup or stored entry by it.
+   */
+  renderWholeDocument?: boolean;
+  /**
    * Query-free identity of a shared App page GET/HEAD dispatch, supplied only
    * to adapters that declare `responseStageCacheIdentity: "query-free"` and
    * require completed-response admission. A transport given one partitions

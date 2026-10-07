@@ -150,10 +150,13 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
       },
     });
 
-    expect(res.status).toBe(404);
+    // As in Next.js dev, the page's notFound() streams as a digest in a 200
+    // flight rather than replacing the response.
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
 
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
 
     // The layout sets data-request-id from headers("x-rsc-context-test").
     // In the RSC flight format this appears as a prop in the serialized tree.

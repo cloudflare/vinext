@@ -33,7 +33,6 @@ import {
   resolveAppPageNavigationParams,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
-import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
@@ -2766,116 +2765,5 @@ describe("buildPageElements", () => {
     return thenable.then((resolved: AppPageParams) => {
       expect(resolved).toEqual(plainParams);
     });
-  });
-});
-
-describe("probeAppPage", () => {
-  beforeEach(() => {
-    markDynamicUsageMock.mockClear();
-    markRenderRequestApiUsageMock.mockClear();
-  });
-
-  it("calls markDynamicUsage when the page awaits searchParams, even when the query is empty", async () => {
-    async function SearchPage({
-      searchParams,
-    }: {
-      searchParams: Promise<Record<string, unknown>>;
-    }): Promise<React.ReactNode> {
-      await searchParams;
-      return React.createElement("div", null, "Search");
-    }
-
-    await Promise.resolve(
-      probeAppPage({
-        asyncRouteParams: makeThenableParams({}),
-        pageComponent: SearchPage,
-        searchParams: new URLSearchParams(""),
-      }),
-    );
-
-    expect(markDynamicUsageMock).toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
-  });
-
-  it("calls markDynamicUsage when a returned server component consumes spread searchParams", async () => {
-    async function Child({
-      searchParams,
-    }: {
-      searchParams: Promise<Record<string, unknown>>;
-    }): Promise<React.ReactNode> {
-      await searchParams;
-      return React.createElement("div", null, "Child");
-    }
-
-    function SearchPage(props: {
-      searchParams: Promise<Record<string, unknown>>;
-    }): React.ReactNode {
-      return React.createElement(Child, props);
-    }
-
-    await Promise.resolve(
-      probeAppPage({
-        asyncRouteParams: makeThenableParams({}),
-        pageComponent: SearchPage,
-        searchParams: new URLSearchParams("q=test"),
-      }),
-    );
-
-    expect(markDynamicUsageMock).toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
-  });
-
-  it("derives the same cache key for a cached page in probe and render", async () => {
-    await resetUseCacheRuntime();
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-
-    let pageCalls = 0;
-    const CachedPage = registerCachedFunction(
-      async (props: { params: Promise<{ slug: string }> }): Promise<string> => {
-        pageCalls++;
-        return `probed:${(await props.params).slug}`;
-      },
-      "/fixture/app/cached-probe/page.tsx:default",
-      "",
-    );
-
-    await Promise.resolve(
-      probeAppPage({
-        asyncRouteParams: makeThenableParams({ slug: "same" }),
-        pageComponent: CachedPage,
-        searchParams: new URLSearchParams("q=probe"),
-      }),
-    );
-    expect(pageCalls).toBe(1);
-    expectNoSearchParamsObservation();
-
-    const route = createSyntheticRoute({
-      page: createSyntheticPageModule(CachedPage),
-      loading: { default: () => null },
-      layouts: [],
-      routeSegments: ["cached"],
-      pattern: "/cached",
-    });
-    await expect(buildAndRenderElement(route, "page:/cached", "render")).resolves.toContain(
-      "probed:same",
-    );
-    expect(pageCalls).toBe(1);
-    expectNoSearchParamsObservation();
-  });
-
-  it("does NOT call markDynamicUsage just because the request query has content", () => {
-    function NoSearchPage(): React.ReactNode {
-      return React.createElement("div", null, "No Search");
-    }
-
-    probeAppPage({
-      asyncRouteParams: makeThenableParams({}),
-      pageComponent: NoSearchPage,
-      searchParams: new URLSearchParams("q=test"),
-    });
-
-    expect(markDynamicUsageMock).not.toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 });

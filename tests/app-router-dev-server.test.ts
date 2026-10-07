@@ -1099,40 +1099,24 @@ describe("App Router integration", () => {
     expect(html).toContain('content="noindex"');
   });
 
-  it("notFound() from async page with loading.tsx returns 404 (NEXT_NOT_FOUND digest)", async () => {
-    // Same regression path as redirect-with-loading.tsx, but for notFound().
-    // Distinct from forbidden/unauthorized: notFound() throws the bare
-    // "NEXT_NOT_FOUND" digest (not "NEXT_HTTP_ERROR_FALLBACK;404"), which
-    // takes a separate branch in resolveAppPageSpecialError. This is the
-    // most common loading-boundary special-error case in real apps —
-    // a dynamic detail page with a loading state that calls notFound()
-    // when the record is missing.
-    const res = await fetch(`${baseUrl}/notfound-loading`);
-    expect(res.status).toBe(404);
-    const html = await res.text();
-    expect(html).toContain("404 - Page Not Found");
-  });
-
-  it("forbidden() from async page with loading.tsx returns 403 (digest status preserved)", async () => {
-    // Same regression path as the redirect()-with-loading.tsx tests, but
-    // for forbidden() — verifies the post-shell digest swap reads the
-    // status code from NEXT_HTTP_ERROR_FALLBACK;403 rather than coercing
-    // to 404, and renders the root forbidden.tsx boundary.
-    const res = await fetch(`${baseUrl}/forbidden-loading`);
-    expect(res.status).toBe(403);
-    const html = await res.text();
-    expect(html).toContain("403 - Forbidden");
-  });
-
-  it("unauthorized() from async page with loading.tsx returns 401 (digest status preserved)", async () => {
-    // Same regression path as forbidden-loading but for unauthorized() —
-    // verifies the post-shell digest swap honors NEXT_HTTP_ERROR_FALLBACK;401
-    // and renders the root unauthorized.tsx boundary.
-    const res = await fetch(`${baseUrl}/unauthorized-loading`);
-    expect(res.status).toBe(401);
-    const html = await res.text();
-    expect(html).toContain("401 - Unauthorized");
-  });
+  // A special error that the route's loading.tsx boundary catches doesn't
+  // reject the shell. Next.js streams the document as a 200 with the digest,
+  // which the client's boundary renders, and the server-inserted HTML adds
+  // the noindex robots tag for HTTP access fallbacks.
+  it.each([
+    ["notFound()", "/notfound-loading", "NEXT_HTTP_ERROR_FALLBACK;404"],
+    ["forbidden()", "/forbidden-loading", "NEXT_HTTP_ERROR_FALLBACK;403"],
+    ["unauthorized()", "/unauthorized-loading", "NEXT_HTTP_ERROR_FALLBACK;401"],
+  ])(
+    "%s from an async page with loading.tsx streams a 200 with the digest",
+    async (_name, pathname, digest) => {
+      const res = await fetch(`${baseUrl}${pathname}`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain(`<template data-dgst="${digest}"`);
+      expect(html).toContain('<meta name="robots" content="noindex"/>');
+    },
+  );
 
   it("forbidden() thrown from a layout uses the forbidden boundary", async () => {
     // Ported from Next.js: test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
@@ -1340,16 +1324,12 @@ describe("App Router integration", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
-  // ── probePage() with Next.js 15+ async params/searchParams ──
-  // Regression tests: probePage() passed raw null-prototype params instead of
-  // thenable params, so pages using `await params` threw TypeError during probe,
-  // silently defeating early notFound()/redirect() detection.
+  // ── Next.js 15+ async params/searchParams ──
+  // Pages that `await params` or `await searchParams` before calling
+  // notFound()/redirect() must still get the 404/redirect response.
 
   it("notFound() detected via probe when page uses async params pattern", async () => {
     // Page does `const { id } = await params` then calls notFound() for invalid IDs.
-    // Without thenable params, `await params` throws TypeError → probe silently fails
-    // → notFound() is caught during RSC render instead of the probe → still returns
-    // 404 but only by luck of error boundary handling, not the probe path.
     const res = await fetch(`${baseUrl}/probe-async-params/invalid-id`);
     expect(res.status).toBe(404);
     const html = await res.text();
@@ -1365,8 +1345,6 @@ describe("App Router integration", () => {
 
   it("redirect() detected via probe when page uses async searchParams pattern", async () => {
     // Page does `const { dest } = await searchParams` then calls redirect(dest).
-    // Without searchParams in the probe, `await searchParams` throws TypeError →
-    // probe silently fails → redirect() goes through RSC render path instead.
     const res = await fetch(`${baseUrl}/probe-async-search?dest=/about`, { redirect: "manual" });
     expect(res.status).toBeGreaterThanOrEqual(300);
     expect(res.status).toBeLessThan(400);
@@ -1379,34 +1357,25 @@ describe("App Router integration", () => {
     expect(html).toContain("probe-async-search-page");
   });
 
-  it("redirect() from async page with loading.tsx returns 307 (digest captured during shell render)", async () => {
-    // Regression: when a page has a loading.tsx sibling and the page
-    // function is async, the probe used to fire-and-forget the page
-    // promise (to preserve loading.tsx streaming for non-redirecting
-    // pages). The route-level Suspense boundary would absorb the
-    // redirect throw, and React would serialize a "Switched to client
-    // rendering" error into a 200 body instead of returning a clean 307.
-    //
-    // Fix: the probe is skipped entirely for hasLoadingBoundary routes;
-    // the rscErrorTracker captures the NEXT_REDIRECT digest from React's
-    // onError during shell render; the lifecycle inspects the tracker
-    // after the shell promise resolves and swaps the response to a 307.
-    const res = await fetch(`${baseUrl}/protected-loading`, { redirect: "manual" });
-    expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toMatch(/\/$/);
-  });
-
-  it("permanentRedirect() from async page with loading.tsx returns 308 (digest status preserved)", async () => {
-    // Same regression path as the redirect()-with-loading.tsx test above,
-    // but verifies the post-shell digest swap honors the status code from
-    // the NEXT_REDIRECT digest (308) rather than coercing to the 307
-    // default.
-    const res = await fetch(`${baseUrl}/permanent-protected-loading`, {
-      redirect: "manual",
-    });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toMatch(/\/$/);
-  });
+  // A redirect that the route's loading.tsx boundary catches doesn't reject
+  // the shell. Next.js streams the document as a 200 with the digest and a
+  // meta refresh, rather than a 307/308 with a Location header.
+  it.each([
+    ["redirect()", "/protected-loading", 1],
+    ["permanentRedirect()", "/permanent-protected-loading", 0],
+  ])(
+    "%s from an async page with loading.tsx streams a 200 with the digest and a meta refresh",
+    async (_name, pathname, refreshDelay) => {
+      const res = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("location")).toBeNull();
+      const html = await res.text();
+      expect(html).toContain('<template data-dgst="NEXT_REDIRECT;');
+      expect(html).toContain(
+        `<meta id="__next-page-redirect" http-equiv="refresh" content="${refreshDelay};url=/"/>`,
+      );
+    },
+  );
 
   it("permanentRedirect() returns 308 status code", async () => {
     const res = await fetch(`${baseUrl}/permanent-redirect-test`, { redirect: "manual" });
@@ -1537,17 +1506,25 @@ describe("App Router integration", () => {
 
   // Ported from Next.js: test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
-  it("renders the local not-found boundary when generateMetadata() calls notFound()", async () => {
+  // As in Next.js, the HTML keeps the page's content followed by the digest,
+  // and the local boundary arrives only in the Flight data, which the client
+  // renders after hydration.
+  it("streams the local not-found boundary in Flight when generateMetadata() calls notFound()", async () => {
     const res = await fetch(`${baseUrl}/nextjs-compat/generate-metadata-not-found`, {
       headers: { "User-Agent": "Mozilla/5.0" },
     });
 
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("Local found boundary");
-    expect(html).not.toContain("not-found-text");
+    // The page's content, then the digest that the client's boundary renders.
+    const contentIndex = html.indexOf("not-found-text");
+    expect(contentIndex).toBeGreaterThan(-1);
+    expect(html.indexOf('<template data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"')).toBeGreaterThan(
+      contentIndex,
+    );
+    expect(html).not.toContain("<h2>Local found boundary</h2>");
     const flightText = [
-      ...html.matchAll(/<script[^>]*>self\.__next_f\.push\(\[1,"([\s\S]*?)"\]\)<\/script>/g),
+      ...html.matchAll(/<script[^>]*>[^<]*\.rsc\.push\("([\s\S]*?)"\)<\/script>/g),
     ]
       .map((match) => match[1])
       .join("");
@@ -2466,16 +2443,12 @@ describe("App Router route-miss root layout redirects", () => {
     expect(body).toContain("/result");
   });
 
-  // The RSC drain applies to every HTTP-access fallback, not only route misses.
-  // `/gated` is a *matched* route that calls notFound(); its route-level
-  // not-found boundary (app/gated/not-found.tsx) redirects on its own header.
-  // That boundary renders only during the not-found fallback — not the
-  // matched-route layout probe — so the async redirect is caught by the
-  // renderAppPageBoundaryElementResponse drain, the new code path, rather than
-  // the layout special-error path. (The layout-redirect header is intentionally
-  // NOT sent here, so the root layout renders normally and we actually reach
-  // the fallback.)
-  it("encodes a matched-route not-found boundary's async redirect into the RSC flight", async () => {
+  // `/gated` is a matched route whose page calls notFound(). As in Next.js,
+  // an RSC request renders the page, so the notFound() digest and the route's
+  // not-found boundary (app/gated/not-found.tsx) travel in the Flight payload
+  // and the client router shows the boundary. A redirect() in that boundary
+  // travels the same way.
+  it("streams a matched-route not-found boundary's redirect in the RSC flight", async () => {
     const res = await fetch(`${baseUrl}/gated.rsc`, {
       redirect: "manual",
       headers: {
@@ -2486,25 +2459,22 @@ describe("App Router route-miss root layout redirects", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
-    expect(res.headers.get("x-vinext-rsc-redirect")).toBe("/result");
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
     expect(body).toContain("NEXT_REDIRECT");
-    expect(body).toContain("/result");
+    expect(body).toContain("result");
   });
 
-  // Guards the drain's cost side: a matched-route not-found with no redirect
-  // must still produce a normal 404 flight. The stream is now buffered before
-  // responding, so this proves buffering does not corrupt or drop the payload.
-  it("still returns a normal 404 flight for a matched-route not-found without a redirect", async () => {
+  it("streams a matched-route not-found boundary in the RSC flight", async () => {
     const res = await fetch(`${baseUrl}/gated.rsc`, {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
-    expect(res.headers.get("x-vinext-rsc-redirect")).toBeNull();
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
     expect(body).toContain("Gated Not Found");
   });
 

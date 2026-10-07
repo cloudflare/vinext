@@ -867,11 +867,16 @@ describe("next/navigation shim", () => {
         await import("../packages/vinext/src/client/navigation-runtime.js");
       const claimCurrentHistoryTreeSnapshot = vi.fn();
       const commitAppOwnedHistoryStateWrite = vi.fn();
+      const discardPendingNavigation = vi.fn();
+      const flushCommittingNavigationUrl = vi.fn();
       registerNavigationRuntimeFunctions({
         claimCurrentHistoryTreeSnapshot,
         commitAppOwnedHistoryStateWrite,
+        discardPendingNavigation,
+        flushCommittingNavigationUrl,
       });
-      await import("../packages/vinext/src/shims/navigation.js");
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
       expect(win.history.state).toEqual({
@@ -914,6 +919,21 @@ describe("next/navigation shim", () => {
         next: true,
       });
       expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(5);
+      // Like Next.js' ACTION_RESTORE, every external write discards a pending
+      // navigation. Internal router writes suppress notifications and do not.
+      expect(discardPendingNavigation).toHaveBeenCalledTimes(5);
+      const externalEntryState = win.history.state;
+      pushHistoryStateWithoutNotify({ [historyTraversalIndexKey]: 8 }, "", "/photo/2");
+      expect(discardPendingNavigation).toHaveBeenCalledTimes(5);
+      // Next.js only dispatches ACTION_RESTORE when the write has a URL, so a
+      // state-only write (omitted, null or empty URL) keeps the navigation.
+      win.history.state = externalEntryState;
+      win.history.replaceState({ scroll: 1 }, "");
+      win.history.replaceState({ scroll: 2 }, "", null);
+      win.history.pushState({ scroll: 3 }, "", "");
+      expect(discardPendingNavigation).toHaveBeenCalledTimes(5);
+      expect(win.location.pathname).toBe("/photo/2");
+      win.history.state = externalEntryState;
 
       // Next.js bypasses its external History API wrapper when caller data is
       // a captured App Router entry (`data?.__NA`). Vinext's traversal index is
@@ -928,7 +948,11 @@ describe("next/navigation shim", () => {
       expect(win.history.state).toEqual(capturedAppState);
       win.history.replaceState(capturedAppState, "", "/replacement-target");
       expect(win.history.state).toEqual(capturedAppState);
-      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(5);
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(8);
+      expect(discardPendingNavigation).toHaveBeenCalledTimes(5);
+      // Every write through the patched methods, app-owned or not, lets a
+      // committing navigation write its URL first.
+      expect(flushCommittingNavigationUrl).toHaveBeenCalledTimes(10);
       expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
         1,
         "push",

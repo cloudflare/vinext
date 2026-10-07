@@ -120,6 +120,85 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
     ).toBe("/interception-mw/en");
   });
 
+  // The matched pathname is decoded, while the server matches the context on
+  // its raw segments, so it is sent encoded the way the URL parser encodes it.
+  // Next.js sends `Next-Url: /en/tags/a` from `/tags/%61` too: params are
+  // canonical, so `%61` and `a` name the same source.
+  it.each([
+    [
+      "/interception-mw/tags/caf%C3%A9",
+      "/interception-mw/en/tags/café",
+      "/interception-mw/en/tags/caf%C3%A9",
+    ],
+    ["/interception-mw/tags/%61", "/interception-mw/en/tags/a", "/interception-mw/en/tags/a"],
+    ["/interception-mw/tags/%7e", "/interception-mw/en/tags/~", "/interception-mw/en/tags/~"],
+  ])(
+    "encodes the matched pathname of %s that only matches after the rewrite",
+    (currentPathname, currentMatchedPathname, expected) => {
+      const tagPhotoInterception: RouteManifestInterception = {
+        ...localePhotoInterception,
+        id: "interception:slot:modal:/interception-mw/:locale/tags/:tag->/interception-mw/:locale/:username/p/:id",
+        sourcePattern: "/interception-mw/:locale/tags/:tag",
+        sourcePatternParts: ["interception-mw", ":locale", "tags", ":tag"],
+      };
+
+      expect(
+        resolveMiddlewareRewriteNavigationInterceptionContext({
+          basePath: "",
+          currentMatchedPathname,
+          currentPathname,
+          routeManifest: createRouteManifest([tagPhotoInterception]),
+          targetPathname: "/interception-mw/foo/p/1",
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it.each([
+    ["/interception-mw/100%", "/interception-mw/100%25"],
+    ["/interception-mw/%61", "/interception-mw/%2561"],
+    ["/interception-mw/%2561", "/interception-mw/%252561"],
+    ["/interception-mw/a%2Fb", "/interception-mw/a%2Fb"],
+    ["/interception-mw/a%5Cb", "/interception-mw/a%5Cb"],
+    ["/interception-mw/a b", "/interception-mw/a%20b"],
+  ])("re-encodes the decoded matched pathname %s as %s", (currentMatchedPathname, expected) => {
+    expect(
+      resolveMiddlewareRewriteNavigationInterceptionContext({
+        basePath: "",
+        currentMatchedPathname,
+        currentPathname: "/interception-mw",
+        routeManifest: createRouteManifest([localePhotoInterception]),
+        targetPathname: "/interception-mw/foo/p/1",
+      }),
+    ).toBe(expected);
+  });
+
+  // The URL parser strips TAB, LF and CR and trailing spaces, so these would
+  // name a different source; `%252F` stands for both `%252F` and `%25252F`.
+  it.each([
+    "/interception-mw/a\tb",
+    "/interception-mw/a\nb",
+    "/interception-mw/a\rb",
+    "/interception-mw/a ",
+    "/interception-mw/%252F",
+    "/interception-mw/%2523",
+    "/interception-mw/%253f",
+    "/interception-mw/%255C",
+  ])(
+    "does not send an ambiguous or URL-parser-changed matched pathname (%j)",
+    (currentMatchedPathname) => {
+      expect(
+        resolveMiddlewareRewriteNavigationInterceptionContext({
+          basePath: "",
+          currentMatchedPathname,
+          currentPathname: "/interception-mw",
+          routeManifest: createRouteManifest([localePhotoInterception]),
+          targetPathname: "/interception-mw/foo/p/1",
+        }),
+      ).toBeNull();
+    },
+  );
+
   it("does not infer fallback context when the target cannot be an intercepted route", () => {
     expect(
       resolveMiddlewareRewriteNavigationInterceptionContext({

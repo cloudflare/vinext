@@ -100,6 +100,13 @@ export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 /** Marks an RSC body carrying completion metadata after the Flight payload. */
 export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Metadata";
 
+/**
+ * Carries the stored status of an App page RSC response whose 401, 403 or 404
+ * is its page's notFound(), forbidden() or unauthorized(). Middleware and
+ * config headers can't set it, and the request stage strips it.
+ */
+export const VINEXT_SPECIAL_ERROR_STATUS_HEADER = "x-vinext-special-error-status";
+
 /** URL-encoded rendered path and search after middleware/config rewrites. */
 export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
 
@@ -111,6 +118,15 @@ export const VINEXT_PRERENDER_REWRITTEN_HEADER = "x-vinext-prerender-rewritten";
 
 /** Marks a local prerender-server 500 that originated from a thrown render error. */
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
+
+/**
+ * Prerender-only marker: the response's 401, 403, 404 or redirect is its page's
+ * notFound(), forbidden(), unauthorized() or redirect(), which escaped the shell.
+ * Its value is the JSON of the headers to store: a redirect's own location, or
+ * `{}`. Only the prerender server sets it, from the special error the page
+ * recorded on its ctx, and it drops one that the response carries.
+ */
+export const VINEXT_PRERENDER_SPECIAL_ERROR_HEADER = "x-vinext-prerender-special-error";
 
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";

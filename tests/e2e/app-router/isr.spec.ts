@@ -360,6 +360,68 @@ test.describe("App Router ISR", () => {
   });
 });
 
+// A background regeneration renders the document whole, so the title that its
+// generateMetadata() streams is in <head>, as in Next.js. A miss streams the
+// document to its request, so the title streams into <body>.
+test.describe("ISR generated metadata placement", () => {
+  function titleIndex(html: string, title: string): number {
+    const index = html.indexOf(`<title>${title}</title>`);
+    expect(index).toBeGreaterThan(-1);
+    return index;
+  }
+
+  function expectTitleInHead(html: string, title: string): void {
+    expect(titleIndex(html, title)).toBeLessThan(html.indexOf("</head>"));
+  }
+
+  function expectTitleInBody(html: string, title: string): void {
+    expect(titleIndex(html, title)).toBeGreaterThan(html.indexOf("</head>"));
+  }
+
+  function readTimestamp(html: string): string | undefined {
+    return html.match(/data-testid="timestamp">(\d+)</)?.[1];
+  }
+
+  test("streams the generated title on a miss and puts it in <head> on a regeneration", async ({
+    request,
+  }) => {
+    const id = crypto.randomUUID();
+    const path = `/isr-metadata-head/${id}`;
+    const title = `ISR metadata head ${id}`;
+
+    const miss = await request.get(`${baseUrl()}${path}`);
+    expect(miss.headers()["x-vinext-cache"]).toBe("MISS");
+    expectTitleInBody(await miss.text(), title);
+
+    const hit = await waitForCacheHit(request, path);
+    const hitHtml = await hit.text();
+    expectTitleInBody(hitHtml, title);
+    const storedTimestamp = readTimestamp(hitHtml);
+    expect(storedTimestamp).toBeDefined();
+
+    // The entry goes stale after a second, and the next request regenerates it.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const stale = await request.get(`${baseUrl()}${path}`);
+    expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
+    await stale.text();
+
+    // A complete regenerated document has the page's new timestamp.
+    let regeneratedHtml = "";
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${baseUrl()}${path}`);
+        regeneratedHtml = await response.text();
+        const timestamp = readTimestamp(regeneratedHtml);
+        return [
+          response.headers()["x-vinext-cache"],
+          timestamp !== undefined && timestamp !== storedTimestamp,
+        ];
+      })
+      .toEqual(["HIT", true]);
+    expectTitleInHead(regeneratedHtml, title);
+  });
+});
+
 /**
  * OpenNext Compat: ISR dynamicParams cache header tests
  *
