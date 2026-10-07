@@ -13,7 +13,8 @@
       ],
       "cwd": "benchmarks/nextjs",
       "implementationId": "nextjs"
-    }
+    },
+    { "command": ["node", "benchmarks/perf/generate-pages-app.mjs"], "trusted": true }
   ],
   "scenarios": [
     {
@@ -37,6 +38,31 @@
           "profile": true,
           "compareBase": true,
           "command": ["node", "benchmarks/perf/cold-start.mjs", "vinext", "/"]
+        }
+      ]
+    },
+    {
+      "id": "dev-cold-start-pages-large",
+      "suite": "Development",
+      "label": "Dev server cold start (large Pages Router app)",
+      "description": "Time from launching a fresh dev-server process until the root route of a generated Pages Router app responds. The app links 40 local packages through node_modules and imports them through barrel files (3,200 components). Framework caches are cleared before every round.",
+      "rounds": 3,
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "implementations": [
+        {
+          "id": "nextjs",
+          "label": "Next.js (Turbopack)",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/cold-start.mjs", "nextjs", "/", "--app=pages-large"]
+        },
+        {
+          "id": "vinext",
+          "label": "vinext",
+          "profile": true,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/cold-start.mjs", "vinext", "/", "--app=pages-large"]
         }
       ]
     },

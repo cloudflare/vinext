@@ -257,6 +257,28 @@ export function _peekUnstableCacheObservations(): UnstableCacheObservation[] {
   );
 }
 
+/**
+ * Run `fn` with the request's cache settings, including its revalidation mode,
+ * but its own record of cache lives and unstable_cache observations, so work
+ * done on the request's behalf after the fact leaves the request untouched.
+ */
+export function runWithDetachedCacheObservations<T>(fn: () => Promise<T>): Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((context) => {
+      context.requestScopedCacheLife = null;
+      context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
+    }, fn);
+  }
+  return cacheAls.run(
+    {
+      ...getCacheState(),
+      requestScopedCacheLife: null,
+      unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
+    },
+    fn,
+  );
+}
+
 export function shouldServeStaleUnstableCacheEntry(): boolean {
   return getCacheState().unstableCacheRevalidation === "background";
 }

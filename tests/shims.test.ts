@@ -6530,6 +6530,137 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  // Next.js serves a stale "use cache" entry during a dynamic render and regenerates it in
+  // the background, but regenerates it first during static generation:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("serves a stale cached value and regenerates it in the background", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { addCollectedRequestTags, getCollectedFetchTags } =
+        await import("../packages/vinext/src/shims/fetch-cache.js");
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        // What a tagged fetch inside the function records.
+        addCollectedRequestTags([`fetch-tag-${callCount + 1}`]);
+        return ++callCount;
+      }, "test:stale-background");
+      const waitUntil: Promise<unknown>[] = [];
+      const request = () =>
+        runWithRequestContext(
+          createRequestContext({
+            unstableCacheRevalidation: "background",
+            executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
+          }),
+          async () => {
+            const value = await cached();
+            await Promise.all(waitUntil);
+            return { tags: getCollectedFetchTags(), value };
+          },
+        );
+
+      await expect(request()).resolves.toEqual({ tags: ["fetch-tag-1"], value: 1 });
+      vi.advanceTimersByTime(1_500);
+      // The background regeneration's fetch tags stay out of the stale response.
+      await expect(request()).resolves.toEqual({ tags: [], value: 1 });
+      expect(waitUntil).toHaveLength(1);
+      expect(callCount).toBe(2);
+      await expect(request()).resolves.toEqual({ tags: [], value: 2 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    // ISR regeneration runs with the foreground mode.
+    ["an ISR regeneration", "foreground", undefined],
+    // A prerender's request context is created in background mode before its work unit.
+    ["a prerender", "background", "1"],
+  ] as const)(
+    "regenerates a stale cached value first in %s",
+    async (_name, unstableCacheRevalidation, prerender) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+      setCacheHandler(new MemoryCacheHandler());
+      vi.useFakeTimers({ toFake: ["Date"] });
+      if (prerender) vi.stubEnv("VINEXT_PRERENDER", prerender);
+      try {
+        let callCount = 0;
+        const cached = registerCachedFunction(async () => {
+          cacheLife({ revalidate: 1, expire: 60 });
+          return ++callCount;
+        }, `test:stale-foreground-${unstableCacheRevalidation}`);
+        const request = () =>
+          runWithRequestContext(createRequestContext({ unstableCacheRevalidation }), () =>
+            cached(),
+          );
+
+        await expect(request()).resolves.toBe(1);
+        vi.advanceTimersByTime(1_500);
+        await expect(request()).resolves.toBe(2);
+      } finally {
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("serves stale nested values to a background regeneration", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let innerCount = 0;
+      let outerCount = 0;
+      const inner = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        return `inner-${++innerCount}`;
+      }, "test:stale-nested-inner");
+      const outer = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        return `outer-${++outerCount}:${await inner()}`;
+      }, "test:stale-nested-outer");
+      const waitUntil: Promise<unknown>[] = [];
+      const request = () =>
+        runWithRequestContext(
+          createRequestContext({
+            unstableCacheRevalidation: "background",
+            executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
+          }),
+          () => outer(),
+        );
+
+      await expect(request()).resolves.toBe("outer-1:inner-1");
+      vi.advanceTimersByTime(1_500);
+      await expect(request()).resolves.toBe("outer-1:inner-1");
+      for (let settled = 0; settled < waitUntil.length; settled = waitUntil.length) {
+        await Promise.all(waitUntil);
+      }
+      // Like Next.js, the outer regeneration used the stale inner value while the inner
+      // value regenerated in its own background task.
+      expect(innerCount).toBe(2);
+      await expect(request()).resolves.toBe("outer-2:inner-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
   it("varies shared cache entries by root params read by the cached function", async () => {

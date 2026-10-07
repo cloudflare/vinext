@@ -59,6 +59,11 @@ class TestStore implements WorkersResponseStore {
     return this.mutationResult;
   }
 
+  async invalidate(): Promise<ResponseStoreMutationResult> {
+    if (this.mutationError) throw this.mutationError;
+    return this.mutationResult;
+  }
+
   async purge(): Promise<ResponseStoreMutationResult> {
     if (this.mutationError) throw this.mutationError;
     return this.mutationResult;
@@ -118,7 +123,8 @@ test("only attaches loopback regeneration to replayable requests", async () => {
   await runWithResponseStoreInvocation("unsafe-post", false, () =>
     handler.set("post", null, { cacheControl: { revalidate: 1, expire: 2 } }),
   );
-  expect(store.options).toEqual({ coalesce: true, purgeExisting: true });
+  // Only invalidate()'s `expire` can expire it, and nothing can regenerate it.
+  expect(store.options).toEqual({ coalesce: true, expiryBehavior: "miss", purgeExisting: true });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBeNull();
   expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
 });
@@ -561,6 +567,17 @@ test("leaves a stale replayable hit to the Store's own refresh", async () => {
   }
 });
 
+test("revalidates an invalidated entry the Store cannot regenerate", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  await handler.set("key", null);
+  await expect(handler.get("key")).resolves.not.toHaveProperty("cacheState");
+
+  // Only invalidate() makes a Store hit stale for an entry without a revalidator.
+  store.response?.headers.set("X-Workers-Response-Store", "BLOB-STALE");
+  await expect(handler.get("key")).resolves.toMatchObject({ cacheState: "stale" });
+});
+
 test("honors a shorter revalidate requested by a later read", async () => {
   vi.useFakeTimers();
   try {
@@ -578,9 +595,9 @@ test("honors a shorter revalidate requested by a later read", async () => {
   }
 });
 
-test("refreshes stale tag invalidations and purges expired ones, as Next.js classifies them", async () => {
+test("invalidates stale tag invalidations and purges expired ones, as Next.js classifies them", async () => {
   const store = new TestStore();
-  const refresh = vi.spyOn(store, "refresh");
+  const invalidate = vi.spyOn(store, "invalidate");
   const purge = vi.spyOn(store, "purge");
   const handler = new WorkersResponseStoreCacheHandler(store);
 
@@ -589,8 +606,8 @@ test("refreshes stale tag invalidations and purges expired ones, as Next.js clas
   await handler.revalidateTag("expired");
   await handler.revalidateTag("expire-zero", { expire: 0 });
 
-  expect(refresh.mock.calls).toEqual([
-    [{ tags: [encodeCloudflareCacheTag("max-profile")] }],
+  expect(invalidate.mock.calls).toEqual([
+    [{ tags: [encodeCloudflareCacheTag("max-profile")], expire: 31_536_000 }],
     [{ tags: [encodeCloudflareCacheTag("no-expire")] }],
   ]);
   expect(purge.mock.calls).toEqual([

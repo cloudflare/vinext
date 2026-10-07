@@ -78,6 +78,7 @@ function createStoreFacade(getStore: () => WorkersResponseStore): WorkersRespons
     getTagExpiration: (tags) => getStore().getTagExpiration(tags),
     put: (request, response, options) => getStore().put(request, response, options),
     refresh: (options) => getStore().refresh(options),
+    invalidate: (options) => getStore().invalidate(options),
     purge: (options) => getStore().purge(options),
   };
 }
@@ -161,6 +162,12 @@ export function createWorkersResponseStoreClient<
       return this.service.refresh(refreshOptions, this.getInvocation());
     }
 
+    invalidate(
+      invalidateOptions: Parameters<WorkersResponseStore["invalidate"]>[0],
+    ): ReturnType<WorkersResponseStore["invalidate"]> {
+      return this.service.invalidate(invalidateOptions, this.getInvocation());
+    }
+
     purge(
       purgeOptions: Parameters<WorkersResponseStore["purge"]>[0],
     ): ReturnType<WorkersResponseStore["purge"]> {
@@ -187,6 +194,7 @@ export function createWorkersResponseStoreClient<
 
 export type {
   ExpiryBehavior,
+  ResponseStoreInvalidateOptions,
   ResponseStoreMutationResult,
   ResponseStoreLocationHint,
   ResponseStorePurgeOptions,

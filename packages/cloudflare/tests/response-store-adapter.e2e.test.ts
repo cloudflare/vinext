@@ -11,8 +11,6 @@ import {
 } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vitest";
 
-import { encodeCloudflareCacheTag } from "../src/cache/cdn-adapter.runtime.js";
-
 const root = path.resolve(import.meta.dirname, "../../..");
 const appOutput = path.join(root, "examples/response-store-demo/dist/server");
 const selfContainedAppOutput = path.join(
@@ -115,16 +113,23 @@ async function bodiesStored(entries: StoredResponseEntry[]): Promise<boolean> {
 
 // Writes run in waitUntil after the response returns, so poll for them, then
 // fail unless exactly `count` entries were published and each body is readable.
-async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
-  let entries = await responseEntries(pathname);
+async function waitForStoredEntries(
+  load: () => Promise<StoredResponseEntry[]>,
+  count: number,
+): Promise<void> {
+  let entries = await load();
   let stored = entries.length >= count && (await bodiesStored(entries));
   for (let attempt = 0; attempt < 50 && !stored; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 50));
-    entries = await responseEntries(pathname);
+    entries = await load();
     stored = entries.length >= count && (await bodiesStored(entries));
   }
   assert.equal(entries.length, count, JSON.stringify(entries));
   assert.ok(stored, `R2 bodies not stored for ${JSON.stringify(entries)}`);
+}
+
+async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
+  await waitForStoredEntries(() => responseEntries(pathname), count);
 }
 
 beforeEach(async () => {
@@ -1139,44 +1144,35 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(recomputed[1], /^second:unreplayable:/);
   }, 15_000);
 
-  test("stores the other values a page replay recomputes", async () => {
-    const pathname = "/use-cache-unreplayable";
-    await cacheStatus(pathname);
-    const replayEntries = async () =>
-      ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
-        (entry) =>
-          entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
-      );
-    // Only the first value carries the tag, which the adapter stores encoded.
-    const firstTag = encodeCloudflareCacheTag("unreplayable-first");
-    const isFirst = (entry: StoredResponseEntry) =>
-      Array.isArray(entry.cacheTags) && entry.cacheTags.includes(firstTag);
-    const secondRevision = async () => {
-      const second = (await replayEntries()).filter((entry) => !isFirst(entry));
-      assert.equal(second.length, 1);
-      return second[0].activeRevision;
-    };
-    for (let attempt = 0; attempt < 50 && (await replayEntries()).length < 2; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal((await replayEntries()).filter(isFirst).length, 1);
-    const before = await secondRevision();
-    assert.equal(typeof before, "number");
+  test("revalidating a tag replays the page on the value's next read", async () => {
+    const pathname = "/use-cache-unreplayable-tagged";
+    const value = async () => htmlValue((await cacheStatus(pathname)).body, "unreplayable-tagged");
+    const before = await value();
+    await waitForStoredEntries(
+      async () =>
+        ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+          (entry) =>
+            entry.revalidator?.id === "vinext:data" && JSON.stringify(entry).includes(pathname),
+        ),
+      1,
+    );
 
-    // Once both values expire, refreshing the first replays the page, which recomputes
-    // the second. That value is stored too, as Next.js stores every entry a revalidation
-    // recomputes, instead of being recomputed again by the next request.
-    await new Promise((resolve) => setTimeout(resolve, 2_100));
-    const refresh = await request("/api/revalidate-tag", {
-      body: JSON.stringify({ tag: "unreplayable-first" }),
+    // Like Next.js, revalidating the tag only marks the value stale: its next read still
+    // serves it, and the Store replays the page in the background to regenerate it.
+    const revalidate = await request("/api/revalidate-tag", {
+      body: JSON.stringify({ tag: "unreplayable-tagged" }),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
-    assert.equal(refresh.status, 200, await refresh.text());
-    for (let attempt = 0; attempt < 40 && (await secondRevision()) === before; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(revalidate.status, 200, await revalidate.text());
+    assert.equal(await value(), before);
+    let regenerated = before;
+    for (let attempt = 0; attempt < 40 && regenerated === before; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      regenerated = await value();
     }
-    assert.ok(Number(await secondRevision()) > Number(before));
+    assert.notEqual(regenerated, before);
+    assert.match(regenerated, /^unreplayable-tagged:/);
   }, 15_000);
 
   test("never serves a hard-expired use-cache value", async () => {
@@ -1210,14 +1206,21 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("revalidates tags and purges paths through the unified store", async () => {
     const firstTagged = await cacheStatus("/cached/tagged");
     const firstId = htmlValue(firstTagged.body, "rendered-at");
+    await waitForResponseEntries("/cached/tagged", 1);
     const revalidate = await request("/api/revalidate-tag", {
       body: JSON.stringify({ tag: "post:tagged" }),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
     assert.equal(revalidate.status, 200, await revalidate.text());
-    const refreshed = await cacheStatus("/cached/tagged");
-    assert.notEqual(htmlValue(refreshed.body, "rendered-at"), firstId);
+    // Like Next.js, the next read serves the stale page and regenerates it in the background.
+    assert.equal(htmlValue((await cacheStatus("/cached/tagged")).body, "rendered-at"), firstId);
+    let refreshedId = firstId;
+    for (let attempt = 0; attempt < 40 && refreshedId === firstId; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      refreshedId = htmlValue((await cacheStatus("/cached/tagged")).body, "rendered-at");
+    }
+    assert.notEqual(refreshedId, firstId);
 
     const firstPurged = await cacheStatus("/cached/purged");
     const purge = await request("/api/revalidate-path", {
