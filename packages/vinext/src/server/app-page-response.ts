@@ -134,9 +134,10 @@ function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?:
 }
 
 /**
- * Only ever set from a *completed* render's cacheLife (cache replay or
- * prerender seed) — `use cache` scopes keep resolving after headers commit,
- * so a streaming response can never carry it.
+ * Only ever set from a *completed* render's cacheLife (cache replay,
+ * prerender seed, or a layout probe's early redirect) — `use cache` scopes
+ * keep resolving after headers commit, so a streaming response can never
+ * carry it.
  */
 export function applyClientStaleTimeHeader(
   headers: Headers,

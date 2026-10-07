@@ -255,7 +255,7 @@ export async function runWithDetachedDynamicUsage<T>(
     renderRequestApiUsage: new Set(),
   };
   // Outside the unified scope the probe's claims stay on the request's cache
-  // state, which the probe does not detach.
+  // state, so no cacheLife is returned for the probe.
   return await _als.run(childState, () => runInChildState(childState, null));
 }
 

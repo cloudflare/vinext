@@ -45,6 +45,12 @@ export default function PrefetchRedirectHome() {
       >
         To a page whose layout redirects after a cached read
       </Link>
+      <Link
+        href="/nextjs-compat/prefetch-redirect/layout-guard-cache-life"
+        id="prefetch-redirect-layout-guard-cache-life"
+      >
+        To a page whose layout reads cookies and redirects after a cached read
+      </Link>
     </main>
   );
 }

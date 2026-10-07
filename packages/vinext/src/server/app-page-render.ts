@@ -397,9 +397,12 @@ export function applyIneligibleRouteCachePolicy(
     | "revalidateSeconds"
     | "scriptNonce"
   >,
+  probeCacheLife: AppPageRequestCacheLife | null = null,
 ): Response {
   const cacheControl = resolveEarlyResponseCacheControl(options);
-  if (!cacheControl) return response;
+  if (!cacheControl) {
+    return applyStaticRedirectStaleTime(response, options.isRscRequest, probeCacheLife);
+  }
   // A streamed RSC redirect from a known-dynamic render carries the
   // `staleTimes.dynamic` bound, so a prefetched redirect is not replayed past it.
   const dynamicStaleTimeSeconds =
@@ -430,11 +433,12 @@ export function applyIneligibleRouteCachePolicy(
 }
 
 /**
- * A probe has completed by the time it answers, so a streamed RSC redirect
- * carries the probe's cacheLife stale bound like a completed render, and a
- * prefetched redirect is not replayed past it.
+ * A probe has completed by the time it answers, so a static streamed RSC
+ * redirect carries the probe's cacheLife stale bound like a prerender, and a
+ * prefetched redirect is not replayed past it. As in Next.js, a known-dynamic
+ * redirect carries only the `staleTimes.dynamic` bound.
  */
-function applyProbeRedirectStaleTime(
+function applyStaticRedirectStaleTime(
   response: Response,
   isRscRequest: boolean,
   cacheLife: AppPageRequestCacheLife | null,
@@ -454,6 +458,16 @@ function applyProbeRedirectStaleTime(
   copyLinkHeaderProvenance(response.headers, stamped.headers);
   applyClientStaleTimeHeader(stamped.headers, staleTimeSeconds);
   return stamped;
+}
+
+/** Claims made before the probe, such as blocking metadata, bound it too. */
+function mergeProbeCacheLife(
+  probe: AppPageRequestCacheLife | null,
+  request: AppPageRequestCacheLife | null,
+): AppPageRequestCacheLife | null {
+  if (probe?.stale === undefined) return request;
+  if (request?.stale === undefined) return probe;
+  return { stale: Math.min(probe.stale, request.stale) };
 }
 
 /** The known-dynamic branches of the RSC and HTML response policies, in their order. */
@@ -964,12 +978,9 @@ async function renderAppPageLifecycleImpl(
     // This response replaces the render, so the probe's usage classifies it.
     if (probeOutcome.dynamicDetected) markDynamicUsage();
     return applyIneligibleRouteCachePolicy(
-      applyProbeRedirectStaleTime(
-        preRenderResult.response,
-        options.isRscRequest,
-        probeOutcome.cacheLife,
-      ),
+      preRenderResult.response,
       options,
+      mergeProbeCacheLife(probeOutcome.cacheLife, options.peekRequestCacheLife?.() ?? null),
     );
   }
 

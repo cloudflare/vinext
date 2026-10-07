@@ -277,6 +277,7 @@ export function _peekUnstableCacheObservations(): UnstableCacheObservation[] {
 export function runWithDetachedCacheObservations<T>(fn: () => Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((context) => {
+      context.cacheLifeSink = null;
       context.requestScopedCacheLife = null;
       context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
     }, fn);
@@ -284,6 +285,7 @@ export function runWithDetachedCacheObservations<T>(fn: () => Promise<T>): Promi
   return cacheAls.run(
     {
       ...getCacheState(),
+      cacheLifeSink: null,
       requestScopedCacheLife: null,
       unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     },

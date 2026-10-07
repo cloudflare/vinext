@@ -1218,10 +1218,18 @@ describe("app page render lifecycle", () => {
     );
   });
 
-  it("bounds client reuse of a layout redirect by the probe's cacheLife (#3745)", async () => {
+  it("bounds client reuse of a static layout redirect by the probe's cacheLife (#3745)", async () => {
     // A layout reads a completed cacheLife claim and then redirects. The
     // probe's claim must reach the redirect that replaces the render.
-    const renderLayoutRedirect = async (isRscRequest: boolean, redirectHeader: string | null) => {
+    const renderLayoutRedirect = async (
+      overrides: {
+        isRscRequest?: boolean;
+        readsCookies?: boolean;
+        redirectHeader?: string | null;
+      } = {},
+    ) => {
+      const redirectHeader =
+        overrides.redirectHeader === undefined ? "/login" : overrides.redirectHeader;
       const common = createCommonOptions();
       common.renderLayoutSpecialError.mockImplementation(
         async () =>
@@ -1233,12 +1241,20 @@ describe("app page render lifecycle", () => {
       return runWithRequestContext(createRequestContext(), () =>
         renderAppPageLifecycle({
           ...common.options,
+          classification: {
+            buildTimeClassifications: null,
+            getLayoutId: () => "layout:/",
+            runWithIsolatedDynamicScope: runWithIsolatedDynamicUsage,
+          },
+          consumeDynamicUsage,
           isProduction: true,
-          isRscRequest,
+          isRscRequest: overrides.isRscRequest ?? true,
           layoutCount: 1,
+          peekDynamicUsage,
           // Production layout probes run in the param tracker's isolated scope.
           probeLayoutAt() {
             return createAppLayoutParamAccessTracker().runLayoutProbe("layout:/", () => {
+              if (overrides.readsCookies) markDynamicUsage();
               cacheLife({ stale: 45, revalidate: 60, expire: 300 });
               throw { digest: "NEXT_REDIRECT;replace;/login;307;" };
             });
@@ -1247,13 +1263,19 @@ describe("app page render lifecycle", () => {
       );
     };
 
-    const redirect = await renderLayoutRedirect(true, "/login");
+    const redirect = await renderLayoutRedirect();
     expect(redirect.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/login");
     expect(redirect.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("45");
+    expect(redirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
 
-    const documentRedirect = await renderLayoutRedirect(false, "/login");
+    // A known-dynamic redirect keeps only the `staleTimes.dynamic` bound.
+    const dynamicRedirect = await renderLayoutRedirect({ readsCookies: true });
+    expect(dynamicRedirect.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
+    expect(dynamicRedirect.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
+
+    const documentRedirect = await renderLayoutRedirect({ isRscRequest: false });
     expect(documentRedirect.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
-    const notRedirect = await renderLayoutRedirect(true, null);
+    const notRedirect = await renderLayoutRedirect({ redirectHeader: null });
     expect(notRedirect.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
   });
 

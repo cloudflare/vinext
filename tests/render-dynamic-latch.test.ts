@@ -12,6 +12,8 @@ import {
   runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
+import { cacheLife } from "../packages/vinext/src/shims/cache.js";
+import { runWithDetachedCacheObservations } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   createRequestContext,
   getRequestContext,
@@ -323,6 +325,26 @@ describe("render dynamic latch", () => {
         expect(context.currentRequestTags).toEqual([]);
         expect([...context.dynamicFetchUrls]).toEqual([]);
         expect(context.requestScopedCacheLife).toBeNull();
+      });
+    });
+
+    it("returns the probe's cacheLife from scopes that reset the request slot", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const outcome = await runWithDetachedDynamicUsage(async () => {
+          await runWithUnifiedStateMutation(
+            (context) => {
+              context.requestScopedCacheLife = null;
+            },
+            () => cacheLife({ stale: 45, revalidate: 60, expire: 300 }),
+          );
+          // A background regeneration's claims stay out of the probe's.
+          await runWithDetachedCacheObservations(async () => {
+            cacheLife({ stale: 10, revalidate: 60, expire: 300 });
+          });
+        });
+
+        expect(outcome.cacheLife?.stale).toBe(45);
+        expect(getRequestContext().requestScopedCacheLife).toBeNull();
       });
     });
 
