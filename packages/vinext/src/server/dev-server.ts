@@ -34,6 +34,7 @@ import {
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
@@ -258,6 +259,16 @@ const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
   res.removeHeader("Transfer-Encoding");
+}
+
+/**
+ * Vite's `transformIndexHtml` treats its URL as the HTML document's path, so
+ * the request query carries no meaning there. Since Vite 8.3.3 it also maps
+ * `/?q` onto the project root directory and then watches the filesystem root
+ * for each inline `<style>` proxy module, so pass the bare path.
+ */
+function toHtmlTransformPath(url: string): string {
+  return stripViteModuleQuery(url);
 }
 
 /**
@@ -491,7 +502,7 @@ async function streamPageToResponseImpl(
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  let transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  let transformedShell = await server.transformIndexHtml(toHtmlTransformPath(url), shellTemplate);
   transformedShell = stripDocumentAssetPropsProtectionMarkers(
     applyDocumentAssetProps(transformedShell, documentAssetProps, {
       configuredCrossOrigin: crossOrigin,
@@ -2123,7 +2134,7 @@ async function renderErrorPage(
 </html>`;
         const transformedHtml = stripDocumentAssetPropsProtectionMarkers(
           applyDocumentAssetProps(
-            await server.transformIndexHtml(url, html),
+            await server.transformIndexHtml(toHtmlTransformPath(url), html),
             {},
             {
               configuredCrossOrigin: context.crossOrigin,
