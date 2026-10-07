@@ -800,6 +800,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return applyIneligibleRouteCachePolicy(
       new Response("Page has no default export", { status: 500 }),
       {
+        dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
         isDraftMode,
         isDynamicError,
         isForceDynamic,
@@ -1155,6 +1156,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.middlewareContext,
       );
       const cachePolicy = {
+        dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
         isDraftMode,
         isDynamicError,
         isForceDynamic,

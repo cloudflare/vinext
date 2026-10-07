@@ -68,7 +68,11 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import {
   createWorkerCacheabilityAdmissionContext,
@@ -896,6 +900,40 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     expect(ensureRouteLoaded).not.toHaveBeenCalled();
+  });
+
+  it("bounds a redirect from a generated-param miss by the route's dynamic stale time (#3745)", async () => {
+    // A not-found boundary that calls redirect() answers an RSC request with
+    // a streamed redirect, which a prefetch may replay.
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () =>
+        new Response("flight", {
+          headers: { [VINEXT_RSC_REDIRECT_HEADER]: "/login" },
+        }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 0,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage({
+      ...options,
+      dynamicParamsConfig: false,
+      dynamicStaleTimeSeconds: 45,
+    });
+
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalled();
+    expect(response.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/login");
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("45");
   });
 
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
