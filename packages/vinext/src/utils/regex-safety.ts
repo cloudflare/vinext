@@ -941,7 +941,7 @@ function repeatableSymbols(node: RegexNode): RegexSymbol[] | null {
     case "assertion":
       return [];
     case "repeat":
-      return node.max === Infinity ? consumedSymbols(node.child) : repeatableSymbols(node.child);
+      return node.max === Infinity ? repeatedSymbols(node.child) : repeatableSymbols(node.child);
     case "sequence":
     case "alternation": {
       const symbols: RegexSymbol[] = [];
@@ -953,6 +953,29 @@ function repeatableSymbols(node: RegexNode): RegexSymbol[] | null {
       return symbols;
     }
   }
+}
+
+/**
+ * Symbols one iteration of `node` can consume. path-to-regexp guards a param
+ * before a custom suffix as `(?:(?!-)[^/])+?`, which never consumes the `-`.
+ */
+function repeatedSymbols(node: RegexNode): RegexSymbol[] | null {
+  if (node.kind === "sequence" && node.children.length === 2) {
+    const [guard, atom] = node.children;
+    if (
+      guard.kind === "assertion" &&
+      guard.negativeLookahead &&
+      guard.child.kind === "atom" &&
+      guard.child.symbol?.kind === "literal" &&
+      atom.kind === "atom" &&
+      atom.symbol?.kind === "class"
+    ) {
+      const values = new Set(atom.symbol.values);
+      values.delete(guard.child.symbol.key);
+      return [createClassSymbol(values, atom.symbol.nonAscii)];
+    }
+  }
+  return consumedSymbols(node);
 }
 
 function findSequenceIssue(
@@ -1127,6 +1150,8 @@ export function regexStartsMayOverlap(
   const rightNode = rightParser.parse();
   if (leftParser.exceededBudget || leftParser.index < left.length) return true;
   if (rightParser.exceededBudget || rightParser.index < right.length) return true;
+  // A nullable side starts with whatever follows it, which is not known here.
+  if (isNullable(rightNode) || (leftSymbols === "first" && isNullable(leftNode))) return true;
   return boundariesMayOverlap(
     leftSymbols === "first" ? firstSymbols(leftNode) : consumedSymbols(leftNode),
     firstSymbols(rightNode),
@@ -1270,6 +1295,21 @@ function sameNode(left: RegexNode, right: RegexNode): boolean {
   }
 }
 
+function containsAssertion(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+      return false;
+    case "assertion":
+      return true;
+    case "sequence":
+      return node.children.some(containsAssertion);
+    case "alternation":
+      return node.branches.some(containsAssertion);
+    case "repeat":
+      return containsAssertion(node.child);
+  }
+}
+
 /**
  * Whether `branch` starts with a negative lookahead such as `(?!foo)` that
  * rules out every one of `words`: each word starts with a literal the
@@ -1278,6 +1318,9 @@ function sameNode(left: RegexNode, right: RegexNode): boolean {
 function negativeLookaheadExcludes(branch: RegexNode, words: RegexSymbol[][]): boolean {
   const first = branch.kind === "sequence" ? branch.children[0] : branch;
   if (first?.kind !== "assertion" || !first.negativeLookahead) return false;
+  // fixedWords() ignores assertions, so a nested one such as `(?!a(?=a))`
+  // would make the lookahead refuse less than its words suggest.
+  if (containsAssertion(first.child)) return false;
   const excluded = fixedWords(first.child, { words: 0, symbols: 0, exceeded: false });
   if (!excluded) return false;
   return words.every((word) =>

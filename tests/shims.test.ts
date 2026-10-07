@@ -13568,6 +13568,35 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       "/:a(.*)/b/:c(.*)",
       { "/x/b/y": true, "/x/y/b/z/w": true, "/b/y": false, "/x/b": false, "/x/c/y": false },
     ],
+    // Repeated params whose segments start differently never share a boundary.
+    [
+      "/:a(a)*/:b(b)*/:c(c)*/end",
+      {
+        "/end": true,
+        "/a/a/b/c/c/end": true,
+        "/A/B/end": true,
+        "/b/a/end": false,
+        "/a/c/b/end": false,
+        "/d/end": false,
+      },
+    ],
+    [
+      "/:a-:b-:c(\\d+|new)",
+      {
+        "/x-y-12": true,
+        "/x-y-z-new": true,
+        "/x-y-NEW": true,
+        "/x-y-z": false,
+        "/x-12": false,
+        "/x/y-z-12": false,
+      },
+    ],
+    // A trailing catch-all takes whatever a chain of repeated params leaves.
+    ["/:a*/:b*/:c*/:rest(.*)", { "/x": true, "/a/b/c/d": true, "/": true, "//": true }],
+    [
+      "/x{/:a}*{/:b}*{/:c}*/:rest(.*)",
+      { "/x/a": true, "/x/a/b/c/d": true, "/x/": true, "/x": false, "/y/a": false },
+    ],
   ];
 
   for (const [source, expected] of cases) {
@@ -13680,6 +13709,10 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ],
     ["/:id(a+aa+a(?:a+|x))/Z", "overlapping sequential repetition", `/${"a".repeat(40)}!`],
     ["/x{/:a}*{/:b}*{/:c}*{/:d}*/end", "can split the same text", `/x${"/s".repeat(40)}`],
+    ["/:a(a)*/:b(a)*/:c(a)*/end", "can split the same text", `/${"a/".repeat(40)}!`],
+    // A catch-all after a required param does not save the chain before it.
+    ["/:a(a)*/:b(a)*/:c(a)*/:d(\\d+)/(.*)", "can split the same text", `/${"a/".repeat(40)}!`],
+    ["/:x((?!a(?=a))a+|a)*/end", "more than one way", `/${"a/".repeat(40)}!`],
     ["/:x((?=.{0,65535}e)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
@@ -13692,6 +13725,26 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       expect(matchHeaders(pathname, rules, ctx)).toEqual([]);
       expect(performance.now() - start).toBeLessThan(1_000);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(reason));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // A chain of repeated params is only slow when the rest of the source can
+  // fail; a trailing catch-all matches on the first split.
+  it.each([
+    ["/:a*/:b*/:c*/:rest(.*)", `/${"a/".repeat(4_000)}`],
+    ["/:a*/:b(.*){/:c}*", `/${"a/".repeat(4_000)}!`],
+    ["/:a(a)*/:b(b)*/:c(c)*/end", `/${"a/b/c/".repeat(1_400)}!`],
+  ])("matches %s on an 8 KB path in linear time", async (source, pathname) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      const start = performance.now();
+      matchHeaders(pathname, rules, ctx);
+      expect(performance.now() - start).toBeLessThan(1_000);
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }

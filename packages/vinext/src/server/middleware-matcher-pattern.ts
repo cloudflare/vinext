@@ -389,6 +389,29 @@ function compileSourcePattern(
 const MAX_OVERLAPPING_REPEATED_TOKENS = 1;
 
 /**
+ * Whether one more occurrence of a repeated token and the next token can start
+ * on the same text. Their shared prefix (usually `/`) says nothing, so compare
+ * what follows it: for `/:a(a)+` followed by `/:b(b)+`, the first character
+ * after each `/` decides.
+ */
+function repeatedOccurrencesMayOverlap(
+  earlier: MiddlewarePathKey,
+  next: MiddlewarePathKey,
+): boolean {
+  let shared = 0;
+  while (
+    shared < earlier.prefix.length &&
+    shared < next.prefix.length &&
+    earlier.prefix[shared] === next.prefix[shared]
+  ) {
+    shared++;
+  }
+  const rest = (token: MiddlewarePathKey) =>
+    `${escapeRegex(token.prefix.slice(shared))}(?:${token.pattern})${escapeRegex(token.suffix)}`;
+  return regexStartsMayOverlap(rest(earlier), rest(next), "first", true);
+}
+
+/**
  * Repeated tokens are reduced to one occurrence for the whole-source check, so
  * check their repetition boundaries here. A repeated token can take one more
  * occurrence where the next token starts, and a token whose pattern spans the
@@ -396,17 +419,51 @@ const MAX_OVERLAPPING_REPEATED_TOKENS = 1;
  * repetitions, one such boundary is linear per split, but each further one in
  * a chain raises the backtracking degree: `/x{/:a}*{/:b}*{/:c}*` is refused.
  * Boundaries between two spanning tokens keep the whole-source rule.
+ *
+ * A chain only backtracks when the rest of the source fails. A `.*` or `.+`
+ * token followed only by optional or other `.*`/`.+` tokens takes whatever
+ * text is left. Once the chain's last required token has matched, optional
+ * tokens that start with the tail's prefix give back at most one occurrence
+ * before the tail matches, so a `/:rest(.*)` after `{/:a}*{/:b}*{/:c}*` keeps
+ * that chain linear. This relies on header sources matching URL pathnames,
+ * which never contain the line terminators `.` rejects.
  */
 function repeatedTokenChainIssue(tokens: MiddlewarePathToken[]): string | null {
   const occurrence = (token: MiddlewarePathKey) =>
     `${escapeRegex(token.prefix)}(?:${token.pattern})${escapeRegex(token.suffix)}`;
+  const isOptional = (token: MiddlewarePathToken) =>
+    typeof token === "string" ? !token : token.modifier === "*" || token.modifier === "?";
+  let tail = -1;
+  for (let index = tokens.length - 1; index >= 0; index--) {
+    const token = tokens[index];
+    const universal =
+      typeof token !== "string" && !token.suffix && UNIVERSAL_PATTERN.test(token.pattern);
+    if (universal) tail = index;
+    else if (!isOptional(token)) break;
+  }
+  const tailToken = tail === -1 ? null : (tokens[tail] as MiddlewarePathKey);
+  // Whether the chain that overflowed at `index` always reaches the tail: the
+  // tokens after the last required one, which must not come after `index`,
+  // are optional and start where the tail can.
+  const reachesTail = (index: number, chainStart: number) => {
+    if (!tailToken) return false;
+    if (index >= tail) return true;
+    for (let next = tail - 1; next > chainStart; next--) {
+      const token = tokens[next];
+      if (!isOptional(token)) return next <= index;
+      if (typeof token !== "string" && !token.prefix.startsWith(tailToken.prefix)) return false;
+    }
+    return true;
+  };
   let pending: Array<{ token: MiddlewarePathKey; repeated: boolean }> = [];
   let chained = 0;
-  for (const token of tokens) {
+  let chainStart = 0;
+  for (const [index, token] of tokens.entries()) {
     if (typeof token === "string") {
       if (token) {
         pending = [];
         chained = 0;
+        chainStart = index + 1;
       }
       continue;
     }
@@ -416,6 +473,7 @@ function repeatedTokenChainIssue(tokens: MiddlewarePathToken[]): string | null {
       if (!nullable) {
         pending = [];
         chained = 0;
+        chainStart = index + 1;
       }
       continue;
     }
@@ -424,16 +482,18 @@ function repeatedTokenChainIssue(tokens: MiddlewarePathToken[]): string | null {
       (earlier) =>
         (earlier.repeated || repeated) &&
         (earlier.repeated
-          ? regexStartsMayOverlap(occurrence(earlier.token), start, "first", true)
+          ? repeatedOccurrencesMayOverlap(earlier.token, token)
           : regexStartsMayOverlap(earlier.token.pattern, start, "any", true)),
     );
     if (overlaps) {
       chained++;
       if (chained > MAX_OVERLAPPING_REPEATED_TOKENS) {
+        if (reachesTail(index, chainStart)) return null;
         return `repeated parameter "${token.name}" can split the same text with an earlier parameter`;
       }
     } else if (!nullable) {
       chained = 0;
+      chainStart = index;
     }
     const entry = { token, repeated };
     pending = nullable ? [...pending, entry] : [entry];

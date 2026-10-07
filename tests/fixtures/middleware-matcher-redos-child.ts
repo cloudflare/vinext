@@ -95,6 +95,8 @@ for (const [matcher, nearMiss] of [
   // Ambiguity inside the pattern is multiplied by every occurrence.
   ["/:x(a|a)*/end", `/${"a/".repeat(1_500)}!`],
   ["/:x([^/]+b[^/]+)*/end", `/${"abba/".repeat(1_000)}!`],
+  // A nested assertion makes the exclusion lookahead refuse less than it reads.
+  ["/:x((?!a(?=a))a+|a)*/end", `/${"a/".repeat(1_500)}!`],
 ]) {
   if (!matchPattern(nearMiss, matcher)) {
     throw new Error(`Unsafe separated repeat did not fail closed: ${matcher}`);
