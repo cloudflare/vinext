@@ -46,18 +46,24 @@ async function collectGarbage(inspectorUrl: URL): Promise<void> {
   const socket = new WebSocket(debuggerUrl, {
     headers: { Origin: "http://localhost" },
   } as unknown as string[]);
-  await new Promise<void>((resolve, reject) => {
-    socket.addEventListener("open", () => resolve(), { once: true });
-    socket.addEventListener("error", () => reject(new Error("Inspector connection failed")), {
-      once: true,
-    });
-  });
   try {
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener("error", () => reject(new Error("Inspector connection failed")));
+      socket.addEventListener("close", () => reject(new Error("Inspector connection closed")));
       socket.addEventListener("message", (event) => {
-        if ((JSON.parse(String(event.data)) as { id?: number }).id === 1) resolve();
+        const message = JSON.parse(String(event.data)) as { id?: number; error?: unknown };
+        if (message.id !== 1) return;
+        if (message.error) {
+          reject(new Error(`Heap snapshot failed: ${JSON.stringify(message.error)}`));
+        } else {
+          resolve();
+        }
       });
-      socket.send(JSON.stringify({ id: 1, method: "HeapProfiler.takeHeapSnapshot" }));
+      socket.addEventListener(
+        "open",
+        () => socket.send(JSON.stringify({ id: 1, method: "HeapProfiler.takeHeapSnapshot" })),
+        { once: true },
+      );
     });
   } finally {
     socket.close();
