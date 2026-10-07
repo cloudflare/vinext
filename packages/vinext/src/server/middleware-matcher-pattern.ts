@@ -1,6 +1,7 @@
 import type { HasCondition } from "../config/next-config.js";
 import { analyzeRegexSafety, regexAtomsMayOverlap } from "../utils/regex-safety.js";
 import {
+  middlewarePathSegmentPattern,
   middlewarePathTokensToRegExp,
   normalizeMiddlewarePathTokens,
   parseMiddlewarePath,
@@ -10,6 +11,11 @@ import {
 
 export type CompiledMiddlewareMatcherPattern =
   | { regexp: RegExp; error?: never }
+  | { regexp?: never; error: string; kind: "invalid" | "unsafe" };
+
+/** `keys[i]` names capture group `i + 1` of `regexp`. */
+export type CompiledCustomRouteSourcePattern =
+  | { regexp: RegExp; keys: MiddlewarePathKey[]; error?: never }
   | { regexp?: never; error: string; kind: "invalid" | "unsafe" };
 
 export type MiddlewareMatcherObject = {
@@ -210,14 +216,20 @@ function hasOverlappingSequentialRepetition(pattern: string): boolean {
   return false;
 }
 
-function unsafeTokenReason(token: MiddlewarePathKey): string | null {
-  const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true });
-  if (regexSafetyIssue) {
-    if (regexSafetyIssue === "analysis budget exceeded") {
-      return `parameter "${token.name}" exceeds the regex analysis budget`;
-    }
-    return `parameter "${token.name}" contains ${regexSafetyIssue}`;
+function regexSafetyReason(token: MiddlewarePathKey, pattern: string): string | null {
+  const regexSafetyIssue = analyzeRegexSafety(pattern, { ignoreCase: true });
+  if (!regexSafetyIssue) return null;
+  if (regexSafetyIssue === "analysis budget exceeded") {
+    return `parameter "${token.name}" exceeds the regex analysis budget`;
   }
+  return `parameter "${token.name}" contains ${regexSafetyIssue}`;
+}
+
+type UnsafeTokenReason = (token: MiddlewarePathKey) => string | null;
+
+function unsafeTokenReason(token: MiddlewarePathKey): string | null {
+  const regexSafetyIssue = regexSafetyReason(token, token.pattern);
+  if (regexSafetyIssue) return regexSafetyIssue;
   if (hasOverlappingSequentialRepetition(token.pattern)) {
     return `parameter "${token.name}" contains overlapping sequential repetition`;
   }
@@ -236,16 +248,69 @@ function unsafeTokenReason(token: MiddlewarePathKey): string | null {
   return null;
 }
 
-function validateTokens(tokens: MiddlewarePathToken[]): string | null {
+const CUSTOM_ROUTE_DELIMITER = "/";
+
+/**
+ * Safety check for a `redirects()` / `rewrites()` source token.
+ *
+ * A constraint that is not repeated gets the structural scan only. Middleware
+ * matchers also refuse overlapping sequential repetition such as
+ * `[a-z0-9]+[a-z0-9-]*`, but that shape is polynomial, common in slug
+ * constraints, and accepted by Next.js.
+ *
+ * A repeated param compiles to `P(?:SEP P)*`, where `SEP` is the param's
+ * suffix plus its prefix (`/` for `/:path*`). Every way to split the path
+ * into segments, and every way to match one segment, multiplies across the
+ * repetition, so the compiled regex is linear only when both are unique.
+ *
+ *   - A constraint `P` must pass the structural scan as the body of a
+ *     repetition. The scan is built to accept a body only when its matches
+ *     have a fixed width or form a prefix-free set of words. Either property
+ *     makes the split and the match unique, also when `P` can match `SEP`.
+ *   - The unconstrained pattern is one repeated character class, so it
+ *     matches a segment in one way, but the scan cannot see that. Its split
+ *     is unique when the segment cannot contain `SEP`: the class excludes the
+ *     delimiter, and after non-delimiter text (`/:name.:ext+`) a lookahead
+ *     excludes that text.
+ */
+function unsafeCustomRouteTokenReason(token: MiddlewarePathKey): string | null {
+  const regexSafetyIssue = regexSafetyReason(token, token.pattern);
+  if (regexSafetyIssue) return regexSafetyIssue;
+  if (token.modifier !== "*" && token.modifier !== "+") return null;
+
+  if (token.pattern !== middlewarePathSegmentPattern(CUSTOM_ROUTE_DELIMITER, token.prefix)) {
+    return regexSafetyReason(token, `(?:${token.pattern})*`);
+  }
+  const excludesPrefix = token.pattern !== middlewarePathSegmentPattern(CUSTOM_ROUTE_DELIMITER);
+  const separator = token.suffix + token.prefix;
+  // A repeat with no separator (`/foo-:id*`) is a syntax error, which the
+  // compile step reports with the message that Next.js gives.
+  if (excludesPrefix || !separator || separator.includes(CUSTOM_ROUTE_DELIMITER)) return null;
+  return `repeated parameter "${token.name}" may match its separator`;
+}
+
+function validateTokens(
+  tokens: MiddlewarePathToken[],
+  unsafeReason: UnsafeTokenReason,
+): string | null {
   for (const token of tokens) {
     if (typeof token === "string") continue;
-    const reason = unsafeTokenReason(token);
+    const reason = unsafeReason(token);
     if (reason) return reason;
   }
   return null;
 }
 
-export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
+type SourcePatternOptions = {
+  delimiter?: string;
+  normalizeUnprefixedRepeats: boolean;
+  unsafeReason: UnsafeTokenReason;
+};
+
+function compileSourcePattern(
+  source: string,
+  { delimiter, normalizeUnprefixedRepeats, unsafeReason }: SourcePatternOptions,
+): CompiledCustomRouteSourcePattern {
   if (!source.startsWith("/")) {
     return { kind: "invalid", error: "source must start with /" };
   }
@@ -255,7 +320,7 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
 
   let tokens: MiddlewarePathToken[];
   try {
-    tokens = parseMiddlewarePath(source);
+    tokens = parseMiddlewarePath(source, delimiter);
   } catch (error) {
     return {
       kind: "invalid",
@@ -263,19 +328,30 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
     };
   }
 
-  const unsafeReason = validateTokens(tokens);
-  if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
+  const unsafeTokenIssue = validateTokens(tokens, unsafeReason);
+  if (unsafeTokenIssue) return { kind: "unsafe", error: unsafeTokenIssue };
 
   try {
-    return { regexp: middlewarePathTokensToRegExp(tokens) };
-  } catch {
+    const keys: MiddlewarePathKey[] = [];
+    return { regexp: middlewarePathTokensToRegExp(tokens, delimiter, { keys }), keys };
+  } catch (error) {
+    if (!normalizeUnprefixedRepeats) {
+      return {
+        kind: "invalid",
+        error: error instanceof Error ? error.message : "source could not be compiled",
+      };
+    }
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
     const normalizedTokens = normalizeMiddlewarePathTokens(tokens);
-    const normalizedUnsafeReason = validateTokens(normalizedTokens);
+    const normalizedUnsafeReason = validateTokens(normalizedTokens, unsafeReason);
     if (normalizedUnsafeReason) return { kind: "unsafe", error: normalizedUnsafeReason };
     try {
-      return { regexp: middlewarePathTokensToRegExp(normalizedTokens) };
+      const keys: MiddlewarePathKey[] = [];
+      return {
+        regexp: middlewarePathTokensToRegExp(normalizedTokens, delimiter, { keys }),
+        keys,
+      };
     } catch (error) {
       return {
         kind: "invalid",
@@ -283,6 +359,43 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
       };
     }
   }
+}
+
+export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
+  return compileSourcePattern(source, {
+    normalizeUnprefixedRepeats: true,
+    unsafeReason: unsafeTokenReason,
+  });
+}
+
+/**
+ * Compile a `redirects()` / `rewrites()` source the way Next.js does: path-to-regexp 6
+ * with `delimiter: "/"` (the default `/#?` would stop a segment at a decoded
+ * `#` or `?`), case-insensitive, and an optional trailing slash. The
+ * optional slash is what lets `/:path*` match the root path `/`. Unlike
+ * middleware matchers, an unprefixed repeat such as `/foo-:id*` is a config
+ * error in Next.js, so it is not normalized here.
+ *
+ * @see .nextjs-ref/packages/next/src/server/lib/router-utils/filesystem.ts (buildCustomRoute)
+ * @see .nextjs-ref/packages/next/src/shared/lib/router/utils/path-match.ts
+ */
+export function compileCustomRouteSourcePattern(source: string): CompiledCustomRouteSourcePattern {
+  const compiled = compileSourcePattern(source, {
+    delimiter: CUSTOM_ROUTE_DELIMITER,
+    normalizeUnprefixedRepeats: false,
+    unsafeReason: unsafeCustomRouteTokenReason,
+  });
+  if (!compiled.regexp) return compiled;
+
+  // The lexer refuses `(` inside a constraint unless `?` follows it, but a
+  // named group `(?<x>…)` passes that test and still captures. One extra
+  // group shifts every later key, so the source is refused. Next.js throws
+  // on such a source when it matches.
+  const groupCount = (new RegExp(`${compiled.regexp.source}|`).exec("")?.length ?? 1) - 1;
+  if (groupCount !== compiled.keys.length) {
+    return { kind: "invalid", error: "Capturing groups are not allowed in a constraint" };
+  }
+  return compiled;
 }
 
 export function validateMiddlewareMatcherPatterns(value: unknown): void {
