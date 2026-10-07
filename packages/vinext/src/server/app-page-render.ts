@@ -398,26 +398,27 @@ export function applyIneligibleRouteCachePolicy(
   >,
 ): Response {
   const cacheControl = resolveEarlyResponseCacheControl(options);
-  const dynamicStaleTimeSeconds = resolveRscRedirectDynamicStaleTimeSeconds(
-    response,
-    options,
-    cacheControl !== null,
-  );
+  if (!cacheControl) return response;
+  // A streamed RSC redirect from a known-dynamic render carries the
+  // `staleTimes.dynamic` bound, so a prefetched redirect is not replayed past it.
+  const dynamicStaleTimeSeconds =
+    options.isRscRequest && response.headers.has(VINEXT_RSC_REDIRECT_HEADER)
+      ? (options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds())
+      : undefined;
   // Middleware's own cache policy wins, as in the normal response builders.
   // Only keep what this response already carries from it.
   const middlewarePolicy = [...(options.middlewareContext.headers ?? [])].filter(
     ([name, value]) => isCdnResponsePolicyHeader(name) && response.headers.get(name) === value,
   );
-  const appliesCacheControl =
-    cacheControl !== null && !middlewarePolicy.some(([name]) => name === "cache-control");
-  if (!appliesCacheControl && dynamicStaleTimeSeconds === undefined) return response;
+  const keepsMiddlewareCacheControl = middlewarePolicy.some(([name]) => name === "cache-control");
+  if (keepsMiddlewareCacheControl && dynamicStaleTimeSeconds === undefined) return response;
   // Some early responses have immutable headers, so stamp a copy.
   const stamped = preserveFullyBufferedBodyMetadata(
     response,
     new Response(response.body, response as ResponseInit),
   );
   copyLinkHeaderProvenance(response.headers, stamped.headers);
-  if (appliesCacheControl) {
+  if (!keepsMiddlewareCacheControl) {
     applyCdnResponseHeaders(stamped.headers, { cacheControl });
     for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
   }
@@ -425,42 +426,6 @@ export function applyIneligibleRouteCachePolicy(
     stamped.headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(dynamicStaleTimeSeconds));
   }
   return stamped;
-}
-
-/**
- * A streamed RSC redirect from a known-dynamic render carries the
- * `staleTimes.dynamic` bound, so a prefetched redirect is not replayed past it.
- * The layout probe runs in an isolated dynamic scope, so a layout that reads
- * `cookies()` and then redirects is visible only through the render latch.
- */
-function resolveRscRedirectDynamicStaleTimeSeconds(
-  response: Response,
-  options: Parameters<typeof applyIneligibleRouteCachePolicy>[1],
-  isKnownDynamic: boolean,
-): number | undefined {
-  if (!options.isRscRequest || !response.headers.has(VINEXT_RSC_REDIRECT_HEADER)) {
-    return undefined;
-  }
-  if (!isKnownDynamic && (ignoresDynamicUsage(options) || !isRenderDynamicLatched())) {
-    return undefined;
-  }
-  return options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
-}
-
-/**
- * As in the HTML response policy, only force-static and dynamic = "error"
- * without a revalidate period stay static after a dynamic API read.
- */
-function ignoresDynamicUsage(
-  options: Pick<
-    RenderAppPageLifecycleOptions,
-    "isDynamicError" | "isForceStatic" | "revalidateSeconds"
-  >,
-): boolean {
-  return (
-    (options.isForceStatic || options.isDynamicError) &&
-    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity)
-  );
 }
 
 /** The known-dynamic branches of the RSC and HTML response policies, in their order. */
@@ -476,9 +441,14 @@ function resolveEarlyResponseCacheControl(
   if (!options.isRscRequest && (options.scriptNonce || options.isProgressiveActionRender)) {
     return NO_STORE_CACHE_CONTROL;
   }
+  // As in the HTML response policy, only force-static and dynamic = "error"
+  // without a revalidate period stay static after a dynamic API read.
+  const ignoresDynamicUsage =
+    (options.isForceStatic || options.isDynamicError) &&
+    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity);
   const isKnownDynamic =
     options.revalidateSeconds === 0 ||
-    (!ignoresDynamicUsage(options) && (options.peekDynamicUsage?.() ?? peekDynamicUsage()));
+    (!ignoresDynamicUsage && (options.peekDynamicUsage?.() ?? peekDynamicUsage()));
   return isKnownDynamic ? uncacheable : null;
 }
 

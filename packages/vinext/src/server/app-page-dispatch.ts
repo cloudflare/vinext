@@ -800,7 +800,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return applyIneligibleRouteCachePolicy(
       new Response("Page has no default export", { status: 500 }),
       {
-        dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
         isDraftMode,
         isDynamicError,
         isForceDynamic,

@@ -1,15 +1,18 @@
 /**
- * Link navigation to a prefetched page whose server component calls
- * redirect(). Link prefetching is production-only, so this runs against the
- * production app-basic server.
+ * Link navigation to a prefetched route that calls redirect(). Link prefetching
+ * is production-only, so this runs against the production app-basic server.
  *
- * Next.js parity: `next start` follows the redirect as a client navigation
- * (observed on Next.js 16.3.8 in the issue below). Upstream has no Link +
- * prefetch test for a page calling redirect(); the closest is the
+ * A page's redirect() streams inside its Flight payload. A layout's redirect()
+ * is answered early with the `X-Vinext-Rsc-Redirect` side channel, which a
+ * replayed prefetch must keep and which must not outlive `staleTimes.dynamic`
+ * when the layout read a dynamic API.
+ *
+ * Next.js parity: `next start` (16.2.7) follows each redirect as a client
+ * navigation with the per-variant request counts below. Upstream has no Link +
+ * prefetch test for a route calling redirect(); the closest is the
  * production-only prefetch + click case for a middleware redirect in
  * test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
  * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
- * The per-variant request counts below match `next start` on Next.js 16.2.7.
  *
  * Regression for https://github.com/cloudflare/vinext/issues/3745
  */
@@ -25,15 +28,18 @@ function readMarker(page: Page): Promise<unknown> {
 }
 
 const VARIANTS = [
-  // Static and full-prefetched dynamic redirects are replayed from the
-  // prefetch cache, as Next.js reuses static and full prefetches.
+  // Page redirect() (the issue's reproduction). Static and full-prefetched
+  // dynamic pages are replayed from the prefetch cache; an auto prefetch of a
+  // dynamic page is fetched again on click, as Next.js does not prefetch
+  // dynamic page data on auto.
   { name: "static", refetchesOnClick: false },
   { name: "dynamic", refetchesOnClick: false },
-  // The click fetches a dynamic redirect again after an auto prefetch, as in
-  // Next.js (which does not prefetch dynamic page data on auto). In vinext the
-  // auto prefetch is fetched but expires under `staleTimes.dynamic` (0 by default).
   { name: "dynamic-auto", refetchesOnClick: true },
-  // The same holds when a layout reads cookies() and then redirects.
+  // Layout redirect(). A static layout redirect and a full prefetch replay the
+  // prefetched redirect; a layout that read cookies() bounds an auto prefetch
+  // by `staleTimes.dynamic` (0 by default), so the click fetches it again.
+  { name: "layout-redirect", refetchesOnClick: false },
+  { name: "layout-guard-full", refetchesOnClick: false },
   { name: "layout-guard", refetchesOnClick: true },
 ] as const;
 

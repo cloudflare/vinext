@@ -1185,20 +1185,34 @@ describe("app page render lifecycle", () => {
       },
     );
 
-    // A layout that reads cookies() and then redirects does so inside the
-    // isolated layout probe, which leaves only the render latch set.
+    // A layout that reads cookies() and then redirects: the layout probe's
+    // dynamic usage classifies the redirect, as in the real lifecycle.
+    const common = createCommonOptions();
+    common.renderLayoutSpecialError.mockImplementation(
+      async () =>
+        new Response("flight", {
+          headers: { [VINEXT_RSC_REDIRECT_HEADER]: "/login" },
+        }),
+    );
     await runWithHeadersContext(
       headersContextFromRequest(new Request("https://example.test/dashboard")),
       async () => {
-        await runWithIsolatedDynamicUsage(() => {
-          markDynamicUsage();
+        const layoutGuard = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage,
+          isProduction: true,
+          isRscRequest: true,
+          layoutCount: 1,
+          peekDynamicUsage,
+          probeLayoutAt() {
+            markDynamicUsage();
+            throw { digest: "NEXT_REDIRECT;replace;/login;307;" };
+          },
         });
 
-        const layoutGuard = await renderRedirect({});
+        expect(common.renderLayoutSpecialError).toHaveBeenCalled();
+        expect(layoutGuard.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/login");
         expect(layoutGuard.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
-        // force-static stays static after a dynamic API read.
-        const forceStatic = await renderRedirect({ isForceStatic: true });
-        expect(forceStatic.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
       },
     );
   });
