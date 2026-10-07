@@ -97,6 +97,8 @@ for (const [matcher, nearMiss] of [
   ["/:x([^/]+b[^/]+)*/end", `/${"abba/".repeat(1_000)}!`],
   // A nested assertion makes the exclusion lookahead refuse less than it reads.
   ["/:x((?!a(?=a))a+|a)*/end", `/${"a/".repeat(1_500)}!`],
+  // An optional element between `b+` and the fixed `ba` shifts it as well.
+  ["/:x(b+a*ba[ab]+)*/end", `/${"bbabaa/".repeat(1_000)}!`],
 ]) {
   if (!matchPattern(nearMiss, matcher)) {
     throw new Error(`Unsafe separated repeat did not fail closed: ${matcher}`);
@@ -197,6 +199,7 @@ for (const [matcher, match, nearMiss] of [
     `/${"xaabc/acdcc/".repeat(500)}end`,
     `/${"xaabc/acdcc/".repeat(500)}xaab!`,
   ],
+  ["/:x([一-鿿]|[가-힣])*/end", `/${"一/가/".repeat(1_000)}end`, `/${"一/가/".repeat(1_000)}一가!`],
 ]) {
   if (!matchPattern(match, matcher)) {
     throw new Error(`Safe separated repeat did not match: ${matcher}`);

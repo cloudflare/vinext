@@ -721,7 +721,51 @@ function symbolsMayOverlap(left: RegexSymbol, right: RegexSymbol): boolean {
   if (left.kind === "literal" && right.kind === "opaque") {
     return opaqueMatchesLiteral(right, left);
   }
-  return true;
+  const leftUnits = codeUnitSet(left);
+  const rightUnits = leftUnits && codeUnitSet(right);
+  if (!leftUnits || !rightUnits) return true;
+  return leftUnits.some((word, index) => (word & rightUnits[index]) !== 0);
+}
+
+const MAX_CODE_UNIT_SETS = 256;
+const codeUnitSets = new Map<string, Uint32Array | null>();
+
+/**
+ * The UTF-16 code units a class or `.` can match, as a bit set, so classes the
+ * parser does not model (non-ASCII ranges such as `[一-鿿]`) can still be
+ * compared. Without the `u` flag a class matches one code unit. Other opaque
+ * escapes, such as backreferences, stay unknown.
+ */
+function codeUnitSet(symbol: RegexSymbol): Uint32Array | null {
+  if (symbol.kind === "opaque" && symbol.pattern !== "." && !symbol.pattern.startsWith("[")) {
+    return null;
+  }
+  const cacheKey = symbol.kind === "opaque" ? `${symbol.ignoreCase}:${symbol.key}` : symbol.key;
+  const cached = codeUnitSets.get(cacheKey);
+  if (cached !== undefined) return cached;
+  if (codeUnitSets.size >= MAX_CODE_UNIT_SETS) return null;
+  let matches: (character: string) => boolean;
+  if (symbol.kind === "opaque") {
+    try {
+      const regexp = new RegExp(`^${symbol.pattern}$`, symbol.ignoreCase ? "i" : "");
+      matches = (character) => regexp.test(character);
+    } catch {
+      return null;
+    }
+  } else {
+    // Over-approximate case folding: a value matches in either case.
+    matches = (character) =>
+      symbolsMayOverlap(symbol, literalSymbol(character, false)) ||
+      symbolsMayOverlap(symbol, literalSymbol(character, true));
+  }
+  let set: Uint32Array | null = new Uint32Array(0x10000 / 32);
+  for (let code = 0; code <= 0xffff; code++) {
+    if (matches(String.fromCharCode(code))) set[code >>> 5] |= 1 << (code & 31);
+  }
+  // An empty set means the symbol is not a plain character after all.
+  if (set.every((word) => word === 0)) set = null;
+  codeUnitSets.set(cacheKey, set);
+  return set;
 }
 
 function insertPrefixFreeWord(
@@ -1446,6 +1490,13 @@ function hasAmbiguousSplit(children: RegexNode[], comparisons: { count: number }
     if (!isNullable(child)) {
       pending = [entry];
     } else if (pending.length < MAX_OPTIONAL_SPLIT_ELEMENTS) {
+      // An optional element between an earlier one and the fixed text after
+      // them can take its own share of that text, so the earlier element's
+      // shifts must include what it consumes: `b+a*ba[ab]+` matches `bbabaa`
+      // with `b+` taking `b` or, with `a*` taking an `a`, `bb`.
+      for (const earlier of pending) {
+        earlier.body = earlier.body && entry.body ? [...earlier.body, ...entry.body] : null;
+      }
       pending = [...pending, entry];
     } else {
       return hasAmbiguousSplitWithOptionalElements(children, comparisons);
@@ -1533,7 +1584,9 @@ function hasAmbiguousSplitWithOptionalElements(
     }
     if (pending.some((body) => boundariesMayOverlap(body, starts, comparisons))) return true;
     const body = consumedSymbols(child);
-    pending = isNullable(child) ? [...pending, body] : [body];
+    pending = isNullable(child)
+      ? [...pending.map((earlier) => (earlier && body ? [...earlier, ...body] : null)), body]
+      : [body];
   }
   return false;
 }

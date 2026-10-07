@@ -13591,6 +13591,11 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
         "/x/y-z-12": false,
       },
     ],
+    // Non-ASCII classes are compared by the characters they match.
+    [
+      "/:x([一-鿿]|[가-힣])*/end",
+      { "/end": true, "/一/가/end": true, "/一가/end": false, "/a/end": false, "/一": false },
+    ],
     // A trailing catch-all takes whatever a chain of repeated params leaves.
     ["/:a*/:b*/:c*/:rest(.*)", { "/x": true, "/a/b/c/d": true, "/": true, "//": true }],
     [
@@ -13713,6 +13718,8 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     // A catch-all after a required param does not save the chain before it.
     ["/:a(a)*/:b(a)*/:c(a)*/:d(\\d+)/(.*)", "can split the same text", `/${"a/".repeat(40)}!`],
     ["/:x((?!a(?=a))a+|a)*/end", "more than one way", `/${"a/".repeat(40)}!`],
+    // `b+` and the optional `a*` after it shift the fixed `ba` together.
+    ["/:x(b+a*ba[ab]+)*/end", "more than one way", `/${"bbabaa/".repeat(30)}!`],
     ["/:x((?=.{0,65535}e)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
