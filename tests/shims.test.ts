@@ -5973,7 +5973,7 @@ describe("next/cache shim", () => {
 
   it("unstable_cache returns the computed value when the cache write fails", async () => {
     // Next.js IncrementalCache.set catches cache handler errors and only warns:
-    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/index.ts
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/incremental-cache/index.ts#L714-L716
     const { setCacheHandler, getCacheHandler, unstable_cache } =
       await import("../packages/vinext/src/shims/cache.js");
 
