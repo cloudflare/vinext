@@ -177,7 +177,7 @@ The generated `server.js` is a small wrapper around `startProdServer` from `vine
 **Compiled single-file binaries.** A `bun build --compile` binary can't use the generated `server.js`. Bun fixes `import.meta.dirname` when it compiles the binary, so `join(import.meta.dirname, "dist")` doesn't point at the directory the binary runs from. Depending on the Bun version, it points at the build machine's path or at Bun's embedded `/$bunfs/root`. Resolve `outDir` from the executable's location instead:
 
 ```js
-// dist/standalone/server-bin.mjs
+// server-bin.mjs, in your project root
 import path from "node:path";
 import { startProdServer } from "vinext/server/prod-server";
 
@@ -189,11 +189,10 @@ await startProdServer({
 ```
 
 ```bash
-cd dist/standalone
-bun build --compile --compile-autoload-package-json server-bin.mjs --outfile server
+bun build --compile --compile-autoload-package-json server-bin.mjs --outfile dist/standalone/server
 ```
 
-Ship the `server` binary next to the `dist/` and `node_modules/` directories from `dist/standalone`. The server bundles in `dist/server` still import their dependencies from `node_modules` at runtime. `--compile-autoload-package-json` lets the binary read package `exports` and `main` fields when it resolves them. Under plain Node, `process.execPath` is the Node binary, so use this entry only for compiled builds.
+Keep the entry outside `dist/standalone`: each build deletes and recreates that directory. Compile after `vite build`, then ship the whole `dist/standalone` directory, because the `server` binary needs the `dist/` and `node_modules/` directories next to it. The server bundles in `dist/server` still import their dependencies from `node_modules` at runtime. `--compile-autoload-package-json` lets the binary read package `exports` and `main` fields when it resolves them. Under plain Node, `process.execPath` is the Node binary, so use this entry only for compiled builds.
 
 ### Starting a new vinext project
 
