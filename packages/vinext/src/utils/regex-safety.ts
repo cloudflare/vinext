@@ -1132,7 +1132,8 @@ export function analyzeSeparatedRepetitionSafety(
   const ignoreCase = options.ignoreCase === true;
   const parser = new RegexParser(pattern, ignoreCase);
   const node = parser.parse();
-  if (parser.exceededBudget) return "analysis budget exceeded";
+  // Fail closed if the parser stopped early, e.g. at an unsupported group.
+  if (parser.exceededBudget || parser.index < pattern.length) return "analysis budget exceeded";
   const separatorSymbol = separator ? literalSymbol(separator[0], ignoreCase) : undefined;
   if (containsUnboundedLookaround(node, separatorSymbol)) return "unbounded lookaround";
   if (

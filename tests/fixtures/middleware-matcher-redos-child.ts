@@ -1,6 +1,9 @@
 import { performance } from "node:perf_hooks";
 import { matchPattern } from "../../packages/vinext/src/server/middleware-matcher.ts";
-import { analyzeRegexSafety } from "../../packages/vinext/src/utils/regex-safety.ts";
+import {
+  analyzeRegexSafety,
+  analyzeSeparatedRepetitionSafety,
+} from "../../packages/vinext/src/utils/regex-safety.ts";
 
 const nearMiss = `/${"a/".repeat(2_000)}not-end`;
 for (const modifier of ["*", "+"]) {
@@ -139,4 +142,13 @@ for (const [matcher, match, nearMiss] of [
   if (matchPattern(nearMiss, matcher)) {
     throw new Error(`Safe separated repeat matched a near miss: ${matcher}`);
   }
+}
+
+// The separated-repeat check fails closed when the parser cannot consume the
+// whole pattern, e.g. an inline modifier group containing a nested group.
+const unparsedIssue = analyzeSeparatedRepetitionSafety("(?i:(?:a))|aa", "/", {
+  ignoreCase: true,
+});
+if (unparsedIssue !== "analysis budget exceeded") {
+  throw new Error(`Partially parsed separated repeat was not refused: ${unparsedIssue}`);
 }
