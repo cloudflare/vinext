@@ -108,6 +108,7 @@ export async function handleResponseStage(
       policyHeaders: props.cacheability.policyHeaders,
       probeMode: props.cacheability.probeMode,
       rawManifest: __cacheabilityManifest,
+      recomposesRequestScopedHeaders: props.kind === "app-page" && props.isRscRequest,
       registerCacheAdapters: () => registerConfiguredCacheAdapters(env),
       request,
       representation: props.cacheability.representation,

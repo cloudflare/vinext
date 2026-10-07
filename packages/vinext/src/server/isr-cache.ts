@@ -22,6 +22,7 @@ import {
 } from "vinext/shims/cache-handler";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { fnv1a64 } from "../utils/hash.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
@@ -113,6 +114,19 @@ export function isrCacheControl(
     ...(claims.expireSeconds === undefined ? {} : { expire: claims.expireSeconds }),
     ...(claims.staleSeconds === undefined ? {} : { stale: claims.staleSeconds }),
   };
+}
+
+/**
+ * The route-level `expireTime` only bounds a finite revalidate. Like Next.js,
+ * a `revalidate = false` entry keeps no expire of its own and stays until it
+ * is invalidated; only a cacheLife expire can bound it.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts#L3035-L3058
+ */
+export function resolveRouteExpireSeconds(
+  revalidateSeconds: number | false | null,
+  expireSeconds: number | undefined,
+): number | undefined {
+  return revalidateSeconds === false || revalidateSeconds === Infinity ? undefined : expireSeconds;
 }
 
 /**
@@ -354,6 +368,21 @@ function buildCacheKey(prefix: string, pathname: string, suffix?: string): strin
 export function isrCacheKey(router: string, pathname: string, buildId?: string): string {
   const prefix = buildId ? `${router}:${buildId}` : router;
   return buildCacheKey(prefix, pathname);
+}
+
+/** Build and request time share the same locale-stripped Pages pathname identity. */
+export function pagesIsrCacheKey(
+  pathname: string,
+  buildId?: string,
+  i18nCacheVariant?: string | null,
+): string {
+  // Decode once per segment, preserving escaped delimiters and literal escapes.
+  // Strip the pathname's trailing slash before appending the locale/domain variant.
+  const normalized = normalizeCachePathname(normalizePathnameForRouteMatch(pathname));
+  const variant = i18nCacheVariant ? `::i18n=${encodeURIComponent(i18nCacheVariant)}` : "";
+  // Legacy keys retained raw escapes. A stable build ID must not let a new
+  // literal-percent pathname reinterpret an old encoded-parameter entry.
+  return isrCacheKey("pages:v2", normalized + variant, buildId);
 }
 
 /**

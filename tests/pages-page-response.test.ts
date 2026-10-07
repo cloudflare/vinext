@@ -1,3 +1,11 @@
+import { CACHEABILITY_REQUEST_STATE } from "../packages/vinext/src/shims/cacheability-classification.js";
+import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  setCdnCacheAdapter,
+  DefaultCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -663,6 +671,46 @@ describe("pages page response", () => {
     });
 
     expect(response.headers.get("cache-control")).toBe("public, max-age=60");
+  });
+
+  it("preserves an authored GSSP provider opt-in independently of its browser policy", async () => {
+    const common = createCommonOptions();
+    try {
+      const response = await withResponseStageCacheability(
+        {
+          buildId: "test",
+          cache: "shared",
+          context: { waitUntil() {} },
+          rawManifest: null,
+          request: new Request("https://example.com/page"),
+          resolvedRoutePathname: "/page",
+          registerCacheAdapters: () => setCdnCacheAdapter(new CloudflareCdnCacheAdapter()),
+        },
+        (context) => {
+          Object.assign(Reflect.get(context, CACHEABILITY_REQUEST_STATE), {
+            route: { kind: "pages-page", pattern: "/page" },
+            outcome: { cacheable: false },
+          });
+          return runWithExecutionContext(context, () =>
+            renderPagesPageResponse({
+              ...common.options,
+              gsspRes: {
+                statusCode: 200,
+                getHeaders: () => ({
+                  "Cache-Control": "private, max-age=300",
+                  "Cloudflare-CDN-Cache-Control": "max-age=60",
+                }),
+              },
+            }),
+          );
+        },
+      );
+      expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("public, max-age=60");
+      expect(await response.text()).toContain("__NEXT_DATA__");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("preserves user-set Cache-Control regardless of header name case", async () => {

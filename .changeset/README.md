@@ -74,6 +74,23 @@ prefix also works). The body becomes the bullet under **Bug Fixes**:
 | `major`                | `feat!`    | Features          |
 | _(no package / empty)_ | `chore`    | _(dropped)_       |
 
+For patch changesets, write the body as a non-breaking `fix:`, `perf:`, or
+`revert:` Conventional Commit subject to select the changelog category. This keeps the patch bump but
+places the commit under **Performance**:
+
+```md
+---
+"vinext": patch
+---
+
+perf(pages): avoid repeated SSR asset manifest scans (#3599)
+```
+
+The type selects the category, the optional scope selects the changelog area,
+and the description becomes the entry text. Other prefixes, breaking subjects, and non-patch
+frontmatter keep the body literal and use the table above.
+Plain-text and empty bodies keep their existing behavior.
+
 An empty / package-less SHA-named changeset therefore **suppresses** the commit:
 no release, and it's dropped from the changelog.
 

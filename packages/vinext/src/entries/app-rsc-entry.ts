@@ -98,10 +98,6 @@ const appRscResponseStagePath = resolveEntryPath(
   "../server/app-rsc-response-stage.js",
   import.meta.url,
 );
-const appRscCombinedHandlerPath = resolveEntryPath(
-  "../server/app-rsc-combined-handler.js",
-  import.meta.url,
-);
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
@@ -361,6 +357,7 @@ export function generateAppRequestRscEntry(
   return `
 import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
+import __cacheabilityRequestProjection from "virtual:vinext-cacheability-request-projection";
 import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
 import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
@@ -464,8 +461,10 @@ function __isMetadataPath(pathname) {
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
 const __requestHandler = createAppRscRequestHandler({
+  assetPrefix: __assetPrefix,
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
+  cacheabilityRequestProjection: __cacheabilityRequestProjection,
   clearRequestContext: __clearRequestContext,
   configHeaders: ${JSON.stringify(config?.headers ?? [])},
   configRedirects: ${JSON.stringify(config?.redirects ?? [])},
@@ -760,7 +759,7 @@ ${
 ${
   responseStageOnly
     ? `import { renderAppWorkerResponseStage as __renderAppWorkerResponseStage } from ${JSON.stringify(appRscResponseStagePath)};`
-    : `import { createAppRscHandler } from ${JSON.stringify(appRscCombinedHandlerPath)};`
+    : `import { createAppRscHandler } from "vinext/server/app-rsc-combined-handler";`
 }
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
@@ -835,9 +834,13 @@ import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
+  collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
+  hasAppPageGenerateStaticParamsAtLastDynamicSegment as __hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  isAppPageStaticEligible as __isAppPageStaticEligible,
   isEdgeRuntime as __isEdgeRuntime,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
+  resolveAppPageStaticGenerationRuntime as __resolveAppPageStaticGenerationRuntime,
 } from ${JSON.stringify(appSegmentConfigPath)};
 import { makeThenableParams } from ${JSON.stringify(thenableParamsShimPath)};
 import {
@@ -960,6 +963,70 @@ function __resolveRouteRuntime(route) {
       slot.page ?? slot.default,
     ]),
   }).runtime ?? null;
+}
+
+function __resolveRouteSegmentConfigBranches(route) {
+  return Object.values(route.slots ?? {}).map((slot) => ({
+    layout: slot.layout,
+    configLayouts: slot.configLayouts,
+    configLayoutTreePositions: slot.configLayoutTreePositions,
+    isDefault: !slot.page,
+    name: slot.name,
+    ownerTreePosition: slot.ownerTreePosition,
+    page: slot.page ?? slot.default,
+    routeSegments: slot.routeSegments,
+  }));
+}
+
+function __resolveRouteSegmentConfig(route, segmentConfigBranches) {
+  return __resolveAppPageSegmentConfig({
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: segmentConfigBranches,
+    parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
+    routeSegments: route.routeSegments,
+  });
+}
+
+// The parts of a route's static generation classification that come from its
+// module tree rather than its effective segment config.
+function __resolveRouteStaticGeneration(route, segmentConfigBranches) {
+  return {
+    hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+      childrenSlot: route.childrenSlot,
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.page,
+      parallelBranches: segmentConfigBranches,
+      routeSegments: route.routeSegments,
+    }),
+    isStaticGenerationEdgeRuntime: __isEdgeRuntime(
+      __resolveAppPageStaticGenerationRuntime(
+        __collectAppPageStaticGenerationRuntimes({
+          childrenSlot: route.childrenSlot,
+          layouts: route.layouts,
+          layoutTreePositions: route.layoutTreePositions,
+          page: route.page,
+          parallelBranches: segmentConfigBranches,
+          routeSegments: route.routeSegments,
+        }),
+      ),
+    ),
+  };
+}
+
+// Whether Next.js classifies a route as static or SSG, from the same inputs
+// dispatch reads for the matched route.
+function __resolveRouteStaticEligible(route) {
+  const segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
+  const segmentConfig = __resolveRouteSegmentConfig(route, segmentConfigBranches);
+  return __isAppPageStaticEligible({
+    ...__resolveRouteStaticGeneration(route, segmentConfigBranches),
+    dynamicConfig: segmentConfig.dynamicConfig,
+    isDynamicRoute: route.isDynamic,
+    revalidateSeconds: segmentConfig.revalidateSeconds,
+  });
 }
 
 ${imports.join("\n")}
@@ -1216,6 +1283,7 @@ ${rootParamNameEntries.join("\n")}
 __setPagesClientAssets(__pagesClientAssets);
 function __VINEXT_ACTION_OWNERS() { return ${actionOwners === undefined ? "__vinextActionOwners" : safeJsonStringify(actionOwners)}; }
 ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandler = createAppRscHandler({"}
+  assetPrefix: __assetPrefix,
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
@@ -1269,20 +1337,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     renderMode,
   }) {
     const PageComponent = route.page?.default;
-    const __segmentConfig = __resolveAppPageSegmentConfig({
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
-        layout: slot.layout,
-        configLayouts: slot.configLayouts,
-        configLayoutTreePositions: slot.configLayoutTreePositions,
-        page: slot.page ?? slot.default,
-        routeSegments: slot.routeSegments,
-      })),
-      parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
-      routeSegments: route.routeSegments,
-    });
+    const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
+    const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
+    const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
@@ -1316,6 +1373,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          isForceStatic: buildOptions?.isForceStatic === true,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           isProduction: process.env.NODE_ENV === "production",
         }, layoutParamAccess, displayPathname, scriptNonce);
@@ -1336,6 +1394,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+      isStaticGenerationEdgeRuntime: __staticGeneration.isStaticGenerationEdgeRuntime,
       findIntercept(pathname) {
         return findIntercept(
           pathname === cleanPathname ? interceptionPathname : pathname,
@@ -1352,7 +1411,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         return routes[sourceRouteIndex];
       },
       hasCustomGlobalError: ${globalErrorVar ? `Boolean(${globalErrorVar}?.default)` : "false"},
-      hasGenerateStaticParams: __generateStaticParams.length > 0,
+      hasAnyGenerateStaticParams: __generateStaticParams.length > 0,
+      hasGenerateStaticParams: __staticGeneration.hasGenerateStaticParams,
       hasPageDefaultExport: !!PageComponent,
       hasPageModule: !!route.page,
       handlerStart,
@@ -1467,6 +1527,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       resolveRouteDynamicConfig(targetRoute) {
         return __resolveRouteDynamicConfig(targetRoute);
+      },
+      resolveRouteStaticEligible(targetRoute) {
+        return __resolveRouteStaticEligible(targetRoute);
       },
       rootForbiddenModule,
       rootNotFoundModule,
@@ -1699,6 +1762,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         renderMode: actionRenderMode,
         observeMetadataSearchParamsAccess,
         observePageSearchParamsAccess,
+        isForceStatic,
         scriptNonce: targetScriptNonce,
       }) {
         return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
@@ -1710,6 +1774,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           renderMode: actionRenderMode,
           observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: observePageSearchParamsAccess === true,
+          isForceStatic: isForceStatic === true,
         }, undefined, actionCleanPathname, targetScriptNonce ?? scriptNonce);
       },
       cleanPathname,

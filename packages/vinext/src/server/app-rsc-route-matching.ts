@@ -5,7 +5,7 @@ import {
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
-import { createAppRouteGraphInterceptionId } from "../routing/app-route-graph.js";
+import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 import {
   decodeMatchedParams,
   splitPathnameForRouteMatch,

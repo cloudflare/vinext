@@ -154,6 +154,18 @@ describe("normalizeRscRequest — malformed percent-encoding", () => {
 // ── basePath check and strip ─────────────────────────────────────────────────
 
 describe("normalizeRscRequest — basePath", () => {
+  it.each(["", "/cdn", "https://cdn.example.test/cdn"])(
+    "retains static asset paths outside basePath with assetPrefix %s",
+    (assetPrefix) => {
+      const pathname = `${assetPrefix ? "/cdn" : ""}/_next/static/missing.js`;
+      const result = normalized(normalizeRscRequest(req(pathname), "/app", false, assetPrefix));
+      expect(result.cleanPathname).toBe(pathname);
+      expect(result.hadBasePath).toBe(false);
+      expect(normalizeRscRequest(req("/cdn/page"), "/app", false, assetPrefix)).toBeInstanceOf(
+        Response,
+      );
+    },
+  );
   it("returns 404 when pathname lacks basePath prefix, preventing unintended route leak", () => {
     // Without this check a request to /other/page would match /page routes
     // as if the basePath didn't exist.

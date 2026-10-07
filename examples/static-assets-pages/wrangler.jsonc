@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "static-assets-pages",
+  "main": "vinext/server/fetch-handler",
+  "preview_urls": true,
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "dist/client",
+    "binding": "STATIC",
+    "not_found_handling": "none",
+    "run_worker_first": ["/_vinext/static-cache/*"],
+  },
+  "observability": { "enabled": true },
+}

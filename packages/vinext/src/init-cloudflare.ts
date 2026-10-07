@@ -40,8 +40,8 @@ export type CloudflarePlatformSetupContext = {
   root: string;
   isAppRouter: boolean;
   existingViteConfigPath?: string;
+  hasCssModules?: boolean;
   packageManager?: string;
-  prerender?: boolean;
   today?: string;
 };
 
@@ -50,12 +50,73 @@ export type CloudflarePlatformSetupResult = {
   skippedViteConfig: boolean;
   generatedPlatformFiles: string[];
   nextSteps: string[];
+  preservedExistingGenerateScopedName: boolean;
 };
 
 export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
+  if (!cloudflare.legacyWrangler) {
+    const existingWrangler = [
+      "wrangler.toml",
+      "wrangler.json",
+      "wrangler.jsonc",
+      RESPONSE_STORE_WRANGLER_CONFIG,
+    ].find((name) => fs.existsSync(path.join(context.root, name)));
+    if (existingWrangler) {
+      throw new Error(
+        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
+      );
+    }
+    const typedConfigPath = path.join(context.root, "cloudflare.config.ts");
+    if (cloudflare.cdnCache === "static-assets" && fs.existsSync(typedConfigPath)) {
+      throw new Error(
+        "Static Assets cache setup for an existing cloudflare.config.ts must be configured manually. " +
+          "Keep its assets binding aligned with staticAssetsAdapter({ binding }) and include " +
+          '"/_vinext/static-cache/*" in assets.runWorkerFirst to protect private cache files.',
+      );
+    }
+    if (
+      cloudflare.cdnCache === "response-store" &&
+      (cloudflare.responseStoreMode ?? "service-binding") === "service-binding" &&
+      fs.existsSync(typedConfigPath) &&
+      !fs
+        .readFileSync(typedConfigPath, "utf-8")
+        .includes("export const responseStoreServiceBinding")
+    ) {
+      throw new Error(
+        "The existing cloudflare.config.ts must export responseStoreServiceBinding for the Response Store auxiliary Worker. Configure it before rerunning init.",
+      );
+    }
+    if (
+      context.existingViteConfigPath &&
+      cloudflare.cdnCache === "response-store" &&
+      (cloudflare.responseStoreMode ?? "service-binding") === "service-binding" &&
+      !fs
+        .readFileSync(context.existingViteConfigPath, "utf-8")
+        .includes("auxiliaryWorkers: [{ config: responseStoreServiceBinding }]")
+    ) {
+      throw new Error(
+        "Cloudflare init with Response Store service-binding requires a fresh Vite config so the auxiliary Worker is connected. Remove the existing Vite config or configure it manually.",
+      );
+    }
+    if (context.existingViteConfigPath) {
+      const updatedConfig = updateViteConfigForCloudflare(
+        context.existingViteConfigPath,
+        fs.readFileSync(context.existingViteConfigPath, "utf-8"),
+        {
+          isAppRouter: context.isAppRouter,
+          nativeModulesToStub: detectProject(context.root).nativeModulesToStub,
+          cache: cloudflare,
+        },
+      );
+      if (context.hasCssModules) {
+        updateViteConfigForCssModules(context.existingViteConfigPath, updatedConfig);
+      }
+    }
+    return;
+  }
   const tomlPath = path.join(context.root, "wrangler.toml");
   if (fs.existsSync(tomlPath)) {
     throw new Error(
@@ -82,23 +143,33 @@ export function validateCloudflarePlatformSetup(
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
     : "IMAGES";
+  const assetsBinding = updatedWranglerCode
+    ? getWranglerAssetsBinding(updatedWranglerCode)
+    : "ASSETS";
+  const assetsDirectory = updatedWranglerCode
+    ? getWranglerAssetsDirectory(updatedWranglerCode)
+    : "dist/client";
   const versionMetadataBinding = updatedWranglerCode
     ? getWranglerVersionMetadataBinding(updatedWranglerCode)
     : DEFAULT_VERSION_METADATA_BINDING;
 
   if (context.existingViteConfigPath) {
-    updateViteConfigForCloudflare(
+    const updatedConfig = updateViteConfigForCloudflare(
       context.existingViteConfigPath,
       fs.readFileSync(context.existingViteConfigPath, "utf-8"),
       {
         isAppRouter: context.isAppRouter,
         nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
+        assetsBinding,
+        assetsDirectory,
         imagesBinding,
         versionMetadataBinding,
-        prerender: context.prerender,
       },
     );
+    if (context.hasCssModules) {
+      updateViteConfigForCssModules(context.existingViteConfigPath, updatedConfig);
+    }
   }
 }
 
@@ -106,6 +177,7 @@ export function setupCloudflarePlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
+  if (!cloudflare.legacyWrangler) return setupCfPlatform(context, cloudflare);
   const projectInfo = detectProject(context.root);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
@@ -117,26 +189,42 @@ export function setupCloudflarePlatform(
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
     : "IMAGES";
+  const assetsBinding = updatedWranglerCode
+    ? getWranglerAssetsBinding(updatedWranglerCode)
+    : "ASSETS";
+  const assetsDirectory = updatedWranglerCode
+    ? getWranglerAssetsDirectory(updatedWranglerCode)
+    : "dist/client";
   const versionMetadataBinding = updatedWranglerCode
     ? getWranglerVersionMetadataBinding(updatedWranglerCode)
     : DEFAULT_VERSION_METADATA_BINDING;
 
   let generatedViteConfig = false;
   let skippedViteConfig = false;
+  let preservedExistingGenerateScopedName = false;
   if (context.existingViteConfigPath) {
     const currentConfig = fs.readFileSync(context.existingViteConfigPath, "utf-8");
-    const updatedConfig = updateViteConfigForCloudflare(
+    let updatedConfig = updateViteConfigForCloudflare(
       context.existingViteConfigPath,
       currentConfig,
       {
         isAppRouter: context.isAppRouter,
         nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
+        assetsBinding,
+        assetsDirectory,
         imagesBinding,
         versionMetadataBinding,
-        prerender: context.prerender,
       },
     );
+    if (context.hasCssModules) {
+      const cssUpdate = updateViteConfigForCssModules(
+        context.existingViteConfigPath,
+        updatedConfig,
+      );
+      updatedConfig = cssUpdate.code;
+      preservedExistingGenerateScopedName = cssUpdate.preservedExistingGenerateScopedName;
+    }
     if (updatedConfig !== currentConfig) {
       fs.writeFileSync(context.existingViteConfigPath, updatedConfig, "utf-8");
       generatedViteConfig = true;
@@ -149,15 +237,21 @@ export function setupCloudflarePlatform(
           projectInfo,
           cloudflare,
           imagesBinding,
-          context.prerender,
           versionMetadataBinding,
+          false,
+          assetsBinding,
+          assetsDirectory,
+          context.hasCssModules,
         )
       : generatePagesRouterViteConfig(
           projectInfo,
           cloudflare,
           imagesBinding,
-          context.prerender,
           versionMetadataBinding,
+          false,
+          context.hasCssModules,
+          assetsBinding,
+          assetsDirectory,
         );
     fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
     generatedViteConfig = true;
@@ -179,7 +273,6 @@ export function setupCloudflarePlatform(
   }
 
   const finalWranglerPath = wranglerPath ?? path.join(context.root, "wrangler.jsonc");
-  const finalWranglerFileName = path.basename(finalWranglerPath);
   if (
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
@@ -202,19 +295,6 @@ export function setupCloudflarePlatform(
       );
     }
   }
-  const finalWranglerConfig = JSON.parse(
-    stripJsonComments(fs.readFileSync(finalWranglerPath, "utf-8")),
-  ) as { kv_namespaces?: Array<{ binding?: unknown; id?: unknown }> };
-  const kvBinding = finalWranglerConfig.kv_namespaces?.find(
-    (namespace) => namespace.binding === "VINEXT_KV_CACHE",
-  );
-  const needsKvNamespaceId =
-    cloudflare.dataCache === "kv" &&
-    (!kvBinding ||
-      typeof kvBinding.id !== "string" ||
-      kvBinding.id.length === 0 ||
-      kvBinding.id === "<your-kv-namespace-id>");
-
   const nextSteps: string[] = [];
   if (
     cloudflare.cdnCache === "response-store" &&
@@ -225,13 +305,10 @@ export function setupCloudflarePlatform(
       `   ${context.packageManager ?? "npm"} run deploy:response-store`,
     );
   }
-  if (needsKvNamespaceId) {
+  if (cloudflare.prerender && cloudflare.cdnCache !== "static-assets") {
     nextSteps.push(
-      "Cloudflare setup is incomplete until you finish KV configuration:",
-      "1. Create the KV namespace:",
-      "   npx wrangler kv namespace create VINEXT_KV_CACHE",
-      `2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in ${finalWranglerFileName}:`,
-      '   Set its "id" value, replacing "<your-kv-namespace-id>" if present.',
+      "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
+      "   Use the Static Assets cache to serve them, or cache warming to fill another cache.",
     );
   }
 
@@ -240,7 +317,170 @@ export function setupCloudflarePlatform(
     skippedViteConfig,
     generatedPlatformFiles,
     nextSteps,
+    preservedExistingGenerateScopedName,
   };
+}
+
+function setupCfPlatform(
+  context: CloudflarePlatformSetupContext,
+  cloudflare: CloudflareInitOptions,
+): CloudflarePlatformSetupResult {
+  const projectInfo = detectProject(context.root);
+  const serviceBinding =
+    cloudflare.cdnCache === "response-store" &&
+    (cloudflare.responseStoreMode ?? "service-binding") === "service-binding";
+  let generatedViteConfig = false;
+  let preservedExistingGenerateScopedName = false;
+  if (context.existingViteConfigPath) {
+    const current = fs.readFileSync(context.existingViteConfigPath, "utf-8");
+    let updated = updateViteConfigForCloudflare(context.existingViteConfigPath, current, {
+      isAppRouter: context.isAppRouter,
+      nativeModulesToStub: projectInfo.nativeModulesToStub,
+      cache: cloudflare,
+    });
+    if (context.hasCssModules) {
+      const cssUpdate = updateViteConfigForCssModules(context.existingViteConfigPath, updated);
+      updated = cssUpdate.code;
+      preservedExistingGenerateScopedName = cssUpdate.preservedExistingGenerateScopedName;
+    }
+    if (updated !== current) {
+      fs.writeFileSync(context.existingViteConfigPath, updated, "utf-8");
+      generatedViteConfig = true;
+    }
+  } else {
+    const viteConfig = context.isAppRouter
+      ? generateAppRouterViteConfig(
+          projectInfo,
+          cloudflare,
+          "IMAGES",
+          DEFAULT_VERSION_METADATA_BINDING,
+          serviceBinding,
+          "ASSETS",
+          "dist/client",
+          context.hasCssModules,
+        )
+      : generatePagesRouterViteConfig(
+          projectInfo,
+          cloudflare,
+          "IMAGES",
+          DEFAULT_VERSION_METADATA_BINDING,
+          serviceBinding,
+          context.hasCssModules,
+        );
+    fs.writeFileSync(path.join(context.root, "vite.config.ts"), viteConfig, "utf-8");
+    generatedViteConfig = true;
+  }
+
+  const configPath = path.join(context.root, "cloudflare.config.ts");
+  const generatedPlatformFiles: string[] = [];
+  if (!fs.existsSync(configPath)) {
+    fs.writeFileSync(
+      configPath,
+      generateTypedCloudflareConfig(projectInfo, cloudflare, context.today),
+    );
+    generatedPlatformFiles.push("cloudflare.config.ts");
+  }
+  const nextSteps: string[] = [];
+  if (serviceBinding) {
+    nextSteps.push(
+      "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
+      `   ${context.packageManager ?? "npm"} run deploy:response-store`,
+      "vinext-cloudflare deploy only deploys the application Worker.",
+    );
+  }
+  if (cloudflare.prerender && cloudflare.cdnCache !== "static-assets") {
+    nextSteps.push(
+      "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
+      "   Use the Static Assets cache to serve them, or cache warming to fill another cache.",
+    );
+  }
+  nextSteps.push(
+    'For TypeScript, add ".cloudflare/types" to the include list in tsconfig.json.',
+    "Worker types are generated during dev/build; run `cf workers types` before standalone type-checks.",
+  );
+  return {
+    generatedViteConfig,
+    skippedViteConfig: !generatedViteConfig,
+    generatedPlatformFiles,
+    nextSteps,
+    preservedExistingGenerateScopedName,
+  };
+}
+
+function generateTypedCloudflareConfig(
+  info: CloudflareProjectInfo,
+  options: CloudflareInitOptions,
+  today = new Date().toISOString().split("T")[0],
+): string {
+  const serviceBinding =
+    options.cdnCache === "response-store" &&
+    (options.responseStoreMode ?? "service-binding") === "service-binding";
+  const selfContained = options.cdnCache === "response-store" && !serviceBinding;
+  const workersCache = options.cdnCache === "workers-cache";
+  const helper = serviceBinding
+    ? "createWorkersResponseStoreServiceBindingConfig"
+    : selfContained
+      ? "createWorkersResponseStoreSelfContainedConfig"
+      : workersCache
+        ? "createWorkersCacheConfig"
+        : undefined;
+  const imports = [
+    `import { bindings, defineConfig, defineWorker } from "cf/config";`,
+    ...(helper ? [`import { ${helper} } from "@vinext/cloudflare/cache/config";`] : []),
+  ];
+  const responseStoreName = compactResourceName(info.projectName, "-response-store", 63);
+  const bucket = serviceBinding
+    ? compactResourceName(responseStoreName, "-cache-bodies", 63)
+    : compactResourceName(info.projectName, "-response-store-cache-bodies", 63);
+  const shared = serviceBinding
+    ? `const responseStore = await ${helper}({
+  worker: {
+    name: ${JSON.stringify(responseStoreName)},
+    compatibilityDate: ${JSON.stringify(today)},
+    compatibilityFlags: ["nodejs_compat"],
+  },
+  bucket: ${JSON.stringify(bucket)},
+});
+
+export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+
+`
+    : selfContained
+      ? `const cache = await ${helper}({
+  worker: ${JSON.stringify(info.projectName)},
+  bucket: ${JSON.stringify(bucket)},
+});
+
+`
+      : workersCache
+        ? `const cache = await ${helper}();\n\n`
+        : "";
+  const cacheSpread = serviceBinding
+    ? "responseStore.applicationWorker"
+    : helper
+      ? "cache"
+      : undefined;
+  const envBindings = [
+    ...(cacheSpread ? [`...${cacheSpread}.env`] : []),
+    "ASSETS: bindings.assets()",
+    ...(options.imageOptimization === "cloudflare-images" ? ["IMAGES: bindings.images()"] : []),
+    ...(options.dataCache === "kv" ? ["VINEXT_KV_CACHE: bindings.kv()"] : []),
+  ];
+  return `${imports.join("\n")}
+
+${shared}export default defineConfig({
+  worker: defineWorker({
+    ${cacheSpread ? `...${cacheSpread},\n    ` : ""}name: ${JSON.stringify(info.projectName)},
+    entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
+    compatibilityDate: ${JSON.stringify(today)},
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none"${options.cdnCache === "static-assets" ? ', runWorkerFirst: ["/_vinext/static-cache/*"]' : ""} },
+    env: {
+      ${envBindings.join(",\n      ")},
+    },
+  }),
+});
+`;
 }
 
 /**
@@ -273,6 +513,9 @@ export function generateWranglerConfig(
       directory: "dist/client",
       not_found_handling: "none",
       binding: "ASSETS",
+      ...(options.cdnCache === "static-assets"
+        ? { run_worker_first: ["/_vinext/static-cache/*"] }
+        : {}),
     },
   };
 
@@ -289,7 +532,6 @@ export function generateWranglerConfig(
     config.kv_namespaces = [
       {
         binding: "VINEXT_KV_CACHE",
-        id: "<your-kv-namespace-id>",
       },
     ];
   }
@@ -470,7 +712,7 @@ function setTopLevelJsonProperty(code: string, name: string, value: unknown): st
   return `${code.slice(0, property.valueStart)}${serialized}${code.slice(property.valueEnd)}`;
 }
 
-function compactResourceName(name: string, suffix: string, maxLength: number): string {
+export function compactResourceName(name: string, suffix: string, maxLength: number): string {
   const fullName = `${name}${suffix}`;
   if (fullName.length <= maxLength) return fullName;
   const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
@@ -929,6 +1171,61 @@ export function updateWranglerConfigForCloudflare(
       '  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS" }',
     );
   }
+  if (options.cdnCache === "static-assets") {
+    const assetsProperty = findTopLevelJsonProperty(output, "assets")!;
+    const assets = JSON.parse(
+      stripJsonComments(output.slice(assetsProperty.valueStart, assetsProperty.valueEnd)),
+    ) as Record<string, unknown> | null;
+    if (!assets || typeof assets !== "object" || Array.isArray(assets)) {
+      throw new Error("The existing Wrangler config has an invalid assets value.");
+    }
+    const workerFirst = assets.run_worker_first;
+    if (
+      workerFirst !== undefined &&
+      typeof workerFirst !== "boolean" &&
+      !Array.isArray(workerFirst)
+    ) {
+      throw new Error("The existing Wrangler config has an invalid assets.run_worker_first value.");
+    }
+    // Exclusions override positive routes, so merely appending our private path
+    // cannot guarantee that the Worker protects it when exclusions are present.
+    if (
+      Array.isArray(workerFirst) &&
+      workerFirst.some((pattern) => typeof pattern !== "string" || pattern.startsWith("!"))
+    ) {
+      throw new Error(
+        "Static Assets cache requires run_worker_first without exclusion patterns. Use true or an array of positive path patterns.",
+      );
+    }
+    const protectedRouting =
+      workerFirst === true
+        ? true
+        : [
+            ...new Set([
+              ...(Array.isArray(workerFirst) ? workerFirst : []),
+              "/_vinext/static-cache/*",
+            ]),
+          ];
+    if (
+      typeof assets.directory !== "string" ||
+      assets.directory.length === 0 ||
+      typeof assets.binding !== "string" ||
+      assets.binding.length === 0 ||
+      JSON.stringify(workerFirst) !== JSON.stringify(protectedRouting)
+    ) {
+      const updatedAssets = JSON.stringify({
+        ...assets,
+        ...(typeof assets.directory === "string" && assets.directory.length > 0
+          ? {}
+          : { directory: "dist/client" }),
+        ...(typeof assets.binding === "string" && assets.binding.length > 0
+          ? {}
+          : { binding: "ASSETS" }),
+        run_worker_first: protectedRouting,
+      });
+      output = `${output.slice(0, assetsProperty.valueStart)}${updatedAssets}${output.slice(assetsProperty.valueEnd)}`;
+    }
+  }
   if (options.cdnCache === "workers-cache") {
     const cacheProperty = findTopLevelJsonProperty(output, "cache");
     if (!cacheProperty) {
@@ -981,7 +1278,7 @@ export function updateWranglerConfigForCloudflare(
     if (!kvProperty) {
       output = appendTopLevelJsonProperty(
         output,
-        '  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }]',
+        '  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE" }]',
       );
     } else {
       const rawValue = output.slice(kvProperty.valueStart, kvProperty.valueEnd);
@@ -990,7 +1287,7 @@ export function updateWranglerConfigForCloudflare(
         const closing = kvProperty.valueEnd - 1;
         const content = output.slice(kvProperty.valueStart + 1, closing);
         const separator = content.trim() ? `${/,\s*$/.test(content) ? "" : ","}\n    ` : "";
-        output = `${output.slice(0, closing)}${separator}{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }${output.slice(closing)}`;
+        output = `${output.slice(0, closing)}${separator}{ "binding": "VINEXT_KV_CACHE" }${output.slice(closing)}`;
       }
     }
   }
@@ -1016,6 +1313,28 @@ export function getWranglerImagesBinding(code: string): string {
     : "IMAGES";
 }
 
+function getWranglerAssetsBinding(code: string): string {
+  const property = findTopLevelJsonProperty(code, "assets");
+  if (!property) return "ASSETS";
+  const assets = JSON.parse(
+    stripJsonComments(code.slice(property.valueStart, property.valueEnd)),
+  ) as { binding?: unknown } | null;
+  return assets && typeof assets.binding === "string" && assets.binding.length > 0
+    ? assets.binding
+    : "ASSETS";
+}
+
+function getWranglerAssetsDirectory(code: string): string {
+  const property = findTopLevelJsonProperty(code, "assets");
+  if (!property) return "dist/client";
+  const assets = JSON.parse(
+    stripJsonComments(code.slice(property.valueStart, property.valueEnd)),
+  ) as { directory?: unknown } | null;
+  return assets && typeof assets.directory === "string" && assets.directory.length > 0
+    ? assets.directory
+    : "dist/client";
+}
+
 export function getWranglerVersionMetadataBinding(code: string): string {
   const property = findTopLevelJsonProperty(code, "version_metadata");
   if (!property) return DEFAULT_VERSION_METADATA_BINDING;
@@ -1035,7 +1354,14 @@ function cacheImports(options: CloudflareInitOptions): string[] {
     imports.push('import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";');
   }
   if (options.cdnCache === "workers-cache") {
-    imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
+    imports.push(
+      'import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";',
+    );
+  }
+  if (options.cdnCache === "static-assets") {
+    imports.push(
+      'import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";',
+    );
   }
   if (options.cdnCache === "response-store") {
     imports.push(
@@ -1053,9 +1379,10 @@ function vinextExpression(
   binding = "vinext",
   imageBinding = "imagesOptimizer",
   imagesBinding = "IMAGES",
-  prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
   responseStoreBinding = "responseStoreAdapter",
+  assetsBinding = "ASSETS",
+  assetsDirectory = "dist/client",
 ): string {
   const responseStore = options.cdnCache === "response-store";
   const cacheEntries: string[] = [];
@@ -1067,7 +1394,12 @@ function vinextExpression(
       versionMetadataBinding === DEFAULT_VERSION_METADATA_BINDING
         ? ""
         : `{ versionMetadataBinding: ${JSON.stringify(versionMetadataBinding)} }`;
-    cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
+    cacheEntries.push(`cdn: workersCacheCdnAdapter(${adapterOptions})`);
+  }
+  if (options.cdnCache === "static-assets") {
+    const adapterOptions =
+      assetsBinding === "ASSETS" ? "" : `{ binding: ${JSON.stringify(assetsBinding)} }`;
+    cacheEntries.push(`cdn: staticAssetsAdapter(${adapterOptions})`);
   }
   const optionEntries: string[] = [];
   if (responseStore) {
@@ -1077,17 +1409,42 @@ function vinextExpression(
   } else if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
   }
+  if (options.cdnCache === "static-assets" || options.prerender) {
+    optionEntries.push('prerender: { routes: "*" }');
+  }
+  if (options.cdnCache === "static-assets") {
+    if (path.normalize(assetsDirectory) !== path.normalize("dist/client")) {
+      optionEntries.push(`clientOutDir: ${JSON.stringify(assetsDirectory)}`);
+    }
+  }
   if (options.imageOptimization === "cloudflare-images") {
     const adapterOptions =
       imagesBinding === "IMAGES" ? "" : `{ binding: ${JSON.stringify(imagesBinding)} }`;
     optionEntries.push(`images: { optimizer: ${imageBinding}(${adapterOptions}) }`);
   }
-  if (prerender) {
-    optionEntries.push(`prerender: { routes: "*" }`);
-  }
   return optionEntries.length === 0
     ? `${binding}()`
     : `${binding}({\n  ${optionEntries.join(",\n  ")},\n})`;
+}
+
+function scopedNameSource(
+  indent: string,
+  pathBinding = "path",
+  hashBinding = "createHash",
+  typescript = true,
+): string {
+  return `${indent}generateScopedName(${typescript ? "name: string, filename: string" : "name, filename"}) {
+${indent}  const relativePath = ${pathBinding}.relative(import.meta.dirname, filename.replace(/\\?.*$/, "")).replaceAll("\\\\", "/");
+${indent}  return \`_\${name}_\${${hashBinding}("sha256").update(relativePath).digest("hex").slice(0, 7)}\`;
+${indent}}`;
+}
+
+export function cssModulesConfigSource(indent = "  "): string {
+  return `\n${indent}css: {
+${indent}  modules: {
+${scopedNameSource(`${indent}    `)},
+${indent}  },
+${indent}},`;
 }
 
 /** Generate vite.config.ts for App Router */
@@ -1095,21 +1452,34 @@ export function generateAppRouterViteConfig(
   info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
-  prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
+  serviceBinding = false,
+  assetsBinding = "ASSETS",
+  assetsDirectory = "dist/client",
+  hasCssModules = false,
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...(serviceBinding
+      ? ['import { responseStoreServiceBinding } from "./cloudflare.config";']
+      : []),
     ...cacheImports(options),
+    ...(hasCssModules
+      ? [
+          'import { createHash } from "node:crypto";',
+          'import { patchCssModules } from "vite-css-modules";',
+        ]
+      : []),
   ];
 
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
     imports.push(`import path from "node:path";`);
   }
 
   const plugins: string[] = [];
+  if (hasCssModules) plugins.push('    patchCssModules({ exportMode: "default" }),');
 
   if (info?.hasMDX) {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
@@ -1120,13 +1490,15 @@ export function generateAppRouterViteConfig(
       "vinext",
       "imagesOptimizer",
       imagesBinding,
-      prerender,
       versionMetadataBinding,
+      "responseStoreAdapter",
+      assetsBinding,
+      assetsDirectory,
     ).replace(/\n/g, "\n    ")},`,
   );
 
   plugins.push(`    cloudflare({
-      viteEnvironment: {
+      ${serviceBinding ? "auxiliaryWorkers: [{ config: responseStoreServiceBinding }],\n      " : ""}viteEnvironment: {
         name: "rsc",
         childEnvironments: ["ssr"],
       },
@@ -1152,7 +1524,7 @@ export function generateAppRouterViteConfig(
 export default defineConfig({
   plugins: [
 ${plugins.join("\n")}
-  ],${resolveBlock}
+  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
@@ -1162,17 +1534,30 @@ export function generatePagesRouterViteConfig(
   info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
-  prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
+  serviceBinding = false,
+  hasCssModules = false,
+  assetsBinding = "ASSETS",
+  assetsDirectory = "dist/client",
 ): string {
+  const legacyStaticAssets = options.legacyWrangler && options.cdnCache === "static-assets";
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...(serviceBinding
+      ? ['import { responseStoreServiceBinding } from "./cloudflare.config";']
+      : []),
     ...cacheImports(options),
+    ...(hasCssModules
+      ? [
+          'import { createHash } from "node:crypto";',
+          'import { patchCssModules } from "vite-css-modules";',
+        ]
+      : []),
   ];
 
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
     imports.push(`import path from "node:path";`);
   }
 
@@ -1194,17 +1579,19 @@ export function generatePagesRouterViteConfig(
   return `${imports.join("\n")}
 
 export default defineConfig({
-  plugins: [
-    ${vinextExpression(
-      options,
-      "vinext",
-      "imagesOptimizer",
-      imagesBinding,
-      prerender,
-      versionMetadataBinding,
-    ).replace(/\n/g, "\n    ")},
-    cloudflare(),
-  ],${resolveBlock}
+${legacyStaticAssets ? `  environments: { client: { build: { outDir: ${JSON.stringify(assetsDirectory)} } }, ssr: { build: { outDir: "dist/server" } } },\n` : ""}  plugins: [
+${hasCssModules ? '    patchCssModules({ exportMode: "default" }),\n' : ""}    ${vinextExpression(
+    options,
+    "vinext",
+    "imagesOptimizer",
+    imagesBinding,
+    versionMetadataBinding,
+    "responseStoreAdapter",
+    assetsBinding,
+    assetsDirectory,
+  ).replace(/\n/g, "\n    ")},
+    cloudflare(${legacyStaticAssets ? '{ viteEnvironment: { name: "ssr" } }' : serviceBinding ? "{ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] }" : ""}),
+  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
@@ -1416,10 +1803,16 @@ function findImportedBinding(
   imported: string,
 ): string | undefined {
   for (const statement of program.body) {
-    if (statement.type !== "ImportDeclaration" || statement.source.value !== source) continue;
+    if (
+      statement.type !== "ImportDeclaration" ||
+      statement.importKind === "type" ||
+      statement.source.value !== source
+    )
+      continue;
     for (const specifier of statement.specifiers) {
       if (
         specifier.type === "ImportSpecifier" &&
+        specifier.importKind !== "type" &&
         specifier.imported.type === "Identifier" &&
         specifier.imported.name === imported
       ) {
@@ -1428,6 +1821,15 @@ function findImportedBinding(
     }
   }
   return undefined;
+}
+
+function quoteImportSource(program: ESTree.Program, source: string): string {
+  const firstImport = program.body.find(
+    (statement): statement is ESTree.ImportDeclaration => statement.type === "ImportDeclaration",
+  );
+  return firstImport?.source.raw?.startsWith("'")
+    ? `'${source.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`
+    : JSON.stringify(source);
 }
 
 function ensureNamedImport(
@@ -1442,7 +1844,9 @@ function ensureNamedImport(
 
   const declaration = program.body.find(
     (statement): statement is ESTree.ImportDeclaration =>
-      statement.type === "ImportDeclaration" && statement.source.value === source,
+      statement.type === "ImportDeclaration" &&
+      statement.importKind !== "type" &&
+      statement.source.value === source,
   );
   if (declaration) {
     const named = declaration.specifiers.filter(
@@ -1457,7 +1861,7 @@ function ensureNamedImport(
 
   const offset = importInsertionOffset(program);
   const specifier = binding === imported ? imported : `${imported} as ${binding}`;
-  const sourceText = `import { ${specifier} } from ${JSON.stringify(source)};`;
+  const sourceText = `import { ${specifier} } from ${quoteImportSource(program, source)};`;
   output.appendLeft(offset, offset === 0 ? `${sourceText}\n` : `\n${sourceText}`);
   return binding;
 }
@@ -1470,7 +1874,9 @@ function ensureDefaultImport(
 ): string {
   const declaration = program.body.find(
     (statement): statement is ESTree.ImportDeclaration =>
-      statement.type === "ImportDeclaration" && statement.source.value === source,
+      statement.type === "ImportDeclaration" &&
+      statement.importKind !== "type" &&
+      statement.source.value === source,
   );
   const existing = declaration?.specifiers.find(
     (specifier): specifier is ESTree.ImportDefaultSpecifier =>
@@ -1479,7 +1885,7 @@ function ensureDefaultImport(
   if (existing) return existing.local.name;
 
   const offset = importInsertionOffset(program);
-  const sourceText = `import ${binding} from ${JSON.stringify(source)};`;
+  const sourceText = `import ${binding} from ${quoteImportSource(program, source)};`;
   output.appendLeft(offset, offset === 0 ? `${sourceText}\n` : `\n${sourceText}`);
   return binding;
 }
@@ -1560,6 +1966,8 @@ function ensureDefaultRequire(
   return binding;
 }
 
+const insertedCommas = new WeakMap<MagicString, Set<number>>();
+
 function insertObjectProperty(
   output: MagicString,
   object: AstObject,
@@ -1567,9 +1975,54 @@ function insertObjectProperty(
   code: string,
 ): void {
   const offset = object.end - 1;
-  const hasProperties = object.properties.length > 0;
-  const hasTrailingComma = /,\s*$/.test(code.slice(object.start + 1, offset));
-  output.appendLeft(offset, `${hasProperties && !hasTrailingComma ? "," : ""}\n${source}\n`);
+  const lastProperty = object.properties.at(-1) as AstNode | undefined;
+  if (lastProperty) {
+    const gap = code.slice(lastProperty.end, offset);
+    if (
+      !endsWithCommaIgnoringWhitespaceAndComments(gap) &&
+      !insertedCommas.get(output)?.has(lastProperty.end)
+    ) {
+      if (/^[ \t]+$/.test(gap)) output.update(lastProperty.end, offset, ",");
+      else output.appendLeft(lastProperty.end, ",");
+      const offsets = insertedCommas.get(output) ?? new Set<number>();
+      offsets.add(lastProperty.end);
+      insertedCommas.set(output, offsets);
+    }
+  }
+  output.appendLeft(offset, `\n${source}\n`);
+}
+
+function formatInlineConfig(filePath: string, code: string, originalCode: string): string {
+  if (code === originalCode) return code;
+  const config = findConfigObject(parseViteConfig(filePath, code));
+  if (!config || config.properties.length === 0) return code;
+
+  const output = new MagicString(code);
+  const lineStart = code.lastIndexOf("\n", config.start) + 1;
+  const indent = code.slice(lineStart, config.start).match(/^[ \t]*/)?.[0] ?? "";
+  const properties = config.properties as AstNode[];
+  const first = properties[0];
+  const opening = code.slice(config.start + 1, first.start);
+  if (/^[ \t]*$/.test(opening)) {
+    if (opening) output.update(config.start + 1, first.start, `\n${indent}  `);
+    else output.appendLeft(first.start, `\n${indent}  `);
+  }
+  for (let index = 1; index < properties.length; index++) {
+    const previous = properties[index - 1];
+    const current = properties[index];
+    const gap = code.slice(previous.end, current.start);
+    if (/^,[ \t]*$/.test(gap)) {
+      output.update(previous.end, current.start, `,\n${indent}  `);
+    }
+  }
+  const last = properties.at(-1)!;
+  const closing = code.slice(last.end, config.end - 1);
+  if (/^,?[ \t]*$/.test(closing)) {
+    const replacement = `${closing.includes(",") ? "," : ""}\n${indent}`;
+    if (closing) output.update(last.end, config.end - 1, replacement);
+    else output.appendLeft(last.end, replacement);
+  }
+  return output.toString();
 }
 
 function endsWithCommaIgnoringWhitespaceAndComments(code: string): boolean {
@@ -1760,18 +2213,6 @@ function getVinextImageOptimizer(
   return findProperty(images.value as AstObject, "optimizer");
 }
 
-function hasVinextPrerender(call: (ESTree.CallExpression & AstNode) | undefined): boolean {
-  const firstArgument = call?.arguments[0];
-  if (
-    !firstArgument ||
-    firstArgument.type === "SpreadElement" ||
-    firstArgument.type !== "ObjectExpression"
-  ) {
-    return false;
-  }
-  return Boolean(findProperty(firstArgument as AstObject, "prerender"));
-}
-
 function isUsableImageOptimizer(property: AstProperty | undefined): boolean {
   if (!property) return false;
   const value = property.value as AstNode & { name?: string; value?: unknown };
@@ -1914,27 +2355,56 @@ function ensureVinextImageOptimizer(
   }
 }
 
-function ensureVinextPrerender(
+function ensureVinextPrerenderOptions(
   output: MagicString,
   config: AstObject,
   vinextBinding: string,
-  prerender: boolean | undefined,
+  assetsDirectory: string | undefined,
   code: string,
 ): void {
-  if (!prerender) return;
   const call = findPluginCall(config, vinextBinding);
-  if (!call || hasVinextPrerender(call)) return;
-  if (call.arguments.length === 0) {
-    output.appendLeft(call.end - 1, `{ prerender: { routes: "*" } }`);
-    return;
-  }
-  const firstArgument = call.arguments[0];
-  if (firstArgument.type === "SpreadElement" || firstArgument.type !== "ObjectExpression") {
+  const firstArgument = call?.arguments[0];
+  if (!call || !firstArgument || firstArgument.type === "SpreadElement") return;
+  if (firstArgument.type !== "ObjectExpression") {
     throw new Error(
-      "The vinext() plugin options must be a static object for vinext init to add prerender config.",
+      "The vinext() plugin options must be a static object for vinext init to configure build-time prerendering.",
     );
   }
-  insertObjectProperty(output, firstArgument as AstObject, `    prerender: { routes: "*" },`, code);
+  const optionsObject = firstArgument as AstObject;
+  const additions: string[] = [];
+  const prerender = findProperty(optionsObject, "prerender");
+  if (!prerender) {
+    additions.push('    prerender: { routes: "*" },');
+  } else {
+    const value = prerender.value as AstNode & { name?: string; value?: unknown };
+    if (
+      (value.type === "Literal" && (value.value === false || value.value === null)) ||
+      (value.type === "Identifier" && value.name === "undefined")
+    ) {
+      output.overwrite(value.start, value.end, '{ routes: "*" }');
+    }
+  }
+  const clientOutDir = assetsDirectory && findProperty(optionsObject, "clientOutDir");
+  if (assetsDirectory && !clientOutDir) {
+    if (path.normalize(assetsDirectory) !== path.normalize("dist/client")) {
+      additions.push(`    clientOutDir: ${JSON.stringify(assetsDirectory)},`);
+    }
+  } else if (assetsDirectory && clientOutDir) {
+    const value = clientOutDir.value;
+    if (value.type !== "Literal" || typeof value.value !== "string") {
+      throw new Error(
+        "The vinext() clientOutDir option must be a string literal for vinext init to align it with Wrangler assets.directory.",
+      );
+    }
+    if (path.normalize(value.value) !== path.normalize(assetsDirectory)) {
+      throw new Error(
+        `The vinext() clientOutDir (${JSON.stringify(value.value)}) must match Wrangler assets.directory (${JSON.stringify(assetsDirectory)}) when using the Static Assets cache.`,
+      );
+    }
+  }
+  if (additions.length > 0) {
+    insertObjectProperty(output, optionsObject, additions.join("\n"), code);
+  }
 }
 
 function indentBlock(source: string, indent: string): string {
@@ -1967,8 +2437,11 @@ function ensurePlugins(
       .slice(0, (plugins as AstNode).start)
       .split("\n")
       .at(-1)
-      ?.match(/^\s*/)?.[0] ?? "";
-  const elementIndent = `${propertyIndent}  `;
+      ?.match(/^[ \t]*/)?.[0] ?? "";
+  const inlinePropertyIndent = code.slice(config.start, (plugins as AstNode).start).includes("\n")
+    ? propertyIndent
+    : `${propertyIndent}  `;
+  const elementIndent = `${inlinePropertyIndent}  `;
   const missingExpressions: string[] = [];
   for (const addition of additions) {
     const alreadyConfigured = array.elements.some(
@@ -2021,8 +2494,211 @@ function ensurePlugins(
     closingOffset,
     `${prefix}\n${missingExpressions
       .map((expression) => indentBlock(expression, elementIndent))
-      .join(",\n")},\n${propertyIndent}`,
+      .join(",\n")},\n${inlinePropertyIndent}`,
   );
+}
+
+function simpleCssConfig(program: ESTree.Program): AstObject {
+  const exported = program.body.find(
+    (statement): statement is ESTree.ExportDefaultDeclaration =>
+      statement.type === "ExportDefaultDeclaration",
+  );
+  const value = exported?.declaration;
+  const direct =
+    value && value.type !== "FunctionDeclaration" && value.type !== "ClassDeclaration"
+      ? unwrapObject(value as ESTree.Expression)
+      : undefined;
+  if (direct) return direct;
+  if (
+    value?.type === "CallExpression" &&
+    value.callee.type === "Identifier" &&
+    value.callee.name === findImportedBinding(program, "vite", "defineConfig") &&
+    value.arguments[0]?.type === "ObjectExpression"
+  ) {
+    return value.arguments[0] as AstObject;
+  }
+  throw new Error(
+    'CSS Modules require an inline Vite config object (export default { ... } or defineConfig({ ... })). Convert a dynamic config to an inline object before running vinext init, or finish migration manually with patchCssModules({ exportMode: "default" }) and a deterministic css.modules.generateScopedName.',
+  );
+}
+
+function simpleProperties(object: AstObject): void {
+  const names = new Set<string>();
+  for (const property of object.properties) {
+    const name = property.type === "Property" ? propertyName(property) : undefined;
+    if (!name || property.type !== "Property" || property.kind !== "init" || names.has(name)) {
+      throw new Error(
+        'CSS Modules cannot safely update Vite config spreads, computed keys, accessors, or duplicate properties. Add patchCssModules({ exportMode: "default" }) before vinext() and a deterministic css.modules.generateScopedName manually.',
+      );
+    }
+    names.add(name);
+  }
+}
+
+export function updateViteConfigForCssModules(
+  filePath: string,
+  code: string,
+): { code: string; preservedExistingGenerateScopedName: boolean } {
+  const program = parseViteConfig(filePath, code);
+  const config = simpleCssConfig(program);
+  simpleProperties(config);
+  const css = findProperty(config, "css");
+  const cssObject = css?.value.type === "ObjectExpression" ? (css.value as AstObject) : undefined;
+  if (css && !cssObject) throw new Error("CSS Modules require a literal css config object.");
+  if (cssObject) simpleProperties(cssObject);
+  const modules = cssObject && findProperty(cssObject, "modules");
+  const modulesObject =
+    modules?.value.type === "ObjectExpression" ? (modules.value as AstObject) : undefined;
+  if (modules && !modulesObject)
+    throw new Error("CSS Modules require a literal css.modules object.");
+  if (modulesObject) simpleProperties(modulesObject);
+  const existingName = modulesObject && findProperty(modulesObject, "generateScopedName");
+  if (existingName) {
+    const value = existingName.value;
+    if (
+      value.type !== "FunctionExpression" &&
+      value.type !== "ArrowFunctionExpression" &&
+      !(
+        value.type === "Literal" &&
+        typeof value.value === "string" &&
+        !/\[hash(?::[^\]]*)?\]/i.test(value.value)
+      )
+    ) {
+      throw new Error(
+        "CSS Modules need a deterministic generateScopedName function; replace the existing hash template or dynamic value manually.",
+      );
+    }
+  }
+
+  const firstOutput = new MagicString(code);
+  if (!existingName) {
+    const bindings = collectTopLevelBindings(program);
+    const hashBinding = ensureNamedImport(
+      program,
+      firstOutput,
+      "node:crypto",
+      "createHash",
+      allocateBinding(bindings, "createHash"),
+    );
+    const pathBinding = ensureDefaultImport(
+      program,
+      firstOutput,
+      "node:path",
+      allocateBinding(bindings, "path"),
+    );
+    const source = scopedNameSource(
+      "      ",
+      pathBinding,
+      hashBinding,
+      [".ts", ".mts", ".cts"].includes(path.extname(filePath)),
+    );
+    if (modulesObject) insertObjectProperty(firstOutput, modulesObject, `${source},`, code);
+    else if (cssObject)
+      insertObjectProperty(firstOutput, cssObject, `    modules: {\n${source},\n    },`, code);
+    else
+      insertObjectProperty(
+        firstOutput,
+        config,
+        `  css: {\n    modules: {\n${source},\n    },\n  },`,
+        code,
+      );
+  }
+
+  const withCss = firstOutput.toString();
+  const nextProgram = parseViteConfig(filePath, withCss);
+  const nextConfig = simpleCssConfig(nextProgram);
+  const plugins = findProperty(nextConfig, "plugins");
+  const pluginArray = plugins?.value.type === "ArrayExpression" ? plugins.value : undefined;
+  if (plugins && !pluginArray) throw new Error("CSS Modules require a literal plugins array.");
+  if (pluginArray?.elements.some((element) => element?.type === "SpreadElement")) {
+    throw new Error("CSS Modules cannot safely update a plugins array containing spreads.");
+  }
+  if (pluginArray?.elements.some((element) => element && element.type !== "CallExpression")) {
+    throw new Error("CSS Modules require direct plugin calls in the plugins array.");
+  }
+  const existingBinding = findImportedBinding(nextProgram, "vite-css-modules", "patchCssModules");
+  const namespaceBinding = nextProgram.body
+    .filter(
+      (statement): statement is ESTree.ImportDeclaration =>
+        statement.type === "ImportDeclaration" &&
+        statement.importKind !== "type" &&
+        statement.source.value === "vite-css-modules",
+    )
+    .flatMap((statement) => statement.specifiers)
+    .find(
+      (specifier): specifier is ESTree.ImportNamespaceSpecifier =>
+        specifier.type === "ImportNamespaceSpecifier",
+    )?.local.name;
+  const existingCall = pluginArray?.elements.find(
+    (element) =>
+      element?.type === "CallExpression" &&
+      ((element.callee.type === "Identifier" &&
+        element.callee.name === (existingBinding ?? "patchCssModules")) ||
+        (element.callee.type === "MemberExpression" &&
+          !element.callee.computed &&
+          element.callee.property.type === "Identifier" &&
+          element.callee.property.name === "patchCssModules")),
+  );
+  if (existingCall?.type === "CallExpression") {
+    const callee = existingCall.callee;
+    if (
+      (callee.type === "Identifier" && callee.name !== existingBinding) ||
+      (callee.type === "MemberExpression" &&
+        (callee.object.type !== "Identifier" || callee.object.name !== namespaceBinding))
+    ) {
+      throw new Error(
+        'Import patchCssModules from "vite-css-modules" before configuring CSS Modules.',
+      );
+    }
+    const argument = existingCall.arguments[0];
+    if (argument?.type === "ObjectExpression") simpleProperties(argument as AstObject);
+    const mode =
+      argument?.type === "ObjectExpression"
+        ? findProperty(argument as AstObject, "exportMode")
+        : undefined;
+    if (
+      argument?.type !== "ObjectExpression" ||
+      (argument as AstObject).properties.some(
+        (property) => property.type !== "Property" || property.computed,
+      ) ||
+      mode?.value.type !== "Literal" ||
+      mode.value.value !== "default"
+    ) {
+      throw new Error(
+        'Set the existing patchCssModules plugin to exportMode: "default" for CSS classes named "default".',
+      );
+    }
+  } else {
+    const output = new MagicString(withCss);
+    const binding = ensureNamedImport(
+      nextProgram,
+      output,
+      "vite-css-modules",
+      "patchCssModules",
+      allocateBinding(collectTopLevelBindings(nextProgram), "patchCssModules"),
+    );
+    const expression = `${binding}({ exportMode: "default" })`;
+    if (!pluginArray)
+      insertObjectProperty(output, nextConfig, `  plugins: [${expression}],`, withCss);
+    else {
+      const first = pluginArray.elements.find(Boolean);
+      output.appendLeft(
+        first ? (first as AstNode).start : (pluginArray as AstNode).end - 1,
+        first ? `${expression}, ` : expression,
+      );
+    }
+    const updated = output.toString();
+    parseViteConfig(filePath, updated);
+    return {
+      code: formatInlineConfig(filePath, updated, code),
+      preservedExistingGenerateScopedName: Boolean(existingName),
+    };
+  }
+  parseViteConfig(filePath, withCss);
+  return {
+    code: formatInlineConfig(filePath, withCss, code),
+    preservedExistingGenerateScopedName: Boolean(existingName),
+  };
 }
 
 function ensureNativeAliases(
@@ -2087,9 +2763,10 @@ export function updateViteConfigForCloudflare(
     isAppRouter: boolean;
     nativeModulesToStub: string[];
     cache?: CloudflareInitOptions;
+    assetsBinding?: string;
+    assetsDirectory?: string;
     imagesBinding?: string;
     versionMetadataBinding?: string;
-    prerender?: boolean;
   },
 ): string {
   const program = parseViteConfig(filePath, code);
@@ -2122,7 +2799,6 @@ export function updateViteConfigForCloudflare(
     : ensureDefaultImport(program, output, "vinext", vinextLocal);
   const existingVinextCall = findPluginCall(config, vinextBinding);
   const existingImageOptimizer = getVinextImageOptimizer(existingVinextCall);
-  const needsPrerender = Boolean(options.prerender && !hasVinextPrerender(existingVinextCall));
   const configureCaches = options.cache !== undefined;
   const existingCache = getVinextCacheOption(existingVinextCall);
   if (configureCaches && existingCache) {
@@ -2238,18 +2914,28 @@ export function updateViteConfigForCloudflare(
     cacheAdditions.push({ name: "data", expression: `${binding}()` });
   }
   if (configureCaches && cacheOptions.cdnCache === "workers-cache") {
-    const imported = "cdnAdapter";
-    const source = "@vinext/cloudflare/cache/cdn-adapter";
-    const existing = commonJs
-      ? findRequiredBinding(program, source, imported)
-      : findImportedBinding(program, source, imported);
     const existingCdnSlot = getVinextCacheSlot(existingVinextCall, "cdn");
-    const existingUsesCloudflareAdapter = Boolean(
-      existing &&
+    const existingCallee =
       existingCdnSlot?.value.type === "CallExpression" &&
-      existingCdnSlot.value.callee.type === "Identifier" &&
-      existingCdnSlot.value.callee.name === existing,
-    );
+      existingCdnSlot.value.callee.type === "Identifier"
+        ? existingCdnSlot.value.callee.name
+        : undefined;
+    const adapterImports = [
+      ["@vinext/cloudflare/cache/workers-cache-cdn-adapter", "workersCacheCdnAdapter"],
+      ["@vinext/cloudflare/cache/cdn-adapter", "cdnAdapter"],
+    ].map(([source, imported]) => ({
+      source,
+      imported,
+      local: commonJs
+        ? findRequiredBinding(program, source, imported)
+        : findImportedBinding(program, source, imported),
+    }));
+    const {
+      source,
+      imported,
+      local: existing,
+    } = adapterImports.find(({ local }) => local && local === existingCallee) ?? adapterImports[0];
+    const existingUsesCloudflareAdapter = Boolean(existing && existingCallee === existing);
     // An existing custom CDN adapter is user-owned; init must not replace it.
     if (!existingCdnSlot || existingUsesCloudflareAdapter) {
       const local = existing ?? allocateBinding(bindings, imported);
@@ -2260,6 +2946,45 @@ export function updateViteConfigForCloudflare(
         options.versionMetadataBinding &&
         options.versionMetadataBinding !== DEFAULT_VERSION_METADATA_BINDING
           ? `{ versionMetadataBinding: ${JSON.stringify(options.versionMetadataBinding)} }`
+          : "";
+      const expression = `${binding}(${adapterOptions})`;
+      if (existingCdnSlot) {
+        output.overwrite(
+          (existingCdnSlot.value as AstNode).start,
+          (existingCdnSlot.value as AstNode).end,
+          expression,
+        );
+      } else {
+        cacheAdditions.push({ name: "cdn", expression });
+      }
+    }
+  }
+  if (configureCaches && cacheOptions.cdnCache === "static-assets") {
+    const imported = "staticAssetsAdapter";
+    const source = "@vinext/cloudflare/cache/static-assets-adapter";
+    const existing = commonJs
+      ? findRequiredBinding(program, source, imported)
+      : findImportedBinding(program, source, imported);
+    const existingCdnSlot = getVinextCacheSlot(existingVinextCall, "cdn");
+    const existingUsesStaticAssets = Boolean(
+      existing &&
+      existingCdnSlot?.value.type === "CallExpression" &&
+      existingCdnSlot.value.callee.type === "Identifier" &&
+      existingCdnSlot.value.callee.name === existing,
+    );
+    if (existingCdnSlot && !existingUsesStaticAssets) {
+      throw new Error(
+        "The existing vinext() CDN cache adapter does not match the selected Static Assets cache. Remove it before rerunning vinext init.",
+      );
+    }
+    if (!existingCdnSlot || existingUsesStaticAssets) {
+      const local = existing ?? allocateBinding(bindings, imported);
+      const binding = commonJs
+        ? ensureNamedRequire(program, output, source, imported, local)
+        : ensureNamedImport(program, output, source, imported, local);
+      const adapterOptions =
+        options.assetsBinding && options.assetsBinding !== "ASSETS"
+          ? `{ binding: ${JSON.stringify(options.assetsBinding)} }`
           : "";
       const expression = `${binding}(${adapterOptions})`;
       if (existingCdnSlot) {
@@ -2309,16 +3034,17 @@ export function updateViteConfigForCloudflare(
       {
         expression: existingVinextCall
           ? `${vinextBinding}()`
-          : options.cache || options.prerender
+          : options.cache
             ? vinextExpression(
                 cacheOptions,
                 vinextBinding,
                 imageOptimizerExpression?.slice(0, imageOptimizerExpression.indexOf("(")) ||
                   "imagesOptimizer",
                 options.imagesBinding,
-                options.prerender,
                 options.versionMetadataBinding,
                 responseStoreBinding,
+                options.assetsBinding,
+                options.assetsDirectory,
               )
             : `${vinextBinding}()`,
         binding: vinextBinding,
@@ -2337,7 +3063,8 @@ export function updateViteConfigForCloudflare(
       (responseStoreExpression ||
         cacheAdditions.length > 0 ||
         imageOptimizerExpression ||
-        needsPrerender)
+        cacheOptions.cdnCache === "static-assets" ||
+        cacheOptions.prerender)
     ) {
       const properties: string[] = [];
       if (responseStoreExpression) {
@@ -2350,8 +3077,16 @@ export function updateViteConfigForCloudflare(
       if (imageOptimizerExpression) {
         properties.push(`images: { optimizer: ${imageOptimizerExpression} }`);
       }
-      if (needsPrerender) {
-        properties.push(`prerender: { routes: "*" }`);
+      if (cacheOptions.cdnCache === "static-assets" || cacheOptions.prerender) {
+        properties.push('prerender: { routes: "*" }');
+      }
+      if (cacheOptions.cdnCache === "static-assets") {
+        if (
+          options.assetsDirectory &&
+          path.normalize(options.assetsDirectory) !== path.normalize("dist/client")
+        ) {
+          properties.push(`clientOutDir: ${JSON.stringify(options.assetsDirectory)}`);
+        }
       }
       const plugins = findProperty(config, "plugins");
       const propertyIndent = plugins
@@ -2371,7 +3106,17 @@ export function updateViteConfigForCloudflare(
       ensureVinextResponseStore(output, config, vinextBinding, responseStoreExpression, code);
       ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
       ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);
-      ensureVinextPrerender(output, config, vinextBinding, options.prerender, code);
+      if (cacheOptions.cdnCache === "static-assets" || cacheOptions.prerender) {
+        ensureVinextPrerenderOptions(
+          output,
+          config,
+          vinextBinding,
+          cacheOptions.cdnCache === "static-assets"
+            ? (options.assetsDirectory ?? "dist/client")
+            : undefined,
+          code,
+        );
+      }
     }
   }
 
@@ -2395,7 +3140,7 @@ export function updateViteConfigForCloudflare(
     ensureNativeAliases(output, config, options.nativeModulesToStub, pathBinding, code);
   }
 
-  return output.toString();
+  return formatInlineConfig(filePath, output.toString(), code);
 }
 
 export function usesCommonJsViteConfig(filePath: string, code: string): boolean {

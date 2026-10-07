@@ -64,6 +64,8 @@ const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
 const { registerFrameworkTracingIntegration } =
   await import("../packages/vinext/src/server/tracer.js");
+const { _peekRequestScopedCacheLife } =
+  await import("../packages/vinext/src/shims/cache-request-state.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -821,6 +823,22 @@ describe("fetch cache shim", () => {
 
   // ── Tag-based invalidation ──────────────────────────────────────────
 
+  it.each([
+    { label: "oversized tags only", tags: ["a".repeat(257)], cached: false },
+    { label: "non-string tags only", tags: [null, undefined], cached: false },
+    { label: "mixed valid and invalid tags", tags: ["posts", "a".repeat(257)], cached: true },
+  ])("uses valid tags to decide cacheability for $label", async ({ tags, cached }) => {
+    const init = { next: { tags: tags as unknown as string[] } };
+    const first = await fetch("https://api.example.com/validated-tags-only", init);
+    expect((await first.json()).count).toBe(1);
+    expect(getCollectedFetchTags()).toEqual(cached ? ["posts"] : []);
+
+    startNewFetchCacheScope();
+    const second = await fetch("https://api.example.com/validated-tags-only", init);
+    expect((await second.json()).count).toBe(cached ? 1 : 2);
+    expect(fetchMock).toHaveBeenCalledTimes(cached ? 1 : 2);
+  });
+
   it("tags-only fetch inherits the active route revalidate", async () => {
     setCurrentFetchRevalidate(60);
 
@@ -931,6 +949,64 @@ describe("fetch cache shim", () => {
     expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([
       31_536_000, 31_536_000,
     ]);
+  });
+
+  // Next.js only lowers the page's revalidate for a fetch whose own
+  // `next.revalidate` is a number below it (server/lib/patch-fetch.ts). A
+  // cached fetch without one is stored for a year but leaves a
+  // `revalidate = false` page indefinite.
+  it.each<{ name: string; init?: RequestInit; fetchCacheMode?: "default-cache" | "force-cache" }>([
+    { name: "force-cache", init: { cache: "force-cache" } },
+    { name: "revalidate: false", init: { next: { revalidate: false } } },
+    { name: "tags only", init: { next: { tags: ["tags-only"] } } },
+    { name: "fetchCache = force-cache", fetchCacheMode: "force-cache" },
+    { name: "fetchCache = default-cache", fetchCacheMode: "default-cache" },
+  ])(
+    "a cached fetch with $name leaves an indefinite page lifetime unset",
+    async ({ init, fetchCacheMode }) => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        setCurrentFetchRevalidate(Infinity);
+        if (fetchCacheMode) setCurrentFetchCacheMode(fetchCacheMode);
+
+        await fetch("https://api.example.com/indefinite-page-lifetime", init);
+
+        const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+        const store = (handler as any).store as Map<string, any>;
+        expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([31_536_000]);
+        expect(_peekRequestScopedCacheLife()).toBeNull();
+      });
+    },
+  );
+
+  it("a tags-only fetch leaves the page lifetime to the route revalidate it inherits", async () => {
+    await runWithRequestContext(createRequestContext(), async () => {
+      setCurrentFetchRevalidate(60);
+
+      await fetch("https://api.example.com/tags-only-route-lifetime", {
+        next: { tags: ["tags-only-route-lifetime"] },
+      });
+
+      const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+      const store = (handler as any).store as Map<string, any>;
+      expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([60]);
+      expect(_peekRequestScopedCacheLife()).toBeNull();
+    });
+  });
+
+  it.each<{ name: string; init: RequestInit }>([
+    { name: "next.revalidate", init: { next: { revalidate: 60 } } },
+    {
+      name: "force-cache and next.revalidate",
+      init: { cache: "force-cache", next: { revalidate: 60 } },
+    },
+  ])("a cached fetch with $name sets the page lifetime", async ({ init }) => {
+    await runWithRequestContext(createRequestContext(), async () => {
+      setCurrentFetchRevalidate(Infinity);
+
+      await fetch("https://api.example.com/finite-page-lifetime", init);
+
+      expect(_peekRequestScopedCacheLife()).toEqual({ revalidate: 60 });
+    });
   });
 
   it("resets the active route revalidate between fetch-cache scopes", async () => {
@@ -2585,9 +2661,9 @@ describe("fetch cache shim", () => {
         next: { tags: ["user-data"] },
       });
 
-      // The fetch itself is bypassed (not cached), but the per-user response
-      // must still downgrade the page output to fresh render so auth-keyed
-      // data is never statically cached and served across users.
+      // The fetch itself is bypassed (not cached) and recorded as a dynamic
+      // fetch observation. Like Next.js's `autoNoCache`, it doesn't make the
+      // page dynamic, so a static page that makes it is still stored.
       expect(peekDynamicFetchObservations()).toEqual([
         "https://api.example.com/auth-bypass-page-output",
       ]);
@@ -2604,8 +2680,8 @@ describe("fetch cache shim", () => {
 
       // An explicit `no-store` is an explicit uncached-fetch decision, so it
       // hits the no-store branch (full markDynamicUsage) before the softer
-      // auth-safety bypass: the page is fully marked dynamic, not merely
-      // downgraded via a dynamic fetch observation.
+      // auth-safety bypass: the page is marked dynamic, not merely recorded
+      // as a dynamic fetch observation.
       expect(peekDynamicFetchObservations()).toEqual([
         "https://api.example.com/nostore-auth-dynamic",
       ]);
@@ -3523,8 +3599,8 @@ describe("fetch cache shim", () => {
 
       // The developer opted into caching; failing to build a cache key is an
       // internal vinext limitation, not an explicit uncached-fetch decision.
-      // The observation downgrades the page output to fresh render, but the
-      // page is not marked dynamic.
+      // The fetch is recorded as a dynamic fetch observation, but the page is
+      // not marked dynamic.
       expect(consumeDynamicUsage()).toBe(false);
       expect(peekDynamicFetchObservations()).toContain(
         "https://api.example.com/large-body-page-output",

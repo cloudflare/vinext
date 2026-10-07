@@ -26,6 +26,7 @@
  */
 
 import type { CacheHandlerValue, IncrementalCacheValue } from "./cache-handler.js";
+import type { VinextAssetFetcher } from "../server/multi-stage.js";
 import { getExplicitCdnCacheAdapter } from "./cdn-cache-state.js";
 export { setCdnCacheAdapter } from "./cdn-cache-state.js";
 
@@ -39,6 +40,8 @@ export type CdnCacheableHeaderInput = {
    * when no cacheable policy applies.
    */
   cacheControl: string;
+  /** Explicit endpoint policy returned to clients, independent of shared admission. */
+  browserCacheControl?: string;
   /**
    * True when this is a freshly-rendered **streaming** response whose
    * dynamic-ness is not yet proven (late Server Component request-API usage can
@@ -68,12 +71,19 @@ export type CdnResponsePolicy = {
    * rules without knowing which provider header carried it.
    */
   readCacheControl(headers: Headers): string | null;
+  /**
+   * Name the response header `readCacheControl` interpreted, or `null` when
+   * none did. Core uses it to tell which stage owns the effective policy;
+   * without it, core cannot attribute that policy to next.config.
+   */
+  readCacheControlHeaderName?(headers: Headers): string | null;
   /** Whether provider policy explicitly opts out of storage. */
   hasExplicitNonCacheablePolicy(headers: Headers, baseline?: Headers): boolean;
 };
 
-/** Whether a Cache-Control value contains an exact non-cacheable directive. */
-export function isNonCacheableCacheControl(cacheControl: string): boolean {
+/** Split Cache-Control directives without treating quoted commas as separators. */
+export function splitCacheControlDirectives(cacheControl: string): string[] {
+  const directives: string[] = [];
   let start = 0;
   let quoted = false;
   let escaped = false;
@@ -81,12 +91,8 @@ export function isNonCacheableCacheControl(cacheControl: string): boolean {
   for (let index = 0; index <= cacheControl.length; index++) {
     const char = cacheControl[index];
     if (index === cacheControl.length || (char === "," && !quoted)) {
-      const directive = cacheControl.slice(start, index);
-      const equals = directive.indexOf("=");
-      const name = (equals === -1 ? directive : directive.slice(0, equals)).trim().toLowerCase();
-      if (name === "no-store" || (equals === -1 && (name === "private" || name === "no-cache"))) {
-        return true;
-      }
+      const directive = cacheControl.slice(start, index).trim();
+      if (directive) directives.push(directive);
       start = index + 1;
       continue;
     }
@@ -99,7 +105,22 @@ export function isNonCacheableCacheControl(cacheControl: string): boolean {
     escaped = false;
   }
 
-  return false;
+  return directives;
+}
+
+/** Whether a Cache-Control value contains an exact non-cacheable directive. */
+export function isNonCacheableCacheControl(
+  cacheControl: string,
+  scope: "shared" | "browser" = "shared",
+): boolean {
+  return splitCacheControlDirectives(cacheControl).some((directive) => {
+    const equals = directive.indexOf("=");
+    const name = (equals === -1 ? directive : directive.slice(0, equals)).trim().toLowerCase();
+    return (
+      name === "no-store" ||
+      (equals === -1 && (name === "no-cache" || (scope === "shared" && name === "private")))
+    );
+  });
 }
 
 /**
@@ -127,6 +148,14 @@ export type CdnCacheAdapter = {
    * the completed artifact.
    */
   readonly requiresCompletedResponseAdmission?: boolean;
+
+  /**
+   * This adapter's response-stage transport keys shared App page dispatches by
+   * `VinextResponseStageDispatchOptions.cacheIdentity` when core supplies one.
+   * Core supplies it only when completed-response admission is also required,
+   * because that admission is what makes a query-free identity safe.
+   */
+  readonly responseStageCacheIdentity?: "query-free";
 
   /**
    * Optionally return a foreground page response while completed-response
@@ -159,6 +188,12 @@ export type CdnCacheAdapter = {
    * edge owns serving.
    */
   get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
+
+  /** Also supplies build-time PAGES entries for pages without getStaticProps. */
+  readonly hasPrerenderedPages?: boolean;
+
+  /** Optional host asset fetcher resolved by the adapter's platform bindings. */
+  readonly assets?: VinextAssetFetcher;
 
   /**
    * Persist a freshly-rendered page-level artifact.
@@ -243,7 +278,7 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
       // data cache instead.
       return { "Cache-Control": PENDING_DYNAMIC_CACHE_CONTROL };
     }
-    return { "Cache-Control": input.cacheControl };
+    return { "Cache-Control": input.browserCacheControl ?? input.cacheControl };
   }
 
   buildResponseIdentityHeaders(): CdnResponseHeaders {
@@ -280,10 +315,10 @@ let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
  *
  * ```ts
  * import { vinext } from "vinext";
- * import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+ * import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
  *
  * export default defineConfig({
- *   plugins: [vinext({ cache: { cdn: cdnAdapter() } })],
+ *   plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })],
  * });
  * ```
  *

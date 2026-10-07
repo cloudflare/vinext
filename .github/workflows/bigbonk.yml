@@ -21,7 +21,7 @@ jobs:
         github.event.comment.author_association == 'OWNER'
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     permissions:
       id-token: write
       contents: write
@@ -37,13 +37,15 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@d00cbcf581a5463f7adc2d81e470234b1727f8dd # main
+        uses: Cloudflare-Studio/ask-bonk/github@2c20fe37255d2e0e186fb0e16dd2c5704e4116cf # main
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"/home/runner/work/**":"allow"},"question":"deny","doom_loop":"deny"}}'
         with:
+          # Stop Bonk before the job's timeout-minutes so it can report the outcome itself.
+          timeout: "10m"
           oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
           model: "cloudflare-ai-gateway/openai/gpt-5.6-sol"
           mentions: "/bigbonk"

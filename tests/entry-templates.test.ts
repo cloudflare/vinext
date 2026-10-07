@@ -898,12 +898,177 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/:locale": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
       '  "/:lang/:locale/other/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","locale"]),',
+      '  "layouts:[lang]/[locale]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/:locale/other/:slug": ["lang","locale"],',
       '  "/:lang/:locale": ["lang","locale"],',
+    ]);
+  });
+
+  it("keys a prefix's layout generateStaticParams apart from the page there", () => {
+    // Next.js composes a route's params from its own loader tree only
+    // (build/static-paths/app.ts), so /[slug]/details reads the [slug] layout
+    // without the sibling app/[slug]/page.tsx.
+    const route = {
+      pattern: "/:slug",
+      patternParts: [":slug"],
+      pagePath: "/tmp/test/app/[slug]/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/[slug]/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPath: null,
+      forbiddenPaths: [null],
+      unauthorizedPath: null,
+      unauthorizedPaths: [null],
+      routeSegments: ["[slug]"],
+      templateTreePositions: [],
+      layoutTreePositions: [1],
+      isDynamic: true,
+      params: ["slug"],
+      siblingIntercepts: [],
+    } satisfies AppRoute;
+    const routes = [
+      route,
+      {
+        ...route,
+        pattern: "/:slug/details",
+        patternParts: [":slug", "details"],
+        pagePath: "/tmp/test/app/[slug]/details/page.tsx",
+        routeSegments: ["[slug]", "details"],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_1 }, { load: load_0 }], []),',
+      '  "/:slug/details": __createAppPrerenderStaticParamsResolver([{ load: load_2 }], []),',
+      '  "layouts:[slug]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
+    ]);
+  });
+
+  it("keys layout generateStaticParams by each route's own tree", () => {
+    // app/[slug]/(a)/layout.tsx and app/[slug]/(b)/layout.tsx share the /:slug
+    // URL prefix but sit in different loader trees; Next.js never composes a
+    // route's params from a layout outside its own tree.
+    const base = {
+      routePath: null,
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPath: null,
+      forbiddenPaths: [null],
+      unauthorizedPath: null,
+      unauthorizedPaths: [null],
+      templateTreePositions: [],
+      isDynamic: true,
+      params: ["slug"],
+      siblingIntercepts: [],
+    };
+    const routes = [
+      {
+        ...base,
+        pattern: "/:slug/foo",
+        patternParts: [":slug", "foo"],
+        pagePath: "/tmp/test/app/[slug]/(a)/foo/page.tsx",
+        layouts: ["/tmp/test/app/[slug]/(a)/layout.tsx"],
+        layoutTreePositions: [2],
+        routeSegments: ["[slug]", "(a)", "foo"],
+      },
+      {
+        ...base,
+        pattern: "/:slug/bar",
+        patternParts: [":slug", "bar"],
+        pagePath: "/tmp/test/app/[slug]/(b)/bar/page.tsx",
+        layouts: ["/tmp/test/app/[slug]/(b)/layout.tsx"],
+        layoutTreePositions: [2],
+        routeSegments: ["[slug]", "(b)", "bar"],
+      },
+      {
+        ...base,
+        pattern: "/:slug",
+        patternParts: [":slug"],
+        pagePath: "/tmp/test/app/[slug]/(c)/page.tsx",
+        layouts: [],
+        layoutTreePositions: [],
+        routeSegments: ["[slug]", "(c)"],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/:slug/foo": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], []),',
+      '  "/:slug/bar": __createAppPrerenderStaticParamsResolver([{ load: load_2 }], []),',
+      '  "/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_4 }], []),',
+      '  "layouts:[slug]/(a)": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
+      '  "layouts:[slug]/(b)": __createAppPrerenderStaticParamsResolver([{ load: load_3 }], []),',
+    ]);
+  });
+
+  it("keeps same-prefix layouts in one tree as separate generateStaticParams providers", () => {
+    // app/[lang]/layout.tsx and app/[lang]/(group)/layout.tsx both sit at the
+    // /:lang prefix, but Next.js calls each loader-tree segment's
+    // generateStaticParams as its own step (build/static-paths/app.ts
+    // generateRouteStaticParams), so an empty result from the first must not
+    // skip the second.
+    const routes = [
+      {
+        pattern: "/:lang/:slug",
+        patternParts: [":lang", ":slug"],
+        pagePath: "/tmp/test/app/[lang]/(group)/[slug]/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/[lang]/layout.tsx", "/tmp/test/app/[lang]/(group)/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null, null],
+        notFoundPath: null,
+        notFoundPaths: [null, null],
+        forbiddenPath: null,
+        forbiddenPaths: [null, null],
+        unauthorizedPath: null,
+        unauthorizedPaths: [null, null],
+        routeSegments: ["[lang]", "(group)", "[slug]"],
+        templateTreePositions: [],
+        layoutTreePositions: [1, 2],
+        isDynamic: true,
+        params: ["lang", "slug"],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/:lang/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], []),',
+      '  "layouts:[lang]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
+      '  "layouts:[lang]/(group)": __createAppPrerenderStaticParamsResolver([{ load: load_2 }], []),',
     ]);
   });
 
@@ -943,8 +1108,8 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/docs v2/:section": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
       '  "/:lang/docs v2/:section/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","section"]),',
+      '  "layouts:[lang]/docs%20v2/[section]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/docs v2/:section/:slug": ["lang","section"],',
@@ -1141,6 +1306,12 @@ describe("App Router entry templates", () => {
     );
     expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
     expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
+    // The request stage reads only the Workers Cache manifest's projection.
+    expect(code).toContain(
+      'import __cacheabilityRequestProjection from "virtual:vinext-cacheability-request-projection"',
+    );
+    expect(code).toContain("cacheabilityRequestProjection: __cacheabilityRequestProjection,");
+    expect(code).not.toContain("virtual:vinext-cacheability-manifest");
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
     expect(code).toContain(
       'dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument)',
@@ -1430,10 +1601,11 @@ describe("App Router entry templates", () => {
   it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toMatch(
-      /import \{ createAppRscHandler \} from "[^"]*app-rsc-combined-handler\.[jt]s";/,
+    expect(code).toContain(
+      'import { createAppRscHandler } from "vinext/server/app-rsc-combined-handler";',
     );
     expect(code).toContain("const __appRscHandler = createAppRscHandler({");
+    expect(code).toContain("assetPrefix: __assetPrefix,");
     expect(code).toContain("export default __appRscHandler;");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });

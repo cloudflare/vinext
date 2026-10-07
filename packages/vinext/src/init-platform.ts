@@ -4,7 +4,12 @@ import { isAgent } from "am-i-vibing";
 
 export type InitPlatform = "cloudflare" | "node";
 export type InitDataCache = "kv" | "none";
-export type InitCdnCache = "data-cache" | "none" | "response-store" | "workers-cache";
+export type InitCdnCache =
+  | "data-cache"
+  | "none"
+  | "response-store"
+  | "static-assets"
+  | "workers-cache";
 export type InitImageOptimization = "cloudflare-images" | "none";
 export type InitResponseStoreMode = "self-contained" | "service-binding";
 
@@ -14,6 +19,8 @@ export type CloudflareInitOptions = {
   imageOptimization: InitImageOptimization;
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
+  legacyWrangler?: boolean;
+  prerender?: boolean;
 };
 
 export const INIT_PLATFORMS = {
@@ -117,6 +124,7 @@ export function parseCdnCacheArg(args: string[]): InitCdnCache | undefined {
     "none",
     "response-store",
     "workers-cache",
+    "static-assets",
     "data-cache",
   ]);
 }
@@ -139,18 +147,26 @@ export function parsePrerenderArg(args: string[]): boolean | undefined {
 }
 
 export function parseWarmCdnCacheArg(args: string[]): boolean | undefined {
-  return parseBooleanArg(
-    args,
-    "--experimental-warm-cdn-cache",
-    "--no-experimental-warm-cdn-cache",
-    '--experimental-warm-cdn-cache expects true or false when using the "--experimental-warm-cdn-cache=value" form.',
+  return (
+    parseBooleanArg(
+      args,
+      "--warm-cache",
+      "--no-warm-cache",
+      '--warm-cache expects true or false when using the "--warm-cache=value" form.',
+    ) ??
+    parseBooleanArg(
+      args,
+      "--experimental-warm-cdn-cache",
+      "--no-experimental-warm-cdn-cache",
+      '--warm-cache expects true or false when using the "--warm-cache=value" form.',
+    )
   );
 }
 
 function parseBooleanArg(
   args: string[],
   enabledFlag: string,
-  disabledFlag: string,
+  disabledFlag: string | undefined,
   errorMessage: string,
 ): boolean | undefined {
   for (const arg of args) {
@@ -222,25 +238,43 @@ export async function resolveInitOptions(
   args: string[],
   options: PlatformPromptOptions = {},
 ): Promise<ResolvedInitOptions> {
-  const platform = await resolveInitPlatform(args, options);
+  const legacyWrangler = parseBooleanArg(
+    args,
+    "--legacy-wrangler-cloudflare-init",
+    undefined,
+    '--legacy-wrangler-cloudflare-init expects true or false when using the "--legacy-wrangler-cloudflare-init=value" form.',
+  );
+  const platform =
+    legacyWrangler && !parsePlatformArg(args)
+      ? "cloudflare"
+      : await resolveInitPlatform(args, options);
   const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
+  if (legacyWrangler && platform !== "cloudflare") {
+    throw new Error("--legacy-wrangler-cloudflare-init requires --platform=cloudflare.");
+  }
   const explicitPrerender = parsePrerenderArg(args);
+  if (
+    platform === "cloudflare" &&
+    platformOptions?.cdnCache === "static-assets" &&
+    explicitPrerender === false
+  ) {
+    throw new Error(
+      "--no-prerender cannot be used with --cdn-cache=static-assets, which requires build-time prerendering.",
+    );
+  }
   const supportsWarmCdnCache =
     platformOptions?.cdnCache === "response-store" || platformOptions?.cdnCache === "workers-cache";
   if (platform === "cloudflare" && !supportsWarmCdnCache) {
     if (explicitWarmCdnCache === true) {
-      throw new Error(
-        "--experimental-warm-cdn-cache requires --cdn-cache=response-store or workers-cache.",
-      );
+      throw new Error("--warm-cache requires --cdn-cache=response-store or workers-cache.");
     }
   }
 
   const prerender =
-    explicitPrerender ??
-    (platformOptions?.cdnCache === "response-store"
-      ? false
-      : await resolveInitPrerender(args, options));
+    platform === "cloudflare" && platformOptions?.cdnCache === "static-assets"
+      ? false // The selected adapter already enables prerendering in its generated config.
+      : (explicitPrerender ?? (await resolveInitPrerender(args, options, platform)));
   const warmCdnCache =
     platform === "cloudflare" && supportsWarmCdnCache
       ? await resolveInitWarmCdnCache(args, options)
@@ -251,7 +285,12 @@ export async function resolveInitOptions(
     prerender,
     cloudflare:
       platform === "cloudflare" && platformOptions
-        ? { ...platformOptions, warmCdnCache }
+        ? {
+            ...platformOptions,
+            warmCdnCache,
+            ...(legacyWrangler ? { legacyWrangler } : {}),
+            ...(prerender ? { prerender: true } : {}),
+          }
         : undefined,
   };
 }
@@ -259,6 +298,7 @@ export async function resolveInitOptions(
 export async function resolveInitPrerender(
   args: string[],
   options: PlatformPromptOptions = {},
+  platform: InitPlatform = "node",
 ): Promise<boolean> {
   const explicitPrerender = parsePrerenderArg(args);
   if (explicitPrerender !== undefined) return explicitPrerender;
@@ -275,7 +315,13 @@ export async function resolveInitPrerender(
 
   try {
     while (true) {
-      const answer = (await question("  Pre-render all static routes after build? [y/N]: "))
+      const answer = (
+        await question(
+          platform === "cloudflare"
+            ? "  Pre-render all static routes after build? (not served by Cloudflare deploy unless using Static Assets) [y/N]: "
+            : "  Pre-render all static routes after build? [y/N]: ",
+        )
+      )
         .trim()
         .toLowerCase();
       if (answer === "") {
@@ -316,7 +362,7 @@ export async function resolveInitWarmCdnCache(
 
   try {
     while (true) {
-      const answer = (await question("  Enable experimental cache pre-warm during deploy? [y/N]: "))
+      const answer = (await question("  Enable cache pre-warm during deploy? [y/N]: "))
         .trim()
         .toLowerCase();
       if (answer === "") {
@@ -384,7 +430,7 @@ export async function resolveCloudflareInitOptions(
   const env = options.env ?? process.env;
   if (isAgentEnvironment(env)) {
     throw new Error(
-      "vinext init needs Cloudflare cache and image choices. Ask the user whether they want no cache or which CDN cache (response-store, workers-cache, or data-cache), the Response Store mode when selected (service-binding or self-contained), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --response-store-mode=..., --data-cache=..., and --image-optimization=....",
+      "vinext init needs Cloudflare cache and image choices. Ask the user whether they want no cache or which CDN cache (response-store, workers-cache, static-assets, or data-cache), the Response Store mode when selected (service-binding or self-contained), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --response-store-mode=..., --data-cache=..., and --image-optimization=....",
     );
   }
 
@@ -450,7 +496,7 @@ export async function resolveCloudflareInitOptions(
     }
     const cdnCache = await promptChoice(
       selectedCdnCache,
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only)\n  CDN cache [1]: ",
       {
         "1": "response-store",
         "response-store": "response-store",
@@ -460,9 +506,12 @@ export async function resolveCloudflareInitOptions(
         "3": "data-cache",
         "data-cache": "data-cache",
         data: "data-cache",
+        "4": "static-assets",
+        "static-assets": "static-assets",
+        static: "static-assets",
       },
       "response-store",
-      "Please choose Workers Response Store (1), Workers Cache (2), or Data cache (3).",
+      "Please choose Workers Response Store (1), Workers Cache (2), Data cache (3), or Static Assets (4).",
     );
     if ((cdnCache === "response-store" || cdnCache === "none") && explicitDataCache === "kv") {
       throw new Error(`--cdn-cache=${cdnCache} cannot be combined with --data-cache=kv.`);

@@ -7,7 +7,7 @@ import {
 import { notFoundResponse } from "./http-error-responses.js";
 import type { RootParams } from "vinext/shims/root-params";
 
-type GenerateStaticParams = (args: { params: RootParams }) => unknown;
+type GenerateStaticParams = (args: { params: RootParams; rejectEmptyResults?: boolean }) => unknown;
 
 export type AppPrerenderStaticParamsMap = Record<string, GenerateStaticParams | null | undefined>;
 export type AppPrerenderRootParamNamesMap = Record<string, readonly string[] | undefined>;
@@ -92,6 +92,7 @@ async function handleStaticParamsEndpoint(
       fn: generateStaticParams,
       params,
       pattern,
+      rejectEmptyResults: url.searchParams.get("rejectEmptyResults") === "1",
       rootParamNamesByPattern: options.rootParamNamesByPattern ?? {},
     });
     if (result === null) return jsonNullResponse();

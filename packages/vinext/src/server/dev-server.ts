@@ -998,7 +998,7 @@ export function createSSRHandler(
         if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
           const pathsResult = await pageModule.getStaticPaths({
             locales: i18nConfig?.locales ?? [],
-            defaultLocale: currentDefaultLocale ?? "",
+            defaultLocale: i18nConfig?.defaultLocale ?? "",
           });
           const fallback = pathsResult?.fallback ?? false;
 
@@ -1006,7 +1006,11 @@ export function createSSRHandler(
           const routePattern = patternToNextFormat(route.pattern);
           const routeParams = getPagesRouteParams(routePattern);
           const isValidPath = paths.some((pathEntry) =>
-            matchesPagesStaticPath(pathEntry, params, routeParams, url),
+            matchesPagesStaticPath(pathEntry, params, routeParams, localeStrippedUrl, {
+              locale,
+              locales: i18nConfig?.locales,
+              defaultLocale: i18nConfig?.defaultLocale,
+            }),
           );
 
           if (fallback === false && !isValidPath && requestPreviewData === false) {
@@ -1458,6 +1462,7 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          dataHeaders["Cache-Control"] = DEV_PAGES_CACHE_CONTROL;
           applyDevPagesPreviewHeaders(dataHeaders, requestPreview);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
@@ -1637,6 +1642,7 @@ export function createSSRHandler(
         // Pages development cache boundary and font preload headers.
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
+          "Cache-Control": DEV_PAGES_CACHE_CONTROL,
         };
         if (typeof pageModule.getStaticProps === "function") {
           // Next's Pages handler never persists route responses in dev. It may

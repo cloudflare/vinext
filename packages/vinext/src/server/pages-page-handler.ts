@@ -13,6 +13,7 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
@@ -37,6 +38,7 @@ import {
   STATIC_CACHE_CONTROL,
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
+  hasCdnResponsePolicy,
   shouldUseNextDeployCacheControl,
 } from "./cache-control.js";
 import {
@@ -49,7 +51,7 @@ import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import {
   isrGet,
   isrSet,
-  isrCacheKey,
+  pagesIsrCacheKey,
   coalesceOnDemandRevalidation,
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
@@ -73,6 +75,7 @@ import {
   isRouteCacheabilityIdentityProbe,
   isRouteCacheabilityProbe,
   recordRouteCacheability,
+  markRouteCacheabilityExplicitResponsePolicy,
 } from "vinext/shims/cacheability-classification";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import {
@@ -191,6 +194,14 @@ function applyPagesErrorCachePolicy(
   cacheTagPathname: string,
 ): Response {
   const headers = new Headers(response.headers);
+  recordRouteCacheability(
+    revalidateSeconds === undefined
+      ? { cacheable: false }
+      : {
+          cacheable: revalidateSeconds !== 0,
+          cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
+        },
+  );
   if (hasExplicitNonCacheableResponsePolicy(headers)) return response;
   // The source route's notFound lifetime controls the outgoing response, not
   // the inner error page's lifetime. Preview and nonce-bearing responses are
@@ -465,15 +476,8 @@ export function createPagesPageHandler(
   function isrCacheKeyForRequest(
     i18nCacheVariant: string | null,
   ): (router: string, pathname: string) => string {
-    if (!i18nCacheVariant) {
-      return (router, pathname) => isrCacheKey(router, pathname, buildId ?? undefined);
-    }
-    return (router, pathname) =>
-      isrCacheKey(
-        router,
-        pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant),
-        buildId ?? undefined,
-      );
+    return (_router, pathname) =>
+      pagesIsrCacheKey(pathname, buildId ?? undefined, i18nCacheVariant);
   }
 
   // The recursive render function — defined inside so it can self-call for
@@ -570,9 +574,11 @@ export function createPagesPageHandler(
         : i18nConfig.defaultLocale
       : undefined;
     const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
+    // A domain can serve prefixed locales as well as its default locale. Keep
+    // both dimensions, and leave old domain-only entries unreachable.
     const i18nCacheVariant = i18nConfig
       ? localeInfo.domainLocale
-        ? "domain:" + String(localeInfo.domainLocale.domain).toLowerCase()
+        ? JSON.stringify([String(localeInfo.domainLocale.domain).toLowerCase(), locale])
         : "locale:" + String(locale)
       : null;
     const pageIsrCacheKey = isrCacheKeyForRequest(i18nCacheVariant);
@@ -636,6 +642,8 @@ export function createPagesPageHandler(
         // ISR entry to copy policy from, so carry Next.js's static policy into
         // the probe/admission result explicitly.
         recordRouteCacheability({ cacheable: true, cacheControl: STATIC_CACHE_CONTROL });
+      } else {
+        recordRouteCacheability({ cacheable: false });
       }
     }
 
@@ -705,10 +713,14 @@ export function createPagesPageHandler(
         // custom 404 module (and its getStaticProps) runs. Keep this separate
         // from routeUrl so router, _document, and getInitialProps contexts
         // continue to observe the original request-facing URL.
+        // The prerenderer stores _error's 404 document as /404; its 500
+        // representation must never reuse that snapshot.
         const isrCachePathname =
-          isStaticPropsRender &&
+          (isStaticPropsRender || pagesReadiness.autoExport) &&
           (routePattern === "/404" || routePattern === "/500" || routePattern === "/_error")
-            ? routePattern
+            ? routePattern === "/_error" && renderStatusCode === 404
+              ? "/404"
+              : routePattern
             : renderRouteUrl.split("?")[0];
         const isNotFoundErrorRender =
           routePattern === "/404" || (routePattern === "/_error" && renderStatusCode === 404);
@@ -838,6 +850,15 @@ export function createPagesPageHandler(
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
+        const browserCacheControl =
+          isStaticPropsRoute && !scriptNonce
+            ? (initialResponseHeaders ?? middlewareHeaders)?.get("Cache-Control")
+            : null;
+        const withBrowserPolicy = (response: Response): Response => {
+          if (browserCacheControl) response.headers.set("Cache-Control", browserCacheControl);
+          return response;
+        };
+
         const shouldApplyErrorResponsePolicy =
           previewData === false &&
           !scriptNonce &&
@@ -902,8 +923,10 @@ export function createPagesPageHandler(
           },
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
+          staticPathsDefaultLocale: i18nConfig?.defaultLocale,
           isrCacheKey: pageIsrCacheKey,
           isrGet: routeIsrGet,
+          hasPrerenderedPages: getCdnCacheAdapter().hasPrerenderedPages,
           isrSet: routeIsrSet,
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
@@ -966,6 +989,7 @@ export function createPagesPageHandler(
           sanitizeDestination,
           scriptNonce,
           statusCode: renderStatusCode,
+          notFoundSourceHeaders: options?.__notFoundSourceHeaders,
           triggerBackgroundRegeneration,
           vinext: serializedPagesNextData.__vinext,
           nextData: serializedPagesNextData,
@@ -1012,7 +1036,7 @@ export function createPagesPageHandler(
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
           }
-          return finalizePagesPreviewResponse(notFoundResponse, preview);
+          return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }
         if (pageDataResult.kind === "response") {
           let response =
@@ -1027,7 +1051,7 @@ export function createPagesPageHandler(
               errorResponseCachePathname,
             );
           }
-          return finalizePagesPreviewResponse(response, preview);
+          return finalizePagesPreviewResponse(withBrowserPolicy(response), preview);
         }
 
         let pageProps = pageDataResult.pageProps;
@@ -1050,6 +1074,18 @@ export function createPagesPageHandler(
         // getStaticProps `notFound` lifetime only controls the outgoing 404
         // response and must not shorten `/404`'s internal cache lifetime.
         const isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+        if (
+          isStaticPropsRoute &&
+          preview.data === false &&
+          !preview.shouldClear &&
+          isrRevalidateSeconds !== null
+        ) {
+          recordRouteCacheability({
+            cacheable: isrRevalidateSeconds !== 0,
+            cacheControl: buildMissIsrCacheControl(isrRevalidateSeconds, vinextConfig.expireTime),
+          });
+        }
+
         const isrExpireSeconds = pageDataResult.isrExpireSeconds;
         const isFallbackRender = pageDataResult.isFallback === true;
 
@@ -1085,6 +1121,7 @@ export function createPagesPageHandler(
               }
             }
           }
+          if (hasCdnResponsePolicy(headers)) markRouteCacheabilityExplicitResponsePolicy();
           if (gsspRes) {
             // Default Cache-Control for gSSP-driven _next/data responses —
             // skip when gSSP already set one via res.setHeader. Fixes #1461.
@@ -1119,7 +1156,9 @@ export function createPagesPageHandler(
             }
           }
           return finalizePagesPreviewResponse(
-            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers }),
+            withBrowserPolicy(
+              buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers }),
+            ),
             preview,
           );
         }
@@ -1213,7 +1252,7 @@ export function createPagesPageHandler(
             errorResponseCachePathname,
           );
         }
-        return finalizePagesPreviewResponse(pageResponse, preview);
+        return finalizePagesPreviewResponse(withBrowserPolicy(pageResponse), preview);
       } catch (e) {
         console.error("[vinext] SSR error:", e);
         await reportRequestError(

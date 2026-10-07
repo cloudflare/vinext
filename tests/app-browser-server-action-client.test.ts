@@ -11,6 +11,7 @@ import {
 import {
   ACTION_REDIRECT_HEADER,
   ACTION_REVALIDATED_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
 
@@ -62,6 +63,8 @@ describe("app browser server action client", () => {
           status: 303,
           headers: {
             [ACTION_REDIRECT_HEADER]: "/target",
+            // The target's render, rewritten from /target to /page?q=rewritten.
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/page?q=rewritten"),
             "content-type": "text/x-component",
           },
         }),
@@ -96,7 +99,11 @@ describe("app browser server action client", () => {
 
     expect(renderRedirectPayload).toHaveBeenCalledWith(
       normalizeAppElements(wireElements),
-      expect.objectContaining({ href: "https://example.com/target" }),
+      // Client pages in the target read the query it rendered with.
+      expect.objectContaining({
+        href: "https://example.com/target",
+        renderedPathAndSearch: "/page?q=rewritten",
+      }),
       expect.any(Object),
       "none",
     );
@@ -365,6 +372,8 @@ describe("app browser server action client", () => {
           headers: {
             "content-type": "text/x-component",
             [ACTION_REVALIDATED_HEADER]: "2",
+            // A rewrite on the POST re-rendered the page with another query.
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/source?q=rewritten"),
           },
         }),
       ),
@@ -390,11 +399,12 @@ describe("app browser server action client", () => {
 
     expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
     expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
-    const [elementsArg, , returnValueArg, revalidationArg] =
+    const [elementsArg, , returnValueArg, revalidationArg, renderedPathAndSearchArg] =
       commitSameUrlNavigatePayload.mock.calls[0];
     await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
     expect(returnValueArg).toEqual({ ok: true, data: "value-after-revalidation" });
     expect(revalidationArg).toBe("dynamicOnly");
+    expect(renderedPathAndSearchArg).toBe("/source?q=rewritten");
   });
 
   it("commits the RSC tree for revalidated void actions with no return value", async () => {

@@ -90,6 +90,7 @@ export async function startFixtureServer(
     appRouter?: boolean;
     listen?: boolean;
     publicDir?: string | false;
+    resolve?: { preserveSymlinks?: boolean };
     server?: {
       host?: string;
       allowedHosts?: true | string[];
@@ -122,6 +123,7 @@ export async function startFixtureServer(
     configFile: false,
     plugins,
     publicDir: opts?.publicDir,
+    resolve: opts?.resolve,
     // Vite may discover additional deps after the first request (especially
     // with @vitejs/plugin-rsc environments) and trigger a re-optimization.
     // In non-browser test clients, we can't "reload" and would otherwise

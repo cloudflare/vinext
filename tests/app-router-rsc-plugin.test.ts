@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { type ViteDevServer } from "vite";
+import { type Plugin, type ViteDevServer } from "vite";
 import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { flattenPluginOptions } from "../packages/vinext/src/utils/plugin-options.js";
 import { APP_FIXTURE_DIR, fetchHtml, RSC_ENTRIES, testCacheDir } from "./helpers.js";
 
 describe("RSC plugin auto-registration", () => {
@@ -209,6 +210,23 @@ describe("RSC plugin auto-registration", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("does not apply auto-injected RSC plugins to auxiliary Worker environments", async () => {
+    const resolvedPlugins = (await flattenPluginOptions(
+      vinext({ appDir: APP_FIXTURE_DIR, react: false }),
+    )) as Plugin[];
+    const encryptionKeyPlugin = resolvedPlugins.find(
+      (plugin) => plugin && plugin.name === "rsc:encryption-key",
+    );
+
+    expect(encryptionKeyPlugin?.applyToEnvironment).toBeTypeOf("function");
+    expect(
+      await encryptionKeyPlugin!.applyToEnvironment!({
+        name: "responseStoreServiceBinding",
+      } as never),
+    ).toBe(false);
+    expect(await encryptionKeyPlugin!.applyToEnvironment!({ name: "rsc" } as never)).toBe(true);
   });
 });
 

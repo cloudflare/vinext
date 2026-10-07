@@ -30,7 +30,7 @@ These are active compatibility areas, not permanent exclusions:
 - **Cache Components and Partial Prerendering:** `"use cache"` is partially implemented, but full `cacheComponents` behavior is still incomplete. Cache profiles, tags, partial shells, resume behavior, prefetching, and some dev/build cache semantics do not yet match Next.js in every case.
 - **Build-time image and font optimization:** images can be optimized at request time on Cloudflare, but vinext does not yet reproduce Next.js's complete build-time image pipeline. Google Fonts are loaded from the CDN, and local font CSS is injected at runtime rather than extracted during the build.
 - **Native modules in App Router development:** packages such as `sharp`, `resvg`, `satori`, `lightningcss`, and `@napi-rs/canvas` can fail in Vite's RSC development environment. Production builds support more of these cases than development mode.
-- **Platform-specific and advanced Next.js behavior:** `runtime` and `preferredRegion` route config are currently ignored, and some recently introduced or undocumented Next.js behavior may not yet be reproduced.
+- **Platform-specific and advanced Next.js behavior:** `preferredRegion` route config is ignored, and `runtime` doesn't choose where a route runs (outside `cacheComponents`, a `runtime = "edge"` App Router page is never ISR-cached, as in Next.js), and some recently introduced or undocumented Next.js behavior may not yet be reproduced.
 
 Run `vinext check` against an existing application before migrating. If a gap is not listed here, check the [open issues](https://github.com/cloudflare/vinext/issues) or file a focused reproduction.
 
@@ -80,28 +80,39 @@ npm install react-server-dom-webpack
 npm install -D @vitejs/plugin-rsc
 ```
 
-Replace `next` with `vinext` in your scripts:
+Add a Vite config:
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext()],
+});
+```
+
+Then use Vite for development and builds:
 
 ```json
 {
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
+    "dev": "vite dev",
+    "build": "vite build",
     "start": "vinext start"
   }
 }
 ```
 
 ```bash
-vinext dev          # Development server with HMR
-vinext build        # Production build
+npx vite dev        # Development server with HMR
+npx vite build      # Production build
 npx @vinext/cloudflare deploy  # Build and deploy to Cloudflare Workers
 ```
 
 With Vite+, use `vpx @vinext/cloudflare deploy`, or
 `vp exec vinext-cloudflare deploy` when running the locally installed bin.
 
-vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite automatically. No `vite.config.ts` required for basic usage.
+The `vinext()` plugin auto-detects your `app/` or `pages/` directory and loads `next.config.js`.
 
 Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work as-is. Run `vinext check` first to scan for known compatibility issues, or use `vinext init` to [automate the full migration](#migrating-an-existing-nextjs-project).
 
@@ -109,8 +120,8 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 | Command                            | Description                                                             |
 | ---------------------------------- | ----------------------------------------------------------------------- |
-| `vinext dev`                       | Start dev server with HMR                                               |
-| `vinext build`                     | Production build (multi-environment for App Router: RSC + SSR + client) |
+| `vite dev`                         | Start dev server with HMR                                               |
+| `vite build`                       | Production build (multi-environment for App Router: RSC + SSR + client) |
 | `vinext start`                     | Start local production server for testing                               |
 | `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                  |
 | `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                       |
@@ -118,16 +129,26 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 | `vinext check`                     | Scan your Next.js app for compatibility issues before migrating         |
 | `vinext lint`                      | Delegate to eslint or oxlint                                            |
 
-Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
+`vinext dev` and `vinext build` remain as thin aliases for the project-local Vite commands.
+They require a Vite config; if one is missing, run `vinext init`. Vite owns their options,
+output, and exit behavior. For older configured projects, the aliases still preload dotenv
+before Vite evaluates the config and add `"type": "module"` (renaming known CommonJS config
+files to `.cjs`) when an unambiguous default Vite config requires the ESM migration. An explicit
+`"type": "commonjs"` is never changed. Direct `vite dev` and `vite build` do not perform these
+wrapper compatibility steps.
 
-`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-traffic-aware-warm-cache`.
+`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--warm-cache`, `--traffic-aware-warm-cache`.
 
 `vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the
 user which target they want, then pass `--platform=cloudflare` or `--platform=node`.
 
 Other options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
-If your `next.config.*` sets `output: "standalone"`, `vinext build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
+Cloudflare init uses `cf` and `cloudflare.config.ts` by default. Both `vinext init`
+and `create-vinext-app` accept `--legacy-wrangler-cloudflare-init` to retain the
+legacy Wrangler setup. Existing Wrangler configs are not automatically migrated.
+
+If your `next.config.*` sets `output: "standalone"`, `vite build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
 
 ```bash
 node dist/standalone/server.js
@@ -166,7 +187,7 @@ This will:
 5. Add `dev:vinext`, `build:vinext`, and `start:vinext` scripts to `package.json`
 6. Prompt for a deployment platform (Cloudflare by default, or Node)
 7. Generate the matching `vite.config.ts`
-8. For Cloudflare, generate `wrangler.jsonc`
+8. For Cloudflare, generate `cloudflare.config.ts` for `cf` and Cloudflare Vite plugin v2
 
 The migration is non-destructive -- your existing Next.js setup continues to work alongside vinext. It does not modify `next.config`, `tsconfig.json`, or any source files, and it does not remove Next.js dependencies.
 
@@ -253,34 +274,24 @@ vinext has native integration with Cloudflare Workers through `@cloudflare/vite-
 
 #### Prerequisites
 
-Before running `npx @vinext/cloudflare deploy` for the first time you need to authenticate with Cloudflare and tell wrangler which account to deploy to.
+Before running `npx @vinext/cloudflare deploy` for the first time, run `vinext init --platform=cloudflare` to install `cf` and Cloudflare Vite plugin v2, create or update `vite.config.*`, and generate `cloudflare.config.ts`.
 
 **Authentication — pick one:**
 
-- **`wrangler login`** (recommended for local development) — opens a browser window to authenticate. Run it once and wrangler caches the token.
+- **`cf auth login`** (recommended for local development) — opens a browser window to authenticate.
 - **`CLOUDFLARE_API_TOKEN` env var** (CI / non-interactive) — create a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) using the **Edit Cloudflare Workers** template. That template grants all the permissions `@vinext/cloudflare deploy` needs.
 
 **Account ID:**
 
-wrangler needs to know which Cloudflare account to deploy to. Add your account ID to `wrangler.jsonc`:
-
-```jsonc
-{
-  "account_id": "<your-account-id>",
-  ...
-}
-```
-
-Find your account ID in the Cloudflare dashboard URL (`dash.cloudflare.com/<account-id>`) or by running `wrangler whoami` after logging in.
+Set `accountId` at the top level of `defineConfig` in `cloudflare.config.ts`, outside `worker`. Find your account ID in the Cloudflare dashboard URL (`dash.cloudflare.com/<account-id>`).
 
 Alternatively, set the `CLOUDFLARE_ACCOUNT_ID` environment variable instead of hardcoding it in the config file.
 
-Run `vinext init --platform=cloudflare` first to install dependencies and create or AST-update
-`vite.config.*` and `wrangler.jsonc`. `@vinext/cloudflare deploy` then validates that setup, builds the
-application, and deploys to Workers without rewriting project configuration.
+`@vinext/cloudflare deploy` validates the initialized setup, builds the application,
+and deploys its Cloudflare Build Output with `cf` without rewriting project configuration.
 
 Cloudflare init can also configure image optimization declaratively in the Vite config with
-`imagesOptimizer()` and add the matching Wrangler Images binding. The built-in fetch handlers register
+`imagesOptimizer()` and add the matching Images binding to `cloudflare.config.ts`. The built-in fetch handlers register
 that optimizer at runtime; image optimization is not implemented or generated by `@vinext/cloudflare deploy`.
 
 ```bash
@@ -290,7 +301,17 @@ npx @vinext/cloudflare deploy --env staging
 vp exec vinext-cloudflare deploy --env staging
 ```
 
-Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is shorthand for `--env preview`.
+Use `--env <name>` to select the Vite mode for the build and deployment. `--preview` is shorthand for `--env preview`.
+
+In Response Store service-binding mode, both Workers build together, but the cache Worker is deployed explicitly. After creating the R2 bucket named by init, run:
+
+```sh
+pnpm run build:vinext
+pnpm run deploy:response-store
+pnpm run deploy:vinext
+```
+
+For `create-vinext-app` projects, use `build` and `deploy` instead of `build:vinext` and `deploy:vinext`. Redeploy the Response Store only when its package or config changes; normal application deployments do not deploy auxiliary Workers.
 
 The init command also auto-detects and fixes common migration issues:
 
@@ -317,37 +338,42 @@ export default async function Page() {
 
 This works because `@cloudflare/vite-plugin` runs the RSC environment in workerd, where `cloudflare:workers` is a native module. In production builds, the import is externalized so workerd resolves it at runtime. All binding types are supported: D1, R2, KV, Durable Objects, AI, Queues, Vectorize, Browser Rendering, etc.
 
-Define your bindings in `wrangler.jsonc` as usual:
+Add bindings to your Worker's `env` in `cloudflare.config.ts`:
 
-```jsonc
-{
-  "name": "my-app",
-  "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
-  "d1_databases": [{ "binding": "DB", "database_name": "my-db", "database_id": "..." }],
-  "kv_namespaces": [{ "binding": "CACHE", "id": "..." }],
-}
+```ts
+import { bindings } from "cf/config";
+
+env: {
+  // ...existing bindings
+  DB: bindings.d1({ name: "my-db" }),
+  CACHE: bindings.kv(),
+},
 ```
 
-For TypeScript types, generate them with `wrangler types` and the `env` import will be fully typed.
+Binding and runtime types are generated in `.cloudflare/types` during dev and build. Include that directory in `tsconfig.json`; run `cf workers types` before standalone type-checks. Generated types and Build Output stay gitignored.
 
 > **Note:** You do not need `getPlatformProxy()`, a custom worker entry with `fetch(request, env)`, or any other workaround. `cloudflare:workers` is the recommended way to access bindings in vinext.
 
-#### Traffic-aware pre-warming (experimental)
+#### Traffic-aware pre-warming
 
 Traffic-aware warming queries Cloudflare zone analytics at deploy time to select the routes that actually get traffic. Those routes then go through vinext's standard staged CDN pre-warming flow, including route resolution, cacheability checks, and promotion.
 
 ```bash
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache                              # Pre-warm routes covering 90% of traffic
-vp exec vinext-cloudflare deploy --experimental-traffic-aware-warm-cache                           # Same, with Vite+
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-coverage 95  # More aggressive coverage
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-limit 500    # Cap at 500 routes
-npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-window 48    # Use 48h of analytics
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache                              # Pre-warm routes covering 90% of traffic
+vp exec vinext-cloudflare deploy --traffic-aware-warm-cache                           # Same, with Vite+
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-coverage 95  # More aggressive coverage
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-limit 500    # Cap at 500 routes
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --traffic-aware-window 48    # Use 48h of analytics
+npx @vinext/cloudflare deploy --traffic-aware-warm-cache --warm-cache-target https://example.com  # Set the production origin manually
 ```
 
-Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
+Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with **Zone > Analytics > Read** and **Zone > Zone > Read** permissions for that zone.
 
-The previous `--experimental-tpr` and `--tpr-*` names remain supported as aliases.
+For typed config projects, declare the custom domain with `domains: ["example.com"]` on the Worker in `cloudflare.config.ts`. The first domain in the generated Build Output is used for both analytics and staged warming. Wrangler projects retain domain selection from their configured routes and deployed triggers. Use `--warm-cache-target https://example.com` to override the origin. Add `--warm-cache-certify` to require reusable cache hits before promotion, or `--no-promote` to leave the warmed version at 0% traffic for verification.
+
+Use the traffic-aware flag on its own to apply the coverage and route limits. Combining it with `--warm-cache` retains full build-discovered warming. See the [caching guide](https://vinext.dev/docs/guides/caching) for all selection controls and requirements.
+
+The previous `--experimental-traffic-aware-warm-cache`, `--experimental-tpr`, and `--tpr-*` names remain supported as aliases.
 
 #### Custom Vite configuration
 
@@ -599,7 +625,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `connection()`                             | ✅  | Forces dynamic rendering                                                                    |
 | `"use cache"` directive                    | ✅  | File-level and function-level. `cacheLife()` profiles, `cacheTag()`, stale-while-revalidate |
 | `instrumentation.ts`                       | ✅  | `register()`, `onRequestError()`, and [framework tracing](docs/tracing.mdx)                 |
-| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`. `runtime` and `preferredRegion` are ignored       |
+| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`, `runtime` (not placement). No `preferredRegion`   |
 
 ### Configuration
 
@@ -643,6 +669,15 @@ One caveat: modules whose JSX is lowered earlier in the pipeline are not memoize
 
 vinext automatically loads dotenv files for `dev`, `build`, `start`, and `deploy`.
 
+Vite evaluates all static config imports before plugin hooks, regardless of import order.
+`vinext dev` and `vinext build` preload dotenv from the project root before handing off to Vite,
+preserving the old CLI's config-time behavior. Direct `vite dev` and `vite build` do not. For
+config-time values that work with either command, use Vite's
+[`loadEnv(mode, process.cwd(), "")`](https://vite.dev/config/#using-environment-variables-in-config)
+in a config factory and read its returned values rather than relying on `process.env` in a static
+import. The empty prefix includes server-only variables; use your custom `envDir` in place of
+`process.cwd()` if you have one.
+
 Load order matches Next.js (highest priority first):
 
 1. Existing `process.env` values (shell/CI)
@@ -653,8 +688,9 @@ Load order matches Next.js (highest priority first):
 
 Modes:
 
-- `vinext dev` uses `development`
-- `vinext build`, `vinext start`, and `@vinext/cloudflare deploy` use `production`
+- `vite dev` uses `development`
+- `vite build`, `vinext start`, and `@vinext/cloudflare deploy` use `production`
+- `vinext dev` and `vinext build` use the corresponding mode, including `--mode` overrides
 
 Variable expansion (`$VAR` / `${VAR}`) is supported.
 
@@ -677,66 +713,81 @@ The cache is pluggable. The default `MemoryCacheHandler` works out of the box. S
 Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships Cloudflare adapters for this:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
-- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
+- **`workersCacheCdnAdapter()`** (`@vinext/cloudflare/cache/workers-cache-cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
+- **`staticAssetsAdapter()`** (`@vinext/cloudflare/cache/static-assets-adapter`) — packages locally prerendered App Router HTML/RSC into Workers Static Assets and serves it through a read-only page cache.
+- **`responseStoreAdapter()`** (`@vinext/cloudflare/cache/response-store-adapter`) — uses Workers Response Store for both responses and data, with service-binding or self-contained deployment modes. See the [config examples for both modes](docs/caching.mdx#workers-response-store).
 
-The two fill different slots and can be used together:
+The KV and Workers Cache adapters fill different slots and can be used together:
 
 ```ts
-import { defineConfig } from "vite";
-import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
-export default defineConfig({
-  plugins: [
-    vinext({
-      cache: {
-        cdn: cdnAdapter(),
-        data: kvDataAdapter(),
-      },
-    }),
-  ],
+vinext({
+  cache: {
+    cdn: workersCacheCdnAdapter(),
+    data: kvDataAdapter(),
+  },
 });
 ```
 
-The KV data adapter reads `env[binding]` at runtime, so add the matching KV namespace to your `wrangler.jsonc`:
+The KV data adapter reads `env[binding]` at runtime. Configure its namespace and the Workers Cache entrypoints in `cloudflare.config.ts`. Here, `existingExports` is your current Worker's `exports` object, or `{}` if it has none:
 
-```jsonc
-{
-  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-namespace-id>" }],
-}
+```ts
+import { bindings } from "cf/config";
+import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
+
+const cache = await createWorkersCacheConfig();
+
+defineWorker({
+  // ...existing Worker settings
+  ...cache,
+  env: {
+    // ...existing bindings
+    ...cache.env,
+    VINEXT_KV_CACHE: bindings.kv(),
+  },
+  exports: { ...existingExports, ...cache.exports },
+});
 ```
 
 `binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s), and `entryCacheTtlSeconds` (optional KV edge-cache TTL for entry reads; tag markers keep KV's default).
 
-When `cdnAdapter()` is used in a Cloudflare build, vinext emits two Worker
+For immutable build output, configure `prerender: true` with `cache: { cdn: staticAssetsAdapter() }`. The adapter copies prerendered HTML, RSC, and metadata responses into the configured client assets output and reads them from the `ASSETS` binding at runtime. Writes and invalidations are no-ops; a new deployment replaces the cached responses. Run `vinext init --platform=cloudflare --cdn-cache=static-assets` to configure the binding and Worker-first routing that prevents direct access to private cache artifacts; see [Static Assets response cache](docs/caching.mdx#static-assets-response-cache) for manual setup.
+
+When `workersCacheCdnAdapter()` is used in a Cloudflare build, vinext emits two Worker
 entrypoints and configures Workers Cache only on the response entrypoint. The
 default entrypoint keeps caching disabled so middleware and request-time routing
-run on every request. Do not enable Workers Cache on the default entrypoint in
-your source `wrangler.jsonc`; the generated `dist/server/wrangler.json` contains
-the per-entrypoint cache settings and version metadata binding used for staged
-discovery and warming.
+run on every request. `createWorkersCacheConfig()` declares these policies and
+the version metadata binding in the source config; vinext does not rewrite them
+in the Cloudflare Build Output. For KV-only caching, omit the helper and keep
+the KV binding. See the [adapter configuration examples](docs/caching.mdx).
 
 The generated version metadata binding lets staged discovery and warming verify
-the uploaded Worker version. Pass `versionMetadataBinding` to `cdnAdapter()`
-only when the deployment needs a custom binding name.
+the uploaded Worker version. Pass the same `versionMetadataBinding` to
+`workersCacheCdnAdapter()` and `createWorkersCacheConfig()` only when the deployment needs a
+custom binding name.
 
-`vinext-cloudflare deploy --experimental-warm-cdn-cache` performs the two-stage
+`vinext-cloudflare deploy --warm-cache` performs the two-stage
 upload and makes one final cache-fill request per admitted identity by default.
-Add `--warm-cdn-certify` only to opt into a second, header-only request that
+Add `--warm-cache-certify` only to opt into a second, header-only request that
 must prove every planned entry reusable before promotion.
 
 While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/response-store-demo](examples/response-store-demo) for the Workers Response Store adapter.
 
 The response entrypoint adds a transport-only digest of the complete stage
 identity to its Workers Cache URL. That internal key is independent of zone
-Cache Rules and prevents distinct query, representation, rewrite, or
-interception identities from colliding.
+Cache Rules and prevents distinct representation, rewrite, or interception
+identities from colliding. With a staged deploy (`--warm-cache`),
+App Router pages its cacheability manifest certifies static leave the query
+string out of their identity, so queries of the page share one entry, as in
+Next.js. Interception RSC requests, and responses that a `next.config`
+`headers()` rule makes cacheable, keep the query. See [Query strings](docs/caching.mdx#query-strings).
 
 Adapter declarations do not access the Workers runtime, so nothing throws at
 config-evaluation or dev time when bindings are unavailable. Builders may also
-provide platform-specific output hooks; `cdnAdapter()` uses one to configure
-the Cloudflare entrypoints after the application build. Runtime adapters (and
+provide platform-specific output hooks; `workersCacheCdnAdapter()` adds the response-stage
+Worker exports, while the source config helper declares their cache policies. Runtime adapters (and
 their `env` binding lookups) are instantiated lazily on the first request.
 
 Registration is wired into **every router and runtime** — App Router and Pages Router, on Cloudflare Workers as well as the Node.js server (`vinext start`) and dev. It self-guards (instantiated once per isolate) and is resilient: if an adapter can't initialize on a given runtime (e.g. a KV binding doesn't exist on the Node server), vinext logs a warning and falls back to the default handler instead of failing requests.

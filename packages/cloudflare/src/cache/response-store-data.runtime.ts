@@ -15,6 +15,7 @@ import { cacheForRequest } from "vinext/cache";
 import type { VinextCacheFunctionInvocation } from "vinext/server/multi-stage";
 
 import { encodeCloudflareCacheTag } from "./cdn-adapter.runtime.js";
+import { isStaleTagInvalidation } from "./workers-cache-invalidation.js";
 
 type StoredCacheEntry = {
   cacheControl?: CacheControlMetadata;
@@ -24,6 +25,8 @@ type StoredCacheEntry = {
 
 type RegenerationScope = {
   captured?: Response;
+  /** Other entries the regeneration stores; callers like cached fetch don't await them. */
+  sideWrites: Promise<void>[];
   targetKey: string;
 };
 
@@ -203,8 +206,13 @@ export async function captureResponseStoreDataRegeneration(
   key: string,
   callback: () => Promise<void>,
 ): Promise<Response> {
-  const scope: RegenerationScope = { targetKey: key };
-  await regenerationStorage.run(scope, callback);
+  const scope: RegenerationScope = { sideWrites: [], targetKey: key };
+  try {
+    await regenerationStorage.run(scope, callback);
+  } finally {
+    // Unawaited work can be cancelled once the Store's regeneration returns, even a failed one.
+    while (scope.sideWrites.length) await Promise.allSettled(scope.sideWrites.splice(0));
+  }
   if (!scope.captured) {
     throw new Error(`vinext response-store regeneration did not rewrite data key ${key}`);
   }
@@ -293,10 +301,11 @@ function cachePolicy(revalidate: number | false | undefined, expire: number | un
   if (revalidate === false || revalidate === undefined) {
     return `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
   }
-  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${Math.max(
-    0,
-    (expire ?? revalidate) - revalidate,
-  )}`;
+  // Like Next.js, an entry without `expire` (unstable_cache, cached fetch) never
+  // hard-expires: past `revalidate` it is served stale and refreshed in the background.
+  const staleSeconds =
+    expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, expire - revalidate);
+  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${staleSeconds}`;
 }
 
 export class WorkersResponseStoreCacheHandler implements CacheHandler {
@@ -314,84 +323,114 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     if (regenerationStorage.getStore()?.targetKey === key) return null;
 
     const request = await cacheRequest(key);
-    const response = await this.store.fetch(request);
-    if (response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS") {
-      return null;
-    }
-    if (!response.ok) {
-      throw new Error(`Workers Response Store returned ${response.status}`);
-    }
-
-    const softTags = [
-      ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
-    ].sort();
-    const getTagExpiration = () => {
-      const key = softTags.join(",");
-      const expirations = this.tagExpirations();
-      let expiration = expirations.get(key);
-      if (!expiration) {
-        expiration = Promise.resolve().then(() => this.store.getTagExpiration(softTags));
-        expirations.set(key, expiration);
-        void expiration.catch(() => {
-          if (expirations.get(key) === expiration) expirations.delete(key);
-        });
+    try {
+      const response = await this.store.fetch(request);
+      if (!response.ok) {
+        void response.body?.cancel().catch(() => {});
+        if (
+          response.status === 404 &&
+          response.headers.get("X-Workers-Response-Store") === "MISS"
+        ) {
+          return null;
+        }
+        throw new Error(`Workers Response Store returned ${response.status}`);
       }
-      return expiration;
-    };
-    const storeStatus = response.headers.get("X-Workers-Response-Store");
-    const body = response.text();
-    const eagerExpiration =
-      softTags.length && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE")
-        ? getTagExpiration().then(
-            (value) => ({ value }) as const,
-            (error: unknown) => ({ error }) as const,
-          )
-        : undefined;
-    const entry = deserialize(await body);
-    if (!entry) {
-      await this.store.purge({ pathPrefixes: [new URL(request.url).pathname] });
+
+      const softTags = [
+        ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
+      ].sort();
+      const getTagExpiration = () => {
+        const key = softTags.join(",");
+        const expirations = this.tagExpirations();
+        let expiration = expirations.get(key);
+        if (!expiration) {
+          expiration = Promise.resolve().then(() => this.store.getTagExpiration(softTags));
+          expirations.set(key, expiration);
+          void expiration.catch(() => {
+            if (expirations.get(key) === expiration) expirations.delete(key);
+          });
+        }
+        return expiration;
+      };
+      const storeStatus = response.headers.get("X-Workers-Response-Store");
+      const body = response.text();
+      const eagerExpiration =
+        softTags.length && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE")
+          ? getTagExpiration().then(
+              (value) => ({ value }) as const,
+              (error: unknown) => ({ error }) as const,
+            )
+          : undefined;
+      const entry = deserialize(await body);
+      if (!entry) {
+        await this.store.purge({ pathPrefixes: [new URL(request.url).pathname] });
+        return null;
+      }
+
+      if (softTags.length) {
+        const expiration = eagerExpiration
+          ? await eagerExpiration
+          : { value: await getTagExpiration() };
+        if ("error" in expiration) throw expiration.error;
+        if (expiration.value >= entry.lastModified) return null;
+      }
+
+      const age = Date.now() - entry.lastModified;
+      const requestedRevalidate = readCacheControlField(context, "revalidate");
+      const requestedStale =
+        typeof requestedRevalidate === "number" &&
+        requestedRevalidate > 0 &&
+        age > requestedRevalidate * 1000;
+      let cacheState: string | undefined;
+      if (response.headers.get(REPLAYABLE_HEADER) === "1") {
+        // A stale Store hit has already scheduled the Store's own refresh. Reporting it
+        // stale as well would make the caller (e.g. cached fetch) refresh it a second time.
+        if (requestedStale && storeStatus !== "BLOB-STALE") cacheState = "stale";
+      } else if (
+        typeof entry.cacheControl?.expire === "number" &&
+        age > entry.cacheControl.expire * 1000
+      ) {
+        cacheState = "expired";
+      } else if (
+        requestedStale ||
+        // Only an invalidate() marks a non-replayable entry stale; the Store cannot
+        // regenerate it, so the caller revalidates it.
+        storeStatus === "BLOB-STALE" ||
+        (typeof entry.cacheControl?.revalidate === "number" &&
+          entry.cacheControl.revalidate > 0 &&
+          age > entry.cacheControl.revalidate * 1000)
+      ) {
+        cacheState = "stale";
+      }
+      return {
+        lastModified: entry.lastModified,
+        value: entry.value,
+        ...(cacheState ? { cacheState } : {}),
+        ...(entry.cacheControl ? { cacheControl: entry.cacheControl } : {}),
+      };
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          message: "Vinext response-store data lookup failed; treating as a cache miss",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
       return null;
     }
-
-    if (softTags.length) {
-      const expiration = eagerExpiration
-        ? await eagerExpiration
-        : { value: await getTagExpiration() };
-      if ("error" in expiration) throw expiration.error;
-      if (expiration.value >= entry.lastModified) return null;
-    }
-
-    const age = Date.now() - entry.lastModified;
-    const requestedRevalidate = readCacheControlField(context, "revalidate");
-    const requestedStale =
-      typeof requestedRevalidate === "number" &&
-      requestedRevalidate > 0 &&
-      age > requestedRevalidate * 1000;
-    let cacheState: string | undefined;
-    if (response.headers.get(REPLAYABLE_HEADER) === "1") {
-      if (requestedStale) cacheState = "stale";
-    } else if (
-      typeof entry.cacheControl?.expire === "number" &&
-      age > entry.cacheControl.expire * 1000
-    ) {
-      cacheState = "expired";
-    } else if (
-      requestedStale ||
-      (typeof entry.cacheControl?.revalidate === "number" &&
-        entry.cacheControl.revalidate > 0 &&
-        age > entry.cacheControl.revalidate * 1000)
-    ) {
-      cacheState = "stale";
-    }
-    return {
-      lastModified: entry.lastModified,
-      value: entry.value,
-      ...(cacheState ? { cacheState } : {}),
-      ...(entry.cacheControl ? { cacheControl: entry.cacheControl } : {}),
-    };
   }
 
-  async set(
+  set(
+    key: string,
+    value: IncrementalCacheValue | null,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    const write = this.write(key, value, context);
+    const regeneration = regenerationStorage.getStore();
+    if (regeneration && regeneration.targetKey !== key) regeneration.sideWrites.push(write);
+    return write;
+  }
+
+  private async write(
     key: string,
     value: IncrementalCacheValue | null,
     context?: Record<string, unknown>,
@@ -453,14 +492,27 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       },
     );
 
+    // A regeneration returns its own entry to the Store; any other entry it recomputes is
+    // stored as usual, as Next.js stores every entry a revalidation recomputes. A cache
+    // function call has no page to replay, so an entry it recomputes without its own
+    // revalidator would replace one the Store can regenerate with one it can't: skip it.
     const regeneration = regenerationStorage.getStore();
-    if (regeneration) {
-      if (key === regeneration.targetKey) regeneration.captured = response;
+    if (regeneration?.targetKey === key) {
+      regeneration.captured = response;
       return;
     }
+    if (regeneration && !revalidator) return;
 
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
+      // A read that finds a page-replay entry expired must not wait for the replay: a page
+      // reading two such entries would replay itself for each in turn (A -> B -> A). The
+      // Store answers a miss and the caller recomputes, as in Next.js; refresh() still replays.
+      // An entry without a revalidator only expires through invalidate()'s `expire`, and the
+      // Store can't regenerate it either.
+      ...(revalidator?.id !== CACHE_FUNCTION_REVALIDATOR_ID
+        ? { expiryBehavior: "miss" as const }
+        : {}),
       coalesce: true,
       purgeExisting: true,
     });
@@ -470,8 +522,12 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     const dataTags = Array.isArray(tags) ? tags : [tags];
     const encodedTags = dataTags.map(encodeCloudflareCacheTag);
     if (!encodedTags.length) return;
-    if (durations?.expire && durations.expire > 0) {
-      await this.store.refresh({ tags: encodedTags });
+    if (isStaleTagInvalidation(durations)) {
+      // Like Next.js, mark the entries stale and let the next read revalidate them.
+      await this.store.invalidate({
+        tags: encodedTags,
+        ...(durations?.expire === undefined ? {} : { expire: durations.expire }),
+      });
     } else {
       await this.store.purge({
         tags: encodedTags,

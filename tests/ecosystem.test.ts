@@ -204,6 +204,18 @@ describe("next-intl", () => {
     expect(html).toContain("Hallo Welt");
     expect(html).toContain("Diese Seite verwendet next-intl zur Internationalisierung.");
   });
+
+  it("renders German SSR content for a page with generateMetadata()", async () => {
+    // generateMetadata() runs inside the render and shares its React cache(),
+    // so it must not freeze the layout's messages before the page sets the
+    // request locale.
+    const { html, status } = await fetchPage("/de/metadata");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="de"');
+    expect(html).toContain("<title>Hallo Welt</title>");
+    expect(html).toMatch(/data-testid="client-greeting"[^>]*>Hallo Welt</);
+    expect(html).not.toContain("Hello World");
+  });
 });
 
 // ─── better-auth ──────────────────────────────────────────────────────────────

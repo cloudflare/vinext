@@ -200,6 +200,59 @@ const starIcons: OwnedIcon[] = [
 ];
 
 test.describe("Next.js compat: streamed metadata icons", () => {
+  for (const pathname of [
+    "/metadata-icons-stream/heart",
+    "/nextjs-compat/metadata-generate/my-post:pk5ufy:0",
+  ]) {
+    test(`keeps streamed icon keys opaque for crawlers at ${pathname}`, async ({ request }) => {
+      const headers = { "User-Agent": "Googlebot" };
+      const response = await request.get(pathname, { headers });
+      expect(response.status()).toBe(200);
+      const html = await response.text();
+      const markers = [...html.matchAll(/<link data-vinext-streamed-icon="([^"]+)"/g)].map(
+        ([, marker]) => marker,
+      );
+      expect(markers.length).toBeGreaterThan(0);
+      for (const marker of markers) {
+        expect(marker).toMatch(/^vi[a-z0-9]+:\d+$/);
+      }
+
+      const flightResponse = await request.get(`${pathname}?_rsc=icons`, {
+        headers: { ...headers, RSC: "1" },
+      });
+      expect(flightResponse.headers()["content-type"]).toContain("text/x-component");
+      const flight = await flightResponse.text();
+      const keys = [...flight.matchAll(/"metadataKey":"([^"]+)"/g)].map(([, key]) => key);
+      expect(keys.length).toBeGreaterThan(0);
+      for (const key of keys) {
+        expect(key).toMatch(/^vi[a-z0-9]+$/);
+        expect(markers.every((marker) => marker.startsWith(`${key}:`))).toBe(true);
+      }
+    });
+  }
+
+  test("keeps distinct icon ownership across paths that collide under a 32-bit hash", async ({
+    page,
+    consoleErrors,
+  }) => {
+    // Both full pathnames have the same 32-bit FNV state before the metadata suffix.
+    await page.goto("/metadata-icons-stream/ae0qv10f");
+    await expect.poll(() => ownedIcons(page)).toEqual(heartIcons);
+    const firstMarker = await page
+      .locator("head link[data-vinext-streamed-icon]")
+      .first()
+      .getAttribute("data-vinext-streamed-icon");
+
+    await page.locator("#metadata-icons-collision").click();
+    await expect(page).toHaveURL(/\/metadata-icons-stream\/n8eg563h$/);
+    await expect(page.locator("head link[data-vinext-streamed-icon]").first()).not.toHaveAttribute(
+      "data-vinext-streamed-icon",
+      firstMarker!,
+    );
+    await expect.poll(() => ownedIcons(page)).toEqual(heartIcons);
+    expect(consoleErrors).toEqual([]);
+  });
+
   test("relocates every metadata icon relation with the request CSP nonce", async ({
     page,
     consoleErrors,

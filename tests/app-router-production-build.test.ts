@@ -37,10 +37,31 @@ describe("App Router Production build", () => {
   let outDir: string;
 
   beforeAll(async () => {
+    // Build only the routes exercised below, rather than rebuilding every
+    // unrelated app-basic regression fixture for each build-ID variant.
+    const fixturePaths = [
+      "package.json",
+      "tsconfig.json",
+      "instrumentation.ts",
+      "instrumentation-state.ts",
+      "prod-singleton-state.ts",
+      "app/layout.tsx",
+      "app/page.tsx",
+      "app/not-found.tsx",
+      "app/about",
+      "app/actions",
+      "app/blog",
+      "app/components",
+      "app/dashboard",
+    ].map((entry) => path.join(APP_FIXTURE_DIR, entry));
     fixtureDir = await createIsolatedFixture(
       APP_FIXTURE_DIR,
       "vinext-app-production-build-",
-      undefined,
+      (src) =>
+        fixturePaths.some(
+          (entry) =>
+            src === entry || src.startsWith(entry + path.sep) || entry.startsWith(src + path.sep),
+        ),
       path.join(APP_FIXTURE_DIR, "node_modules"),
     );
     outDir = path.join(fixtureDir, "dist");
@@ -200,7 +221,7 @@ describe("App Router Production build", () => {
   }, 30000);
 
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
-    // The `vinext build` CLI resolves the build ID once and shares it via
+    // The `vite build` CLI resolves the build ID once and shares it via
     // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App
     // Router buildApp + the separate hybrid Pages Router vite.build) uses the
     // same ID. Without it, each instance mints its own random UUID and the

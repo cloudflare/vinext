@@ -1,7 +1,70 @@
 import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
+import type { NavigationRuntime } from "../../../packages/vinext/src/client/navigation-runtime";
 
 const BASE = process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4203";
+
+// Same-URL Link navigation must retain the document URL:
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+// Regression for https://github.com/cloudflare/vinext/issues/3416.
+for (const arrival of ["document", "prefetch"] as const) {
+  test(`cached and same-URL navigation after ${arrival} arrival never opens Flight text`, async ({
+    page,
+  }) => {
+    const documentPaths: string[] = [];
+    page.on("request", (request) => {
+      if (request.resourceType() === "document") {
+        documentPaths.push(new URL(request.url()).pathname);
+      }
+    });
+    const initialPath = arrival === "document" ? "/docs/about" : "/docs";
+    const prefetched =
+      arrival === "prefetch"
+        ? page.waitForResponse((response) => new URL(response.url()).pathname === "/docs/about.txt")
+        : null;
+    await page.goto(`${BASE}${initialPath}`);
+    await waitForAppRouterHydration(page);
+    if (prefetched) await (await prefetched).finished();
+
+    // Await the actual navigation completion, including cache publication, so
+    // the next click deterministically exercises the visited-response path.
+    await page.evaluate(() => {
+      const runtime = Reflect.get(
+        window,
+        Symbol.for("vinext.navigationRuntime"),
+      ) as NavigationRuntime;
+      const navigate = runtime.functions.navigate!;
+      Reflect.set(window, "__completedNavigations", 0);
+      runtime.functions.navigate = async (...args) => {
+        await navigate(...args);
+        Reflect.set(
+          window,
+          "__completedNavigations",
+          Reflect.get(window, "__completedNavigations") + 1,
+        );
+      };
+    });
+
+    const paths =
+      arrival === "document"
+        ? ["/docs", "/docs/about", "/docs/about", "/docs/about"]
+        : ["/docs/about", "/docs", "/docs/about", "/docs/about"];
+    for (const [index, pathname] of paths.entries()) {
+      const click = index + 1;
+      await page.locator(`a[href="${pathname}"]`).click();
+      await expect
+        .poll(() => page.evaluate(() => Reflect.get(window, "__completedNavigations")))
+        .toBe(click);
+      await expect(page).toHaveURL(`${BASE}${pathname}`);
+      await expect(
+        page.getByRole("heading", {
+          name: pathname === "/docs" ? "BasePath Home" : "BasePath About",
+        }),
+      ).toBeVisible();
+      expect(documentPaths).toEqual([initialPath]);
+    }
+  });
+}
 
 test("basePath root soft navigation uses index.txt without trailingSlash", async ({ page }) => {
   const documentPaths: string[] = [];

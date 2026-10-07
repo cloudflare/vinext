@@ -442,3 +442,153 @@ describe("collectAssetTags", () => {
     expect(result).not.toContain("lazy.js");
   });
 });
+
+describe("build metadata cache lifecycle", () => {
+  afterEach(() => setPagesClientAssets(undefined));
+
+  it("uses replacement build metadata after cached hits and misses", () => {
+    const callerManifest = {};
+    const moduleIds = ["/project/pages/index.tsx", "/project/pages/missing.tsx"];
+    const render = () =>
+      collectAssetTags({ manifest: callerManifest, moduleIds, disableOptimizedLoading: false });
+    setPagesClientAssets({
+      ssrManifest: { "pages/index.tsx": ["old.js", "lazy.js", "framework-old.js"] },
+      cssGraph: { "pages/index.tsx": { css: ["old.css"] } },
+      lazyChunks: ["lazy.js"],
+    });
+    const first = render();
+    expect(render()).toBe(first);
+    expect(first).toContain("old.js");
+    expect(first).toContain("old.css");
+    expect(first).not.toContain("lazy.js");
+    expect(getManifestFilesForModule(resolveSsrManifest(callerManifest), moduleIds[1])).toBeNull();
+
+    setPagesClientAssets({
+      ssrManifest: {
+        "pages/index.tsx": ["new.js", "lazy.js", "framework-new.js"],
+        "pages/missing.tsx": ["found.js"],
+      },
+      cssGraph: {
+        "pages/index.tsx": { css: ["new.css"] },
+        "pages/missing.tsx": { css: ["found.css"] },
+      },
+      lazyChunks: ["new.js"],
+    });
+    const second = render();
+    expect(second).not.toContain("old");
+    expect(second).not.toContain('src="/new.js"');
+    expect(second).toContain('src="/lazy.js"');
+    expect(second).toContain("framework-new.js");
+    expect(second).toContain("new.css");
+    expect(second).toContain("found.js");
+    expect(second).toContain("found.css");
+    expect(render()).toBe(second);
+  });
+
+  it("keeps tag options and stylesheet tracking per request", () => {
+    // Next.js keeps nonce and loading attributes on request-local document tags:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
+    const manifest = {
+      "pages/index.tsx": [
+        "/base/_next/static/page.js",
+        "/base/_next/static/page.css",
+        "/base/_next/static/framework-a.js",
+      ],
+    };
+    const options = {
+      manifest,
+      moduleIds: ["/project/pages/index.tsx"],
+      basePath: "/base",
+      disableOptimizedLoading: false,
+    };
+    const firstStyles = new Set<string>();
+    const first = collectAssetTags({
+      ...options,
+      scriptNonce: "first",
+      initialStylesheetHrefs: firstStyles,
+    });
+    expect(first).toContain('nonce="first"');
+    expect(first).toContain(" defer");
+    expect(firstStyles).toEqual(new Set(["/base/_next/static/page.css"]));
+
+    const secondStyles = new Set<string>();
+    const second = collectAssetTags({
+      ...options,
+      scriptNonce: "second",
+      disableOptimizedLoading: true,
+      crossOrigin: "use-credentials",
+      assetPrefix: "https://cdn.example.com",
+      deploymentId: "two",
+      initialStylesheetHrefs: secondStyles,
+    });
+    expect(second).not.toContain("first");
+    expect(second).not.toContain(" defer");
+    expect(second).toContain('nonce="second"');
+    expect(second).toContain('crossorigin="use-credentials"');
+    expect(second).toContain('src="https://cdn.example.com/_next/static/page.js"');
+    expect(secondStyles).toEqual(
+      new Set(["https://cdn.example.com/_next/static/page.css?dpl=two"]),
+    );
+    expect(firstStyles).toEqual(new Set(["/base/_next/static/page.css"]));
+  });
+
+  it("preserves exact-match priority and first suffix-match ordering", () => {
+    const manifest = { "index.tsx": ["short.js"], "pages/index.tsx": ["long.js"] };
+    for (let i = 0; i < 2; i++) {
+      expect(getManifestFilesForModule(manifest, "pages/index.tsx")).toEqual(["long.js"]);
+      expect(getManifestFilesForModule(manifest, "/project/pages/index.tsx")).toEqual(["short.js"]);
+    }
+  });
+});
+
+describe("manifest lookup scaling", () => {
+  it("resolves new routes without scans and indexes missing keys only once", () => {
+    let scans = 0;
+    const entries = Object.fromEntries(
+      Array.from({ length: 3000 }, (_, i) => [`pages/p${i}.tsx`, [`p${i}.js`]]),
+    );
+    const manifest = new Proxy(entries, {
+      ownKeys(target) {
+        scans++;
+        return Reflect.ownKeys(target);
+      },
+    });
+    expect(getManifestFilesForModule(manifest, "/project/pages/p0.tsx")).toEqual(["p0.js"]);
+    const initialScans = scans;
+    expect(initialScans).toBe(0);
+    expect(getManifestFilesForModule(manifest, "/project/pages/p2999.tsx")).toEqual(["p2999.js"]);
+    expect(scans).toBe(initialScans);
+    expect(getManifestFilesForModule(manifest, "/project/pages/missing.tsx")).toBeNull();
+    const afterMiss = scans;
+    expect(getManifestFilesForModule(manifest, "/project/pages/another-missing.tsx")).toBeNull();
+    expect(scans).toBe(afterMiss);
+  });
+});
+
+describe("precomputed shared chunks", () => {
+  afterEach(() => setPagesClientAssets(undefined));
+
+  it("uses the build list only with its own registered manifest", () => {
+    const manifest = new Proxy(
+      { "pages/index.tsx": ["page.js"] },
+      {
+        ownKeys() {
+          throw new Error("cold render scanned the manifest");
+        },
+      },
+    );
+    setPagesClientAssets({ ssrManifest: manifest, sharedChunks: ["framework-built.js"] });
+    const options = { moduleIds: ["/project/pages/index.tsx"], disableOptimizedLoading: false };
+    const html = collectAssetTags({ ...options, manifest: null });
+    expect(html).toContain('src="/page.js"');
+    expect(html).toContain('src="/framework-built.js"');
+
+    const custom = collectAssetTags({
+      ...options,
+      manifest: { "pages/index.tsx": ["custom.js"], "shared.ts": ["framework-custom.js"] },
+    });
+    expect(custom).toContain('src="/custom.js"');
+    expect(custom).toContain('src="/framework-custom.js"');
+    expect(custom).not.toContain("framework-built.js");
+  });
+});

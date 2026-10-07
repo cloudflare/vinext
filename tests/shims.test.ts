@@ -2044,13 +2044,13 @@ describe("next/navigation shim", () => {
 });
 
 // ---------------------------------------------------------------------------
-// next/error shim — unstable_catchError
+// next/error shim — catchError / unstable_catchError
 //
 // Ported from Next.js:
 //   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/catch-error.tsx
 //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/catch-error/
 // ---------------------------------------------------------------------------
-describe("next/error shim — unstable_catchError", () => {
+describe("next/error shim — catchError / unstable_catchError", () => {
   // Ported from Next.js:
   // packages/next/src/api/error.react-server.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/api/error.react-server.ts
@@ -2066,6 +2066,18 @@ describe("next/error shim — unstable_catchError", () => {
   it("exports unstable_catchError as a function", async () => {
     const mod = await import("../packages/vinext/src/shims/error.js");
     expect(typeof mod.unstable_catchError).toBe("function");
+  });
+
+  // Ported from Next.js 16.3:
+  // https://github.com/vercel/next.js/blob/v16.3.6/packages/next/error.d.ts
+  it("exports catchError as the stable name in both module conditions", async () => {
+    const client = await import("../packages/vinext/src/shims/error.js");
+    const reactServer = await import("../packages/vinext/src/shims/error.react-server.js");
+
+    expect(client.catchError).toBe(client.unstable_catchError);
+    expect(() => reactServer.catchError()).toThrow(
+      "`catchError` can only be used in Client Components.",
+    );
   });
 
   it("returns a Component that renders children when no error occurs", async () => {
@@ -2128,14 +2140,14 @@ describe("next/error shim — unstable_catchError", () => {
     }
   });
 
-  it("exposes the displayName matching Next.js (`unstable_catchError(...)`)", async () => {
+  it("exposes the stable catchError displayName", async () => {
     const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
     const Fallback = function MyFallback() {
       return null;
     };
     const Boundary = unstable_catchError(Fallback);
     // Wrapper component carries the user fallback name for DevTools.
-    expect(Boundary.displayName).toBe("unstable_catchError(MyFallback)");
+    expect(Boundary.displayName).toBe("catchError(MyFallback)");
   });
 
   // Ported from Next.js:
@@ -2187,8 +2199,15 @@ describe("next/error shim — unstable_catchError", () => {
     });
   });
 
-  // class-component lifecycle catches non-router errors and renders the fallback
-  it("class-component lifecycle catches non-router errors and renders the fallback", async () => {
+  // Ported from Next.js 16.3.6, including null/undefined thrown-value cases:
+  // https://github.com/vercel/next.js/blob/v16.3.6/test/e2e/app-dir/catch-error/catch-error.test.ts
+  it.each([
+    [new Error("boom"), "boom"],
+    ["thrown string", "thrown string"],
+    [{ message: "thrown object" }, "[object Object]"],
+    [null, "null"],
+    [undefined, "undefined"],
+  ])("passes the original thrown value %j to the fallback", async (thrown, message) => {
     // React 19's renderToStaticMarkup does NOT invoke error boundaries during
     // SSR — errors propagate up by design (boundaries only run during client
     // commit). To validate behavior without spinning up a real browser, we
@@ -2198,7 +2217,7 @@ describe("next/error shim — unstable_catchError", () => {
     // next render.
     const React = (await import("react")).default;
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+    const { catchError } = await import("../packages/vinext/src/shims/error.js");
 
     const seenErrors: unknown[] = [];
     function Fallback({
@@ -2225,7 +2244,7 @@ describe("next/error shim — unstable_catchError", () => {
     // single props object per React.createElement semantics), matching
     // the internal wrapper shape rather than the public API signature
     // `(props: P, errorInfo: ErrorInfo) => React.ReactNode`.
-    const Boundary = unstable_catchError<{ title: string }>(Fallback as any);
+    const Boundary = catchError<{ title: string }>(Fallback as any);
 
     // The Boundary wrapper is a function component that calls hooks.
     // We must call it inside a React render so React's dispatcher is active.
@@ -2268,15 +2287,14 @@ describe("next/error shim — unstable_catchError", () => {
     // Before an error: children render untouched.
     expect(renderToStaticMarkup(instance.render() as React.ReactElement)).toContain("child");
 
-    // Simulate React calling getDerivedStateFromError with a thrown Error.
-    const thrown = new Error("boom");
+    // Simulate React capturing the thrown value, including non-Error objects.
     const derived = InnerCatchError.getDerivedStateFromError(thrown);
     expect(derived).toEqual({ error: { thrownValue: thrown } });
 
     // Feed the derived state into the instance and render the fallback.
     instance.state = derived as { error: { thrownValue: unknown } | null };
     const fallbackOutput = renderToStaticMarkup(instance.render() as React.ReactElement);
-    expect(fallbackOutput).toContain("boom");
+    expect(fallbackOutput).toContain(message);
     expect(fallbackOutput).toContain("hello-title");
     expect(seenErrors[seenErrors.length - 1]).toBe(thrown);
   });
@@ -2320,51 +2338,121 @@ describe("next/error shim — unstable_catchError", () => {
     }
   });
 
-  it("unstable_retry on the client calls appRouterInstance.refresh and resets the boundary", async () => {
-    // Stub `window` with the minimum surface navigation.ts needs at
-    // module-load time (location, history, addEventListener). This must be
-    // installed BEFORE re-importing the shims, otherwise navigation.ts will
-    // initialize its client navigation state against a bare `{}` and crash.
-    // Mutable view over globalThis that allows assigning/deleting `window`.
-    const globalAny = globalThis as unknown as { window?: unknown };
-    const previousWindow = globalAny.window;
-    const win = {
-      location: {
-        pathname: "/",
-        search: "",
-        hash: "",
-        href: "http://localhost/",
-        origin: "http://localhost",
-      },
-      history: {
-        state: null,
-        pushState() {},
-        replaceState() {},
-      },
-      addEventListener() {},
-      dispatchEvent() {
-        return true;
-      },
-      removeEventListener() {},
-      scrollTo() {},
-      scrollX: 0,
-      scrollY: 0,
-    };
-    globalAny.window = win;
+  it.each(["retry", "unstable_retry"] as const)(
+    "%s refreshes and resets through the fallback ErrorInfo",
+    async (retry) => {
+      // Stub `window` with the minimum surface navigation.ts needs at
+      // module-load time (location, history, addEventListener). This must be
+      // installed BEFORE re-importing the shims, otherwise navigation.ts will
+      // initialize its client navigation state against a bare `{}` and crash.
+      // Mutable view over globalThis that allows assigning/deleting `window`.
+      const globalAny = globalThis as unknown as { window?: unknown };
+      const previousWindow = globalAny.window;
+      const win = {
+        location: {
+          pathname: "/",
+          search: "",
+          hash: "",
+          href: "http://localhost/",
+          origin: "http://localhost",
+        },
+        history: {
+          state: null,
+          pushState() {},
+          replaceState() {},
+        },
+        addEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+        removeEventListener() {},
+        scrollTo() {},
+        scrollX: 0,
+        scrollY: 0,
+      };
+      globalAny.window = win;
 
-    try {
-      vi.resetModules();
+      try {
+        vi.resetModules();
 
+        const React = (await import("react")).default;
+        const { renderToStaticMarkup } = await import("react-dom/server");
+        const { catchError } = await import("../packages/vinext/src/shims/error.js");
+
+        const refreshSpy = vi.fn();
+
+        function Fallback() {
+          return null;
+        }
+        const Boundary = catchError(Fallback);
+        // The Boundary wrapper is a function component that calls hooks.
+        // We must call it inside a React render so React's dispatcher is active.
+        let wrapperResult: React.ReactElement | null = null;
+        function Capture() {
+          wrapperResult = (Boundary as unknown as (p: Record<string, never>) => React.ReactElement)(
+            {},
+          );
+          return React.createElement("span");
+        }
+        renderToStaticMarkup(React.createElement(Capture));
+
+        const InnerCatchError = wrapperResult!.type as unknown as new (props: object) => {
+          state: { error: { thrownValue: unknown } | null };
+          render(): React.ReactElement<{
+            errorInfo: import("../packages/vinext/src/shims/error.js").ErrorInfo & {
+              unstable_retry(): void;
+            };
+          }>;
+        };
+        const instance = new InnerCatchError({
+          fallback: Fallback,
+          props: {},
+        });
+        // Manually instantiating the class skips React's context machinery.
+        // Seed `this.context` with a mock App Router instance so the App Router
+        // branch in `unstable_retry` fires and calls `context.refresh()`.
+        (instance as unknown as { context: { refresh: typeof refreshSpy } }).context = {
+          refresh: refreshSpy,
+        };
+
+        // Seed an error so reset has something to clear, and replace setState
+        // with a spy so we can confirm the boundary self-resets.
+        instance.state = { error: { thrownValue: new Error("boom") } };
+        const setStateCalls: Array<{ error: { thrownValue: unknown } | null }> = [];
+        (instance as unknown as { setState: (partial: object) => void }).setState = (partial) => {
+          setStateCalls.push(partial as { error: { thrownValue: unknown } | null });
+          instance.state = { ...instance.state, ...(partial as object) } as typeof instance.state;
+        };
+
+        // startTransition runs synchronously here because there's no
+        // concurrent renderer in the test environment.
+        void React.startTransition;
+        instance.render().props.errorInfo[retry]();
+
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        expect(setStateCalls).toHaveLength(1);
+        expect(setStateCalls[0]).toEqual({ error: null });
+      } finally {
+        globalAny.window = previousWindow;
+        vi.resetModules();
+      }
+    },
+  );
+
+  // class component's `contextType`). When a non-null Pages Router instance
+  // is in context, `unstable_retry()` must throw the verbatim Next.js
+  // message instead of calling App Router's `refresh()`.
+  it.each(["retry", "unstable_retry"] as const)(
+    "%s under Pages Router throws the matching diagnostic",
+    async (retry) => {
       const React = (await import("react")).default;
       const { renderToStaticMarkup } = await import("react-dom/server");
-      const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
-
-      const refreshSpy = vi.fn();
+      const { catchError } = await import("../packages/vinext/src/shims/error.js");
 
       function Fallback() {
         return null;
       }
-      const Boundary = unstable_catchError(Fallback);
+      const Boundary = catchError(Fallback);
       // The Boundary wrapper is a function component that calls hooks.
       // We must call it inside a React render so React's dispatcher is active.
       let wrapperResult: React.ReactElement | null = null;
@@ -2378,80 +2466,26 @@ describe("next/error shim — unstable_catchError", () => {
 
       const InnerCatchError = wrapperResult!.type as unknown as new (props: object) => {
         state: { error: { thrownValue: unknown } | null };
-        unstable_retry: () => void;
+        render(): React.ReactElement<{
+          errorInfo: import("../packages/vinext/src/shims/error.js").ErrorInfo & {
+            unstable_retry(): void;
+          };
+        }>;
       };
       const instance = new InnerCatchError({
         fallback: Fallback,
+        isPagesRouter: true,
         props: {},
       });
-      // Manually instantiating the class skips React's context machinery.
-      // Seed `this.context` with a mock App Router instance so the App Router
-      // branch in `unstable_retry` fires and calls `context.refresh()`.
-      (instance as unknown as { context: { refresh: typeof refreshSpy } }).context = {
-        refresh: refreshSpy,
-      };
-
-      // Seed an error so reset has something to clear, and replace setState
-      // with a spy so we can confirm the boundary self-resets.
       instance.state = { error: { thrownValue: new Error("boom") } };
-      const setStateCalls: Array<{ error: { thrownValue: unknown } | null }> = [];
-      (instance as unknown as { setState: (partial: object) => void }).setState = (partial) => {
-        setStateCalls.push(partial as { error: { thrownValue: unknown } | null });
-        instance.state = { ...instance.state, ...(partial as object) } as typeof instance.state;
-      };
 
-      // startTransition runs synchronously here because there's no
-      // concurrent renderer in the test environment.
-      void React.startTransition;
-      instance.unstable_retry();
+      void React; // keep React import for parity with sibling tests
 
-      expect(refreshSpy).toHaveBeenCalledTimes(1);
-      expect(setStateCalls).toHaveLength(1);
-      expect(setStateCalls[0]).toEqual({ error: null });
-    } finally {
-      globalAny.window = previousWindow;
-      vi.resetModules();
-    }
-  });
-
-  // class component's `contextType`). When a non-null Pages Router instance
-  // is in context, `unstable_retry()` must throw the verbatim Next.js
-  // message instead of calling App Router's `refresh()`.
-  it("unstable_retry under Pages Router throws Next.js parity error message", async () => {
-    const React = (await import("react")).default;
-    const { renderToStaticMarkup } = await import("react-dom/server");
-    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
-
-    function Fallback() {
-      return null;
-    }
-    const Boundary = unstable_catchError(Fallback);
-    // The Boundary wrapper is a function component that calls hooks.
-    // We must call it inside a React render so React's dispatcher is active.
-    let wrapperResult: React.ReactElement | null = null;
-    function Capture() {
-      wrapperResult = (Boundary as unknown as (p: Record<string, never>) => React.ReactElement)({});
-      return React.createElement("span");
-    }
-    renderToStaticMarkup(React.createElement(Capture));
-
-    const InnerCatchError = wrapperResult!.type as unknown as new (props: object) => {
-      state: { error: { thrownValue: unknown } | null };
-      unstable_retry: () => void;
-    };
-    const instance = new InnerCatchError({
-      fallback: Fallback,
-      isPagesRouter: true,
-      props: {},
-    });
-    instance.state = { error: { thrownValue: new Error("boom") } };
-
-    void React; // keep React import for parity with sibling tests
-
-    expect(() => instance.unstable_retry()).toThrow(
-      "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
-    );
-  });
+      expect(() => instance.render().props.errorInfo[retry]()).toThrow(
+        `\`${retry}()\` can only be used in the App Router. Use \`reset()\` in the Pages Router.`,
+      );
+    },
+  );
 
   // Integration test: the boundary contract that useUntrackedPathname protects.
   // The error boundary must clear its captured error when the pathname changes
@@ -6468,6 +6502,163 @@ describe('"use cache" runtime', () => {
     const r3 = await cached(7);
     expect(r3).toEqual({ result: 14 });
     expect(callCount).toBe(2);
+  });
+
+  // Next.js treats a "use cache" entry past its expire as a miss and regenerates it:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("regenerates a cached value once it is past its expire", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers();
+    try {
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 2 });
+        return ++callCount;
+      }, "test:expire");
+
+      await expect(cached()).resolves.toBe(1);
+      await expect(cached()).resolves.toBe(1);
+      vi.advanceTimersByTime(2_100);
+      await expect(cached()).resolves.toBe(2);
+      await expect(cached()).resolves.toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Next.js serves a stale "use cache" entry during a dynamic render and regenerates it in
+  // the background, but regenerates it first during static generation:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("serves a stale cached value and regenerates it in the background", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { addCollectedRequestTags, getCollectedFetchTags } =
+        await import("../packages/vinext/src/shims/fetch-cache.js");
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        // What a tagged fetch inside the function records.
+        addCollectedRequestTags([`fetch-tag-${callCount + 1}`]);
+        return ++callCount;
+      }, "test:stale-background");
+      const waitUntil: Promise<unknown>[] = [];
+      const request = () =>
+        runWithRequestContext(
+          createRequestContext({
+            unstableCacheRevalidation: "background",
+            executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
+          }),
+          async () => {
+            const value = await cached();
+            await Promise.all(waitUntil);
+            return { tags: getCollectedFetchTags(), value };
+          },
+        );
+
+      await expect(request()).resolves.toEqual({ tags: ["fetch-tag-1"], value: 1 });
+      vi.advanceTimersByTime(1_500);
+      // The background regeneration's fetch tags stay out of the stale response.
+      await expect(request()).resolves.toEqual({ tags: [], value: 1 });
+      expect(waitUntil).toHaveLength(1);
+      expect(callCount).toBe(2);
+      await expect(request()).resolves.toEqual({ tags: [], value: 2 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    // ISR regeneration runs with the foreground mode.
+    ["an ISR regeneration", "foreground", undefined],
+    // A prerender's request context is created in background mode before its work unit.
+    ["a prerender", "background", "1"],
+  ] as const)(
+    "regenerates a stale cached value first in %s",
+    async (_name, unstableCacheRevalidation, prerender) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+      setCacheHandler(new MemoryCacheHandler());
+      vi.useFakeTimers({ toFake: ["Date"] });
+      if (prerender) vi.stubEnv("VINEXT_PRERENDER", prerender);
+      try {
+        let callCount = 0;
+        const cached = registerCachedFunction(async () => {
+          cacheLife({ revalidate: 1, expire: 60 });
+          return ++callCount;
+        }, `test:stale-foreground-${unstableCacheRevalidation}`);
+        const request = () =>
+          runWithRequestContext(createRequestContext({ unstableCacheRevalidation }), () =>
+            cached(),
+          );
+
+        await expect(request()).resolves.toBe(1);
+        vi.advanceTimersByTime(1_500);
+        await expect(request()).resolves.toBe(2);
+      } finally {
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("serves stale nested values to a background regeneration", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cacheLife, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let innerCount = 0;
+      let outerCount = 0;
+      const inner = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        return `inner-${++innerCount}`;
+      }, "test:stale-nested-inner");
+      const outer = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 1, expire: 60 });
+        return `outer-${++outerCount}:${await inner()}`;
+      }, "test:stale-nested-outer");
+      const waitUntil: Promise<unknown>[] = [];
+      const request = () =>
+        runWithRequestContext(
+          createRequestContext({
+            unstableCacheRevalidation: "background",
+            executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
+          }),
+          () => outer(),
+        );
+
+      await expect(request()).resolves.toBe("outer-1:inner-1");
+      vi.advanceTimersByTime(1_500);
+      await expect(request()).resolves.toBe("outer-1:inner-1");
+      for (let settled = 0; settled < waitUntil.length; settled = waitUntil.length) {
+        await Promise.all(waitUntil);
+      }
+      // Like Next.js, the outer regeneration used the stale inner value while the inner
+      // value regenerated in its own background task.
+      expect(innerCount).toBe(2);
+      await expect(request()).resolves.toBe("outer-2:inner-1");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
@@ -11583,6 +11774,119 @@ describe("NextRequest API", () => {
     expect(reads).toBe(0);
     expect(Reflect.get(request, "cf")).toEqual({ country: "AU" });
     expect(reads).toBe(1);
+  });
+
+  it("keeps method, headers and body when a Request is passed as init", async () => {
+    // Auth.js rebases the incoming request with `new NextRequest(url, request)` (reqWithEnvURL).
+    // Next.js hands `init` to the Request constructor as-is; the fields live on
+    // Request.prototype, so copying own properties would drop all of them:
+    // packages/next/src/server/web/spec-extension/request.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/request.ts
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const source = new Request("https://example.com/api/auth/signout", {
+      method: "POST",
+      headers: { cookie: "session=abc", "content-type": "application/x-www-form-urlencoded" },
+      body: "csrfToken=token",
+    });
+
+    const request = new NextRequest("https://auth.example.com/api/auth/signout", source);
+
+    expect(request.url).toBe("https://auth.example.com/api/auth/signout");
+    expect(request.method).toBe("POST");
+    expect(request.headers.get("cookie")).toBe("session=abc");
+    expect(request.cookies.get("session")?.value).toBe("abc");
+    expect(await request.text()).toBe("csrfToken=token");
+  });
+
+  it("rebases a NextRequest passed as init onto the new URL", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const source = new NextRequest("https://example.com/api/auth/callback?code=1", {
+      method: "POST",
+      headers: { cookie: "session=abc" },
+      body: "state=xyz",
+    });
+
+    const request = new NextRequest("https://auth.example.com/api/auth/callback?code=1", source);
+
+    expect(request.nextUrl.href).toBe("https://auth.example.com/api/auth/callback?code=1");
+    expect(request.nextUrl.searchParams.get("code")).toBe("1");
+    expect(request.method).toBe("POST");
+    expect(request.cookies.get("session")?.value).toBe("abc");
+    expect(await request.text()).toBe("state=xyz");
+  });
+
+  it.each(["GET", "HEAD"] as const)(
+    "drops a framed body from a %s Request passed as init",
+    async (method) => {
+      // Workers can hand a GET a non-null body (e.g. Content-Length on a GET), and the
+      // route handler request is a Proxy that the Request constructor reads as a plain
+      // dictionary. Next.js never sees this: it nulls GET/HEAD bodies on the way in.
+      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+      const source = new Request("https://example.com/api/auth/session", {
+        method,
+        headers: { cookie: "session=abc" },
+      });
+      const framed = new Proxy(source, {
+        get(target, key) {
+          if (key === "body") return new Blob(["hi"]).stream();
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+
+      const request = new NextRequest("https://auth.example.com/api/auth/session", framed);
+
+      expect(request.method).toBe(method);
+      expect(request.cookies.get("session")?.value).toBe("abc");
+      expect(request.body).toBeNull();
+    },
+  );
+
+  it("keeps the request metadata of a framed GET Request passed as init", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const init = new Request("https://example.com/api/auth/session", {
+      headers: { cookie: "session=abc" },
+      // only-if-cached is only valid with same-origin mode, so dropping mode would throw.
+      cache: "only-if-cached",
+      credentials: "omit",
+      integrity: "sha256-abc",
+      keepalive: true,
+      mode: "same-origin",
+      redirect: "manual",
+      referrer: "https://example.com/login",
+      referrerPolicy: "no-referrer",
+    });
+    Object.defineProperty(init, "body", { get: () => new Blob(["hi"]).stream() });
+
+    const request = new NextRequest("https://auth.example.com/api/auth/session", init);
+
+    expect(request.cache).toBe("only-if-cached");
+    expect(request.credentials).toBe("omit");
+    expect(request.integrity).toBe("sha256-abc");
+    expect(request.keepalive).toBe(true);
+    expect(request.mode).toBe("same-origin");
+    expect(request.redirect).toBe("manual");
+    expect(request.referrer).toBe("https://example.com/login");
+    expect(request.referrerPolicy).toBe("no-referrer");
+    expect(request.cookies.get("session")?.value).toBe("abc");
+    expect(request.body).toBeNull();
+  });
+
+  it("lets a Request init override a Request input", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const input = new Request("https://example.com/items", { headers: { "x-from": "input" } });
+    const init = new Request("https://example.com/other", {
+      method: "PUT",
+      headers: { "x-from": "init" },
+      body: "payload",
+    });
+
+    const request = new NextRequest(input, init);
+
+    expect(request.url).toBe("https://example.com/items");
+    expect(request.method).toBe("PUT");
+    expect(request.headers.get("x-from")).toBe("init");
+    expect(await request.text()).toBe("payload");
   });
 
   it("throws canonical 'Please use only absolute URLs' error for relative URL input", async () => {

@@ -39,7 +39,7 @@ export type KvDataAdapterOptions = {
  * // wrangler.jsonc
  * {
  *   "kv_namespaces": [
- *     { "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }
+ *     { "binding": "VINEXT_KV_CACHE" }
  *   ]
  * }
  * ```

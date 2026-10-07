@@ -10,9 +10,10 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { createBuilder, parseAst } from "vite";
+import { createBuilder, createLogger, mergeConfig, parseAst, resolveConfig } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
+  EXPORT_ALL_CANDIDATE_FILTER as _EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
   stripServerExports as _stripServerExportsImpl,
@@ -237,7 +238,233 @@ describe("createClientManualChunks (installed layout)", () => {
   });
 });
 
+describe.each([false, true])("generated .vinext files (bundled dev: %s)", (bundledDev) => {
+  it.each([undefined, "**/user-cache/**", [/user-cache/, "**/other-cache/**"]])(
+    "excludes generated files from watching and preserves user ignores (%j)",
+    async (ignored) => {
+      const { default: vinext } = await import("../packages/vinext/src/index.js");
+      const config = await resolveConfig(
+        {
+          root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
+          configFile: false,
+          plugins: [vinext()],
+          experimental: { bundledDev },
+          server: { watch: { ignored, exclude: ignored, usePolling: true } },
+        },
+        "serve",
+      );
+      expect(config.server.watch?.ignored).toEqual([
+        ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
+      ]);
+      expect(config.server.watch?.exclude).toEqual([
+        ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
+      ]);
+      expect(config.server.watch?.usePolling).toBe(true);
+    },
+  );
+
+  it("preserves an explicitly disabled watcher", async () => {
+    const { default: vinext } = await import("../packages/vinext/src/index.js");
+    const config = await resolveConfig(
+      {
+        root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
+        configFile: false,
+        plugins: [vinext()],
+        experimental: { bundledDev },
+        server: { watch: null },
+      },
+      "serve",
+    );
+    expect(config.server.watch).toBeNull();
+  });
+});
+
 // ─── optimizeDeps.exclude — prevents esbuild scanning virtual module imports ─
+
+describe("next-intl dependency optimization", () => {
+  const dependencies = [
+    "@formatjs/intl-localematcher",
+    "negotiator",
+    "@formatjs/fast-memoize",
+    "intl-messageformat",
+  ];
+  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react", "next/link"];
+  const legacyClientDependencies = [
+    "next-intl > use-intl/_IntlProvider",
+    "next-intl > use-intl/_useLocale",
+  ];
+
+  it.each([
+    { scenario: "Cloudflare dev", expected: dependencies, clientExpected: clientDependencies },
+    { scenario: "Node dev", cloudflare: false, expected: [], clientExpected: clientDependencies },
+    { scenario: "production", command: "build", expected: [], clientExpected: [] },
+    { scenario: "without next-intl", nextIntl: false, expected: [], clientExpected: [] },
+    {
+      scenario: "resolvable but undeclared next-intl without request config",
+      declared: false,
+      requestConfig: false,
+      expected: [],
+      clientExpected: [],
+    },
+    {
+      scenario: "without request config",
+      requestConfig: false,
+      expected: [],
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "request config without a direct declaration",
+      declared: false,
+      expected: dependencies,
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "next-intl 3.x exports",
+      legacy: true,
+      expected: dependencies,
+      clientExpected: [...clientDependencies, ...legacyClientDependencies],
+    },
+    {
+      scenario: "top-level noDiscovery",
+      topLevelNoDiscovery: true,
+      expected: [],
+      clientExpected: [],
+    },
+    {
+      scenario: "environment discovery overrides top-level noDiscovery",
+      topLevelNoDiscovery: true,
+      noDiscovery: false,
+      clientNoDiscovery: false,
+      expected: dependencies,
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "RSC noDiscovery",
+      noDiscovery: true,
+      expected: [],
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "client noDiscovery",
+      clientNoDiscovery: true,
+      expected: dependencies,
+      clientExpected: [],
+    },
+    {
+      scenario: "client exclusions",
+      clientExcluded: true,
+      expected: dependencies,
+      clientExpected: ["next-intl > use-intl"],
+    },
+    {
+      scenario: "explicit exclusions",
+      excluded: true,
+      expected: ["@formatjs/intl-localematcher", "intl-messageformat"],
+      clientExpected: ["next/link"],
+    },
+    {
+      scenario: "dependencies unavailable from root",
+      missing: true,
+      expected: ["@formatjs/intl-localematcher", "negotiator"],
+      clientExpected: clientDependencies,
+    },
+  ])("preserves optimizer behavior for $scenario", async (options) => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-next-intl-optimizer-"));
+    try {
+      await fsp.mkdir(path.join(root, "app"));
+      await fsp.writeFile(path.join(root, "app/page.tsx"), "export default function Page() {}");
+      await fsp.writeFile(path.join(root, "next.config.mjs"), "export default {};");
+      await fsp.writeFile(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          dependencies:
+            options.nextIntl === false || options.declared === false ? {} : { "next-intl": "*" },
+        }),
+      );
+      await fsp.mkdir(path.join(root, "i18n"));
+      if (options.requestConfig !== false)
+        await fsp.writeFile(path.join(root, "i18n/request.ts"), "export default {};");
+      // Only config resolution runs here. Mock installed packages with actual
+      // files so missing/isolated dependencies exercise Node's resolver.
+      const installed = options.missing ? dependencies.slice(0, 2) : dependencies;
+      for (const name of [...installed, ...(options.nextIntl === false ? [] : ["next-intl"])]) {
+        const dir = path.join(root, "node_modules", name);
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(
+          path.join(dir, "package.json"),
+          JSON.stringify({ name, main: "index.js" }),
+        );
+        await fsp.writeFile(path.join(dir, "index.js"), "module.exports = {};");
+      }
+      if (options.nextIntl !== false) {
+        // use-intl is nested under next-intl, as with an isolated installation.
+        const dir = path.join(root, "node_modules/next-intl/node_modules/use-intl");
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(
+          path.join(dir, "package.json"),
+          JSON.stringify({
+            name: "use-intl",
+            exports: {
+              ".": "./index.js",
+              "./react": "./react.js",
+              ...(options.legacy
+                ? { "./_IntlProvider": "./index.js", "./_useLocale": "./react.js" }
+                : {}),
+            },
+          }),
+        );
+        for (const file of ["index.js", "react.js"])
+          await fsp.writeFile(path.join(dir, file), "module.exports = {};");
+      }
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const main = vinext({ rsc: false }).find((plugin: any) => plugin.name === "vinext:config");
+      const result = await (main as any).config(
+        {
+          root,
+          build: {},
+          plugins: options.cloudflare === false ? [] : [{ name: "vite-plugin-cloudflare" }],
+          optimizeDeps: {
+            noDiscovery: options.topLevelNoDiscovery,
+            include: ["user-selected"],
+            exclude: options.excluded ? ["negotiator", "use-intl"] : [],
+          },
+          environments: {
+            client: {
+              optimizeDeps: {
+                noDiscovery: options.clientNoDiscovery,
+                exclude: options.clientExcluded ? ["use-intl/react", "next/link"] : [],
+              },
+            },
+            rsc: {
+              optimizeDeps: {
+                noDiscovery: options.noDiscovery,
+                exclude: options.excluded ? ["@formatjs/fast-memoize"] : [],
+              },
+            },
+          },
+        },
+        { command: options.command ?? "serve" },
+      );
+      const includes = result.environments.rsc.optimizeDeps.include;
+      expect(includes).toContain("user-selected");
+      expect(dependencies.filter((id) => includes.includes(id))).toEqual(options.expected);
+      const clientIncludes = result.environments.client.optimizeDeps.include;
+      expect(
+        [...clientDependencies, ...legacyClientDependencies].filter((id) =>
+          clientIncludes.includes(id),
+        ),
+      ).toEqual(options.clientExpected);
+      for (const name of ["client", "ssr"]) {
+        const otherIncludes = result.environments[name].optimizeDeps.include ?? [];
+        expect(dependencies.filter((id) => otherIncludes.includes(id))).toEqual([]);
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("optimizeDeps.exclude for vinext", () => {
   const rscClientShimExcludes = [
@@ -284,7 +511,6 @@ describe("optimizeDeps.exclude for vinext", () => {
       const result = await (mainPlugin as any).config(mockConfig, {
         command: "build",
       });
-
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
       // Incoming excludes from other plugins must survive the merge
@@ -530,8 +756,28 @@ describe("optimizeDeps.exclude for vinext", () => {
       // applies top-level ssr.* as defaults for environments.ssr.*, so
       // setting noExternal: true here would force-bundle React despite
       // external: true and recreate the duplicate-React bug.
-      expect(result.ssr?.noExternal).toBeUndefined();
+      expect(result.ssr?.noExternal).not.toBe(true);
+      expect(result.ssr?.noExternal).not.toContain("react");
       expect(result.ssr?.external).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  // @vercel/og 1.x throws on native import; it only runs once
+  // vinext:og-harfbuzz has transformed it, so `ssr.external: true` must not
+  // externalize it in any Node server environment.
+  it("keeps @vercel/og in the transform pipeline when ssr.external: true", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-og-no-external-");
+
+    try {
+      const result = await fixture.config({ ssr: { external: true } });
+
+      expect(result.ssr.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.rsc.resolve.external).toBe(true);
+      expect(result.environments.rsc.resolve.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.ssr.resolve.external).toBe(true);
+      expect(result.environments.ssr.resolve.noExternal).toEqual(["@vercel/og"]);
     } finally {
       await fixture.cleanup();
     }
@@ -738,6 +984,14 @@ describe("optimizeDeps.exclude for vinext", () => {
         },
       };
       (mainPlugin as any).configEnvironment("worker", workerEnvConfig);
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: { worker: workerEnvConfig },
+        logger: createLogger("silent"),
+        plugins: [],
+      });
 
       expect(workerEnvConfig.optimizeDeps.entries).toContain("already-present.ts");
       expect(workerEnvConfig.optimizeDeps.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
@@ -822,78 +1076,280 @@ describe("optimizeDeps.exclude for vinext", () => {
     );
   }, 15000);
 
-  it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
-    const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext();
-    const mainPlugin = plugins.find(
-      (p: any) =>
-        p.name === "vinext:config" &&
-        typeof p.config === "function" &&
-        typeof p.configResolved === "function",
-    );
-    expect(mainPlugin).toBeDefined();
-
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optwarn-"));
-    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
-    await fsp.writeFile(
-      path.join(tmpDir, "pages", "index.tsx"),
-      `export default function Home() { return <h1>Home</h1>; }`,
-    );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
-
-    try {
-      await (mainPlugin as any).config(
-        {
-          root: tmpDir,
-          build: {},
-          plugins: [{ name: "vite-plugin-cloudflare" }],
-        },
-        { command: "serve" },
+  it.each([false, true])(
+    "scopes optional worker warnings (explicit include: %s)",
+    async (explicit) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const plugins = vinext();
+      const mainPlugin = plugins.find(
+        (p: any) =>
+          p.name === "vinext:config" &&
+          typeof p.config === "function" &&
+          typeof p.configResolved === "function",
       );
+      expect(mainPlugin).toBeDefined();
 
-      const warned: string[] = [];
-      const logger = {
-        hasWarned: false,
-        info() {},
-        warn(msg: string) {
-          warned.push(msg);
-        },
-        warnOnce(msg: string) {
-          warned.push(msg);
-        },
-        error() {},
-        clearScreen() {},
-        hasErrorLogged() {
-          return false;
-        },
-      };
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optwarn-"));
+      await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "index.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+      await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
-      await (mainPlugin as any).configResolved({
-        cacheDir: path.join(tmpDir, "node_modules", ".vite"),
-        command: "serve",
+      try {
+        await (mainPlugin as any).config(
+          {
+            root: tmpDir,
+            build: {},
+            plugins: [{ name: "vite-plugin-cloudflare" }],
+          },
+          { command: "serve" },
+        );
+
+        const workerConfig = {
+          optimizeDeps: {
+            include: explicit ? ["use-sync-external-store/with-selector"] : [],
+          },
+        };
+        (mainPlugin as any).configEnvironment("worker", workerConfig);
+        const warned: string[] = [];
+        const logger = {
+          hasWarned: false,
+          info() {},
+          warn(msg: string) {
+            warned.push(msg);
+          },
+          warnOnce(msg: string) {
+            warned.push(msg);
+          },
+          error() {},
+          clearScreen() {},
+          hasErrorLogged() {
+            return false;
+          },
+        };
+
+        const resolvedConfig = {
+          cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { worker: workerConfig },
+          logger,
+          plugins: [],
+        };
+        await (mainPlugin as any).configResolved(resolvedConfig);
+
+        const optionalWarnings = [
+          "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
+          "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
+        ];
+        const actionableWarnings = [
+          "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+          "Failed to resolve dependency: use-sync-external-store/with-selector, present in client 'optimizeDeps.include'",
+        ];
+        for (const warning of [...optionalWarnings, ...actionableWarnings])
+          resolvedConfig.logger.warn(warning);
+
+        expect(warned).toEqual([...(explicit ? optionalWarnings : []), ...actionableWarnings]);
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    15000,
+  );
+
+  it.each([
+    { name: "automatic entries", config: {}, visibleClientIds: [] },
+    {
+      name: "explicit top-level include",
+      config: { optimizeDeps: { include: ["use-sync-external-store/shim"] } },
+      visibleClientIds: ["use-sync-external-store/shim"],
+    },
+    {
+      name: "explicit client include",
+      config: {
+        environments: {
+          client: { optimizeDeps: { include: ["use-sync-external-store/shim"] } },
+        },
+      },
+      visibleClientIds: ["use-sync-external-store/shim"],
+    },
+    {
+      name: "disabled automatic entries",
+      config: {
+        optimizeDeps: { noDiscovery: true, include: ["use-sync-external-store/shim"] },
+      },
+      visibleClientIds: "all" as const,
+    },
+  ])(
+    "scopes optional client optimizer warnings: $name",
+    async (options) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const plugins = vinext();
+      const mainPlugin = plugins.find(
+        (p: any) =>
+          p.name === "vinext:config" &&
+          typeof p.config === "function" &&
+          typeof p.configResolved === "function",
+      );
+      expect(mainPlugin).toBeDefined();
+
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-app-dev-optwarn-"));
+      const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+      await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+      await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+      try {
+        const config = mergeConfig(
+          options.config,
+          await (mainPlugin as any).config(
+            { root: tmpDir, build: {}, plugins: [], ...options.config },
+            { command: "serve" },
+          ),
+        );
+        const clientConfig = mergeConfig(
+          { optimizeDeps: config.optimizeDeps },
+          config.environments.client,
+        );
+
+        const warned: string[] = [];
+        const logger = {
+          hasWarned: false,
+          info() {},
+          warn(msg: string) {
+            warned.push(msg);
+          },
+          warnOnce(msg: string) {
+            warned.push(msg);
+          },
+          error() {},
+          clearScreen() {},
+          hasErrorLogged() {
+            return false;
+          },
+        };
+
+        const resolvedConfig = {
+          cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { client: clientConfig },
+          logger,
+          plugins: [],
+        };
+        await (mainPlugin as any).configResolved(resolvedConfig);
+
+        const expectedWarnings: string[] = [];
+        for (const id of [
+          "use-sync-external-store/shim",
+          "use-sync-external-store/shim/index.js",
+          "use-sync-external-store/shim/with-selector",
+          "use-sync-external-store/shim/with-selector.js",
+          "use-sync-external-store/with-selector",
+          "use-sync-external-store/with-selector.js",
+        ]) {
+          for (const specifier of [id, `\x1b[36m${id}\x1b[39m`]) {
+            const warning = `Failed to resolve dependency: ${specifier}, present in client 'optimizeDeps.include'`;
+            resolvedConfig.logger.warn(warning);
+            if (
+              options.visibleClientIds === "all" ||
+              options.visibleClientIds.some((visible) => visible === id)
+            ) {
+              expectedWarnings.push(warning);
+            }
+          }
+        }
+
+        const actionableWarnings = [
+          "Failed to resolve dependency: use-sync-external-store/shim, present in ssr 'optimizeDeps.include'",
+          "Failed to resolve dependency: other-package, present in client 'optimizeDeps.include'",
+          "Failed to resolve dependency: use-sync-external-store/shim/unknown, present in client 'optimizeDeps.include'",
+          "Failed to resolve dependency: other-package > use-sync-external-store/shim, present in client 'optimizeDeps.include'",
+          "Cannot optimize dependency: use-sync-external-store/shim, present in client 'optimizeDeps.include'",
+        ];
+        for (const warning of actionableWarnings) resolvedConfig.logger.warn(warning);
+
+        expect(warned).toEqual([...expectedWarnings, ...actionableWarnings]);
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    15000,
+  );
+
+  it.each([
+    { name: "dev defaults", expected: true },
+    { name: "production", command: "build", expected: false },
+    { name: "top-level noDiscovery", topLevel: { noDiscovery: true }, expected: false },
+    { name: "client noDiscovery", client: { noDiscovery: true }, expected: false },
+    {
+      name: "client discovery override",
+      topLevel: { noDiscovery: true },
+      client: { noDiscovery: false },
+      expected: true,
+    },
+    {
+      name: "package exclusion",
+      topLevel: { exclude: ["use-sync-external-store"] },
+      expected: false,
+    },
+    {
+      name: "client package exclusion",
+      client: { exclude: ["use-sync-external-store"] },
+      expected: false,
+    },
+    {
+      name: "subpath exclusion",
+      client: { exclude: ["use-sync-external-store/shim"] },
+      expected: false,
+      selectorExpected: true,
+    },
+  ])("respects optional client optimizer settings: $name", async (options) => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((p: any) => p.name === "vinext:config") as any;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-store-optdeps-"));
+    await fsp.mkdir(path.join(root, "app"));
+    await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
+    try {
+      const nestedInclude = "example-lib > use-sync-external-store/shim";
+      const config = await plugin.config(
+        {
+          root,
+          build: {},
+          optimizeDeps: { ...options.topLevel, include: [nestedInclude] },
+          environments: { client: { optimizeDeps: options.client } },
+        },
+        { command: options.command ?? "serve" },
+      );
+      const clientConfig = mergeConfig(
+        { optimizeDeps: options.topLevel },
+        mergeConfig(config.environments.client, { optimizeDeps: options.client }),
+      );
+      await plugin.configResolved({
+        cacheDir: path.join(root, ".vite"),
+        command: options.command ?? "serve",
         configFile: false,
-        environments: {},
-        logger,
+        environments: { client: clientConfig },
+        logger: createLogger("silent"),
         plugins: [],
       });
-
-      logger.warn(
-        "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
+      const includes = clientConfig.optimizeDeps.include as string[];
+      expect(includes).toContain(nestedInclude);
+      expect(includes.includes("use-sync-external-store/shim")).toBe(options.expected);
+      expect(includes.includes("use-sync-external-store/shim/index.js")).toBe(options.expected);
+      expect(includes.includes("use-sync-external-store/with-selector")).toBe(
+        options.selectorExpected ?? options.expected,
       );
-      logger.warn(
-        "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
-      );
-      logger.warn(
-        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
-      );
-
-      expect(warned).toEqual([
-        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
-      ]);
     } finally {
-      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fsp.rm(root, { recursive: true, force: true });
     }
-  }, 15000);
+  });
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────
@@ -925,7 +1381,7 @@ describe("process.env.NODE_ENV define", () => {
     );
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
-    return { mainPlugin: mainPlugin as any, tmpDir, fsp };
+    return { mainPlugin: mainPlugin as any, plugins, tmpDir, fsp };
   }
 
   it("is injected as production for build", async () => {
@@ -3021,12 +3477,24 @@ describe("stripServerExports", () => {
     expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
   });
 
-  it("cheaply identifies export-all syntax without matching multiplication", () => {
-    expect(_hasExportAllCandidate(`export * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export\n*\nfrom './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export /* comment */ * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export // comment\n* from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
+  it("cheaply identifies export-all syntax without matching multiplication", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((p: any) => p.name === "vinext:validate-page-exports") as any;
+    const codeFilter = plugin?.transform?.filter?.code;
+    expect(codeFilter).toBe(_EXPORT_ALL_CANDIDATE_FILTER);
+
+    for (const code of [
+      `export * from './other-page';`,
+      `export\n*\nfrom './other-page';`,
+      `export /* comment */ * from './other-page';`,
+      `export // comment\n* from './other-page';`,
+    ]) {
+      expect(_hasExportAllCandidate(code)).toBe(true);
+      expect(codeFilter.test(code)).toBe(true);
+    }
+    const multiplication = `export const area = width * height;`;
+    expect(_hasExportAllCandidate(multiplication)).toBe(false);
+    expect(codeFilter.test(multiplication)).toBe(false);
   });
 
   it("rejects export-all declarations in page modules", () => {
@@ -3955,6 +4423,12 @@ describe("createMultiStageChunkFileNames", () => {
     expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-response-stage" } as never)).toBe(
       "vinext-stage-runtime~virtual_vinext-response-stage-[hash].js",
     );
+    expect(fileName({ name: "_virtual_vinext-request-stage" } as never)).toBe(
+      "_virtual_vinext-request-stage-[hash].js",
+    );
+    expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-request-stage" } as never)).toBe(
+      "vinext-stage-runtime~virtual_vinext-request-stage-[hash].js",
+    );
     expect(fileName({ name: "request-runtime" } as never)).toBe(
       "_next/static/request-runtime-[hash].js",
     );
@@ -4431,7 +4905,7 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
-  it("applies stage isolation to every server output but not the App SSR renderer", async () => {
+  it("applies App stage isolation only to the RSC environment", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
     try {
@@ -4483,6 +4957,22 @@ describe("createMultiStageChunkFileNames", () => {
         }),
       ).toBeUndefined();
       expect(ssrEmit).not.toHaveBeenCalled();
+
+      const auxiliaryEmit = vi.fn();
+      const auxiliaryContext = {
+        emitFile: auxiliaryEmit,
+        environment: {
+          config: { build: { ssr: true }, consumer: "server" },
+          name: "response_store_service_binding",
+        },
+      };
+      await (outputPlugin as any).buildStart.call(auxiliaryContext);
+      expect(
+        await (outputPlugin as any).outputOptions.call(auxiliaryContext, {
+          chunkFileNames: "auxiliary/[name].js",
+        }),
+      ).toBeUndefined();
+      expect(auxiliaryEmit).not.toHaveBeenCalled();
 
       const customClientEmit = vi.fn();
       const customClientContext = {

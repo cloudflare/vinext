@@ -175,6 +175,104 @@ describe("OgAssetOwnership", () => {
     await expect(ownership.resolveModuleBoundary(entryPath)).resolves.not.toBeNull();
   });
 
+  describe("resolved import package roots", () => {
+    // A workspace package linked outside the project root, owned through the
+    // project's dependency on it (no alias involved).
+    async function createLinkedDependency(name: string) {
+      const projectRoot = path.join(tmpDir, name, "app");
+      const packageRoot = path.join(tmpDir, name, "linked-og");
+      const modulePath = path.join(packageRoot, "dist", "index.js");
+      await fs.mkdir(projectRoot, { recursive: true });
+      await fs.mkdir(path.dirname(modulePath), { recursive: true });
+      await fs.writeFile(
+        path.join(projectRoot, "package.json"),
+        '{"dependencies":{"linked-og":"link:../linked-og"}}',
+      );
+      await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"linked-og"}');
+      await fs.writeFile(modulePath, "export {};");
+      return { projectRoot, packageRoot, modulePath };
+    }
+
+    it("reuses the lookup for a repeated import until reset", async () => {
+      const { projectRoot, packageRoot, modulePath } = await createLinkedDependency("memo-reset");
+      const manifestPath = path.join(packageRoot, "package.json");
+      const ownership = new OgAssetOwnership();
+      ownership.configure(projectRoot, []);
+
+      // The package does not match the dependency name yet, so the lookup
+      // finds no root.
+      await fs.writeFile(manifestPath, '{"name":"other"}');
+      await Promise.all([
+        ownership.recordResolvedImport("linked-og", modulePath),
+        ownership.recordResolvedImport("linked-og", modulePath),
+      ]);
+      await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+
+      // The package now matches. Within the same pass the recorded miss is
+      // reused.
+      await fs.writeFile(manifestPath, '{"name":"linked-og"}');
+      await ownership.recordResolvedImport("linked-og", modulePath);
+      await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+
+      // A new pass looks the import up again.
+      ownership.reset();
+      await ownership.recordResolvedImport("linked-og", modulePath);
+      expect((await ownership.resolveModuleBoundary(modulePath))?.assetRoot).toBe(
+        canonical(await fs.realpath(packageRoot)),
+      );
+    });
+
+    it("re-adds a looked-up root after reset", async () => {
+      const { projectRoot, packageRoot, modulePath } = await createLinkedDependency("memo-readd");
+      const ownership = new OgAssetOwnership();
+      ownership.configure(projectRoot, []);
+
+      await ownership.recordResolvedImport("linked-og", modulePath);
+      ownership.reset();
+      await ownership.recordResolvedImport("linked-og", modulePath);
+
+      expect((await ownership.resolveModuleBoundary(modulePath))?.assetRoot).toBe(
+        canonical(await fs.realpath(packageRoot)),
+      );
+    });
+
+    it("forgets lookups when reconfigured", async () => {
+      const { projectRoot, packageRoot, modulePath } = await createLinkedDependency("memo-config");
+      const unrelatedRoot = path.join(tmpDir, "memo-config", "unrelated");
+      await fs.mkdir(unrelatedRoot, { recursive: true });
+      const ownership = new OgAssetOwnership();
+
+      // Without the dependency, the import does not own a package.
+      ownership.configure(unrelatedRoot, []);
+      await ownership.recordResolvedImport("linked-og", modulePath);
+      await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+
+      ownership.configure(projectRoot, []);
+      await ownership.recordResolvedImport("linked-og", modulePath);
+
+      expect((await ownership.resolveModuleBoundary(modulePath))?.assetRoot).toBe(
+        canonical(await fs.realpath(packageRoot)),
+      );
+    });
+
+    it("keys lookups by resolved id as well as specifier", async () => {
+      const first = await createLinkedDependency("memo-key-first");
+      const second = await createLinkedDependency("memo-key-second");
+      const ownership = new OgAssetOwnership();
+      ownership.configure(first.projectRoot, []);
+
+      await ownership.recordResolvedImport("linked-og", first.modulePath);
+      await ownership.recordResolvedImport("linked-og", second.modulePath);
+
+      expect((await ownership.resolveModuleBoundary(first.modulePath))?.assetRoot).toBe(
+        canonical(await fs.realpath(first.packageRoot)),
+      );
+      expect((await ownership.resolveModuleBoundary(second.modulePath))?.assetRoot).toBe(
+        canonical(await fs.realpath(second.packageRoot)),
+      );
+    });
+  });
+
   it("rejects assets outside the resolved package boundary", async () => {
     const packageRoot = path.join(tmpDir, "contained-package");
     const assetPath = path.join(packageRoot, "font.ttf");

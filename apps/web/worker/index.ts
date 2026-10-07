@@ -3,26 +3,6 @@ import { tracing } from "cloudflare:workers";
 import handler from "vinext/server/fetch-handler";
 import { addPreviewRobotsHeader, getCanonicalRedirect } from "./seo";
 
-type Env = {
-  ASSETS: Fetcher;
-  IMAGES: {
-    input(stream: ReadableStream): {
-      transform(options: Record<string, unknown>): {
-        output(options: { format: string; quality: number }): Promise<{ response(): Response }>;
-      };
-    };
-  };
-  DB: D1Database;
-  VINEXT_KV_CACHE: KVNamespace;
-  PERFORMANCE_PROFILES: R2Bucket;
-  COMPAT_INGEST_SECRET?: string;
-};
-
-type ExecutionContext = {
-  waitUntil(promise: Promise<unknown>): void;
-  passThroughOnException(): void;
-};
-
 async function sweepPerformanceProfiles(env: Env): Promise<void> {
   return tracing.enterSpan("vinext.web.sweepPerformanceProfiles", async (span) => {
     const { results } = await env.DB.prepare(`

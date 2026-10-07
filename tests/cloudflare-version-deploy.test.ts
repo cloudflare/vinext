@@ -1,13 +1,23 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  parseCfDeploymentStatusOutput,
+  buildCfVersionUploadArgs,
   buildWranglerDeploymentsStatusArgs,
   buildWranglerTriggersDeployArgs,
   buildWranglerVersionDeployArgs,
   buildWranglerVersionUploadArgs,
+  parseUploadedWorkerName,
   parseVersionId,
   parseWorkersDevUrl,
   parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
+  runCfVersionUpload,
+  runCfDeploymentStatus,
+  runCfVersionDeploy,
+  runCfTriggersDeploy,
   runWranglerDeploymentStatus,
   runWranglerVersionDeploy,
   runWranglerVersionUpload,
@@ -23,6 +33,71 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       args: ["versions", "upload"],
       env: undefined,
     });
+  });
+
+  it("builds cf Build Output version upload args", () => {
+    expect(buildCfVersionUploadArgs({})).toEqual({
+      args: ["workers", "versions", "create", "--prebuilt"],
+      mode: undefined,
+    });
+    expect(buildCfVersionUploadArgs({ env: "staging", previewAlias: "warm-build" })).toEqual({
+      args: [
+        "workers",
+        "versions",
+        "create",
+        "--prebuilt",
+        "--mode",
+        "staging",
+        "--preview-alias",
+        "warm-build",
+      ],
+      mode: "staging",
+    });
+  });
+
+  it("uses cf for a Build Output version upload", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-upload-"));
+    const configPath = path.join(root, ".cloudflare/output/v0/workers/default/worker.config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ name: "my-worker" }));
+    const execute = vi.fn(
+      () => `
+      Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22
+      Version Preview URL: https://095f00a7-my-worker.example.workers.dev
+    `,
+    );
+
+    expect(runCfVersionUpload(root, {}, execute as never)).toMatchObject({
+      versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      workerName: "my-worker",
+      previewUrl: "https://095f00a7-my-worker.example.workers.dev",
+    });
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [path.join(root, "node_modules/cf/bin/cf"), "workers", "versions", "create", "--prebuilt"],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads the Build Output Worker name before uploading", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-upload-"));
+    const execute = vi.fn();
+
+    expect(() => runCfVersionUpload(root, {}, execute as never)).toThrow(
+      "Could not read the generated Cloudflare Build Output config",
+    );
+    expect(execute).not.toHaveBeenCalled();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    "│  Uploaded my-worker (3.55 sec)",
+    "\u001B[32m|  Uploaded my-worker (3.55 sec)\u001B[0m",
+  ])("parses Wrangler's uploaded Worker name from %j", (output) => {
+    expect(parseUploadedWorkerName(output)).toBe("my-worker");
   });
 
   it("builds version upload args for a named environment and preview alias", () => {
@@ -299,5 +374,96 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       deploymentId: "deployment-1",
       versions: [{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
     });
+  });
+
+  it("reads the first cf deployment, not an older entry", () => {
+    const current = {
+      id: "current",
+      versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+    };
+    expect(
+      parseCfDeploymentStatusOutput(
+        JSON.stringify({
+          deployments: [current, { id: "older", versions: [] }],
+        }),
+      ),
+    ).toMatchObject({
+      deploymentId: "current",
+      versions: [{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+    });
+    expect(() => parseCfDeploymentStatusOutput('{"deployments":[]}')).toThrow("active deployment");
+  });
+
+  it("uses cf for status, percentage deployments, and prebuilt triggers", () => {
+    const execute = vi.fn(() =>
+      JSON.stringify({
+        deployments: [
+          {
+            id: "current",
+            versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+          },
+        ],
+      }),
+    );
+    const root = "/tmp/app";
+    const bin = path.join(root, "node_modules/cf/bin/cf");
+    expect(runCfDeploymentStatus(root, { name: "my-worker" }, execute as never).deploymentId).toBe(
+      "current",
+    );
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [bin, "workers", "deployments", "list", "--worker", "my-worker"],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
+
+    runCfVersionDeploy(
+      root,
+      [
+        { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+        { versionId: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+      ],
+      { name: "my-worker" },
+      "stage",
+      execute as never,
+    );
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        bin,
+        "workers",
+        "deployments",
+        "create",
+        "--worker",
+        "my-worker",
+        "--strategy",
+        "percentage",
+        "--versions",
+        JSON.stringify([
+          { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+          { version_id: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+        ]),
+      ],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
+
+    runCfTriggersDeploy(root, {}, execute as never);
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [bin, "workers", "triggers", "deploy", "--prebuilt"],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
+
+    runCfDeploymentStatus(root, { name: "my-worker", env: "staging" }, execute as never);
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [bin, "workers", "deployments", "list", "--worker", "my-worker", "--mode", "staging"],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
+    runCfTriggersDeploy(root, { env: "staging" }, execute as never);
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [bin, "workers", "triggers", "deploy", "--prebuilt", "--mode", "staging"],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
   });
 });

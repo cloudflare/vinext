@@ -21,6 +21,9 @@ export function getPreviewBuildCredentials(): PreviewBuildCredentials | undefine
   return previewBuildCredentialsStorage.getStore();
 }
 
-export function runWithPreviewBuildCredentials<T>(callback: () => T): T {
-  return previewBuildCredentialsStorage.run(createPreviewBuildCredentials(), callback);
+export function runWithPreviewBuildCredentials<T>(
+  callback: () => T,
+  credentials = createPreviewBuildCredentials(),
+): T {
+  return previewBuildCredentialsStorage.run(credentials, callback);
 }

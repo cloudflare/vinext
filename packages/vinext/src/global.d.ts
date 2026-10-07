@@ -351,7 +351,7 @@ declare global {
       __VINEXT_BUILD_ID?: string;
 
       /**
-       * Build-only coordination variable set by the `vinext build` CLI so that
+       * Build-only coordination variable set by the top-level Vite build lifecycle so that
        * every vinext() plugin instance in a single build (App Router buildApp +
        * the separate hybrid Pages Router vite.build) resolves the same build ID.
        * Distinct from `__VINEXT_BUILD_ID` (the runtime value baked via `define`)
@@ -362,7 +362,7 @@ declare global {
       /**
        * Public App Router RSC compatibility identity injected via Vite
        * `define`. Used by browser navigation code to reject RSC payloads from
-       * a different vinext build without exposing the raw build ID header.
+       * a different Vite build without exposing the raw build ID header.
        */
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 
@@ -373,7 +373,7 @@ declare global {
       __VINEXT_RSC_BUILD_IDENTITY?: string;
 
       /**
-       * Build-only coordination variable set by the `vinext build` CLI so that
+       * Build-only coordination variable set by the top-level Vite build lifecycle so that
        * every vinext() plugin instance in a single build resolves the same RSC
        * compatibility token (companion to `__VINEXT_SHARED_BUILD_ID`). Never read
        * by dev or standalone createRscCompatibilityId() resolution.
@@ -392,13 +392,13 @@ declare global {
        * per-process random secret would mismatch across isolates because
        * `res.revalidate()`'s loopback `fetch()` can land on a different isolate;
        * a build-baked constant is the same in all of them.
-       * `undefined` unless set during `vinext build` (so dev, and any non-CLI
+       * `undefined` unless set during the Vite build lifecycle (so dev, and any non-CLI
        * build, omit it — see `getRevalidateSecret`'s single-process fallback).
        */
       __VINEXT_REVALIDATE_SECRET?: string;
 
       /**
-       * Build-only coordination variable set by the `vinext build` CLI so that
+       * Build-only coordination variable set by the top-level Vite build lifecycle so that
        * every vinext() plugin instance in a single build (App Router buildApp +
        * the separate hybrid Pages Router vite.build) bakes the same revalidate
        * secret. Companion to `__VINEXT_SHARED_BUILD_ID`; never read by dev or

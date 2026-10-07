@@ -205,13 +205,22 @@ async function runProfile(scenario, implementation) {
 }
 
 for (const scenario of performanceScenarios) {
+  if (
+    scenario.rounds !== undefined &&
+    (!Number.isInteger(scenario.rounds) || scenario.rounds < 1)
+  ) {
+    throw new Error(`rounds must be a positive integer for scenario ${scenario.id}`);
+  }
+  // --rounds overrides everything; otherwise a scenario may lower its own count when each
+  // sample is expensive (for example the large generated app).
+  const scenarioRounds = requestedRounds ?? scenario.rounds;
   for (const implementation of scenario.implementations) {
     if (skippedImplementations.has(implementation.id)) continue;
     const profile = implementation.profile === true;
 
     console.log(`\nRunning ${scenario.suite} / ${implementation.label} / ${scenario.label}`);
     if (direct) {
-      const directRounds = requestedRounds ?? 5;
+      const directRounds = scenarioRounds ?? 5;
       for (let round = 0; round < directRounds; round++) {
         await runTimingSample(scenario, implementation, "head", targetRoot);
       }
@@ -219,7 +228,7 @@ for (const scenario of performanceScenarios) {
     }
 
     if (pairedRun && implementation.compareBase === true) {
-      const pairedRounds = requestedRounds ?? DEFAULT_PAIRED_ROUNDS;
+      const pairedRounds = scenarioRounds ?? DEFAULT_PAIRED_ROUNDS;
       for (let round = 0; round < pairedRounds; round++) {
         const roots = { base: baseRoot, head: targetRoot };
         const order = pairedRevisionOrder(round).map((revision) => [revision, roots[revision]]);
@@ -234,7 +243,7 @@ for (const scenario of performanceScenarios) {
       continue;
     }
 
-    const timingRounds = requestedRounds ?? 5;
+    const timingRounds = scenarioRounds ?? 5;
     for (let round = 0; round < timingRounds; round++) {
       await runTimingSample(scenario, implementation, "head", targetRoot);
     }

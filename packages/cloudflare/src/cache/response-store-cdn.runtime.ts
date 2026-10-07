@@ -14,6 +14,7 @@ import {
 class ResponseStoreCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = false;
   readonly requiresCompletedResponseAdmission = true;
+  readonly responseStageCacheIdentity = "query-free";
   readonly responsePolicy: CdnCacheAdapter["responsePolicy"];
 
   constructor(private readonly headers: CdnCacheAdapter) {

@@ -7,16 +7,22 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   deploy,
+  buildCfDeployArgs,
   buildNodeCliInvocation,
-  buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
   getZeroPercentStagingTraffic,
+  isCfCliInstalled,
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
+  resolveCfBin,
+  resolvePrerenderOutputDirs,
+  resolveDeploymentTool,
+  resolveViteBuildMode,
+  resolveDeploymentControlPlaneOptions,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
-  runWranglerKVBulkPut,
+  runCfDeploy,
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
@@ -31,13 +37,11 @@ import {
   hasWranglerConfig,
   ensureESModule,
   renameCJSConfigs,
-  ensureViteConfigCompatibility,
   isPackageResolvable,
 } from "../packages/vinext/src/utils/project.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
-  resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
@@ -101,6 +105,14 @@ function writeWranglerPackageForTest(
 ) {
   writeFile(dir, "node_modules/wrangler/package.json", JSON.stringify({ name: "wrangler", bin }));
   writeFile(dir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+}
+
+function writeCfPackageForTest(
+  dir: string,
+  bin: string | Record<string, string> = { cf: "bin/cf" },
+) {
+  writeFile(dir, "node_modules/cf/package.json", JSON.stringify({ name: "cf", bin }));
+  writeFile(dir, "node_modules/cf/bin/cf", "#!/usr/bin/env node");
 }
 
 function expectedWranglerBinForTest(dir: string): string {
@@ -225,62 +237,15 @@ describe("buildWranglerDeployArgs", () => {
   });
 });
 
-describe("buildWranglerKVBulkPutArgs", () => {
-  it("uploads a bulk JSON file to the configured KV binding", () => {
-    expect(
-      buildWranglerKVBulkPutArgs({
-        binding: "VINEXT_KV_CACHE",
-        filePath: "/tmp/prerender-kv.json",
-      }),
-    ).toEqual({
-      args: [
-        "kv",
-        "bulk",
-        "put",
-        "/tmp/prerender-kv.json",
-        "--binding",
-        "VINEXT_KV_CACHE",
-        "--remote",
-      ],
-      env: undefined,
-    });
-  });
-
-  it("passes through the Wrangler environment when deploy targets one", () => {
-    expect(
-      buildWranglerKVBulkPutArgs({
-        binding: "VINEXT_KV_CACHE",
-        env: "staging",
-        filePath: "/tmp/prerender-kv.json",
-      }),
-    ).toEqual({
-      args: [
-        "kv",
-        "bulk",
-        "put",
-        "/tmp/prerender-kv.json",
-        "--binding",
-        "VINEXT_KV_CACHE",
-        "--remote",
-        "--env",
-        "staging",
-      ],
-      env: "staging",
-    });
-  });
-
-  it("rejects null bytes in Wrangler environment names", () => {
-    expect(() =>
-      buildWranglerKVBulkPutArgs({
-        binding: "VINEXT_KV_CACHE",
-        env: "preview\0prod",
-        filePath: "/tmp/prerender-kv.json",
-      }),
-    ).toThrow("null bytes");
-  });
-});
-
 describe("deploy environment validation", () => {
+  it("keeps the typed Cloudflare config authoritative for the Worker name", async () => {
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+
+    await expect(deploy({ root: tmpDir, name: "cli-worker", dryRun: true })).rejects.toThrow(
+      "Set `name` in cloudflare.config.ts instead.",
+    );
+  });
+
   it("rejects invalid environment names before project side effects", async () => {
     writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
     const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
@@ -575,6 +540,145 @@ describe("resolveWranglerBin", () => {
   });
 });
 
+describe("cf Build Output deployment", () => {
+  it("uses the emitted Worker and assets directories for typed cf prerendering", () => {
+    const configured = { clientOutDir: "dist/client", rscOutDir: "dist/server" };
+    expect(resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toEqual(configured);
+    expect(resolvePrerenderOutputDirs(tmpDir, "wrangler", configured)).toEqual(configured);
+
+    writeFile(tmpDir, ".cloudflare/output/v0/workers/default/worker.config.json", "{}");
+    const workerDir = path.join(tmpDir, ".cloudflare", "output", "v0", "workers", "default");
+    expect(resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toEqual({
+      clientOutDir: path.join(workerDir, "assets"),
+      rscOutDir: path.join(workerDir, "bundle"),
+    });
+    expect(resolvePrerenderOutputDirs(tmpDir, "wrangler", configured)).toEqual(configured);
+  });
+
+  it("builds the selected Cloudflare mode before prebuilt deployment", () => {
+    expect(resolveViteBuildMode("cf", undefined)).toBe("production");
+    expect(resolveViteBuildMode("cf", "staging")).toBe("staging");
+    expect(resolveViteBuildMode("wrangler", "staging")).toBe("production");
+  });
+
+  it("selects cf for typed Cloudflare configs and Wrangler for legacy configs", () => {
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "wrangler.jsonc", "{}");
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
+    expect(resolveDeploymentTool(tmpDir)).toBe("cf");
+  });
+
+  it("resolves cf's JavaScript entrypoint from its bin map", () => {
+    writeCfPackageForTest(tmpDir);
+    expect(resolveCfBin(tmpDir)).toBe(
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+    );
+  });
+
+  it("detects whether the cf CLI is installed", () => {
+    expect(isCfCliInstalled(tmpDir, () => "/app/node_modules/cf/package.json")).toBe(true);
+    expect(isCfCliInstalled(tmpDir, () => null)).toBe(false);
+  });
+
+  it("uses the typed Build Output Worker name without a Wrangler fallback", () => {
+    expect(
+      resolveDeploymentControlPlaneOptions(
+        { deploymentTool: "cf", env: "staging" },
+        { workerName: "typed-staging-worker" },
+      ),
+    ).toEqual({ deploymentTool: "cf", env: "staging", name: "typed-staging-worker" });
+    expect(
+      resolveDeploymentControlPlaneOptions(
+        { deploymentTool: "wrangler", name: "legacy-worker" },
+        { workerName: "other-worker" },
+      ),
+    ).toEqual({ deploymentTool: "wrangler", name: "legacy-worker" });
+  });
+
+  it("builds prebuilt deploy args with an optional Cloudflare mode", () => {
+    expect(buildCfDeployArgs({})).toEqual({ args: ["deploy", "--prebuilt"], mode: undefined });
+    expect(buildCfDeployArgs({ env: "staging" })).toEqual({
+      args: ["deploy", "--prebuilt", "--mode", "staging"],
+      mode: "staging",
+    });
+  });
+
+  it("runs cf with shell disabled and returns its workers.dev URL", async () => {
+    writeCfPackageForTest(tmpDir);
+    let observed: Parameters<typeof spawn> | undefined;
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      return createMockChildProcess(
+        "Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22\nhttps://app.example.workers.dev\n",
+      );
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, {}, execute)).resolves.toBe("https://app.example.workers.dev");
+    expect(observed?.[0]).toBe(process.execPath);
+    expect(observed?.[1]).toEqual([
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+      "deploy",
+      "--prebuilt",
+    ]);
+    expect(observed?.[2]).toMatchObject({ shell: false });
+  });
+
+  it("deploys only the default Worker even when named Build Output Workers exist", async () => {
+    writeCfPackageForTest(tmpDir);
+    const auxiliaryDir = path.join(
+      tmpDir,
+      ".cloudflare",
+      "output",
+      "v0",
+      "workers",
+      "z-response-store-service-binding",
+    );
+    fs.mkdirSync(auxiliaryDir, { recursive: true });
+    writeFile(auxiliaryDir, "worker.config.json", JSON.stringify({ name: "response-store" }));
+    mkdir(tmpDir, ".cloudflare/output/v0/workers/a-service");
+    const invocations: Parameters<typeof spawn>[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      invocations.push(args);
+      return createMockChildProcess(
+        args[1].includes("--worker") ? "" : "https://app.example.workers.dev\n",
+      );
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, { env: "staging" }, execute)).resolves.toBe(
+      "https://app.example.workers.dev",
+    );
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]?.[0]).toBe(process.execPath);
+    const cfBin = fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf"));
+    expect(invocations.map(([, args]) => args)).toEqual([
+      [cfBin, "deploy", "--prebuilt", "--mode", "staging"],
+    ]);
+    for (const [, , options] of invocations) {
+      expect(options).toMatchObject({ cwd: tmpDir, shell: false });
+    }
+    expect(invocations.map(([, , options]) => options?.stdio)).toEqual([
+      ["inherit", "pipe", "pipe"],
+    ]);
+  });
+
+  it("reports a failed default Worker deployment without deploying named Workers", async () => {
+    writeCfPackageForTest(tmpDir);
+    mkdir(tmpDir, ".cloudflare/output/v0/workers/response-store");
+    const invocations: Parameters<typeof spawn>[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      invocations.push(args);
+      return createMockChildProcess("", 1);
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, {}, execute)).rejects.toThrow(
+      "cf deploy failed with exit code 1",
+    );
+    expect(invocations).toHaveLength(1);
+  });
+});
+
 describe("parseWorkerDeploymentUrl", () => {
   it.each([
     "app.example.com (custom domain - zone id: 023e105f4ecef8ad9ca31a8372d0c353)",
@@ -619,103 +723,6 @@ describe("parseWorkerDeploymentUrl", () => {
         "Deployed app triggers\n  app.example.com (custom domain) [disabled]\n",
       ),
     ).toBeNull();
-  });
-});
-
-describe("runWranglerKVBulkPut", () => {
-  it("writes prerender pairs to a temporary file and invokes Wrangler without a shell", async () => {
-    writeWranglerPackageForTest(tmpDir);
-    let observed: Parameters<typeof spawn> | undefined;
-    let bulkFilePath = "";
-    let bulkFileContent: unknown;
-    const execute = ((...args: Parameters<typeof spawn>) => {
-      observed = args;
-      const wranglerArgs = args[1] as string[];
-      bulkFilePath = wranglerArgs[4] ?? "";
-      bulkFileContent = JSON.parse(fs.readFileSync(bulkFilePath, "utf-8"));
-      return createMockChildProcess();
-    }) as typeof spawn;
-
-    await runWranglerKVBulkPut(
-      tmpDir,
-      {
-        binding: "VINEXT_KV_CACHE",
-        env: "staging",
-        pairs: [
-          {
-            key: "cache:app:v2:build:/about:html",
-            value: '{"value":{"kind":"APP_PAGE"}}',
-            expiration_ttl: 86400,
-            metadata: { tags: ["/about"] },
-          },
-        ],
-        tempDir: tmpDir,
-      },
-      execute,
-      "node.exe",
-    );
-
-    expect(observed?.[0]).toBe("node.exe");
-    expect(observed?.[1]).toEqual([
-      expectedWranglerBinForTest(tmpDir),
-      "kv",
-      "bulk",
-      "put",
-      bulkFilePath,
-      "--binding",
-      "VINEXT_KV_CACHE",
-      "--remote",
-      "--env",
-      "staging",
-    ]);
-    expect(observed?.[2]).toMatchObject({ cwd: tmpDir, shell: false, stdio: "inherit" });
-    expect(bulkFileContent).toEqual([
-      {
-        key: "cache:app:v2:build:/about:html",
-        value: '{"value":{"kind":"APP_PAGE"}}',
-        expiration_ttl: 86400,
-        metadata: { tags: ["/about"] },
-      },
-    ]);
-    expect(fs.existsSync(path.dirname(bulkFilePath))).toBe(false);
-  });
-
-  it("uploads prerender pairs in OpenNext-style chunks", async () => {
-    writeWranglerPackageForTest(tmpDir);
-    const bulkFileContents: unknown[] = [];
-    const execute = ((...args: Parameters<typeof spawn>) => {
-      const wranglerArgs = args[1] as string[];
-      bulkFileContents.push(JSON.parse(fs.readFileSync(wranglerArgs[4] ?? "", "utf-8")));
-      return createMockChildProcess();
-    }) as typeof spawn;
-
-    await runWranglerKVBulkPut(
-      tmpDir,
-      {
-        binding: "VINEXT_KV_CACHE",
-        pairs: Array.from({ length: 26 }, (_, i) => ({
-          key: `cache:app:v2:build:/route-${i}:html`,
-          value: String(i),
-        })),
-        tempDir: tmpDir,
-      },
-      execute,
-      "node.exe",
-    );
-
-    expect(bulkFileContents).toHaveLength(2);
-    expect(bulkFileContents).toEqual([
-      Array.from({ length: 25 }, (_, i) => ({
-        key: `cache:app:v2:build:/route-${i}:html`,
-        value: String(i),
-      })),
-      [
-        {
-          key: "cache:app:v2:build:/route-25:html",
-          value: "25",
-        },
-      ],
-    ]);
   });
 });
 
@@ -776,16 +783,54 @@ describe("parseDeployArgs", () => {
   });
 
   it("requires CDN warming when certification is requested", () => {
-    expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
-      "--warm-cdn-certify requires --experimental-warm-cdn-cache.",
+    expect(() => parseDeployArgs(["--warm-cache-certify"])).toThrow(
+      "--warm-cache-certify requires --warm-cache or --traffic-aware-warm-cache.",
     );
   });
 
   it("requires CDN warming when an explicit warm target is requested", () => {
-    expect(() => parseDeployArgs(["--warm-cdn-target", "https://app.example.com"])).toThrow(
-      "--warm-cdn-target requires --experimental-warm-cdn-cache.",
+    expect(() => parseDeployArgs(["--warm-cache-target", "https://app.example.com"])).toThrow(
+      "--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.",
     );
   });
+
+  it.each([
+    "--traffic-aware-warm-cache",
+    "--experimental-traffic-aware-warm-cache",
+    "--experimental-tpr",
+  ])("accepts a manual target with %s without enabling full cache warming", (flag) => {
+    const parsed = parseDeployArgs([flag, "--warm-cache-target=https://app.example.com/"]);
+    expect(parsed.warmCdnTarget).toBe("https://app.example.com");
+    expect(parsed.experimentalTPR).toBe(true);
+    expect(parsed.warmCdnCache).toBe(false);
+  });
+
+  it("accepts the legacy target flag with traffic-aware warming", () => {
+    const parsed = parseDeployArgs([
+      "--traffic-aware-warm-cache",
+      "--warm-cdn-target=https://app.example.com",
+    ]);
+    expect(parsed.warmCdnTarget).toBe("https://app.example.com");
+    expect(parsed.warmCdnCache).toBe(false);
+  });
+
+  it.each([
+    ["--traffic-aware-warm-cache", "--warm-cache-target", "--warm-cache-certify"],
+    ["--experimental-traffic-aware-warm-cache", "--warm-cdn-target", "--warm-cdn-certify"],
+    ["--experimental-tpr", "--warm-cdn-target", "--warm-cdn-certify"],
+  ])(
+    "allows an explicit target and certification with %s",
+    (trafficFlag, targetFlag, certifyFlag) => {
+      expect(
+        parseDeployArgs([trafficFlag, targetFlag, "https://vinext.dev", certifyFlag]),
+      ).toMatchObject({
+        experimentalTPR: true,
+        warmCdnCache: false,
+        warmCdnTarget: "https://vinext.dev",
+        warmCdnCertify: true,
+      });
+    },
+  );
 
   it("parses --env with space-separated value", () => {
     expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
@@ -821,8 +866,15 @@ describe("parseDeployArgs", () => {
     const help = formatDeployHelp();
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
-    expect(help).toContain("--experimental-traffic-aware-warm-cache");
-    expect(help).toContain("Legacy --experimental-tpr and --tpr-* aliases remain supported");
+    expect(help).toContain("--traffic-aware-warm-cache");
+    expect(help).toContain("--warm-cache");
+    expect(help).toContain("--warm-cache-target");
+    expect(help).toContain("--dangerously-promote-on-warm-cache-error");
+    expect(help).not.toContain("--dangerously-promote-on-cdn-warm-error");
+    expect(help).not.toContain("--experimental-");
+    expect(help).not.toContain("--warm-cdn-");
+    expect(help).not.toContain("--tpr-");
+    expect(help).not.toContain("Experimental:");
   });
 
   it("parses traffic-aware warming flags", () => {
@@ -833,7 +885,7 @@ describe("parseDeployArgs", () => {
       "20",
       "--tpr-window",
       "30",
-      "--experimental-traffic-aware-warm-cache",
+      "--traffic-aware-warm-cache",
       "--traffic-aware-coverage",
       "95",
       "--traffic-aware-limit",
@@ -863,6 +915,35 @@ describe("parseDeployArgs", () => {
     expect(parsed.tprWindow).toBe(48);
   });
 
+  it("keeps the experimental traffic-aware flag as a hidden alias", () => {
+    expect(parseDeployArgs(["--experimental-traffic-aware-warm-cache"])).toEqual(
+      parseDeployArgs(["--traffic-aware-warm-cache"]),
+    );
+  });
+
+  it.each([false, true])(
+    "prefers current warm-cache options over aliases (reversed: %s)",
+    (reverse) => {
+      const args = ["--warm-cache-timeout=2000", "--warm-cdn-timeout=1000"];
+      expect(parseDeployArgs(reverse ? args.reverse() : args).warmCdnTimeout).toBe(2000);
+    },
+  );
+
+  it("accepts mixed spellings and validates legacy options", () => {
+    expect(
+      parseDeployArgs(["--experimental-warm-cdn-cache", "--warm-cache-certify"]).warmCdnCertify,
+    ).toBe(true);
+    expect(
+      parseDeployArgs(["--warm-cache", "--warm-cdn-target=https://example.com"]).warmCdnTarget,
+    ).toBe("https://example.com");
+    expect(() => parseDeployArgs(["--warm-cdn-timeout=0"])).toThrow(
+      "--warm-cache-timeout expects a positive integer",
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
+      "--warm-cache-certify requires --warm-cache",
+    );
+  });
+
   it("parses --prerender-concurrency with space-separated value", () => {
     expect(parseDeployArgs(["--prerender-concurrency", "4"]).prerenderConcurrency).toBe(4);
   });
@@ -887,30 +968,44 @@ describe("parseDeployArgs", () => {
     );
   });
 
-  it("parses CDN warmup flags", () => {
-    const parsed = parseDeployArgs([
-      "--experimental-warm-cdn-cache",
-      "--warm-cdn-target=https://app.example.com/",
-      "--warm-cdn-concurrency",
+  it.each(["current", "legacy"])("parses %s cache warming flags", (spelling) => {
+    const args = [
+      "--warm-cache",
+      "--warm-cache-target=https://app.example.com/",
+      "--warm-cache-concurrency",
       "6",
-      "--warm-cdn-timeout=1500",
-      "--warm-cdn-retries",
+      "--warm-cache-timeout=1500",
+      "--warm-cache-retries",
       "0",
-      "--warm-cdn-discovery-timeout=90000",
-      "--warm-cdn-discovery-retries=7",
-      "--warm-cdn-probe-timeout=60000",
-      "--warm-cdn-probe-retries=4",
-      "--warm-cdn-certify",
-      "--warm-cdn-readiness-timeout=45000",
-      "--warm-cdn-readiness-retries=9",
-      "--warm-cdn-readiness-probes=8",
-      "--warm-cdn-readiness-probe-delay",
+      "--warm-cache-discovery-timeout=90000",
+      "--warm-cache-discovery-retries=7",
+      "--warm-cache-probe-timeout=60000",
+      "--warm-cache-probe-retries=4",
+      "--warm-cache-certify",
+      "--warm-cache-readiness-timeout=45000",
+      "--warm-cache-readiness-retries=9",
+      "--warm-cache-readiness-probes=8",
+      "--warm-cache-readiness-probe-delay",
       "750",
-      "--dangerously-promote-on-cdn-warm-error",
-      "--warm-cdn-no-promote",
-      "--warm-cdn-promotion-delay=2500",
-      "--warm-cdn-include-fallbacks",
-    ]);
+      "--dangerously-promote-on-warm-cache-error",
+      "--warm-cache-no-promote",
+      "--warm-cache-promotion-delay=2500",
+      "--warm-cache-include-fallbacks",
+    ];
+    const parsed = parseDeployArgs(
+      spelling === "legacy"
+        ? args.map((arg) =>
+            arg === "--warm-cache"
+              ? "--experimental-warm-cdn-cache"
+              : arg
+                  .replace(/^--warm-cache-/, "--warm-cdn-")
+                  .replace(
+                    "--dangerously-promote-on-warm-cache-error",
+                    "--dangerously-promote-on-cdn-warm-error",
+                  ),
+          )
+        : args,
+    );
 
     expect(parsed.warmCdnCache).toBe(true);
     expect(parsed.warmCdnTarget).toBe("https://app.example.com");
@@ -940,9 +1035,9 @@ describe("parseDeployArgs", () => {
     "https://app.example.com:8443",
     "not-a-url",
   ])("rejects invalid CDN warm target %s", (target) => {
-    expect(() =>
-      parseDeployArgs(["--experimental-warm-cdn-cache", "--warm-cdn-target", target]),
-    ).toThrow("--warm-cdn-target expects an HTTPS origin");
+    expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-target", target])).toThrow(
+      "--warm-cache-target expects an HTTPS origin",
+    );
   });
 
   it("promotes warmed Worker versions by default", () => {
@@ -951,62 +1046,62 @@ describe("parseDeployArgs", () => {
 
   it("parses the general no-promote flag and keeps the warmup-specific alias", () => {
     expect(parseDeployArgs(["--no-promote"]).warmCdnPromote).toBe(false);
-    expect(parseDeployArgs(["--warm-cdn-no-promote"]).warmCdnPromote).toBe(false);
+    expect(parseDeployArgs(["--warm-cache-no-promote"]).warmCdnPromote).toBe(false);
     expect(formatDeployHelp()).toContain("--no-promote");
   });
 
   it("allows the CDN warmup promotion delay to be set to zero", () => {
-    expect(parseDeployArgs(["--warm-cdn-promotion-delay=0"]).warmCdnPromotionDelay).toBe(0);
+    expect(parseDeployArgs(["--warm-cache-promotion-delay=0"]).warmCdnPromotionDelay).toBe(0);
   });
 
   it("allows the staged-readiness probe delay to be set to zero", () => {
-    expect(parseDeployArgs(["--warm-cdn-readiness-probe-delay=0"]).warmCdnReadinessProbeDelay).toBe(
-      0,
-    );
+    expect(
+      parseDeployArgs(["--warm-cache-readiness-probe-delay=0"]).warmCdnReadinessProbeDelay,
+    ).toBe(0);
   });
 
   it("throws for invalid CDN warmup numeric flags", () => {
-    expect(() => parseDeployArgs(["--warm-cdn-concurrency=0"])).toThrow(
-      '--warm-cdn-concurrency expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-concurrency=0"])).toThrow(
+      '--warm-cache-concurrency expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
-      '--warm-cdn-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-retries=-1"])).toThrow(
+      '--warm-cache-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-discovery-timeout=0"])).toThrow(
-      '--warm-cdn-discovery-timeout expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-discovery-timeout=0"])).toThrow(
+      '--warm-cache-discovery-timeout expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-discovery-retries=-1"])).toThrow(
-      '--warm-cdn-discovery-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-discovery-retries=-1"])).toThrow(
+      '--warm-cache-discovery-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-probe-timeout=0"])).toThrow(
-      '--warm-cdn-probe-timeout expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-probe-timeout=0"])).toThrow(
+      '--warm-cache-probe-timeout expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-probe-retries=-1"])).toThrow(
-      '--warm-cdn-probe-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-probe-retries=-1"])).toThrow(
+      '--warm-cache-probe-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-timeout=0"])).toThrow(
-      '--warm-cdn-readiness-timeout expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-timeout=0"])).toThrow(
+      '--warm-cache-readiness-timeout expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-retries=-1"])).toThrow(
-      '--warm-cdn-readiness-retries expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-retries=-1"])).toThrow(
+      '--warm-cache-readiness-retries expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=0"])).toThrow(
-      '--warm-cdn-readiness-probes expects a positive integer, but got "0".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probes=0"])).toThrow(
+      '--warm-cache-readiness-probes expects a positive integer, but got "0".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=1.5"])).toThrow(
-      '--warm-cdn-readiness-probes expects a positive integer, but got "1.5".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probes=1.5"])).toThrow(
+      '--warm-cache-readiness-probes expects a positive integer, but got "1.5".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=-1"])).toThrow(
-      '--warm-cdn-readiness-probe-delay expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probe-delay=-1"])).toThrow(
+      '--warm-cache-readiness-probe-delay expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=2147483648"])).toThrow(
-      '--warm-cdn-readiness-probe-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    expect(() => parseDeployArgs(["--warm-cache-readiness-probe-delay=2147483648"])).toThrow(
+      '--warm-cache-readiness-probe-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=-1"])).toThrow(
-      '--warm-cdn-promotion-delay expects a non-negative integer, but got "-1".',
+    expect(() => parseDeployArgs(["--warm-cache-promotion-delay=-1"])).toThrow(
+      '--warm-cache-promotion-delay expects a non-negative integer, but got "-1".',
     );
-    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=2147483648"])).toThrow(
-      '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    expect(() => parseDeployArgs(["--warm-cache-promotion-delay=2147483648"])).toThrow(
+      '--warm-cache-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
   });
 
@@ -1329,7 +1424,7 @@ describe("viteConfigHasCacheAdapter", () => {
     writeFile(
       tmpDir,
       "vite.config.ts",
-      `export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };`,
+      `export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })] };`,
     );
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
   });
@@ -1375,45 +1470,6 @@ describe("viteConfigHasCacheAdapter", () => {
 
   it("returns true (does not block) when there is no Vite config to inspect", () => {
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
-  });
-});
-
-describe("resolveKvDataAdapterConfig", () => {
-  it("requires a Vite cache data descriptor even when a legacy worker handler exists", () => {
-    writeFile(
-      tmpDir,
-      "worker/index.ts",
-      `import { setDataCacheHandler } from "vinext/shims/cache";
-       setDataCacheHandler(handler);`,
-    );
-
-    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
-    expect(resolveKvDataAdapterConfig(undefined)).toBeNull();
-    expect(resolveKvDataAdapterConfig({})).toBeNull();
-  });
-
-  it("returns null for non-KV data adapters", () => {
-    expect(resolveKvDataAdapterConfig({ data: { adapter: "custom-adapter" } })).toBeNull();
-    expect(resolveKvDataAdapterConfig({ cdn: { adapter: "cdn-adapter" } })).toBeNull();
-  });
-
-  it("detects Cloudflare KV runtime descriptors and preserves options", () => {
-    expect(
-      resolveKvDataAdapterConfig({
-        data: {
-          adapter: "/project/node_modules/@vinext/cloudflare/dist/cache/kv-data-adapter.runtime.js",
-          options: { binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 },
-        },
-      }),
-    ).toEqual({ binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 });
-  });
-
-  it("uses the default KV binding when the adapter has no binding option", () => {
-    expect(
-      resolveKvDataAdapterConfig({
-        data: { adapter: "/x/cache/kv-data-adapter.runtime.js" },
-      }),
-    ).toEqual({ binding: "VINEXT_KV_CACHE" });
   });
 });
 
@@ -1500,9 +1556,15 @@ describe("formatMissingCacheAdapterError", () => {
     expect(msg).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
   });
 
+  it("points typed-config projects to their Cloudflare config instead of Wrangler", () => {
+    const message = formatMissingCacheAdapterError({ typedConfig: true });
+    expect(message).toContain("cloudflare.config.ts");
+    expect(message).not.toContain("wrangler");
+  });
+
   it("no longer references the cdn adapter", () => {
     const msg = formatMissingCacheAdapterError({});
-    expect(msg).not.toContain("cdnAdapter");
+    expect(msg).not.toContain("workersCacheCdnAdapter");
     expect(msg).not.toContain("cdn-adapter");
   });
 });
@@ -1513,6 +1575,12 @@ describe("formatImageOptimizationHint", () => {
     expect(message).toContain("--image-optimization=cloudflare-images");
     expect(message).toContain("imagesOptimizer()");
     expect(message).toContain("IMAGES binding");
+  });
+
+  it("points typed-config projects to cloudflare.config.ts instead of Wrangler", () => {
+    const message = formatImageOptimizationHint(true);
+    expect(message).toContain("cloudflare.config.ts");
+    expect(message).not.toContain("Wrangler");
   });
 });
 
@@ -1595,7 +1663,7 @@ describe("readPagesRouterEntrySource", () => {
     // handing the request to the middleware function, then delegates via
     // runPagesRequest.
     expect(content).toContain('typeof runMiddleware === "function"');
-    expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
+    expect(content).toContain("wrapMiddlewareWithBasePath(");
     expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
     expect(content).toContain("isDataRequest: isDataReq");
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -1795,7 +1863,7 @@ describe("readPagesRouterEntrySource", () => {
     // The worker returns result.response directly from the pipeline result.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("finalizeMissingStaticAssetResponse(result.response");
+    expect(content).toContain("let response = result.response;");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
@@ -1947,9 +2015,7 @@ describe("readPagesRouterEntrySource", () => {
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain(
-      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
-    );
+    expect(content).toContain("let response = result.response;");
   });
 
   it("finalizes only missing build-asset 404 responses", async () => {
@@ -1988,15 +2054,6 @@ describe("readPagesRouterEntrySource", () => {
 
     const regular404 = new Response("rendered 404", { status: 404 });
     expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
-  });
-
-  it("finalizes missing build-asset 404s in both Node production routers", () => {
-    const content = fs.readFileSync(
-      path.join(import.meta.dirname, "../packages/vinext/src/server/prod-server.ts"),
-      "utf8",
-    );
-
-    expect(content.match(/finalizeMissingStaticAssetResponse\(/g)).toHaveLength(2);
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
@@ -2171,32 +2228,62 @@ describe("readPagesRouterEntrySource", () => {
 
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
-  it("runs middleware before finalizing missing `_next/static/*` responses", () => {
+  it("delegates missing static-asset classification to the shared router", () => {
     const content = readPagesRouterEntrySource();
-    expect(content).toContain('from "./http-error-responses.js"');
-    expect(content).toContain('from "../utils/asset-prefix.js"');
-    expect(content).toContain("assetPrefixPathname(vinextConfig?.assetPrefix");
-    expect(content).toContain(
-      "const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix)",
-    );
-    expect(content).toContain(
-      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
-    );
-
-    // Detection happens before routing, but the response is finalized only
-    // after runPagesRequest has given middleware a chance to handle the miss.
-    const staticPos = content.indexOf("isNextStaticPath(pathname, basePath, assetPathPrefix)");
-    const pipelinePos = content.indexOf("runPagesRequest(request, deps)");
-    const finalizePos = content.indexOf(
-      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
-    );
-    expect(staticPos).toBeGreaterThan(-1);
-    expect(pipelinePos).toBeGreaterThan(staticPos);
-    expect(finalizePos).toBeGreaterThan(pipelinePos);
+    expect(content).toContain("assetPrefix: vinextConfig?.assetPrefix");
+    expect(content).toContain("runPagesRequest(request, deps)");
+    expect(content).toContain("let response = result.response;");
+    expect(content).not.toContain("finalizeMissingStaticAssetResponse");
   });
 });
 
 describe("fetchWorkerFilesystemRoute", () => {
+  // Like Next.js router-utils/filesystem.ts, rewrites resolve only public files
+  // and the build asset tree, not arbitrary files in the deployment binding.
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "rejects private destinations and encoded traversal during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("private"));
+      for (const pathname of [
+        "/_vinext/static-cache/index.json",
+        "/%5fvinext/static-cache/index.json",
+        "/_next/static/../../_vinext/static-cache/index.json",
+        "/_next/static/%2e%2e/%2e%2e/_vinext/static-cache/index.json",
+        "/_next/static/..%2f..%2f_vinext/static-cache/index.json",
+        "/_next/static/..%5c..%5c_vinext/static-cache/index.json",
+      ]) {
+        expect(
+          await fetchWorkerFilesystemRoute(
+            new Request("https://example.com/_next/static/original.js"),
+            pathname,
+            phase,
+            fetchAsset,
+            new Set(["/visible.txt"]),
+          ),
+        ).toBe(false);
+      }
+      expect(fetchAsset).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "allows rewritten build assets with basePath and assetPrefix during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("built asset"));
+      expect(
+        await fetchWorkerFilesystemRoute(
+          new Request("https://example.com/source"),
+          "/docs/cdn/_next/static/app.js",
+          phase,
+          fetchAsset,
+          new Set(),
+          "/docs",
+          "/cdn",
+        ),
+      ).toBeInstanceOf(Response);
+    },
+  );
+
   it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
     "fetches rewritten assets during %s",
     async (phase) => {
@@ -2211,6 +2298,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         "/file.txt",
         phase,
         fetchAsset,
+        new Set(["/file.txt"]),
       );
 
       expect(result).toBeInstanceOf(Response);
@@ -2231,6 +2319,7 @@ describe("fetchWorkerFilesystemRoute", () => {
       "/missing.txt",
       "afterFiles",
       fetchAsset,
+      new Set(["/missing.txt"]),
     );
 
     expect(result).toBe(false);
@@ -2328,7 +2417,6 @@ describe("fetchWorkerFilesystemRoute", () => {
       "direct",
       fetchAsset,
       new Set(),
-      true,
     );
 
     expect(result).toBeInstanceOf(Response);
@@ -2344,6 +2432,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         "/file.txt",
         "direct",
         fetchAsset,
+        new Set(["/file.txt"]),
       ),
     ).toBe(false);
     expect(
@@ -2352,6 +2441,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         "/api/hello",
         "fallback",
         fetchAsset,
+        new Set(["/file.txt"]),
       ),
     ).toBe(false);
     expect(fetchAsset).not.toHaveBeenCalled();
@@ -2422,6 +2512,19 @@ describe("getMissingDeps", () => {
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(expect.objectContaining({ name: "wrangler" }));
+  });
+
+  it("does not require wrangler for a typed Cloudflare config", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = false;
+    info.hasRscPlugin = true;
+
+    expect(getMissingDeps(info, () => true)).not.toContainEqual(
+      expect.objectContaining({ name: "wrangler" }),
+    );
   });
 
   it("reports missing @vitejs/plugin-rsc for App Router", () => {
@@ -3308,7 +3411,7 @@ describe("client asset sidecar generation", () => {
     });
 
     expect(source).toBe(
-      'export default {"clientEntry":"assets/entry.js","appBootstrapPreinitModules":["/assets/framework.js"],"ssrManifest":{"pages/index.tsx":["assets/page.js"]},"lazyChunks":["assets/lazy.js"],"dynamicPreloads":{"src/widget.tsx":["assets/widget.js"]}};\n',
+      'export default {"clientEntry":"assets/entry.js","appBootstrapPreinitModules":["/assets/framework.js"],"ssrManifest":{"pages/index.tsx":["assets/page.js"]},"lazyChunks":["assets/lazy.js"],"dynamicPreloads":{"src/widget.tsx":["assets/widget.js"]},"sharedChunks":[]};\n',
     );
   });
 
@@ -3501,120 +3604,6 @@ describe("findInNodeModules", () => {
 
     const result = findInNodeModules(appDir, "@cloudflare/vite-plugin");
     expect(result).toBe(toSlash(path.join(appDir, "node_modules", "@cloudflare", "vite-plugin")));
-  });
-});
-
-// ─── ESM config compatibility (issue #184) ──────────────────────────────────
-//
-// Tests for ensureViteConfigCompatibility() — the wrapper in utils/project.ts
-// that renames CJS configs + adds type:module before Vite loads the config.
-//
-// The underlying ensureESModule() and renameCJSConfigs() are tested above.
-// These tests cover the wrapper's own guards and the integration of both
-// functions together.
-
-describe("ensureViteConfigCompatibility — issue #184", () => {
-  it("renames CJS configs and adds type:module when vite.config.ts exists", () => {
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
-    writeFile(
-      tmpDir,
-      "vite.config.ts",
-      'import { cloudflare } from "@cloudflare/vite-plugin";\nexport default { plugins: [cloudflare()] };',
-    );
-    writeFile(
-      tmpDir,
-      "postcss.config.js",
-      "module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };",
-    );
-
-    const result = ensureViteConfigCompatibility(tmpDir);
-
-    expect(result).not.toBeNull();
-    expect(result!.addedTypeModule).toBe(true);
-    expect(result!.renamed).toEqual([["postcss.config.js", "postcss.config.cjs"]]);
-
-    const pkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
-    expect(pkg.type).toBe("module");
-    expect(fs.existsSync(path.join(tmpDir, "postcss.config.cjs"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, "postcss.config.js"))).toBe(false);
-  });
-
-  it("returns null when no vite.config exists", () => {
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
-
-    const result = ensureViteConfigCompatibility(tmpDir);
-    expect(result).toBeNull();
-
-    // package.json should not be modified
-    const pkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
-    expect(pkg.type).toBeUndefined();
-  });
-
-  it("returns null when package.json already has type:module", () => {
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", type: "module" }));
-    writeFile(tmpDir, "vite.config.ts", "export default {};");
-
-    const result = ensureViteConfigCompatibility(tmpDir);
-    expect(result).toBeNull();
-  });
-
-  it("does not override explicit 'type': 'commonjs'", () => {
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", type: "commonjs" }));
-    writeFile(tmpDir, "vite.config.ts", "export default {};");
-    writeFile(tmpDir, "postcss.config.js", "module.exports = {};");
-
-    const result = ensureViteConfigCompatibility(tmpDir);
-    expect(result).toBeNull();
-
-    // package.json should not be modified
-    const pkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
-    expect(pkg.type).toBe("commonjs");
-
-    // CJS configs should not be renamed either
-    expect(fs.existsSync(path.join(tmpDir, "postcss.config.js"))).toBe(true);
-  });
-
-  it("returns null when no package.json exists", () => {
-    writeFile(tmpDir, "vite.config.ts", "export default {};");
-
-    const result = ensureViteConfigCompatibility(tmpDir);
-    expect(result).toBeNull();
-  });
-
-  it("detects vite.config.js (not only .ts)", () => {
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
-    writeFile(tmpDir, "vite.config.js", "export default {};");
-
-    const result = ensureViteConfigCompatibility(tmpDir);
-
-    expect(result).not.toBeNull();
-    expect(result!.addedTypeModule).toBe(true);
-
-    const pkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
-    expect(pkg.type).toBe("module");
-  });
-
-  it("handles a workspaces monorepo: only updates the leaf package.json", () => {
-    const webDir = path.join(tmpDir, "apps", "web");
-    fs.mkdirSync(webDir, { recursive: true });
-
-    // Root package.json (CJS)
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "monorepo", workspaces: ["apps/*"] }));
-    // Workspace package.json (no type:module)
-    writeFile(webDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
-    writeFile(webDir, "vite.config.ts", "export default {};");
-
-    const result = ensureViteConfigCompatibility(webDir);
-
-    expect(result).not.toBeNull();
-    expect(result!.addedTypeModule).toBe(true);
-
-    const rootPkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
-    const webPkg = JSON.parse(fs.readFileSync(path.join(webDir, "package.json"), "utf-8"));
-
-    // Only the workspace package should be modified
-    expect(webPkg.type).toBe("module");
-    expect(rootPkg.type).toBeUndefined();
   });
 });
 

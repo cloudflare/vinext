@@ -14,6 +14,31 @@ const HASHED_KEY_PREFIX = "__hash:";
 
 const KV_KEY_ENCODER = new TextEncoder();
 
+/** KV rejects an expiration TTL below 60 seconds. */
+const MIN_KV_EXPIRATION_TTL_SECONDS = 60;
+
+/** The Workers KV binding types `expirationTtl` as a signed 32-bit integer. */
+const MAX_KV_EXPIRATION_TTL_SECONDS = 2_147_483_647;
+
+/** Default KV TTL for cache entries. */
+const DEFAULT_KV_EXPIRATION_TTL_SECONDS = 30 * 24 * 3600;
+
+/**
+ * The KV TTL for a configured `ttlSeconds`. A missing, non-finite or
+ * nonpositive value falls back to 30 days. Any other value is truncated to
+ * whole seconds, as the binding does, and kept within the range KV accepts.
+ */
+export function resolveKvExpirationTtlSeconds(ttlSeconds: number | undefined): number {
+  const configured =
+    typeof ttlSeconds === "number" && Number.isFinite(ttlSeconds) && ttlSeconds > 0
+      ? ttlSeconds
+      : DEFAULT_KV_EXPIRATION_TTL_SECONDS;
+  return Math.min(
+    MAX_KV_EXPIRATION_TTL_SECONDS,
+    Math.max(MIN_KV_EXPIRATION_TTL_SECONDS, Math.trunc(configured)),
+  );
+}
+
 export type KvKeySpace = {
   /** Prefix shared by every cache entry, including entries with hashed logical keys. */
   entryPrefix: string;
@@ -43,15 +68,15 @@ function normalizeAppPrefix(appPrefix: string | undefined): string {
 
 function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: string): string {
   const key = `${prefix}${categoryPrefix}${logicalKey}`;
-  if (kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) return key;
+  // Colon tags can spell app/category prefixes or the internal hash marker.
+  // Hash them so their contents cannot cross those namespace boundaries.
+  const colonTag = categoryPrefix === TAG_PREFIX && logicalKey.includes(":");
+  if (!colonTag && kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) return key;
 
   return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${fnv1a64(logicalKey)}`;
 }
 
-/**
- * Create the deterministic key namespace shared by runtime cache operations
- * and deploy-time prerender population.
- */
+/** Create the deterministic key namespace for runtime cache operations. */
 export function createKvKeySpace(appPrefix: string | undefined): KvKeySpace {
   const prefix = normalizeAppPrefix(appPrefix);
   return {

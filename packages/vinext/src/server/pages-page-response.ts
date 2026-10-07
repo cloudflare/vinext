@@ -2,9 +2,11 @@ import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   applyCdnResponseHeaders,
+  hasCdnResponsePolicy,
   BROWSER_REVALIDATE_CACHE_CONTROL,
   shouldUseNextDeployCacheControl,
 } from "./cache-control.js";
@@ -708,6 +710,7 @@ export async function renderPagesPageResponse(
   // the ISR cache write; applyGsspHeaders is the only Cache-Control writer before
   // this point, so the captured value matches main's original capture site.
   const userSetCacheControl = responseHeaders.has("Cache-Control");
+  if (hasCdnResponsePolicy(responseHeaders)) markRouteCacheabilityExplicitResponsePolicy();
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);

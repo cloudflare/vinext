@@ -24,6 +24,7 @@ import {
   getBfcacheSegmentIdContext,
   notFound,
 } from "./navigation-server.js";
+import type { ClientNavigationRenderSnapshot } from "./navigation.js";
 
 const EMPTY_ELEMENTS: AppElements = Object.freeze({});
 const warnedMissingEntryIds = new Set<string>();
@@ -43,6 +44,55 @@ export const ChildrenContext = React.createContext<React.ReactNode>(null);
 export const ParallelSlotsContext = React.createContext<Readonly<
   Record<string, React.ReactNode>
 > | null>(null);
+
+/**
+ * The query the server rendered a Slot's element with. Client pages read it
+ * (see `client-page-root.tsx`), so a page that first renders under a later
+ * navigation (a kept branch a refresh fetched from its own URL, or one still
+ * streaming when an intercepted navigation keeps it) reads its own response's
+ * query.
+ */
+export const RenderedSearchContext = React.createContext<string | undefined>(undefined);
+
+type RenderedSearchSource =
+  | string
+  | Pick<ClientNavigationRenderSnapshot, "renderedSearch" | "search">;
+
+// Keyed by element value, which merges carry over by reference.
+const renderedSearchByElement = new WeakMap<object, RenderedSearchSource>();
+
+/** Record the query the server rendered these elements with. */
+export function setAppElementsRenderedSearch(elements: AppElements, search: string): void {
+  for (const element of Object.values(elements)) {
+    if (typeof element === "object" && element !== null) {
+      renderedSearchByElement.set(element, search);
+    }
+  }
+}
+
+/**
+ * Bind a payload's elements to the snapshot of the navigation that delivers
+ * them, unless they already carry a query (a merged supplemental refresh, or
+ * an element an earlier payload delivered). Read at render time, so a query
+ * that arrives after the head (initial hydration) is still seen.
+ */
+export function bindAppElementsRenderedSearch(
+  elements: AppElements,
+  snapshot: Pick<ClientNavigationRenderSnapshot, "renderedSearch" | "search">,
+): void {
+  for (const element of Object.values(elements)) {
+    if (typeof element === "object" && element !== null && !renderedSearchByElement.has(element)) {
+      renderedSearchByElement.set(element, snapshot);
+    }
+  }
+}
+
+function getElementRenderedSearch(element: unknown): string | undefined {
+  if (typeof element !== "object" || element === null) return undefined;
+  const source = renderedSearchByElement.get(element);
+  return typeof source === "object" ? (source.renderedSearch ?? source.search) : source;
+}
+
 const BfcacheIdMapContext = getBfcacheIdMapContext();
 const BfcacheSegmentIdContext = getBfcacheSegmentIdContext();
 const EMPTY_BFCACHE_STATE_KEYS: Readonly<Record<string, string>> = Object.freeze({});
@@ -630,9 +680,11 @@ export function Slot({
   }
 
   const content = (
-    <ParallelSlotsContext.Provider value={parallelSlots ?? null}>
-      <ChildrenContext.Provider value={children ?? null}>{element}</ChildrenContext.Provider>
-    </ParallelSlotsContext.Provider>
+    <RenderedSearchContext.Provider value={getElementRenderedSearch(element)}>
+      <ParallelSlotsContext.Provider value={parallelSlots ?? null}>
+        <ChildrenContext.Provider value={children ?? null}>{element}</ChildrenContext.Provider>
+      </ParallelSlotsContext.Provider>
+    </RenderedSearchContext.Provider>
   );
 
   return BfcacheIdMapContext && BfcacheSegmentIdContext ? (

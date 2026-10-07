@@ -571,7 +571,7 @@ export default function TPRVisualization() {
 
           <div className="code-block">
             <span className="dimmed">$ </span>
-            <span className="highlight">npx @vinext/cloudflare deploy --experimental-tpr</span>
+            <span className="highlight">npx @vinext/cloudflare deploy --traffic-aware-warm-cache</span>
             {"\n\n"}
             <span className="dimmed">{"  "}Project: tpr-demo</span>
             {"\n"}

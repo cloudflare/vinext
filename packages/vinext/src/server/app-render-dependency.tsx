@@ -28,6 +28,11 @@ const REACT_FORWARD_REF = Symbol.for("react.forward_ref");
 const REACT_LAZY = Symbol.for("react.lazy");
 const REACT_MEMO = Symbol.for("react.memo");
 
+/** Whether `component` is a "use client" export seen from the RSC environment. */
+export function isAppClientReference(component: unknown): boolean {
+  return (component as AppDependencyComponent | null)?.$$typeof === REACT_CLIENT_REFERENCE;
+}
+
 export function isReactOwnedAppComponent(component: unknown): boolean {
   const candidate = component as AppDependencyComponent | null;
 

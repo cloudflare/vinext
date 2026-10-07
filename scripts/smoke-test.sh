@@ -45,6 +45,9 @@ CHECKS=(
   "response-store-demo          /       vinext cache adapters"
   "workers-cache                /       vinext cache adapters"
   "kv                           /       vinext cache adapters"
+  "static-assets-cache          /       vinext Static Assets cache"
+  "static-assets-pages          /       Static Assets Pages Router"
+  "static-assets-pages-i18n     /fr/    Static Assets Pages i18n"
   "static-export                /       Static by design"
   "static-export                /catalog/pocket-observatory/  Pocket Observatory"
   "static-export                /products/atlas/              Atlas Field Kit"
@@ -85,7 +88,6 @@ for check in "${CHECKS[@]}"; do
   # Retry transient transport and server failures while deployments propagate.
   status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null) || status=000
   status=${status:-000}
-  body=$(cat "$tmpfile" 2>/dev/null || echo "")
 
   if [[ "$status" != "200" ]]; then
     echo "FAIL  ${worker}${path}  (HTTP ${status})"
@@ -94,7 +96,7 @@ for check in "${CHECKS[@]}"; do
     continue
   fi
 
-  if [[ -n "$expected" ]] && ! echo "$body" | grep -qiF "$expected"; then
+  if [[ -n "$expected" ]] && ! grep -qiF "$expected" "$tmpfile"; then
     echo "FAIL  ${worker}${path}  (missing '${expected}' in body)"
     errors+=("${worker}${path} missing expected text '${expected}'")
     failed=$((failed + 1))
@@ -120,7 +122,6 @@ for check in "${CONTENT_CHECKS[@]}"; do
 
   status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null) || status=000
   status=${status:-000}
-  body=$(cat "$tmpfile" 2>/dev/null || echo "")
 
   if [[ "$status" != "200" ]]; then
     echo "FAIL  ${worker}${path}  (HTTP ${status})"
@@ -129,14 +130,14 @@ for check in "${CONTENT_CHECKS[@]}"; do
     continue
   fi
 
-  if ! echo "$body" | grep -qiF "$must_contain"; then
+  if ! grep -qiF "$must_contain" "$tmpfile"; then
     echo "FAIL  ${worker}${path}  (missing '${must_contain}')"
     errors+=("${worker}${path} missing '${must_contain}' — wrong content rendered")
     failed=$((failed + 1))
     continue
   fi
 
-  if echo "$body" | grep -qiF "$must_not_contain"; then
+  if grep -qiF "$must_not_contain" "$tmpfile"; then
     echo "FAIL  ${worker}${path}  (found '${must_not_contain}' — wrong section data)"
     errors+=("${worker}${path} contains '${must_not_contain}' — data from wrong dynamic param")
     failed=$((failed + 1))

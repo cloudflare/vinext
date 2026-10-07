@@ -20,6 +20,10 @@ const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
 const CAPTURE_PRERENDER_STATE = "__vinextCaptureWorkerPrerenderState";
 const REGISTER_CDN_ADAPTER = "__vinextRegisterWorkerCdnAdapter";
 const REGISTER_ALL_CACHE_ADAPTERS = "__vinextRegisterAllWorkerCacheAdapters";
+const STATIC_FILE_SIGNAL_MODULE = path.resolve(
+  import.meta.dirname,
+  "../packages/vinext/src/server/static-file-signal.ts",
+);
 
 function workerEntryVirtualModules(): Plugin {
   const modules = new Map([
@@ -59,6 +63,10 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage, _
   if (new URL(request.url).pathname === "/middleware-terminal") {
     globalThis.${CAPTURE_RSC_REQUEST}(request);
     return Response.redirect("https://example.com/login", 307);
+  }
+  if (new URL(request.url).pathname === "/public-signal") {
+    const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
+    return createStaticFileSignal("/visible.txt", {});
   }
   if (new URL(request.url).pathname === "/middleware-data-cache") {
     const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
@@ -429,6 +437,59 @@ describe("App Router Production server worker entry compatibility", () => {
       await server?.close();
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+      Reflect.deleteProperty(globalThis, REGISTER_CDN_ADAPTER);
+    }
+  });
+
+  it("resolves public-file signals through the registered adapter's assets", async () => {
+    // No Next.js test port applies: adapter-supplied asset bindings are a vinext contract.
+    const fetchAsset = vi.fn(
+      async (request: Request) => new Response(`asset ${new URL(request.url).pathname}`),
+    );
+    const adapter = Object.assign(new DefaultCdnCacheAdapter(), {
+      assets: { fetch: fetchAsset },
+    });
+    Reflect.set(globalThis, REGISTER_CDN_ADAPTER, () => setCdnCacheAdapter(adapter));
+
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+        ),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: undefined,
+          dispatchResponseStage: () => Promise<Response>,
+        ): Promise<Response>;
+      };
+      const response = await entry.handleRequestStage(
+        new Request("https://example.com/public-signal"),
+        {},
+        undefined,
+        async () => new Response("unused"),
+      );
+
+      expect(await response.text()).toBe("asset /visible.txt");
+      expect(fetchAsset).toHaveBeenCalledOnce();
+    } finally {
+      await server?.close();
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       Reflect.deleteProperty(globalThis, REGISTER_CDN_ADAPTER);
     }
   });

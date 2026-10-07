@@ -33,7 +33,8 @@ import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
-import { mergeHeaders } from "./worker-utils.js";
+import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
+import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
@@ -44,11 +45,13 @@ import {
 } from "./revalidation-request.js";
 import {
   methodNotAllowedResponse,
+  notFoundStaticAssetResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { setFrameworkRequestRoute } from "./request-tracing.js";
+import { VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
@@ -103,16 +106,13 @@ export async function fetchWorkerFilesystemRoute(
   requestPathname: string,
   phase: FilesystemRoutePhase,
   fetchAsset: (request: Request) => Promise<Response>,
-  publicFiles?: ReadonlySet<string>,
-  isDirectBuildAsset = false,
+  publicFiles: ReadonlySet<string>,
+  basePath = "",
+  assetPathPrefix = "",
 ): Promise<Response | false> {
   const isRetrievalMethod = request.method === "GET" || request.method === "HEAD";
   if (
     (phase === "direct" && isRetrievalMethod) ||
-    (phase === "direct" &&
-      publicFiles !== undefined &&
-      !isDirectBuildAsset &&
-      !publicFiles.has(requestPathname)) ||
     requestPathname === "/api" ||
     requestPathname.startsWith("/api/")
   ) {
@@ -121,6 +121,22 @@ export async function fetchWorkerFilesystemRoute(
   const assetUrl = new URL(request.url);
   assetUrl.pathname = requestPathname;
   assetUrl.search = "";
+  const decodedAssetUrl = new URL(assetUrl);
+  try {
+    decodedAssetUrl.pathname = decodeURIComponent(assetUrl.pathname);
+  } catch {
+    return false;
+  }
+  // Every rewrite phase must stay inside the public filesystem boundary. The
+  // binding also contains private cache artifacts. Authorize the normalized
+  // destination, never the original request's build-asset classification.
+  if (
+    !publicFiles.has(assetUrl.pathname) &&
+    !publicFiles.has(decodedAssetUrl.pathname) &&
+    !isNextStaticPath(decodedAssetUrl.pathname, basePath, assetPathPrefix)
+  ) {
+    return false;
+  }
   // Never forward a mutating method or body to the asset binding. A HEAD probe
   // establishes existence without reading the asset body; only a real asset is
   // then converted to the framework's deterministic 405 response.
@@ -157,6 +173,7 @@ export type MiddlewareResult = {
 // The deps object injected by each runtime adapter
 export type PagesPipelineDeps = {
   // Config values
+  assetPrefix?: string;
   basePath: string;
   trailingSlash: boolean;
   i18nConfig: NextI18nConfig | null;
@@ -696,13 +713,17 @@ export async function runPagesRequest(
   );
   if (initialFilesystemResult) return initialFilesystemResult;
 
+  const isMissingBuildAsset = () =>
+    isNextStaticPath(resolvedPathname, "", assetPrefixPathname(deps.assetPrefix ?? ""));
   const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
     type: "response",
-    response: new Response("This page could not be found", {
-      status: 404,
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    }),
+    response: isMissingBuildAsset()
+      ? notFoundStaticAssetResponse(headersFromRecord(middlewareHeaders))
+      : new Response("This page could not be found", {
+          status: 404,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
   });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
@@ -920,6 +941,18 @@ export async function runPagesRequest(
       }
     }
 
+    // Only an unmatched resolved asset path gets the static-file response.
+    // Middleware, API responses, and rewrites to missing pages retain their 404s.
+    if (!renderPageMatch && response.status === 404 && isMissingBuildAsset()) {
+      return {
+        type: "response",
+        response: finalizeMissingStaticAssetResponse(
+          mergeHeaders(response, middlewareHeaders, middlewareStatus),
+          true,
+        ),
+      };
+    }
+
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
       response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
@@ -951,6 +984,13 @@ export async function runPagesRequest(
       matchedPathHeaders["x-nextjs-matched-path"] = matchedPathnameForRoute(
         renderPageMatch?.route.pattern,
       );
+    }
+    if (typeof process !== "undefined" && process.env?.VINEXT_PRERENDER === "1") {
+      // A build request can satisfy a request-conditional rewrite that real
+      // visitors may not. Only an unrewritten page render may become a snapshot;
+      // earlier filesystem, API, and proxy returns never carry this confirmation.
+      matchedPathHeaders[VINEXT_PRERENDER_REWRITTEN_HEADER] =
+        resolvedUrl === originalResolvedUrl ? "0" : "1";
     }
     const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.

@@ -2,6 +2,7 @@ import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -181,6 +182,7 @@ export function normalizeRscRequest(
   request: Request,
   basePath: string,
   allowOutsideBasePath = false,
+  assetPrefix = "",
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
 
@@ -208,10 +210,17 @@ export function normalizeRscRequest(
   // Step 5: basePath check and strip.
   // Skipped when basePath is empty (no basePath configured).
   // /__vinext/ prefix bypasses the check for internal prerender endpoints
-  // that must be reachable regardless of basePath configuration.
+  // that must be reachable regardless of basePath configuration. Static
+  // asset paths also reach routing so their misses get the canonical 404,
+  // including a distinct assetPrefix outside basePath.
   if (basePath) {
     hadBasePath = hasBasePath(requestPathname, basePath);
-    if (!hadBasePath && !pathname.startsWith("/__vinext/") && !allowOutsideBasePath) {
+    if (
+      !hadBasePath &&
+      !pathname.startsWith("/__vinext/") &&
+      !allowOutsideBasePath &&
+      !isNextStaticPath(pathname, "", assetPrefixPathname(assetPrefix))
+    ) {
       return notFoundResponse();
     }
     if (hadBasePath) {

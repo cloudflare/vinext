@@ -1,9 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import "vinext/internal/server/cloudflare-workers-tracing";
 import {
-  NEXTJS_CACHE_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
-  VINEXT_CACHE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/headers";
 import type {
@@ -15,8 +13,13 @@ import type {
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
-import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import {
+  finalizeGatewayResponse,
+  SHARED_RESPONSE_STAGE_HEADER,
+  type SharedResponseStage,
+} from "./browser-cache-policy.js";
 import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
+import { hasCacheMethod, invalidateOrPurge } from "./workers-cache-invalidation.js";
 
 type StageBinding = {
   fetch(request: Request): Promise<Response> | Response;
@@ -64,8 +67,6 @@ const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CACHE_CONTROL_TRANSPORT_HEADER = "x-vinext-internal-request-cache-control";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
-const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
-const SHARED_RESPONSE_STAGE_HEADER = "x-vinext-cloudflare-shared-response-stage";
 const RESPONSE_STAGE_WIRE_CACHE = {
   bypass: "vinext-cloudflare-v1:bypass",
   shared: "vinext-cloudflare-v1:shared",
@@ -200,15 +201,6 @@ function hasFetch(value: unknown): value is StageBinding {
     (typeof value === "object" || typeof value === "function") &&
     "fetch" in value &&
     typeof value.fetch === "function"
-  );
-}
-
-function hasPurge(value: unknown): value is Required<Pick<StageBinding, "purge">> {
-  return (
-    value !== null &&
-    (typeof value === "object" || typeof value === "function") &&
-    "purge" in value &&
-    typeof value.purge === "function"
   );
 }
 
@@ -422,46 +414,6 @@ function markSharedResponseStage(
   );
 }
 
-function finalizeGatewayResponse(response: Response, provenanceToken: string): Response {
-  const provenance = response.headers.get(SHARED_RESPONSE_STAGE_HEADER);
-  const usedSharedResponseStage =
-    provenance === provenanceToken || provenance?.startsWith(`${provenanceToken}:`) === true;
-  // The marker is reserved for adapter-internal provenance. If outer response
-  // composition replaces it, fail closed rather than forwarding shared cache
-  // policy on a response whose origin can no longer be authenticated.
-  const sharedResponseStageCollision = provenance !== null && !usedSharedResponseStage;
-  const cacheControl = response.headers.get("Cache-Control");
-  if (
-    !response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER) &&
-    !usedSharedResponseStage &&
-    !sharedResponseStageCollision
-  ) {
-    return response;
-  }
-  const headers = new Headers(response.headers);
-  headers.delete(SHARED_RESPONSE_STAGE_HEADER);
-  headers.delete(CLOUDFLARE_EDGE_POLICY_HEADER);
-  if (usedSharedResponseStage || sharedResponseStageCollision) {
-    headers.delete("CDN-Cache-Control");
-    headers.delete("Cache-Tag");
-    headers.delete(VINEXT_CACHE_HEADER);
-    headers.delete(NEXTJS_CACHE_HEADER);
-    if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
-      headers.set("Cache-Control", "private, max-age=0, must-revalidate");
-    }
-  }
-  if (usedSharedResponseStage && provenance?.startsWith(`${provenanceToken}:`)) {
-    const cacheStatus = decodeURIComponent(provenance.slice(provenanceToken.length + 1));
-    headers.set(VINEXT_CACHE_HEADER, cacheStatus);
-    headers.set(NEXTJS_CACHE_HEADER, cacheStatus);
-  }
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
-}
-
 function hasTaggedCustomVary(response: Response): boolean {
   if (!response.headers.get("Cache-Tag")) return false;
   const varyFields = (response.headers.get("Vary") ?? "")
@@ -471,7 +423,11 @@ function hasTaggedCustomVary(response: Response): boolean {
   return varyFields.some((name) => !FRAMEWORK_RESPONSE_VARY_FIELDS.has(name));
 }
 
-function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
+/**
+ * Workers Cache purges and invalidations only reach the calling entrypoint's
+ * cache, so route both through the cache-bearing response entrypoint.
+ */
+function withResponseStageCache(context: CloudflareStageContext): CloudflareStageContext {
   const factory = context.exports?.[CACHED_RESPONSE_STAGE_EXPORT];
   if (typeof factory !== "function") return context;
   const fallback = context.cache;
@@ -480,8 +436,14 @@ function withResponseStagePurge(context: CloudflareStageContext): CloudflareStag
     cache: {
       purge(options: CachePurgeOptions) {
         const target = (factory as StageBindingFactory)({ props: {} });
-        if (hasPurge(target)) return target.purge(options);
-        return hasPurge(fallback) ? fallback.purge(options) : undefined;
+        if (hasCacheMethod(target, "purge")) return target.purge(options);
+        return hasCacheMethod(fallback, "purge") ? fallback.purge(options) : undefined;
+      },
+      invalidate(options: CachePurgeOptions) {
+        const target = (factory as StageBindingFactory)({ props: {} });
+        const targetCanUpdate =
+          hasCacheMethod(target, "invalidate") || hasCacheMethod(target, "purge");
+        return invalidateOrPurge(targetCanUpdate ? target : fallback, options);
       },
     },
   };
@@ -617,15 +579,19 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
 
   async purge(options: CachePurgeOptions): Promise<unknown> {
     const cache = Reflect.get(this.ctx, "cache");
-    if (!hasPurge(cache)) return undefined;
+    if (!hasCacheMethod(cache, "purge")) return undefined;
     return cache.purge(options);
+  }
+
+  async invalidate(options: CachePurgeOptions): Promise<unknown> {
+    return invalidateOrPurge(Reflect.get(this.ctx, "cache"), options);
   }
 }
 
-/** Uncached response entrypoint. Bypass and probe renders execute only here. */
+/** Uncached response entrypoint retained for deployment readiness probes. */
 export class VinextUncachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
-    const context = withResponseStagePurge(withWorkerHostRuntime(this.ctx, this.env));
+    const context = withResponseStageCache(withWorkerHostRuntime(this.ctx, this.env));
     const invocation = getResponseStageInvocation(context.props, "bypass");
     if (!invocation) {
       return stampResponseStageBuildIdentity(
@@ -655,8 +621,8 @@ export default {
     context: CloudflareStageContext | undefined,
   ): Promise<Response> {
     request = stripUntrustedTransportHeaders(request);
-    const sharedResponseStageProvenance = crypto.randomUUID();
-    const stageContext = withResponseStagePurge(withWorkerHostRuntime(context, env));
+    const sharedResponses = new Map<string, SharedResponseStage>();
+    const stageContext = withResponseStageCache(withWorkerHostRuntime(context, env));
     const dispatchResponseStage: VinextResponseStageTransport = async (
       stageRequest,
       props,
@@ -674,6 +640,12 @@ export default {
       };
       const usesSharedCache = options.cache === "shared";
       try {
+        // Readiness must still verify that the named response entrypoint is available.
+        if (!usesSharedCache && !isResponseStageReadinessRequest(stageRequest)) {
+          return stampResponseStageBuildIdentity(
+            await invokeResponseStage(stageRequest, env, stageContext, invocation),
+          );
+        }
         const serializedInvocation = JSON.stringify({
           ...invocation,
           options:
@@ -696,9 +668,12 @@ export default {
           ? await createCacheFacingRequest(stageRequest, serializedInvocation)
           : stageRequest;
         const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
-        return usesSharedCache
-          ? markSharedResponseStage(response, sharedResponseStageProvenance, props, true)
-          : response;
+        if (!usesSharedCache) return response;
+        const shared = markSharedResponseStage(response, crypto.randomUUID(), props, true);
+        sharedResponses.set(shared.headers.get(SHARED_RESPONSE_STAGE_HEADER)!, {
+          headers: new Headers(shared.headers),
+        });
+        return shared;
       } catch (error) {
         if (isResponseStageReadinessRequest(stageRequest)) return responseStageUnavailable();
         throw error;
@@ -707,7 +682,7 @@ export default {
     const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
     return finalizeGatewayResponse(
       await handleRequestStage(request, env, stageContext, dispatchResponseStage),
-      sharedResponseStageProvenance,
+      sharedResponses,
     );
   },
 };

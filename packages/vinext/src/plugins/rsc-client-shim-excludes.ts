@@ -2,6 +2,7 @@ const RSC_CLIENT_SHIM_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
   // @vitejs/plugin-rsc tracks package client references by the original
   // bare source. If Vite pre-bundles these known client shims, the generated
   // client-package proxy can lose the matching export metadata in dev.
+  "vinext/shims/client-page-root",
   "vinext/shims/error-boundary",
   "vinext/shims/form",
   "vinext/shims/layout-segment-context",

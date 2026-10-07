@@ -1,6 +1,6 @@
 # Workers Response Store adapter demo
 
-This example uses one `responseStoreAdapter()` from `@vinext/cloudflare` in place of both `cdnAdapter()` and `kvDataAdapter()`. The application Worker keeps Workers Cache disabled. Its `RESPONSE_STORE` service binding calls a separately deployed cache Worker that owns Workers Cache, R2 response bodies, SQLite Durable Object metadata and tag invalidation timestamps, and SWR regeneration.
+This example uses one `responseStoreAdapter()` from `@vinext/cloudflare` in place of both `workersCacheCdnAdapter()` and `kvDataAdapter()`. The application Worker keeps Workers Cache disabled. Its `RESPONSE_STORE` service binding calls a separately deployed cache Worker that owns Workers Cache, R2 response bodies, SQLite Durable Object metadata and tag invalidation timestamps, and SWR regeneration.
 
 The cache Worker is shared infrastructure, not a second deployment of the application. Each application version has one ordinary build and deploy. Cached entries retain a loopback to that application version's vinext response-stage entrypoint. Route and fetch-cache entries can replay that stage, while a transformed public `"use cache"` entry records its encrypted arguments and server-reference identity so regeneration invokes only that function. If its arguments cannot be safely recorded, the adapter falls back to replaying the cacheable route.
 
@@ -29,7 +29,18 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 - `/use-cache-expired` verifies that hard-expired data blocks on loopback regeneration.
 - `/api/now` exercises cached App Route responses.
 - `/pages-prewarm` exercises Pages Router ISR.
+- `/static-default` verifies that a static page with no revalidate source is stored until it's
+  revalidated, as in Next.js.
+- `/search-params/suspense` verifies that `useSearchParams()` inside Suspense keeps a static page
+  cached with the fallback in its HTML, and `/search-params/unwrapped/[slug]` that a call
+  outside Suspense returns a 500, as in Next.js. `/search-params/dynamic` reads `headers()`, so it
+  server-renders the real query and is never stored.
+- `/client-search-params/ignores` verifies that a `"use client"` page that never reads its
+  `searchParams` prop is stored once for every query, and `/client-search-params/reads` that a
+  client page reading it is never stored, as in Next.js.
 - `/force-dynamic` verifies that explicit build-time dynamic config bypasses response-cache lookup.
+- `/dynamic-segment/[slug]` verifies that a dynamic-segment route without `generateStaticParams`
+  bypasses response-cache lookup, as in Next.js.
 - `/dynamic` and `/vary` verify that unsafe completed responses bypass shared storage.
 
 Canonical App Router RSC requests use the same response-stage transport:

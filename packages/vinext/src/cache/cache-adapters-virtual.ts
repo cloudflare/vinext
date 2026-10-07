@@ -14,6 +14,7 @@
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  */
+import path from "pathslash";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 
@@ -79,6 +80,11 @@ export type CacheAdapterBuildOutput = {
     outDir: string;
     isPrimaryServerOutput: boolean;
   }) => Promise<void> | void;
+  /** Package locally prerendered artifacts after the prerender phase completes. */
+  finalizePrerenderOutput?: (output: {
+    root: string;
+    clientOutDir: string;
+  }) => Promise<void> | void;
 };
 
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
@@ -107,10 +113,41 @@ export function cacheWarmupStatusSource(
   cache?: VinextCacheConfig | null,
 ): "cloudflare" | "data-cache" | "vinext" {
   if (cache?.cdn?.capabilities?.warmup === "response-store") return "vinext";
+  if (cache?.cdn?.capabilities?.warmup === "data-cache") return "data-cache";
   if (!cache?.cdn?.adapter && cache?.data?.capabilities?.warmup === "data-cache") {
     return "data-cache";
   }
   return "cloudflare";
+}
+
+function prerenderOutputFinalizers(cache?: VinextCacheConfig | null) {
+  return [cache?.data?.output, cache?.cdn?.output]
+    .map((output) =>
+      output && "finalizePrerenderOutput" in output ? output.finalizePrerenderOutput : undefined,
+    )
+    .filter(
+      (finalize): finalize is NonNullable<CacheAdapterBuildOutput["finalizePrerenderOutput"]> =>
+        Boolean(finalize),
+    );
+}
+
+/** Whether a configured adapter consumes locally prerendered build artifacts. */
+export function hasCacheAdapterPrerenderOutput(cache?: VinextCacheConfig | null): boolean {
+  return prerenderOutputFinalizers(cache).length > 0;
+}
+
+/** Let configured adapters package locally prerendered build artifacts. */
+export async function finalizeCacheAdapterPrerenderOutput(
+  cache: VinextCacheConfig | null | undefined,
+  root: string,
+  output: { clientOutDir?: string } = {},
+): Promise<void> {
+  for (const finalize of new Set(prerenderOutputFinalizers(cache))) {
+    await finalize({
+      root,
+      clientOutDir: path.resolve(root, output.clientOutDir ?? "dist/client"),
+    });
+  }
 }
 
 export function hasUncachedRequestRouting(cache?: VinextCacheConfig | null): boolean {

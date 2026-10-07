@@ -16,6 +16,7 @@ import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { createAppMetadataModuleRoute, traceGenerateMetadata } from "./app-metadata-tracing.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
+import { searchParamsToRecord } from "../utils/query.js";
 
 /**
  * Wrapped {@link _resolveModuleMetadata} that tags any thrown error with the
@@ -339,24 +340,8 @@ function hasGenerateMetadata(module: AppPageHeadModule | null | undefined): bool
 export function collectAppPageSearchParams(
   searchParams: URLSearchParams | null | undefined,
 ): AppPageSearchParamsCollection {
-  const pageSearchParams: AppPageSearchParams = Object.create(null);
-  let hasSearchParams = false;
-
-  searchParams?.forEach((value, key) => {
-    hasSearchParams = true;
-    const currentValue = pageSearchParams[key];
-    if (Array.isArray(currentValue)) {
-      pageSearchParams[key] = [...currentValue, value];
-      return;
-    }
-    if (currentValue !== undefined) {
-      pageSearchParams[key] = [currentValue, value];
-      return;
-    }
-    pageSearchParams[key] = value;
-  });
-
-  return { hasSearchParams, pageSearchParams };
+  const pageSearchParams = searchParamsToRecord(searchParams);
+  return { hasSearchParams: Object.keys(pageSearchParams).length > 0, pageSearchParams };
 }
 
 function createMetadataSources(
@@ -713,6 +698,23 @@ export async function resolveAppPageHead<TModule extends AppPageHeadModule>(
 }
 
 /**
+ * Whether any segment of the page's head exports `generateMetadata()`. Known
+ * from the modules alone, so callers can place the head before resolving it.
+ */
+export function hasAppPageDynamicMetadata<TModule extends AppPageHeadModule>(
+  options: Pick<
+    ResolveAppPageHeadOptions<TModule>,
+    "layoutModules" | "pageModule" | "parallelRoutes"
+  >,
+): boolean {
+  return (
+    options.layoutModules.some(hasGenerateMetadata) ||
+    hasGenerateMetadata(options.pageModule) ||
+    (options.parallelRoutes ?? []).some(parallelRouteHasDynamicMetadata)
+  );
+}
+
+/**
  * Start metadata and viewport resolution without coupling their completion.
  *
  * Live document renders can place the metadata promise behind Suspense while
@@ -732,9 +734,6 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   const layoutTreePositions = options.layoutTreePositions ?? [];
   const layoutInputs = createLayoutInputs(options.layoutModules, layoutTreePositions);
   const layoutSourcePositions = layoutInputs.map((input) => input.treePosition);
-  const primaryHasDynamicMetadata =
-    layoutInputs.some((input) => hasGenerateMetadata(input.module)) ||
-    hasGenerateMetadata(options.pageModule);
   const { hasSearchParams, pageSearchParams } = collectAppPageSearchParams(options.searchParams);
   const layoutMetadataPromise = resolveLayoutMetadata(layoutInputs, options.params, routeSegments);
   const layoutViewport = resolveLayoutViewport(layoutInputs, options.params, routeSegments);
@@ -802,8 +801,7 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     accumulatedViewport = parallelViewport.resolvedViewport;
   }
   const parallelRouteViewportPromise = Promise.all(parallelRouteViewportPromises);
-  const hasDynamicMetadata =
-    primaryHasDynamicMetadata || parallelRoutes.some(parallelRouteHasDynamicMetadata);
+  const hasDynamicMetadata = hasAppPageDynamicMetadata(options);
 
   const metadata = Promise.all([
     layoutMetadataPromise,

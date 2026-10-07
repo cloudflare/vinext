@@ -14,7 +14,7 @@ import {
   unwrapExpression,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
-import { magicStringTransformResult } from "./transform-result.js";
+import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -34,6 +34,28 @@ const DYNAMIC_REQUEST_PRESCAN = new RegExp(
   "i",
 );
 const MAX_CONSTANT_BINDING_DEPTH = 1_500;
+const REQUIRE_OR_IMPORT_OCCURRENCE = new RegExp(
+  String.raw`${REQUIRE_PRESCAN.source}|\bimport\b`,
+  "gi",
+);
+const IDENTIFIER_CHAR = /[\w$]/;
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+const WHITESPACE_CHAR = /\s/;
+// A single-line string literal argument other than "/". The transform keeps
+// these requests unchanged, so they never need the AST pass.
+const UNCHANGED_STRING_ARGUMENT = String.raw`\s*\(\s*(?:"(?!\/")[^"\\\r\n]*"|'(?!\/')[^'\\\r\n]*')\s*`;
+const UNCHANGED_REQUIRE_CALL = new RegExp(String.raw`${UNCHANGED_STRING_ARGUMENT}\)`, "y");
+const UNCHANGED_IMPORT_CALL = new RegExp(String.raw`${UNCHANGED_STRING_ARGUMENT}[,)]`, "y");
+// A call, comment (including HTML-like `<!--` and `-->`), optional call, or
+// TypeScript wrapper after `require`.
+// Both follower checks conservatively include HTML's `--!>` spelling too;
+// the AST parser, not this prescan, decides whether the JavaScript is valid.
+const POSSIBLE_REQUIRE_CALLEE_FOLLOWER = /\s*(?:[(/<]|--!?>|\?\.|!(?!=)|as\b|satisfies\b)/y;
+const CLOSING_PAREN_FOLLOWER = /\s*\)/y;
+// `import(...)`, `import /* comment */ (...)` (HTML-like comments included),
+// and phase imports such as `import.source(...)`. `import.meta` is the only
+// other `import.` form.
+const POSSIBLE_IMPORT_EXPRESSION_FOLLOWER = /\s*(?:[(/<]|--!?>|\.(?!\s*meta\b))/y;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RSC_PATH =
   /[\\/]node_modules[\\/](?:\.pnpm[\\/][^/\\]+[\\/]node_modules[\\/])?@vitejs[\\/]plugin-rsc[\\/]/;
@@ -696,6 +718,60 @@ function dynamicImportReplacement(): string {
   return `Promise.resolve().then(() => { const error = new Error(${JSON.stringify(DYNAMIC_REQUEST_ERROR)}); error.code = "MODULE_NOT_FOUND"; throw error; })`;
 }
 
+function matchesAt(pattern: RegExp, code: string, index: number): boolean {
+  pattern.lastIndex = index;
+  return pattern.test(code);
+}
+
+// `require` followed by `)` can still be a callee when wrapped in parentheses
+// or a TypeScript `<T>` assertion: `(require)(x)`, `(/* c */ require)(x)`.
+function mayBeWrappedCallee(code: string, start: number): boolean {
+  let index = start - 1;
+  while (index >= 0 && WHITESPACE_CHAR.test(code[index])) {
+    // A preceding line comment can end in any character.
+    if (LINE_TERMINATOR.test(code[index])) return true;
+    index--;
+  }
+  return index < 0 || code[index] === "(" || code[index] === ">" || code[index] === "/";
+}
+
+/**
+ * Cheap, conservative check run before parsing: whether any `require` or
+ * `import` occurrence could be a request this transform rewrites. Occurrences
+ * that are part of a longer identifier, member properties, static imports,
+ * non-callee positions (`typeof require`, `require,`), and calls with a
+ * single-line string literal argument other than "/" are left unchanged, so a
+ * module containing only those is skipped. Anything else, including escaped
+ * identifiers, falls through to the AST pass.
+ */
+function mayContainVeryDynamicRequest(code: string): boolean {
+  REQUIRE_OR_IMPORT_OCCURRENCE.lastIndex = 0;
+  for (let match; (match = REQUIRE_OR_IMPORT_OCCURRENCE.exec(code));) {
+    const text = match[0];
+    const start = match.index;
+    const end = start + text.length;
+    if (text.includes("\\")) return true;
+    if (text !== "require" && text !== "import") continue;
+    if (IDENTIFIER_CHAR.test(code[start - 1] ?? "") || IDENTIFIER_CHAR.test(code[end] ?? "")) {
+      continue;
+    }
+    if (code[start - 1] === "." && code[start - 2] !== ".") continue;
+    if (text === "import") {
+      if (
+        matchesAt(POSSIBLE_IMPORT_EXPRESSION_FOLLOWER, code, end) &&
+        !matchesAt(UNCHANGED_IMPORT_CALL, code, end)
+      ) {
+        return true;
+      }
+    } else if (matchesAt(POSSIBLE_REQUIRE_CALLEE_FOLLOWER, code, end)) {
+      if (!matchesAt(UNCHANGED_REQUIRE_CALL, code, end)) return true;
+    } else if (matchesAt(CLOSING_PAREN_FOLLOWER, code, end) && mayBeWrappedCallee(code, start)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function transformVeryDynamicRequests(code: string, id: string) {
   // Pre-parse gate. `require` stays a broad substring check (it also covers
   // aliasing and comment-separated `require/* … */(`), but the `import` side is
@@ -703,6 +779,9 @@ function transformVeryDynamicRequests(code: string, id: string) {
   // bare `import` (static ESM) otherwise matched ~every module, so this plugin
   // parsed the whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
   if (!REQUIRE_PRESCAN.test(code) && !mayContainDynamicImport(code)) return null;
+  // Most modules that pass that gate only contain `require("literal")`,
+  // `__require`, or static imports, which this transform never changes.
+  if (!mayContainVeryDynamicRequest(code)) return null;
 
   const lang = scriptParserLanguage(id) ?? "js";
   let ast: ReturnType<typeof parseAst>;
@@ -865,7 +944,10 @@ export function createIgnoreDynamicRequestsPlugin(
         ) {
           return null;
         }
-        return cached(id, code, undefined, () => transformVeryDynamicRequests(code, id));
+        return omitUnusedBuildSourcemap(
+          this.environment,
+          cached(id, code, undefined, () => transformVeryDynamicRequests(code, id)),
+        );
       },
     },
   };
@@ -885,3 +967,4 @@ function shouldTransformVeryDynamicRequests(
 }
 
 export const _transformVeryDynamicRequests = transformVeryDynamicRequests;
+export const _mayContainVeryDynamicRequest = mayContainVeryDynamicRequest;

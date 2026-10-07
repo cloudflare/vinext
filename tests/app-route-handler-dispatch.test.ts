@@ -36,6 +36,49 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  it.each([400, 500])(
+    "retains established ISR eligibility after hard expiry for status %s",
+    async (status) => {
+      const write = vi.fn();
+      const response = await dispatchAppRouteHandler({
+        cleanPathname: "/api/expired-status",
+        clearRequestContext() {},
+        draftModeSecret: "test-secret",
+        isDevelopment: false,
+        isProduction: true,
+        isrGet: async () => ({
+          ...buildISRCacheEntry(buildCachedRouteValue("old")),
+          isExpired: true,
+        }),
+        isrRouteKey: (path) => path,
+        isrSet: write,
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        request: new Request("https://example.com/api/expired-status"),
+        route: {
+          pattern: "/api/expired-status",
+          routeSegments: ["api", "expired-status"],
+          routeHandler: {
+            revalidate: 2,
+            GET: () =>
+              new Response("regenerated error", {
+                status,
+                headers: { "Cache-Control": "private, max-age=300" },
+              }),
+          },
+        },
+        scheduleBackgroundRegeneration() {
+          throw new Error("expired entries regenerate in the foreground");
+        },
+        searchParams: new URLSearchParams(),
+      });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+      await expect.poll(() => write.mock.calls.length).toBe(1);
+      expect(write.mock.calls[0][1].status).toBe(status);
+    },
+  );
+
   // Ported from Next.js: test/e2e/on-request-error/isr/isr.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/isr/isr.test.ts
   it.each([
@@ -162,7 +205,7 @@ describe("app route handler dispatch", () => {
         });
 
         expect(response.status).toBe(500);
-        expect(isrGet).not.toHaveBeenCalled();
+        expect(isrGet).toHaveBeenCalledTimes(revalidate === false ? 1 : 0);
         expect(onRequestError.mock.calls[0]?.[2]).toEqual({
           routerKind: "App Router",
           routePath: "/api/uncached",

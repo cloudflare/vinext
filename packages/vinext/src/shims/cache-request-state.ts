@@ -1,4 +1,4 @@
-import { getHeadersAccessPhase } from "./headers.js";
+import { getHeadersAccessPhase } from "./internal/headers-state.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
@@ -22,33 +22,11 @@ export const cacheLifeProfiles: Record<string, CacheLifeConfig> = {
   max: { stale: 300, revalidate: 2592000, expire: 31536000 },
 };
 
-type CacheContextLike = {
-  tags: string[];
-  lifeConfigs: CacheLifeConfig[];
-  variant: string;
-  readRootParamNames?: Set<string>;
-  hasExplicitRevalidate: boolean;
-  hasExplicitExpire: boolean;
-  dynamicNestedCacheError: Error | undefined;
-};
-
-let getCacheContext: (() => CacheContextLike | null) | null = null;
-
-export function _registerCacheContextAccessor(fn: () => CacheContextLike | null): void {
-  getCacheContext = fn;
-}
-
-export function getRegisteredCacheContext(): CacheContextLike | null {
-  return getCacheContext?.() ?? null;
-}
-
-/** Record a root-param dependency on the active public `"use cache"` scope. */
-export function _recordUseCacheRootParamRead(name: string): void {
-  const context = getRegisteredCacheContext();
-  if (context && context.variant !== "private") {
-    context.readRootParamNames?.add(name);
-  }
-}
+export {
+  _recordUseCacheRootParamRead,
+  _registerCacheContextAccessor,
+  getRegisteredCacheContext,
+} from "./internal/cache-context-accessor.js";
 
 export type UnstableCacheRevalidationMode = "foreground" | "background";
 export type ActionRevalidationKind = 0 | 1 | 2;
@@ -276,6 +254,28 @@ export function recordUnstableCacheObservation(observation: UnstableCacheObserva
 export function _peekUnstableCacheObservations(): UnstableCacheObservation[] {
   return [...getCacheState().unstableCacheObservations.values()].sort((a, b) =>
     a.keyHash.localeCompare(b.keyHash),
+  );
+}
+
+/**
+ * Run `fn` with the request's cache settings, including its revalidation mode,
+ * but its own record of cache lives and unstable_cache observations, so work
+ * done on the request's behalf after the fact leaves the request untouched.
+ */
+export function runWithDetachedCacheObservations<T>(fn: () => Promise<T>): Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((context) => {
+      context.requestScopedCacheLife = null;
+      context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
+    }, fn);
+  }
+  return cacheAls.run(
+    {
+      ...getCacheState(),
+      requestScopedCacheLife: null,
+      unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
+    },
+    fn,
   );
 }
 

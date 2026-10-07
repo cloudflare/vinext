@@ -8,6 +8,19 @@ const BASE_URL = "http://localhost:4195";
 
 let server: ChildProcess;
 
+function stopWorker(child: ChildProcess | undefined): void {
+  if (!child?.pid) return;
+  if (process.platform === "win32") {
+    child.kill();
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
 async function waitForServer(): Promise<void> {
   for (let attempt = 0; attempt < 240; attempt++) {
     if (server.exitCode !== null) {
@@ -54,18 +67,76 @@ async function readPersonalized(request: APIRequestContext, pathname: string, vi
   };
 }
 
+// The reporter's pass-through proxy and private-only cases, verified against
+// Next.js 16.2.7 build/start. Next keeps explicitly authored Cache-Control:
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
+function browserPolicyRegressions(baseURL: string, prefix: string) {
+  for (const [suffix, policy] of [
+    ["bot-blocked", "max-age=10"],
+    ["proxy", "public, max-age=300"],
+    ["private", "private, max-age=300"],
+  ]) {
+    test(`preserves Next.js policy for ${prefix}-${suffix}`, async ({ request }) => {
+      for (const method of ["GET", "HEAD"]) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = await request.fetch(`${baseURL}/api/${prefix}-${suffix}`, {
+            method,
+            headers:
+              suffix === "private" ? { "x-private-visitor": `visitor-${attempt}` } : undefined,
+          });
+          expect(response.status()).toBe(200);
+          expect(response.headers()["cache-control"]).toBe(policy);
+          if (suffix === "private")
+            expect(response.headers()["x-private-visitor"]).toBe(`visitor-${attempt}`);
+          expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+          expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+          if (method === "GET") expect(await response.json()).toEqual({ browserCache: true });
+        }
+        if (suffix === "bot-blocked") {
+          const blocked = await request.fetch(`${baseURL}/api/${prefix}-${suffix}`, {
+            method,
+            headers: { "User-Agent": "GPTBot/1.2" },
+          });
+          expect(blocked.status()).toBe(403);
+        }
+      }
+    });
+  }
+}
+
 test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
+  browserPolicyRegressions(BASE_URL, "browser-cache");
   test.beforeAll(async () => {
     server = spawn(
       "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; ../../../node_modules/.bin/vp build --config vite.cdn-cache.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4195",
-      { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
+      { cwd: FIXTURE_DIR, shell: true, stdio: "inherit", detached: process.platform !== "win32" },
     );
     await waitForServer();
   });
 
   test.afterAll(() => {
-    server.kill();
+    stopWorker(server);
   });
+
+  // Next.js preserves user Cache-Control in build/templates/app-route.ts.
+  // The browser/edge split and gateway personalization are Workers-specific.
+  for (const [pathname, cacheControl] of [
+    ["/api/browser-cache", "max-age=10"],
+    ["/api/browser-cache-swr", "max-age=10, stale-while-revalidate=60"],
+    ["/api/browser-cache-generated-edge", "max-age=10, stale-while-revalidate=60"],
+    ["/api/browser-cache-shared", "public, max-age=300, s-maxage=600, stale-while-revalidate=60"],
+    ["/api/browser-cache-static", "public, max-age=300, s-maxage=600, stale-while-revalidate=60"],
+    ["/api/browser-cache-config", "public, max-age=300"],
+  ]) {
+    test(`preserves browser cache policy for ${pathname}`, async ({ request }) => {
+      const response = await request.get(`${BASE_URL}${pathname}`);
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ browserCache: true });
+      expect(response.headers()["cache-control"]).toBe(cacheControl);
+      expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+      expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+    });
+  }
 
   test("keeps draft and anonymous route-handler ISR responses isolated", async ({ request }) => {
     const forged = await request.get(`${BASE_URL}/api/draft-isr/forged-${Date.now()}`, {
@@ -73,7 +144,9 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(forged.status()).toBe(200);
     expect(await forged.json()).toMatchObject({ draftMode: false });
-    expect(forged.headers()["cache-control"]).toContain("no-store");
+    // An invalid draft cookie cannot enable draft mode or shared storage.
+    // The untrusted cookie also keeps the framework response out of browser storage.
+    expect(forged.headers()["cache-control"]).toBe("no-store, must-revalidate");
     expect(forged.headers()["cdn-cache-control"]).toBeUndefined();
     // Local workerd does not expose a Workers Cache status. Do not preserve
     // the inner ISR state as though it were a CF-Cache-Status mirror.
@@ -109,6 +182,107 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       expect(draftAfterAnonymous.cacheControl).toContain("no-store");
       expect(draftAfterAnonymous.cdnCacheControl).toBeUndefined();
       expect(draftAfterAnonymous.cacheTag).toBeUndefined();
+    } finally {
+      await setDraftMode(request, false);
+    }
+  });
+
+  test("preserves browser policy when conditional middleware is eligible", async ({ request }) => {
+    for (const visitor of [undefined, "alice"]) {
+      const response = await request.get(`${BASE_URL}/api/browser-cache-middleware`, {
+        headers: visitor ? { "x-test-visitor-id": visitor } : undefined,
+      });
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ browserCache: true });
+      expect(response.headers()["x-cdn-stage-visitor"]).toBe(visitor);
+      expect(response.headers()["cache-control"]).toBe("max-age=10");
+    }
+  });
+
+  for (const kind of ["redirect", "rewrite"] as const) {
+    test(`preserves browser policy for conditional config routing: ${kind}`, async ({
+      request,
+    }) => {
+      const response = await request.get(`${BASE_URL}/api/browser-cache-${kind}`);
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ browserCache: true });
+      expect(response.headers()["cache-control"]).toBe("max-age=10");
+
+      const routed = await request.get(`${BASE_URL}/api/browser-cache-${kind}`, {
+        headers: kind === "redirect" ? { "x-plan": "pro" } : { Cookie: "plan=pro" },
+        maxRedirects: 0,
+      });
+      if (kind === "redirect") {
+        expect(routed.status()).toBe(307);
+        expect(routed.headers()["location"]).toBe("/api/browser-cache");
+      } else {
+        expect(await routed.json()).toEqual({ visitor: "pro" });
+        // The matched cookie condition already prevents shared admission.
+        expect(routed.headers()["cache-control"]).toContain("no-store");
+      }
+    });
+  }
+
+  test("preserves browser policy after a query-only middleware rewrite", async ({ request }) => {
+    const anonymous = await request.get(`${BASE_URL}/api/browser-cache-query?visitor=alice`);
+    expect(anonymous.headers()["cache-control"]).toBe("public, max-age=300, s-maxage=600");
+    for (const visitor of ["alice", "bob"]) {
+      const response = await request.get(`${BASE_URL}/api/browser-cache-query?visitor=alice`, {
+        headers: { "x-test-visitor-id": visitor },
+      });
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ visitor });
+      expect(response.headers()["cache-control"]).toBe("public, max-age=300, s-maxage=600");
+    }
+  });
+
+  test("preserves browser policy after a hybrid Pages query rewrite", async ({ request }) => {
+    for (const visitor of ["alice", "bob"]) {
+      const response = await request.get(
+        `${BASE_URL}/api/browser-cache-pages-query?visitor=alice`,
+        {
+          headers: { "x-test-visitor-id": visitor },
+        },
+      );
+      expect(response.status()).toBe(200);
+      // Keep vinext's existing query-rewrite isolation check. Next 16.2.7
+      // preserves the authored header here, but retains the original query.
+      expect(await response.json()).toEqual({ visitor });
+      expect(response.headers()["cache-control"]).toBe("public, max-age=300, s-maxage=600");
+    }
+  });
+
+  test("preserves browser policy for conditional config policies", async ({ request }) => {
+    for (const plan of ["pro", "basic"]) {
+      const response = await request.get(`${BASE_URL}/api/browser-cache-conditional`, {
+        headers: { "x-plan": plan },
+      });
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ browserCache: true });
+      expect(response.headers()["cache-control"]).toBe(
+        plan === "pro" ? "max-age=300" : "max-age=10",
+      );
+    }
+  });
+
+  // Next.js app-route.ts applies the ISR draft veto after middleware's headers.
+  test("keeps ISR draft responses uncacheable when proxy sets a browser TTL", async ({
+    request,
+  }) => {
+    await setDraftMode(request, true);
+    try {
+      for (const method of ["GET", "HEAD"]) {
+        const response = await request.fetch(`${BASE_URL}/api/draft-isr/proxy-policy`, {
+          method,
+          headers: { "x-browser-policy": "1" },
+        });
+        expect(response.status()).toBe(200);
+        expect(response.headers()["cache-control"]).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+        if (method === "GET") expect(await response.json()).toMatchObject({ draftMode: true });
+      }
     } finally {
       await setDraftMode(request, false);
     }
@@ -185,10 +359,8 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(dynamicResponse.status()).toBe(200);
     expect(await dynamicResponse.text()).toBe("tenant-a");
-    // The explicit response policy admits the completed body in the named
-    // entrypoint; the uncached gateway remains private for outer composition.
-    expect(dynamicResponse.headers()["cache-control"]).toContain("private");
-    expect(dynamicResponse.headers()["cache-control"]).toContain("max-age=0");
+    // The app's completed response keeps its explicit policy at the gateway.
+    expect(dynamicResponse.headers()["cache-control"]).toBe("public, s-maxage=60");
     expect(dynamicResponse.headers()["cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cache-tag"]).toBeUndefined();
@@ -304,13 +476,14 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
 
 test.describe("Cloudflare Pages-only completed-response admission", () => {
   const pagesBaseUrl = "http://localhost:4196";
+  browserPolicyRegressions(pagesBaseUrl, "browser-cache-pages");
   let pagesServer: ChildProcess;
 
   test.beforeAll(async () => {
     test.setTimeout(90_000);
     pagesServer = spawn(
       "../../../node_modules/.bin/vp build --config vite.pages-cdn-cache.config.ts && npx wrangler dev --config dist/cf_app_basic/wrangler.json --port 4196",
-      { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
+      { cwd: FIXTURE_DIR, shell: true, stdio: "inherit", detached: process.platform !== "win32" },
     );
     for (let attempt = 0; attempt < 240; attempt++) {
       if (pagesServer.exitCode !== null) {
@@ -326,7 +499,7 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
   });
 
   test.afterAll(() => {
-    pagesServer.kill();
+    stopWorker(pagesServer);
   });
 
   test("clears inner CDN policy when outer config keeps a response private", async ({
@@ -369,9 +542,81 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
 
     expect(response.status()).toBe(200);
     expect(await response.json()).toEqual({ public: true });
-    expect(response.headers()["cache-control"]).toBe("private, max-age=0, must-revalidate");
+    expect(response.headers()["cache-control"]).toBe("public, s-maxage=60");
     expect(response.headers()["cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  });
+
+  test("preserves browser cache policy for Pages API responses", async ({ request }) => {
+    const response = await request.get(`${pagesBaseUrl}/api/browser-cache-pages`);
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ browserCache: true });
+    expect(response.headers()["cache-control"]).toBe("max-age=10");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  });
+
+  test("preserves an independent Pages browser stale window", async ({ request }) => {
+    const response = await request.get(`${pagesBaseUrl}/api/browser-cache-pages-swr`);
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ browserCache: true });
+    expect(response.headers()["cache-control"]).toBe("max-age=10, stale-while-revalidate=60");
+  });
+
+  test("preserves browser policy when conditional middleware is eligible", async ({ request }) => {
+    for (const visitor of [undefined, "alice"]) {
+      const response = await request.get(`${pagesBaseUrl}/api/browser-cache-pages-middleware`, {
+        headers: visitor ? { "x-test-visitor-id": visitor } : undefined,
+      });
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ browserCache: true });
+      expect(response.headers()["x-cdn-stage-visitor"]).toBe(visitor);
+      expect(response.headers()["cache-control"]).toBe("max-age=10");
+    }
+  });
+
+  for (const kind of ["redirect", "rewrite"] as const) {
+    test(`preserves browser policy for conditional config routing: ${kind}`, async ({
+      request,
+    }) => {
+      const response = await request.get(`${pagesBaseUrl}/api/browser-cache-pages-${kind}`);
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ browserCache: true });
+      expect(response.headers()["cache-control"]).toBe("max-age=10");
+
+      const routed = await request.get(`${pagesBaseUrl}/api/browser-cache-pages-${kind}`, {
+        headers: kind === "redirect" ? { "x-plan": "pro" } : { Cookie: "plan=pro" },
+        maxRedirects: 0,
+      });
+      if (kind === "redirect") {
+        expect(routed.status()).toBe(307);
+        expect(routed.headers()["location"]).toBe("/api/browser-cache");
+      } else {
+        expect(await routed.json()).toEqual({ visitor: "pro" });
+        // The matched cookie condition already prevents shared admission.
+        expect(routed.headers()["cache-control"]).toBe("public, max-age=300, s-maxage=600");
+      }
+    });
+  }
+
+  test("preserves browser policy after a Pages query-only middleware rewrite", async ({
+    request,
+  }) => {
+    const anonymous = await request.get(
+      `${pagesBaseUrl}/api/browser-cache-pages-query?visitor=alice`,
+    );
+    expect(anonymous.headers()["cache-control"]).toBe("public, max-age=300, s-maxage=600");
+    for (const visitor of ["alice", "bob"]) {
+      const response = await request.get(
+        `${pagesBaseUrl}/api/browser-cache-pages-query?visitor=alice`,
+        {
+          headers: { "x-test-visitor-id": visitor },
+        },
+      );
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ visitor });
+      expect(response.headers()["cache-control"]).toBe("public, max-age=300, s-maxage=600");
+    }
   });
 
   test("keeps public Pages Edge API responses private after request.cf access", async ({
@@ -385,5 +630,16 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     expect(response.headers()["cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cache-tag"]).toBeUndefined();
+  });
+
+  test("preserves Pages browser policy for conditional config policies", async ({ request }) => {
+    for (const plan of ["pro", "basic"]) {
+      const response = await request.get(`${pagesBaseUrl}/api/browser-cache-pages-conditional`, {
+        headers: { "x-plan": plan },
+      });
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ browserCache: true });
+      expect(response.headers()["cache-control"]).toBe("max-age=10");
+    }
   });
 });
