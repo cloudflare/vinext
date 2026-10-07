@@ -34,10 +34,12 @@ import {
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
   getBfcacheIdMapContext,
+  getNavigationContext,
   getMountedSlotsHeader,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
   invalidatePrefetchCache,
+  parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
   decodeRedirectError,
@@ -115,6 +117,7 @@ import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
+  resolveFetchedHydrationLocation,
 } from "./app-browser-hydration.js";
 import {
   AppElementsWire,
@@ -164,7 +167,13 @@ import {
 } from "vinext/shims/error-boundary";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
-import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
+import {
+  BfcacheIdentityMapContext,
+  ElementsContext,
+  Slot,
+  bindAppElementsRenderedSearch,
+  setAppElementsRenderedSearch,
+} from "vinext/shims/slot";
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
@@ -173,7 +182,7 @@ import {
   createDevOnCaughtError,
   createOnUncaughtError,
   createProdOnCaughtError,
-  prodOnRecoverableError,
+  createProdOnRecoverableError,
 } from "./app-browser-error.js";
 import {
   createHydrationCachePublication,
@@ -211,6 +220,7 @@ import {
 import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
   VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "./headers.js";
@@ -588,7 +598,7 @@ async function fetchPersistedInterceptedSlotRefresh(options: {
     headers,
     signal: options.signal,
   });
-  return decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response)));
+  return decodeSupplementalRefresh(response, options.targetPathname);
 }
 
 async function fetchPersistedSourcePageRefresh(options: {
@@ -602,7 +612,28 @@ async function fetchPersistedSourcePageRefresh(options: {
     headers,
     signal: options.signal,
   });
-  return decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response)));
+  return decodeSupplementalRefresh(response, options.targetPathname);
+}
+
+/**
+ * Decode a kept branch a refresh fetched from its own URL. Its client pages
+ * read the query the server rendered it with, not the navigation's.
+ */
+async function decodeSupplementalRefresh(
+  response: Response,
+  targetPathname: string,
+): Promise<AppElements> {
+  const elements = await decodeAppElementsPromise(
+    createFromFetch<AppWireElements>(Promise.resolve(response)),
+  );
+  const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
+    response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+  );
+  setAppElementsRenderedSearch(
+    elements,
+    new URL(renderedPathAndSearch ?? targetPathname, window.location.origin).search,
+  );
+  return elements;
 }
 
 function isSettledPrefetchCacheEntry(
@@ -821,6 +852,7 @@ async function commitSameUrlNavigatePayload(
   actionInitiation: ActionInitiationSnapshot,
   returnValue?: ServerActionResult["returnValue"],
   revalidation: ServerActionRevalidationKind = "none",
+  renderedPathAndSearch: string | null = null,
 ): Promise<unknown> {
   let shouldRetrySupplementalRefresh = false;
   let supplementalHandle: ReturnType<
@@ -888,10 +920,22 @@ async function commitSameUrlNavigatePayload(
       });
     }
   }
-  const navigationSnapshot = createClientNavigationRenderSnapshot(
-    actionInitiation.href,
-    actionInitiation.routerState.navigationSnapshot.params,
-  );
+  // The re-render keeps the URL, but a rewrite on the POST can resolve
+  // another query. Without the header, keep the query the page rendered.
+  const navigationSnapshot =
+    renderedPathAndSearch === null
+      ? withRenderedSearchOf(
+          createClientNavigationRenderSnapshot(
+            actionInitiation.href,
+            actionInitiation.routerState.navigationSnapshot.params,
+          ),
+          actionInitiation.routerState.navigationSnapshot,
+        )
+      : createClientNavigationRenderSnapshot(
+          actionInitiation.href,
+          actionInitiation.routerState.navigationSnapshot.params,
+          renderedPathAndSearch,
+        );
   try {
     const result = await browserNavigationController.commitSameUrlNavigatePayload(
       nextElements,
@@ -1494,6 +1538,46 @@ function restoreEmbeddedHydrationNavigationContext(
   );
 }
 
+/**
+ * The path and query SSR rendered, from the navigation payload the document
+ * embeds: the effective query, which a rewrite may have changed, or the
+ * browser URL's when a stored document leaves the query out.
+ */
+function getHydrationRenderedPathAndSearch(): string | null {
+  const context = getNavigationContext();
+  if (!context) return null;
+  const search = context.searchParams.toString();
+  return search ? `${context.pathname}?${search}` : context.pathname;
+}
+
+/**
+ * A render that turns dynamic after the head sends its client pages' query
+ * later in the document (see `app-ssr-entry.ts`), possibly after bootstrap, so
+ * the hydration snapshot reads it when a client page first renders.
+ */
+function withLateRenderedSearch(
+  snapshot: ClientNavigationRenderSnapshot,
+  rsc: NavigationRuntimeRscBootstrap | undefined,
+): ClientNavigationRenderSnapshot {
+  if (!rsc) return snapshot;
+  const headRenderedSearch = snapshot.renderedSearch;
+  return Object.defineProperty(snapshot, "renderedSearch", {
+    configurable: true,
+    enumerable: true,
+    get: () => rsc.renderedSearch ?? headRenderedSearch,
+  });
+}
+
+/** Carry the rendered query over to a snapshot of the same URL. */
+function withRenderedSearchOf(
+  snapshot: ClientNavigationRenderSnapshot,
+  source: ClientNavigationRenderSnapshot,
+): ClientNavigationRenderSnapshot {
+  return source.renderedSearch === undefined
+    ? snapshot
+    : { ...snapshot, renderedSearch: source.renderedSearch };
+}
+
 function restorePopstateScrollPosition(
   state: unknown,
   options?: {
@@ -1670,7 +1754,15 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
     }
   }
 
-  restoreHydrationNavigationContext(window.location.pathname, window.location.search, params);
+  // Like the embedded payload, carry the query the server rendered, which a
+  // rewrite may have changed, under the public pathname.
+  const rendered = resolveFetchedHydrationLocation(
+    parseRenderedPathAndSearchHeader(
+      rscResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+    ),
+    window.location,
+  );
+  restoreHydrationNavigationContext(rendered.pathname, rendered.search, params);
 
   return rscResponse.body;
 }
@@ -1722,6 +1814,7 @@ function registerServerActionCallback(): void {
               navigationSnapshot: createClientNavigationRenderSnapshot(
                 target.href,
                 actionInitiation.routerState.navigationSnapshot.params,
+                target.renderedPathAndSearch,
               ),
               navId: actionInitiation.navigationId,
               operationLane: resolveServerActionOperationLane(revalidation),
@@ -1782,11 +1875,20 @@ function bootstrapHydration(
   const hydrationCachePublication = createHydrationCachePublication();
   const cacheGeneration = clientNavigationCacheGeneration;
   const [reactBranch, cacheBranch] = rscStream.tee();
-  const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(reactBranch));
-  const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
-    window.location.href,
-    latestClientParams,
+  const initialNavigationSnapshot = withLateRenderedSearch(
+    createClientNavigationRenderSnapshot(
+      window.location.href,
+      latestClientParams,
+      getHydrationRenderedPathAndSearch(),
+    ),
+    initialRscBootstrap,
   );
+  const root = decodeAppElementsPromise(
+    createFromReadableStream<AppWireElements>(reactBranch),
+  ).then((elements) => {
+    bindAppElementsRenderedSearch(elements, initialNavigationSnapshot);
+    return elements;
+  });
   const initialParams = initialNavigationSnapshot.params;
   const initialPathAndSearch = createSnapshotPathAndSearch(initialNavigationSnapshot);
   const initialCacheBuffer = new Response(cacheBranch).arrayBuffer();
@@ -1856,10 +1958,9 @@ function bootstrapHydration(
     hydrationCachePublication.fail();
     reportUncaughtError(...args);
   };
-  const onRecoverableError = (...args: Parameters<typeof prodOnRecoverableError>) => {
+  const onRecoverableError = createProdOnRecoverableError(() => {
     hydrationCachePublication.fail();
-    prodOnRecoverableError(...args);
-  };
+  });
   const invalidateOnCaughtError = <T extends (...args: never[]) => void>(handler: T): T =>
     ((...args: Parameters<T>) => {
       hydrationCachePublication.fail();
@@ -2215,7 +2316,9 @@ function bootstrapHydration(
             redirectDepth: redirectCount,
             requestPreviousNextUrl,
             responseOk: true,
-            responseUrl: cachedRoute.response.url,
+            // Hydration and consumed prefetch snapshots can retain the static
+            // Flight transport URL. Match the fresh-response path below.
+            responseUrl: IS_STATIC_EXPORT ? currentHref : cachedRoute.response.url,
             source: "cached",
             streamedRedirectTarget: null,
           });
@@ -2254,6 +2357,7 @@ function bootstrapHydration(
           const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
             currentHref,
             cachedParams,
+            cachedRoute.response.renderedPathAndSearch,
           );
           const cachedPayload = cachedRoute.elements
             ? Promise.resolve(cachedRoute.elements)
@@ -2523,7 +2627,8 @@ function bootstrapHydration(
         // the response body underneath createFromFetch and reports an unhandled
         // BodyStreamBuffer AbortError. The navigation id still prevents a late
         // decoded payload from committing. Refreshes retain ownership because
-        // their supplemental branch requests use the same signal until commit.
+        // their supplemental branch requests use the same signal until they
+        // settle.
         if (!hasSupplementalRefresh) {
           navigationAbortHandle.release();
         }
@@ -2535,7 +2640,13 @@ function bootstrapHydration(
         const navParams: Record<string, string | string[]> =
           responseParams ?? (IS_STATIC_EXPORT ? resolveStaticExportRouteParams(currentHref) : {});
         // Build snapshot from local params, not latestClientParams
-        const navigationSnapshot = createClientNavigationRenderSnapshot(currentHref, navParams);
+        const navigationSnapshot = createClientNavigationRenderSnapshot(
+          currentHref,
+          navParams,
+          parseRenderedPathAndSearchHeader(
+            navResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+          ),
+        );
 
         // Tee the response body so React can consume it incrementally —
         // shell parses fast, and any Suspense boundary inside (e.g. the
@@ -2600,7 +2711,15 @@ function bootstrapHydration(
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortHandle.signal,
             supplemental,
-          }).then(requireCompleteSupplementalRefresh);
+          })
+            .finally(() => {
+              // Settled supplemental requests stop listening to this signal, so
+              // it now guards only the primary Flight body React is about to
+              // render. Aborting that body would reject the refreshed tree's
+              // pending chunks into the nearest error boundary.
+              navigationAbortHandle.release();
+            })
+            .then(requireCompleteSupplementalRefresh);
         }
 
         // Static hosts cannot supply the compatibility response header used by
@@ -2960,10 +3079,6 @@ function bootstrapHydration(
         return;
       }
       clearClientNavigationCaches();
-      const navigationSnapshot = createClientNavigationRenderSnapshot(
-        window.location.href,
-        latestClientParams,
-      );
       // Clear stale errors from the dev overlay before dispatching the
       // fresh tree. If the new tree renders cleanly, the overlay stays
       // empty; if it throws again, devOnCaughtError/devOnUncaughtError
@@ -2978,19 +3093,32 @@ function bootstrapHydration(
           browserNavigationController.getBrowserRouterState().elements,
         ),
       });
+      const hmrHref = window.location.href;
+      const hmrParams = latestClientParams;
+      // Same URL, so the same rendered query unless the response says otherwise.
+      const sameQuerySnapshot = withRenderedSearchOf(
+        createClientNavigationRenderSnapshot(hmrHref, hmrParams),
+        browserNavigationController.getBrowserRouterState().navigationSnapshot,
+      );
+      const hmrResponse = fetch(
+        await createRscRequestUrl(window.location.pathname + window.location.search, hmrHeaders),
+        { headers: hmrHeaders },
+      );
+      // Enter the controller before the response arrives, so this update
+      // supersedes an older one that is still decoding.
       await browserNavigationController.hmrReplaceTree(
         decodeAppElementsPromise(
-          createFromFetch<AppWireElements>(
-            fetch(
-              await createRscRequestUrl(
-                window.location.pathname + window.location.search,
-                hmrHeaders,
-              ),
-              { headers: hmrHeaders },
-            ).then(stripRscCompletionMetadataResponse),
-          ),
+          createFromFetch<AppWireElements>(hmrResponse.then(stripRscCompletionMetadataResponse)),
         ),
-        navigationSnapshot,
+        hmrResponse.then((response) => {
+          // A rewrite can resolve another query than the tree had.
+          const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
+            response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+          );
+          return renderedPathAndSearch === null
+            ? sameQuerySnapshot
+            : createClientNavigationRenderSnapshot(hmrHref, hmrParams, renderedPathAndSearch);
+        }),
       );
     };
 

@@ -2,8 +2,6 @@
 
 import "./server-globals.js";
 import requestRscHandler, {
-  __assetPrefix,
-  __basePath,
   __ensureHybridPagesApplication,
   __ensureInstrumentation,
   __imageAllowedWidths,
@@ -23,11 +21,7 @@ import {
   handleConfiguredImageOptimization,
   isImageOptimizationPath,
 } from "./image-optimization.js";
-import {
-  createStaticAssetRequest,
-  finalizeMissingStaticAssetResponse,
-  resolveStaticAssetSignal,
-} from "./worker-utils.js";
+import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -43,7 +37,6 @@ import {
 } from "./headers.js";
 import { readTrustedPrerenderStateFromHeaders } from "./prerender-route-params.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
-import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
   createWorkerPrerenderDiscoveryContext,
@@ -59,11 +52,6 @@ import { consumeFrameworkRequestRoute, traceFrameworkRequest } from "./request-t
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
-
-const workerBasePath = typeof __basePath === "string" ? __basePath : "";
-const workerAssetPathPrefix = assetPrefixPathname(
-  typeof __assetPrefix === "string" ? __assetPrefix : "",
-);
 
 export function handleRequestStage(
   request: Request,
@@ -165,7 +153,6 @@ async function handleRequest(
     return badRequestResponse();
   }
 
-  const missingBuildAsset = isNextStaticPath(url.pathname, workerBasePath, workerAssetPathPrefix);
   const trustedPrerenderState = readTrustedPrerenderStateFromHeaders(
     request.headers,
     __prerenderSecret,
@@ -216,7 +203,6 @@ async function handleRequest(
     });
     if (assetResponse) response = assetResponse;
   }
-  response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
   if (probeMode && probeRoute && !responseStageDispatched) {
     const { finalizeRequestStageCacheabilityProbe } = await import("./cacheability-request.js");
     response = finalizeRequestStageCacheabilityProbe(response, {

@@ -6,7 +6,11 @@ import {
   serializeWorkerCacheabilityProbeRoute,
   type WorkerCacheabilityProbeMode,
 } from "../packages/vinext/src/server/cacheability-request.js";
-import { VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
+  VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { cacheabilityManifestRouteKey } from "../packages/vinext/src/server/cacheability-manifest.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import {
@@ -18,6 +22,13 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { handleMetadataRouteRequest } from "../packages/vinext/src/server/metadata-route-response.js";
+import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -161,7 +172,7 @@ describe("response-stage cacheability", () => {
       async (context) => {
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
         return new Response(body, { headers: { "Cache-Control": "no-store" } });
       },
@@ -226,6 +237,84 @@ describe("response-stage cacheability", () => {
     await expect(response.text()).resolves.toContain("changed from static to dynamic");
   });
 
+  it("drops request-scoped headers before admitting a shared response", async () => {
+    const route = { kind: "app-page" as const, pattern: "/page", state: "static-candidate" };
+    const rawManifest = JSON.stringify({
+      buildId: "build-a",
+      routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+      version: 1,
+    });
+    const rscRequest = () =>
+      new Request("https://example.com/page?_rsc", {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      });
+    const admitted: Response[] = [];
+    const render = (options: {
+      cache: "bypass" | "shared";
+      rawManifest: string | null;
+      recomposesRequestScopedHeaders: boolean;
+    }) =>
+      withResponseStageCacheability(
+        {
+          ...options,
+          buildId: "build-a",
+          context: baseContext(),
+          registerCacheAdapters() {},
+          request: rscRequest(),
+        },
+        async (context) => {
+          const state = contextState(context);
+          if (state) {
+            state.route = { kind: "app-page", pattern: "/page" };
+            state.outcome = {
+              cacheable: true,
+              cacheControl: "s-maxage=60",
+              searchParamsUnread: true,
+            };
+          }
+          return new Response("rsc", {
+            headers: {
+              [VINEXT_PARAMS_HEADER]: encodeURIComponent('{"id":"one"}'),
+              [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/page?q=1"),
+            },
+          });
+        },
+      );
+    setCdnCacheAdapter({
+      ...admissionAdapter(),
+      deferCompletedPageResponseAdmission(response) {
+        admitted.push(response);
+        return null;
+      },
+    });
+
+    // Manifest admission stores the response as returned.
+    const manifestAdmitted = await render({
+      cache: "shared",
+      rawManifest,
+      recomposesRequestScopedHeaders: true,
+    });
+    expect(manifestAdmitted.headers.get("Cache-Control")).toBe("s-maxage=60");
+    expect(manifestAdmitted.headers.has(VINEXT_PARAMS_HEADER)).toBe(false);
+    expect(manifestAdmitted.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(false);
+    await expect(manifestAdmitted.text()).resolves.toBe("rsc");
+
+    // Deferred runtime admission sees the response without them too.
+    await render({ cache: "shared", rawManifest: null, recomposesRequestScopedHeaders: true });
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]!.headers.has(VINEXT_PARAMS_HEADER)).toBe(false);
+    expect(admitted[0]!.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(false);
+
+    for (const kept of [
+      await render({ cache: "bypass", rawManifest, recomposesRequestScopedHeaders: true }),
+      await render({ cache: "shared", rawManifest, recomposesRequestScopedHeaders: false }),
+    ]) {
+      expect(kept.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+        encodeURIComponent("/page?q=1"),
+      );
+    }
+  });
+
   it("runs authenticated probes even when the response transport bypasses caching", async () => {
     let closeBody!: () => void;
     let markRenderStarted!: () => void;
@@ -254,7 +343,7 @@ describe("response-stage cacheability", () => {
         markRenderStarted();
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response(body);
       },
     ).finally(() => {
@@ -289,7 +378,7 @@ describe("response-stage cacheability", () => {
       async (context) => {
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/client-page" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response("rendered");
       },
     );
@@ -336,7 +425,7 @@ describe("response-stage cacheability", () => {
           routePathname: "/target",
         });
         state.route = { kind: "app-page", pattern: "/target" };
-        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", searchParamsUnread: true };
         return new Response("static");
       },
     );
@@ -415,6 +504,14 @@ describe("response-stage cacheability", () => {
         isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
         readCacheControl: (headers) =>
           headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        // Naming the header lets core attribute config's policy, which waives
+        // the App page's searchParams proof.
+        readCacheControlHeaderName: (headers) =>
+          headers.has("X-Example-Edge-Policy")
+            ? "X-Example-Edge-Policy"
+            : headers.has("Cache-Control")
+              ? "Cache-Control"
+              : null,
         hasExplicitNonCacheablePolicy: () => false,
       },
     });
@@ -529,5 +626,111 @@ describe("response-stage cacheability", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     await expect(response.json()).resolves.toEqual({ private: true });
+  });
+});
+
+describe("response-stage metadata route admission", () => {
+  const YEAR = "public, immutable, no-transform, max-age=31536000";
+  const PATTERN = "/:locale/event/:city/:eventId/opengraph-image";
+
+  function eventImageRoute(response: () => Response): MetadataFileRoute {
+    return {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/[locale]/event/[city]/[eventId]/opengraph-image.tsx",
+      routePrefix: "/[locale]/event/[city]/[eventId]",
+      routeSegments: ["[locale]", "event", "[city]", "[eventId]"],
+      servedUrl: "/[locale]/event/[city]/[eventId]/opengraph-image",
+      patternParts: [":locale", "event", ":city", ":eventId", "opengraph-image"],
+      contentType: "image/png",
+      module: { default: response },
+    };
+  }
+
+  async function renderEventImage(options: {
+    headers?: HeadersInit;
+    method?: string;
+    response: () => Response;
+  }): Promise<{ response: Response; state: RouteCacheabilityState | undefined }> {
+    const pathname = "/en/event/london/42/opengraph-image";
+    let state: RouteCacheabilityState | undefined;
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        rawManifest: JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+        registerCacheAdapters: () => setCdnCacheAdapter(new CloudflareCdnCacheAdapter()),
+        request: new Request(`https://example.com${pathname}`, {
+          headers: options.headers,
+          method: options.method,
+        }),
+        resolvedRoutePathname: pathname,
+      },
+      async (context) => {
+        state = contextState(context);
+        const rendered = await runWithRequestContext(
+          createRequestContext({ executionContext: context }),
+          () =>
+            handleMetadataRouteRequest({
+              cleanPathname: pathname,
+              makeThenableParams: (params) => Object.assign(Promise.resolve(params), params),
+              metadataRoutes: [eventImageRoute(options.response)],
+            }),
+        );
+        return rendered!;
+      },
+    );
+    return { response, state };
+  }
+
+  function png(headers: HeadersInit, status = 200): () => Response {
+    return () =>
+      new Response("png-bytes", {
+        headers: { "Content-Type": "image/png", ...Object.fromEntries(new Headers(headers)) },
+        status,
+      });
+  }
+
+  it.each(["GET", "HEAD"])(
+    "admits a dynamic opengraph-image on its own public Cache-Control for %s",
+    async (method) => {
+      const { response, state } = await renderEventImage({
+        method,
+        response: png({ "Cache-Control": YEAR }),
+      });
+
+      expect(state?.route).toEqual({ kind: "app-route", pattern: PATTERN });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(YEAR);
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(response.headers.get("Content-Type")).toBe("image/png");
+      await expect(response.text()).resolves.toBe("png-bytes");
+    },
+  );
+
+  it.each([
+    ["the route opts out with no-store", { response: png({ "Cache-Control": "no-store" }) }],
+    [
+      "the route sets a cookie",
+      { response: png({ "Cache-Control": YEAR, "Set-Cookie": "seen=1; Path=/" }) },
+    ],
+    [
+      "the request carries a cookie",
+      { headers: { Cookie: "session=1" }, response: png({ "Cache-Control": YEAR }) },
+    ],
+    [
+      "the request carries authorization",
+      { headers: { Authorization: "Bearer token" }, response: png({ "Cache-Control": YEAR }) },
+    ],
+    ["the route fails with a 5xx", { response: png({ "Cache-Control": YEAR }, 503) }],
+    ["the request is not a read", { method: "POST", response: png({ "Cache-Control": YEAR }) }],
+    ["the route relies on the framework default", { response: png({}) }],
+  ])("keeps a metadata route private when %s", async (_label, options) => {
+    const { response } = await renderEventImage(options);
+
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("png-bytes");
   });
 });

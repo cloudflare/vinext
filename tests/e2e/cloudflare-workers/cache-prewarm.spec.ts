@@ -101,3 +101,177 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(nextRenderId).toBeTruthy();
   expect(nextRenderId).not.toBe(renderId);
 });
+
+test("a dynamic-segment route without generateStaticParams is never cached", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  // Next.js renders this route per request even though it sets `revalidate`.
+  const url = `${baseURL}/dynamic-segment/${randomUUID()}`;
+  const renderIds: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(url);
+    const headers = response.headers();
+    expect(response.ok(), JSON.stringify({ backend, headers })).toBe(true);
+    // Workers Cache admission rewrites a denied response to its own no-store
+    // policy, so only the no-store directive is common to every backend.
+    expect(headers["cache-control"]).toContain("no-store");
+    expect(headers["x-vinext-cache"]).not.toBe("HIT");
+    expect(headers["cf-cache-status"]).not.toBe("HIT");
+    const renderId = /dynamic-segment-render-id[^>]*>([^<]+)</.exec(await response.text())?.[1];
+    expect(renderId).toBeTruthy();
+    renderIds.push(renderId!);
+  }
+  expect(renderIds[1]).not.toBe(renderIds[0]);
+});
+
+test("a static page with no revalidate source is served from the configured cache", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(60_000);
+
+  // Next.js defaults a static page to `revalidate = false`. The deploy may have
+  // warmed it already, so wait for two consecutive responses from one render.
+  const renderIds: string[] = [];
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${baseURL}/static-default`);
+        expect(response.ok(), JSON.stringify({ backend, headers: response.headers() })).toBe(true);
+        const renderId = /static-default-render-id[^>]*>([^<]+)</.exec(await response.text())?.[1];
+        expect(renderId).toBeTruthy();
+        renderIds.push(renderId!);
+        return renderIds.length > 1 && renderIds.at(-1) === renderIds.at(-2);
+      },
+      { intervals: [1_000], timeout: 45_000 },
+    )
+    .toBe(true);
+});
+
+test("useSearchParams() inside Suspense keeps the query out of a static page", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  const query = randomUUID();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(`${baseURL}/search-params/suspense?q=${query}`);
+    const body = await response.text();
+    expect(response.ok(), JSON.stringify({ backend, headers: response.headers() })).toBe(true);
+    // The server renders the fallback, and the browser reads the query.
+    expect(body).toContain('data-testid="search-fallback"');
+    expect(body).not.toContain(query);
+  }
+});
+
+test("useSearchParams() outside Suspense fails an on-demand static path", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  const url = `${baseURL}/search-params/unwrapped/${randomUUID()}?q=${randomUUID()}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(url);
+    await response.dispose();
+    expect(response.status(), JSON.stringify({ backend, headers: response.headers() })).toBe(500);
+  }
+});
+
+test("useSearchParams() server-renders the real query once the page is dynamic", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  const query = randomUUID();
+  const response = await request.get(`${baseURL}/search-params/dynamic?q=${query}`);
+  const headers = response.headers();
+  expect(response.ok(), JSON.stringify({ backend, headers })).toBe(true);
+  expect(/search-value[^>]*>([^<]+)</.exec(await response.text())?.[1]).toBe(query);
+  expect(headers["x-vinext-cache"]).not.toBe("HIT");
+  expect(headers["cf-cache-status"]).not.toBe("HIT");
+});
+
+test("Workers Cache serves every query of a static page from one entry", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(backend !== "workers-cache", "the query-free dispatch is specific to Workers Cache");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(180_000);
+
+  // Next.js serves a static page's one render for any query. Each request
+  // carries a query no earlier request used, so only an entry shared across
+  // queries can report a HIT with the previous response's render. No query
+  // ever reaches the shared render.
+  const expectSharedAcrossQueries = async (
+    label: string,
+    urlFor: (query: string) => string,
+    headers: Record<string, string>,
+    content: string,
+    renderOf: (body: string) => string | undefined,
+  ) => {
+    const queries: string[] = [];
+    let previousRender: string | undefined;
+    await expect
+      .poll(
+        async () => {
+          const query = randomUUID();
+          queries.push(query);
+          const response = await request.get(urlFor(query), { headers });
+          const responseHeaders = response.headers();
+          const trace = JSON.stringify({ label, headers: responseHeaders });
+          expect(response.ok(), trace).toBe(true);
+          const body = await response.text();
+          expect(body, trace).toContain(content);
+          for (const sent of queries) expect(body, trace).not.toContain(sent);
+          const render = renderOf(body);
+          expect(render, trace).toBeTruthy();
+          const shared = responseHeaders["cf-cache-status"] === "HIT" && render === previousRender;
+          previousRender = render;
+          return shared;
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe(true);
+  };
+
+  await expectSharedAcrossQueries(
+    "HTML",
+    (query) => `${baseURL}/cached/featured?q=${query}`,
+    { accept: "text/html" },
+    "Post: featured",
+    (body) => /data-render-id-tag[^>]*>([^<]+)</.exec(body)?.[1],
+  );
+  // The canonical navigation RSC request: no router-state headers, so its
+  // validated `_rsc` value is empty.
+  await expectSharedAcrossQueries(
+    "RSC navigation",
+    (query) => `${baseURL}/cached/featured?q=${query}&_rsc`,
+    { accept: "text/x-component", rsc: "1" },
+    "Post: featured",
+    // A HIT returns the stored payload byte for byte.
+    (body) => body,
+  );
+  // A static page that reads useSearchParams() inside Suspense: Next.js
+  // prerenders it once with the fallback, and the browser reads the query.
+  await expectSharedAcrossQueries(
+    "HTML with useSearchParams() inside Suspense",
+    (query) => `${baseURL}/search-params/suspense?q=${query}`,
+    { accept: "text/html" },
+    'data-testid="search-fallback"',
+    (body) => /search-suspense-render-id[^>]*>([^<]+)</.exec(body)?.[1],
+  );
+});

@@ -26,21 +26,25 @@ import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager"
   }}
 />
 
-The initializer creates or updates `vite.config.ts` and `wrangler.jsonc`, then lets you choose caching and image optimization. Commit these generated config files.
+The initializer creates or updates `vite.config.ts` and creates `cloudflare.config.ts`, then lets you choose caching and image optimization. It installs `cf` and Cloudflare Vite plugin v2 and generates scripts for `vite dev`, `vite build`, `vite preview`, and `vinext-cloudflare deploy`. Commit the source config files; the generated Cloudflare Build Output stays gitignored.
+
+Response Store service-binding mode declares its second Worker in the typed config and builds both Workers together. KV namespaces and missing Response Store R2 buckets are automatically provisioned on deployment. See [Caching on Cloudflare](/docs/guides/caching) for each adapter's config.
+
+For TypeScript projects, add `.cloudflare/types` to the `include` list in `tsconfig.json`. The plugin generates binding and runtime declarations there during development and builds; these files stay gitignored. Run `cf workers types` to generate them before a standalone type-check without building the app.
 
 ## 2. Authenticate
 
 <PackageManagerCommand
   commands={{
-    pnpm: "pnpm dlx wrangler login",
-    npm: "npx wrangler login",
-    yarn: "yarn dlx wrangler login",
-    bun: "bunx wrangler login",
-    vp: "vpx wrangler login",
+    pnpm: "pnpm exec cf auth login",
+    npm: "npx cf auth login",
+    yarn: "yarn cf auth login",
+    bun: "bunx cf auth login",
+    vp: "vp exec cf auth login",
   }}
 />
 
-Add your Cloudflare account ID to `wrangler.jsonc`, or set `CLOUDFLARE_ACCOUNT_ID`. In CI, use a `CLOUDFLARE_API_TOKEN` instead of browser login.
+Set `accountId` at the top level of `defineConfig` in `cloudflare.config.ts` (outside `worker`), or set `CLOUDFLARE_ACCOUNT_ID`. In CI, use a `CLOUDFLARE_API_TOKEN` instead of browser login.
 
 ## 3. Deploy
 
@@ -54,13 +58,23 @@ Add your Cloudflare account ID to `wrangler.jsonc`, or set `CLOUDFLARE_ACCOUNT_I
   }}
 />
 
-The deploy command validates the initialized setup, builds all Vite environments, and deploys the Worker. Use `--preview` for the preview environment.
+The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode; `--preview` selects the preview mode.
+
+For Response Store service-binding mode, build and deploy the cache Worker explicitly before the first application deployment:
+
+```sh
+pnpm run build:vinext
+pnpm run deploy:response-store
+pnpm run deploy:vinext
+```
+
+`create-vinext-app` uses `build` and `deploy` instead of `build:vinext` and `deploy:vinext`. Redeploy the Response Store when its package or config changes; normal application deployments do not redeploy it.
 
 To prefill configured caches before promoting a new Worker version, see [Cache warming](/docs/guides/caching#cache-warming).
 
 ## Use Workers bindings
 
-Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in Wrangler as usual.
+Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in the Worker's `env` object in `cloudflare.config.ts`.
 
 ```tsx
 import { env } from "cloudflare:workers";

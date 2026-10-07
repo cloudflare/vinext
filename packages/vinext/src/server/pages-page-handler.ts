@@ -570,9 +570,11 @@ export function createPagesPageHandler(
         : i18nConfig.defaultLocale
       : undefined;
     const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
+    // A domain can serve prefixed locales as well as its default locale. Keep
+    // both dimensions, and leave old domain-only entries unreachable.
     const i18nCacheVariant = i18nConfig
       ? localeInfo.domainLocale
-        ? "domain:" + String(localeInfo.domainLocale.domain).toLowerCase()
+        ? JSON.stringify([String(localeInfo.domainLocale.domain).toLowerCase(), locale])
         : "locale:" + String(locale)
       : null;
     const pageIsrCacheKey = isrCacheKeyForRequest(i18nCacheVariant);

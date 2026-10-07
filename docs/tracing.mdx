@@ -39,7 +39,7 @@ Every framework span includes these stable Next.js attributes:
 - `next.span_name`: the final span name
 - `next.span_type`: one of the types below
 
-The request root uses `BaseServer.handleRequest`. It starts with `http.method` and `http.target`, then records the parameterized `http.route` and `next.route`, `next.rsc`, `http.status_code`, and `error.type` when applicable. Its final `next.span_name` follows Next.js, for example `GET /blog/[slug]` or `RSC GET /blog/[slug]`. OpenTelemetry also updates the span's display name; the current Workers custom-span API cannot rename a started span, so its display name remains the initial method while its final `next.span_name` attribute is route-qualified.
+The request root uses `BaseServer.handleRequest`. It starts with `http.method` and `http.target`, then records the parameterized `http.route` and `next.route`, `next.rsc`, `http.status_code`, and `error.type` when applicable. Its final `next.span_name` follows Next.js, for example `GET /blog/[slug]` or `RSC GET /blog/[slug]`. OpenTelemetry also updates the span's display name. Workers tracing updates the display name and error status when the runtime supports `updateName()` and `setStatus()`; older runtimes retain the initial display name and still receive the final `next.span_name` and `error.type` attributes.
 
 The stable built-in child span types are:
 
@@ -176,6 +176,8 @@ Enable trace recording deliberately in `wrangler.jsonc`:
 ```
 
 The resulting native hierarchy can contain the Workers handler root, an application custom span, vinext's `BaseServer.handleRequest` and built-in child spans, another application span in route code, and automatic fetch, KV, D1, R2, or other binding spans. Workers Observability can retain the trace or export it through a configured OpenTelemetry destination, including Sentry, without adding an in-process Sentry SDK solely for Workers-native tracing.
+
+When the runtime exposes `tracing.getActiveSpan()`, vinext also adds the matched `http.route` to the enclosing native span. Native exception events preserve an error's `code`, `name`, `message`, and `stack` when present, including structured exceptions. These capabilities are detected at runtime so applications using older local Workers runtimes continue to work.
 
 Vinext defines each logical framework span once and enters every available tracing context around the same callback. If an application uses both a registered OpenTelemetry provider and native Workers tracing, both consumers see the same built-in child-span names and stable `next.*` attributes, but they retain their own generated trace and span IDs.
 

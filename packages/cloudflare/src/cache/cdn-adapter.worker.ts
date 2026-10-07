@@ -622,7 +622,7 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
   }
 }
 
-/** Uncached response entrypoint. Bypass and probe renders execute only here. */
+/** Uncached response entrypoint retained for deployment readiness probes. */
 export class VinextUncachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
     const context = withResponseStagePurge(withWorkerHostRuntime(this.ctx, this.env));
@@ -674,6 +674,12 @@ export default {
       };
       const usesSharedCache = options.cache === "shared";
       try {
+        // Readiness must still verify that the named response entrypoint is available.
+        if (!usesSharedCache && !isResponseStageReadinessRequest(stageRequest)) {
+          return stampResponseStageBuildIdentity(
+            await invokeResponseStage(stageRequest, env, stageContext, invocation),
+          );
+        }
         const serializedInvocation = JSON.stringify({
           ...invocation,
           options:

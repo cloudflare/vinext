@@ -18,6 +18,86 @@ import { getPagesClientAssets } from "./pages-client-assets.js";
 // Manifest helpers
 // ---------------------------------------------------------------------------
 
+// Build metadata is immutable within a build. Development invalidates the
+// virtual asset module and supplies new objects on edits. Weak keys keep these
+// derived lookups scoped to that snapshot without retaining previous builds.
+// Module IDs come from the route table, never from request URLs.
+const nonEmptyManifests = new WeakMap<object, boolean>();
+const moduleKeyOrder = new WeakMap<object, Map<string, number>>();
+const sharedChunkFiles = new WeakMap<object, string[]>();
+const lazyChunkSets = new WeakMap<string[], Set<string>>();
+
+function findModuleKey(manifest: Record<string, unknown>, moduleId: string): string | null {
+  if (manifest[moduleId]) return moduleId;
+
+  // Most built manifests have just one matching relative module path. Probe
+  // that path's suffixes directly before indexing any build-wide keys. Own
+  // enumerable keys precede inherited keys in the original for-in lookup.
+  let uniqueKey: string | null = null;
+  let candidate = moduleId;
+  while (true) {
+    if (Object.prototype.propertyIsEnumerable.call(manifest, candidate)) {
+      if (uniqueKey !== null) {
+        uniqueKey = null;
+        break;
+      }
+      uniqueKey = candidate;
+    }
+    const slash = candidate.indexOf("/");
+    if (slash === -1) break;
+    candidate = candidate.slice(slash + 1);
+  }
+  if (uniqueKey !== null) return uniqueKey;
+
+  let keyOrder = moduleKeyOrder.get(manifest);
+  if (!keyOrder) {
+    keyOrder = new Map();
+    for (const key in manifest) keyOrder.set(key, keyOrder.size);
+    moduleKeyOrder.set(manifest, keyOrder);
+  }
+
+  // Probe only slash-delimited suffixes of this path, so even the first visit
+  // to another route is independent of the total number of manifest entries.
+  // Keep the old first-enumerated-key precedence when suffixes overlap.
+  let matchedKey: string | null = null;
+  let matchedOrder = Infinity;
+  let suffix = moduleId;
+  while (true) {
+    const order = keyOrder.get(suffix);
+    if (order !== undefined && order < matchedOrder) {
+      matchedKey = suffix;
+      matchedOrder = order;
+    }
+    const slash = suffix.indexOf("/");
+    if (slash === -1) break;
+    suffix = suffix.slice(slash + 1);
+  }
+  return matchedKey;
+}
+
+export function getSharedChunkFiles(manifest: Record<string, string[]>): string[] {
+  const cached = sharedChunkFiles.get(manifest);
+  if (cached) return cached;
+
+  const files = new Set<string>();
+  for (const key in manifest) {
+    for (const file of manifest[key] ?? []) {
+      const basename = file.slice(file.lastIndexOf("/") + 1);
+      if (
+        basename.startsWith("framework-") ||
+        basename.startsWith("vinext-") ||
+        basename.includes("vinext-client-entry") ||
+        basename.includes("vinext-app-browser-entry")
+      ) {
+        files.add(file);
+      }
+    }
+  }
+  const result = [...files];
+  sharedChunkFiles.set(manifest, result);
+  return result;
+}
+
 /**
  * Resolve the effective SSR manifest: prefer the caller-supplied object and
  * fall back to the registered client build metadata.
@@ -25,7 +105,14 @@ import { getPagesClientAssets } from "./pages-client-assets.js";
 export function resolveSsrManifest(
   manifest: Record<string, string[]> | null | undefined,
 ): Record<string, string[]> | null {
-  if (manifest && Object.keys(manifest).length > 0) return manifest;
+  if (manifest) {
+    let nonEmpty = nonEmptyManifests.get(manifest);
+    if (nonEmpty === undefined) {
+      nonEmpty = Object.keys(manifest).length > 0;
+      nonEmptyManifests.set(manifest, nonEmpty);
+    }
+    if (nonEmpty) return manifest;
+  }
   return getPagesClientAssets().ssrManifest ?? null;
 }
 
@@ -41,15 +128,8 @@ export function getManifestFilesForModule(
 ): string[] | null {
   if (!manifest || !moduleId) return null;
 
-  const files = manifest[moduleId];
-  if (files) return files;
-
-  for (const key in manifest) {
-    if (moduleId.endsWith("/" + key) || moduleId === key) {
-      return manifest[key];
-    }
-  }
-  return null;
+  const key = findModuleKey(manifest, moduleId);
+  return key === null ? null : manifest[key];
 }
 
 function collectGraphOrderedCss(
@@ -60,16 +140,7 @@ function collectGraphOrderedCss(
   const emitted = new Set<string>();
   const visited = new Set<string>();
 
-  function findKey(moduleId: string | null | undefined): string | undefined {
-    if (!moduleId) return undefined;
-    if (graph[moduleId]) return moduleId;
-    for (const key in graph) {
-      if (moduleId === key || moduleId.endsWith("/" + key)) return key;
-    }
-    return undefined;
-  }
-
-  function visit(key: string | undefined): void {
+  function visit(key: string | null): void {
     if (!key || visited.has(key)) return;
     visited.add(key);
     const chunk = graph[key];
@@ -82,7 +153,9 @@ function collectGraphOrderedCss(
     }
   }
 
-  for (const moduleId of moduleIds) visit(findKey(moduleId));
+  for (const moduleId of moduleIds) {
+    if (moduleId) visit(findModuleKey(graph, moduleId));
+  }
   return ordered;
 }
 
@@ -198,7 +271,11 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // tags — they are fetched on demand when the dynamic import() executes.
   const runtimeAssets = getPagesClientAssets();
   const lazyChunks = runtimeAssets.lazyChunks ?? null;
-  const lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
+  let lazySet = lazyChunks ? lazyChunkSets.get(lazyChunks) : undefined;
+  if (lazyChunks && !lazySet) {
+    lazySet = new Set(lazyChunks);
+    lazyChunkSets.set(lazyChunks, lazySet);
+  }
 
   // Development adapters provide the Vite-served virtual entry explicitly.
   // Production builds use the client entry registered from the emitted sidecar.
@@ -251,26 +328,12 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         }
       }
 
-      // Also inject shared chunks that every page needs: framework,
-      // vinext runtime, and the entry bootstrap. These are identified
-      // by scanning all manifest values for chunk filenames containing
-      // known prefixes.
-      for (const key in m) {
-        const vals = m[key];
-        if (!vals) continue;
-        for (let vi = 0; vi < vals.length; vi++) {
-          const file = vals[vi];
-          const basename = file.split("/").pop() || "";
-          if (
-            basename.startsWith("framework-") ||
-            basename.startsWith("vinext-") ||
-            basename.includes("vinext-client-entry") ||
-            basename.includes("vinext-app-browser-entry")
-          ) {
-            allFiles.push(file);
-          }
-        }
-      }
+      // Shared runtime files are build-wide; scan and deduplicate them once.
+      const sharedFiles =
+        m === runtimeAssets.ssrManifest && runtimeAssets.sharedChunks
+          ? runtimeAssets.sharedChunks
+          : getSharedChunkFiles(m);
+      for (const file of sharedFiles) allFiles.push(file);
     } else {
       // No specific modules — include all assets from manifest.
       for (const akey in m) {

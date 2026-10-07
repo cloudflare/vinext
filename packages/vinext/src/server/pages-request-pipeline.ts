@@ -33,7 +33,8 @@ import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
-import { mergeHeaders } from "./worker-utils.js";
+import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
+import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
@@ -44,6 +45,7 @@ import {
 } from "./revalidation-request.js";
 import {
   methodNotAllowedResponse,
+  notFoundStaticAssetResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
@@ -157,6 +159,7 @@ export type MiddlewareResult = {
 // The deps object injected by each runtime adapter
 export type PagesPipelineDeps = {
   // Config values
+  assetPrefix?: string;
   basePath: string;
   trailingSlash: boolean;
   i18nConfig: NextI18nConfig | null;
@@ -696,13 +699,17 @@ export async function runPagesRequest(
   );
   if (initialFilesystemResult) return initialFilesystemResult;
 
+  const isMissingBuildAsset = () =>
+    isNextStaticPath(resolvedPathname, "", assetPrefixPathname(deps.assetPrefix ?? ""));
   const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
     type: "response",
-    response: new Response("This page could not be found", {
-      status: 404,
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    }),
+    response: isMissingBuildAsset()
+      ? notFoundStaticAssetResponse(headersFromRecord(middlewareHeaders))
+      : new Response("This page could not be found", {
+          status: 404,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
   });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
@@ -918,6 +925,18 @@ export async function runPagesRequest(
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
       }
+    }
+
+    // Only an unmatched resolved asset path gets the static-file response.
+    // Middleware, API responses, and rewrites to missing pages retain their 404s.
+    if (!renderPageMatch && response.status === 404 && isMissingBuildAsset()) {
+      return {
+        type: "response",
+        response: finalizeMissingStaticAssetResponse(
+          mergeHeaders(response, middlewareHeaders, middlewareStatus),
+          true,
+        ),
+      };
     }
 
     // Deferred 404 re-render

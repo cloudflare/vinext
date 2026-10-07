@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
 import type {
   ResponseStoreMutationResult,
@@ -62,6 +62,40 @@ class TestStore implements WorkersResponseStore {
     return this.mutationResult;
   }
 }
+
+afterEach(() => vi.restoreAllMocks());
+
+test.each(["throw", 500, 503, 404] as const)(
+  "treats a failed data lookup (%s) as a miss and retries after recovery",
+  async (failure) => {
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetch = vi.spyOn(store, "fetch");
+    if (failure === "throw") fetch.mockRejectedValueOnce(new Error("metadata overloaded"));
+    else fetch.mockResolvedValueOnce(new Response("unavailable", { status: failure }));
+
+    await expect(handler.get("key")).resolves.toBeNull();
+    expect(errorLog).toHaveBeenCalledOnce();
+    await handler.set("key", null);
+    await expect(handler.get("key")).resolves.toMatchObject({ value: null });
+  },
+);
+
+test("treats a failed cached body read as a miss", async () => {
+  const store = new TestStore();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(store, "fetch").mockResolvedValue(
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error("body unavailable"));
+        },
+      }),
+    ),
+  );
+  await expect(new WorkersResponseStoreCacheHandler(store).get("key")).resolves.toBeNull();
+});
 
 test("only attaches loopback regeneration to replayable requests", async () => {
   const store = new TestStore();
@@ -307,7 +341,8 @@ test("does not resolve soft-tag expiration when the data entry misses", async ()
   expect(store.tagExpirationCalls).toHaveLength(0);
 });
 
-test("observes an eager soft-tag failure after finishing the response body", async () => {
+test("treats an eager soft-tag failure as a miss after finishing the response body", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
   let releaseBody!: () => void;
   const bodyBlocked = new Promise<void>((resolve) => {
     releaseBody = resolve;
@@ -359,7 +394,7 @@ test("observes an eager soft-tag failure after finishing the response body", asy
       settled = true;
     },
   );
-  const rejected = expect(result).rejects.toThrow("expiration unavailable");
+  const missed = expect(result).resolves.toBeNull();
   await vi.waitFor(() => expect(store.tagExpirationCalls).toHaveLength(1));
 
   rejectExpiration(new Error("expiration unavailable"));
@@ -367,7 +402,7 @@ test("observes an eager soft-tag failure after finishing the response body", asy
   expect(settled).toBe(false);
   releaseBody();
   await bodyConsumed;
-  await rejected;
+  await missed;
   expect(settled).toBe(true);
 });
 
@@ -409,9 +444,8 @@ test("does not speculate soft-tag expiration for invalid or non-ok responses", a
     status: 503,
     headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
   });
-  await expect(handler.get("unavailable", { softTags: ["path"] })).rejects.toThrow(
-    "Workers Response Store returned 503",
-  );
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  await expect(handler.get("unavailable", { softTags: ["path"] })).resolves.toBeNull();
 
   expect(store.tagExpirationCalls).toHaveLength(0);
 });

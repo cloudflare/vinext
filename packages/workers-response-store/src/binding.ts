@@ -546,7 +546,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-      throw error;
+      return false;
     }
   }
 
@@ -814,6 +814,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     now = Date.now(),
   ): Response {
     const headers = new Headers(entry.responseHeaders);
+    // Workers Cache echoes this as If-None-Match when it revalidates. A revision
+    // validator also distinguishes writes that share Last-Modified's second.
+    if (!headers.has("ETag")) {
+      headers.set("ETag", `W/"${encodeURIComponent(entry.objectKey)}:${entry.activeRevision}"`);
+    }
     headers.set(AGE_BASIS_HEADER, `${createdAt}:${initialAge}`);
     headers.set("Age", String(representationAge(createdAt, initialAge, now)));
     headers.set(
@@ -980,8 +985,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
         if (reconciliation.purged.length) {
           try {
-            await this.purgeEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry));
-            await metadata.markTombstonesEdgePurged(reconciliation.purged);
+            if (await this.purgeEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
+              await metadata.markTombstonesEdgePurged(reconciliation.purged);
+            }
           } catch (reconciliationError) {
             reconciliationFailures.push(
               reconciliationError instanceof Error
@@ -1074,11 +1080,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     );
   }
 
-  private async revalidateEntryInBackground(
+  private async revalidateEntry(
     metadata: CacheMetadataStub,
     entry: StoredEntry,
     expectedR2Etag?: string | null,
-  ): Promise<void> {
+  ): Promise<StoreResult | null> {
     const claim = await metadata.claimRevalidation(
       entry.keyHash,
       entry.activeRevision,
@@ -1088,24 +1094,32 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       BACKGROUND_REVALIDATION_LEASE_MS,
     );
     if (!claim) {
-      return;
+      return null;
     }
 
+    return this.regenerateEntry(
+      metadata,
+      claim.entry,
+      "swr",
+      {
+        cacheKey: claim.entry.cacheKey,
+        claimId: claim.claimId,
+        fenceTags: claim.entry.cacheTags,
+        keyHash: claim.entry.keyHash,
+        objectKey: claim.objectKey,
+        revision: claim.revision,
+      },
+      expectedR2Etag,
+    );
+  }
+
+  private async revalidateEntryInBackground(
+    metadata: CacheMetadataStub,
+    entry: StoredEntry,
+    expectedR2Etag?: string | null,
+  ): Promise<void> {
     try {
-      await this.regenerateEntry(
-        metadata,
-        claim.entry,
-        "swr",
-        {
-          cacheKey: claim.entry.cacheKey,
-          claimId: claim.claimId,
-          fenceTags: claim.entry.cacheTags,
-          keyHash: claim.entry.keyHash,
-          objectKey: claim.objectKey,
-          revision: claim.revision,
-        },
-        expectedR2Etag,
-      );
+      await this.revalidateEntry(metadata, entry, expectedR2Etag);
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -1128,7 +1142,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const now = Date.now();
-    if (now < entry.swrUntil) {
+    // Workers Cache already owns stale serving for conditional revalidations
+    // (both background SWR and blocking expiry). Return its fresh replacement
+    // instead of starting another SWR cycle. A fresh R2 revision can still fill
+    // the edge immediately; unconditional reads retain the stale fast path.
+    const revalidateStale =
+      now >= entry.freshUntil &&
+      (request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since"));
+    if (now < entry.swrUntil && !revalidateStale) {
       const stored = await this.readStoredResponse(entry, now, r2Read?.object);
       if (stored) {
         if (now < entry.freshUntil) {
@@ -1147,28 +1168,40 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     await r2Read?.object?.body.cancel().catch(() => {});
     const metadata = this.getMetadata(keyHash);
-    const regeneration = await metadata.reserveRegeneration(
-      keyHash,
-      cacheKey.cacheKey,
-      this.objectKeyPrefix(keyHash),
-      now,
-    );
-    if (!regeneration) {
-      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+    let regenerated: StoreResult;
+    if (revalidateStale && now < entry.swrUntil) {
+      const result = await this.revalidateEntry(metadata, entry, expectedR2Etag);
+      if (!result?.published) {
+        // Another cache location or an unconditional stale read owns the claim.
+        // A claim that expired mid-render also cannot return its old R2 body.
+        // Fail this callback so Workers Cache retains stale and can retry.
+        throw new Error("Cache entry revalidation is already in progress or was superseded");
+      }
+      regenerated = result;
+    } else {
+      const regeneration = await metadata.reserveRegeneration(
+        keyHash,
+        cacheKey.cacheKey,
+        this.objectKeyPrefix(keyHash),
+        now,
+      );
+      if (!regeneration) {
+        return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+      }
+      regenerated = await this.regenerateEntry(
+        metadata,
+        regeneration.entry,
+        now >= entry.swrUntil ? "expired" : "missing",
+        regeneration.reservation
+          ? {
+              ...cacheKey,
+              fenceTags: regeneration.entry.cacheTags,
+              ...regeneration.reservation,
+            }
+          : undefined,
+        expectedR2Etag,
+      );
     }
-    const regenerated = await this.regenerateEntry(
-      metadata,
-      regeneration.entry,
-      now >= entry.swrUntil ? "expired" : "missing",
-      regeneration.reservation
-        ? {
-            ...cacheKey,
-            fenceTags: regeneration.entry.cacheTags,
-            ...regeneration.reservation,
-          }
-        : undefined,
-      expectedR2Etag,
-    );
     if (!regenerated.entry) {
       throw new Error("Regeneration was superseded and no active entry remains");
     }

@@ -112,6 +112,7 @@ export type PrerenderWarmPlan = {
   buildIdentity?: string;
   deploymentId?: string;
   fallbackRoutePatterns?: PrerenderRoutePattern[];
+  loadingBoundaryRoutePatterns?: string[];
   loadingShellPaths: string[];
   pagesDataPaths?: string[];
   pagesPaths?: string[];
@@ -213,11 +214,18 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                   (route.cacheabilityProbe.routeMayResolve === undefined ||
                     typeof route.cacheabilityProbe.routeMayResolve === "boolean") &&
                   (route.cacheabilityProbe.requestStageMayTerminate === undefined ||
-                    typeof route.cacheabilityProbe.requestStageMayTerminate === "boolean"))),
+                    typeof route.cacheabilityProbe.requestStageMayTerminate === "boolean") &&
+                  (route.cacheabilityProbe.unlisted === undefined ||
+                    typeof route.cacheabilityProbe.unlisted === "boolean"))),
           ))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||
           !manifest.loadingShellPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.loadingBoundaryRoutePatterns !== undefined &&
+        (!Array.isArray(manifest.loadingBoundaryRoutePatterns) ||
+          !manifest.loadingBoundaryRoutePatterns.every(
+            (pattern) => typeof pattern === "string" && pattern.startsWith("/"),
+          ))) ||
       (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
       (manifest.buildIdentity !== undefined && typeof manifest.buildIdentity !== "string") ||
       (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
@@ -323,6 +331,9 @@ export function createPrerenderWarmPlan(
     ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
     ...(manifest.fallbackRoutePatterns
       ? { fallbackRoutePatterns: manifest.fallbackRoutePatterns }
+      : {}),
+    ...(manifest.loadingBoundaryRoutePatterns
+      ? { loadingBoundaryRoutePatterns: manifest.loadingBoundaryRoutePatterns }
       : {}),
     loadingShellPaths: supportsCanonicalRsc
       ? (manifest.loadingShellPaths ?? []).map(applyConfig)

@@ -1,4 +1,4 @@
-import { createNonceAttribute } from "./html.js";
+import { createNonceAttribute, safeJsonStringify } from "./html.js";
 import { resolveClientRuntimeModule } from "../entries/runtime-entry-module.js";
 
 export type PagesDevHydrationOptions = {
@@ -6,6 +6,12 @@ export type PagesDevHydrationOptions = {
   forceRouterReady?: boolean;
   normalizePageProps?: boolean;
   pageModuleSource: string;
+  /** Lazily importable page routes, matching the production client manifest. */
+  pageLoaders?: readonly {
+    pattern: string;
+    moduleSource: string;
+    dataKind?: "static" | "server" | "none";
+  }[];
   reactStrictMode: boolean;
   replaceFallbackRoute?: boolean;
   scriptNonce?: string;
@@ -19,8 +25,26 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
     ? "_initializePagesRouterReadyFromNextData(nextData, true);"
     : "_initializePagesRouterReadyFromNextData(nextData);";
   const pagePatterns = options.setPagePatternsFromNextData
-    ? "window.__VINEXT_PAGE_PATTERNS__ = [nextData.page];"
+    ? options.pageLoaders
+      ? "window.__VINEXT_PAGE_PATTERNS__ = Object.keys(window.__VINEXT_PAGE_LOADERS__);"
+      : "window.__VINEXT_PAGE_PATTERNS__ = [nextData.page];"
     : "";
+  const pageLoaders = `{ ${[
+    ...(options.pageLoaders?.map(({ pattern, moduleSource }) => {
+      const importer =
+        moduleSource === "next/error"
+          ? 'import("next/error")'
+          : `loadDevPage(import.meta.env.BASE_URL + ${safeJsonStringify(moduleSource.slice(1))})`;
+      return `${safeJsonStringify(pattern)}: () => ${importer}`;
+    }) ?? []),
+    `[nextData.page]: () => import(${safeJsonStringify(options.pageModuleSource)})`,
+  ].join(", ")} }`;
+  const ssgPatterns = options.pageLoaders
+    ?.filter((route) => route.dataKind === "static")
+    .map((route) => route.pattern);
+  const sspPatterns = options.pageLoaders
+    ?.filter((route) => route.dataKind === "server")
+    .map((route) => route.pattern);
   const pageProps =
     options.normalizePageProps === false
       ? "const pageProps = rawPageProps ?? {};"
@@ -40,7 +64,7 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
     : "";
   const createElement = options.appModuleSource
     ? `
-  const appModule = await import(${JSON.stringify(options.appModuleSource)});
+  const appModule = await import(${safeJsonStringify(options.appModuleSource)});
   const AppComponent = appModule.default;
   window.__VINEXT_APP__ = AppComponent;
   const appRouter = ${options.forceRouterReady ? "{ ...Router, isReady: true }" : "Router"};
@@ -56,7 +80,7 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
 
   return `
 <script type="module"${nonceAttr}>
-import ${JSON.stringify(reactInstanceBootstrapPath)};
+import ${safeJsonStringify(reactInstanceBootstrapPath)};
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
@@ -70,13 +94,19 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
 }
 const nextData = window.__NEXT_DATA__;
+window.__VINEXT_MIDDLEWARE_MATCHER__ = nextData.__vinext?.clientMiddlewareMatcher;
 ${initializeRouter}
 const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
 const rawPageProps = props.pageProps;
 ${pageProps}
-window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import(${JSON.stringify(options.pageModuleSource)}) };
+// Other pages must not become static dependencies of this page's HMR proxy.
+// Vite adds ?import to variable imports, so source URLs are bare and base-qualified here.
+const loadDevPage = (source) => import(/* @vite-ignore */ source);
+window.__VINEXT_PAGE_LOADERS__ = ${pageLoaders};
 ${pagePatterns}
-window.__VINEXT_APP_LOADER__ = ${options.appModuleSource ? `() => import(${JSON.stringify(options.appModuleSource)})` : "undefined"};
+${ssgPatterns ? `window.__VINEXT_PAGES_SSG_PATTERNS__ = ${safeJsonStringify(ssgPatterns)};` : ""}
+${sspPatterns ? `window.__VINEXT_PAGES_SSP_PATTERNS__ = ${safeJsonStringify(sspPatterns)};` : ""}
+window.__VINEXT_APP_LOADER__ = ${options.appModuleSource ? `() => import(${safeJsonStringify(options.appModuleSource)})` : "undefined"};
 window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(options.reactStrictMode)};
 
 async function hydrate() {
@@ -92,7 +122,7 @@ async function hydrate() {
     };
   }
 
-  const pageModule = await import(${JSON.stringify(options.pageModuleSource)});
+  const pageModule = await import(${safeJsonStringify(options.pageModuleSource)});
   const PageComponent = pageModule.default;
   let element;
   ${createElement}

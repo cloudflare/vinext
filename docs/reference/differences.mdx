@@ -17,7 +17,18 @@ Development, bundling, and production builds run on Vite 8 instead of the Next.j
 
 ## Deployment
 
-Cloudflare Workers is the primary native target. Standalone Node output and Nitro adapters cover other hosts. Next.js route config values such as `runtime` and `preferredRegion` are currently ignored because runtime placement belongs to the selected deployment adapter.
+Cloudflare Workers is the primary native target. Standalone Node output and Nitro adapters cover other hosts. Next.js route config values such as `runtime` and `preferredRegion` don't choose where code runs, because runtime placement belongs to the selected deployment adapter. Outside `cacheComponents`, `runtime = "edge"` still opts an App Router page out of ISR, as it does in Next.js.
+
+## Caching
+
+These differences apply to builds without `cacheComponents`, which follow their own caching rules.
+
+At request time, vinext decides whether a render is dynamic while it renders. (The opt-in prerender and a staged deploy's cacheability probe render the HTML, so they do detect these reads, and the probe's manifest keeps Workers Cache from storing most such paths.) A client navigation requests only the RSC payload, whose render doesn't run client components, so it can't see a `"use client"` page reading its `searchParams`, or a `useSearchParams()` call with no `<Suspense>` boundary above it. On an otherwise static route, vinext can then store that RSC payload, while Next.js treats the route as dynamic, or fails its build, and stores nothing. Under `dynamic = "force-static"`, both read empty values and the route is static in both, so this doesn't apply. The payload doesn't contain the query, but server-rendered data on the route can stay stale during client navigations until it's revalidated. To match Next.js:
+
+- export `dynamic = "force-dynamic"` from the route's `layout.tsx` (a `"use client"` page can't export segment config), or read `searchParams` in a server component page and pass the values down;
+- wrap `useSearchParams()` in `<Suspense>`, as Next.js requires.
+
+Next.js also treats an otherwise static route as SSG when a layout above its last dynamic segment returns every param from `generateStaticParams`. vinext doesn't run the generator to classify requests, so it renders such a route on every request unless it exports `dynamic = "force-static"` or `"error"`. Adding `generateStaticParams` to the last dynamic segment, even one that returns `[]`, makes the route static in both.
 
 ## Compatibility
 

@@ -24,6 +24,8 @@ import {
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getRevalidateSecret,
+  isrCacheKey,
+  isrSet,
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
@@ -987,6 +989,52 @@ describe("createPagesPageHandler — 405 method check", () => {
 // ---------------------------------------------------------------------------
 // i18n redirect — 307 short-circuit from resolvePagesI18nRequest
 // ---------------------------------------------------------------------------
+
+describe("createPagesPageHandler — i18n ISR identity", () => {
+  it("ignores old domain-only entries even when the build ID is unchanged", async () => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    await isrSet(
+      isrCacheKey(
+        "pages",
+        "/about::i18n=" + encodeURIComponent("domain:example.com"),
+        "test-build-id",
+      ),
+      {
+        kind: "PAGES",
+        html: "old domain-only HTML",
+        pageData: { locale: "fr" },
+        headers: undefined,
+        status: 200,
+      },
+      { cacheControl: { revalidate: 3600 } },
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({
+        i18nConfig: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [{ domain: "example.com", defaultLocale: "en" }],
+        },
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({
+              getStaticProps: ({ locale }: { locale: string }) => ({
+                props: { locale },
+                revalidate: 3600,
+              }),
+            }),
+          ),
+        ],
+      }),
+    );
+    const response = await handler(new Request("http://example.com/about"), "/about", null, null, {
+      isDataReq: true,
+    });
+    expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(await response.json()).toMatchObject({ pageProps: { locale: "en" } });
+  });
+});
 
 describe("createPagesPageHandler — i18n redirect", () => {
   // getLocaleRedirect fires when pathname === "/" and the Accept-Language

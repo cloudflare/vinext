@@ -123,8 +123,11 @@ export default {
       return render(request, env, ctx);
     }
 
-    // Cache identity is pathname + query string. Use a canonical GET request
-    // with only information that is safe to share between visitors.
+    // Cache identity is the key's pathname + query string. Use a canonical GET
+    // request with only information that is safe to share between visitors.
+    // This minimal sample keeps the full query, so every query variant gets its
+    // own entry. Leave out query parameters the response doesn't depend on, so
+    // requests that differ only in them share one entry.
     const cacheRequest = new Request(request.url);
     const cached = await responseStore.fetch(cacheRequest);
     if (!isResponseStoreMiss(cached)) {
@@ -172,13 +175,13 @@ This is the minimum integration loop. A framework can add its own cacheability r
 
 The object returned by `createWorkersResponseStore()` and `createWorkersResponseStoreClient()` implements the same API:
 
-| Method                                           | Behavior                                                                                                                                                                                                                            |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch(request)`                                 | Reads a canonical `GET` cache key. Returns a stored response or a `404` Response Store miss. Stale entries inside their SWR window return immediately and regenerate in the background; hard-expired entries wait for regeneration. |
-| `put(request, response, options?)`               | Stores a response under a canonical `GET` cache key. `options.revalidator` supplies `{ id, args }` for future regeneration. Set `purgeExisting: true` when replacing an entry that may already be in Workers Cache.                 |
-| `refresh({ tags, pathPrefixes })`                | Regenerates matching entries and purges their prior edge responses. At least one selector is required.                                                                                                                              |
-| `purge({ tags, pathPrefixes, purgeEverything })` | Removes matching metadata, records tag invalidations, deletes response bodies, and purges corresponding edge responses. At least one selector or `purgeEverything: true` is required.                                               |
-| `getTagExpiration(tags)`                         | Returns the latest invalidation timestamp for a set of framework-managed soft tags. Most integrations do not need this low-level method.                                                                                            |
+| Method                                           | Behavior                                                                                                                                                                                                                                                          |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch(request)`                                 | Reads a canonical `GET` cache key. Returns a stored response or a `404` Response Store miss. Unconditional stale reads return immediately and regenerate in the background; Workers Cache conditional revalidations and hard-expired reads wait for regeneration. |
+| `put(request, response, options?)`               | Stores a response under a canonical `GET` cache key. `options.revalidator` supplies `{ id, args }` for future regeneration. Set `purgeExisting: true` when replacing an entry that may already be in Workers Cache.                                               |
+| `refresh({ tags, pathPrefixes })`                | Regenerates matching entries and purges their prior edge responses. At least one selector is required.                                                                                                                                                            |
+| `purge({ tags, pathPrefixes, purgeEverything })` | Removes matching metadata, records tag invalidations, deletes response bodies, and purges corresponding edge responses. At least one selector or `purgeEverything: true` is required.                                                                             |
+| `getTagExpiration(tags)`                         | Returns the latest invalidation timestamp for a set of framework-managed soft tags. Most integrations do not need this low-level method.                                                                                                                          |
 
 Mutation methods return:
 
@@ -192,24 +195,27 @@ type ResponseStoreMutationResult = {
 ### Cache keys
 
 - Keys must be `GET` requests.
-- Identity is the URL pathname plus query string; scheme and host are ignored.
+- Identity is the key URL's pathname plus query string; scheme and host are ignored. The key doesn't have to be the visitor's URL.
 - Every key stores its response and read metadata together in one version-scoped R2 object by default, so fresh hits and misses do not query the metadata Durable Object. No special key format is required.
 - Build the key from trusted route and vary data. Do not include arbitrary visitor headers or other unbounded input unless it intentionally creates a distinct shared response.
+- Leave out query parameters the response doesn't depend on, so requests that differ only in them share one entry.
 
 ### Freshness and tags
 
 Freshness is derived from `Cloudflare-CDN-Cache-Control`, then `CDN-Cache-Control`, then `Cache-Control`. The store preserves an incoming `Age` value and advances it while the response is stored.
 
+Stored responses preserve application-provided validators and include a revision-specific `ETag` when none is provided. A generated `Last-Modified` would conflate revisions written within the same second. Workers Cache sends validators back as `If-None-Match` or `If-Modified-Since` when revalidating. If the backing response is stale, that invocation claims regeneration and returns the committed response directly to Workers Cache, avoiding a second layer of SWR. If another invocation already holds the claim, the callback fails so Workers Cache can retain its stale response and retry. Fresh backing responses are reused without regeneration. Conditional headers identify revalidation, including foreground expiry; they do not identify background execution specifically.
+
 Set `Cache-Tag` on the response passed to `put()` to associate comma-separated purge tags. `refresh()` and `purge()` also accept pathname prefixes. Tags are matched case-insensitively for invalidation.
 
 The `regenerate` callback receives the stored `id` and `args`, a canonical cache-key request, and one of these reasons:
 
-| Reason    | Trigger                                                                 |
-| --------- | ----------------------------------------------------------------------- |
-| `swr`     | A stale response was returned inside its SWR window.                    |
-| `expired` | The response passed its SWR window and the read must wait.              |
-| `missing` | The R2 object exists but its committed response content is unavailable. |
-| `manual`  | `refresh()` selected the entry.                                         |
+| Reason    | Trigger                                                                                                               |
+| --------- | --------------------------------------------------------------------------------------------------------------------- |
+| `swr`     | A stale entry inside its SWR window is regenerated, either for an unconditional read or a Workers Cache revalidation. |
+| `expired` | The response passed its SWR window and the read must wait.                                                            |
+| `missing` | The R2 object exists but its committed response content is unavailable.                                               |
+| `manual`  | `refresh()` selected the entry.                                                                                       |
 
 ### Response headers
 
@@ -274,7 +280,7 @@ application Worker
 - SQLite revisions and conditional publication prevent slow writes from replacing newer writes or resurrecting purged entries. User RPC, R2, and cache-purge I/O run outside SQLite transactions.
 - Purging replaces the active R2 object with a higher-revision tombstone. A later put can replace that tombstone, but an older delayed write cannot recreate purged content.
 - R2 tombstones are durably queued in SQLite and drained in bounded batches. A failed R2 operation leaves its tombstone queued so a later purge can retry it instead of losing the anti-resurrection fence.
-- A stale R2 response inside its SWR window returns immediately while `ctx.waitUntil()` runs one claimed regeneration. A later Workers Cache request promotes the completed revision, so one extra stale response is possible.
+- An unconditional read of stale R2 content returns immediately while `ctx.waitUntil()` runs one claimed regeneration. A conditional Workers Cache revalidation instead waits for regeneration and returns the committed replacement in that same invocation.
 - Hard-expired responses are never served. Reads wait for regeneration and therefore require a stored revalidator descriptor.
 - Abandoned write reservations are retained for one hour before alarm-driven cleanup fences them from later publication. Response bodies are written only after Durable Object publication, so this cleanup does not perform R2 operations.
 - RPC-transferred response bodies are buffered before R2 writes because transferred streams do not retain the fixed-length marker required by R2's single-part put API. Account for Worker memory limits when choosing maximum response sizes.

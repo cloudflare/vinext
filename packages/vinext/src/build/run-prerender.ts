@@ -1,5 +1,5 @@
 /**
- * Shared prerender runner used by both `vinext build` (cli.ts) and
+ * Shared prerender runner used by both `vite build` (cli.ts) and
  * `vinext-cloudflare deploy --prerender-all` (deploy.ts).
  *
  * `runPrerender` handles route scanning, dynamic imports, progress reporting,
@@ -39,6 +39,7 @@ import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { resolveBuiltRscEntryPath } from "./server-entry.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
+import { registerPrerenderCloudflareLoader } from "./prerender-cloudflare-loader.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ type RunPrerenderOptions = {
  * to a single `dist/server/vinext-prerender.json`.
  *
  * If a required production bundle does not exist, an error is thrown directing
- * the user to run `vinext build` first.
+ * the user to run `vite build` first.
  */
 /**
  * Throw if any route is a `fatal` error (a thrown generateStaticParams /
@@ -167,6 +168,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
+  // The built Worker graph may import cloudflare:workers even when every page
+  // is static (for example the Cloudflare tracing integration). The Node-only
+  // prerender phase must not try to load its workerd-native module.
+  registerPrerenderCloudflareLoader();
+
   // Framework manifests and prerendered routes have one canonical location,
   // independent of where an adapter asks Vite to emit the executable RSC
   // graph. Consumers such as cache prewarming always resolve these artifacts
@@ -192,7 +198,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     : {
         ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)),
       };
-  // Prerender must reuse the exact BUILD_ID that `vinext build` wrote to disk
+  // Prerender must reuse the exact BUILD_ID that `vite build` wrote to disk
   // rather than re-resolving a fresh one. `config.buildId` is consumed when
   // computing prerendered-output identity (prerender.ts), so re-resolving here
   // would produce artifacts keyed to a different buildId than the deployed

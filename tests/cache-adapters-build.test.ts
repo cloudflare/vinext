@@ -15,7 +15,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
+import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
+import { cacheabilityManifestRouteKey } from "../packages/vinext/src/server/cacheability-manifest.js";
 import vinext from "../packages/vinext/src/index.js";
 
 const tmpDirs: string[] = [];
@@ -302,7 +304,7 @@ export default createAdapter;
       root,
       configFile: false,
       plugins: [
-        vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
+        vinext({ appDir: root, cache: { cdn: workersCacheCdnAdapter() } }),
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
       logLevel: "silent",
@@ -376,7 +378,7 @@ export default createAdapter;
       root,
       configFile: false,
       plugins: [
-        vinext({ disableAppRouter: true, cache: { cdn: cdnAdapter() } }),
+        vinext({ disableAppRouter: true, cache: { cdn: workersCacheCdnAdapter() } }),
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
       logLevel: "silent",
@@ -436,7 +438,7 @@ export default createAdapter;
       root,
       configFile: false,
       plugins: [
-        vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
+        vinext({ appDir: root, cache: { cdn: workersCacheCdnAdapter() } }),
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
       logLevel: "silent",
@@ -538,5 +540,38 @@ export default {
     expect(readStaticEntryClosure(root, "virtual:vinext-response-stage")).toContain(
       LOCAL_ADAPTER_MARKER,
     );
+    // The request stage reads the deploy's manifest projection, never the full
+    // manifest. The build emits a null placeholder that `vinext deploy` fills.
+    expect(readStaticEntryClosure(root, "virtual:vinext-request-stage")).toContain(
+      "__vinext_cacheability_request_projection.js",
+    );
+    expect(readStaticEntryClosure(root, "virtual:vinext-request-stage")).not.toContain(
+      "__vinext_cacheability_manifest.js",
+    );
+    expect(
+      fs.readFileSync(
+        path.join(root, "dist/server/__vinext_cacheability_request_projection.js"),
+        "utf8",
+      ),
+    ).toBe("export default null;\n");
+    // The deploy only fills the projection that the Worker graph statically
+    // imports, so the emitted graph must pass that check.
+    writeCacheabilityManifestArtifact(root, "dist/server/wrangler.json", {
+      buildId: "build-a",
+      routes: {
+        [cacheabilityManifestRouteKey("app-page", "/about")]: {
+          kind: "app-page",
+          pattern: "/about",
+          state: "static-candidate",
+        },
+      },
+      version: 1,
+    });
+    expect(
+      fs.readFileSync(
+        path.join(root, "dist/server/__vinext_cacheability_request_projection.js"),
+        "utf8",
+      ),
+    ).toContain("/about");
   }, 60_000);
 });

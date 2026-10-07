@@ -33,6 +33,7 @@ beforeEach(async () => {
         modules: true,
         scriptPath: userWorkerScript,
         serviceBindings: {
+          RESPONSE_STORE_CLIENT: { name: "user-worker", entrypoint: "ResponseStoreClient" },
           RESPONSE_STORE: {
             name: "cache-worker",
             entrypoint: "ResponseStoreService",
@@ -160,4 +161,25 @@ test("SWR keeps the passed user-Worker loopback alive after returning stale", as
   assert.equal(await fresh.text(), "fresh");
   assert.equal(fresh.headers.get("X-Revalidation-Reason"), "swr");
   assert.equal(fresh.headers.get("X-Revalidation-Version"), "user-worker-v1");
+});
+
+test("conditional revalidation waits for the service-bound user Worker to publish fresh content", async () => {
+  await put("/conditional-swr", "stale", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    regeneratedBody: "fresh",
+    delayMs: 100,
+  });
+  const bindings = await mf.getBindings<{
+    RESPONSE_STORE_CLIENT: Awaited<ReturnType<Miniflare["getWorker"]>>;
+  }>("user-worker");
+  const response = await bindings.RESPONSE_STORE_CLIENT.fetch(
+    "https://cache-key.invalid/conditional-swr",
+    {
+      headers: { "If-Modified-Since": "Tue, 29 Sep 2026 00:00:00 GMT" },
+    },
+  );
+  assert.equal(await response.text(), "fresh");
+  assert.equal(response.headers.get("X-Revalidation-Reason"), "swr");
+  assert.equal(response.headers.get("X-Revalidation-Version"), "user-worker-v1");
+  assert.equal(response.headers.get("X-Workers-Response-Store-Revision"), "2");
 });

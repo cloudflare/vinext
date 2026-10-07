@@ -1,6 +1,6 @@
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { INITIAL_BFCACHE_ID } from "./app-bfcache-id.js";
-import { isBfcacheSegmentId, type BfcacheIdMap } from "./app-history-state.js";
+import { INITIAL_BFCACHE_ID, isBfcacheSegmentId } from "./app-bfcache-id.js";
+import type { BfcacheIdMap } from "./app-history-state.js";
 import {
   isNestedBfcacheSlotSegmentIdFor,
   type BfcacheSegmentIdentity,

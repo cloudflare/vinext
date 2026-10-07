@@ -73,7 +73,7 @@ describe("App prerender endpoint helpers", () => {
     ]);
   });
 
-  it("bails out of composed generateStaticParams when a source returns a non-array", async () => {
+  it("rejects composed generateStaticParams when a source returns a non-array", async () => {
     const malformedLayoutGenerateStaticParams = vi.fn(() => undefined);
     const pageGenerateStaticParams = vi.fn(() => [{ slug: "unused" }]);
     const resolveStaticParams = createAppPrerenderStaticParamsResolver([
@@ -81,7 +81,77 @@ describe("App prerender endpoint helpers", () => {
       pageGenerateStaticParams,
     ]);
 
-    await expect(resolveStaticParams?.({ params: {} })).resolves.toEqual([]);
+    await expect(resolveStaticParams?.({ params: {} })).rejects.toThrow(
+      "generateStaticParams must return an array",
+    );
+    expect(pageGenerateStaticParams).not.toHaveBeenCalled();
+  });
+
+  // Next.js rejects malformed output in every mode (build/static-paths/app.ts
+  // callGenerateStaticParams), so the endpoint must not report it as [].
+  it("fails the static params endpoint on malformed output outside path discovery", async () => {
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/static-params?pattern=layouts%3A%5Blang%5D"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        staticParamsMap: {
+          "layouts:[lang]": createAppPrerenderStaticParamsResolver([() => [null]]),
+        },
+      },
+    );
+
+    expect(response?.status).toBe(500);
+    await expect(response?.json()).resolves.toEqual({
+      error: "Error: generateStaticParams must return an array of objects",
+    });
+  });
+
+  // Next.js passes each parent set through a later generateStaticParams that
+  // returns no params, and calls it once with `{}` while no parent sets exist
+  // (build/static-paths/app.ts generateRouteStaticParams).
+  it("passes parents through an empty composed source and calls the next one with no params", async () => {
+    const pageGenerateStaticParams = vi.fn(() => [{ slug: "post" }]);
+    const resolveStaticParams = createAppPrerenderStaticParamsResolver([
+      () => [],
+      pageGenerateStaticParams,
+    ]);
+
+    await expect(resolveStaticParams?.({ params: { lang: "en" } })).resolves.toEqual([
+      { lang: "en", slug: "post" },
+    ]);
+    expect(pageGenerateStaticParams).toHaveBeenLastCalledWith({ params: { lang: "en" } });
+
+    await expect(resolveStaticParams?.({ params: {} })).resolves.toEqual([{ slug: "post" }]);
+    expect(pageGenerateStaticParams).toHaveBeenLastCalledWith({ params: {} });
+
+    await expect(
+      createAppPrerenderStaticParamsResolver([() => [], () => []])?.({ params: { lang: "en" } }),
+    ).resolves.toEqual([{ lang: "en" }]);
+  });
+
+  // Under `output: "export"` and Cache Components, Next.js fails the build on
+  // any empty result, so the resolver hands it back for the caller to reject.
+  it("returns an empty composed result when the endpoint asks to reject empty results", async () => {
+    const pageGenerateStaticParams = vi.fn(() => [{ slug: "post" }]);
+    const response = await handleAppPrerenderEndpoint(
+      new Request(
+        "http://localhost/__vinext/prerender/static-params?pattern=%2F%3Alang%2F%3Aslug" +
+          `&parentParams=${encodeURIComponent(JSON.stringify({ lang: "en" }))}&rejectEmptyResults=1`,
+      ),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        staticParamsMap: {
+          "/:lang/:slug": createAppPrerenderStaticParamsResolver([
+            () => [],
+            pageGenerateStaticParams,
+          ]),
+        },
+      },
+    );
+
+    await expect(response?.json()).resolves.toEqual([]);
     expect(pageGenerateStaticParams).not.toHaveBeenCalled();
   });
 

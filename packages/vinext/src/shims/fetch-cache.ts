@@ -1207,14 +1207,19 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // Safety: when per-user auth headers are present and the developer hasn't
     // explicitly opted into caching with `cache: 'force-cache'` or an explicit
-    // `next.revalidate`, skip caching to prevent accidental cross-user data
-    // leakage. Developers who understand the implications can still force
+    // `next.revalidate`, skip the fetch cache so one user's response isn't
+    // reused for another through it. This doesn't keep the value out of a
+    // stored page (see below). Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
     // This is an automatic safety bypass, not an explicit opt-out, so it does
-    // NOT mark the page dynamic via markDynamicUsage(). It still records a
-    // dynamic fetch observation: the per-user response must downgrade the
-    // page output to fresh render, or a statically cached page could leak
-    // one user's auth-keyed data to everyone else.
+    // NOT mark the page dynamic via markDynamicUsage(), and a static page that
+    // makes this fetch is still stored. Next.js does the same: an `autoNoCache`
+    // fetch doesn't make the page dynamic ("we don't consider autoNoCache to
+    // switch to dynamic for ISR", server/lib/patch-fetch.ts). Outside a
+    // "use cache" or unstable_cache scope, the fetch is still recorded as a
+    // dynamic fetch observation, which keeps the layout that made it out of
+    // static layout reuse and, except under force-static, marks the client
+    // navigation cache metadata dynamic.
     // Ordering is deliberate: an explicit `no-store`/`no-cache`/`revalidate: 0`
     // takes the stronger branch above and fully marks the page dynamic even
     // when auth headers are present — this bypass only handles auth-keyed
@@ -1228,6 +1233,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
       recordDynamicFetchObservation(input);
       return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
     }
+
+    const tags = encodeCacheTags(nextOpts?.tags ?? []);
 
     // Determine revalidation period
     let revalidateSeconds: number;
@@ -1246,7 +1253,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // During prerender, a fetch without an explicit cache lifetime inherits
       // the active route's revalidate value in Next.js. Tags make this fetch
       // cacheable, but do not independently make it cache indefinitely.
-      if (nextOpts?.tags && nextOpts.tags.length > 0) {
+      if (tags.length > 0) {
         const routeRevalidate = _getState().currentFetchRevalidate;
         if (routeRevalidate === 0) {
           const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -1282,10 +1289,15 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // lifetime is shorter. Later metadata-only fetches inherit that live
       // minimum rather than the route's original segment-config seed.
       lowerCurrentFetchRevalidate(nextOpts.revalidate);
+      // Only this explicit lifetime shortens the page's. A fetch without a
+      // numeric `next.revalidate` (force-cache, `revalidate: false`, tags only
+      // or a fetchCache default) stores its entry for a year or the route's
+      // revalidate, but leaves a `revalidate = false` page indefinite: Next.js
+      // lowers the prerender store only when the fetch's own revalidate is
+      // shorter (server/lib/patch-fetch.ts).
+      recordFiniteFetchRevalidate(nextOpts.revalidate);
     }
-    recordFiniteFetchRevalidate(revalidateSeconds);
     const reqTags = _getState().currentRequestTags;
-    const tags = encodeCacheTags(nextOpts?.tags ?? []);
     if (tags.length > 0) {
       for (const tag of tags) {
         if (!reqTags.includes(tag)) {
@@ -1310,9 +1322,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
         // The developer opted into caching but we couldn't build a cache key
         // (body too large / unserializable). That is an internal vinext
-        // limitation, not an explicit uncached-fetch decision, so record only
-        // the observation (downgrading the page output to fresh render)
-        // without marking the whole page dynamic.
+        // limitation, not an explicit uncached-fetch decision, so additionally
+        // record the dynamic fetch observation (outside a cache scope) without
+        // marking the page dynamic. A static page that makes this fetch is
+        // still stored.
         recordDynamicFetchObservation(input);
         return recordFetchOutcome(await dedupeFetch(input, fetchInit), "miss", cacheReason);
       }

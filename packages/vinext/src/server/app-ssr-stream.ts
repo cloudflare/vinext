@@ -10,7 +10,7 @@ import {
   RSC_EMBEDDED_BINARY_CHUNK,
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
-import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
+import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
 
 type RscEmbedTransform = {
   flush(): string;
@@ -77,6 +77,20 @@ export function createNavigationRuntimeRscMetadataScript(
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +
+    "})"
+  );
+}
+
+/**
+ * The query a client page read during SSR, for a render that turned dynamic
+ * after its head told the browser to read the query from its own URL.
+ */
+export function createNavigationRuntimeRenderedSearchScript(search: string): string {
+  return (
+    "Object.assign(" +
+    navigationRuntimeRscBootstrapExpression() +
+    ",{renderedSearch:" +
+    safeJsonStringify(search) +
     "})"
   );
 }

@@ -129,7 +129,49 @@ type TransformResult = {
   contexts: WatchedContext[];
 };
 
+// Whitespace the parser skips between tokens: JS `\s`, plus U+0085 and U+200B,
+// which oxc also accepts.
+const CONTEXT_CALL_SPACE = String.raw`[\s\u0085\u200b]`;
+const LINE_TERMINATOR = String.raw`[\n\r\u2028\u2029]`;
+// `context`, with any character optionally spelled as a `\uXXXX` / `\u{X}`
+// escape; the parser decodes those to the same identifier name.
+const CONTEXT_PROPERTY = String.raw`(?:c|\\u(?:0063|\{0*63\}))(?:o|\\u(?:006f|\{0*6f\}))(?:n|\\u(?:006e|\{0*6e\}))(?:t|\\u(?:0074|\{0*74\}))(?:e|\\u(?:0065|\{0*65\}))(?:x|\\u(?:0078|\{0*78\}))(?:t|\\u(?:0074|\{0*74\}))`;
+// What may precede the property: a `.`, or a gap ending in a block comment
+// (`*/`) or a line comment (`//`, `<!--`, `-->`) that could hide the `.`.
+const CONTEXT_MEMBER_PREFIX = String.raw`(?:\.|\*\/|(?:\/\/|<!--|-->)[^\n\r\u2028\u2029]*${LINE_TERMINATOR})${CONTEXT_CALL_SPACE}*`;
+// A comment opener in any gap after the property counts as a match; the
+// prescan never scans a comment body.
+const COMMENT_OPENER = String.raw`\/[*/]|<!--|-->`;
+/**
+ * Cheap pre-parse gate for {@link transformRequireContext}. The transform only
+ * rewrites a `.context` member call whose first argument is a string literal,
+ * so the source must contain `.`, `context`, then — after optional closing
+ * parens of a `(require.context)` callee and an optional `?.` — a `(` followed
+ * by optional opening parens and a quote. TypeScript type arguments
+ * (`context<T>(...)`) are not scanned: any `<` after `context` keeps the parse.
+ *
+ * The transform filter admits every module that mentions both `require` and
+ * `.context` (React, TypeScript, ...), and parsing multi-MB dependencies that
+ * can never contain a matching call dominated this plugin's cost. The gate
+ * errs toward over-matching: a false positive costs one redundant parse,
+ * whereas a false negative would silently skip a real `require.context` call.
+ * Comments therefore count as a match instead of being scanned, and the match
+ * starts at `context` and looks back for the `.`. Every repetition then covers
+ * only whitespace and parens next to one `context`, so the scan stays linear.
+ */
+const REQUIRE_CONTEXT_CALL_PRESCAN = new RegExp(
+  String.raw`${CONTEXT_PROPERTY}(?<=${CONTEXT_MEMBER_PREFIX}${CONTEXT_PROPERTY})(?:${CONTEXT_CALL_SPACE}|\))*(?:\?\.${CONTEXT_CALL_SPACE}*)?(?:<|${COMMENT_OPENER}|\((?:${CONTEXT_CALL_SPACE}|\()*(?:["']|${COMMENT_OPENER}))`,
+  // Escape hex digits are case-insensitive; also matching `.Context(` is harmless.
+  "i",
+);
+
+export function _mayContainRequireContextCall(code: string): boolean {
+  return REQUIRE_CONTEXT_CALL_PRESCAN.test(code);
+}
+
 async function transformRequireContext(code: string, id: string): Promise<TransformResult | null> {
+  if (!REQUIRE_CONTEXT_CALL_PRESCAN.test(code)) return null;
+
   const lang = scriptParserLanguage(id)!;
 
   let ast: ReturnType<typeof parseAst>;

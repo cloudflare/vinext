@@ -19,6 +19,7 @@ out/
 .ecosystem-test/
 .next/
 .wrangler/
+.cloudflare/
 test-results/
 playwright-report/
 out-e2e
@@ -47,6 +48,7 @@ reports/
 
 # Next.js reference clone (for searching source/tests)
 .nextjs-ref/
+.nextjs-ref*
 
 # OS / editor
 .DS_Store

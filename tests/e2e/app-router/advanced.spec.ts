@@ -392,6 +392,60 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
+  test("navigation superseding a streaming intercepted refresh does not abort it", async ({
+    page,
+  }) => {
+    // Next.js passes no abort signal to router.refresh() or navigation fetches,
+    // so a superseded Flight response is never torn down under React:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/refresh-reducer.ts
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    await page.goto(`${BASE}/slow-intercept`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("slow-intercept-link").click();
+    await expect(page.locator("#slow-intercept-message")).toHaveText(
+      "Slow intercepted photo resolved",
+      { timeout: 10_000 },
+    );
+
+    // Delay the navigation's response so React keeps rendering the superseded
+    // refresh, whose modal page streams for 3s, before the navigation commits.
+    await page.route(
+      (url) => url.pathname === "/about" && url.searchParams.has("_rsc"),
+      async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await route.continue();
+      },
+    );
+    // Refreshing the modal also refreshes its source page.
+    const refreshResponses = Promise.all([
+      page.waitForResponse((response) =>
+        isAppRouterRscRequestForPath(response.request(), "/slow-intercept/photo"),
+      ),
+      page.waitForResponse((response) =>
+        isAppRouterRscRequestForPath(response.request(), "/slow-intercept"),
+      ),
+    ]);
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router || !("refresh" in router)) {
+        throw new Error("window.next App Router is not installed");
+      }
+      router.refresh();
+    });
+    await refreshResponses;
+    await page.waitForTimeout(500);
+    await page.getByTestId("slow-intercept-about-link").click();
+
+    await expect(page.getByRole("heading", { name: "About" })).toBeVisible();
+    await expect(page.getByTestId("global-error")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test("server action from intercepted modal preserves modal tree", async ({ page }) => {
     await page.goto(`${BASE}/feed`);
     await waitForAppRouterHydration(page);

@@ -26,7 +26,6 @@ import {
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
@@ -388,7 +387,7 @@ async function handleRequestImpl(
 
     // Valid assets are served by Cloudflare's ASSETS binding before the worker
     // is invoked. Missing asset-shaped requests still need to reach middleware
-    // so it can rewrite/respond; a final 404 is converted back below.
+    // so it can rewrite/respond before the pipeline classifies the miss.
     const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
 
     // Track basePath presence on the original request so matcher gating can
@@ -431,6 +430,7 @@ async function handleRequestImpl(
     let speculativeRenderRequest: Request | null = null;
 
     const deps: PagesPipelineDeps = {
+      assetPrefix: vinextConfig?.assetPrefix,
       basePath,
       trailingSlash,
       i18nConfig,
@@ -616,7 +616,7 @@ async function handleRequestImpl(
 
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
-      let response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      let response = result.response;
       if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
       }

@@ -39,7 +39,6 @@ import {
   toSameOriginAppPath,
   withBasePath,
 } from "./url-utils.js";
-import { appendSearchParamsToUrl, type UrlQuery, urlQueryToSearchParams } from "../utils/query.js";
 import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import { getI18nContext } from "./i18n-context.js";
 import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-next-data.js";
@@ -69,6 +68,8 @@ import {
   type PendingLinkSetter,
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
+import { normalizeRouterHref, resolvePagesRouterHref } from "./internal/normalize-router-href.js";
+import { formatUrlObject, formatUrlObjectWithValidation } from "./internal/format-url-object.js";
 import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
 
 type NavigateEvent = {
@@ -200,24 +201,27 @@ const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 
-function resolveHref(href: LinkProps["href"]): string {
+function resolveHref(href: LinkProps["href"], validate = false): string {
   if (typeof href === "string") return href;
-  // When `pathname` is omitted, leave the base empty so the result is a
-  // query-only href (e.g. `?params=foo`) rather than `/?params=foo`. Mirrors
-  // Next.js's `formatUrl()` (`pathname = urlObj.pathname || ''`) so that a
-  // `<Link href={{ query: {...} }} />` resolves against the *current* path at
-  // navigation time instead of collapsing onto the site root. Defaulting to
-  // "/" here recorded the wrong history entry for shallow links, breaking
-  // back/forward traversal (issue #1540).
-  let url = href.pathname ?? "";
-  if (href.query) {
-    const params = urlQueryToSearchParams(href.query as UrlQuery);
-    url = appendSearchParamsToUrl(url, params);
+  return validate ? formatUrlObjectWithValidation(href) : formatUrlObject(href);
+}
+
+function resolvePagesLinkValue(
+  value: LinkProps["href"],
+  pagesRouter: React.ContextType<typeof RouterContext>,
+  routePathnameForWarning: string,
+): string {
+  const formatted = resolveHref(value, pagesRouter !== null);
+  if (pagesRouter === null) return formatted;
+  if (
+    typeof pagesRouter.pathname === "string" &&
+    typeof pagesRouter.asPath === "string" &&
+    !formatted.startsWith("?") &&
+    !formatted.startsWith("#")
+  ) {
+    return resolvePagesRouterHref(formatted, pagesRouter, __basePath);
   }
-  if (href.hash) {
-    url += href.hash.startsWith("#") ? href.hash : `#${href.hash}`;
-  }
-  return url;
+  return normalizeRouterHref(formatted, routePathnameForWarning);
 }
 
 function resolvePagesQueryOnlyHref(href: string): string {
@@ -256,73 +260,6 @@ function applyPagesNavigationFallback(href: string, replace: boolean): void {
     window.history.pushState({}, "", href);
   }
   window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
-/**
- * Collapse repeated forward-slashes (and convert backslashes to forward-slashes)
- * in the path portion of a URL, preserving any query string.
- *
- * Ported from Next.js: packages/next/src/shared/lib/utils/normalize-repeated-slashes.ts
- * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/utils/normalize-repeated-slashes.ts
- */
-function normalizeRepeatedSlashes(url: string): string {
-  const urlParts = url.split("?");
-  const urlNoQueryString = urlParts.shift() ?? "";
-  const queryString = urlParts.join("?");
-  return (
-    urlNoQueryString.replace(/\\/g, "/").replace(/\/\/+/g, "/") +
-    (queryString ? `?${queryString}` : "")
-  );
-}
-
-/**
- * Emit Next.js's "Invalid href" `console.error` when `href` contains repeated
- * forward slashes or backslashes in its path portion, and return the
- * normalized URL (with `\\` converted to `/` and runs of `/` collapsed). If
- * the href is already well-formed, the original string is returned unchanged.
- *
- * Ported from Next.js: packages/next/src/client/resolve-href.ts
- * https://github.com/vercel/next.js/blob/canary/packages/next/src/client/resolve-href.ts
- *
- * Matches the message asserted by:
- * test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
- *
- * Note: Next.js fires this warning unconditionally on every call to
- * `resolveHref`. We mirror that behaviour (no dedup) for exact parity.
- *
- * Note: Next.js uses `router.pathname` (the route pattern, e.g.
- * `/posts/[id]`) for the "in page" segment of the message. The Next.js
- * compat test asserts this exact text (`in page: '/my/path/[name]'`), so we
- * source it from the current render's route pattern via
- * `getCurrentRoutePathnameForWarning()`: the Pages Router SSR context's route
- * pattern on the server, `window.location.pathname` on the client, falling
- * back to `"/"`.
- */
-function warnAndNormalizeRepeatedSlashesInHref(urlAsString: string): string {
-  // Protocol-relative URLs (e.g. "//example.com/path") are treated by vinext
-  // as external — see `isAbsoluteOrProtocolRelativeUrl` in url-utils. We
-  // intentionally skip the repeated-slash warning and normalization for them
-  // so that locale prefixing and same-origin detection elsewhere in this
-  // shim continue to receive the original href. (Next.js itself does flag
-  // these, but our external-URL handling supersedes that behaviour.)
-  if (urlAsString.startsWith("//")) return urlAsString;
-
-  // Strip any protocol prefix (e.g. "https://") so we do not flag the
-  // legitimate `//` that separates the scheme from the authority.
-  const urlProtoMatch = urlAsString.match(/^[a-z][a-z0-9+.-]*:\/\//i);
-  const urlAsStringNoProto = urlProtoMatch
-    ? urlAsString.slice(urlProtoMatch[0].length)
-    : urlAsString;
-  const urlParts = urlAsStringNoProto.split("?", 1);
-  if (!(urlParts[0] || "").match(/(\/\/|\\)/)) return urlAsString;
-
-  const pathname = getCurrentRoutePathnameForWarning();
-  console.error(
-    `Invalid href '${urlAsString}' passed to next/router in page: '${pathname}'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.`,
-  );
-
-  const normalizedNoProto = normalizeRepeatedSlashes(urlAsStringNoProto);
-  return (urlProtoMatch ? urlProtoMatch[0] : "") + normalizedNoProto;
 }
 
 export function resolveLinkPrefetchMode(
@@ -748,7 +685,8 @@ function prefetchUrl(
           const middlewareDataHref =
             fullRouteHref === fullHref
               ? dataTarget.middlewareDataHref
-              : (getPagesMiddlewareDataHref(fullHref, __basePath, { locale }) ?? undefined);
+              : (getPagesMiddlewareDataHref(fullHref, __basePath, { locale }, fullRouteHref) ??
+                undefined);
           prefetchPagesData({ ...dataTarget, middlewareDataHref });
         } else {
           // The target is not a Pages Router route — mark it on the Pages
@@ -1005,30 +943,10 @@ function applyLocaleToHref(href: string, locale: string | false | undefined): st
   return addLocalePrefix(href, resolvedLocale, defaultLocale);
 }
 
-/**
- * For the `<Link href="/blog/[slug]" as="/blog/test-post">` case, project the
- * bracket-pattern href + the resolved `as` back into a concrete route URL the
- * Pages Router can fetch (`/blog/test-post`). Returns null when:
- *   - `href` has no bracket params (already concrete; the existing forwarding
- *     path works as-is)
- *   - interpolation fails because a required param could not be resolved
- *     (caller falls back to `as`, matching pre-PR behavior)
- *
- * The query for interpolation is the href's own query — `as` is the matcher
- * input rather than the source of param values. For string hrefs the search
- * portion is parsed into the query record; for object hrefs we take
- * `href.query` directly.
- */
-function resolveConcreteRouteHref(href: LinkProps["href"], as: string | undefined): string | null {
+/** Resolve a dynamic route pattern to the concrete URL used for prefetching. */
+function resolveConcreteRouteHref(href: string, as: string | undefined): string | null {
   if (typeof as !== "string") return null;
-  const hrefStr = typeof href === "string" ? href : resolveHref(href);
-  const projection = interpolateDynamicRouteHref(
-    hrefStr,
-    as,
-    typeof href === "string" || !href.query || typeof href.query === "string"
-      ? undefined
-      : (href.query as UrlQuery),
-  );
+  const projection = interpolateDynamicRouteHref(href, as);
   return projection?.href || null;
 }
 
@@ -1054,8 +972,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   forwardedRef,
 ) {
   const pagesRouter = useContext(RouterContext);
-  const asHref = as === undefined ? undefined : resolveHref(as);
-  const hrefStr = resolveHref(href);
+  const routePathnameForWarning = getCurrentRoutePathnameForWarning();
+  const hrefStr = resolvePagesLinkValue(href, pagesRouter, routePathnameForWarning);
+  const asHref =
+    as === undefined ? undefined : resolvePagesLinkValue(as, pagesRouter, routePathnameForWarning);
   // Extract locale from rest props
   const { locale, ...restWithoutLocale } = rest;
 
@@ -1069,32 +989,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     children = React.createElement("a", null, childrenProp);
   }
 
-  // If `as` is provided, use it as the actual URL (legacy Next.js pattern
-  // where href is a route pattern like "/user/[id]" and as is "/user/1").
-  // Pages Router object hrefs with dynamic segments implicitly derive the
-  // same pair: the bracket-pattern href is retained for the router while the
-  // interpolated URL is rendered and displayed. This is gated on the mounted
-  // Pages Router context because App Router intentionally rejects dynamic
-  // href patterns instead of interpolating them.
-  // The rendered anchor / prefetch / locale / trailingSlash / basePath math
-  // all run on the display value below; a concrete route-pattern href is
-  // retained as `routeHrefRaw` so the Pages Router click branch can forward
-  // the (href, as) pair to `router.push/replace` and preserve upstream
-  // semantics (popstate fetches by href; same-asPath clicks coerce to
-  // replaceState). When `as` is absent, routeHrefRaw === rawResolvedHref.
-  //
-  // Dynamic-route case: when `href` is a bracket pattern like "/blog/[slug]"
-  // and `as` is the resolved display URL, the raw `href` itself is NOT
-  // server-routable — the Pages Router data endpoint and HTML fetch would
-  // both target `/_next/data/<id>/blog/[slug].json` and `/blog/[slug]`. Run
-  // it through the Next.js `interpolateAs` helper (extracts params from `as`
-  // when href and as differ, otherwise falls back to the href's own query)
-  // to get a concrete URL the router can fetch. If interpolation fails (a
-  // required param could not be resolved), fall back to `as` so behavior
-  // matches the pre-PR documented use of `as` as the navigation target.
-  // Mirrors Next.js' Router.change(): `getRouteRegex` + `interpolateAs`
-  // computes `resolvedAs` for the dynamic-route branch (packages/next/src/
-  // shared/lib/router/router.ts around L987).
+  // Keep Next.js's route/display split: Router receives the normalized route
+  // pattern plus `as`, while prefetching uses an interpolated concrete URL.
   const hrefForImplicitInterpolation = isAbsoluteOrProtocolRelativeUrl(hrefStr)
     ? hrefStr.startsWith("//")
       ? null
@@ -1107,41 +1003,22 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     hrefForImplicitInterpolation !== null
       ? resolveDynamicRouteHref(hrefForImplicitInterpolation)
       : null;
-  const dynamicRouteHref = implicitDynamicRouteHref
-    ? { ...implicitDynamicRouteHref, href: hrefStr }
-    : null;
-  const pagesAsHref = asHref ?? dynamicRouteHref?.as;
+  const pagesAsHref = asHref ?? implicitDynamicRouteHref?.as;
   const unresolvedHref = pagesAsHref ?? hrefStr;
-  const rawResolvedHref =
-    typeof unresolvedHref === "string" &&
-    unresolvedHref.startsWith("#") &&
-    !getNavigationRuntime()?.functions.navigate
+  const resolvedHref =
+    unresolvedHref.startsWith("#") && !getNavigationRuntime()?.functions.navigate
       ? resolvePagesQueryOnlyHref(unresolvedHref)
       : unresolvedHref;
   const concreteRouteHref = HAS_PAGES_ROUTER
-    ? resolveConcreteRouteHref(
-        dynamicRouteHref ? (hrefForImplicitInterpolation ?? href) : href,
-        pagesAsHref,
-      )
+    ? resolveConcreteRouteHref(hrefForImplicitInterpolation ?? hrefStr, pagesAsHref)
     : null;
-  const routeHrefRaw = dynamicRouteHref?.href ?? concreteRouteHref ?? hrefStr;
+  const routeHrefRaw = hrefStr;
   const prefetchRouteHrefRaw = concreteRouteHref ?? routeHrefRaw;
   const hasPagesHrefAsPair =
-    HAS_PAGES_ROUTER &&
-    typeof pagesAsHref === "string" &&
-    typeof routeHrefRaw === "string" &&
-    pagesAsHref !== routeHrefRaw;
-
-  // Mirror Next.js: emit a console.error when the href contains repeated
-  // forward-slashes (e.g. "/foo//bar") or backslashes, and then normalize the
-  // href so navigation targets the collapsed path rather than the raw one.
-  // See packages/next/src/client/resolve-href.ts.
-  const resolvedHref =
-    typeof rawResolvedHref === "string"
-      ? warnAndNormalizeRepeatedSlashesInHref(rawResolvedHref)
-      : rawResolvedHref;
-
-  const isDangerous = typeof resolvedHref === "string" && isDangerousScheme(resolvedHref);
+    HAS_PAGES_ROUTER && pagesAsHref !== undefined && pagesAsHref !== routeHrefRaw;
+  const isDangerous = isDangerousScheme(resolvedHref);
+  const isRouteDangerous = isDangerousScheme(prefetchRouteHrefRaw);
+  const isPrefetchDangerous = isDangerous || (pagesRouter !== null && isRouteDangerous);
 
   // Apply locale prefix if specified (safe even for dangerous hrefs since we
   // won't use the result when isDangerous is true)
@@ -1154,7 +1031,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const normalizedHref = normalizePathTrailingSlash(localizedHref, __trailingSlash);
   const normalizedRouteHref = hasPagesHrefAsPair
     ? normalizePathTrailingSlash(
-        applyLocaleToHref(isDangerous ? "/" : prefetchRouteHrefRaw, locale),
+        applyLocaleToHref(isRouteDangerous ? "/" : prefetchRouteHrefRaw, locale),
         __trailingSlash,
       )
     : normalizedHref;
@@ -1200,11 +1077,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const prefetchRouterMode = getLinkPrefetchRouterMode();
   const isShallowPagesLink = prefetchRouterMode === "pages" && shallow;
   const effectivePrefetchProp = isShallowPagesLink ? false : prefetchProp;
-  const prefetchMode = resolveLinkPrefetchMode(effectivePrefetchProp, isDangerous);
+  const prefetchMode = resolveLinkPrefetchMode(effectivePrefetchProp, isPrefetchDangerous);
   const shouldViewportPrefetch = canLinkPrefetch({
     nodeEnv: process.env.NODE_ENV,
     prefetch: effectivePrefetchProp,
-    isDangerous,
+    isDangerous: isPrefetchDangerous,
   });
 
   const setRefs = useCallback(
@@ -1274,7 +1151,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       !canLinkIntentPrefetch({
         nodeEnv: process.env.NODE_ENV,
         prefetch: effectivePrefetchProp,
-        isDangerous,
+        isDangerous: isPrefetchDangerous,
         routerMode: prefetchRouterMode,
       })
     ) {
@@ -1297,7 +1174,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     );
   }, [
     effectivePrefetchProp,
-    isDangerous,
+    isPrefetchDangerous,
     isShallowPagesLink,
     prefetchMode,
     prefetchRouterMode,

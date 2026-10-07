@@ -294,7 +294,9 @@ function renderWrappers() {
 
   for (const [moduleName, source] of PUBLIC_ENTRIES) {
     const target =
-      moduleName === "next/router" ? "@vinext/types/next/vinext/router" : upstreamSpecifier(source);
+      moduleName === "next/router" || moduleName === "next/error"
+        ? `@vinext/types/next/vinext/${moduleName.slice("next/".length)}`
+        : upstreamSpecifier(source);
     lines.push(`declare module ${JSON.stringify(moduleName)} {`);
     if (moduleName === "next") {
       lines.push(`  export type * from ${JSON.stringify(target)};`);

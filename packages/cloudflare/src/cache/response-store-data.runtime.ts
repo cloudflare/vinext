@@ -314,81 +314,95 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     if (regenerationStorage.getStore()?.targetKey === key) return null;
 
     const request = await cacheRequest(key);
-    const response = await this.store.fetch(request);
-    if (response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS") {
-      return null;
-    }
-    if (!response.ok) {
-      throw new Error(`Workers Response Store returned ${response.status}`);
-    }
-
-    const softTags = [
-      ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
-    ].sort();
-    const getTagExpiration = () => {
-      const key = softTags.join(",");
-      const expirations = this.tagExpirations();
-      let expiration = expirations.get(key);
-      if (!expiration) {
-        expiration = Promise.resolve().then(() => this.store.getTagExpiration(softTags));
-        expirations.set(key, expiration);
-        void expiration.catch(() => {
-          if (expirations.get(key) === expiration) expirations.delete(key);
-        });
+    try {
+      const response = await this.store.fetch(request);
+      if (!response.ok) {
+        void response.body?.cancel().catch(() => {});
+        if (
+          response.status === 404 &&
+          response.headers.get("X-Workers-Response-Store") === "MISS"
+        ) {
+          return null;
+        }
+        throw new Error(`Workers Response Store returned ${response.status}`);
       }
-      return expiration;
-    };
-    const storeStatus = response.headers.get("X-Workers-Response-Store");
-    const body = response.text();
-    const eagerExpiration =
-      softTags.length && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE")
-        ? getTagExpiration().then(
-            (value) => ({ value }) as const,
-            (error: unknown) => ({ error }) as const,
-          )
-        : undefined;
-    const entry = deserialize(await body);
-    if (!entry) {
-      await this.store.purge({ pathPrefixes: [new URL(request.url).pathname] });
+
+      const softTags = [
+        ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
+      ].sort();
+      const getTagExpiration = () => {
+        const key = softTags.join(",");
+        const expirations = this.tagExpirations();
+        let expiration = expirations.get(key);
+        if (!expiration) {
+          expiration = Promise.resolve().then(() => this.store.getTagExpiration(softTags));
+          expirations.set(key, expiration);
+          void expiration.catch(() => {
+            if (expirations.get(key) === expiration) expirations.delete(key);
+          });
+        }
+        return expiration;
+      };
+      const storeStatus = response.headers.get("X-Workers-Response-Store");
+      const body = response.text();
+      const eagerExpiration =
+        softTags.length && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE")
+          ? getTagExpiration().then(
+              (value) => ({ value }) as const,
+              (error: unknown) => ({ error }) as const,
+            )
+          : undefined;
+      const entry = deserialize(await body);
+      if (!entry) {
+        await this.store.purge({ pathPrefixes: [new URL(request.url).pathname] });
+        return null;
+      }
+
+      if (softTags.length) {
+        const expiration = eagerExpiration
+          ? await eagerExpiration
+          : { value: await getTagExpiration() };
+        if ("error" in expiration) throw expiration.error;
+        if (expiration.value >= entry.lastModified) return null;
+      }
+
+      const age = Date.now() - entry.lastModified;
+      const requestedRevalidate = readCacheControlField(context, "revalidate");
+      const requestedStale =
+        typeof requestedRevalidate === "number" &&
+        requestedRevalidate > 0 &&
+        age > requestedRevalidate * 1000;
+      let cacheState: string | undefined;
+      if (response.headers.get(REPLAYABLE_HEADER) === "1") {
+        if (requestedStale) cacheState = "stale";
+      } else if (
+        typeof entry.cacheControl?.expire === "number" &&
+        age > entry.cacheControl.expire * 1000
+      ) {
+        cacheState = "expired";
+      } else if (
+        requestedStale ||
+        (typeof entry.cacheControl?.revalidate === "number" &&
+          entry.cacheControl.revalidate > 0 &&
+          age > entry.cacheControl.revalidate * 1000)
+      ) {
+        cacheState = "stale";
+      }
+      return {
+        lastModified: entry.lastModified,
+        value: entry.value,
+        ...(cacheState ? { cacheState } : {}),
+        ...(entry.cacheControl ? { cacheControl: entry.cacheControl } : {}),
+      };
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          message: "Vinext response-store data lookup failed; treating as a cache miss",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
       return null;
     }
-
-    if (softTags.length) {
-      const expiration = eagerExpiration
-        ? await eagerExpiration
-        : { value: await getTagExpiration() };
-      if ("error" in expiration) throw expiration.error;
-      if (expiration.value >= entry.lastModified) return null;
-    }
-
-    const age = Date.now() - entry.lastModified;
-    const requestedRevalidate = readCacheControlField(context, "revalidate");
-    const requestedStale =
-      typeof requestedRevalidate === "number" &&
-      requestedRevalidate > 0 &&
-      age > requestedRevalidate * 1000;
-    let cacheState: string | undefined;
-    if (response.headers.get(REPLAYABLE_HEADER) === "1") {
-      if (requestedStale) cacheState = "stale";
-    } else if (
-      typeof entry.cacheControl?.expire === "number" &&
-      age > entry.cacheControl.expire * 1000
-    ) {
-      cacheState = "expired";
-    } else if (
-      requestedStale ||
-      (typeof entry.cacheControl?.revalidate === "number" &&
-        entry.cacheControl.revalidate > 0 &&
-        age > entry.cacheControl.revalidate * 1000)
-    ) {
-      cacheState = "stale";
-    }
-    return {
-      lastModified: entry.lastModified,
-      value: entry.value,
-      ...(cacheState ? { cacheState } : {}),
-      ...(entry.cacheControl ? { cacheControl: entry.cacheControl } : {}),
-    };
   }
 
   async set(

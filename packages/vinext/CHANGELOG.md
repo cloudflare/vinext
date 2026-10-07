@@ -1,5 +1,111 @@
 # vinext
 
+## 1.0.0
+
+### Features
+
+- share one cached HTML, RSC and loading-shell entry across the query strings of a static App Router page, as Next.js does, on KV, in-memory, Workers Response Store and Static Assets, and on Workers Cache for paths its deploy manifest marks static (#3462, #3463, #3465, #3490, #3531)
+- match Next.js for `useSearchParams()` and client page `searchParams` on cacheable App Router pages: server rendering shows the nearest `<Suspense>` fallback and the browser renders the real query after hydration (#3455, #3457)
+- cache App Router pages only when Next.js would treat the route as static or SSG, default them to `revalidate = false`, never store a render that used a dynamic API, and send Next.js's never-cache header on pages that can't be static (#3451, #3452, #3453, #3454, #3456, #3461, #3489, #3500)
+- **Init:** default Cloudflare projects to cf (#3504)
+- **Init:** detect css modules and auto-install compatibility workarounds (#3059)
+- **Cloudflare:** add read-only Static Assets prerender cache (#3344)
+- **CLI:** stabilize cache warming flags (#3502)
+
+### Bug Fixes
+
+#### Check
+
+- report next.config options vinext ignores or honours (#3508)
+- refresh import and library support entries (#3507)
+- stop false positives in the project structure scan (#3506)
+
+#### Cloudflare
+
+- use cf/config for typed configuration (#3535)
+- remove manual binding provisioning steps (#3529)
+- allow KV namespace autoprovisioning (#3528)
+- replace deploy prerendering with cache warming (#3340)
+- rename cdnAdapter to workersCacheCdnAdapter (#3503)
+
+#### Misc
+
+- **App Router:** keep cached export Flight URLs out of navigation (#3522)
+- pass `generateStaticParams` the parent params from a route's own layouts rather than from a sibling page (#3493)
+- keep serving the previous entry when an App Router page regeneration fails, and send the request's params and pathname on cached RSC responses (#3459, #3460)
+- **Metadata:** keep streamed icon keys opaque (#3518)
+- **Init:** tidy edits to existing Vite configs (#3515)
+- **Dev:** stabilize next-intl cold rendering and hydration (#3513)
+- **Prerender:** surface render errors in build output (#3514)
+- **Vinext:** support Worker imports during prerender and test Static Assets (#3405)
+
+### Contributors
+
+- @james-elicx
+- @NriotHrreion
+
+## 1.0.0-beta.13
+
+### Features
+
+- support direct `vite dev` and `vite build` commands with vinext's development, prerendering, and Cloudflare deployment lifecycle (#3381)
+- **Cloudflare:** support cf Build Output deployments (#3230)
+
+### Bug Fixes
+
+#### Cache
+
+- admit metadata routes to the CDN cache on their own Cache-Control (#3449)
+- replay "use cache" params under the original cache key (#3430)
+- keep "use cache" pages with props prerenderable (#3421)
+
+#### Misc
+
+- **OG:** support @vercel/og 1.0.3 on Node and Workers (#3409)
+- align Pages Router navigation with Next.js for URL objects, repeated slashes, dynamic routes, and browser history in development and production (#3354, #3367, #3368)
+- **Build:** keep browser client out of multi-stage server outputs (#3440)
+
+### Performance
+
+- **Build:** look up action owner modules once per build pass (#3415)
+
+### Contributors
+
+- @james-elicx
+- @mhsnook
+- @shortstuffsushi
+
+## 1.0.0-beta.12
+
+### Bug Fixes
+
+- **Constants:** guard Node feature detection in browser imports (#3394)
+- **Navigation:** clear pending links on server action redirects (#3393)
+- **Head:** serialize adjacent head tags without whitespace nodes (#3391)
+- **Cache:** protect cache function references (#3385)
+- detect Wrangler with Bun on Windows (#3364)
+- **Cache:** isolate divergent App Router route identities (#3357)
+- **Metadata:** enforce static params for image routes (#3358)
+- **Dev:** initialize App instrumentation in the RSC runner (#3363)
+- **Dev:** pre-optimize Pages hydration runtime (#3356)
+- **Pages:** preserve production CSS graph order (#3314)
+- **Pages:** include resolved CSS aliases in dev manifest (#3355)
+- **App Router:** send anonymous crossOrigin on dynamic preloads and bootstrap hints (#3327)
+
+### Performance
+
+- **Render:** batch Flight chunks and optimize render hot paths (#3402)
+- **Render:** batch inline RSC chunks (#3397)
+
+### Contributors
+
+- @camc314
+- @james-elicx
+- @lyzno1
+- @matthewp
+- @snhsish
+- @yaner-here
+
 ## 1.0.0-beta.11
 
 ### Features

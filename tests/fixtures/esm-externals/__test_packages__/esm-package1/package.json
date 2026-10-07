@@ -1,6 +1,7 @@
 {
   "name": "esm-package",
   "version": "1.0.0",
+  "private": true,
   "exports": {
     "./entry": {
       "browser": "./browser.mjs",

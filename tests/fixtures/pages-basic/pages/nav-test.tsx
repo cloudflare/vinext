@@ -44,6 +44,33 @@ export default function NavTestPage() {
       >
         Replace masked Post via singleton
       </button>
+      <button
+        data-testid="push-object-as"
+        onClick={() =>
+          router.push(
+            { pathname: "/nav-test", query: { mode: "compact", tag: ["a", "b"] } },
+            { pathname: "/nav-test", query: { mode: "compact", tag: ["a", "b"] } },
+            { shallow: true },
+          )
+        }
+      >
+        Push object as
+      </button>
+      <button
+        data-testid="replace-object-as"
+        onClick={() =>
+          Router.replace(
+            { pathname: "/nav-test", hash: "result" },
+            { pathname: "/nav-test", hash: "result" },
+            { shallow: true },
+          )
+        }
+      >
+        Replace object as
+      </button>
+      <button data-testid="push-empty-as" onClick={() => router.push("/about", "")}>
+        Push with empty as
+      </button>
       <Link href="/" data-testid="link-home">
         Link to Home
       </Link>

@@ -130,7 +130,11 @@ export class NextRequest extends Request {
     validateURL(rawUrl);
     // Strip nextConfig before passing to super() — it's vinext-internal,
     // not a valid RequestInit property.
-    const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
+    const { nextConfig: _nextConfig, ...plainInit } = init ?? {};
+    // A Request passed as init (e.g. `new NextRequest(url, request)`) keeps its
+    // method, headers and body on Request.prototype, so the spread above copies
+    // none of them. Hand it to super() as-is, like Next.js does.
+    const requestInit: RequestInit = init instanceof Request ? init : plainInit;
     if (input instanceof Request) {
       // Transfer the body like Next.js does (`super(input, init)`). Cloning here
       // would tee the stream, and the branch left on `input` buffers the entire

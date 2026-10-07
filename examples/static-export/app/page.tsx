@@ -6,7 +6,7 @@ import { catalog } from "../lib/content";
 export const dynamic = "error";
 
 const capabilities = [
-  ["Build-time React", "Server Components run during vinext build and become durable HTML plus static RSC payloads."],
+  ["Build-time React", "Server Components run during vite build and become durable HTML plus static RSC payloads."],
   ["Known dynamic paths", "generateStaticParams expands dynamic and catch-all routes before anything is deployed."],
   ["Browser interactivity", "Client Components hydrate normally, including state, effects, and query-string navigation."],
   ["Both routers", "App Router generation and Pages Router SSG can coexist in one exported application."],

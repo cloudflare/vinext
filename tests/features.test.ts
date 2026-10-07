@@ -3457,6 +3457,25 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     expect(html).toMatch(/<script>document\.querySelectorAll[\s\S]*<\/script><\/div>$/);
   });
 
+  it("body placement: uses opaque icon keys that vary with pathname and metadata", () => {
+    const marker = (pathname: string, icon: string) => {
+      const node = createAppPageRouteBodyMetadata({ icons: { icon } }, pathname, "body");
+      const html = renderToStaticMarkup(node as React.ReactElement);
+      const key = html.match(/data-vinext-streamed-icon="([^"]+)"/)?.[1];
+      expect(key).toMatch(/^vi[a-z0-9]+:0$/);
+      return key;
+    };
+
+    const key = marker("/blog/my-post:pk5ufy:0", "/favicon.ico");
+    expect(marker("/blog/my-post:pk5ufy:0", "/favicon.ico")).toBe(key);
+    expect(marker("/blog/another-post", "/favicon.ico")).not.toBe(key);
+    expect(marker("/blog/my-post:pk5ufy:0", "/other.ico")).not.toBe(key);
+    // These paths collide under the previous single-round 32-bit FNV hash.
+    expect(marker("/products/vb9e3r", "/favicon.ico")).not.toBe(
+      marker("/products/obz81c", "/favicon.ico"),
+    );
+  });
+
   it("body placement: serializes icon-bearing metadata once", () => {
     let titleReads = 0;
     const title = 'data-vinext-streamed-icon="vinext-pending-streamed-icon-key:0';
@@ -3479,7 +3498,7 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     expect(titleReads).toBe(2);
     expect(html).toContain(`<title>${title}</title>`);
     expect(html).not.toContain(' data-injected="true"');
-    expect(html).toContain("/icons&quot; data-injected=&quot;true:");
+    expect(html).not.toContain("/icons");
   });
 
   it("body placement: includes icon cleanup reconciliation without streamed icons", () => {

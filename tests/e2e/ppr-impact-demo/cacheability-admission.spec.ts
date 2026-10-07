@@ -233,6 +233,16 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   });
   expectGatewayCachePolicy(explicitMixedRouteHandler);
 
+  // Next.js compiles metadata files into Route Handlers, so a dynamic image's
+  // own public policy opts it into runtime admission the same way.
+  const explicitMetadataRoute = await request.get(
+    "/cacheability/metadata-route-explicit/london/opengraph-image",
+  );
+  expect(explicitMetadataRoute.status()).toBe(200);
+  expect(explicitMetadataRoute.headers()["content-type"]).toBe("image/png");
+  expect(await explicitMetadataRoute.text()).toBe("metadata-image");
+  expectGatewayCachePolicy(explicitMetadataRoute);
+
   // `revalidate` alone is framework policy, not an explicit response-level
   // opt-in, and must not bypass the route's manifest absence.
   const frameworkPolicyMixedRouteHandler = await request.get(

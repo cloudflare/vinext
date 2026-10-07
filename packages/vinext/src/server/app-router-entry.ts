@@ -45,11 +45,7 @@ import {
   handleConfiguredImageOptimization,
   isImageOptimizationPath,
 } from "./image-optimization.js";
-import {
-  createStaticAssetRequest,
-  finalizeMissingStaticAssetResponse,
-  resolveStaticAssetSignal,
-} from "./worker-utils.js";
+import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -239,9 +235,8 @@ async function handleRequest(
   }
 
   // Valid assets are served by Cloudflare's ASSETS binding before the worker
-  // is invoked. Missing asset-shaped requests still need to reach middleware
-  // so it can rewrite or respond; a final 404 is converted back to Next.js's
-  // canonical plain-text static-file response below.
+  // is invoked. The shared router classifies misses after middleware and
+  // rewrites; this flag is only needed for the legacy null-result fallback.
   const missingBuildAsset = isNextStaticPath(
     url.pathname,
     __workerBasePath,
@@ -295,7 +290,6 @@ async function handleRequest(
       });
       if (assetResponse) response = assetResponse;
     }
-    response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
     return finalizeCacheabilityResponse ? finalizeCacheabilityResponse(response, ctx) : response;
   }
 

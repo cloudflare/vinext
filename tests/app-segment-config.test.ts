@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  collectAppPageStaticGenerationRuntimes,
+  collectAppPageStaticParamsWalkSegments,
+  hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  isAppPageStaticEligible,
   isEdgeRuntime,
+  lastDynamicSegmentHasGenerateStaticParams,
   resolveAppPageDynamicConfig,
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
+  resolveAppPageStaticGenerationRuntime,
   resolveAppRouteHandlerFetchCacheMode,
 } from "../packages/vinext/src/server/app-segment-config.js";
 
@@ -527,5 +533,504 @@ describe("isEdgeRuntime", () => {
     expect(isEdgeRuntime("experimental-edge")).toBe(true);
     expect(isEdgeRuntime("nodejs")).toBe(false);
     expect(isEdgeRuntime(undefined)).toBe(false);
+  });
+});
+
+describe("resolveAppPageStaticGenerationRuntime", () => {
+  // Next.js reads runtime from the page and its parent layouts, the page
+  // winning, then the nearest layout.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/get-static-info-including-layouts.ts
+  it("lets the page win, then the nearest layout", () => {
+    expect(resolveAppPageStaticGenerationRuntime(["nodejs", "edge", undefined])).toBe("edge");
+    expect(resolveAppPageStaticGenerationRuntime(["edge", undefined, "nodejs"])).toBe("nodejs");
+    expect(resolveAppPageStaticGenerationRuntime(["edge", "bogus"])).toBe("edge");
+    expect(resolveAppPageStaticGenerationRuntime([undefined, undefined])).toBeUndefined();
+  });
+});
+
+describe("collectAppPageStaticGenerationRuntimes", () => {
+  const resolve = (options: Parameters<typeof collectAppPageStaticGenerationRuntimes>[0]) =>
+    resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(options));
+
+  it("reads the page and its layouts", () => {
+    expect(
+      resolve({
+        layouts: [{ runtime: "edge" }, {}],
+        layoutTreePositions: [0, 1],
+        page: {},
+        routeSegments: ["blog"],
+      }),
+    ).toBe("edge");
+    expect(
+      resolve({
+        layouts: [{ runtime: "edge" }, {}],
+        layoutTreePositions: [0, 1],
+        page: { runtime: "nodejs" },
+        routeSegments: ["blog"],
+      }),
+    ).toBe("nodejs");
+  });
+
+  it("merges a slot page's runtime into a route with its own page", () => {
+    // app/page.tsx and app/@panel/page.tsx exporting runtime = "edge": Next.js
+    // merges every parallel branch, so / is edge.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "active" },
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          { name: "panel", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: [] },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("edge");
+  });
+
+  it("merges a slot's default module runtime", () => {
+    // app/@panel/default.tsx exports runtime = "edge".
+    expect(
+      resolve({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          { isDefault: true, name: "panel", ownerTreePosition: 0, page: { runtime: "edge" } },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("edge");
+  });
+
+  it("reads the slot page of a route that only a slot page materializes", () => {
+    // app/@feed/foo/page.tsx with no app/foo/page.tsx: children renders the
+    // root default, and the slot page supplies the runtime.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{ runtime: "nodejs" }],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          {
+            configLayouts: [{ runtime: "nodejs" }],
+            configLayoutTreePositions: [1],
+            layout: {},
+            name: "feed",
+            ownerTreePosition: 0,
+            page: { runtime: "edge" },
+            routeSegments: ["foo"],
+          },
+        ],
+        routeSegments: ["foo"],
+      }),
+    ).toBe("edge");
+  });
+
+  it("makes the route edge when any sibling slot page is edge", () => {
+    // app/@alpha/page.tsx (Node) and app/@zeta/page.tsx (edge) with no
+    // app/page.tsx: / is edge even though @alpha sorts first.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: null,
+        parallelBranches: [
+          { name: "alpha", ownerTreePosition: 0, page: {}, routeSegments: [] },
+          { name: "zeta", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: [] },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("edge");
+  });
+
+  it("lets a branch's runtime win over an enclosing layout's", () => {
+    // app/layout.tsx sets runtime = "edge" and app/@alpha/page.tsx sets
+    // "nodejs": the merged branch value is set, so the root layout doesn't
+    // override it.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{ runtime: "edge" }],
+        layoutTreePositions: [0],
+        page: null,
+        parallelBranches: [
+          { name: "alpha", ownerTreePosition: 0, page: { runtime: "nodejs" }, routeSegments: [] },
+          { name: "zeta", ownerTreePosition: 0, page: {}, routeSegments: [] },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("nodejs");
+  });
+
+  it("reads the main-branch layouts of a page-less route", () => {
+    // app/layout.tsx sets runtime = "edge", app/dashboard/layout.tsx sets
+    // "nodejs", app/dashboard/@panel/default.tsx makes /dashboard a route, and
+    // app/@feed/dashboard/page.tsx matches it. The dashboard layout is in the
+    // children branch, whose value the root layout doesn't override.
+    expect(
+      resolve({
+        layouts: [{ runtime: "edge" }, { runtime: "nodejs" }],
+        layoutTreePositions: [0, 1],
+        page: null,
+        parallelBranches: [
+          {
+            layout: {},
+            name: "feed",
+            ownerTreePosition: 0,
+            page: {},
+            routeSegments: ["dashboard"],
+          },
+          { isDefault: true, name: "panel", ownerTreePosition: 1, page: {} },
+        ],
+        routeSegments: ["dashboard"],
+      }),
+    ).toBe("nodejs");
+  });
+
+  it("stops the main branch at the folder whose default children renders", () => {
+    // app/dashboard/layout.tsx sets runtime = "edge", app/dashboard/settings/
+    // layout.tsx sets "nodejs", and app/dashboard/@feed/settings/page.tsx
+    // materializes /dashboard/settings. Children renders the dashboard default,
+    // so the settings layout isn't in the tree.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/dashboard", state: "default" },
+        layouts: [{}, { runtime: "edge" }, { runtime: "nodejs" }],
+        layoutTreePositions: [0, 1, 2],
+        page: {},
+        parallelBranches: [
+          { name: "feed", ownerTreePosition: 1, page: {}, routeSegments: ["settings"] },
+        ],
+        routeSegments: ["dashboard", "settings"],
+      }),
+    ).toBe("edge");
+  });
+});
+
+describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
+  const generateStaticParams = () => [];
+
+  it("counts generateStaticParams on the page below the last dynamic segment", () => {
+    // app/[slug]/page.tsx
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        routeSegments: ["[slug]"],
+      }),
+    ).toBe(true);
+    // app/[locale]/about/page.tsx
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        routeSegments: ["[locale]", "about"],
+      }),
+    ).toBe(true);
+  });
+
+  it("counts the last dynamic segment's layout and deeper layouts", () => {
+    // app/[slug]/layout.tsx exports it, app/[slug]/details/page.tsx does not.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}, { generateStaticParams }],
+        layoutTreePositions: [0, 1],
+        page: {},
+        routeSegments: ["[slug]", "details"],
+      }),
+    ).toBe(true);
+    // app/[slug]/(group)/layout.tsx
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}, { generateStaticParams }],
+        layoutTreePositions: [0, 2],
+        page: {},
+        routeSegments: ["[slug]", "(group)"],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not count generateStaticParams above the last dynamic segment", () => {
+    // app/[a]/layout.tsx exports it; app/[a]/[b]/page.tsx does not (Next.js: ƒ).
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}, { generateStaticParams }],
+        layoutTreePositions: [0, 1],
+        page: {},
+        routeSegments: ["[a]", "[b]"],
+      }),
+    ).toBe(false);
+    // The root layout's generateStaticParams sits above every dynamic segment.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{ generateStaticParams }],
+        layoutTreePositions: [0],
+        page: {},
+        routeSegments: ["[slug]"],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not use a sibling page's generateStaticParams", () => {
+    // app/[slug]/page.tsx exports it, but /[slug]/details has its own page.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        routeSegments: ["[slug]", "details"],
+      }),
+    ).toBe(false);
+  });
+
+  it("counts parallel slot pages, and visits a layout-less slot folder that repeats the main tree once", () => {
+    // app/[id]/page.tsx has no generateStaticParams, app/@modal/[id]/page.tsx does.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [{ page: { generateStaticParams }, routeSegments: ["[id]"] }],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(true);
+    // app/[id]/page.tsx exports it. The slot's layout-less [id] folder is the
+    // same segment to Next.js, so it does not clear the flag again.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [{ page: {}, routeSegments: ["[id]"] }],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(true);
+  });
+
+  // Next.js's default build (Turbopack) puts `children` first at each level,
+  // so the main-tree segment is visited before a slot segment at the same
+  // depth.
+  // https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1504-L1511
+  it("visits the main tree before a matched slot at the same depth", () => {
+    // app/[id]/page.tsx exports it; app/@modal/[id]/layout.tsx does not. The
+    // slot's [id] is a separate segment, visited after the main page.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [
+          {
+            configLayouts: [{}],
+            configLayoutTreePositions: [1],
+            name: "modal",
+            ownerTreePosition: 0,
+            page: {},
+            routeSegments: ["[id]"],
+          },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(false);
+  });
+
+  it("orders slot folder names by UTF-8 bytes", () => {
+    // @豈 (U+F900) sorts before @𐀀 (U+10000) by UTF-8 bytes, but after it by
+    // UTF-16 code units.
+    const segments = collectAppPageStaticParamsWalkSegments({
+      layouts: [{}],
+      layoutTreePositions: [0],
+      page: {},
+      parallelBranches: [
+        { name: "\u{10000}", ownerTreePosition: 0, page: {}, routeSegments: [] },
+        { name: "\u{F900}", ownerTreePosition: 0, page: {}, routeSegments: [] },
+      ],
+      routeSegments: [],
+    });
+    expect(
+      segments
+        .filter((segment) => segment.treePath.length === 1 && segment.treePath[0] > 0)
+        .map((segment) => segment.identity[0]),
+    ).toEqual(["@\u{F900}", "@\u{10000}"]);
+  });
+
+  it("orders slots by folder name, whether they matched a page or render default", () => {
+    const segments = collectAppPageStaticParamsWalkSegments({
+      layouts: [{}],
+      layoutTreePositions: [0],
+      page: {},
+      parallelBranches: [
+        { name: "zeta", ownerTreePosition: 0, page: {}, routeSegments: [] },
+        { isDefault: true, name: "alpha", ownerTreePosition: 0, page: {} },
+      ],
+      routeSegments: [],
+    });
+    expect(segments.map((segment) => [segment.identity[0], segment.treePath])).toEqual([
+      ["", []],
+      ["__DEFAULT__", [1]],
+      ["@zeta", [2]],
+      ["__PAGE__", [2, 0]],
+      ["__PAGE__", [0]],
+    ]);
+  });
+
+  it("places a slot under the folder that owns it, not by its segment count", () => {
+    // app/(main)/[id]/page.tsx exports it; the root slot app/@panel/[id]/page.tsx
+    // does not. The slot's [id] sits one level above the main page.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [
+          { name: "panel", ownerTreePosition: 0, page: {}, routeSegments: ["[id]"] },
+        ],
+        routeSegments: ["(main)", "[id]"],
+      }),
+    ).toBe(true);
+  });
+
+  it("reads only the default module of a slot that renders its default", () => {
+    // A default slot is a single `__DEFAULT__` segment; the slot's own layout
+    // is not part of the loader tree.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          {
+            isDefault: true,
+            layout: { generateStaticParams },
+            name: "modal",
+            ownerTreePosition: 0,
+            page: {},
+            routeSegments: [],
+          },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(false);
+  });
+
+  it("places the children default of a route that only a slot page materializes under its owner", () => {
+    // app/default.tsx exports it; app/@feed/[id]/page.tsx does not. Next.js's
+    // loader tree puts `__DEFAULT__` directly under the root, so the slot's
+    // deeper [id] is visited last and clears the flag.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [
+          { name: "feed", ownerTreePosition: 0, page: {}, routeSegments: ["[id]"] },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(false);
+  });
+
+  it("reads a route-group layout of a slot page that has no URL segments", () => {
+    // app/[id]/@details/(variant)/layout.tsx exports it, below the [id]
+    // segment it follows.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          {
+            configLayouts: [{ generateStaticParams }],
+            configLayoutTreePositions: [1],
+            name: "details",
+            ownerTreePosition: 1,
+            page: {},
+            routeSegments: [],
+          },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(true);
+  });
+
+  it("walks segments breadth-first in loader tree order", () => {
+    expect(
+      lastDynamicSegmentHasGenerateStaticParams([
+        {
+          dynamic: false,
+          generateStaticParams: true,
+          identity: ["__PAGE__", "page"],
+          treePath: [1, 0],
+        },
+        {
+          dynamic: true,
+          generateStaticParams: false,
+          identity: ["[slug]", undefined],
+          treePath: [1],
+        },
+        {
+          dynamic: true,
+          generateStaticParams: false,
+          identity: ["[id]", "slot"],
+          treePath: [0, 0],
+        },
+      ]),
+    ).toBe(true);
+    expect(lastDynamicSegmentHasGenerateStaticParams([])).toBe(false);
+  });
+});
+
+describe("isAppPageStaticEligible", () => {
+  const base = {
+    hasGenerateStaticParams: false,
+    isDynamicRoute: false,
+    isStaticGenerationEdgeRuntime: false,
+    revalidateSeconds: null,
+  };
+
+  it("treats routes without dynamic segments as static", () => {
+    expect(isAppPageStaticEligible(base)).toBe(true);
+    expect(isAppPageStaticEligible({ ...base, revalidateSeconds: 60 })).toBe(true);
+  });
+
+  it("treats dynamic-segment routes as SSG only with generateStaticParams at the last dynamic segment", () => {
+    expect(isAppPageStaticEligible({ ...base, isDynamicRoute: true })).toBe(false);
+    // revalidate never makes a dynamic route static in Next.js.
+    expect(isAppPageStaticEligible({ ...base, isDynamicRoute: true, revalidateSeconds: 60 })).toBe(
+      false,
+    );
+    expect(
+      isAppPageStaticEligible({ ...base, hasGenerateStaticParams: true, isDynamicRoute: true }),
+    ).toBe(true);
+  });
+
+  it("treats force-static and dynamic = error as static", () => {
+    expect(
+      isAppPageStaticEligible({ ...base, dynamicConfig: "force-static", isDynamicRoute: true }),
+    ).toBe(true);
+    expect(isAppPageStaticEligible({ ...base, dynamicConfig: "error", isDynamicRoute: true })).toBe(
+      true,
+    );
+  });
+
+  it("excludes force-dynamic, revalidate = 0 and the edge runtime", () => {
+    expect(isAppPageStaticEligible({ ...base, dynamicConfig: "force-dynamic" })).toBe(false);
+    expect(isAppPageStaticEligible({ ...base, revalidateSeconds: 0 })).toBe(false);
+    for (const config of [
+      {},
+      { revalidateSeconds: 60 },
+      { hasGenerateStaticParams: true, isDynamicRoute: true },
+      { dynamicConfig: "force-static" },
+    ]) {
+      expect(
+        isAppPageStaticEligible({ ...base, ...config, isStaticGenerationEdgeRuntime: true }),
+      ).toBe(false);
+    }
   });
 });

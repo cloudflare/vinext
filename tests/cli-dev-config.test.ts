@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { resolveConfig, type Plugin, type ServerOptions } from "vite";
 import {
   applyDevServerDefaults,
-  createDevServerConfigPlugin,
+  createDevServerLifecyclePlugin,
   normalizeDevServerHostname,
 } from "../packages/vinext/src/cli-dev-config.js";
 
@@ -32,7 +32,7 @@ describe("applyDevServerDefaults", () => {
   });
 });
 
-describe("createDevServerConfigPlugin", () => {
+describe("createDevServerLifecyclePlugin", () => {
   it("applies explicit CLI flags after user config hooks", async () => {
     const lateUserConfigPlugin: Plugin = {
       name: "test:late-user-config",
@@ -52,7 +52,7 @@ describe("createDevServerConfigPlugin", () => {
         configFile: false,
         plugins: [
           lateUserConfigPlugin,
-          createDevServerConfigPlugin({ hostname: "127.0.0.1", port: 4000 }),
+          createDevServerLifecyclePlugin({ hostname: "127.0.0.1", port: 4000 }, () => true),
         ],
       },
       "serve",

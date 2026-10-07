@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { createBuilder, createServer } from "vite";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  _mayContainVeryDynamicRequest,
   _transformVeryDynamicRequests,
   createIgnoreDynamicRequestsPlugin,
 } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
@@ -163,6 +164,119 @@ describe("App Router dynamic requests", () => {
     expect(transformed?.code).toContain("MODULE_NOT_FOUND");
   });
 
+  it("skips parsing modules whose requests are never rewritten", () => {
+    for (const code of [
+      `const a = require("package"); const b = require( './local.js' ); require("");`,
+      `import value from "package"; import "./side-effect.js"; import * as ns from "ns";`,
+      `import value = require("package");`,
+      `const load = () => import("./module.js", { with: { type: "json" } });`,
+      "const load = createRequire(import.meta.url); const url = import.meta.url;",
+      "var __require = createRequire(url); __require(request); require_cjs(request);",
+      "mod.require(request); mod?.require(request); mod.import(request);",
+      `if (typeof require === "function") factory(require, exports);`,
+      "const { require: load } = options; (0, require)(request);",
+      "Require(request); REQUIRE(request);",
+    ]) {
+      expect(_mayContainVeryDynamicRequest(code), code).toBe(false);
+      expect(_transformVeryDynamicRequests(code, "/app/page.ts"), code).toBeNull();
+    }
+  });
+
+  it("does not parse modules the prescan skips", async () => {
+    const parseAst = vi.fn<typeof import("vite").parseAst>();
+    vi.doMock("vite", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("vite")>();
+      parseAst.mockImplementation(actual.parseAst);
+      return { ...actual, parseAst };
+    });
+    try {
+      const pluginSpecifier = "../packages/vinext/src/plugins/ignore-dynamic-requests.js?parse";
+      const {
+        _transformVeryDynamicRequests: transform,
+      }: typeof import("../packages/vinext/src/plugins/ignore-dynamic-requests.js") = await import(
+        /* @vite-ignore */ pluginSpecifier
+      );
+      expect(transform(`const a = require("package");`, "/app/page.ts")).toBeNull();
+      expect(parseAst).not.toHaveBeenCalled();
+      expect(transform("require(request)", "/app/page.ts")).not.toBeNull();
+      expect(parseAst).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("vite");
+    }
+  });
+
+  it("keeps the AST pass for every request form that can be rewritten", () => {
+    for (const code of [
+      "require(request)",
+      "require (request)",
+      "require\n(request)",
+      "require/* comment */(request)",
+      "require // comment\n(request)",
+      `require${" ".repeat(300)}(request)`,
+      "require?.(request)",
+      "require!(request)",
+      "require<string>(request)",
+      "(require)(request)",
+      "( ( require ) )(request)",
+      "(/* comment */ require)(request)",
+      "(// comment\nrequire)(request)",
+      `(${" ".repeat(100)}require)(request)`,
+      "(require as any)(request)",
+      "(require satisfies unknown)(request)",
+      "(<any>require)(request)",
+      "[...require(request)]",
+      `require("/")`,
+      "require('/')",
+      "require(String.fromCharCode(97))",
+      String.raw`\u0072equire(request)`,
+      String.raw`requ\u0069re(request)`,
+      String.raw`\u{72}equire(request)`,
+      "import(request)",
+      "import (request)",
+      "import\n(request)",
+      "import /* comment */ (request)",
+      "import(/* comment */ request)",
+      `import("/")`,
+      "import(`${request}`)",
+      `mod.require(request); require("package"); require(request);`,
+      "const url = import.meta.url; import(request);",
+    ]) {
+      expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
+      expect(_transformVeryDynamicRequests(code, "/app/page.ts"), code).not.toBeNull();
+    }
+
+    // Annex B HTML-like comments between the callee and the call.
+    for (const code of [
+      "require\n-->comment\n(request)",
+      "(require\n-->comment\n)(request)",
+      "require <!--comment\n(request)",
+      `require("package");\nimport <!--comment\n(request)`,
+      `require("package");\nimport\n-->comment\n(request)`,
+    ]) {
+      expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
+      expect(_transformVeryDynamicRequests(code, "/app/page.js"), code).not.toBeNull();
+    }
+
+    // Left unchanged by the AST pass, but the prescan conservatively keeps them.
+    for (const code of [
+      `require("./" + request)`,
+      `require("a", request)`,
+      "import.source(request)",
+      "import./* comment */defer(request)",
+    ]) {
+      expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
+    }
+  });
+
+  it("defers HTML comment end variants to the AST parser", () => {
+    for (const callee of ["require", "import"]) {
+      // Unlike Annex B's `-->`, HTML's `--!>` is not valid JavaScript here.
+      const code = `require("package");\n${callee}\n--!>comment\n(request)`;
+      expect(_mayContainVeryDynamicRequest(code), code).toBe(true);
+      expect(_transformVeryDynamicRequests(code, "/app/page.js"), code).toBeNull();
+    }
+  });
+
   it("matches Next.js environment scoping", () => {
     const transform = createIgnoreDynamicRequestsPlugin(() => [
       "transpiled",
@@ -203,6 +317,37 @@ describe("App Router dynamic requests", () => {
     expect(runTransform("client", "/app/node_modules/transpiled-extra/index.js")).toBeTruthy();
     expect(runTransform("client", "/app/node_modules/@scope/pkg-extra/index.js")).toBeTruthy();
     expect(runTransform("server", "/app/node_modules/transpiled/index.js")).toBeTruthy();
+  });
+
+  it("omits sourcemaps only for builds that discard them", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const runTransform = (
+      mode: "dev" | "build",
+      sourcemap: boolean | "inline" | "hidden" = false,
+    ): { code: string; map: unknown } | null =>
+      transform.handler.call(
+        { environment: { mode, config: { consumer: "server", build: { sourcemap } } } } as never,
+        "import(request)",
+        "/app/page.tsx",
+      ) as never;
+
+    const withoutMap = runTransform("build");
+    expect(withoutMap?.map).toBeNull();
+    expect(withoutMap?.code).toContain("MODULE_NOT_FOUND");
+    // The cached result is shared across environments, so later consumers
+    // that need the sourcemap still receive it.
+    for (const result of [
+      runTransform("dev"),
+      runTransform("build", true),
+      runTransform("build", "hidden"),
+      runTransform("build", "inline"),
+    ]) {
+      expect(result?.code).toBe(withoutMap?.code);
+      expect(result?.map).toMatchObject({ version: 3, mappings: expect.any(String) });
+    }
   });
 
   it("only rewrites fully dynamic unbound requests", () => {

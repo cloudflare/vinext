@@ -6,8 +6,8 @@ import {
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import {
+  markRouteCacheabilityConfigCdnCachePolicy,
   markRouteCacheabilityDynamic,
-  markRouteCacheabilityExplicitConfigPolicy,
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import { isCdnResponsePolicyHeader, isNonCacheableCdnResponsePolicy } from "./cache-control.js";
@@ -76,7 +76,7 @@ function markExplicitConfigResponseVeto(
       continue;
     }
     if (isCdnResponsePolicyHeader(name)) {
-      markRouteCacheabilityExplicitConfigPolicy();
+      markRouteCacheabilityConfigCdnCachePolicy(name, header.value);
     }
     if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, header.value)) {
       markRouteCacheabilityFinalResponseUncacheable(

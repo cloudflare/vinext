@@ -1,9 +1,10 @@
 import path from "pathslash";
-import { parseAst, type ESTree } from "vite";
+import { parseSync, type ESTree } from "vite";
 import MagicString from "magic-string";
 import {
   booleanLiteralValue,
   collectBindingNames,
+  DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
   isIdentifierNamed,
   stringLiteralValue,
@@ -34,10 +35,27 @@ export const consumerEnvironmentConditionFilter = new RegExp(
   String.raw`\btypeof\s+window\b|${identifierEscapePattern.source}|\bprocess\b[\s)]*(?:(?:\?\.|\.)\s*(?:browser\b|\/[/*])|(?:\?\.\s*)?\[[\s(]*(?:["']browser["']|["'][^"'\\\n\r]*\\|\/[/*])|\/[/*])`,
 );
 
+// An import-scan build reduces every module to its import specifiers, and
+// static import declarations cannot sit inside a foldable branch. Folding can
+// therefore only change the scanned graph by pruning a dynamic `import()`, a
+// phase import (`import.source()` / `import.defer()`), or an `import.meta`
+// expression such as `import.meta.glob(...)`. Only those follow `import.`, so
+// the dot alone admits them, including when a comment precedes the property.
+const SCANNED_IMPORT_FOLD_PRESCAN = new RegExp(
+  String.raw`${DYNAMIC_IMPORT_PRESCAN.source}|\bimport\s*\.`,
+);
+// `import.meta.url` and `import.meta.env` reads never name another module.
+const NON_IMPORTING_IMPORT_META_RE = /\s*\.\s*(?:url|env)\b/y;
+
 export type ConsumerEnvironmentReplacements = {
   typeofWindow?: WindowType;
   processBrowser?: boolean;
   pruneUnreachableImports?: boolean;
+  /**
+   * Return null without walking the AST when folding cannot change the module's
+   * scanned imports. Only valid for import-scan builds.
+   */
+  onlyIfScannedImportsChange?: boolean;
 };
 
 type EnvironmentLike = {
@@ -211,6 +229,37 @@ function evaluateConsumerCondition(
   return result === null ? null : { value: result, effects: [] };
 }
 
+/**
+ * Cheap pre-parse gate for import-scan builds. Over-inclusive by design; the
+ * parser's module record in {@link moduleRecordHasScannedFoldTargets} is exact.
+ */
+export function mayFoldChangeScannedImports(code: string): boolean {
+  return SCANNED_IMPORT_FOLD_PRESCAN.test(code);
+}
+
+/**
+ * Whether folding may change a scanned import: any dynamic or phase import, or
+ * an `import.meta` expression other than a `.url`/`.env` read. Reads the parser's native module record, so no
+ * ESTree is materialized.
+ */
+function moduleRecordHasScannedFoldTargets(
+  code: string,
+  module: ReturnType<typeof parseSync>["module"],
+  lang: "js" | "jsx" | "ts" | "tsx",
+): boolean {
+  // The module record omits TypeScript `import("x")` types, which the scan's
+  // lexer still sees when no earlier plugin stripped them.
+  if ((lang === "ts" || lang === "tsx") && DYNAMIC_IMPORT_PRESCAN.test(code)) return true;
+  // Any dynamic or phase import counts: besides static specifiers, folding can
+  // turn a request such as `import(typeof window)` into a literal.
+  if (module.dynamicImports.length > 0) return true;
+  for (const importMeta of module.importMetas) {
+    NON_IMPORTING_IMPORT_META_RE.lastIndex = importMeta.end;
+    if (!NON_IMPORTING_IMPORT_META_RE.test(code)) return true;
+  }
+  return false;
+}
+
 export function replaceTypeofWindow(code: string, replacement: WindowType, id = "file.js") {
   return replaceConsumerEnvironmentConditions(code, { typeofWindow: replacement }, id);
 }
@@ -236,12 +285,15 @@ export function replaceConsumerEnvironmentConditions(
         : extension === ".jsx"
           ? "jsx"
           : "js";
-  let ast: ReturnType<typeof parseAst>;
-  try {
-    ast = parseAst(code, { lang });
-  } catch {
+  const parsed = parseSync(id, code, { lang, preserveParens: false });
+  if (parsed.errors.length > 0) return null;
+  if (
+    replacements.onlyIfScannedImportsChange &&
+    !moduleRecordHasScannedFoldTargets(code, parsed.module, lang)
+  ) {
     return null;
   }
+  const ast = parsed.program;
 
   const output = new MagicString(code);
   let changed = false;
