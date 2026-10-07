@@ -6,9 +6,10 @@ import type { PagesClientAssets } from "../server/pages-client-assets.js";
 export const PAGES_CLIENT_ASSETS_MODULE = "vinext-client-assets.js";
 
 export function buildPagesClientAssetsModule(assets: PagesClientAssets): string {
-  const prepared = assets.ssrManifest
-    ? { ...assets, sharedChunks: getSharedChunkFiles(assets.ssrManifest) }
-    : assets;
+  const prepared =
+    assets.ssrManifest && !assets.sharedChunks
+      ? { ...assets, sharedChunks: getSharedChunkFiles(assets.ssrManifest) }
+      : assets;
   return `export default ${JSON.stringify(prepared)};\n`;
 }
 

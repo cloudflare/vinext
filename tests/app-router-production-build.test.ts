@@ -673,6 +673,67 @@ export default async function OpenGraphImage() {
     }
   }, 30000);
 
+  it("keeps server entries when top-level output names are client-only", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-top-level-client-names-"));
+
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), `{"type":"module"}`);
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() {
+  return <p>Top-level names</p>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+        build: {
+          rolldownOptions: {
+            output: {
+              entryFileNames: "_next/static/chunks/[hash].js",
+              chunkFileNames: "_next/static/chunks/[hash].js",
+            },
+          },
+        },
+      });
+      await builder.buildApp();
+
+      const clientEntryManifest = JSON.parse(
+        fs.readFileSync(
+          path.join(tmpDir, "dist", "client", "vinext-client-entry-manifest.json"),
+          "utf-8",
+        ),
+      );
+      expect(clientEntryManifest.appBrowserEntry).toMatch(/^_next\/static\/chunks\/[\w-]{8}\.js$/);
+      expect(fs.existsSync(path.join(tmpDir, "dist", "server", "ssr", "index.js"))).toBe(true);
+
+      const rscEntryPath = path.join(tmpDir, "dist", "server", "index.js");
+      const rscModule = await import(pathToFileURL(rscEntryPath).href);
+      const response = await rscModule.default(new Request("http://localhost/"));
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Top-level names");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+
   it("emits and serves Pages client entry in hybrid builds with basePath + assetPrefix", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-hybrid-basepath-assetprefix-"));
 
