@@ -33,7 +33,11 @@ import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
-import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
+import {
+  addCollectedRequestTags,
+  getCurrentFetchSoftTags,
+  runWithDetachedFetchObservations,
+} from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
@@ -486,6 +490,8 @@ const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v2";
  * a direct import (avoiding circular dependencies).
  */
 const _unstableCacheAls = getOrCreateAls<boolean>("vinext.unstableCache.als");
+// The "use cache" scope registered by cache-runtime.ts, read without importing it.
+const _useCacheContextAls = getOrCreateAls<unknown>("vinext.cacheRuntime.contextAls");
 
 /**
  * Wrapper used to serialize `unstable_cache` results so that `undefined` can
@@ -553,9 +559,12 @@ function scheduleUnstableCacheBackgroundRevalidation(
   const pending = getPendingUnstableCacheRevalidations();
   if (pending.has(cacheKey)) return;
 
-  // As with a "use cache" regeneration, the refresh feeds its cache life back
-  // into neither the request nor a layout probe.
-  const revalidation = runWithDetachedCacheObservations(refresh)
+  // As with a "use cache" regeneration (regenerateInBackground), the refresh
+  // feeds neither its cache life nor its tags back into the request, a layout
+  // probe, or an enclosing cache that served the stale value.
+  const revalidation = runWithDetachedCacheObservations(() =>
+    runWithDetachedFetchObservations(() => _useCacheContextAls.exit(refresh)),
+  )
     .then(() => undefined)
     .catch((err) => {
       console.error(`[vinext] unstable_cache background revalidation failed for ${cacheKey}:`, err);

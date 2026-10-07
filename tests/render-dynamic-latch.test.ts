@@ -12,6 +12,11 @@ import {
   runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import {
+  addCollectedRequestTags,
+  getCollectedFetchTags,
+} from "../packages/vinext/src/shims/fetch-cache.js";
 import {
   cacheLife,
   MemoryCacheHandler,
@@ -353,51 +358,85 @@ describe("render dynamic latch", () => {
       });
     });
 
-    it("keeps an unstable_cache background refresh's cacheLife out of the probe's", async () => {
-      setCacheHandler({
-        async get() {
+    describe("an unstable_cache background refresh", () => {
+      // Serves every unstable_cache entry stale, so each call schedules a refresh.
+      class StaleUnstableCacheHandler extends MemoryCacheHandler {
+        override async get(key: string, ctx?: Record<string, unknown>) {
+          if (!key.startsWith("unstable_cache:")) return super.get(key, ctx);
           return {
-            cacheState: "stale",
+            cacheState: "stale" as const,
             lastModified: Date.now() - 2_000,
             value: {
-              kind: "FETCH",
-              data: { body: JSON.stringify({ v: "stale" }), headers: {}, url: "" },
+              kind: "FETCH" as const,
+              data: { body: JSON.stringify({ v: "stale" }), headers: {}, url: key },
               revalidate: 1,
               tags: [],
             },
           };
-        },
-        async set() {},
-        async revalidateTag() {},
-      });
-      try {
-        const refreshes: Promise<unknown>[] = [];
-        const getValue = unstable_cache(
+        }
+      }
+
+      const runScenario = async (scenario: (refreshes: Promise<unknown>[]) => Promise<void>) => {
+        setCacheHandler(new StaleUnstableCacheHandler());
+        try {
+          const refreshes: Promise<unknown>[] = [];
+          const context = createRequestContext({
+            executionContext: { waitUntil: (promise) => refreshes.push(promise) },
+            unstableCacheRevalidation: "background",
+          });
+          await runWithRequestContext(context, () => scenario(refreshes));
+        } finally {
+          setCacheHandler(new MemoryCacheHandler());
+        }
+      };
+
+      // A refresh that reads a public cached function with a shorter stale time.
+      const createStaleRead = (key: string) => {
+        const readShortLived = registerCachedFunction(async () => {
+          cacheLife({ stale: 10, revalidate: 60, expire: 300 });
+          return "short";
+        }, `test:${key}:short-lived`);
+        return unstable_cache(
           async () => {
-            cacheLife({ stale: 10, revalidate: 60, expire: 300 });
-            return "fresh";
+            // What a tagged fetch inside the refresh records.
+            addCollectedRequestTags([`${key}:fetch-tag`]);
+            return readShortLived();
           },
-          ["probe-sink-refresh"],
+          [key],
           { revalidate: 1 },
         );
-        const context = createRequestContext({
-          executionContext: { waitUntil: (promise) => refreshes.push(promise) },
-          unstableCacheRevalidation: "background",
-        });
-        await runWithRequestContext(context, async () => {
-          const outcome = await runWithDetachedDynamicUsage(async () => {
-            cacheLife({ stale: 45, revalidate: 60, expire: 300 });
-            expect(await getValue()).toBe("stale");
-            await Promise.all(refreshes);
-          });
+      };
+
+      it("keeps its cacheLife out of the request", async () => {
+        const getValue = createStaleRead("refresh-request");
+        await runScenario(async (refreshes) => {
+          expect(await getValue()).toBe("stale");
+          await Promise.all(refreshes);
 
           expect(refreshes).toHaveLength(1);
-          expect(outcome.cacheLife?.stale).toBe(45);
           expect(getRequestContext().requestScopedCacheLife).toBeNull();
+          expect(getCollectedFetchTags()).toEqual([]);
         });
-      } finally {
-        setCacheHandler(new MemoryCacheHandler());
-      }
+      });
+
+      it("keeps its cacheLife out of a probe and an enclosing cache", async () => {
+        const getValue = createStaleRead("refresh-probe");
+        await runScenario(async (refreshes) => {
+          const readOuter = registerCachedFunction(async () => {
+            cacheLife({ stale: 45, revalidate: 60, expire: 300 });
+            const value = await getValue();
+            // Let the refresh finish while the enclosing cache is still open.
+            await Promise.all(refreshes);
+            return value;
+          }, "test:refresh-probe:outer");
+
+          const outcome = await runWithDetachedDynamicUsage(() => readOuter());
+
+          expect(outcome.result).toBe("stale");
+          expect(refreshes).toHaveLength(1);
+          expect(outcome.cacheLife?.stale).toBe(45);
+        });
+      });
     });
 
     it("lets the render rerun a cacheForRequest factory the probe called", async () => {
