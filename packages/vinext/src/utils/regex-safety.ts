@@ -936,10 +936,8 @@ function findSequenceIssue(
 
   let pending: PendingBoundary[] = [];
   // Earlier elements whose unbounded repetition may also have consumed the
-  // fixed text since, so their variable boundary is still open. Repetitions
-  // keep the established rule (a fixed element resets them), but an unbounded
-  // alternation may not overlap any of these: `(?:a+|x)a(?:a+|x)` still fails
-  // closed.
+  // fixed text since, so their variable boundary is still open. Between two
+  // repetitions a fixed element keeps the established rule and resets them.
   let carried: PendingBoundary[] = [];
   const comparisons = { count: 0 };
   const carriedComparisons = { count: 0 };
@@ -952,30 +950,30 @@ function findSequenceIssue(
         : isUnboundedAlternation(child);
     if (variableRepetition) {
       const starts = firstSymbols(child);
-      if (
-        carried.some(
-          (boundary) =>
-            (alternation || boundary.alternation) &&
-            boundariesMayOverlap(boundary.consumed, starts, carriedComparisons),
-        )
-      ) {
-        return "overlapping sequential repetition";
-      }
+      // An unbounded alternation counts as a variable repetition at its
+      // boundaries, including one across fixed text the other side can
+      // consume (`(.*)/(\d+|new)`), so it shares the overlapping-boundary
+      // budget below. Two of them may never overlap: `(?:a+|x)(?:a+|x)` and
+      // `(?:a+|x)a(?:a+|x)` still fail closed.
+      const carriedOverlaps = carried.filter(
+        (boundary) =>
+          (alternation || boundary.alternation) &&
+          boundariesMayOverlap(boundary.consumed, starts, carriedComparisons),
+      );
       const overlapping = pending.map((boundary) =>
         boundariesMayOverlap(boundary.ends, starts, comparisons),
       );
-      const overlappingBoundaries = overlapping.filter(Boolean).length;
-      // An unbounded alternation is only accepted where no neighbouring
-      // repetition can take its text: `(?:a+|x)(?:a+|x)` still fails closed.
       if (
-        overlappingBoundaries > 0 &&
-        (alternation ||
+        alternation &&
+        (carriedOverlaps.some((boundary) => boundary.alternation) ||
           overlapping.some((overlaps, index) => overlaps && pending[index].alternation))
       ) {
         return "overlapping sequential repetition";
       }
+      const overlappingBoundaries =
+        overlapping.filter(Boolean).length + (carriedOverlaps.length > 0 ? 1 : 0);
       if (overlappingBoundaries > 0) {
-        overlappingBoundaryCount++;
+        overlappingBoundaryCount += overlapping.some(Boolean) && carriedOverlaps.length > 0 ? 2 : 1;
       } else if (!isNullable(child)) {
         overlappingBoundaryCount = 0;
       }

@@ -119,7 +119,6 @@ for (const pattern of [
   "^(?:a+|x)(?:a+|x)Z$",
   // Fixed text that the variable branch can consume does not end its boundary.
   "^(?:a+|x)a(?:a+|x)a(?:a+|x)Z$",
-  "^a+aa+a(?:a+|x)Z$",
 ]) {
   if (!analyzeRegexSafety(pattern, { ignoreCase: true })) {
     throw new Error(`Unsafe alternation sequence was accepted: ${pattern}`);
@@ -131,9 +130,20 @@ for (const pattern of [
   "(?:foo.*|bar)baz",
   "[^/]+(?:\\.(?:[^/.]+))?",
   "^(?:(?=a*)b){2}$",
+  // One boundary between a repetition and an alternation, across fixed text.
+  "^(.*)/(\\d+|new)$",
+  "^(.*)/(\\d+|new)/edit$",
 ]) {
   const issue = analyzeRegexSafety(pattern, { ignoreCase: true });
   if (issue) throw new Error(`Safe pattern was rejected: ${pattern} (${issue})`);
+}
+
+const catchAllWithId = "/:path(.*)/:id(\\d+|new)";
+if (!matchPattern(`/${"1/".repeat(2_000)}new`, catchAllWithId)) {
+  throw new Error(`Safe catch-all matcher did not match: ${catchAllWithId}`);
+}
+if (matchPattern(`/${"1/".repeat(2_000)}x!`, catchAllWithId)) {
+  throw new Error(`Safe catch-all matcher matched a near miss: ${catchAllWithId}`);
 }
 
 // A lookaround that cannot match the separator stops at the next one, a

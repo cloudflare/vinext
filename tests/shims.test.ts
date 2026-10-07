@@ -13541,6 +13541,23 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       "/:x(x?a+(?:ab|cd)c+)*/end",
       { "/xaabc/end": true, "/acdc/aaabcc/end": true, "/xabc/end": false, "/xaab/end": false },
     ],
+    // A catch-all followed by a constrained param shares one boundary.
+    [
+      "/:path(.*)/:id(\\d+|new)",
+      {
+        "/a/b/12": true,
+        "/a/new": true,
+        "/a/NEW": true,
+        "/12": false,
+        "/a/b/x": false,
+        "/a/12/x": false,
+      },
+    ],
+    ["/:slug(.*)/:id(\\d+)", { "/a/b/12": true, "/12": false, "/a/b/x": false, "/a/12/x": false }],
+    [
+      "/:a(.*)/b/:c(.*)",
+      { "/x/b/y": true, "/x/y/b/z/w": true, "/b/y": false, "/x/b": false, "/x/c/y": false },
+    ],
   ];
 
   for (const [source, expected] of cases) {
