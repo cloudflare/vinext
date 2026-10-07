@@ -99,6 +99,8 @@ for (const [matcher, nearMiss] of [
   ["/:x((?!a(?=a))a+|a)*/end", `/${"a/".repeat(1_500)}!`],
   // An optional element between `b+` and the fixed `ba` shifts it as well.
   ["/:x(b+a*ba[ab]+)*/end", `/${"bbabaa/".repeat(1_000)}!`],
+  // `\cA` and `\x01` are the same control character.
+  ["/:x(\\cA|\\x01)*/end", `/${"\x01/".repeat(1_500)}!`],
 ]) {
   if (!matchPattern(nearMiss, matcher)) {
     throw new Error(`Unsafe separated repeat did not fail closed: ${matcher}`);

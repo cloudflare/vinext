@@ -355,6 +355,15 @@ class RegexParser {
         Number.parseInt(this.pattern.slice(this.index, this.index + 4), 16),
       );
       this.index += 4;
+    } else if (escaped === "c") {
+      // `\cA` is the control character U+0001. Without a letter after it,
+      // Annex B reads `\c` as a literal backslash and `c`, which is not modeled.
+      const letter = this.pattern[this.index];
+      if (letter === undefined || !/[A-Za-z]/.test(letter)) {
+        return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+      }
+      literal = String.fromCharCode(letter.charCodeAt(0) % 32);
+      this.index++;
     } else if ("nrtvf0".includes(escaped)) {
       literal = ({ n: "\n", r: "\r", t: "\t", v: "\v", f: "\f", 0: "\0" } as const)[
         escaped as "n" | "r" | "t" | "v" | "f" | "0"
@@ -727,48 +736,99 @@ function symbolsMayOverlap(left: RegexSymbol, right: RegexSymbol): boolean {
   return leftUnits.some((word, index) => (word & rightUnits[index]) !== 0);
 }
 
-const MAX_CODE_UNIT_SETS = 256;
-const codeUnitSets = new Map<string, Uint32Array | null>();
+const MAX_CODE_UNIT_SETS = 1_024;
+// Sets computed during the current top-level analysis. Scoping them to one
+// analysis keeps its result independent of earlier ones, and the cap fails
+// closed on a source with more distinct classes than any real one has.
+let codeUnitSets: Map<string, Uint32Array | null> | null = null;
+let allCodeUnits: string | null = null;
+
+function withCodeUnitSets<T>(analyze: () => T): T {
+  if (codeUnitSets) return analyze();
+  codeUnitSets = new Map();
+  try {
+    return analyze();
+  } finally {
+    codeUnitSets = null;
+  }
+}
+
+/** Adds every code unit `regexp` (one code unit per match) matches to `set`. */
+function addMatchingCodeUnits(set: Uint32Array, regexp: RegExp): void {
+  if (allCodeUnits === null) {
+    const units: string[] = [];
+    for (let code = 0; code < 0xffff; code++) units.push(String.fromCharCode(code));
+    allCodeUnits = units.join("");
+  }
+  // Each match is one code unit, so marking it with U+FFFF keeps positions.
+  const marked = allCodeUnits.replace(new RegExp(regexp.source, `${regexp.flags}g`), "\uffff");
+  for (let code = 0; code < 0xffff; code++) {
+    if (marked.charCodeAt(code) === 0xffff) set[code >>> 5] |= 1 << (code & 31);
+  }
+  if (new RegExp(`^(?:${regexp.source})$`, regexp.flags).test("\uffff")) {
+    set[0xffff >>> 5] |= 1 << (0xffff & 31);
+  }
+}
+
+let nonAsciiSets: Record<Exclude<NonAsciiDomain, "none">, Uint32Array> | null = null;
+
+/** The non-ASCII code units in each {@link NonAsciiDomain}. These never change. */
+function nonAsciiCodeUnits(): Record<Exclude<NonAsciiDomain, "none">, Uint32Array> {
+  if (nonAsciiSets) return nonAsciiSets;
+  const all = new Uint32Array(0x10000 / 32);
+  const whitespace = new Uint32Array(0x10000 / 32);
+  addMatchingCodeUnits(all, /[^\0-\x7f]/);
+  addMatchingCodeUnits(whitespace, /[^\0-\x7f\S]/);
+  nonAsciiSets = {
+    all,
+    whitespace,
+    "non-whitespace": all.map((word, index) => word & ~whitespace[index]),
+  };
+  return nonAsciiSets;
+}
 
 /**
  * The UTF-16 code units a class or `.` can match, as a bit set, so classes the
  * parser does not model (non-ASCII ranges such as `[一-鿿]`) can still be
  * compared. Without the `u` flag a class matches one code unit. Other opaque
- * escapes, such as backreferences, stay unknown. A set depends only on the
- * symbol, so the bounded cache drops its oldest entry when full instead of
- * letting earlier analyses change later results.
+ * escapes, such as backreferences, stay unknown.
  */
 function codeUnitSet(symbol: RegexSymbol): Uint32Array | null {
   if (symbol.kind === "opaque" && symbol.pattern !== "." && !symbol.pattern.startsWith("[")) {
     return null;
   }
+  if (!codeUnitSets) return null;
   const cacheKey = symbol.kind === "opaque" ? `${symbol.ignoreCase}:${symbol.key}` : symbol.key;
   const cached = codeUnitSets.get(cacheKey);
   if (cached !== undefined) return cached;
-  let matches: (character: string) => boolean;
+  if (codeUnitSets.size >= MAX_CODE_UNIT_SETS) return null;
+  let set: Uint32Array | null = new Uint32Array(0x10000 / 32);
   if (symbol.kind === "opaque") {
     try {
-      const regexp = new RegExp(`^${symbol.pattern}$`, symbol.ignoreCase ? "i" : "");
-      matches = (character) => regexp.test(character);
+      addMatchingCodeUnits(set, new RegExp(symbol.pattern, symbol.ignoreCase ? "i" : ""));
     } catch {
       return null;
     }
+  } else if (symbol.kind === "literal") {
+    for (const value of [symbol.value, symbol.key]) {
+      const code = value.charCodeAt(0);
+      set[code >>> 5] |= 1 << (code & 31);
+    }
   } else {
     // Over-approximate case folding: a value matches in either case.
-    matches = (character) =>
-      symbolsMayOverlap(symbol, literalSymbol(character, false)) ||
-      symbolsMayOverlap(symbol, literalSymbol(character, true));
-  }
-  let set: Uint32Array | null = new Uint32Array(0x10000 / 32);
-  for (let code = 0; code <= 0xffff; code++) {
-    if (matches(String.fromCharCode(code))) set[code >>> 5] |= 1 << (code & 31);
+    for (const value of symbol.values) {
+      for (const variant of [value, value.toLowerCase(), value.toUpperCase()]) {
+        const code = variant.charCodeAt(0);
+        set[code >>> 5] |= 1 << (code & 31);
+      }
+    }
+    if (symbol.nonAscii !== "none") {
+      const domain = nonAsciiCodeUnits()[symbol.nonAscii];
+      for (let index = 0; index < set.length; index++) set[index] |= domain[index];
+    }
   }
   // An empty set means the symbol is not a plain character after all.
   if (set.every((word) => word === 0)) set = null;
-  if (codeUnitSets.size >= MAX_CODE_UNIT_SETS) {
-    const oldest = codeUnitSets.keys().next().value;
-    if (oldest !== undefined) codeUnitSets.delete(oldest);
-  }
   codeUnitSets.set(cacheKey, set);
   return set;
 }
@@ -1179,7 +1239,7 @@ export function analyzeRegexSafety(
   const parser = new RegexParser(pattern, options.ignoreCase === true);
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
-  return findSafetyIssue(node);
+  return withCodeUnitSets(() => findSafetyIssue(node));
 }
 
 /**
@@ -1201,10 +1261,12 @@ export function regexStartsMayOverlap(
   if (rightParser.exceededBudget || rightParser.index < right.length) return true;
   // A nullable side starts with whatever follows it, which is not known here.
   if (isNullable(rightNode) || (leftSymbols === "first" && isNullable(leftNode))) return true;
-  return boundariesMayOverlap(
-    leftSymbols === "first" ? firstSymbols(leftNode) : consumedSymbols(leftNode),
-    firstSymbols(rightNode),
-    { count: 0 },
+  return withCodeUnitSets(() =>
+    boundariesMayOverlap(
+      leftSymbols === "first" ? firstSymbols(leftNode) : consumedSymbols(leftNode),
+      firstSymbols(rightNode),
+      { count: 0 },
+    ),
   );
 }
 
@@ -1219,7 +1281,7 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   const leftSymbol = leftWords[0][0];
   const rightSymbol = rightWords[0][0];
   if (!leftSymbol || !rightSymbol) return true;
-  return symbolsMayOverlap(leftSymbol, rightSymbol);
+  return withCodeUnitSets(() => symbolsMayOverlap(leftSymbol, rightSymbol));
 }
 
 /**
@@ -1723,15 +1785,17 @@ export function analyzeSeparatedRepetitionSafety(
   // Fail closed if the parser stopped early, e.g. at an unsupported group.
   if (parser.exceededBudget || parser.index < pattern.length) return "analysis budget exceeded";
   const separatorSymbol = separator ? literalSymbol(separator[0], ignoreCase) : undefined;
-  if (containsUnboundedLookaround(node, separatorSymbol)) return "unbounded lookaround";
-  if (!isUnambiguous(node, { count: 0 })) return "ambiguous pattern";
-  if (
-    separatorSymbol &&
-    exactWidth(node) === null &&
-    fixedSeparatorCount(node, separatorSymbol) === null &&
-    !hasUnambiguousSeparatedWords(node, separator, ignoreCase)
-  ) {
-    return "separator overlap";
-  }
-  return null;
+  return withCodeUnitSets((): SeparatedRepetitionIssue | null => {
+    if (containsUnboundedLookaround(node, separatorSymbol)) return "unbounded lookaround";
+    if (!isUnambiguous(node, { count: 0 })) return "ambiguous pattern";
+    if (
+      separatorSymbol &&
+      exactWidth(node) === null &&
+      fixedSeparatorCount(node, separatorSymbol) === null &&
+      !hasUnambiguousSeparatedWords(node, separator, ignoreCase)
+    ) {
+      return "separator overlap";
+    }
+    return null;
+  });
 }

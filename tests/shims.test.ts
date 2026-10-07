@@ -13596,12 +13596,6 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       "/:x([一-鿿]|[가-힣])*/end",
       { "/end": true, "/一/가/end": true, "/一가/end": false, "/a/end": false, "/一": false },
     ],
-    // A trailing catch-all takes whatever a chain of repeated params leaves.
-    ["/:a*/:b*/:c*/:rest(.*)", { "/x": true, "/a/b/c/d": true, "/": true, "//": true }],
-    [
-      "/x{/:a}*{/:b}*{/:c}*/:rest(.*)",
-      { "/x/a": true, "/x/a/b/c/d": true, "/x/": true, "/x": false, "/y/a": false },
-    ],
   ];
 
   for (const [source, expected] of cases) {
@@ -13717,9 +13711,14 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     ["/:a(a)*/:b(a)*/:c(a)*/end", "can split the same text", `/${"a/".repeat(40)}!`],
     // A catch-all after a required param does not save the chain before it.
     ["/:a(a)*/:b(a)*/:c(a)*/:d(\\d+)/(.*)", "can split the same text", `/${"a/".repeat(40)}!`],
+    // Header paths are matched decoded, so `.*` cannot take a `%0A` and a
+    // trailing catch-all does not save the chain before it.
+    ["/x{/:a}*{/:b}*{/:c}*/:rest(.*)", "can split the same text", `/x${"/s".repeat(40)}\n`],
     ["/:x((?!a(?=a))a+|a)*/end", "more than one way", `/${"a/".repeat(40)}!`],
     // `b+` and the optional `a*` after it shift the fixed `ba` together.
     ["/:x(b+a*ba[ab]+)*/end", "more than one way", `/${"bbabaa/".repeat(30)}!`],
+    // `\cA` is the control character U+0001, the same text as `\x01`.
+    ["/:x(\\cA|\\x01)*/end", "more than one way", `/${"\x01/".repeat(30)}!`],
     ["/:x((?=.{0,65535}e)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
@@ -13737,23 +13736,21 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
     }
   });
 
-  // A chain of repeated params is only slow when the rest of the source can
-  // fail; a trailing catch-all matches on the first split.
-  it.each([
-    ["/:a*/:b*/:c*/:rest(.*)", `/${"a/".repeat(4_000)}`, "/a/b"],
-    ["/:a*/:b(.*){/:c}*", `/${"a/".repeat(4_000)}!`, "/a"],
-    ["/:a(a)*/:b(b)*/:c(c)*/end", `/${"a/b/c/".repeat(1_400)}!`, "/a/b/c/end"],
-  ])("matches %s on an 8 KB path in linear time", async (source, pathname, matching) => {
-    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
-    const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
-    const start = performance.now();
-    matchHeaders(pathname, rules, ctx);
-    expect(performance.now() - start).toBeLessThan(1_000);
-    expect(matchHeaders(matching, rules, ctx)).toEqual([{ key: "x-matched", value: "1" }]);
-  });
+  // Repeated params whose segments start differently never share a split.
+  it.each([["/:a(a)*/:b(b)*/:c(c)*/end", `/${"a/b/c/".repeat(1_400)}!`, "/a/b/c/end"]])(
+    "matches %s on an 8 KB path in linear time",
+    async (source, pathname, matching) => {
+      const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+      const rules = [{ source, headers: [{ key: "x-matched", value: "1" }] }];
+      const start = performance.now();
+      matchHeaders(pathname, rules, ctx);
+      expect(performance.now() - start).toBeLessThan(1_000);
+      expect(matchHeaders(matching, rules, ctx)).toEqual([{ key: "x-matched", value: "1" }]);
+    },
+  );
 
   // Compiling one source must not depend on how many others were analyzed
-  // first, even past the bounded cache of non-ASCII class sets.
+  // first, or on the non-ASCII class sets they computed.
   it("compiles non-ASCII class sources regardless of earlier sources", async () => {
     const { compileHeaderSourcePattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
@@ -13763,6 +13760,21 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       expect(compileHeaderSourcePattern(source).regexp).toBeDefined();
     }
     expect(compileHeaderSourcePattern("/:x([一]|[가])*/end").regexp).toBeDefined();
+  });
+
+  // One source with 300 distinct non-ASCII classes builds each class's code
+  // unit set once per analysis instead of rebuilding evicted sets.
+  it("compiles a source with many distinct non-ASCII classes", async () => {
+    const { compileHeaderSourcePattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const char = (code: number) => String.fromCharCode(code);
+    const pairs = Array.from(
+      { length: 150 },
+      (_, index) => `(?:[${char(0x4e00 + index)}]|[${char(0xac00 + index)}])`,
+    ).join("");
+    const start = performance.now();
+    expect(compileHeaderSourcePattern(`/:x(${pairs})*/end`).regexp).toBeDefined();
+    expect(performance.now() - start).toBeLessThan(1_000);
   });
 
   // Each token is safe on its own, but adjacent overlapping groups backtrack
