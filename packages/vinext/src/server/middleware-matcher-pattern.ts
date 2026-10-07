@@ -3,8 +3,10 @@ import {
   analyzeRegexSafety,
   analyzeSeparatedRepetitionSafety,
   regexAtomsMayOverlap,
+  regexStartsMayOverlap,
 } from "../utils/regex-safety.js";
 import {
+  escapeRegex,
   middlewarePathTokensToRegExp,
   normalizeMiddlewarePathTokens,
   parseMiddlewarePath,
@@ -384,6 +386,61 @@ function compileSourcePattern(
   return compiled;
 }
 
+const MAX_OVERLAPPING_REPEATED_TOKENS = 1;
+
+/**
+ * Repeated tokens are reduced to one occurrence for the whole-source check, so
+ * check their repetition boundaries here. A repeated token can take one more
+ * occurrence where the next token starts, and a token whose pattern spans the
+ * delimiter (`(.*)`) can take the next token's text. Like adjacent variable
+ * repetitions, one such boundary is linear per split, but each further one in
+ * a chain raises the backtracking degree: `/x{/:a}*{/:b}*{/:c}*` is refused.
+ * Boundaries between two spanning tokens keep the whole-source rule.
+ */
+function repeatedTokenChainIssue(tokens: MiddlewarePathToken[]): string | null {
+  const occurrence = (token: MiddlewarePathKey) =>
+    `${escapeRegex(token.prefix)}(?:${token.pattern})${escapeRegex(token.suffix)}`;
+  let pending: Array<{ token: MiddlewarePathKey; repeated: boolean }> = [];
+  let chained = 0;
+  for (const token of tokens) {
+    if (typeof token === "string") {
+      if (token) {
+        pending = [];
+        chained = 0;
+      }
+      continue;
+    }
+    const repeated = token.modifier === "*" || token.modifier === "+";
+    const nullable = token.modifier === "*" || token.modifier === "?";
+    if (!repeated && !regexStartsMayOverlap(token.pattern, "\\/", "any", true)) {
+      if (!nullable) {
+        pending = [];
+        chained = 0;
+      }
+      continue;
+    }
+    const start = occurrence(token);
+    const overlaps = pending.some(
+      (earlier) =>
+        (earlier.repeated || repeated) &&
+        (earlier.repeated
+          ? regexStartsMayOverlap(occurrence(earlier.token), start, "first", true)
+          : regexStartsMayOverlap(earlier.token.pattern, start, "any", true)),
+    );
+    if (overlaps) {
+      chained++;
+      if (chained > MAX_OVERLAPPING_REPEATED_TOKENS) {
+        return `repeated parameter "${token.name}" can split the same text with an earlier parameter`;
+      }
+    } else if (!nullable) {
+      chained = 0;
+    }
+    const entry = { token, repeated };
+    pending = nullable ? [...pending, entry] : [entry];
+  }
+  return null;
+}
+
 export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
   const compiled = compileSourcePattern(source, {
     normalizeUnprefixedRepeats: true,
@@ -425,6 +482,9 @@ export function compileHeaderSourcePattern(source: string): CompiledMiddlewareMa
     collapseUniversalRepeats: true,
   });
   if (!compiled.regexp) return compiled;
+
+  const chainIssue = repeatedTokenChainIssue(compiled.tokens);
+  if (chainIssue) return { kind: "unsafe", error: chainIssue };
 
   // Tokens are safety-checked one at a time, which misses adjacent tokens
   // that overlap, such as `/(a*)(a*)(a*)/end`. Check the whole regex as well,

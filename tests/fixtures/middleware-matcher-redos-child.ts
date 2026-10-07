@@ -102,7 +102,13 @@ for (const [matcher, nearMiss] of [
 }
 
 // A lookaround that scans unboundedly is re-run for every repetition.
-for (const matcher of ["/:x((?:(?=a*b)a)+b)", "/:x((?!.*c)[^/]+)*", "/:x((?=(?!.*Z)a)a)*/end"]) {
+for (const matcher of [
+  "/:x((?:(?=a*b)a)+b)",
+  "/:x((?!.*c)[^/]+)*",
+  "/:x((?=(?!.*Z)a)a)*/end",
+  // A bound far above request-path sizes scans like an unbounded one.
+  "/:x((?=.{0,65535}e)a)*/end",
+]) {
   if (!matchPattern(`/${"a".repeat(3_000)}!`, matcher)) {
     throw new Error(`Unsafe repeated lookaround did not fail closed: ${matcher}`);
   }
@@ -178,6 +184,12 @@ for (const [matcher, match, nearMiss] of [
     `/${"aabc/acdcc/".repeat(500)}aab!`,
   ],
   ["/:x(a+b|a+c)*/end", `/${"aab/ac/".repeat(500)}end`, `/${"aab/ac/".repeat(500)}a!`],
+  ["/:x(a*b+|a+c+)*/end", `/${"aab/acc/".repeat(500)}end`, `/${"aab/acc/".repeat(500)}a!`],
+  [
+    "/:x((?!foo)[^/]+|foo)*/end",
+    `/${"foo/bar/".repeat(500)}end`,
+    `/${"foo/bar/".repeat(500)}foobar/end`,
+  ],
   [
     "/:x(x?a+(?:ab|cd)c+)*/end",
     `/${"xaabc/acdcc/".repeat(500)}end`,

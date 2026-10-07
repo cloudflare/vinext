@@ -13541,6 +13541,16 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       "/:x(x?a+(?:ab|cd)c+)*/end",
       { "/xaabc/end": true, "/acdc/aaabcc/end": true, "/xabc/end": false, "/xaab/end": false },
     ],
+    [
+      "/:x(a*b+|a+c+)*/end",
+      { "/end": true, "/aab/acc/b/end": true, "/abc/end": false, "/a/end": false, "/c/end": false },
+    ],
+    [
+      "/:x((?!foo)[^/]+|foo)*/end",
+      { "/end": true, "/foo/bar/end": true, "/foobar/end": false, "/fo/end": true },
+    ],
+    // Two adjacent repeated params share one boundary.
+    ["/x{/:a}*{/:b}*/end", { "/x/end": true, "/x/a/b/c/end": true, "/x": false, "/y/end": false }],
     // A catch-all followed by a constrained param shares one boundary.
     [
       "/:path(.*)/:id(\\d+|new)",
@@ -13669,6 +13679,8 @@ describe("matchHeaders source compilation (Next.js parity)", () => {
       `/${"a".repeat(40)}!`,
     ],
     ["/:id(a+aa+a(?:a+|x))/Z", "overlapping sequential repetition", `/${"a".repeat(40)}!`],
+    ["/x{/:a}*{/:b}*{/:c}*{/:d}*/end", "can split the same text", `/x${"/s".repeat(40)}`],
+    ["/:x((?=.{0,65535}e)a)*/end", "lookaround with unbounded repetition", `/${"a/".repeat(40)}!`],
     ["/:x((?:(?=a*b)a)+b)", "nested repetition", `/${"a".repeat(3)}b`],
     ["/:path((?!.*\\.json)[^/]+)*", "lookaround with unbounded repetition", "/a/b"],
   ])("ignores %s as an unsafe source", async (source, reason, pathname) => {

@@ -41,6 +41,9 @@ const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
 const MAX_SEQUENCE_EXPANSIONS = 256;
 const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
+// A lookaround that may scan further than this behaves like an unbounded scan
+// at request-path sizes: `(?=.{0,65535}e)` re-run per repetition is quadratic.
+const MAX_LOOKAROUND_SCAN_WIDTH = 256;
 
 function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
@@ -489,11 +492,33 @@ function containsUnboundedRepetition(node: RegexNode): boolean {
   }
 }
 
+/** The longest text `node` may examine, including what nested lookarounds scan. */
+function scanWidth(node: RegexNode): number {
+  switch (node.kind) {
+    case "atom":
+      return node.fixedWidth ? 1 : Infinity;
+    case "assertion":
+      return scanWidth(node.child);
+    case "sequence":
+      return node.children.reduce((width, child) => width + scanWidth(child), 0);
+    case "alternation":
+      return Math.max(0, ...node.branches.map(scanWidth));
+    case "repeat":
+      return node.max === 0 ? 0 : scanWidth(node.child) * node.max;
+  }
+}
+
+/** Whether a lookaround over `node` may scan an unbounded amount of input. */
+function scansUnboundedInput(node: RegexNode): boolean {
+  return containsUnboundedRepetition(node) || scanWidth(node) > MAX_LOOKAROUND_SCAN_WIDTH;
+}
+
 /**
  * A lookaround consumes nothing, so width and repetition checks treat it as
  * free. It still scans the input each time it runs: one with an unbounded
  * repetition, such as `(?=a*b)`, does linear work per evaluation and turns a
- * surrounding repetition quadratic.
+ * surrounding repetition quadratic. So does a bound far above request-path
+ * sizes, such as `(?=.{0,65535}e)`.
  *
  * With a `separator`, a lookaround that can never match the separator stops
  * scanning at the next occurrence of it, so it is not counted.
@@ -504,7 +529,7 @@ function containsUnboundedLookaround(node: RegexNode, separator?: RegexSymbol): 
       return false;
     case "assertion":
       return (
-        containsUnboundedRepetition(node.child) &&
+        scansUnboundedInput(node.child) &&
         !(separator && scanStopsAtSeparator(node.child, separator))
       );
     case "sequence":
@@ -530,9 +555,7 @@ function nestedScansStopAtSeparator(node: RegexNode, separator: RegexSymbol): bo
     case "atom":
       return true;
     case "assertion":
-      return (
-        !containsUnboundedRepetition(node.child) || scanStopsAtSeparator(node.child, separator)
-      );
+      return !scansUnboundedInput(node.child) || scanStopsAtSeparator(node.child, separator);
     case "sequence":
       return node.children.every((child) => nestedScansStopAtSeparator(child, separator));
     case "alternation":
@@ -751,17 +774,22 @@ function hasPrefixFreeFiniteLanguage(node: RegexNode): {
 
 /**
  * An alternation such as `(\d+|new)`, where every branch without a finite
- * word set has an unbounded repetition and passes through only one
- * variable-width element. Sequence analysis treats it like a single variable
+ * word set has an unbounded repetition and splits its own text one way: it
+ * passes through one variable-width element, or several that isUnambiguous()
+ * separates (`a*b+`). Sequence analysis treats it like a single variable
  * repetition with the alternation's first and last symbols; a branch such as
- * `a*a*` would hide a second overlapping boundary, so it still fails closed.
+ * `a*a*`, which splits its own text more than one way, would hide a second
+ * overlapping boundary, so it still fails closed.
  */
 function isUnboundedAlternation(node: RegexNode): boolean {
   if (node.kind !== "alternation") return false;
   let unbounded = false;
   for (const branch of node.branches) {
     if (fixedWords(branch, { words: 0, symbols: 0, exceeded: false })) continue;
-    if (!containsUnboundedRepetition(branch) || variableWidthElements(branch) > 1) return false;
+    if (!containsUnboundedRepetition(branch)) return false;
+    // A branch whose variable elements split its text one way (`a*b+`) has
+    // no hidden boundary of its own.
+    if (variableWidthElements(branch) > 1 && !isUnambiguous(branch, { count: 0 })) return false;
     unbounded = true;
   }
   return unbounded;
@@ -1082,6 +1110,30 @@ export function analyzeRegexSafety(
   return findSafetyIssue(node);
 }
 
+/**
+ * Whether text matched by `right` may start with a symbol that `left` can
+ * start with (`"first"`) or consume anywhere (`"any"`). Unknown patterns may
+ * overlap.
+ */
+export function regexStartsMayOverlap(
+  left: string,
+  right: string,
+  leftSymbols: "first" | "any",
+  ignoreCase = false,
+): boolean {
+  const leftParser = new RegexParser(left, ignoreCase);
+  const rightParser = new RegexParser(right, ignoreCase);
+  const leftNode = leftParser.parse();
+  const rightNode = rightParser.parse();
+  if (leftParser.exceededBudget || leftParser.index < left.length) return true;
+  if (rightParser.exceededBudget || rightParser.index < right.length) return true;
+  return boundariesMayOverlap(
+    leftSymbols === "first" ? firstSymbols(leftNode) : consumedSymbols(leftNode),
+    firstSymbols(rightNode),
+    { count: 0 },
+  );
+}
+
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
   const leftParser = new RegexParser(left, ignoreCase);
   const rightParser = new RegexParser(right, ignoreCase);
@@ -1218,6 +1270,30 @@ function sameNode(left: RegexNode, right: RegexNode): boolean {
   }
 }
 
+/**
+ * Whether `branch` starts with a negative lookahead such as `(?!foo)` that
+ * rules out every one of `words`: each word starts with a literal the
+ * lookahead refuses, as in `(?!foo)[^/]+|foo`.
+ */
+function negativeLookaheadExcludes(branch: RegexNode, words: RegexSymbol[][]): boolean {
+  const first = branch.kind === "sequence" ? branch.children[0] : branch;
+  if (first?.kind !== "assertion" || !first.negativeLookahead) return false;
+  const excluded = fixedWords(first.child, { words: 0, symbols: 0, exceeded: false });
+  if (!excluded) return false;
+  return words.every((word) =>
+    excluded.some(
+      (prefix) =>
+        prefix.length <= word.length &&
+        prefix.every((symbol, index) => {
+          const character = word[index];
+          if (character.kind !== "literal") return false;
+          if (symbol.kind === "literal") return symbol.key === character.key;
+          return symbol.kind === "class" && classMatchesLiteral(symbol, character);
+        }),
+    ),
+  );
+}
+
 /** Whether two alternatives may both match some text. */
 function branchesMayShareText(
   left: RegexNode,
@@ -1240,6 +1316,17 @@ function branchesMayShareText(
     }
     return false;
   }
+  // Shared text ends with a symbol both alternatives can end with
+  // (`a*b+` and `a+c+` cannot share text).
+  if (
+    !isNullable(left) &&
+    !isNullable(right) &&
+    !boundariesMayOverlap(lastSymbols(left), lastSymbols(right), comparisons)
+  ) {
+    return false;
+  }
+  if (rightWords && negativeLookaheadExcludes(left, rightWords)) return false;
+  if (leftWords && negativeLookaheadExcludes(right, leftWords)) return false;
   // Shared text must agree symbol by symbol, so walk the prefix both
   // alternatives start with (`ab+` and `ac+` differ after `a`), then compare
   // the first symbols of what remains.
