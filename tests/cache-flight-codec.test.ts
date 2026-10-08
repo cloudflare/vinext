@@ -1,7 +1,14 @@
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { createElement } from "react";
 import { loadCacheFlightCodec } from "./helpers/cache-flight-codec.js";
-import { patchCacheFlightCodec } from "../packages/vinext/src/plugins/cache-flight-codec.js";
+import {
+  patchCacheFlightCodec,
+  readFlightCodecVersion,
+} from "../packages/vinext/src/plugins/cache-flight-codec.js";
 import {
   snapshotFlightReply,
   restoreFlightReply,
@@ -44,32 +51,65 @@ describe("Flight cache codec", () => {
     },
   );
 
-  // The vendored React 19.2 encoder lacks the branch; React 19.3 has it.
-  const elementCase = (branch: string) => `
+  const elementCase = `
     function resolveToJSON(key, value) {
       switch (value.$$typeof) {
         case REACT_ELEMENT_TYPE:
           if (void 0 !== temporaryReferences && -1 === key.indexOf(":")) {
             return "$T";
           }
-          ${branch}throw Error("React Element cannot be passed to Server Functions");
+          throw Error("React Element cannot be passed to Server Functions");
       }
     }
   `;
 
-  it("adds the root-element temporary reference branch to React 19.2 encoders", () => {
-    const patched = patchCacheFlightCodec(elementCase(""), "react-19.2.js");
+  it.each(["19.2.6", "19.2.8"])("backports the root-element branch for React %s", (version) => {
+    const patched = patchCacheFlightCodec(elementCase, "codec.js", version);
     expect(patched?.code.match(/modelRoot === value/g)).toHaveLength(1);
   });
 
-  it("leaves encoders that already have the branch untouched", () => {
-    const source = elementCase(
-      'if (void 0 !== temporaryReferences && modelRoot === value) return (modelRoot = null), "$T";\n',
-    );
-    expect(patchCacheFlightCodec(source, "react-19.3.js")).toBeNull();
+  it.each(["19.3.0", "19.3.0-canary-d75b0697-20261006", "0.0.0-experimental-d75b0697-20261006"])(
+    "leaves React %s untouched",
+    (version) => {
+      expect(patchCacheFlightCodec(elementCase, "codec.js", version)).toBeNull();
+    },
+  );
+
+  it("fails explicitly when an older encoder has an unknown shape", () => {
+    expect(() =>
+      patchCacheFlightCodec("exports.encodeReply = somethingElse;", "codec.js", "19.2.8"),
+    ).toThrow("unsupported react-server-dom 19.2.8 encoder");
   });
 
-  it("leaves unrecognized encoders untouched instead of failing the build", () => {
-    expect(patchCacheFlightCodec("exports.encodeReply = somethingElse;", "codec.js")).toBeNull();
+  it("reads the version of the codec plugin-rsc resolved", () => {
+    const vendored = createRequire(import.meta.url).resolve(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/client.edge",
+    );
+    const vendoredVersion = JSON.parse(
+      fs.readFileSync(path.join(path.dirname(vendored), "package.json"), "utf8"),
+    ).version;
+    expect(
+      readFlightCodecVersion(
+        path.join(path.dirname(vendored), "cjs/react-server-dom-webpack-client.edge.production.js"),
+      ),
+    ).toBe(vendoredVersion);
+
+    // An app's own react-server-dom-webpack takes precedence over the vendored copy.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-rsdw-"));
+    try {
+      const pkg = path.join(root, "node_modules", "react-server-dom-webpack");
+      fs.mkdirSync(path.join(pkg, "cjs"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pkg, "package.json"),
+        JSON.stringify({ name: "react-server-dom-webpack", version: "19.3.0" }),
+      );
+      expect(
+        readFlightCodecVersion(
+          path.join(pkg, "cjs/react-server-dom-webpack-client.edge.production.js"),
+        ),
+      ).toBe("19.3.0");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
