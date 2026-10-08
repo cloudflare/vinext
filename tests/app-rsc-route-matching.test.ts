@@ -227,6 +227,34 @@ describe("App RSC route matching", () => {
     expect(matcher.findIntercept("/photos/1", "/%61dmin")).toBeNull();
   });
 
+  it("keeps a dynamic interception source owner for an encoded static alias", () => {
+    // Next.js tests the raw Next-Url against the owner's pattern, so
+    // `/%61dmin` is a `/:slug` source even though a direct request to it
+    // renders the static `/admin`, which doesn't own the intercept.
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/admin", ["admin"]),
+        route("/:slug", [":slug"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/:slug",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["modal-layout"],
+                page: "photo-page",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+      ],
+      ["/admin"],
+    );
+
+    expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).toMatchObject({ sourceRouteIndex: 1 });
+  });
+
   it("preserves encoded interception target identity and canonicalizes target params", () => {
     const matcher = createAppRscRouteMatcher([
       route("/feed/:slug", ["feed", ":slug"], {

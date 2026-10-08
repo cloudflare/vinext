@@ -271,13 +271,12 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       if (sourcePathname === null) return null;
 
       const urlParts = appRscPathnameParts(pathname, true);
-      // Resolve the concrete source like a direct request to it
-      // (`matchRequestRoute`). The source gate (`matchInterceptSource`)
-      // compares static segments against the raw, still-encoded path, as the
-      // Next-Url header regex does, so `/%66eed` never passes a `/feed` gate
-      // even when a direct request to it renders `/feed`.
+      // Match the source against the raw, still-encoded path, as the Next-Url
+      // header regex does. Decoding first would let `/%66eed` claim the static
+      // `/feed` source, and the decoded static page substitution would let
+      // `/%61dmin` claim a static `/admin` that doesn't own the intercept.
       const sourceParts = appRscPathnameParts(sourcePathname, true);
-      const matchedSourceRoute = matchRequestParts(sourceParts);
+      const matchedSourceRoute = matchRawRequestParts(sourceParts);
 
       for (const entry of interceptLookup) {
         if (interceptionId !== null && entry.interceptionId !== interceptionId) continue;
