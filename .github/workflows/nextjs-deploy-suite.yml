@@ -248,7 +248,7 @@ jobs:
       # be re-submitted manually (e.g. if the live POST hiccupped) or
       # inspected when debugging misclassifications.
       - name: Upload suite router classification
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nextjs-suite-routers
           path: |
@@ -355,7 +355,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ strategy.job-index }}
           path: next.js/test/**/*.results.json
@@ -364,7 +364,7 @@ jobs:
 
       - name: Upload deploy debug logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deploy-debug-${{ strategy.job-index }}
           path: reports/nextjs-deploy-debug/
@@ -590,7 +590,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deploy-suite-report
           # Include both files: the human-readable report and the
