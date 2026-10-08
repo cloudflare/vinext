@@ -49,12 +49,16 @@ jobs:
           # missing timestamp would compare as older than the cutoff, so require one.
           # Cloudflare timestamps carry fractional seconds and the cutoff doesn't, so
           # drop the fraction before comparing them as strings.
-          mapfile -t stale < <(jq -r --arg cutoff "$cutoff" '
-            .result[]
-            | select(.id | test("^pr-[0-9]+-"))
-            | select((.modified_on | type) == "string" and (.modified_on | sub("\\.[0-9]+"; "")) < $cutoff)
-            | .id
-          ' <<<"$scripts" | sort)
+          candidates="$(jq -r --arg cutoff "$cutoff" '
+            [
+              .result[]
+              | select((.id | type) == "string" and (.id | test("^pr-[0-9]+-")))
+              | select((.modified_on | type) == "string" and (.modified_on | sub("\\.[0-9]+"; "")) < $cutoff)
+              | .id
+            ]
+            | sort[]
+          ' <<<"$scripts")"
+          mapfile -t stale < <(printf '%s' "$candidates")
 
           {
             echo "## Stale PR Workers"
@@ -70,26 +74,23 @@ jobs:
           fi
 
           echo "Found ${#stale[@]} stale PR Workers."
-          if [[ "$DRY_RUN" == "true" ]]; then
-            echo "**Dry run:** ${#stale[@]} Workers would be deleted." >> "$GITHUB_STEP_SUMMARY"
-            printf -- "- \`%s\`\n" "${stale[@]}" >> "$GITHUB_STEP_SUMMARY"
-            printf '%s\n' "${stale[@]}"
-            exit 0
-          fi
 
           # PR numbers with an unfinished Deploy Examples run. Runs don't always list
           # their PR, so resolve them through the run's head branch instead.
           active_prs() {
-            local branches branch
-            branches="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-examples.yml/runs?event=pull_request&per_page=100" \
-              | jq -r --arg repo "$GITHUB_REPOSITORY" '.workflow_runs[] | select(.status != "completed" and .head_repository.full_name == $repo) | .head_branch' \
-              | sort -u)" || return 1
+            local runs branches branch status
+            runs=""
+            for status in queued in_progress waiting requested pending; do
+              runs+="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-examples.yml/runs?event=pull_request&status=${status}&per_page=100")" || return 1
+            done
+            branches="$(jq -r --arg repo "$GITHUB_REPOSITORY" '.workflow_runs[] | select(.head_repository.full_name == $repo) | .head_branch' <<<"$runs" | sort -u)" || return 1
             while IFS= read -r branch; do
               [[ -n "$branch" ]] || continue
               gh api -X GET "repos/${GITHUB_REPOSITORY}/pulls" -f head="${GITHUB_REPOSITORY_OWNER}:${branch}" -f state=all --jq '.[].number' || return 1
             done <<<"$branches"
           }
 
+          deleted=()
           failed=()
           skipped=()
           checked_pr=""
@@ -138,23 +139,40 @@ jobs:
               continue
             fi
 
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "Would delete ${name}"
+              deleted+=("$name")
+              continue
+            fi
+
             # force=true also removes Workers that other (equally stale) PR Workers
             # still reference through service bindings.
             response="$(curl -sS -X DELETE -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/${name}?force=true" || true)"
             if [[ "$(jq -r '.success // false' <<<"$response" 2>/dev/null)" == "true" ]]; then
               echo "Deleted ${name}"
+              deleted+=("$name")
             else
               echo "::warning::Failed to delete ${name}: ${response}"
               failed+=("$name")
             fi
           done
 
-          echo "Deleted $(( ${#stale[@]} - ${#failed[@]} - ${#skipped[@]} )) of ${#stale[@]} stale PR Workers (${#skipped[@]} skipped as deploying, redeployed or already removed)." >> "$GITHUB_STEP_SUMMARY"
-          if [[ ${#failed[@]} -gt 0 ]]; then
-            {
+          {
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "**Dry run:** ${#deleted[@]} of ${#stale[@]} stale PR Workers would be deleted (${#skipped[@]} skipped as deploying, redeployed or already removed)."
+            else
+              echo "Deleted ${#deleted[@]} of ${#stale[@]} stale PR Workers (${#skipped[@]} skipped as deploying, redeployed or already removed)."
+            fi
+            if [[ ${#deleted[@]} -gt 0 ]]; then
+              echo
+              printf -- "- \`%s\`\n" "${deleted[@]}"
+            fi
+            if [[ ${#failed[@]} -gt 0 ]]; then
               echo
               echo "Failed:"
               printf -- "- \`%s\`\n" "${failed[@]}"
-            } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ ${#failed[@]} -gt 0 ]]; then
             exit 1
           fi
