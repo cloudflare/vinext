@@ -759,7 +759,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       let cacheKey = buildUseCacheKey(
         cacheFunctionId,
         keySeed,
-        await flightArgumentsKey(flightArguments),
+        flightArgumentsKey(flightArguments),
       );
       let callArgs = (await rsc.decodeReply(restoreFlightReply(flightArguments), {
         temporaryReferences: serverReferences,
