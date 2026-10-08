@@ -4,12 +4,15 @@ import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shim
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { APP_PAGE_USE_CACHE_MARKER } from "../packages/vinext/src/shims/internal/app-page-props-cache-key.js";
 import {
-  encodeCacheArguments,
-  decodeCacheArguments,
   encryptCacheCaptures,
   registerCachedFunction,
   invokeCacheFunction,
 } from "../packages/vinext/src/shims/cache-callable-runtime.js";
+import {
+  restoreFlightReply,
+  snapshotFlightReply,
+} from "../packages/vinext/src/shims/cache-flight-arguments.js";
+import { decodeReply, encodeReply } from "@vitejs/plugin-rsc/react/rsc";
 
 const encryption = vi.hoisted(() => ({ values: new Map<string, unknown>() }));
 vi.mock("@vitejs/plugin-rsc/utils/encryption-runtime", () => ({
@@ -32,6 +35,11 @@ beforeEach(() => {
   setCacheHandler(new MemoryCacheHandler());
 });
 const file = () => new File(["private"], "private.txt", { type: "text/plain", lastModified: 111 });
+// The persisted argument transport, as cache-runtime.ts encodes and replays it.
+async function roundTripArguments(args: unknown[]): Promise<unknown[]> {
+  const persisted = JSON.parse(JSON.stringify(await snapshotFlightReply(await encodeReply(args))));
+  return (await decodeReply(restoreFlightReply(persisted))) as unknown[];
+}
 
 // Argument decoding is React's implementation, as in Next.js use-cache-wrapper.ts.
 // Only the ordered multipart transport and native File metadata are ours.
@@ -104,7 +112,7 @@ describe("cache callable Flight transport", () => {
     const form = new FormData();
     form.append("file", original);
     form.append("file", original);
-    const encoded = await encodeCacheArguments([
+    const decoded = await roundTripArguments([
       original,
       { file: original },
       Promise.resolve(original),
@@ -112,7 +120,6 @@ describe("cache callable Flight transport", () => {
       new Set([original]),
       form,
     ]);
-    const decoded = await decodeCacheArguments(JSON.parse(JSON.stringify(encoded)));
     const restored = decoded[0] as File;
     expect([restored.name, restored.lastModified, restored.type, await restored.text()]).toEqual([
       "private.txt",
@@ -236,19 +243,17 @@ describe("cache callable Flight transport", () => {
     // eslint-disable-next-line unicorn/no-new-array
     const sparse = new Array(2);
     Object.setPrototypeOf(sparse, inherited);
-    const [record, iterable, promise, array] = await decodeCacheArguments(
-      await encodeCacheArguments([
-        object,
-        {
-          *[Symbol.iterator]() {
-            yield 1;
-            yield 2;
-          },
+    const [record, iterable, promise, array] = await roundTripArguments([
+      object,
+      {
+        *[Symbol.iterator]() {
+          yield 1;
+          yield 2;
         },
-        Promise.resolve(Promise.resolve("resolved")),
-        sparse,
-      ]),
-    );
+      },
+      Promise.resolve(Promise.resolve("resolved")),
+      sparse,
+    ]);
     expect((record as typeof object).self).toBe(record);
     expect(iterable).toEqual([1, 2]);
     expect(await promise).toBe("resolved");
@@ -256,8 +261,15 @@ describe("cache callable Flight transport", () => {
   });
 
   it("rejects old invocation envelopes", async () => {
-    await expect(decodeCacheArguments({ args: [] } as never)).rejects.toThrow(
-      "Invalid cache function arguments",
-    );
+    encryption.values.set("old", JSON.stringify({ args: [] }));
+    const fn = vi.fn(async () => "value");
+    const cached = registerCachedFunction(fn, "test:old-envelope", "", {});
+    await expect(
+      invokeCacheFunction(
+        { encryptedArgs: "old", referenceId: "test#old-envelope" } as VinextCacheFunctionInvocation,
+        async () => cached,
+      ),
+    ).rejects.toThrow("Invalid cache function arguments");
+    expect(fn).not.toHaveBeenCalled();
   });
 });

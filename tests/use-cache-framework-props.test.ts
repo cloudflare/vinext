@@ -14,7 +14,10 @@ import {
   resolveModuleMetadata,
   resolveModuleViewport,
 } from "../packages/vinext/src/shims/metadata.js";
-import type { CacheFlightArguments } from "../packages/vinext/src/shims/cache-flight-arguments.js";
+import {
+  restoreFlightReply,
+  type CacheFlightArguments,
+} from "../packages/vinext/src/shims/cache-flight-arguments.js";
 import { probeAppPageLayoutWithTracking } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import {
   createPprFallbackShellState,
@@ -310,6 +313,54 @@ describe("use cache framework props", () => {
     expect(replaySet.mock.calls[0]?.[0]).toBe(set.mock.calls[0]?.[0]);
     expect((await call("first")).sync).toBe("first");
     expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  // Ported behaviour from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  // A "use cache" page that takes props must stay prerenderable: Next.js omits
+  // searchParams from the serialized arguments of a public page cache.
+  it.each([
+    ["direct", 0],
+    ["bound", 1],
+    ["captured", 1],
+  ] as const)("omits searchParams from %s page replay arguments", async (kind, propsIndex) => {
+    const envelope = { captured: true };
+    const payloads: CacheFlightArguments[] = [];
+    const fn = vi.fn(async (...args: unknown[]) => {
+      const props = args[propsIndex] as { params: Promise<{ slug: string }> };
+      return (await props.params).slug;
+    });
+    const cached = registerCachedFunction(fn, `page-replay:${kind}`, "", {
+      argumentCount: kind === "direct" ? 1 : 2,
+      decryptCaptures:
+        kind === "captured"
+          ? async (value) => (value === envelope ? ["captured-value"] : undefined)
+          : undefined,
+      serverReferenceId: `page-replay:${kind}`,
+      encodeInvocation: async (args) => {
+        payloads.push(args);
+        return "encrypted";
+      },
+    }) as (...args: unknown[]) => Promise<string>;
+    const observeSearchParams = vi.fn();
+    const props = withUseCachePageMarker(cached, {
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams({ q: "first" }, { observeParamAccess: observeSearchParams }),
+    });
+    const leading = kind === "direct" ? [] : [kind === "bound" ? "label" : envelope];
+    expect(await cached(...leading, props)).toBe("same");
+
+    expect(observeSearchParams).not.toHaveBeenCalled();
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]!.pagePropsIndex).toBe(propsIndex);
+    const { createTemporaryReferenceSet, decodeReply } =
+      await import("@vitejs/plugin-rsc/react/rsc");
+    const decoded = (await decodeReply(restoreFlightReply(payloads[0]!), {
+      temporaryReferences: createTemporaryReferenceSet(),
+    })) as unknown[];
+    expect(decoded.slice(0, propsIndex)).toEqual(
+      kind === "captured" ? [["captured-value"]] : leading,
+    );
+    expect(Object.keys(decoded[propsIndex] as object)).toEqual(["params"]);
   });
 
   it.each(["metadata", "viewport"])("marks layout %s invocations", async (kind) => {

@@ -6900,11 +6900,9 @@ describe('"use cache" runtime', () => {
     setCacheHandler(new MemoryCacheHandler());
 
     const firstBuild = registerCachedFunction(async () => "old", "test:same-id", "", {
-      encodeInvocationArgs: async () => "encrypted",
       serverReferenceId: "module#first-alias",
     });
     const secondBuild = registerCachedFunction(async () => "new", "test:same-id", "", {
-      encodeInvocationArgs: async () => "encrypted",
       serverReferenceId: "module#second-alias",
     });
 
@@ -7135,7 +7133,7 @@ describe('"use cache" runtime', () => {
     await cached();
 
     // The cache entry should have tags
-    const entry = await handler.get("use-cache:v2:test:tags");
+    const entry = await handler.get("use-cache:test:tags");
     expect(entry).not.toBeNull();
     expect(entry?.value).toHaveProperty("kind", "FETCH");
     if (entry?.value && entry.value.kind === "FETCH") {
@@ -7207,7 +7205,7 @@ describe('"use cache" runtime', () => {
     // Now build the outer entry; its body re-runs `inner()`, which HITs.
     await outer();
 
-    const outerEntry = await handler.get("use-cache:v2:test:nested-outer");
+    const outerEntry = await handler.get("use-cache:test:nested-outer");
     expect(outerEntry?.value).toHaveProperty("kind", "FETCH");
     if (outerEntry?.value && outerEntry.value.kind === "FETCH") {
       // The outer entry must carry both its own tag and the nested inner tag.
@@ -7411,7 +7409,7 @@ describe('"use cache" runtime', () => {
     await cached();
 
     // The entry should have the minimum revalidate (1 second from "seconds" profile)
-    const entry = await handler.get("use-cache:v2:test:min-wins");
+    const entry = await handler.get("use-cache:test:min-wins");
     expect(entry).not.toBeNull();
     if (entry?.value && entry.value.kind === "FETCH") {
       expect(entry.value.revalidate).toBe(1);
@@ -7423,18 +7421,27 @@ describe('"use cache" runtime', () => {
     expect(getCacheContext()).toBeNull();
   });
 
-  it("keys the observable property order in JSON fallback arguments", async () => {
+  it("consistent cache keys for same objects regardless of key order", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     setCacheHandler(new MemoryCacheHandler());
-    const fn = vi.fn(async (opts: Record<string, unknown>) => Object.keys(opts));
+
+    let callCount = 0;
+    const fn = async (_opts: Record<string, unknown>) => {
+      callCount++;
+      return { result: "ok" };
+    };
+
     const cached = registerCachedFunction(fn, "test:stable-key");
-    expect(await cached({ b: 2, a: 1 })).toEqual(["b", "a"]);
-    expect(await cached({ a: 1, b: 2 })).toEqual(["a", "b"]);
-    expect(await cached({ b: 2, a: 1 })).toEqual(["b", "a"]);
-    expect(fn).toHaveBeenCalledTimes(2);
+
+    // Different key order, same content — should be same cache key
+    await cached({ b: 2, a: 1 });
+    expect(callCount).toBe(1);
+
+    await cached({ a: 1, b: 2 });
+    expect(callCount).toBe(1); // Same cache key, still cached
   });
 
   it("cached function with no args works correctly", async () => {
@@ -7529,32 +7536,6 @@ describe('"use cache" runtime', () => {
     expect(calls).toBe(1);
   });
 
-  it("excludes framework arguments from revalidation invocations", async () => {
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler } =
-      await import("../packages/vinext/src/shims/cache.js");
-    const handler = new MemoryCacheHandler();
-    const set = vi.spyOn(handler, "set");
-    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => JSON.stringify(args));
-    setCacheHandler(handler);
-
-    const cached = registerCachedFunction(async () => "value", "test:revalidation-arity", "", {
-      argumentCount: 0,
-      encodeInvocationArgs,
-      serverReferenceId: "test#cached",
-    });
-    await (cached as (...args: unknown[]) => Promise<string>)("framework argument");
-
-    expect(encodeInvocationArgs).toHaveBeenCalledWith([]);
-    expect(set.mock.calls[0]?.[2]).toMatchObject({
-      cacheFunctionInvocation: {
-        encryptedArgs: "[]",
-        referenceId: "test#cached",
-      },
-    });
-  });
-
   it("preserves rest arguments when declared arity is unknown", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -7587,7 +7568,7 @@ describe('"use cache" runtime', () => {
 
     // Verify the stored value is JSON (no x-vinext-rsc header)
     // stableStringify wraps args as an array: [3]
-    const entry = await handler.get("use-cache:v2:test:json-fallback:[3]");
+    const entry = await handler.get("use-cache:test:json-fallback:[3]");
     expect(entry).not.toBeNull();
     if (entry?.value && entry.value.kind === "FETCH") {
       expect(entry.value.data.headers["x-vinext-rsc"]).toBeUndefined();
@@ -7813,58 +7794,6 @@ describe('"use cache" runtime', () => {
     expect(observeSearchParams).not.toHaveBeenCalled();
   });
 
-  // Ported behaviour from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
-  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
-  // A "use cache" page that takes props must stay prerenderable: Next.js omits
-  // searchParams from the serialized arguments of a public page cache.
-  it("omits page default export searchParams from replayable invocation args", async () => {
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler } =
-      await import("../packages/vinext/src/shims/cache.js");
-    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
-    setCacheHandler(new MemoryCacheHandler());
-
-    const observeSearchParams = vi.fn();
-    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => {
-      // Encoding walks every argument property, like encodeReply does.
-      JSON.stringify(args, (_key, value) =>
-        value && typeof value === "object" ? { ...value } : value,
-      );
-      return "encrypted";
-    });
-    const cached = registerCachedFunction(
-      async (props: {
-        params: Promise<{ slug: string }>;
-        searchParams: Promise<Record<string, unknown>>;
-      }) => ({ slug: (await props.params).slug }),
-      "/fixture/app/cached/replay/page.tsx:default",
-      "",
-      {
-        encodeInvocationArgs,
-        serverReferenceId: "fixture#cached",
-      },
-    );
-
-    await expect(
-      cached(
-        asPageInvocation({
-          params: makeThenableParams({ slug: "same" }),
-          searchParams: makeThenableParams(
-            { q: "first" },
-            { observeParamAccess: observeSearchParams },
-          ),
-        }),
-      ),
-    ).resolves.toEqual({ slug: "same" });
-
-    expect(encodeInvocationArgs).toHaveBeenCalledTimes(1);
-    const [[replayProps]] = encodeInvocationArgs.mock.calls[0] as [[Record<string, unknown>]];
-    // Replay keeps the `$$isPage` marker so it regains page semantics.
-    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
-    expect(observeSearchParams).not.toHaveBeenCalled();
-  });
-
   // Next.js: use-cache-wrapper.ts passes `makeErroringSearchParamsForUseCache()`
   // to a public page cache whose serialized args omit searchParams.
   it("gives replayed page props searchParams that reject inside the cache scope", async () => {
@@ -7903,13 +7832,6 @@ describe('"use cache" runtime', () => {
     const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
     setCacheHandler(new MemoryCacheHandler());
 
-    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => {
-      // Encoding walks every argument property, like encodeReply does.
-      JSON.stringify(args, (_key, value) =>
-        value && typeof value === "object" ? { ...value } : value,
-      );
-      return "encrypted";
-    });
     type PageProps = {
       params: Promise<{ slug: string }>;
       searchParams?: Promise<Record<string, unknown>>;
@@ -7925,7 +7847,7 @@ describe('"use cache" runtime', () => {
       },
       "/fixture/app/cached/imported-page.tsx:default",
       "",
-      { encodeInvocationArgs, serverReferenceId: "fixture#imported-page" },
+      { serverReferenceId: "fixture#imported-page" },
     );
 
     const observeSearchParams = vi.fn();
@@ -7939,9 +7861,6 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
     expect(observeSearchParams).not.toHaveBeenCalled();
     expect(receivedPropKeys).toEqual(["params", "searchParams"]);
-    const [[replayProps]] = encodeInvocationArgs.mock.calls[0] as [[Record<string, unknown>]];
-    expect(replayProps).toMatchObject({ $$isPage: true });
-    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
 
     // A Response Store replay of those args (no searchParams) regains page
     // semantics from the marker and gets erroring searchParams.
@@ -8128,7 +8047,6 @@ describe('"use cache" runtime', () => {
 
     // Values bound by user code arrive before the page props.
     let withLabelCalls = 0;
-    const encodeInvocationArgs = vi.fn(async (_args: unknown[]) => "encrypted");
     const CachedWithLabel = registerTestServerReference(
       registerCachedFunction(
         async (label: string, props: PageProps) => {
@@ -8138,7 +8056,7 @@ describe('"use cache" runtime', () => {
         },
         "/app/bound/cached-label.tsx:default",
         "",
-        { encodeInvocationArgs, serverReferenceId: "fixture#cached-label" },
+        { serverReferenceId: "fixture#cached-label" },
       ),
       "/app/bound/cached-label.tsx",
       TEST_CACHE_EXPORT_NAME,
@@ -8153,11 +8071,6 @@ describe('"use cache" runtime', () => {
       LabelledPage(withUseCachePageMarker(LabelledPage, pageProps("second"))),
     ).resolves.toBe("label:same");
     expect(withLabelCalls).toBe(1);
-    const [[replayLabel, replayProps]] = encodeInvocationArgs.mock.calls[0] as [
-      [unknown, Record<string, unknown>],
-    ];
-    expect(replayLabel).toBe("label");
-    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
     expect(observeSearchParams).not.toHaveBeenCalled();
   });
 
@@ -8217,8 +8130,8 @@ describe('"use cache" runtime', () => {
   });
 
   // An inline cache function that closes over values is bound to a capture
-  // envelope, so its page props arrive as the second argument. Key omission,
-  // replay-arg omission and the erroring replay fallback must all target them.
+  // envelope, so its page props arrive as the second argument. Key omission
+  // and the erroring replay fallback must both target them.
   it("locates page props after an inline capture envelope", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -8230,13 +8143,6 @@ describe('"use cache" runtime', () => {
     const envelope = { captured: true };
     const decryptCaptures = async (value: unknown) =>
       value === envelope ? ["captured-value"] : undefined;
-    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => {
-      // Encoding walks every argument property, like encodeReply does.
-      JSON.stringify(args, (_key, value) =>
-        value && typeof value === "object" ? { ...value } : value,
-      );
-      return "encrypted";
-    });
     type PageProps = {
       params: Promise<{ slug: string }>;
       searchParams?: Promise<Record<string, unknown>>;
@@ -8252,7 +8158,6 @@ describe('"use cache" runtime', () => {
       {
         argumentCount: 1,
         decryptCaptures,
-        encodeInvocationArgs,
         serverReferenceId: "fixture#captures",
       },
     ) as (envelope: unknown, props: PageProps) => Promise<unknown>;
@@ -8273,12 +8178,6 @@ describe('"use cache" runtime', () => {
     });
     expect(callCount).toBe(1);
     expect(observeSearchParams).not.toHaveBeenCalled();
-    expect(encodeInvocationArgs).toHaveBeenCalledTimes(1);
-    const [[replayEnvelope, replayProps]] = encodeInvocationArgs.mock.calls[0] as [
-      [unknown, Record<string, unknown>],
-    ];
-    expect(replayEnvelope).toBe(envelope);
-    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
 
     const readsSearchParams = registerCachedFunction(
       async (_captures: unknown[], props: PageProps) => ({ q: (await props.searchParams!).q }),
@@ -8852,9 +8751,9 @@ describe("buildUseCacheKey logical handler keys", () => {
   // test to exercise per-test module state/loading boundaries.
   it("builds keys from the function scope and serialized arguments", async () => {
     const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    expect(buildUseCacheKey("mod#Comp", undefined)).toBe("use-cache:v2:mod#Comp");
+    expect(buildUseCacheKey("mod#Comp", undefined)).toBe("use-cache:mod#Comp");
     expect(buildUseCacheKey("mod#Comp", "dep-v1", '["a"]')).toBe(
-      'use-cache:v2:build:dep-v1:mod#Comp:["a"]',
+      'use-cache:build:dep-v1:mod#Comp:["a"]',
     );
   });
 
@@ -8863,7 +8762,7 @@ describe("buildUseCacheKey logical handler keys", () => {
     const longArgs = JSON.stringify([{ slug: "a".repeat(600) }]);
     const key = buildUseCacheKey("mod#CachedRoute", "deploy-usecache-v1", longArgs);
 
-    expect(key).toBe(`use-cache:v2:build:deploy-usecache-v1:mod#CachedRoute:${longArgs}`);
+    expect(key).toBe(`use-cache:build:deploy-usecache-v1:mod#CachedRoute:${longArgs}`);
     expect(key).not.toContain(":__hash:");
   });
 });

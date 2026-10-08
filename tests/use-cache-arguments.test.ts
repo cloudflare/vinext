@@ -241,11 +241,11 @@ describe("use cache argument identity", () => {
     const handler = new MemoryCacheHandler();
     const set = vi.spyOn(handler, "set");
     setCacheHandler(handler);
-    const encodeInvocationArgs = vi.fn(async () => "encrypted");
+    const encodeInvocation = vi.fn(async () => "encrypted");
     const fn = vi.fn(async (_value: unknown) => "result");
     const cached = registerCachedFunction(fn, "test:replay-file", "", {
       serverReferenceId: "test#replay-file",
-      encodeInvocationArgs,
+      encodeInvocation,
     });
     const input = kind === "file" ? file() : new Blob(["hello"]);
     await cached({ input });
@@ -253,7 +253,7 @@ describe("use cache argument identity", () => {
     expect(fn).toHaveBeenCalledTimes(1);
     expect(set).toHaveBeenCalledTimes(1);
     const invocation = set.mock.calls[0]?.[2]?.cacheFunctionInvocation;
-    expect(encodeInvocationArgs).toHaveBeenCalledTimes(1);
+    expect(encodeInvocation).toHaveBeenCalledTimes(1);
     expect(invocation).toMatchObject({ encryptedArgs: "encrypted" });
   });
 

@@ -67,12 +67,10 @@ import {
   trackPprFallbackShellCacheTask,
 } from "./ppr-fallback-shell.js";
 import {
-  APP_PAGE_USE_CACHE_MARKER,
   hasUseCachePageMarker,
   hasUseCacheLayoutMarker,
   isMarkedAppPagePropsObject,
   isUseCacheFunctionReference,
-  markAppPagePropsForUseCache,
   withoutUseCacheSegmentMarker,
 } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
@@ -290,8 +288,7 @@ export function buildUseCacheKey(
   argsKey?: string,
 ): string {
   const scopedId = keySeed ? `build:${encodeURIComponent(keySeed)}:${id}` : id;
-  // Do not read entries written with the old, lossy argument identity.
-  return argsKey === undefined ? `use-cache:v2:${scopedId}` : `use-cache:v2:${scopedId}:${argsKey}`;
+  return argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
 }
 
 const NOT_LOADED = Symbol("not-loaded");
@@ -573,7 +570,6 @@ export type RegisterCachedFunctionOptions = {
   /** Number of declared arguments supplied by the directive transform. */
   argumentCount?: number;
   decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
-  encodeInvocationArgs?: (args: unknown[]) => Promise<string>;
   encodeInvocation?: (args: CacheFlightArguments) => Promise<string>;
   serverReferenceId?: string;
 };
@@ -782,11 +778,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         const keyArgs =
           pagePropsIndex === undefined
             ? serializationArgs
-            : toReplayablePageArgs(serializationArgs, pagePropsIndex).map((arg, index) =>
-                index === pagePropsIndex
-                  ? withoutUseCacheSegmentMarker(arg as Record<string, unknown>, true)
-                  : arg,
-              );
+            : toReplayablePageArgs(serializationArgs, pagePropsIndex);
         flightArguments =
           replay ??
           (await snapshotFlightReply(
@@ -805,33 +797,22 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           temporaryReferences: serverReferences,
         })) as TArgs;
       } else {
-        // Non-RSC environments support the existing JSON subset only.
+        // Without the RSC runtime (unit tests), key the JSON-serializable subset.
         try {
-          const pending: Promise<unknown>[] = [];
-          const prepared = prepareCacheArguments(
-            serializationArgs,
-            {
-              pagePropsIndex,
-              omitMarkedAppPageSearchParams: omitAppPageSearchParams,
-            },
-            pending,
-          );
-          for (let index = 0; index < pending.length;) {
-            const batch = pending.slice(index);
-            index = pending.length;
-            await Promise.all(batch);
-          }
-          callArgs = (
-            pagePropsIndex === undefined
-              ? prepared.value
-              : withErroringPageSearchParams(prepared.value, pagePropsIndex)
-          ) as TArgs;
+          const processedArgs =
+            serializationArgs.length > 0
+              ? unwrapThenableObjectArray(serializationArgs, {
+                  pagePropsIndex,
+                  omitMarkedAppPageSearchParams: omitAppPageSearchParams,
+                })
+              : [];
           cacheKey = buildUseCacheKey(
             cacheFunctionId,
             keySeed,
-            prepared.key.length ? await stableStringify(prepared.key) : undefined,
+            processedArgs.length > 0 ? stableStringify(processedArgs) : undefined,
           );
         } catch {
+          // Non-serializable arguments — run without caching
           return (await executeWithContext(fn, callArgs, cacheVariant)).result;
         }
       }
@@ -967,23 +948,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         if (collectedResult?.cacheEntry) {
           try {
             let cacheFunctionInvocation: VinextCacheFunctionInvocation | undefined;
-            if (
-              options.serverReferenceId &&
-              (options.encodeInvocation || options.encodeInvocationArgs)
-            ) {
+            if (options.serverReferenceId && options.encodeInvocation && flightArguments) {
               try {
                 cacheFunctionInvocation = {
                   // Like the cache key, a public page cache replays without the
                   // page's searchParams: encoding them would read search params
                   // and turn every cached page render dynamic.
-                  encryptedArgs:
-                    flightArguments && options.encodeInvocation
-                      ? await options.encodeInvocation(flightArguments)
-                      : await options.encodeInvocationArgs!(
-                          pagePropsIndex === undefined
-                            ? admittedArgs
-                            : toReplayablePageArgs(admittedArgs, pagePropsIndex),
-                        ),
+                  encryptedArgs: await options.encodeInvocation(flightArguments),
                   referenceId: options.serverReferenceId,
                   rootParams: Object.fromEntries(
                     Object.entries(rootParams ?? {}).filter((entry) => entry[1] !== undefined),
@@ -1520,13 +1491,15 @@ async function runCachedFunctionWithContext<
 }
 
 // ---------------------------------------------------------------------------
-// Legacy JSON fallback for environments without the RSC runtime
+// JSON cache keys when the RSC runtime is unavailable (unit tests)
 // ---------------------------------------------------------------------------
 
 /**
- * Keep the existing JSON-only fallback self-contained. Snapshot the values
- * it keys; unsupported prototypes (including all binary inputs) bypass caching.
- * Real App Router invocations use Flight above and never traverse this path.
+ * Recursively unwrap "thenable objects" — values created by
+ * `Object.assign(Promise.resolve(obj), obj)`, like Next.js 16 params and
+ * searchParams — into plain objects, so their values reach the JSON key.
+ * Only used for cache key generation — the original Promise-augmented
+ * objects are still passed to the actual function on cache miss.
  */
 type UnwrapThenableObjectsOptions = {
   omitAppPageSearchParamsAtRoot?: boolean;
@@ -1543,115 +1516,61 @@ type UnwrapThenableObjectArrayOptions = {
   omitMarkedAppPageSearchParams: boolean;
 };
 
-type PreparedCacheArgument = { key: unknown; value: unknown };
-
-function prepareCacheArgument(
-  value: unknown,
-  options: UnwrapThenableObjectsOptions,
-  seen: WeakMap<object, PreparedCacheArgument>,
-  pending: Promise<unknown>[],
-): PreparedCacheArgument {
+function unwrapThenableObjects(value: unknown, options: UnwrapThenableObjectsOptions): unknown {
   if (value === null || value === undefined || typeof value !== "object") {
-    return { key: value, value };
+    return value;
   }
-  const existing = seen.get(value);
-  // JSON cannot represent aliases. Repeated references must not share a key
-  // with distinct objects when the function can observe their identity.
-  if (existing) throw new Error("Shared cache arguments require Flight serialization");
-  const prepare = (child: unknown) =>
-    prepareCacheArgument(
-      child,
-      {
-        omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
-      },
-      seen,
-      pending,
-    );
-  const remember = (key: unknown, execution = key): PreparedCacheArgument => {
-    const result = { key, value: execution };
-    seen.set(value, result);
-    return result;
+
+  const childOptions: UnwrapThenableObjectsOptions = {
+    omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
   };
-  const define = (target: object, key: string, item: unknown) =>
-    Object.defineProperty(target, key, {
-      value: item,
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
 
   if (Array.isArray(value)) {
-    const keys: unknown[] = [],
-      values: unknown[] = [];
-    const result = remember(keys, values);
-    // Flight reads indices, including holes and inherited values. A custom
-    // iterator must not substitute a different value into the shared key.
-    for (let index = 0; index < value.length; index++) {
-      const item = prepare(value[index]);
-      keys.push(item.key);
-      values.push(item.value);
-    }
-    return result;
-  }
-  if ("then" in value && typeof value.then === "function") {
-    const fieldNames = Object.keys(value);
-    if (fieldNames.includes("then")) {
-      // Copying a custom continuation onto the execution promise would let
-      // it return the original, unnormalized argument graph.
-      throw new Error("Cache arguments with an own then method cannot be snapshotted");
-    }
-    const resolved = Promise.resolve(value).then(prepare);
-    const execution = resolved.then((item) => item.value);
-    const fields: Record<string, unknown> = {};
-    // The JSON fallback's Promise tag distinguishes this pair from an array;
-    // the pair separates the resolved value from legacy params' attached fields.
-    const key = resolved.then((item) => [item.key, fields]);
-    resolved.catch(() => {});
-    execution.catch(() => {});
-    key.catch(() => {});
-    const result = remember(key, execution);
-    pending.push(resolved);
-    // Both the resolved value and attached fields are observable by user code.
-    for (const name of fieldNames) {
-      const item = prepare(Reflect.get(value, name));
-      define(fields, name, item.key);
-      define(execution, name, item.value);
-    }
-    return result;
-  }
-  if (value instanceof Date) {
-    // Flight transports Dates by value (without aliases), and invalid Dates
-    // become null through Date.toJSON(). Execute that same representation.
-    const date = Number.isNaN(value.getTime()) ? null : new Date(value.getTime());
-    return { key: date, value: date };
+    return value.map((item) => unwrapThenableObjects(item, childOptions));
   }
 
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new Error("Unsupported cache argument");
+  if (isThenableObject(value)) {
+    const plain: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      // oxlint-disable-next-line typescript/no-explicit-any
+      plain[key] = unwrapThenableObjects((value as any)[key], childOptions);
+    }
+    return plain;
   }
-  const keys: Record<string, unknown> = {},
-    values: Record<string, unknown> = {};
-  const result = remember(keys, values);
-  for (const name of Object.keys(value)) {
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof (value as any).then === "function") {
+    // Pure Promise with no own properties — leave as-is
+    return value;
+  }
+
+  // Regular object — recurse into values
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
     if (
-      name === "searchParams" &&
+      key === "searchParams" &&
       (options.omitAppPageSearchParamsAtRoot ||
         (options.omitMarkedAppPageSearchParams && isMarkedAppPagePropsObject(value)))
     ) {
-      // Keep the request's erroring proxy without observing or keying it.
-      define(values, name, Reflect.get(value, name));
       continue;
     }
-    const item = prepare(Reflect.get(value, name));
-    define(keys, name, item.key);
-    define(values, name, item.value);
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+    result[key] = unwrapThenableObjects((value as any)[key], childOptions);
   }
-  if (typeof Reflect.get(keys, "toJSON") === "function") {
-    throw new Error("Cache arguments with toJSON require custom serialization");
-  }
-  if (isMarkedAppPagePropsObject(value)) markAppPagePropsForUseCache(values);
   return result;
+}
+
+/**
+ * A thenable (not an array) with own enumerable properties — the
+ * `Object.assign(Promise.resolve(obj), obj)` pattern Next.js params use. The
+ * cache key is built from its fields instead of the promise.
+ */
+function isThenableObject(value: object): value is PromiseLike<unknown> {
+  return (
+    !Array.isArray(value) &&
+    "then" in value &&
+    typeof value.then === "function" &&
+    Object.keys(value).length > 0
+  );
 }
 
 function isPagePropsObject(value: unknown): value is Record<string, unknown> {
@@ -1667,15 +1586,14 @@ function replaceArgument(args: readonly unknown[], index: number, value: unknown
 /**
  * Response Store replay args for a public page cache: drop `searchParams` from
  * the page props at `index` (after a capture envelope, if any), as Next.js does
- * for the serialized arguments (use-cache-wrapper.ts, `isPageSegmentFunction`),
- * and keep the `$$isPage` marker so a replay regains page semantics, including
- * the erroring searchParams fallback.
+ * for the serialized arguments (use-cache-wrapper.ts, `isPageSegmentFunction`).
+ * The replay regains page semantics from `CacheFlightArguments.pagePropsIndex`.
  */
 function toReplayablePageArgs(args: readonly unknown[], index: number): unknown[] {
   const props = args[index];
   if (!isPagePropsObject(props)) return [...args];
   const { searchParams: _searchParams, ...pageProps } = props;
-  return replaceArgument(args, index, { ...pageProps, [APP_PAGE_USE_CACHE_MARKER]: true });
+  return replaceArgument(args, index, pageProps);
 }
 
 /**
@@ -1696,31 +1614,23 @@ function withErroringPageSearchParams(args: readonly unknown[], index: number): 
   });
 }
 
-function prepareCacheArguments(
+function unwrapThenableObjectArray(
   values: readonly unknown[],
   options: UnwrapThenableObjectArrayOptions,
-  pending: Promise<unknown>[],
-): { key: unknown[]; value: unknown[] } {
-  const seen = new WeakMap<object, PreparedCacheArgument>();
-  const prepared = values.map((value, index) =>
-    prepareCacheArgument(
-      value,
-      {
-        omitAppPageSearchParamsAtRoot: index === options.pagePropsIndex,
-        omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
-      },
-      seen,
-      pending,
-    ),
+): unknown[] {
+  return values.map((value, index) =>
+    unwrapThenableObjects(value, {
+      omitAppPageSearchParamsAtRoot: index === options.pagePropsIndex,
+      omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
+    }),
   );
-  return { key: prepared.map((item) => item.key), value: prepared.map((item) => item.value) };
 }
 
 // ---------------------------------------------------------------------------
 // Fallback: stable JSON serialization for cache keys (when RSC unavailable)
 // ---------------------------------------------------------------------------
 
-async function stableStringify(value: unknown, seen = new Set<unknown>()): Promise<string> {
+function stableStringify(value: unknown, seen?: Set<unknown>): string {
   if (value === undefined) return "undefined";
   if (value === null) return "null";
 
@@ -1728,21 +1638,12 @@ async function stableStringify(value: unknown, seen = new Set<unknown>()): Promi
   if (typeof value === "function") throw new Error("Cannot serialize function");
   if (typeof value === "symbol") throw new Error("Cannot serialize symbol");
 
-  if (value instanceof Promise) {
-    if (seen.has(value)) throw new Error("Circular reference");
-    seen.add(value);
-    const result = `Promise(${await stableStringify(await value, seen)})`;
-    seen.delete(value);
-    return result;
-  }
-
   if (Array.isArray(value)) {
     // Circular reference detection
+    if (!seen) seen = new Set();
     if (seen.has(value)) throw new Error("Circular reference");
     seen.add(value);
-    const items: string[] = [];
-    for (const item of value) items.push(await stableStringify(item, seen));
-    const result = "[" + items.join(",") + "]";
+    const result = "[" + value.map((v) => stableStringify(v, seen)).join(",") + "]";
     seen.delete(value);
     return result;
   }
@@ -1751,28 +1652,23 @@ async function stableStringify(value: unknown, seen = new Set<unknown>()): Promi
     if (value instanceof Date) {
       return `Date(${value.getTime()})`;
     }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw new Error("Cache argument requires Flight serialization");
-    }
     // Circular reference detection
+    if (!seen) seen = new Set();
     if (seen.has(value)) throw new Error("Circular reference");
     seen.add(value);
-    const keys = Object.keys(value);
-    const fields: string[] = [];
-    for (const key of keys) {
-      fields.push(
-        `${JSON.stringify(key)}:${await stableStringify((value as Record<string, unknown>)[key], seen)}`,
-      );
-    }
-    const result = "{" + fields.join(",") + "}";
+    const keys = Object.keys(value).sort();
+    const result =
+      "{" +
+      keys
+        .map(
+          (k) =>
+            `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k], seen)}`,
+        )
+        .join(",") +
+      "}";
     seen.delete(value);
     return result;
   }
 
-  if (typeof value === "number") {
-    if (Object.is(value, -0)) return "-0";
-    if (!Number.isFinite(value)) return String(value);
-  }
   return JSON.stringify(value);
 }

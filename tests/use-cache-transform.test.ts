@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
@@ -838,7 +838,6 @@ describe("plugin-rsc inline use-cache references", () => {
       setCacheHandler(new MemoryCacheHandler());
       for (const [name, options] of Object.entries(wrapperOptions)) {
         let calls = 0;
-        const encodeInvocationArgs = vi.fn(async (_args: unknown[]) => "encrypted");
         const cached = registerCachedFunction(
           async (props: { searchParams: Promise<Record<string, string>> }) => {
             calls++;
@@ -846,7 +845,7 @@ describe("plugin-rsc inline use-cache references", () => {
           },
           `${pageId}:${name}`,
           "",
-          { ...options, encodeInvocationArgs },
+          options,
         );
         const pageProps = (q: string) => ({
           params: makeThenableParams({}),
@@ -856,8 +855,6 @@ describe("plugin-rsc inline use-cache references", () => {
         await expect(cached(pageProps("first"))).resolves.toBe("first");
         await expect(cached(pageProps("second"))).resolves.toBe("second");
         expect(calls).toBe(2);
-        const [[replayProps]] = encodeInvocationArgs.mock.calls[0] as [[Record<string, unknown>]];
-        expect(Object.keys(replayProps)).toEqual(["params", "searchParams"]);
       }
     },
   );

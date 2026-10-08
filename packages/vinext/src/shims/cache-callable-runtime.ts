@@ -2,12 +2,7 @@ import {
   decryptActionBoundArgs,
   encryptActionBoundArgs,
 } from "@vitejs/plugin-rsc/utils/encryption-runtime";
-import {
-  encodeReply,
-  decodeReply,
-  renderToReadableStream,
-  createFromReadableStream,
-} from "@vitejs/plugin-rsc/react/rsc";
+import { renderToReadableStream, createFromReadableStream } from "@vitejs/plugin-rsc/react/rsc";
 import {
   isUseCacheFunction,
   memoizeInCacheScope,
@@ -27,16 +22,6 @@ type CacheCaptureEnvelope = {
   type: typeof CACHE_CAPTURE_TYPE;
   encrypted: Promise<string>;
 };
-
-/** Persist invocation arguments using Flight's argument codec. */
-export async function encodeCacheArguments(args: unknown[]): Promise<CacheFlightArguments> {
-  return snapshotFlightReply(await encodeReply(args));
-}
-
-export async function decodeCacheArguments(value: CacheFlightArguments): Promise<unknown[]> {
-  if (!value || value.version !== 1) throw new Error("Invalid cache function arguments");
-  return (await decodeReply(restoreFlightReply(value))) as unknown[];
-}
 
 async function encryptArguments(value: CacheFlightArguments): Promise<string> {
   // The encryption helper uses the result codec internally. A string preserves
