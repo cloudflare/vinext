@@ -5028,11 +5028,18 @@ describe("Plugin config", () => {
       expect(repeatedResult.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe(
         result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"],
       );
-      const rscBuildIdentity = result.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"];
+      // The per-build identity is server-only; the browser bundle gets "".
+      const readServerRscBuildIdentity = (vinextPlugins: any[]) =>
+        vinextPlugins
+          .find((p) => p.name === "vinext:compiler-define-server")
+          .configEnvironment("rsc", {}, { command: "build" }).define[
+          "process.env.__VINEXT_RSC_BUILD_IDENTITY"
+        ];
+      expect(result.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe('""');
+      const rscBuildIdentity = readServerRscBuildIdentity(plugins);
       expect(JSON.parse(rscBuildIdentity)).toMatch(/^[0-9a-f]{32}$/);
-      expect(repeatedResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe(
-        rscBuildIdentity,
-      );
+      expect(repeatedResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe('""');
+      expect(readServerRscBuildIdentity(plugins)).toBe(rscBuildIdentity);
 
       const nextBuildPlugins = vinext({
         nextConfig: { generateBuildId: () => buildId },
@@ -5043,9 +5050,7 @@ describe("Plugin config", () => {
         { command: "build", mode: "production" },
       );
       expect(nextBuildResult.define["process.env.__VINEXT_BUILD_ID"]).toBe(JSON.stringify(buildId));
-      expect(nextBuildResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).not.toBe(
-        rscBuildIdentity,
-      );
+      expect(readServerRscBuildIdentity(nextBuildPlugins)).not.toBe(rscBuildIdentity);
     } finally {
       if (previousSharedRscBuildIdentity === undefined) {
         delete process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;

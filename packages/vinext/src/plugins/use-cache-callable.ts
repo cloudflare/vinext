@@ -181,6 +181,18 @@ function getCacheWrapperOptions(
   };
 }
 
+/**
+ * Ported from Next.js: packages/next/src/server/app-render/encryption-utils-server.ts
+ * Next salts server-reference IDs with NEXT_SERVER_ACTIONS_ENCRYPTION_KEY when
+ * it is set, so rebuilding identical source emits identical client chunks, and
+ * otherwise with a generated key. The key is derived under a label rather than
+ * used directly so the reference names reveal nothing about the key.
+ */
+function createReferenceSecret(encryptionKey: string | undefined): Buffer {
+  if (!encryptionKey) return randomBytes(32);
+  return createHmac("sha256", encryptionKey).update("vinext use cache reference").digest();
+}
+
 export async function createUseCacheCallablePlugin(options: Options): Promise<Plugin> {
   const rscModulePath = resolvePluginRscModule(options.projectRoot, "@vitejs/plugin-rsc");
   const transformsPath = resolvePluginRscModule(
@@ -197,12 +209,14 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
   // original export name must not also be the remotely addressable name. A
   // per-plugin secret keeps aliases stable across every environment/build pass
   // in one Vite build without making sibling exports derivable from each other.
-  const referenceSecret = randomBytes(32);
+  let referenceSecret: Buffer | undefined;
   let manager: RscPluginManager | undefined;
 
   return {
     name: PLUGIN_NAME,
     configResolved(config) {
+      // Read after vinext's config hook has loaded `.env` files.
+      referenceSecret ??= createReferenceSecret(process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY);
       const pluginApi = rscModule.getPluginApi(config);
       const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
       if (!pluginApi && options.allowMissingRsc && !hasRscPlugin) return;
@@ -230,7 +244,8 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
         },
       },
       async handler(code, id) {
-        if (!manager) return;
+        const secret = referenceSecret;
+        if (!manager || !secret) return;
         if (!code.includes("use cache")) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;
@@ -248,7 +263,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
         const reference = manager.serverReferences.resolve(id, "rsc");
         const relativeImportId = manager.toRelativeId(reference.importId);
         const secureExportName = (name: string) =>
-          `$$vinext_cache_${createHmac("sha256", referenceSecret)
+          `$$vinext_cache_${createHmac("sha256", secret)
             .update(relativeImportId)
             .update("\0")
             .update(name)
