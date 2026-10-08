@@ -34,7 +34,7 @@ export function readFlightCodecVersion(id: string): string {
 }
 
 /** React 19.3 ships the branch; 0.0.0-* experimental builds track main. */
-export function needsElementTemporaryReferenceBackport(version: string): boolean {
+function needsElementTemporaryReferenceBackport(version: string): boolean {
   const match = /^(\d+)\.(\d+)\./.exec(version);
   if (!match || version.startsWith("0.0.0-")) return false;
   const [major, minor] = [Number(match[1]), Number(match[2])];
