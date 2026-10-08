@@ -16,10 +16,8 @@ describe("use cache argument identity", () => {
   beforeEach(() => setCacheHandler(new MemoryCacheHandler()));
 
   it("resolves a cache hit without waiting for another event-loop turn", async () => {
-    const cached = registerCachedFunction(
-      async (locale: string) => ({ locale }),
-      "test:hit-within-task",
-    );
+    const fn = vi.fn(async (locale: string) => ({ locale }));
+    const cached = registerCachedFunction(fn, "test:hit-within-task");
     await cached("en");
 
     let hit: unknown;
@@ -31,6 +29,7 @@ describe("use cache argument identity", () => {
     for (let i = 0; i < 1000 && hit === undefined; i++) await Promise.resolve();
 
     expect(hit).toEqual({ locale: "en" });
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it("snapshots the File that Flight emitted while other arguments are pending", async () => {
