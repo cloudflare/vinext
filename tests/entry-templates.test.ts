@@ -33,6 +33,7 @@ import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matc
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { createPagesDevHydrationScript } from "../packages/vinext/src/server/pages-dev-hydration.js";
+import { loadMdxEsmReader } from "../packages/vinext/src/utils/mdx-scan.js";
 
 // ── Minimal App Router route fixtures ─────────────────────────────────
 // Use stable absolute paths so tests don't depend on the machine.
@@ -1435,7 +1436,7 @@ describe("App Router entry templates", () => {
     }
   });
 
-  it("lists the static App pages that answer their decoded pathname in both RSC entries", () => {
+  it("lists the static App pages that answer their decoded pathname in both RSC entries", async () => {
     // Next.js answers `/%61` beside `/[slug]` with the response cached under
     // `/a`, which exists only for a prerendered page. Segment config that
     // renders any segment of the direct tree dynamically, or on the edge
@@ -1467,6 +1468,8 @@ describe("App Router entry templates", () => {
       "edge-layout.tsx",
       'export const runtime = "edge"; export default function Layout({ children }) { return children; }',
     );
+    const mdxPage = write("mdx-page.mdx", "export const revalidate = 60;\n\n# Static\n");
+    const mdxEdgePage = write("mdx-edge-page.mdx", 'export const runtime = "edge";\n\n# Edge\n');
     const handler = write("route.ts", "export function GET() { return new Response(); }");
     const panelSlot = (pagePath: string) => ({
       key: "panel@slot/@panel",
@@ -1502,6 +1505,9 @@ describe("App Router entry templates", () => {
       staticRoute("/slot-only", { pagePath: null, parallelSlots: [panelSlot(staticPage)] }),
       staticRoute("/edge", { pagePath: edgePage }),
       staticRoute("/edge-layout", { layouts: [edgeLayout] }),
+      // MDX exports are read with the parser the prerender listing uses.
+      staticRoute("/mdx", { pagePath: mdxPage }),
+      staticRoute("/mdx-edge", { pagePath: mdxEdgePage }),
       // Intercepting trees never render for a direct request to the page.
       staticRoute("/sibling-intercept", {
         siblingIntercepts: [
@@ -1523,13 +1529,16 @@ describe("App Router entry templates", () => {
       "/café",
       "/isr",
       "/slot-only",
+      "/mdx",
       "/sibling-intercept",
     ]);
+    const config = { readMdxEsm: await loadMdxEsmReader(process.cwd()) };
+    expect(config.readMdxEsm).not.toBeNull();
 
     try {
       for (const code of [
-        generateRscEntry(tmpDir, routes, null, [], null, "", false),
-        generateAppRequestRscEntry(tmpDir, routes),
+        generateRscEntry(tmpDir, routes, null, [], null, "", false, config),
+        generateAppRequestRscEntry(tmpDir, routes, null, [], null, "", false, config),
       ]) {
         expect(
           code.match(/^const __routeMatcher = __createAppRscRouteMatcher\(\w+, (.+)\);$/m)?.[1],

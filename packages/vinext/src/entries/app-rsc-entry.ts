@@ -200,6 +200,8 @@ type AppRouterConfig = {
   globalNotFound?: boolean;
   /** Enables Next.js Cache Components semantics for App Router document HTML. */
   cacheComponents?: boolean;
+  /** Reads an MDX source's ESM exports, as the prerender listing does. */
+  readMdxEsm?: ((source: string) => string) | null;
   /** Resolved `experimental.prefetchInlining` thresholds. */
   prefetchInlining?: PrefetchInliningConfig;
   /** Whether the RSC build discovered any server references. Defaults to true. */
@@ -273,13 +275,20 @@ function appPageSegmentConfigPaths(route: AppRoute): (string | null | undefined)
  * classifies those: a page whose effective segment config renders it
  * dynamically (`dynamic = "force-dynamic"`, `revalidate = 0` or the edge
  * runtime on any segment) and a Route Handler have no such entry, so the
- * dynamic sibling renders. So does a page whose sources (MDX included) can't
- * be read here; its sibling's render stays out of the shared caches.
+ * dynamic sibling renders. So does a page whose sources can't be read here;
+ * its sibling's render stays out of the shared caches. A cacheComponents
+ * build lists every page route, as the prerender listing does.
  */
-function buildAppDecodedPathnamePatterns(routes: AppRoute[]): string[] {
+function buildAppDecodedPathnamePatterns(
+  routes: AppRoute[],
+  config: AppRouterConfig | undefined,
+): string[] {
   const isPrerenderedPage = (route: AppRoute): boolean => {
+    if (config?.cacheComponents) return true;
     try {
-      return classifyAppPageRouteStaticEligibility(route, null) === "eligible";
+      return (
+        classifyAppPageRouteStaticEligibility(route, config?.readMdxEsm ?? null) === "eligible"
+      );
     } catch {
       return false;
     }
@@ -472,7 +481,7 @@ export const __imageConfig = ${JSON.stringify({
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
   })};
 const __routes = ${JSON.stringify(requestRoutes)};
-const __routeMatcher = __createAppRscRouteMatcher(__routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes))});
+const __routeMatcher = __createAppRscRouteMatcher(__routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes, config))});
 const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};
 
 function matchRoute(pathname) { return __routeMatcher.matchRoute(pathname); }
@@ -1109,7 +1118,7 @@ function __VINEXT_CLASS_REASONS(routeIdx) {
 const routes = [
 ${routeEntries.join(",\n")}
 ];
-const __routeMatcher = __createAppRscRouteMatcher(routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes))});
+const __routeMatcher = __createAppRscRouteMatcher(routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes, config))});
 
 ${
   instrumentationPath
