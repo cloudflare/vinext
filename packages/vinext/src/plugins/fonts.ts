@@ -109,20 +109,8 @@ const MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH = 500;
  */
 const CACHED_FONT_DIR_TOKEN = "__VINEXT_FONT_CACHE_DIR__";
 
-/**
- * Cached stylesheet whose `url()` references use `CACHED_FONT_DIR_TOKEN`.
- * It gets a new file name rather than changing what `style.css` holds, so
- * the format of a file is known from its name, and an older vinext sharing
- * the same `.vinext/` keeps reading the `style.css` it understands.
- */
-const CACHED_FONT_CSS_FILE = "style.v2.css";
-
-/**
- * Cached stylesheet written by earlier vinext versions, holding the absolute
- * filesystem path of whichever checkout wrote it. Read only as an offline
- * fallback; see `fetchAndCacheFont()`.
- */
-const LEGACY_CACHED_FONT_CSS_FILE = "style.css";
+/** Cached stylesheet whose `url()` references use `CACHED_FONT_DIR_TOKEN`. */
+const CACHED_FONT_CSS_FILE = "style.css";
 
 function formatGoogleFontsErrorBody(body: string): string {
   const trimmed = body.trim();
@@ -165,35 +153,6 @@ export function _rewriteCachedFontCssToServedUrls(
   return css
     .split(CACHED_FONT_DIR_TOKEN)
     .join(`/${assetsDir || DEFAULT_ASSETS_DIR}/${VINEXT_FONT_URL_NAMESPACE}`);
-}
-
-/**
- * Convert a `LEGACY_CACHED_FONT_CSS_FILE` stylesheet to the token form.
- *
- * Earlier versions wrote every reference as
- * `url(<cacheDir>/<fontDirName>/<file>)`, so the file is accepted only when
- * every `url(` in it is the start of exactly this checkout's
- * `url(<cacheDir>/<fontDirName>/`, which is then replaced. After splitting
- * on that prefix, no `url(` may remain between the matches; one inside a
- * matched prefix (a checkout path containing `url(`) is part of the match.
- * Anything else (a file written from another path, including one that ends
- * with this checkout's path) returns `null` rather than ship a path that
- * 404s: recovering an arbitrary absolute path from an unquoted `url()` is
- * ambiguous, which is why the current format stores no path at all.
- *
- * Uses split/join rather than regex because `cacheDir` is an absolute
- * filesystem path that may contain regex metacharacters.
- */
-export function _legacyCachedFontCssToTokenForm(
-  css: string,
-  cacheDir: string,
-  fontDirName: string,
-): string | null {
-  const normalizedCacheDir = toSlash(cacheDir);
-  if (!normalizedCacheDir) return null;
-  const parts = css.split(`url(${normalizedCacheDir}/${fontDirName}/`);
-  if (parts.some((part) => part.includes("url("))) return null;
-  return parts.join(`url(${CACHED_FONT_DIR_TOKEN}/${fontDirName}/`);
 }
 
 /**
@@ -476,9 +435,8 @@ function propertyNameToGoogleFontFamily(prop: string): string {
  * @font-face CSS whose `url()` references use `CACHED_FONT_DIR_TOKEN`.
  *
  * Cache dir structure: .vinext/fonts/<family-hash>/
- *   - style.v2.css (the rewritten @font-face CSS, see `CACHED_FONT_CSS_FILE`)
+ *   - style.css (the rewritten @font-face CSS, see `CACHED_FONT_CSS_FILE`)
  *   - *.woff2 (downloaded font files)
- *   - style.css (only when written by an earlier vinext version)
  */
 async function fetchAndCacheFont(
   cssUrl: string,
@@ -497,28 +455,7 @@ async function fetchAndCacheFont(
     return fs.readFileSync(cachedCSSPath, "utf-8");
   }
 
-  let css: string;
-  try {
-    css = await downloadGoogleFont(cssUrl, family, fontDir, fontDirName);
-  } catch (err) {
-    // A `style.css` written by an earlier vinext holds absolute paths, so it
-    // is refetched rather than trusted. When that fails (offline, a font
-    // file download fails, or Google rejects a URL it served before) the old
-    // file is what earlier versions would have used without asking Google
-    // at all, so fall back to it if it was written from this checkout. One
-    // written from another path would embed URLs that 404, so the error
-    // stands and the caller treats the font as uncached.
-    const legacyCSSPath = path.join(fontDir, LEGACY_CACHED_FONT_CSS_FILE);
-    const legacyCSS = fs.existsSync(legacyCSSPath)
-      ? _legacyCachedFontCssToTokenForm(
-          fs.readFileSync(legacyCSSPath, "utf-8"),
-          cacheDir,
-          fontDirName,
-        )
-      : null;
-    if (legacyCSS === null) throw err;
-    return legacyCSS;
-  }
+  const css = await downloadGoogleFont(cssUrl, family, fontDir, fontDirName);
 
   // Cache the rewritten CSS. Failing to (a read-only or full disk) loses
   // only the cache: the CSS and every file it names are already on disk, so
@@ -568,8 +505,7 @@ async function downloadGoogleFont(
   }
   let css = await cssResponse.text();
   // `ok` is also true for a bodyless 204. Caching an empty stylesheet would
-  // be trusted by every later build (and shadow an earlier version's cache),
-  // so treat it like a failed fetch: the caller falls back and the next
+  // be trusted by every later build, so treat it like a failed fetch: the caller falls back and the next
   // build retries.
   if (!css.trim()) {
     throw new Error(`Google Fonts returned an empty stylesheet: ${cssUrl}`);
@@ -602,9 +538,8 @@ async function downloadGoogleFont(
       // and a cached stylesheet is trusted from then on. Skipping a failed
       // or empty download (`ok` is also true for a bodyless 204) would cache
       // a reference to a file that 404s or fails to decode on every later
-      // build, so fail this attempt instead: the caller falls back to an
-      // earlier version's cache or the runtime CDN path, and the next build
-      // retries.
+      // build, so fail this attempt instead: the caller falls back to the
+      // runtime CDN path, and the next build retries.
       if (!fontResponse.ok) {
         throw new Error(`Font file download failed with HTTP ${fontResponse.status}: ${fontUrl}`);
       }
@@ -1218,7 +1153,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         const targetRoot = path.join(outDir, assetsDir, VINEXT_FONT_URL_NAMESPACE);
 
         // Recursive copy of every cached font file. Skip the companion
-        // stylesheet artifacts — those are only read by the build plugin
+        // `style.css` artifact — that is only read by the build plugin
         // itself, never served at runtime.
         const stack: string[] = [cacheDir];
         while (stack.length > 0) {

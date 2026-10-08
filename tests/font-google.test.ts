@@ -9,7 +9,6 @@ import {
   parseStaticObjectLiteral,
   _findBalancedObject as findBalancedObject,
   _findCallEnd as findCallEnd,
-  _legacyCachedFontCssToTokenForm as legacyCachedFontCssToTokenForm,
   _rewriteCachedFontCssToServedUrls as rewriteCachedFontCssToServedUrls,
 } from "../packages/vinext/src/plugins/fonts.js";
 import type { Plugin } from "vite-plus";
@@ -779,7 +778,7 @@ describe("vinext:google-fonts plugin", () => {
     expect(interDir).toBeDefined();
 
     const files = fs.readdirSync(path.join(cacheDir, interDir!));
-    expect(files).toContain("style.v2.css");
+    expect(files).toContain("style.css");
     expect(files.some((f: string) => f.endsWith(".woff2"))).toBe(true);
 
     // Clean up
@@ -1441,18 +1440,6 @@ describe("fetchAndCacheFont", () => {
       return fontDirName;
     }
 
-    // The format earlier vinext versions wrote: the same CSS with the
-    // absolute path of the checkout that fetched it.
-    function writeLegacyCache(fontDirName: string, writtenCacheDir: string) {
-      const fontDir = path.join(cacheDir, fontDirName);
-      const css = fs.readFileSync(path.join(fontDir, "style.v2.css"), "utf-8");
-      fs.rmSync(path.join(fontDir, "style.v2.css"));
-      fs.writeFileSync(
-        path.join(fontDir, "style.css"),
-        css.replaceAll("__VINEXT_FONT_CACHE_DIR__", writtenCacheDir),
-      );
-    }
-
     function goOffline() {
       server.use(http.get("https://fonts.googleapis.com/*", () => HttpResponse.error()));
     }
@@ -1461,7 +1448,7 @@ describe("fetchAndCacheFont", () => {
       const fontDirName = await populateCache();
 
       const fontDir = path.join(cacheDir, fontDirName);
-      const cached = fs.readFileSync(path.join(fontDir, "style.v2.css"), "utf-8");
+      const cached = fs.readFileSync(path.join(fontDir, "style.css"), "utf-8");
       expect(cached).not.toContain(toSlash(root));
       const references = [...cached.matchAll(/url\(([^)]+)\)/g)].map((match) => match[1]);
       expect(references).toHaveLength(2);
@@ -1470,7 +1457,6 @@ describe("fetchAndCacheFont", () => {
         expect(reference.startsWith(prefix)).toBe(true);
         expect(fs.existsSync(path.join(fontDir, reference.slice(prefix.length)))).toBe(true);
       }
-      expect(fs.existsSync(path.join(fontDir, "style.css"))).toBe(false);
     });
 
     it("is read back from disk with served URLs, without refetching", async () => {
@@ -1504,44 +1490,6 @@ describe("fetchAndCacheFont", () => {
       }
     });
 
-    it("refetches a stylesheet written by an earlier version", async () => {
-      const fontDirName = await populateCache();
-      writeLegacyCache(fontDirName, toSlash(cacheDir));
-      const fonts = mockGoogleFontsCSS(fontCSS);
-
-      const result = await transformWithFreshPlugin();
-
-      expect(fonts.count()).toBe(1);
-      expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(true);
-      expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
-    });
-
-    it("falls back to this checkout's earlier-version stylesheet when Google is unreachable", async () => {
-      const fontDirName = await populateCache();
-      writeLegacyCache(fontDirName, toSlash(cacheDir));
-      goOffline();
-
-      const result = await transformWithFreshPlugin();
-
-      expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
-      expect(result.code).not.toContain(toSlash(root));
-      // The fallback is not promoted to the current format: it is retried
-      // on the next run, when Google may be reachable again.
-      expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(false);
-    });
-
-    it("does not ship an earlier-version stylesheet written from another path", async () => {
-      const fontDirName = await populateCache();
-      writeLegacyCache(fontDirName, "/home/someone-else/app/.vinext/fonts");
-      goOffline();
-
-      const result = await transformWithFreshPlugin();
-
-      // Same as an empty cache offline: the runtime CDN path takes over.
-      expect(result.code).not.toContain("selfHostedCSS");
-      expect(result.code).not.toContain("/home/someone-else/");
-    });
-
     const failedDownloads = [
       ["an HTTP error", 503],
       // `Response.ok` is true for a bodyless 204 too.
@@ -1565,24 +1513,8 @@ describe("fetchAndCacheFont", () => {
         expect(result.code).not.toContain("selfHostedCSS");
         const fontDirName = fs.readdirSync(cacheDir).find((d) => d.startsWith("inter-"));
         const files = fs.readdirSync(path.join(cacheDir, fontDirName!));
-        expect(files).not.toContain("style.v2.css");
+        expect(files).not.toContain("style.css");
         expect(files.filter((file) => file.endsWith(".woff2"))).toEqual([]);
-      },
-    );
-
-    it.each(failedDownloads)(
-      "keeps the earlier-version fallback when a refetched font file download returns %s",
-      async (_label, status) => {
-        const fontDirName = await populateCache();
-        writeLegacyCache(fontDirName, toSlash(cacheDir));
-        // Google now serves a font file this cache has not downloaded yet.
-        mockGoogleFontsCSS(fontCSS.replaceAll("/v19/", "/v20/"));
-        failFontDownloads(status);
-
-        const result = await transformWithFreshPlugin();
-
-        expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
-        expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(false);
       },
     );
 
@@ -1609,24 +1541,10 @@ describe("fetchAndCacheFont", () => {
       const cachedStylesheets = fs.existsSync(cacheDir)
         ? fs
             .readdirSync(cacheDir, { recursive: true })
-            .filter((file) => String(file).endsWith("style.v2.css"))
+            .filter((file) => String(file).endsWith("style.css"))
         : [];
       expect(cachedStylesheets).toEqual([]);
     });
-
-    it.each(emptyStylesheets)(
-      "keeps the earlier-version fallback when Google returns %s",
-      async (_label, status) => {
-        const fontDirName = await populateCache();
-        writeLegacyCache(fontDirName, toSlash(cacheDir));
-        serveEmptyStylesheet(status);
-
-        const result = await transformWithFreshPlugin();
-
-        expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
-        expect(fs.existsSync(path.join(cacheDir, fontDirName, "style.v2.css"))).toBe(false);
-      },
-    );
 
     it.skipIf(process.platform === "win32")(
       "still self-hosts when the stylesheet cannot be cached",
@@ -1635,8 +1553,8 @@ describe("fetchAndCacheFont", () => {
         // already holds the font files: the refetch downloads nothing and
         // only the stylesheet write fails.
         const fontDirName = await populateCache();
-        writeLegacyCache(fontDirName, toSlash(cacheDir));
         const fontDir = path.join(cacheDir, fontDirName);
+        fs.rmSync(path.join(fontDir, "style.css"));
         mockGoogleFontsCSS(fontCSS);
         fs.chmodSync(fontDir, 0o555);
         try {
@@ -1718,74 +1636,6 @@ describe("_rewriteCachedFontCssToServedUrls", () => {
     expect(rewriteCachedFontCssToServedUrls(css, "")).toBe(
       "src: url(/_next/static/_vinext_fonts/geist/a.woff2);",
     );
-  });
-});
-
-describe("_legacyCachedFontCssToTokenForm", () => {
-  // `style.css` files written before the cache-token format hold the
-  // absolute path of whichever checkout fetched them. They are only used
-  // when a refetch fails, and only when written from this checkout.
-  const fontDirName = "geist-4db05770f54f";
-
-  it.each([
-    ["a plain path", "/home/user/project"],
-    ["parentheses and a space", "/tmp/build (1)"],
-    ["regex metacharacters", "/srv/app+$1[x]"],
-    ["url( in the path", "/tmp/url(project)"],
-  ])("converts references written from this checkout at %s", (_label, root) => {
-    const cacheDir = `${root}/.vinext/fonts`;
-    const css = [
-      `src: url(${cacheDir}/${fontDirName}/geist-8e42e564.woff2) format('woff2');`,
-      `src: url(${cacheDir}/${fontDirName}/geist-bd9fc9d8.woff2) format('woff2');`,
-    ].join("\n");
-
-    expect(legacyCachedFontCssToTokenForm(css, cacheDir, fontDirName)).toBe(
-      [
-        `src: url(__VINEXT_FONT_CACHE_DIR__/${fontDirName}/geist-8e42e564.woff2) format('woff2');`,
-        `src: url(__VINEXT_FONT_CACHE_DIR__/${fontDirName}/geist-bd9fc9d8.woff2) format('woff2');`,
-      ].join("\n"),
-    );
-  });
-
-  it.runIf(process.platform === "win32")(
-    "matches writer-normalized CSS when the cache directory uses native Windows separators",
-    () => {
-      // Regression for the shape reported in #2933: the CSS writer used
-      // forward slashes while configResolved retained backslashes.
-      const cacheDir = path.join("C:\\", "Users", "me", "project", ".vinext", "fonts");
-      const css = `src: url(${toSlash(cacheDir)}/${fontDirName}/geist-def.woff2) format('woff2');`;
-
-      expect(legacyCachedFontCssToTokenForm(css, cacheDir, fontDirName)).toBe(
-        `src: url(__VINEXT_FONT_CACHE_DIR__/${fontDirName}/geist-def.woff2) format('woff2');`,
-      );
-    },
-  );
-
-  it.each([
-    ["a moved checkout", "src: url(/home/user/old/.vinext/fonts/geist-4db05770f54f/a.woff2);"],
-    [
-      // A Docker build with `WORKDIR /app` reading a host `.vinext/` written
-      // from `/home/me/app`: this checkout's cacheDir is a suffix of it.
-      "a checkout whose path ends with this one",
-      "src: url(/home/me/app/.vinext/fonts/geist-4db05770f54f/a.woff2);",
-    ],
-    [
-      "a mix of this checkout and another",
-      "src: url(/app/.vinext/fonts/geist-4db05770f54f/a.woff2);\n" +
-        "src: url(/home/user/old/.vinext/fonts/geist-4db05770f54f/b.woff2);",
-    ],
-    [
-      "a path that contains url( and ends with this one",
-      "src: url(/x/url(/app/.vinext/fonts/geist-4db05770f54f/a.woff2);",
-    ],
-  ])("rejects references written from %s", (_label, css) => {
-    expect(legacyCachedFontCssToTokenForm(css, "/app/.vinext/fonts", fontDirName)).toBeNull();
-  });
-
-  it("rejects everything when cacheDir is empty", () => {
-    // Before Vite's configResolved hook runs, `cacheDir` is the empty string.
-    const css = `src: url(/.vinext/fonts/${fontDirName}/a.woff2);`;
-    expect(legacyCachedFontCssToTokenForm(css, "", fontDirName)).toBeNull();
   });
 });
 
