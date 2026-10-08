@@ -15,6 +15,9 @@ import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
 
+/** Name of the cached stylesheet in each `.vinext/fonts/<family-hash>/` dir. */
+const CACHED_STYLESHEET = "style-q7f3kd.css";
+
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
 function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
@@ -778,7 +781,7 @@ describe("vinext:google-fonts plugin", () => {
     expect(interDir).toBeDefined();
 
     const files = fs.readdirSync(path.join(cacheDir, interDir!));
-    expect(files).toContain("style.css");
+    expect(files).toContain(CACHED_STYLESHEET);
     expect(files.some((f: string) => f.endsWith(".woff2"))).toBe(true);
 
     // Clean up
@@ -1448,7 +1451,7 @@ describe("fetchAndCacheFont", () => {
       const fontDirName = await populateCache();
 
       const fontDir = path.join(cacheDir, fontDirName);
-      const cached = fs.readFileSync(path.join(fontDir, "style.css"), "utf-8");
+      const cached = fs.readFileSync(path.join(fontDir, CACHED_STYLESHEET), "utf-8");
       expect(cached).not.toContain(toSlash(root));
       const references = [...cached.matchAll(/url\(([^)]+)\)/g)].map((match) => match[1]);
       expect(references).toHaveLength(2);
@@ -1490,6 +1493,31 @@ describe("fetchAndCacheFont", () => {
       }
     });
 
+    it("refetches instead of reading a stylesheet from an earlier vinext", async () => {
+      // Before the token form, `style.css` held the writing checkout's
+      // absolute paths. A `.vinext/` kept across an upgrade still has it.
+      const fontDirName = await populateCache();
+      const fontDir = path.join(cacheDir, fontDirName);
+      const current = path.join(fontDir, CACHED_STYLESHEET);
+      const tokenForm = fs.readFileSync(current, "utf-8");
+      fs.rmSync(current);
+      fs.writeFileSync(
+        path.join(fontDir, "style.css"),
+        tokenForm.replaceAll(
+          "__VINEXT_FONT_CACHE_DIR__",
+          toSlash(path.join(root, "old", ".vinext", "fonts")),
+        ),
+      );
+      const fonts = mockGoogleFontsCSS(fontCSS);
+
+      const result = await transformWithFreshPlugin();
+
+      expect(fonts.count()).toBe(1);
+      expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
+      expect(result.code).not.toContain(toSlash(root));
+      expect(fs.readFileSync(current, "utf-8")).toContain("__VINEXT_FONT_CACHE_DIR__");
+    });
+
     const failedDownloads = [
       ["an HTTP error", 503],
       // `Response.ok` is true for a bodyless 204 too.
@@ -1513,7 +1541,7 @@ describe("fetchAndCacheFont", () => {
         expect(result.code).not.toContain("selfHostedCSS");
         const fontDirName = fs.readdirSync(cacheDir).find((d) => d.startsWith("inter-"));
         const files = fs.readdirSync(path.join(cacheDir, fontDirName!));
-        expect(files).not.toContain("style.css");
+        expect(files).not.toContain(CACHED_STYLESHEET);
         expect(files.filter((file) => file.endsWith(".woff2"))).toEqual([]);
       },
     );
@@ -1541,7 +1569,7 @@ describe("fetchAndCacheFont", () => {
       const cachedStylesheets = fs.existsSync(cacheDir)
         ? fs
             .readdirSync(cacheDir, { recursive: true })
-            .filter((file) => String(file).endsWith("style.css"))
+            .filter((file) => String(file).endsWith(CACHED_STYLESHEET))
         : [];
       expect(cachedStylesheets).toEqual([]);
     });
@@ -1554,7 +1582,7 @@ describe("fetchAndCacheFont", () => {
         // only the stylesheet write fails.
         const fontDirName = await populateCache();
         const fontDir = path.join(cacheDir, fontDirName);
-        fs.rmSync(path.join(fontDir, "style.css"));
+        fs.rmSync(path.join(fontDir, CACHED_STYLESHEET));
         mockGoogleFontsCSS(fontCSS);
         fs.chmodSync(fontDir, 0o555);
         try {

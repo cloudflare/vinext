@@ -109,8 +109,14 @@ const MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH = 500;
  */
 const CACHED_FONT_DIR_TOKEN = "__VINEXT_FONT_CACHE_DIR__";
 
-/** Cached stylesheet whose `url()` references use `CACHED_FONT_DIR_TOKEN`. */
-const CACHED_FONT_CSS_FILE = "style.css";
+/**
+ * Cached stylesheet whose `url()` references use `CACHED_FONT_DIR_TOKEN`.
+ * The suffix ties the cache to that format: a `style.css` written by an
+ * earlier vinext holds the writing checkout's absolute paths, which would
+ * 404 once embedded, so it is never read and the font is fetched again.
+ * Change the suffix whenever the cached CSS format changes.
+ */
+const CACHED_FONT_CSS_FILE = "style-q7f3kd.css";
 
 function formatGoogleFontsErrorBody(body: string): string {
   const trimmed = body.trim();
@@ -435,7 +441,7 @@ function propertyNameToGoogleFontFamily(prop: string): string {
  * @font-face CSS whose `url()` references use `CACHED_FONT_DIR_TOKEN`.
  *
  * Cache dir structure: .vinext/fonts/<family-hash>/
- *   - style.css (the rewritten @font-face CSS, see `CACHED_FONT_CSS_FILE`)
+ *   - style-<suffix>.css (the rewritten @font-face CSS, see `CACHED_FONT_CSS_FILE`)
  *   - *.woff2 (downloaded font files)
  */
 async function fetchAndCacheFont(
@@ -1153,7 +1159,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         const targetRoot = path.join(outDir, assetsDir, VINEXT_FONT_URL_NAMESPACE);
 
         // Recursive copy of every cached font file. Skip the companion
-        // `style.css` artifact — that is only read by the build plugin
+        // stylesheet artifact — that is only read by the build plugin
         // itself, never served at runtime.
         const stack: string[] = [cacheDir];
         while (stack.length > 0) {
