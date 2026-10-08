@@ -72,3 +72,46 @@ test("decodes Pages dynamic params exactly once in production", async () => {
   expect(encodedSlash.status).toBe(200);
   expect(encodedSlash.body).toMatch(/Post: (?:<!-- -->)?b\/c/);
 });
+
+// Next.js 16.2.7 matches `/encoded-isr/%6Eew` to `[slug]`, which answers from
+// the prerendered `getStaticProps` page cached under the decoded pathname.
+test("renders an encoded getStaticProps page beside its dynamic sibling in production", async () => {
+  const encoded = await getRawPath("/encoded-isr/%6Eew");
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("static encoded-isr new");
+  expect(encoded.body).not.toContain("dynamic encoded-isr");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-isr/new");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("static encoded-isr new");
+    expect(literal.body).not.toContain("dynamic encoded-isr");
+  }
+});
+
+test("keeps an encoded dynamic render out of its sibling's ISR entry in production", async () => {
+  // `[tab]` matches `/encoded-isr/bob/%73ettings` raw. Next.js 16.2.7 then
+  // stores that render under `/encoded-isr/bob/settings` and serves it to the
+  // literal `settings` page; vinext renders it without caching it.
+  const encoded = await getRawPath("/encoded-isr/bob/%73ettings");
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("tab settings for bob");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-isr/bob/settings");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("settings for bob");
+    expect(literal.body).not.toContain("tab settings");
+  }
+});
+
+test("shares a dynamic Pages ISR entry with its encoded spelling in production", async () => {
+  const encoded = await getRawPath("/encoded-isr/%62");
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("dynamic encoded-isr b");
+
+  const literal = await getRawPath("/encoded-isr/b");
+  expect(literal.status).toBe(200);
+  expect(literal.body).toContain("dynamic encoded-isr b");
+  expect(literal.headers["x-vinext-cache"]).toBe("HIT");
+});

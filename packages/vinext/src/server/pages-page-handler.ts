@@ -16,6 +16,7 @@ import type { ComponentType, ReactNode } from "react";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
 import { createPagesReqRes } from "./pages-node-compat.js";
 import {
@@ -616,6 +617,37 @@ export function createPagesPageHandler(
       }
     }
 
+    // Pages routes match the raw pathname, as in Next.js, so `/q/%6Eew` reaches
+    // `/q/[slug]`, but the ISR key decodes it to `/q/new`, which a literal
+    // request routes to the static `/q/new`. Next.js then answers from the
+    // entry cached under that key: for a `getStaticProps` page, its prerender.
+    // Render that page itself. Any other divergent render stays out of the
+    // shared caches so it never answers for, or replaces, that page's entry.
+    const routePathname = routeUrl.split("?")[0];
+    const cachePathname = normalizePathnameForRouteMatch(routePathname);
+    let cacheIdentityDiverges = false;
+    if (
+      !isRouteMissErrorRender &&
+      options?.__forcedRoute === undefined &&
+      cachePathname !== routePathname
+    ) {
+      const cachePathRoute = matchRoute(cachePathname, pageRoutes)?.route;
+      if (cachePathRoute !== match.route) {
+        const cachePathModule = cachePathRoute?.module;
+        if (
+          match.route.isDynamic &&
+          cachePathRoute &&
+          !cachePathRoute.isDynamic &&
+          typeof cachePathModule?.getStaticProps === "function" &&
+          typeof cachePathModule.getServerSideProps !== "function"
+        ) {
+          match = { route: cachePathRoute, params: {} };
+        } else {
+          cacheIdentityDiverges = true;
+        }
+      }
+    }
+
     const { route, params } = match;
     const pageModule = traceFindPageComponents(route.pattern, () => route.module);
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
@@ -647,8 +679,8 @@ export function createPagesPageHandler(
       }
     }
 
-    const routeIsrGet = isCacheabilityProbe ? async () => null : isrGet;
-    const routeIsrSet = isCacheabilityProbe ? async () => {} : isrSet;
+    const routeIsrGet = isCacheabilityProbe || cacheIdentityDiverges ? async () => null : isrGet;
+    const routeIsrSet = isCacheabilityProbe || cacheIdentityDiverges ? async () => {} : isrSet;
     const isStaticPropsRender =
       isStaticPropsRoute && typeof pageModule.getServerSideProps !== "function";
     const shouldCoalesceOnDemand =
