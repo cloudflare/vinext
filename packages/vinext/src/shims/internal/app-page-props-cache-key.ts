@@ -16,10 +16,8 @@ const USE_CACHE_SERVER_REFERENCE_ID_RE = /#\$\$vinext_cache_[0-9a-f]{64}$/;
  * props before a server component is invoked.
  */
 export const APP_PAGE_USE_CACHE_MARKER = "$$isPage";
+/** Layout marker, matching Next.js's `$$isLayout` prop (create-component-tree.tsx). */
 const APP_LAYOUT_USE_CACHE_MARKER = "$$isLayout";
-// The enumerable marker survives React.createElement, while its private value
-// retains a parallel slot with the same name until the cache wrapper admits it.
-const layoutMarkerSlots = new WeakMap<object, [] | [unknown]>();
 
 export function markAppPagePropsForUseCache<T extends object>(props: T): T {
   Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
@@ -72,17 +70,9 @@ export function withUseCacheLayoutMarker<T extends Record<string, unknown>>(
   fn: unknown,
   props: T,
 ): T {
-  if (!isUseCacheFunctionReference(fn)) return props;
-  const markedProps = { ...props };
-  if (getLayoutMarkerSlot(markedProps[APP_LAYOUT_USE_CACHE_MARKER])) return props;
-  const marker = {};
-  layoutMarkerSlots.set(
-    marker,
-    Object.hasOwn(markedProps, APP_LAYOUT_USE_CACHE_MARKER)
-      ? [markedProps[APP_LAYOUT_USE_CACHE_MARKER]]
-      : [],
-  );
-  return Object.assign(markedProps, { [APP_LAYOUT_USE_CACHE_MARKER]: marker });
+  return isUseCacheFunctionReference(fn)
+    ? { ...props, [APP_LAYOUT_USE_CACHE_MARKER]: true }
+    : props;
 }
 
 /**
@@ -92,10 +82,7 @@ export function withUseCacheLayoutMarker<T extends Record<string, unknown>>(
  * observed as a param access.
  */
 export function hasUseCachePageMarker(value: unknown): value is Record<string, unknown> {
-  return (
-    hasUseCacheSegmentMarker(value, APP_PAGE_USE_CACHE_MARKER) &&
-    !getLayoutMarkerSlot(value[APP_LAYOUT_USE_CACHE_MARKER])
-  );
+  return hasUseCacheSegmentMarker(value, APP_PAGE_USE_CACHE_MARKER);
 }
 
 export function hasUseCacheLayoutMarker(value: unknown): value is Record<string, unknown> {
@@ -108,19 +95,12 @@ export function withoutUseCacheSegmentMarker(
   isPage: boolean,
 ): Record<string, unknown> {
   const marker = isPage ? APP_PAGE_USE_CACHE_MARKER : APP_LAYOUT_USE_CACHE_MARKER;
-  const originalSlot = isPage ? undefined : getLayoutMarkerSlot(props[marker]);
-  if (isPage ? props[marker] !== true : originalSlot === undefined) return props;
-  const segmentProps = { ...props };
-  if (originalSlot?.length) segmentProps[marker] = originalSlot[0];
-  else delete segmentProps[marker];
+  if (props[marker] !== true) return props;
+  const { [marker]: _marker, ...segmentProps } = props;
   // Keep the page probe's non-enumerable marker, which the spread drops.
   return isMarkedAppPagePropsObject(props)
     ? markAppPagePropsForUseCache(segmentProps)
     : segmentProps;
-}
-
-function getLayoutMarkerSlot(value: unknown): [] | [unknown] | undefined {
-  return value !== null && typeof value === "object" ? layoutMarkerSlots.get(value) : undefined;
 }
 
 function hasUseCacheSegmentMarker(
@@ -131,8 +111,6 @@ function hasUseCacheSegmentMarker(
   const prototype = Object.getPrototypeOf(value);
   return (
     (prototype === Object.prototype || prototype === null) &&
-    (marker === APP_LAYOUT_USE_CACHE_MARKER
-      ? getLayoutMarkerSlot((value as Record<string, unknown>)[marker]) !== undefined
-      : (value as Record<string, unknown>)[marker] === true)
+    (value as Record<string, unknown>)[marker] === true
   );
 }

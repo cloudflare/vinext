@@ -148,10 +148,9 @@ describe("App Router integration", () => {
     expect(html).toContain("Server Component");
   });
 
-  it("preserves parallel slots named like cache markers in a cached layout", async () => {
+  it("preserves a parallel slot named like the page cache marker in a cached layout", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/use-cache-slot-markers");
     expect(res.status).toBe(200);
-    expect(html).toContain("<p>layout marker slot content</p>");
     expect(html).toContain("<p>page marker slot content</p>");
     expect(html).toContain("<p>cached layout with marker-named slots</p>");
   });

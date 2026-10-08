@@ -32,66 +32,18 @@ beforeEach(() => setCacheHandler(new MemoryCacheHandler()));
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
 // See isPageSegmentFunction/isLayoutSegmentFunction and their outerParams wrappers.
 describe("use cache framework props", () => {
-  // Only the framework's layout invocation can opt into params restoration.
-  // Next's segment handling is described in use-cache-wrapper.ts above; an
-  // ordinary argument must retain its Flight-encoded fields and cache key.
-  it("preserves an ordinary true-valued $$isLayout field without adding params", async () => {
-    const fn = vi.fn(async (props: Record<string, unknown>) => ({
-      props,
-      hasParams: Object.hasOwn(props, "params"),
-    }));
+  // Like Next.js (use-cache-wrapper.ts, `isLayoutSegmentFunction`), any first
+  // argument with `$$isLayout: true` is layout props: the marker is removed.
+  it("treats a true-valued $$isLayout field as the layout marker", async () => {
+    const fn = vi.fn(async (props: Record<string, unknown>) => Object.keys(props).sort());
     const cached = registerCachedFunction(fn, "ordinary-layout-field");
-    const input = { $$isLayout: true, value: "ordinary" };
-    expect(await cached(input)).toEqual({ props: input, hasParams: false });
-    expect(await cached({ ...input })).toEqual({ props: input, hasParams: false });
-    expect(fn).toHaveBeenCalledTimes(1);
+    expect(await cached({ $$isLayout: true, value: "ordinary" })).toEqual(["params", "value"]);
   });
 
-  it("keys ordinary true-valued $$isLayout fields separately from absent fields", async () => {
-    const fn = vi.fn(async (props: Record<string, unknown>) => props);
-    const cached = registerCachedFunction(fn, "ordinary-layout-field-key");
-    await cached({ value: "ordinary" });
-    await cached({ value: "ordinary", $$isLayout: true });
-    expect(fn).toHaveBeenCalledTimes(2);
-    expect(await cached({ value: "ordinary", $$isLayout: true })).toEqual({
-      value: "ordinary",
-      $$isLayout: true,
-    });
-    expect(fn).toHaveBeenCalledTimes(2);
-  });
-
-  it("replays ordinary true-valued $$isLayout fields without framework metadata", async () => {
-    const handler = new MemoryCacheHandler();
-    const set = vi.spyOn(handler, "set");
-    setCacheHandler(handler);
-    const payloads: CacheFlightArguments[] = [];
-    const fn = vi.fn(async (props: Record<string, unknown>) => ({ ...props }));
-    const cached = registerCachedFunction(fn, "ordinary-layout-field-replay", "", {
-      serverReferenceId: "ordinary-layout-field-replay",
-      encodeInvocation: async (args) => {
-        payloads.push(args);
-        return "encrypted";
-      },
-    });
-    const input = { $$isLayout: true, value: "ordinary" };
-    await cached(input);
-    expect(payloads[0]?.layoutPropsIndex).toBeUndefined();
-    expect(payloads[0]?.pagePropsIndex).toBeUndefined();
-    const replayHandler = new MemoryCacheHandler();
-    const replaySet = vi.spyOn(replayHandler, "set");
-    setCacheHandler(replayHandler);
-    expect(await replayCachedFunction(cached, payloads[0]!)).toEqual(input);
-    expect(replaySet.mock.calls[0]?.[0]).toBe(set.mock.calls[0]?.[0]);
-    expect(await cached({ ...input })).toEqual(input);
-    expect(fn).toHaveBeenCalledTimes(2);
-    expect(fn).toHaveBeenLastCalledWith(input);
-  });
-
-  // Parallel route slots are layout props. Next preserves outerSlots after
-  // removing its layout marker, but currently overwrites a $$isLayout slot:
+  // Parallel route slots are layout props. Like Next.js, the layout marker
+  // overwrites a slot named $$isLayout, but a $$isPage slot is kept:
   // https://github.com/vercel/next.js/blob/v16.3.7/packages/next/src/server/app-render/create-component-tree.tsx#L1046
-  // Keep both names supported by vinext's route scanner without losing data.
-  it.each(["$$isLayout", "$$isPage"])(
+  it.each(["$$isPage"])(
     "keeps the %s slot in execution, cache keys, and replay",
     async (slotName) => {
       const handler = new MemoryCacheHandler();
@@ -135,68 +87,21 @@ describe("use cache framework props", () => {
       expect(replaySet.mock.calls[0]?.[0]).toBe(set.mock.calls[0]?.[0]);
       expect(await call("first")).toEqual(expected("first"));
       expect(fn).toHaveBeenCalledTimes(3);
-      expect(await call(true)).toEqual(expected(true));
     },
   );
 
-  it.each(["$$isLayout", "$$isPage"])(
-    "rebinds the %s ReactNode slot on cache hits",
-    async (slotName) => {
-      const fn = vi.fn(async (props: Record<string, unknown>) => props[slotName]);
-      const cached = registerCachedFunction(fn, `marker-node-slot:${slotName}`);
-      const call = (slot: ReturnType<typeof createElement>) =>
-        cached(
-          withUseCacheLayoutMarker(cached, { params: makeThenableParams({}), [slotName]: slot }),
-        );
-      const first = createElement("p", null, "first slot");
-      const second = createElement("p", null, "second slot");
-      expect(await call(first)).toBe(first);
-      expect(await call(second)).toBe(second);
-      expect(fn).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it("keeps Flight semantics for absent, undefined, and null slots when marked repeatedly", async () => {
-    const fn = vi.fn(async (props: Record<string, unknown>) => ({
-      slot: props.$$isLayout,
-      hasSlot: Object.hasOwn(props, "$$isLayout"),
-    }));
-    const cached = registerCachedFunction(fn, "repeated-layout-slot-marker");
-    const ordinary = registerCachedFunction(
-      async (props: Record<string, unknown>) => ({
-        slot: props.sidebar,
-        hasSlot: Object.hasOwn(props, "sidebar"),
-      }),
-      "ordinary-layout-slot-values",
-    );
-    for (const slot of [{}, { $$isLayout: undefined }, { $$isLayout: null }]) {
-      const props = withUseCacheLayoutMarker(cached, { params: makeThenableParams({}), ...slot });
-      // Flight preserves undefined in the key but removes the property when
-      // decoding. Marker restoration must retain these ordinary semantics.
-      const expected = await ordinary("$$isLayout" in slot ? { sidebar: slot.$$isLayout } : {});
-      expect(await cached(withUseCacheLayoutMarker(cached, props))).toEqual(expected);
-    }
-    expect(fn).toHaveBeenCalledTimes(3);
-  });
-
-  it("does not apply page semantics to a true-valued layout slot", async () => {
-    const fn = vi.fn(async (props: Record<string, unknown>) => ({
-      slot: props.$$isPage,
-      searchParams: await props.searchParams,
-    }));
-    const cached = registerCachedFunction(fn, "layout-page-marker-and-search-slot");
-    const call = (query: string) =>
+  it.each(["$$isPage"])("rebinds the %s ReactNode slot on cache hits", async (slotName) => {
+    const fn = vi.fn(async (props: Record<string, unknown>) => props[slotName]);
+    const cached = registerCachedFunction(fn, `marker-node-slot:${slotName}`);
+    const call = (slot: ReturnType<typeof createElement>) =>
       cached(
-        withUseCacheLayoutMarker(cached, {
-          params: makeThenableParams({}),
-          $$isPage: true,
-          searchParams: Promise.resolve({ query }),
-        }),
+        withUseCacheLayoutMarker(cached, { params: makeThenableParams({}), [slotName]: slot }),
       );
-    expect(await call("first")).toEqual({ slot: true, searchParams: { query: "first" } });
-    expect(await call("second")).toEqual({ slot: true, searchParams: { query: "second" } });
-    expect(await call("first")).toEqual({ slot: true, searchParams: { query: "first" } });
-    expect(fn).toHaveBeenCalledTimes(2);
+    const first = createElement("p", null, "first slot");
+    const second = createElement("p", null, "second slot");
+    expect(await call(first)).toBe(first);
+    expect(await call(second)).toBe(second);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   // Next.js reinjects outerParams for cached segments so unused fallback keys

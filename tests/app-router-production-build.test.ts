@@ -826,14 +826,13 @@ describe("use cache production argument isolation", () => {
     return response.json();
   }
 
-  it("preserves parallel slots named like cache markers in a cached layout", async () => {
+  it("preserves a parallel slot named like the page cache marker in a cached layout", async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await handler(new Request("http://localhost/use-cache-slot-markers"));
       expect(response).toBeInstanceOf(Response);
       if (!(response instanceof Response)) throw new Error("Expected a response");
       expect(response.status).toBe(200);
       const html = await response.text();
-      expect(html).toContain("<p>layout marker slot content</p>");
       expect(html).toContain("<p>page marker slot content</p>");
       expect(html).toContain("<p>cached layout with marker-named slots</p>");
     }

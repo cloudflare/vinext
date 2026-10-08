@@ -510,10 +510,11 @@ function LayoutWithoutChildren() {
 }
 
 describe("app page route wiring helpers", () => {
-  // Parallel slots must render alongside children, including scanner-supported
-  // names that collide with the cache wrapper's internal invocation markers.
+  // Parallel slots must render alongside children, including a scanner-supported
+  // name that matches the cache wrapper's page marker. Like Next.js, a slot named
+  // `$$isLayout` is overwritten by the layout marker.
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-root-slot/parallel-routes-root-slot.test.ts
-  it.each(["$$isLayout", "$$isPage"])(
+  it.each(["$$isPage"])(
     "renders the %s parallel slot in cached and uncached layouts",
     async (slotName) => {
       setCacheHandler(new MemoryCacheHandler());
