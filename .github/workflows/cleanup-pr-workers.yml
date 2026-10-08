@@ -42,11 +42,12 @@ jobs:
           fi
 
           # Per-PR Workers are named pr-<number>-<suffix>. modified_on is bumped on
-          # every deploy, so a PR that was pushed recently keeps its Workers.
+          # every deploy, so a PR that was pushed recently keeps its Workers. A
+          # missing timestamp would compare as older than the cutoff, so require one.
           mapfile -t stale < <(jq -r --arg cutoff "$cutoff" '
             .result[]
             | select(.id | test("^pr-[0-9]+-"))
-            | select(.modified_on < $cutoff)
+            | select((.modified_on | type) == "string" and .modified_on < $cutoff)
             | .id
           ' <<<"$scripts" | sort)
 
@@ -72,7 +73,32 @@ jobs:
           fi
 
           failed=()
+          skipped=()
           for name in "${stale[@]}"; do
+            # The listing above can be minutes old by now, so re-check the newest
+            # deployment right before deleting in case the PR was pushed meanwhile.
+            deployments="$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/${name}/deployments" || true)"
+            latest="$(jq -r '
+              if .success == true then ([.result.deployments[]?.created_on | strings] | max // "")
+              elif any(.errors[]?; .code == 10007) then "gone"
+              else "error" end
+            ' <<<"$deployments" 2>/dev/null || echo error)"
+            if [[ "$latest" == "gone" ]]; then
+              echo "Skipping ${name}: already deleted"
+              skipped+=("$name")
+              continue
+            fi
+            if [[ "$latest" == "error" ]]; then
+              echo "::warning::Failed to re-check ${name}: ${deployments}"
+              failed+=("$name")
+              continue
+            fi
+            if [[ -n "$latest" && ! "$latest" < "$cutoff" ]]; then
+              echo "Skipping ${name}: deployed at ${latest}"
+              skipped+=("$name")
+              continue
+            fi
+
             # force=true also removes Workers that other (equally stale) PR Workers
             # still reference through service bindings.
             response="$(curl -sS -X DELETE -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/${name}?force=true" || true)"
@@ -84,7 +110,7 @@ jobs:
             fi
           done
 
-          echo "Deleted $(( ${#stale[@]} - ${#failed[@]} )) of ${#stale[@]} stale PR Workers." >> "$GITHUB_STEP_SUMMARY"
+          echo "Deleted $(( ${#stale[@]} - ${#failed[@]} - ${#skipped[@]} )) of ${#stale[@]} stale PR Workers (${#skipped[@]} redeployed or removed since listing)." >> "$GITHUB_STEP_SUMMARY"
           if [[ ${#failed[@]} -gt 0 ]]; then
             {
               echo
