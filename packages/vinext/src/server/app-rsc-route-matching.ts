@@ -235,6 +235,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     // their `matchRawRequestRoute` instead.
     if (
       decodedPathnameRoutes.size > 0 &&
+      result.route.patternParts.some((part) => part.startsWith(":")) &&
       !isAppRouteHandlerRoute(result.route) &&
       rawParts.some((part) => part.includes("%"))
     ) {

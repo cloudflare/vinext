@@ -2022,13 +2022,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     (isPossibleAppRouteActionRequest(request) ||
       isDraftModeRequest(request, options.draftModeSecret) ||
       isDraftModeEnabled());
+  const usesRawRequestMatch = () =>
+    rendersRawRequestMatch && cleanPathnameIsRequestPathname && !isInterceptionMatch;
   const renderedRouteMatch = <TMatch extends AppRscRouteMatch<TRoute> | null>(
     routeMatch: TMatch,
   ): TMatch =>
-    routeMatch !== null &&
-    rendersRawRequestMatch &&
-    cleanPathnameIsRequestPathname &&
-    !isInterceptionMatch
+    routeMatch !== null && usesRawRequestMatch()
       ? ((options.matchRawRequestRoute!(requestCleanPathname) as TMatch | null) ?? routeMatch)
       : routeMatch;
   const renderedPreActionMatch = renderedRouteMatch(preActionMatch);
@@ -2591,7 +2590,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isInterceptionMatch
       ? "interception"
       : cleanPathnameIsRequestPathname && options.matchRequestRoute
-        ? "request"
+        ? usesRawRequestMatch()
+          ? "raw-request"
+          : "request"
         : "resolved";
   const responseStageRoutePathname = isInterceptionMatch
     ? preActionRoutePathname

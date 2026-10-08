@@ -14,7 +14,7 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 10;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 11;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -51,7 +51,7 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   interceptionContext: string | null;
   interceptionId: string | null;
   isRscRequest: boolean;
-  matchKind: "interception" | "request" | "resolved";
+  matchKind: "interception" | "raw-request" | "request" | "resolved";
   mountedSlotsHeader: string | null;
   params: AppPageParams;
   resolvedUrl: string;
@@ -297,6 +297,7 @@ export function isAppWorkerResponseStageProps(
     (props.interceptionId === null || typeof props.interceptionId === "string") &&
     typeof props.isRscRequest === "boolean" &&
     (props.matchKind === "interception" ||
+      props.matchKind === "raw-request" ||
       props.matchKind === "request" ||
       props.matchKind === "resolved") &&
     (props.mountedSlotsHeader === null || typeof props.mountedSlotsHeader === "string") &&
