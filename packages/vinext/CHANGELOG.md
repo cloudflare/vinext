@@ -1,5 +1,74 @@
 # vinext
 
+## 1.1.0
+
+### Features
+
+- **Prerender:** write a page's special error that escapes the shell with its status (#3716)
+
+### Bug Fixes
+
+#### App Router
+
+- render an encoded static page instead of its dynamic sibling (#3776)
+- bound a prefetched layout redirect by the probe's cacheLife (#3754)
+- follow redirect() from a prefetched Link navigation (#3749)
+- authorize an interception source as a direct request to it (#3654)
+- resolve an interception source through its proxy rewrite (#3648)
+- restore streamed metadata and the __next_f mirror for the stack's deploy-suite regressions (#3736)
+- put generated metadata in <head> of a page that may be stored, as Next.js does (#3714)
+- stream a special error a Suspense boundary caught as a 200, as Next.js does (#3711)
+- store an RSC-first ISR render with its real status, and never cache unmatched 404s (#3710)
+- keep a shallow history write made after the optimistic shell commits (#3706)
+- store a page's special-error render in the ISR cache (#3702)
+- stop refetching a page that redirects to itself; remove the leftover page probe (#3701)
+- let only the render decide whether a page is dynamic (#3698)
+- leave streamed generated metadata out of loading-shell prefetches (#3705)
+- share React cache() between generateMetadata and the page render (#3660)
+
+#### Cache
+
+- hash use cache argument keys synchronously so hits resolve before the shell flushes (#3783)
+- use Flight arguments for cache identity and replay (#3600)
+- accept a class as the cache adapter's default export and reject non-callable exports with a clear error (#3480)
+
+#### Server
+
+- compress RSC responses in the production server (#3732)
+- propagate client disconnects to request signals (#3692)
+- redirect repeated slashes and backslashes like Next.js (#3684)
+
+#### Misc
+
+- **Pages Router:** keep an encoded dynamic render out of its sibling's ISR entry (#3777)
+- **Fonts:** ignore font caches written before the path-free format (#3770)
+- **Fonts:** write cached font CSS without the checkout's path (#3530)
+- **Image:** send x-nextjs-cache and x-vinext-cache: MISS on /_next/image responses (#3734)
+- **Headers:** stop completed connection probes leaking their caller's async context (#3731)
+- **Middleware:** accept variable-length alternation branches in matcher safety analysis (#3663)
+- **Cloudflare:** render Response Store and Workers Cache regenerations and warm-ups whole (#3737)
+- **Dev:** keep the dev server alive when a request body is cancelled (#3726)
+- **Use Cache:** serve stale entries and regenerate them in the background (#3713)
+- **Config:** pass the real defaultConfig to function-form next.config (#3687)
+- **CSS:** derive drafts.customMedia from lightningCssFeatures.include (#3681)
+- **Pages:** pass the original data URL as req.url in the Worker request stage (#3472)
+- **Use Cache:** regenerate entries past their expire instead of serving them (#3703)
+- **Cjs:** drop the CommonJS export facade from ESM like Next.js (#3667)
+
+### Performance
+
+- **App Router:** stop probing the page before RSC renders (#3699)
+
+### Contributors
+
+- @Adnan-Husayn
+- @AhmedElBanna80
+- @james-elicx
+- @mhsnook
+- @SisyphusZheng
+- @sppidy
+- @Tiscs
+
 ## 1.0.1
 
 ### Bug Fixes

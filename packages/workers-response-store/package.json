@@ -1,6 +1,6 @@
 {
   "name": "@cloudflare/workers-response-store",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "An R2-backed programmatic response store for Cloudflare Workers.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
