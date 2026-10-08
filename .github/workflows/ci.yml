@@ -123,7 +123,7 @@ jobs:
           COVERAGE: ${{ github.event_name == 'push' && '--coverage' || '' }}
           SHARD_INDEX: ${{ matrix.shardIndex }}
           SHARD_TOTAL: ${{ matrix.shardTotal }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: blob-report-${{ matrix.shardIndex }}
@@ -155,7 +155,7 @@ jobs:
       - name: Publish coverage matrix to job summary
         if: ${{ !cancelled() && hashFiles('coverage/coverage-summary.json') != '' }}
         run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && hashFiles('coverage/index.html') != '' }}
         with:
           name: coverage-html
@@ -680,7 +680,7 @@ jobs:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-report-${{ matrix.project }}-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}
