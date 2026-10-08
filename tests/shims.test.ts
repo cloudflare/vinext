@@ -8793,14 +8793,11 @@ describe("Flight transport deterministic hashing", () => {
   });
 
   it("produces stable hash for FormData with string entries", async () => {
-    const { CacheFlightFormData } =
-      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
-
-    const fd1 = new CacheFlightFormData();
+    const fd1 = new FormData();
     fd1.append("a", "1");
     fd1.append("b", "2");
 
-    const fd2 = new CacheFlightFormData();
+    const fd2 = new FormData();
     fd2.append("a", "1");
     fd2.append("b", "2");
 
@@ -8810,14 +8807,11 @@ describe("Flight transport deterministic hashing", () => {
   });
 
   it("preserves observable entry insertion order", async () => {
-    const { CacheFlightFormData } =
-      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
-
-    const fd1 = new CacheFlightFormData();
+    const fd1 = new FormData();
     fd1.append("b", "2");
     fd1.append("a", "1");
 
-    const fd2 = new CacheFlightFormData();
+    const fd2 = new FormData();
     fd2.append("a", "1");
     fd2.append("b", "2");
 
@@ -8827,15 +8821,12 @@ describe("Flight transport deterministic hashing", () => {
   });
 
   it("produces stable hash for FormData with Blob entries", async () => {
-    const { CacheFlightFormData } =
-      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
-
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "application/octet-stream" });
 
-    const fd1 = new CacheFlightFormData();
+    const fd1 = new FormData();
     fd1.append("data", blob);
 
-    const fd2 = new CacheFlightFormData();
+    const fd2 = new FormData();
     fd2.append("data", blob);
 
     const key1 = await replyToCacheKey(fd1);
@@ -8844,13 +8835,10 @@ describe("Flight transport deterministic hashing", () => {
   });
 
   it("produces different hashes for different FormData content", async () => {
-    const { CacheFlightFormData } =
-      await import("../packages/vinext/src/shims/cache-flight-arguments.js");
-
-    const fd1 = new CacheFlightFormData();
+    const fd1 = new FormData();
     fd1.append("a", "1");
 
-    const fd2 = new CacheFlightFormData();
+    const fd2 = new FormData();
     fd2.append("a", "2");
 
     const key1 = await replyToCacheKey(fd1);

@@ -13,37 +13,12 @@ const fileName = Object.getOwnPropertyDescriptor(File.prototype, "name")!.get!;
 const fileTime = Object.getOwnPropertyDescriptor(File.prototype, "lastModified")!.get!;
 /* oxlint-enable typescript/unbound-method */
 
-/**
- * Supplied to Flight per encodeReply call by the cache codec integration.
- * Native FormData assigns wall-clock timestamps to Blob wrappers. Give only
- * those wrappers a deterministic timestamp; actual File metadata is preserved.
- */
-export class CacheFlightFormData extends FormData {
-  static override [Symbol.hasInstance](value: unknown): boolean {
-    return value instanceof FormData;
-  }
-  override append(name: string, value: string | Blob, filename?: string): void {
-    if (value instanceof Blob) {
-      if (!(value instanceof File)) {
-        value = new File([value], "blob", { type: blobType.call(value), lastModified: 0 });
-      }
-      if (filename !== undefined) super.append(name, value, filename);
-      else super.append(name, value);
-    } else {
-      super.append(name, value);
-    }
-  }
-}
-
 /** Snapshot only the multipart transport, never traverse user arguments. */
 export async function snapshotFlightReply(
   reply: string | FormData,
   pagePropsIndex?: number,
 ): Promise<CacheFlightArguments> {
   if (typeof reply === "string") return { version: 1, reply, pagePropsIndex };
-  if (!CacheFlightFormData.prototype.isPrototypeOf(reply)) {
-    throw new Error("vinext: use cache requires the Flight FormData integration");
-  }
   const entries: Exclude<CacheFlightArguments["reply"], string> = [];
   for (const [name, value] of reply) {
     entries.push(
@@ -81,10 +56,19 @@ export function restoreFlightReply(args: CacheFlightArguments): string | FormDat
   return reply;
 }
 
+/**
+ * Like Next.js (use-cache-wrapper.ts, `encodeFormData`), a binary entry is keyed
+ * by its bytes alone. Its name, type, and timestamp are replayed but not keyed:
+ * native FormData gives each Blob wrapper a wall-clock timestamp.
+ */
 export async function flightArgumentsKey(args: CacheFlightArguments): Promise<string> {
+  const reply =
+    typeof args.reply === "string"
+      ? args.reply
+      : args.reply.map((entry) => (entry.length === 2 ? entry : [entry[0], { bytes: entry[1] }]));
   const hash = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(JSON.stringify(args)),
+    new TextEncoder().encode(JSON.stringify({ ...args, reply })),
   );
   return Buffer.from(hash).toString("base64url");
 }

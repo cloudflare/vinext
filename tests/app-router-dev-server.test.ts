@@ -117,7 +117,8 @@ describe("App Router integration", () => {
       } else {
         expect(result.value).toMatchObject({
           name: kind === "blob" ? "blob" : "private.txt",
-          lastModified: kind === "blob" ? 0 : 111,
+          // Native FormData gives a Blob's File wrapper the current time.
+          lastModified: kind === "blob" ? expect.any(Number) : 111,
           text: "private",
         });
       }

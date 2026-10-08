@@ -112,8 +112,8 @@ describe("use cache File identity and replay in Workers", () => {
     "isolates files and reuses entries (attacker first: %s)",
     async (reverse) => {
       const base = { kind: "file", partition: `isolation-${reverse}` };
-      const firstInput = { ...base, name: reverse ? "public.txt" : "private.txt" };
-      const secondInput = { ...base, name: reverse ? "private.txt" : "public.txt" };
+      const firstInput = { ...base, text: reverse ? "public" : "private" };
+      const secondInput = { ...base, text: reverse ? "private" : "public" };
       const first = await request(firstInput);
       const second = await request(secondInput);
       expect(second.value).not.toEqual(first.value);
@@ -181,11 +181,11 @@ describe("use cache File identity and replay in Workers", () => {
 
   it("isolates the resolved File of augmented promises", async () => {
     const base = { kind: "augmented-promise", partition: "augmented-promise" };
-    const first = await request({ ...base, name: "private.txt" });
-    const second = await request({ ...base, name: "public.txt" });
+    const first = await request({ ...base, text: "private" });
+    const second = await request({ ...base, text: "public" });
     expect(second.value).not.toEqual(first.value);
     expect(second.execution).not.toBe(first.execution);
-    expect(await request({ ...base, name: "private.txt" })).toEqual(first);
+    expect(await request({ ...base, text: "private" })).toEqual(first);
   });
 
   it("uses Flight completion order and reuses the same promise schedule", async () => {

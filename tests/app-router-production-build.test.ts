@@ -842,17 +842,14 @@ describe("use cache production argument isolation", () => {
   for (const reverse of [false, true]) {
     it.each([
       ["bytes", "file", { text: "X" }],
-      ["filename", "file", { name: "public.txt" }],
-      ["timestamp", "file", { time: "333" }],
-      ["mime", "file", { type: "application/pdf" }],
-      ["nested", "nested", { time: "333" }],
-      ["promise", "promise", { time: "333" }],
-      ["augmented-promise", "augmented-promise", { time: "333" }],
-      ["map-file", "map-file", { time: "333" }],
-      ["set-file", "set-file", { time: "333" }],
-      ["form-file", "form-file", { time: "333" }],
-      ["shared-file", "shared-file", { time: "333" }],
-      ["captured-file", "captured-file", { time: "333" }],
+      ["nested", "nested", { text: "X" }],
+      ["promise", "promise", { text: "X" }],
+      ["augmented-promise", "augmented-promise", { text: "X" }],
+      ["map-file", "map-file", { text: "X" }],
+      ["set-file", "set-file", { text: "X" }],
+      ["form-file", "form-file", { text: "X" }],
+      ["shared-file", "shared-file", { text: "X" }],
+      ["captured-file", "captured-file", { text: "X" }],
     ] as const)(
       `isolates %s across requests (attacker first: ${reverse})`,
       async (label, kind, change) => {
@@ -868,6 +865,18 @@ describe("use cache production argument isolation", () => {
       },
     );
   }
+
+  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), only a File's bytes
+  // are keyed, so a File differing only in metadata reuses the entry.
+  it.each([
+    ["filename", { name: "public.txt" }],
+    ["timestamp", { time: "333" }],
+    ["mime", { type: "application/pdf" }],
+  ] as const)("reuses the entry for a File differing only in %s", async (label, change) => {
+    const base = { kind: "file", partition: `metadata-${label}` };
+    const first = await request(base);
+    expect(await request({ ...base, ...change })).toEqual(first);
+  });
 
   it("separates equal-size file contents with identical metadata", async () => {
     const base = { kind: "file", partition: "same-size" };

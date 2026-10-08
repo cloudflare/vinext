@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import vm from "node:vm";
 import { patchCacheFlightCodec } from "../../packages/vinext/src/plugins/cache-flight-codec.js";
 
-/** Actual installed React codecs, with the same narrow adapter used by Vite. */
+/** Actual installed React codecs, with the same element backport used by Vite. */
 export function loadCacheFlightCodec(mode: "production" | "development" = "production") {
   const require = createRequire(import.meta.url);
   const root = path.dirname(
@@ -13,7 +13,8 @@ export function loadCacheFlightCodec(mode: "production" | "development" = "produ
   function load(kind: "client" | "server") {
     const filename = path.join(root, `cjs/react-server-dom-webpack-${kind}.edge.${mode}.js`);
     const source = fs.readFileSync(filename, "utf8");
-    const code = kind === "client" ? patchCacheFlightCodec(source, filename).code : source;
+    const code =
+      kind === "client" ? (patchCacheFlightCodec(source, filename)?.code ?? source) : source;
     const module = { exports: {} };
     const localRequire = createRequire(filename);
     const reactServer = path.join(

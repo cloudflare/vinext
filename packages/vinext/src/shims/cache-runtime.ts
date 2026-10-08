@@ -85,7 +85,6 @@ import { suppressHangingPromiseAbortRejections } from "./internal/make-hanging-p
 import type { VinextCacheFunctionInvocation } from "../server/multi-stage.js";
 
 import {
-  CacheFlightFormData,
   snapshotFlightReply,
   restoreFlightReply,
   flightArgumentsKey,
@@ -778,8 +777,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       let cacheKey: string;
       let flightArguments: CacheFlightArguments | undefined;
       if (rsc) {
-        // React owns argument semantics. Hash, execute, and persist exactly the
-        // same multipart snapshot, including native File metadata.
+        // React owns argument semantics. Execute and persist exactly the same
+        // multipart snapshot, including native File metadata; key it like Next.js.
         const keyArgs =
           pagePropsIndex === undefined
             ? serializationArgs
@@ -791,10 +790,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         flightArguments =
           replay ??
           (await snapshotFlightReply(
-            await rsc.encodeReply(keyArgs, {
-              temporaryReferences: clientReferences,
-              formDataConstructor: CacheFlightFormData,
-            }),
+            await rsc.encodeReply(keyArgs, { temporaryReferences: clientReferences }),
             isPageInvocation ? pagePropsArgIndex : undefined,
           ));
         if (!replay && layoutPropsArgIndex !== -1) {

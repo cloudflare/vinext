@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import {
-  CacheFlightFormData,
   snapshotFlightReply,
   flightArgumentsKey,
 } from "../packages/vinext/src/shims/cache-flight-arguments.js";
@@ -100,52 +99,61 @@ describe("use cache argument identity", () => {
     },
   );
 
-  it.each(["colon", "getter", "iterable"])(
-    "preserves File metadata and Blob hits through %s",
-    async (kind) => {
-      const wrap = (value: Blob) =>
-        kind === "colon"
-          ? { "a:b": value }
-          : kind === "getter"
-            ? {
-                get "a:b"() {
-                  return value;
-                },
-              }
-            : {
-                *[Symbol.iterator]() {
-                  yield value;
-                },
-              };
-      const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
-      const cached = registerCachedFunction(fn, "test:binary-path");
-      const first = await cached(wrap(file("blob", "X", 111)));
-      expect(await cached(wrap(file("blob", "X", 222)))).not.toBe(first);
-      expect(await cached(wrap(file("blob", "X", 111)))).toBe(first);
-      const blob = await cached(wrap(new Blob(["X"])));
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(await cached(wrap(new Blob(["X"])))).toBe(blob);
-      expect(fn).toHaveBeenCalledTimes(3);
-    },
-  );
+  it.each(["colon", "getter", "iterable"])("keys File and Blob bytes through %s", async (kind) => {
+    const wrap = (value: Blob) =>
+      kind === "colon"
+        ? { "a:b": value }
+        : kind === "getter"
+          ? {
+              get "a:b"() {
+                return value;
+              },
+            }
+          : {
+              *[Symbol.iterator]() {
+                yield value;
+              },
+            };
+    const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
+    const cached = registerCachedFunction(fn, "test:binary-path");
+    const first = await cached(wrap(file("blob", "X", 111)));
+    expect(await cached(wrap(file("other", "X", 222)))).toBe(first);
+    expect(await cached(wrap(new Blob(["X"])))).toBe(first);
+    const blob = await cached(wrap(new Blob(["Y"])));
+    expect(blob).not.toBe(first);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await cached(wrap(new Blob(["Y"])))).toBe(blob);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
 
+  const describeFile = async (value: File) => ({
+    name: value.name,
+    lastModified: value.lastModified,
+    type: value.type,
+    text: await value.text(),
+  });
+
+  it("distinguishes File bytes and reuses identical files", async () => {
+    const fn = vi.fn(describeFile);
+    const cached = registerCachedFunction(fn, "test:file");
+    const first = await cached(file());
+    expect(await cached(file("private.txt", "X"))).not.toEqual(first);
+    expect(await cached(file())).toEqual(first);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), only a File's bytes
+  // are keyed, so a File differing only in metadata reuses the entry.
   it.each([
-    ["bytes", () => file("private.txt", "X")],
     ["name", () => file("public.txt")],
     ["timestamp", () => file("private.txt", "", 333)],
     ["type", () => file("private.txt", "", 111, "application/pdf")],
-  ])("distinguishes File %s and reuses identical files", async (_label, different) => {
-    const fn = vi.fn(async (value: File) => ({
-      name: value.name,
-      lastModified: value.lastModified,
-      type: value.type,
-      text: await value.text(),
-    }));
-    const cached = registerCachedFunction(fn, "test:file");
+  ])("reuses the entry for a File differing only in %s", async (_label, different) => {
+    const fn = vi.fn(describeFile);
+    const cached = registerCachedFunction(fn, "test:file-metadata");
     const first = await cached(file());
-    expect(await cached(different())).not.toEqual(first);
-    expect(await cached(file())).toEqual(first);
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(await cached(different())).toEqual(first);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -161,12 +169,12 @@ describe("use cache argument identity", () => {
         return form;
       },
     ],
-  ])("includes File metadata inside a %s", async (_label, wrap) => {
+  ])("keys File bytes, not metadata, inside a %s", async (_label, wrap) => {
     const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
     const cached = registerCachedFunction(fn, "test:nested-file");
     const first = await cached(wrap(file()));
-    expect(await cached(wrap(file("private.txt", "", 333)))).not.toBe(first);
-    expect(await cached(wrap(file()))).toBe(first);
+    expect(await cached(wrap(file("private.txt", "X")))).not.toBe(first);
+    expect(await cached(wrap(file("private.txt", "", 333)))).toBe(first);
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
@@ -190,13 +198,12 @@ describe("use cache argument identity", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
-  it("does not equate a File named blob with a Blob", async () => {
-    const cached = registerCachedFunction(
-      async (value: Blob) => (value instanceof File ? value.lastModified : null),
-      "test:blob-file",
-    );
-    expect(await cached(new Blob(["X"], { type: "text/plain" }))).toBe(0);
-    expect(await cached(file("blob", "X"))).toBe(111);
+  it("keys a Blob and a File with the same bytes alike, like Next.js", async () => {
+    const fn = vi.fn(async (_value: Blob) => crypto.randomUUID());
+    const cached = registerCachedFunction(fn, "test:blob-file");
+    const blob = await cached(new Blob(["X"], { type: "text/plain" }));
+    expect(await cached(file("blob", "X"))).toBe(blob);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it("rejects inspecting temporary references like Next.js", async () => {
@@ -317,7 +324,7 @@ describe("use cache argument identity", () => {
     }));
     const cached = registerCachedFunction(fn, "test:augmented-promise");
     const input = (name: string, label = "same") =>
-      Object.assign(Promise.resolve(file(name)), { label });
+      Object.assign(Promise.resolve(file(name, name)), { label });
     expect(await cached(input("private"))).toEqual({ name: "private", label: undefined });
     expect(await cached(input("public"))).toEqual({ name: "public", label: undefined });
     expect(await cached(input("private", "different"))).toEqual({
@@ -343,7 +350,7 @@ describe("use cache argument identity", () => {
     const fn = vi.fn(async (input: Promise<File>) => (await input).name);
     const cached = registerCachedFunction(fn, "test:promise-status");
     const input = (name: string) =>
-      Object.assign(Promise.resolve(file(name)), { status: "fulfilled", value: "same" });
+      Object.assign(Promise.resolve(file(name, name)), { status: "fulfilled", value: "same" });
     expect(await cached(input("private"))).toBe("private");
     expect(await cached(input("public"))).toBe("public");
     expect(await cached(input("private"))).toBe("private");
@@ -503,9 +510,9 @@ describe("use cache argument identity", () => {
 
 describe("binary cache key framing", () => {
   it("distinguishes delimiter-containing strings from multiple entries", async () => {
-    const first = new CacheFlightFormData();
+    const first = new FormData();
     first.append("a", "x\0b=s:y");
-    const second = new CacheFlightFormData();
+    const second = new FormData();
     second.append("a", "x");
     second.append("b", "y");
     expect(await replyToCacheKey(first)).not.toBe(await replyToCacheKey(second));
@@ -514,10 +521,10 @@ describe("binary cache key framing", () => {
   it.each([false, true])(
     "preserves observable FormData ordering (duplicate names: %s)",
     async (duplicate) => {
-      const first = new CacheFlightFormData();
+      const first = new FormData();
       first.append("a", "1");
       first.append(duplicate ? "a" : "b", "2");
-      const second = new CacheFlightFormData();
+      const second = new FormData();
       second.append(duplicate ? "a" : "b", "2");
       second.append("a", "1");
       expect(await replyToCacheKey(first)).not.toBe(await replyToCacheKey(second));

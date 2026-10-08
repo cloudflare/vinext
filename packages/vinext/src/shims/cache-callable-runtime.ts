@@ -16,7 +16,6 @@ import {
   type RegisterCachedFunctionOptions,
 } from "./cache-runtime.js";
 import {
-  CacheFlightFormData,
   snapshotFlightReply,
   restoreFlightReply,
   type CacheFlightArguments,
@@ -31,11 +30,7 @@ type CacheCaptureEnvelope = {
 
 /** Persist invocation arguments using Flight's argument codec. */
 export async function encodeCacheArguments(args: unknown[]): Promise<CacheFlightArguments> {
-  return snapshotFlightReply(
-    await encodeReply(args, {
-      formDataConstructor: CacheFlightFormData,
-    } as Parameters<typeof encodeReply>[1]),
-  );
+  return snapshotFlightReply(await encodeReply(args));
 }
 
 export async function decodeCacheArguments(value: CacheFlightArguments): Promise<unknown[]> {
@@ -76,7 +71,7 @@ async function encryptCaptures(captures: unknown[]): Promise<string> {
   // Like Next.js, closure captures use the result codec, which can serialize
   // ReactNodes and global symbols. Divert only Files into native metadata
   // records via Flight's temporary-reference option; no second argument walk.
-  const files = new CacheFlightFormData();
+  const files = new FormData();
   let nextFileId = 0;
   const temporaryReferences = new (class extends WeakMap<object, string> {
     override get(value: object): string | undefined {
