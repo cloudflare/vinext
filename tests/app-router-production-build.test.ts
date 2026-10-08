@@ -21,6 +21,17 @@ function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
   return typeof value === "function";
 }
 
+/** List every file under `dir` (recursively) as sorted `/`-joined relative paths. */
+function listFiles(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...listFiles(path.join(dir, entry.name), relative));
+    else out.push(relative);
+  }
+  return out.sort();
+}
+
 /** Concatenate every `.js` file under `dir` (recursively) for substring checks. */
 function readAllJs(dir: string): string {
   let out = "";
@@ -53,6 +64,7 @@ describe("App Router Production build", () => {
       "app/blog",
       "app/components",
       "app/dashboard",
+      "app/use-cache-client-import",
     ].map((entry) => path.join(APP_FIXTURE_DIR, entry));
     fixtureDir = await createIsolatedFixture(
       APP_FIXTURE_DIR,
@@ -172,6 +184,10 @@ describe("App Router Production build", () => {
     expect(buildId.length).toBeGreaterThan(0);
     const rscBuildId = fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8").trim();
     expect(rscBuildId).toMatch(/^[0-9a-f]{32}$/);
+    // The per-build RSC identity stamps server responses only. If it reaches a
+    // client chunk, every build renames that chunk and all of its importers.
+    expect(readAllJs(path.join(outDir, "server"))).toContain(rscBuildId);
+    expect(clientJs).not.toContain(rscBuildId);
 
     const warmupManifestPath = path.join(outDir, "server", "vinext-prerender-paths.json");
     expect(fs.existsSync(warmupManifestPath)).toBe(false);
@@ -219,6 +235,56 @@ describe("App Router Production build", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 30000);
+
+  it("emits the same client file names when identical source is rebuilt", async () => {
+    // With deploymentId, generateBuildId and the server-action key pinned,
+    // nothing that reaches the browser may vary per build. Otherwise every
+    // deploy renames unchanged chunks, defeating CDN/browser cache reuse and
+    // dropping long-lived tabs' chunks (vinext#3626).
+    const previousKey = process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY;
+    const previousRscBuildIdentity = process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
+    process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
+    delete process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
+    try {
+      const buildClientFiles = async () => {
+        fs.rmSync(outDir, { recursive: true, force: true });
+        const builder = await createBuilder({
+          root: fixtureDir,
+          cacheDir: testCacheDir(fixtureDir),
+          configFile: false,
+          plugins: [
+            vinext({
+              appDir: fixtureDir,
+              nextConfig: { deploymentId: "pinned-test", generateBuildId: () => "pinned-build" },
+            }),
+          ],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+        return {
+          files: listFiles(path.join(outDir, "client")),
+          rscBuildId: fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8"),
+        };
+      };
+
+      const first = await buildClientFiles();
+      const second = await buildClientFiles();
+      // The server-side build identity still changes per build.
+      expect(second.rscBuildId).not.toBe(first.rscBuildId);
+      // The fixture's client component imports a "use cache" module, whose
+      // reference names land in a client chunk.
+      expect(readAllJs(path.join(outDir, "client"))).toContain("$$vinext_cache_");
+      expect(second.files).toEqual(first.files);
+    } finally {
+      if (previousKey === undefined) delete process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY;
+      else process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY = previousKey;
+      if (previousRscBuildIdentity === undefined) {
+        delete process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
+      } else {
+        process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY = previousRscBuildIdentity;
+      }
+    }
+  }, 60000);
 
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
     // The `vite build` CLI resolves the build ID once and shares it via

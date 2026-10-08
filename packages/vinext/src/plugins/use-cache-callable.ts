@@ -257,6 +257,18 @@ function transformBrowserModule(
   return { output: result.output, referenceNames: result.exportNames.map(referenceName) };
 }
 
+/**
+ * Ported from Next.js: packages/next/src/server/app-render/encryption-utils-server.ts
+ * Next salts server-reference IDs with NEXT_SERVER_ACTIONS_ENCRYPTION_KEY when
+ * it is set, so rebuilding identical source emits identical client chunks, and
+ * otherwise with a generated key. The key is derived under a label rather than
+ * used directly so the reference names reveal nothing about the key.
+ */
+function createReferenceSecret(encryptionKey: string | undefined): Buffer {
+  if (!encryptionKey) return randomBytes(32);
+  return createHmac("sha256", encryptionKey).update("vinext use cache reference").digest();
+}
+
 export async function createUseCacheCallablePlugin(
   options: Options,
 ): Promise<Plugin<UseCacheCallableApi>> {
@@ -275,10 +287,15 @@ export async function createUseCacheCallablePlugin(
   // original export name must not also be the remotely addressable name. A
   // per-plugin secret keeps aliases stable across every environment/build pass
   // in one Vite build without making sibling exports derivable from each other.
-  const referenceSecret = randomBytes(32);
+  let referenceSecret: Buffer | undefined;
   let manager: RscPluginManager | undefined;
 
-  async function analyzeModule(manager: RscPluginManager, code: string, id: string) {
+  async function analyzeModule(
+    manager: RscPluginManager,
+    secret: Buffer,
+    code: string,
+    id: string,
+  ) {
     const ast = await parseProgramAsync(code);
     const moduleDirective = findModuleUseCacheDirective(ast);
     const useServerBoundary = transforms.hasDirective(ast.body, "use server");
@@ -291,7 +308,7 @@ export async function createUseCacheCallablePlugin(
     const reference = manager.serverReferences.resolve(id, "rsc");
     const relativeImportId = manager.toRelativeId(reference.importId);
     const secureExportName = (name: string) =>
-      `$$vinext_cache_${createHmac("sha256", referenceSecret)
+      `$$vinext_cache_${createHmac("sha256", secret)
         .update(relativeImportId)
         .update("\0")
         .update(name)
@@ -304,7 +321,8 @@ export async function createUseCacheCallablePlugin(
     api: {
       async transformWorkerModule(code, id, createReference) {
         if (!code.includes("use cache")) return;
-        if (!manager) {
+        const secret = referenceSecret;
+        if (!manager || !secret) {
           // Like the worker "use server" transform, fail rather than ship the
           // module body.
           if (findModuleUseCacheDirective(await parseProgramAsync(code))) {
@@ -315,7 +333,7 @@ export async function createUseCacheCallablePlugin(
           return;
         }
         const { ast, moduleDirective, useServerBoundary, reference, secureExportName } =
-          await analyzeModule(manager, code, id);
+          await analyzeModule(manager, secret, code, id);
         if (useServerBoundary) return;
         return transformBrowserModule(transforms, code, ast, id, moduleDirective, {
           environmentName: "worker",
@@ -326,6 +344,8 @@ export async function createUseCacheCallablePlugin(
       },
     },
     configResolved(config) {
+      // Read after vinext's config hook has loaded `.env` files.
+      referenceSecret ??= createReferenceSecret(process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY);
       const pluginApi = rscModule.getPluginApi(config);
       const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
       if (!pluginApi && options.allowMissingRsc && !hasRscPlugin) return;
@@ -353,14 +373,15 @@ export async function createUseCacheCallablePlugin(
         },
       },
       async handler(code, id) {
-        if (!manager) return;
+        const secret = referenceSecret;
+        if (!manager || !secret) return;
         if (!code.includes("use cache")) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;
         }
 
         const { ast, moduleDirective, useServerBoundary, reference, secureExportName } =
-          await analyzeModule(manager, code, id);
+          await analyzeModule(manager, secret, code, id);
         const isRsc = this.environment.name === "rsc";
 
         if (!isRsc) {
