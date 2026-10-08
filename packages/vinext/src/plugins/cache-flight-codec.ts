@@ -57,7 +57,10 @@ export function patchCacheFlightCodec(
   const elementCase = ELEMENT_CASE.exec(code);
   if (!elementCase) {
     throw new Error(
-      `vinext: unsupported react-server-dom ${version} encoder in ${id}; update the "use cache" backport`,
+      `vinext: react-server-dom-webpack ${version} (${id}) is not supported. ` +
+        "Upgrade react, react-dom, and react-server-dom-webpack to 19.3 or later. " +
+        "If your app does not depend on react-server-dom-webpack directly, " +
+        "upgrade @vitejs/plugin-rsc to 0.5.35 or later instead.",
     );
   }
   const output = new MagicString(code);

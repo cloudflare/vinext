@@ -75,10 +75,10 @@ describe("Flight cache codec", () => {
     },
   );
 
-  it("fails explicitly when an older encoder has an unknown shape", () => {
+  it("asks for an upgrade when an older encoder has an unknown shape", () => {
     expect(() =>
       patchCacheFlightCodec("exports.encodeReply = somethingElse;", "codec.js", "19.2.8"),
-    ).toThrow("unsupported react-server-dom 19.2.8 encoder");
+    ).toThrow("Upgrade react, react-dom, and react-server-dom-webpack to 19.3 or later");
   });
 
   it("reads the version of the codec plugin-rsc resolved", () => {
