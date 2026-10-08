@@ -1438,7 +1438,8 @@ describe("App Router entry templates", () => {
   it("lists the static App pages that answer their decoded pathname in both RSC entries", () => {
     // Next.js answers `/%61` beside `/[slug]` with the response cached under
     // `/a`, which exists only for a prerendered page. Segment config that
-    // renders any segment of the direct tree dynamically leaves no such entry.
+    // renders any segment of the direct tree dynamically, or on the edge
+    // runtime, leaves no such entry.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-decoded-routes-"));
     const write = (name: string, source: string) => {
       const filePath = path.join(tmpDir, name);
@@ -1458,7 +1459,30 @@ describe("App Router entry templates", () => {
       "revalidate-zero-layout.tsx",
       "export const revalidate = 0; export default function Layout({ children }) { return children; }",
     );
+    const edgePage = write(
+      "edge-page.tsx",
+      'export const runtime = "edge"; export default function Page() { return null; }',
+    );
+    const edgeLayout = write(
+      "edge-layout.tsx",
+      'export const runtime = "edge"; export default function Layout({ children }) { return children; }',
+    );
     const handler = write("route.ts", "export function GET() { return new Response(); }");
+    const panelSlot = (pagePath: string) => ({
+      key: "panel@slot/@panel",
+      name: "panel",
+      ownerDir: tmpDir,
+      ownerTreePath: "/slot",
+      hasPage: true,
+      pagePath,
+      defaultPath: null,
+      layoutPath: null,
+      loadingPath: null,
+      errorPath: null,
+      interceptingRoutes: [],
+      layoutIndex: 0,
+      routeSegments: null,
+    });
     const staticRoute = (pattern: string, overrides: Partial<AppRoute> = {}): AppRoute => ({
       ...minimalAppRoutes[0],
       pattern,
@@ -1473,25 +1497,11 @@ describe("App Router entry templates", () => {
       staticRoute("/isr", { pagePath: isrPage }),
       staticRoute("/force-dynamic", { pagePath: forceDynamicPage }),
       staticRoute("/revalidate-zero-layout", { layouts: [revalidateZeroLayout] }),
-      staticRoute("/dynamic-slot", {
-        parallelSlots: [
-          {
-            key: "panel@dynamic-slot/@panel",
-            name: "panel",
-            ownerDir: tmpDir,
-            ownerTreePath: "/dynamic-slot",
-            hasPage: true,
-            pagePath: forceDynamicPage,
-            defaultPath: null,
-            layoutPath: null,
-            loadingPath: null,
-            errorPath: null,
-            interceptingRoutes: [],
-            layoutIndex: 0,
-            routeSegments: null,
-          },
-        ],
-      }),
+      staticRoute("/dynamic-slot", { parallelSlots: [panelSlot(forceDynamicPage)] }),
+      // A layout-only route renders, and prerenders, its slot page.
+      staticRoute("/slot-only", { pagePath: null, parallelSlots: [panelSlot(staticPage)] }),
+      staticRoute("/edge", { pagePath: edgePage }),
+      staticRoute("/edge-layout", { layouts: [edgeLayout] }),
       // Intercepting trees never render for a direct request to the page.
       staticRoute("/sibling-intercept", {
         siblingIntercepts: [
@@ -1508,7 +1518,13 @@ describe("App Router entry templates", () => {
       staticRoute("/blog/:slug", { isDynamic: true, params: ["slug"] }),
       staticRoute("/api", { pagePath: null, routePath: handler }),
     ];
-    const expected = JSON.stringify(["/static", "/café", "/isr", "/sibling-intercept"]);
+    const expected = JSON.stringify([
+      "/static",
+      "/café",
+      "/isr",
+      "/slot-only",
+      "/sibling-intercept",
+    ]);
 
     try {
       for (const code of [

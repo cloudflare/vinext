@@ -12,7 +12,8 @@ import fs from "node:fs";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { toSlash } from "pathslash";
-import { extractExportConstNumber, extractExportConstString } from "../build/report.js";
+import { classifyAppPageRouteStaticEligibility } from "../build/app-page-static-eligibility.js";
+import { extractExportConstString, getAppRouteRenderEntryPath } from "../build/report.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -268,28 +269,28 @@ function appPageSegmentConfigPaths(route: AppRoute): (string | null | undefined)
  * `/%61` and `/caf%C3%A9` render `/a` and `/café` rather than `/[slug]`.
  *
  * Next.js serves those requests from the response cached under the decoded
- * pathname, which exists only for a page it prerendered. A page whose segment
- * config renders it dynamically (`dynamic = "force-dynamic"` or
- * `revalidate = 0` on any segment) and a Route Handler have no such entry, so
- * the dynamic sibling renders.
+ * pathname, which exists only for a page it prerendered. The prerender listing
+ * classifies those: a page whose effective segment config renders it
+ * dynamically (`dynamic = "force-dynamic"`, `revalidate = 0` or the edge
+ * runtime on any segment) and a Route Handler have no such entry, so the
+ * dynamic sibling renders. So does a page whose sources (MDX included) can't
+ * be read here; its sibling's render stays out of the shared caches.
  */
 function buildAppDecodedPathnamePatterns(routes: AppRoute[]): string[] {
-  const readSource = createSegmentSourceReader();
-  const rendersDynamically = (filePath: string | null | undefined): boolean => {
-    const source = readSource(filePath);
-    return (
-      source !== null &&
-      (extractExportConstString(source, "dynamic") === "force-dynamic" ||
-        extractExportConstNumber(source, "revalidate") === 0)
-    );
+  const isPrerenderedPage = (route: AppRoute): boolean => {
+    try {
+      return classifyAppPageRouteStaticEligibility(route, null) === "eligible";
+    } catch {
+      return false;
+    }
   };
   return routes
     .filter(
       (route) =>
         !route.isDynamic &&
-        route.pagePath &&
         !route.routePath &&
-        !appPageSegmentConfigPaths(route).some(rendersDynamically),
+        getAppRouteRenderEntryPath(route) !== null &&
+        isPrerenderedPage(route),
     )
     .map((route) => route.pattern);
 }
