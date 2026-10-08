@@ -9,6 +9,7 @@ import {
   PAGES_FIXTURE_DIR,
   buildAppFixture,
   buildPagesFixture,
+  createIsolatedFixture,
   startFixtureServer,
 } from "./helpers.js";
 
@@ -153,6 +154,23 @@ type ServerTarget = {
   start: () => Promise<{ baseUrl: string; close: () => Promise<void>; logger?: Logger }>;
 };
 
+/**
+ * Build app-basic from a copy. The build helper emits bundles to a temp dir,
+ * but vinext still writes `BUILD_ID` and client assets under `<root>/dist`,
+ * which app-router-production-server.test.ts builds and serves from when the
+ * two files share a CI shard.
+ */
+async function buildIsolatedAppFixture(): Promise<string> {
+  const distDir = path.join(APP_FIXTURE_DIR, "dist");
+  const root = await createIsolatedFixture(
+    APP_FIXTURE_DIR,
+    "vinext-request-cancellation-",
+    (src) => src !== distDir && !src.startsWith(distDir + path.sep),
+    path.join(APP_FIXTURE_DIR, "node_modules"),
+  );
+  return buildAppFixture(root);
+}
+
 async function startBuiltProdServer(entryPath: string) {
   const outDir = path.dirname(path.dirname(entryPath));
   const { server } = await startProdServer({
@@ -207,7 +225,7 @@ const targets: ServerTarget[] = [
     reason: "ResponseAborted",
     probes: [APP_ROUTE_PROBE],
     externalRewrites: APP_EXTERNAL_REWRITES,
-    start: async () => startBuiltProdServer(await buildAppFixture(APP_FIXTURE_DIR)),
+    start: async () => startBuiltProdServer(await buildIsolatedAppFixture()),
   },
   {
     // Served by @vitejs/plugin-rsc through srvx, which owns this signal.
