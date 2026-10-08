@@ -3709,7 +3709,12 @@ describe("createAppRscHandler", () => {
     // `/about`, but draft mode and server actions skip that cache and render
     // the raw-matched `/[slug]`.
     const staticRoute = createPageRoute();
-    const dynamicRoute = createPageRoute({ isDynamic: true, params: ["slug"], pattern: "/:slug" });
+    const dynamicRoute = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/:slug",
+      rootParamNames: ["slug"],
+    });
     const encodedRouteOptions = (overrides: Partial<TestHandlerOptions> = {}) => ({
       matchRoute: (pathname: string) =>
         pathname === "/about" ? { params: {}, route: staticRoute } : null,
@@ -3748,7 +3753,13 @@ describe("createAppRscHandler", () => {
     });
 
     it("runs a server action against the raw-matched page", async () => {
-      const handleServerActionRequest = vi.fn(async () => new Response("action"));
+      let observedRootParams: unknown = null;
+      const handleServerActionRequest = vi.fn(async () => {
+        const { getCurrentRootParams } =
+          await import("../packages/vinext/src/shims/root-params.js");
+        observedRootParams = getCurrentRootParams();
+        return new Response("action");
+      });
       const handler = createHandler(encodedRouteOptions({ handleServerActionRequest }));
 
       await handler(
@@ -3764,6 +3775,7 @@ describe("createAppRscHandler", () => {
           routeMatch: { params: { slug: "%61bout" }, route: dynamicRoute },
         }),
       );
+      expect(observedRootParams).toEqual({ slug: "%61bout" });
     });
   });
 

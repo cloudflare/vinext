@@ -2012,9 +2012,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : null;
   const preActionMatch = directPreActionMatch ?? interceptionPreActionMatch;
   const isInterceptionMatch = interceptionPreActionMatch !== null;
-  if (preActionMatch) {
-    setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
-  }
   // `matchRequestRoute` answers an encoded request such as `/%61`, which
   // reaches `/[slug]` raw, with the static `/a` whose prerender Next.js
   // serves, and routing (rewrites, Pages arbitration) treats it as `/a`, as
@@ -2034,6 +2031,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     !isInterceptionMatch
       ? ((options.matchRawRequestRoute!(requestCleanPathname) as TMatch | null) ?? routeMatch)
       : routeMatch;
+  const renderedPreActionMatch = renderedRouteMatch(preActionMatch);
+  if (renderedPreActionMatch) {
+    setRootParams(
+      pickRootParams(renderedPreActionMatch.params, renderedPreActionMatch.route.rootParamNames),
+    );
+  }
 
   // A Pages client navigating to a path that middleware rewrites into App
   // territory needs `x-nextjs-rewrite` so it can hard-navigate; the body is an
@@ -2073,7 +2076,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         contentType,
         middlewareContext,
         request,
-        routeMatch: renderedRouteMatch(preActionMatch),
+        routeMatch: renderedPreActionMatch,
       });
     } else if (preActionMatch?.route.__loadPage && !preActionMatch.route.__loadRouteHandler) {
       return createMissingServerActionResponse(options, null);
@@ -2136,7 +2139,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           mountedSlotsHeader,
           request,
           scriptNonce,
-          routeMatch: renderedRouteMatch(preActionMatch),
+          routeMatch: renderedPreActionMatch,
           routePathname: preActionRoutePathname,
           dispatchRedirectTargetRequest: dispatchInternalRequest,
           sourceConfigHeaders,
