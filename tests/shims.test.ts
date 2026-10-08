@@ -6523,7 +6523,7 @@ async function zeroArgUseCacheKey(id: string): Promise<string> {
   const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
   const { flightArgumentsKey, snapshotFlightReply } =
     await import("../packages/vinext/src/shims/cache-flight-arguments.js");
-  return buildUseCacheKey(id, undefined, await flightArgumentsKey(await snapshotFlightReply("[]")));
+  return buildUseCacheKey(id, undefined, flightArgumentsKey(await snapshotFlightReply("[]")));
 }
 
 describe('"use cache" runtime', () => {

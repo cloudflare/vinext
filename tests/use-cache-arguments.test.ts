@@ -15,6 +15,23 @@ const file = (name = "private.txt", content = "", lastModified = 111, type = "te
 describe("use cache argument identity", () => {
   beforeEach(() => setCacheHandler(new MemoryCacheHandler()));
 
+  it("resolves a cache hit without waiting for another event-loop turn", async () => {
+    const fn = vi.fn(async (locale: string) => ({ locale }));
+    const cached = registerCachedFunction(fn, "test:hit-within-task");
+    await cached("en");
+
+    let hit: unknown;
+    void cached("en").then((value) => {
+      hit = value;
+    });
+    // React flushes a shell when its render task ends, so a hit that waits
+    // for a later turn misses the shell. Draining microtasks never yields one.
+    for (let i = 0; i < 1000 && hit === undefined; i++) await Promise.resolve();
+
+    expect(hit).toEqual({ locale: "en" });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it("snapshots the File that Flight emitted while other arguments are pending", async () => {
     let finish!: () => void;
     const pending = new Promise<void>((resolve) => {
