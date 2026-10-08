@@ -1,6 +1,7 @@
 import {
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
+  type PprFallbackShellState,
 } from "./ppr-fallback-shell.js";
 import {
   isOwnPropertyCheck,
@@ -19,6 +20,36 @@ export type ThenableParamsObserver = Readonly<{
   observeParamAccess: (keys: readonly string[]) => void;
   observeReactPromiseStatus?: boolean;
 }>;
+
+const paramsState = new WeakMap<
+  object,
+  {
+    plain: Record<string, unknown>;
+    observer: ThenableParamsObserver | undefined;
+    fallbackShellState: PprFallbackShellState | null;
+  }
+>();
+
+function getParamsState(value: unknown) {
+  return value !== null && typeof value === "object" ? paramsState.get(value) : undefined;
+}
+
+/** Serialize backing values without reading a framework fallback-key proxy. */
+export function getFallbackParamsSnapshot(
+  value: unknown,
+): Promise<Record<string, unknown>> | undefined {
+  const state = getParamsState(value);
+  return state?.fallbackShellState ? Promise.resolve(state.plain) : undefined;
+}
+
+/** Reattach only framework metadata; argument values always come from the decoder. */
+export function restoreThenableParams<T extends Record<string, unknown>>(
+  decoded: T,
+  original: unknown,
+): ThenableParams<T> {
+  const state = getParamsState(original);
+  return createThenableParams(decoded, state?.observer, state?.fallbackShellState ?? null);
+}
 
 function observeParamKeys(
   observer: ThenableParamsObserver | undefined,
@@ -148,8 +179,15 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer?: ThenableParamsObserver,
 ): ThenableParams<T> {
+  return createThenableParams(obj, observer, getPprFallbackShellState());
+}
+
+function createThenableParams<T extends Record<string, unknown>>(
+  obj: T,
+  observer: ThenableParamsObserver | undefined,
+  fallbackShellState: PprFallbackShellState | null,
+): ThenableParams<T> {
   const plain = { ...obj };
-  const fallbackShellState = getPprFallbackShellState();
   const fallbackParamNames =
     fallbackShellState &&
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
@@ -284,5 +322,11 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     },
   };
 
-  return createThenableParamsProxy(promise, handler);
+  const params = createThenableParamsProxy(promise, handler);
+  paramsState.set(params, {
+    plain,
+    observer,
+    fallbackShellState: fallbackParamNames ? fallbackShellState : null,
+  });
+  return params;
 }

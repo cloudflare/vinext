@@ -94,6 +94,37 @@ describe("App Router integration", () => {
     await server?.close();
   });
 
+  it.each(["file", "blob", "bytes", "captured-file", "captured-rich"])(
+    "uses the Flight cache codec for %s arguments in dev",
+    async (kind) => {
+      const response = await fetch(
+        `${baseUrl}/api/use-cache-arguments?${new URLSearchParams({ kind, text: "private", time: "111" })}`,
+      );
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      if (kind === "bytes") {
+        expect(result.value).toEqual({
+          type: "Uint8Array",
+          offset: 0,
+          bytes: [...new TextEncoder().encode("private")],
+        });
+      } else if (kind === "captured-rich") {
+        expect(result.value).toMatchObject({
+          file: { name: "private.txt", lastModified: 111, text: "private" },
+          child: "captured child",
+          token: "Symbol(vinext:captured-token)",
+        });
+      } else {
+        expect(result.value).toMatchObject({
+          name: kind === "blob" ? "blob" : "private.txt",
+          // Native FormData gives a Blob's File wrapper the current time.
+          lastModified: kind === "blob" ? expect.any(Number) : 111,
+          text: "private",
+        });
+      }
+    },
+  );
+
   // Next.js 308s any raw path containing a backslash or a repeated slash to
   // the collapsed path (base-server.ts / resolve-routes.ts).
   it("redirects repeated slashes and backslashes like Next.js", async () => {
@@ -115,6 +146,13 @@ describe("App Router integration", () => {
     expect(html).toContain("<html");
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("Server Component");
+  });
+
+  it("preserves a parallel slot named like the page cache marker in a cached layout", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/use-cache-slot-markers");
+    expect(res.status).toBe(200);
+    expect(html).toContain("<p>page marker slot content</p>");
+    expect(html).toContain("<p>cached layout with marker-named slots</p>");
   });
 
   it("loads the current source App Router request handler in source-checkout tests", async () => {

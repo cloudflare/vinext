@@ -7,6 +7,7 @@ const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims")
 const VINEXT_SRC = path.resolve(import.meta.dirname, "packages/vinext/src");
 const CLOUDFLARE_SRC = path.resolve(import.meta.dirname, "packages/cloudflare/src");
 const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
+const FLIGHT_CODEC_SETUP = path.resolve(import.meta.dirname, "tests/_setup/flight-codec.ts");
 
 // Resolve own-workspace sources directly in tests so the vinext <->
 // @vinext/cloudflare dependency edge points at source (single module instance,
@@ -177,7 +178,7 @@ export default defineConfig({
         test: {
           name: "unit",
           server: { deps: { inline: ["@vercel/og"] } },
-          setupFiles: [MSW_SETUP],
+          setupFiles: [MSW_SETUP, FLIGHT_CODEC_SETUP],
           // `scripts/**` covers the release-tooling unit tests
           // (scripts/create-changeset.test.ts, scripts/version.test.ts), which
           // are pure-logic and have no fixture/server dependencies.

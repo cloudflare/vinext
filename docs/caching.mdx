@@ -503,6 +503,10 @@ With the KV or in-memory cache, when a background regeneration of an App Router 
 
 The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.
 
+## How `"use cache"` arguments are keyed
+
+As in Next.js, a `"use cache"` function's arguments are serialized with React's Server Function argument encoder, and that serialized form is the cache key. Files and Blobs are keyed by their bytes alone, so files with the same contents share an entry even if their names, types, or timestamps differ. Values the encoder can't serialize, such as JSX, functions, and class instances, are passed through without affecting the key; the function can render or return them but can't read their properties.
+
 ## Where generated metadata goes
 
 `generateMetadata()` can resolve after the rest of the page. Next.js streams a dynamic page, so its generated tags (`<title>`, canonical, robots and so on) arrive in `<body>` once they resolve. It renders a static or ISR page whole before serving it, so that page has them in `<head>`. Browsers and most crawlers read metadata in either place. Bots that match `htmlLimitedBots` wait for the metadata and get it in `<head>`, in both.

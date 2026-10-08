@@ -1,6 +1,9 @@
 import { Suspense, cache, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
-import { withUseCachePageMarker } from "vinext/shims/internal/app-page-props-cache-key";
+import {
+  withUseCachePageMarker,
+  withUseCacheLayoutMarker,
+} from "vinext/shims/internal/app-page-props-cache-key";
 import { ClientPageRoot } from "vinext/shims/client-page-root";
 import {
   collectAppPageSearchParams,
@@ -731,7 +734,9 @@ export async function buildPageElements<
         );
         element = createElement(
           LayoutComponent,
-          { params: makeThenableParams(interceptLayoutParams) },
+          withUseCacheLayoutMarker(LayoutComponent, {
+            params: makeThenableParams(interceptLayoutParams),
+          }),
           element,
         );
       }

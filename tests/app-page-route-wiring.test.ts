@@ -40,6 +40,8 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import {
   createRequestContext,
   getRequestContext,
@@ -503,6 +505,66 @@ function LayoutWithoutChildren() {
 }
 
 describe("app page route wiring helpers", () => {
+  // Parallel slots must render alongside children, including a scanner-supported
+  // name that matches the cache wrapper's page marker. Like Next.js, a slot named
+  // `$$isLayout` is overwritten by the layout marker.
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-root-slot/parallel-routes-root-slot.test.ts
+  it.each(["$$isPage"])(
+    "renders the %s parallel slot in cached and uncached layouts",
+    async (slotName) => {
+      setCacheHandler(new MemoryCacheHandler());
+      const renderLayout = (props: Record<string, unknown>) =>
+        createElement(
+          "section",
+          null,
+          createElement("div", { key: "slot" }, props[slotName] as ReactNode),
+          createElement("div", { key: "children" }, props.children as ReactNode),
+        );
+      const cachedLayout = registerCachedFunction(
+        async (props: Record<string, unknown>) => renderLayout(props),
+        `wired-marker-slot:${slotName}`,
+      );
+      const build = (layout: typeof renderLayout | typeof cachedLayout) =>
+        buildAppPageElements({
+          element: createElement("main", null, "main page"),
+          makeThenableParams,
+          matchedParams: {},
+          route: {
+            error: null,
+            errors: [null],
+            layoutTreePositions: [0],
+            layouts: [{ default: layout }],
+            loading: null,
+            notFound: null,
+            notFounds: [null],
+            routeSegments: ["dashboard"],
+            slots: {
+              [slotName]: {
+                default: null,
+                error: null,
+                layout: null,
+                layoutIndex: 0,
+                loading: null,
+                name: slotName,
+                page: { default: () => createElement("aside", null, `${slotName} content`) },
+                routeSegments: [],
+              },
+            },
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: "/dashboard",
+          rootNotFoundModule: null,
+        });
+      const uncached = await renderRouteEntry(build(renderLayout), "route:/dashboard");
+      const cached = await renderRouteEntry(build(cachedLayout), "route:/dashboard");
+      expect(uncached).toContain(`${slotName} content`);
+      expect(uncached).toContain("main page");
+      expect(cached).toBe(uncached);
+      expect(await renderRouteEntry(build(cachedLayout), "route:/dashboard")).toBe(uncached);
+    },
+  );
+
   it("selects the nearest positioned loading module with a default export", () => {
     const legacyLoading = { default: () => null };
     const rootLoading = { default: () => null };
