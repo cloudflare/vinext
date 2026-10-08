@@ -18,15 +18,15 @@ export type CdnAdapterOptions = {
  * Unlike the data adapter (which stores cache entries in a durable store and
  * serves HIT/STALE itself), this adapter delegates serving to Workers Cache on
  * a named Worker entrypoint. The default entrypoint always runs middleware and
- * request-time routing before dispatching to cached or uncached response-stage
- * entrypoints.
+ * request-time routing, then renders bypass requests inline or dispatches shared
+ * requests to the cached response-stage entrypoint.
  *
  * The deployment configuration enables Workers Cache only for that response-stage
  * export, so cache hits do not start the application stage. Legacy Cloudflare
  * builds receive this policy in their generated Wrangler config. Cloudflare Vite
  * plugin v2 builds declare the same entrypoint policy in `cloudflare.config.ts`.
- * The uncached response entrypoint keeps bypass and probe renders out of the
- * gateway without enabling Workers Cache for them.
+ * Deployment readiness probes still use the uncached response entrypoint to
+ * verify that named response entrypoints are available.
  *
  * The adapter adds a transport-only URL digest so distinct response-stage
  * identities cannot collide. Workers Cache owns this key independently of

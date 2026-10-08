@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import { createBuilder, createLogger, mergeConfig, parseAst, resolveConfig } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
+  EXPORT_ALL_CANDIDATE_FILTER as _EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
   stripServerExports as _stripServerExportsImpl,
@@ -3476,12 +3477,24 @@ describe("stripServerExports", () => {
     expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
   });
 
-  it("cheaply identifies export-all syntax without matching multiplication", () => {
-    expect(_hasExportAllCandidate(`export * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export\n*\nfrom './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export /* comment */ * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export // comment\n* from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
+  it("cheaply identifies export-all syntax without matching multiplication", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((p: any) => p.name === "vinext:validate-page-exports") as any;
+    const codeFilter = plugin?.transform?.filter?.code;
+    expect(codeFilter).toBe(_EXPORT_ALL_CANDIDATE_FILTER);
+
+    for (const code of [
+      `export * from './other-page';`,
+      `export\n*\nfrom './other-page';`,
+      `export /* comment */ * from './other-page';`,
+      `export // comment\n* from './other-page';`,
+    ]) {
+      expect(_hasExportAllCandidate(code)).toBe(true);
+      expect(codeFilter.test(code)).toBe(true);
+    }
+    const multiplication = `export const area = width * height;`;
+    expect(_hasExportAllCandidate(multiplication)).toBe(false);
+    expect(codeFilter.test(multiplication)).toBe(false);
   });
 
   it("rejects export-all declarations in page modules", () => {

@@ -90,7 +90,13 @@ export type CacheAdapterBuildOutput = {
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
   /**
    * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
-   * default export is a cache adapter factory.
+   * default export creates the adapter from one `{ env, options }` argument:
+   * either a factory `({ env, options }) => adapter` or a class
+   * `new Adapter({ env, options })`. Class syntax is invoked with `new`; any
+   * other function is called. For a constructor that is not class syntax (an
+   * ES5-compiled, bound or Proxy-wrapped class), export
+   * `(args) => new Adapter(args)`. The result must be the adapter object
+   * itself, not a Promise.
    */
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
@@ -270,6 +276,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   const lines: string[] = [
     "// vinext: generated from the `cache` option in your vinext() plugin config.",
+    `import { instantiateCacheAdapter } from "vinext/shims/cache-adapter-instantiate";`,
   ];
 
   if (data?.adapter) {
@@ -309,10 +316,10 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (data?.adapter) {
     lines.push(
       "  try {",
-      `    registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: ${inlineOptions(
+      `    registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, { env, options: ${inlineOptions(
         data.adapter,
         data.options,
-      )} }));`,
+      )} }, "data"));`,
     );
     if (dataProvidesBuildIdentity) {
       lines.push(
@@ -331,10 +338,10 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (cdn?.adapter) {
     lines.push(
       "  try {",
-      `    registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+      `    registerCdnCacheAdapter(() => instantiateCacheAdapter(__vinextCdnAdapterFactory, { env, options: ${inlineOptions(
         cdn.adapter,
         cdn.options,
-      )} }));`,
+      )} }, "cdn"));`,
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
         'using the default adapter.\\n" + __vinextFormatAdapterError(error));',

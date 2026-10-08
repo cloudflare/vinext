@@ -140,3 +140,27 @@ test("preserves raw redirect captures on Workers", async () => {
   expect(response.status).toBe(307);
   expect(response.location).toBe("/blog/a%252Fb/a%252Fb");
 });
+
+// Next.js 308s any raw path containing a backslash or a repeated slash to the
+// collapsed path (base-server.ts / resolve-routes.ts); encoded leading
+// delimiters stay a 404.
+test("redirects repeated slashes and backslashes like Next.js on Workers", async () => {
+  for (const [path, location] of [
+    ["//", "/"],
+    ["//?a=1", "/?a=1"],
+    ["//evil.com", "/evil.com"],
+    ["///evil.com", "/evil.com"],
+    ["/\\evil.com", "/evil.com"],
+    ["/about//", "/about/"],
+  ] as const) {
+    const response = await getRawPath(path);
+    expect({ path, status: response.status, location: response.location }).toEqual({
+      path,
+      status: 308,
+      location,
+    });
+  }
+  for (const path of ["/%2F", "/%5C", "/%2F/evil.com", "/.//%2Fevil.com"]) {
+    expect({ path, status: (await getRawPath(path)).status }).toEqual({ path, status: 404 });
+  }
+});

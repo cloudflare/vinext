@@ -175,13 +175,8 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
         // both font data passed to satori and WASM bytes passed to initWasm).
         if (code.includes("readFileSync(")) {
-          const readFilePattern =
-            /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
-
-          for (const match of code.matchAll(readFilePattern)) {
-            const fullMatch = match[0];
-            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-            const absPath = path.resolve(moduleDir, relPath);
+          for (const match of matchReadFileSyncAssetUrls(code)) {
+            const absPath = path.resolve(moduleDir, match.relPath);
 
             const fileBase64 = await readAsBase64(absPath);
             if (fileBase64 === null) continue;
@@ -190,7 +185,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
             const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
 
-            s.overwrite(match.index, match.index + fullMatch.length, inlined);
+            s.overwrite(match.start, match.end, inlined);
             didReplace = true;
           }
         }
@@ -200,6 +195,67 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       },
     },
   } satisfies Plugin;
+}
+
+// Everything after the identifier in
+// `fs.readFileSync(fileURLToPath(new URL("./file", import.meta.url)))`. Sticky, so
+// it only matches at the `.readFileSync(` occurrence it is positioned on.
+const READ_FILE_SYNC_ASSET_URL_TAIL_RE =
+  /\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/y;
+
+type ReadFileSyncAssetUrlMatch = {
+  start: number;
+  end: number;
+  relPath: string; // e.g. "./noto-sans-v27-latin-regular.ttf"
+};
+
+/**
+ * Find every `<identifier>.readFileSync(fileURLToPath(new URL("./file", import.meta.url)))`
+ * call in `code`.
+ *
+ * Returns the same matches, in the same order, as `code.matchAll()` with
+ * `/[a-zA-Z_$][a-zA-Z0-9_$]*` followed by `READ_FILE_SYNC_ASSET_URL_TAIL_RE` as a
+ * global regex. That regex retries the identifier prefix at every identifier
+ * character of the module, which is slow on large bundles such as typescript.js.
+ * A match's identifier always ends right at a `.readFileSync(` occurrence, so
+ * candidates are found with `indexOf` and the identifier is recovered by
+ * scanning backwards.
+ */
+export function matchReadFileSyncAssetUrls(code: string): ReadFileSyncAssetUrlMatch[] {
+  const matches: ReadFileSyncAssetUrlMatch[] = [];
+  // Like a global regex, a match never starts inside the previous one.
+  let searchFrom = 0;
+  let dot = code.indexOf(".readFileSync(");
+  while (dot !== -1) {
+    let start = dot;
+    while (start > searchFrom && isAsciiIdentifierPart(code.charCodeAt(start - 1))) start--;
+    // Leading digits cannot start an identifier.
+    while (start < dot && !isAsciiIdentifierStart(code.charCodeAt(start))) start++;
+    if (start < dot) {
+      READ_FILE_SYNC_ASSET_URL_TAIL_RE.lastIndex = dot;
+      const tail = READ_FILE_SYNC_ASSET_URL_TAIL_RE.exec(code);
+      if (tail !== null) {
+        const end = dot + tail[0].length;
+        matches.push({ start, end, relPath: tail[2] });
+        searchFrom = end;
+      }
+    }
+    dot = code.indexOf(".readFileSync(", Math.max(dot + 1, searchFrom));
+  }
+  return matches;
+}
+
+function isAsciiIdentifierStart(charCode: number): boolean {
+  return (
+    (charCode >= 97 && charCode <= 122) || // a-z
+    (charCode >= 65 && charCode <= 90) || // A-Z
+    charCode === 95 || // _
+    charCode === 36 // $
+  );
+}
+
+function isAsciiIdentifierPart(charCode: number): boolean {
+  return isAsciiIdentifierStart(charCode) || (charCode >= 48 && charCode <= 57); // 0-9
 }
 
 // @vercel/og WASM assets that need a single physical copy in the output.

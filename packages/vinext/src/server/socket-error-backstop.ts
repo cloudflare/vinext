@@ -14,9 +14,10 @@
  * `uncaughtException`, where this listener filters it.
  *
  * Filters strictly on peer-disconnect codes (ECONNRESET / EPIPE /
- * ECONNABORTED) plus benign static-asset `import()` rejections (see
- * `isBenignAssetImportError`), and synchronously re-throws everything
- * else, preserving Node's default crash semantics for genuine bugs.
+ * ECONNABORTED), benign static-asset `import()` rejections (see
+ * `isBenignAssetImportError`) and Node's cancelled-request-body enqueue
+ * race (see `isCancelledRequestBodyEnqueueError`), and synchronously
+ * re-throws everything else, preserving Node's default crash semantics for genuine bugs.
  * This is more conservative than Next.js's equivalent
  * (`router-server.ts`'s log-only handler), which silently swallows
  * every uncaught — vinext keeps real bugs surfacing.
@@ -170,6 +171,31 @@ export function isBenignAssetImportError(err: unknown): boolean {
 }
 
 /**
+ * Pure predicate: returns `true` when `err` is Node's
+ * `Readable.toWeb()` adapter enqueueing into a request body stream that was
+ * already cancelled. `pull()` calls `req.resume()`, which schedules `flow()`
+ * on `nextTick`; if the body is cancelled before that tick runs, `flow()`
+ * still emits the chunks already buffered in `req` and the adapter's
+ * `onData` throws inside the `nextTick` callback. srvx (used by
+ * `@vitejs/plugin-rsc` in dev) builds `request.body` this way, so any
+ * cancelled request body, e.g. an oversized Server Action, can crash the
+ * dev server. Node main drops that data instead (`if (wasCanceled) return;`
+ * in `onData`), so absorbing it matches upstream behaviour. Exported for
+ * unit testing in isolation.
+ */
+export function isCancelledRequestBodyEnqueueError(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  const { code, message, stack } = err as { code?: string; message?: string; stack?: string };
+  return (
+    code === "ERR_INVALID_STATE" &&
+    typeof message === "string" &&
+    message.includes("Controller is already closed") &&
+    typeof stack === "string" &&
+    /\.onData \(node:internal\/webstreams\/adapters:\d+/.test(stack)
+  );
+}
+
+/**
  * Test-only: returns whether the backstop has been installed in this
  * process. Used by the unit test to assert idempotent install via the
  * Symbol.for guard. Not part of the public API.
@@ -212,6 +238,13 @@ export function installSocketErrorBackstop(): void {
     const code = peerDisconnectCode(err);
     if (code) {
       if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
+      return;
+    }
+    if (isCancelledRequestBodyEnqueueError(err)) {
+      if (debug)
+        console.warn(
+          "[vinext] absorbed uncaughtException ERR_INVALID_STATE (cancelled request body)",
+        );
       return;
     }
     throw err;

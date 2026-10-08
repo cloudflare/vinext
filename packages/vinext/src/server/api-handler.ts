@@ -28,6 +28,7 @@ import {
 import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { NextRequest } from "vinext/shims/server";
+import { signalFromNodeResponse } from "./node-response-signal.js";
 import { hasBasePath } from "../utils/base-path.js";
 import {
   attachPagesPreviewApi,
@@ -181,6 +182,7 @@ function readEdgeRequestBody(req: IncomingMessage): ReadableStream<Uint8Array> |
 
 function createEdgeApiRequest(
   req: IncomingMessage,
+  res: ServerResponse,
   url: string,
   params: Record<string, string | string[]>,
   nextConfig?: { basePath?: string },
@@ -218,11 +220,15 @@ function createEdgeApiRequest(
   }
   const query = mergeRouteParamsIntoQuery(parseQueryString(url), params);
   requestUrl.search = urlQueryToSearchParams(query).toString();
-  const body = readEdgeRequestBody(req);
+  // Match prod/Next.js: edge API handlers observe client disconnects, and an
+  // already-aborted request carries no body.
+  const signal = signalFromNodeResponse(res);
+  const body = signal.aborted ? undefined : readEdgeRequestBody(req);
 
   const init: RequestInit & { duplex?: "half" } = {
     headers,
     method: req.method,
+    signal,
   };
 
   if (body) {
@@ -261,6 +267,7 @@ function waitForWritableDrain(res: ServerResponse): Promise<void> {
 async function writeEdgeApiResponseBody(
   res: ServerResponse,
   body: ReadableStream<Uint8Array> | null,
+  signal: AbortSignal,
 ): Promise<void> {
   if (!body) {
     res.end();
@@ -268,6 +275,14 @@ async function writeEdgeApiResponseBody(
   }
 
   const reader = body.getReader();
+  // A stalled body would otherwise keep the read pending after the client left.
+  const cancel = () => {
+    reader.cancel(signal.reason).catch(() => {
+      /* ignore cancellation failures on discarded bodies */
+    });
+  };
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
   try {
     while (true) {
       const result = await reader.read();
@@ -277,11 +292,14 @@ async function writeEdgeApiResponseBody(
         await waitForWritableDrain(res);
       }
     }
-    res.end();
+    if (!signal.aborted) res.end();
   } catch (error) {
+    // A client disconnect is not a route error.
+    if (signal.aborted) return;
     res.destroy(error instanceof Error ? error : new Error(String(error)));
     throw error;
   } finally {
+    signal.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
 }
@@ -406,7 +424,7 @@ export async function handleApiRoute(
       // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
       // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
       const nextRequest = new NextRequest(
-        createEdgeApiRequest(req, url, params, nextConfig),
+        createEdgeApiRequest(req, res, url, params, nextConfig),
         nextConfig
           ? {
               nextConfig: {
@@ -434,7 +452,7 @@ export async function handleApiRoute(
       if (setCookieHeaders.length) {
         res.setHeader("set-cookie", setCookieHeaders);
       }
-      await writeEdgeApiResponseBody(res, response.body);
+      await writeEdgeApiResponseBody(res, response.body, nextRequest.signal);
       return true;
     }
 

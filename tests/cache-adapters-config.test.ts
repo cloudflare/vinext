@@ -49,6 +49,7 @@ import createKvDataCacheAdapter, {
 import createCloudflareCdnCacheAdapter, {
   CloudflareCdnCacheAdapter,
 } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { instantiateCacheAdapter } from "../packages/vinext/src/shims/cache-adapter-instantiate.js";
 
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
@@ -83,7 +84,7 @@ describe("generateCacheAdaptersModule", () => {
       `import { registerDataCacheHandler } from "vinext/shims/cache-handler";`,
     );
     expect(code).toContain(
-      "registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: undefined }));",
+      'registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, { env, options: undefined }, "data"));',
     );
     expect(code).not.toContain("__vinextCdnAdapterFactory");
     expect(code).not.toContain("registerCdnCacheAdapter");
@@ -96,7 +97,7 @@ describe("generateCacheAdaptersModule", () => {
       `import { registerCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`,
     );
     expect(code).toContain(
-      "registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: undefined }));",
+      'registerCdnCacheAdapter(() => instantiateCacheAdapter(__vinextCdnAdapterFactory, { env, options: undefined }, "cdn"));',
     );
     expect(code).not.toContain("__vinextDataAdapterFactory");
     expect(code).not.toContain("registerDataCacheHandler");
@@ -107,7 +108,7 @@ describe("generateCacheAdaptersModule", () => {
       data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter", options: { binding: "MY_KV" } },
     });
     expect(code).toContain(
-      `registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: {"binding":"MY_KV"} }));`,
+      `registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, { env, options: {"binding":"MY_KV"} }, "data"));`,
     );
   });
 
@@ -139,8 +140,12 @@ describe("generateCacheAdaptersModule", () => {
     });
     expect(code).toContain(`from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";`);
     expect(code).toContain(`from "@vinext/cloudflare/cache/kv-data-adapter";`);
-    expect(code).toContain("registerDataCacheHandler(() => __vinextDataAdapterFactory(");
-    expect(code).toContain("registerCdnCacheAdapter(() => __vinextCdnAdapterFactory(");
+    expect(code).toContain(
+      "registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, ",
+    );
+    expect(code).toContain(
+      "registerCdnCacheAdapter(() => instantiateCacheAdapter(__vinextCdnAdapterFactory, ",
+    );
     expect(code).toContain(
       "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     );
@@ -183,6 +188,21 @@ describe("generateCacheAdaptersModule", () => {
     const weird = `/tmp/some path/with"quote/adapter.js`;
     const code = generateCacheAdaptersModule({ data: { adapter: weird } });
     expect(code).toContain(`import __vinextDataAdapterFactory from ${JSON.stringify(weird)};`);
+  });
+
+  it("routes every configured slot through the shared instantiation shim", () => {
+    for (const cache of [
+      { data: { adapter: "my-data-adapter" } },
+      { cdn: { adapter: "my-cdn-adapter" } },
+    ]) {
+      expect(generateCacheAdaptersModule(cache)).toContain(
+        `import { instantiateCacheAdapter } from "vinext/shims/cache-adapter-instantiate";`,
+      );
+    }
+    expect(generateCdnCacheAdapterModule({ cdn: { adapter: "my-cdn-adapter" } })).toContain(
+      'instantiateCacheAdapter(__vinextCdnAdapterFactory, { env, options: undefined }, "cdn")',
+    );
+    expect(generateCacheAdaptersModule(undefined)).not.toContain("instantiateCacheAdapter");
   });
 });
 
@@ -278,6 +298,15 @@ describe("Cloudflare kv-data-adapter factory", () => {
       env: { MY_KV: namespace },
       options: { binding: "MY_KV" },
     });
+    expect(handler).toBeInstanceOf(KVCacheHandler);
+  });
+
+  it("is accepted by the registration shim the generated module uses", () => {
+    const handler = instantiateCacheAdapter(
+      createKvDataCacheAdapter,
+      { env: { VINEXT_KV_CACHE: namespace }, options: undefined },
+      "data",
+    );
     expect(handler).toBeInstanceOf(KVCacheHandler);
   });
 
@@ -457,6 +486,15 @@ describe("workersCacheCdnAdapter builder + factory", () => {
     expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
     // Edge adapter does not own in-process background regeneration.
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
+  });
+
+  it("factory is accepted by the registration shim the generated module uses", () => {
+    const adapter = instantiateCacheAdapter(
+      createCloudflareCdnCacheAdapter,
+      { env: undefined, options: undefined },
+      "cdn",
+    );
+    expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
   });
 
   it("forwards a custom version metadata binding", () => {

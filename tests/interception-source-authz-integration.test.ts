@@ -86,6 +86,21 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
     authGuard: null,
     exposedGuardedContent: false,
   });
+
+  // Static segments match the raw path, as in Next.js, so a direct request to
+  // `/%66eed/secret` reaches no `/feed` route, and neither does the claimed
+  // source: the target renders without interception.
+  const encodedAlias = await fetch(`${baseUrl}/photos/1`, {
+    headers: interceptionHeaders("/%66eed/secret"),
+  });
+  const encodedAliasBody = await encodedAlias.text();
+  expect({
+    status: encodedAlias.status,
+    exposedGuardedContent: encodedAliasBody.includes(GUARDED_MARKER),
+  }).toEqual({
+    status: 200,
+    exposedGuardedContent: false,
+  });
 }
 
 describe.each([

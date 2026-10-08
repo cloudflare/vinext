@@ -472,6 +472,8 @@ export function applyMiddlewareRequestHeaders(
       method: request.method,
       headers: nextHeaders,
       body: request.body,
+      // Keep observing client disconnects after the header override.
+      signal: request.signal,
       // @ts-expect-error — duplex needed for streaming request bodies
       duplex: request.body ? "half" : undefined,
     });
@@ -1336,13 +1338,21 @@ export async function proxyExternalRequest(
   }
 
   // Enforce a timeout so slow/unresponsive upstreams don't hold connections
-  // open indefinitely (DoS amplification risk on Node.js dev/prod servers).
+  // open indefinitely (DoS amplification risk on Node.js dev/prod servers),
+  // and stop the upstream request when the client disconnects.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(targetUrl.href, { ...init, signal: controller.signal });
+    upstreamResponse = await fetch(targetUrl.href, {
+      ...init,
+      signal: AbortSignal.any([request.signal, controller.signal]),
+    });
   } catch (e) {
+    if (request.signal.aborted && !controller.signal.aborted) {
+      // The client is gone, so this response is never sent.
+      return new Response(null, { status: 499 });
+    }
     if (e instanceof Error && e.name === "AbortError") {
       console.error("[vinext] External rewrite proxy timeout:", targetUrl.href);
       return new Response("Gateway Timeout", { status: 504 });

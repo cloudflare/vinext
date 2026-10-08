@@ -23,6 +23,7 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import type { CacheLifeConfig, CacheLifeSink } from "./cache-request-state.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -194,6 +195,70 @@ export async function runWithIsolatedDynamicUsage<T>(
   return await _als.run(childState, () => runInChildState(childState));
 }
 
+/**
+ * Run a pre-render probe without letting its dynamic API usage classify the
+ * request. Next.js has no probe: only the render decides whether a page is
+ * dynamic, and the render runs the probed layouts and page again. Returns the
+ * probe's own usage and cacheLife for a caller whose probe response replaces
+ * the render.
+ */
+export async function runWithDetachedDynamicUsage<T>(
+  fn: () => T | Promise<T>,
+): Promise<{ result: T; dynamicDetected: boolean; cacheLife: CacheLifeConfig | null }> {
+  const runInChildState = async (
+    childState: VinextHeadersShimState,
+    cacheLifeSink: CacheLifeSink | null,
+  ) => {
+    const result = await fn();
+    return {
+      result,
+      cacheLife: cacheLifeSink?.cacheLife ?? null,
+      // Nested isolated scopes latch without setting this scope's flag.
+      dynamicDetected: childState.dynamicUsageDetected || childState.renderDynamicLatch.dynamic,
+    };
+  };
+
+  if (isInsideUnifiedScope()) {
+    let childState: VinextHeadersShimState | null = null;
+    // Layout probes run in further isolated scopes that reset the slot.
+    const cacheLifeSink: CacheLifeSink = { cacheLife: null };
+    return await runWithUnifiedStateMutation(
+      (context) => {
+        context.cacheLifeSink = cacheLifeSink;
+        context.dynamicUsageDetected = false;
+        context.renderDynamicLatch = createRenderDynamicLatch();
+        context.renderRequestApiUsage = new Set();
+        // cacheForRequest() values would hand the probe's result to the render
+        // without the dynamic API calls that produced it.
+        context.requestCache = new WeakMap();
+        // The render records its own fetches, tags and cacheLife.
+        context.cacheableFetchUrls = new Set();
+        context.currentRequestTags = [];
+        context.dynamicFetchUrls = new Set();
+        context.requestScopedCacheLife = null;
+        context.unstableCacheObservations = new Map();
+        childState = context;
+      },
+      () => {
+        if (!childState) {
+          throw new Error("Dynamic usage scope was not initialized");
+        }
+        return runInChildState(childState, cacheLifeSink);
+      },
+    );
+  }
+
+  const childState: VinextHeadersShimState = {
+    ..._getState(),
+    dynamicUsageDetected: false,
+    renderDynamicLatch: createRenderDynamicLatch(),
+    renderRequestApiUsage: new Set(),
+  };
+  // Outside the unified scope the probe's claims stay on the request's cache
+  // state, so no cacheLife is returned for the probe.
+  return await _als.run(childState, () => runInChildState(childState, null));
+}
+
 export async function runWithConnectionProbe<T>(
   fn: () => T | Promise<T>,
 ): Promise<ConnectionProbeResult<T>> {
@@ -213,10 +278,6 @@ export async function runWithConnectionProbe<T>(
       probe.interrupted = true;
       interruptProbe();
     },
-    // `connection()` suspends forever inside speculative probes, matching
-    // Next.js's prerender/probe contract: code after `await connection()`
-    // must not run while classifying a route.
-    pending: new Promise<never>(() => {}),
   };
 
   const runInChildState = async (childState: VinextHeadersShimState) => {
@@ -227,11 +288,18 @@ export async function runWithConnectionProbe<T>(
       return await Promise.race([completed, interrupted]);
     } finally {
       probe.active = false;
-      // Async resources created inside this ALS scope retain `childState` after
-      // the probe returns. Restore the inherited probe when nested; otherwise
-      // retain this inactive probe so late dynamic usage can still propagate
-      // to its parent without suspending. Reading the parent at cleanup time
-      // preserves the right lifecycle if an outer probe completed separately.
+      // Async resources created inside this ALS scope retain `childState`, and
+      // through it this probe, after the probe returns. A completed probe would
+      // otherwise leave `interrupted` pending forever, holding Promise.race's
+      // reaction, which captured the caller's async context. workerd holds
+      // async context values through strong handles, so that cycle is never
+      // collected and retained every request's context. The race is already
+      // decided here, so settling `interrupted` only drops the reaction.
+      interruptProbe();
+      // Restore the inherited probe when nested; otherwise retain this inactive
+      // probe so late dynamic usage can still propagate to its parent without
+      // suspending. Reading the parent at cleanup time preserves the right
+      // lifecycle if an outer probe completed separately.
       childState.connectionProbe = parentState.connectionProbe ?? probe;
 
       // Dynamic usage discovered by a speculative probe still classifies the
@@ -281,7 +349,12 @@ export function suspendConnectionProbe(): Promise<never> | null {
   if (!probe?.active) return null;
 
   probe.interrupt();
-  return probe.pending;
+  // `connection()` suspends forever inside speculative probes, matching
+  // Next.js's prerender/probe contract: code after `await connection()` must
+  // not run while classifying a route. Each call gets its own promise that
+  // the probe does not keep, so the suspended code (and the async context its
+  // continuation captured) is collected with the request.
+  return new Promise<never>(() => {});
 }
 
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {
@@ -421,6 +494,11 @@ export function restoreDraftModeTransition(cookieHeader: string): void {
   context.mutableCookies = undefined;
   context.draftModeEnabled = entry.value === validateDraftModeSecret(context.draftModeSecret ?? "");
   state.draftModeCookieHeader = cookieHeader;
+}
+
+/** Replace request API inputs while retaining dynamic usage and pending mutations. */
+export function replaceHeadersContext(ctx: HeadersContext): void {
+  _getState().headersContext = ctx;
 }
 
 export function setHeadersContext(ctx: HeadersContext | null): void {
@@ -936,6 +1014,11 @@ const DRAFT_MODE_COOKIE = "__prerender_bypass";
  * Get any Set-Cookie header generated by draftMode().enable()/disable().
  * Called by the framework after rendering to attach the header to the response.
  */
+/** Check a pending draft transition without consuming its outgoing cookie. */
+export function hasDraftModeCookieHeader(): boolean {
+  return _getState().draftModeCookieHeader !== null;
+}
+
 export function getDraftModeCookieHeader(): string | null {
   const state = _getState();
   const header = state.draftModeCookieHeader;

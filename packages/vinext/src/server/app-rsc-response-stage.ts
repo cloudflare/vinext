@@ -146,7 +146,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   rawRequest: Request,
   ctx: unknown,
   props: AppWorkerResponseStageProps,
-  _stageOptions?: VinextResponseStageDispatchOptions,
+  stageOptions?: VinextResponseStageDispatchOptions,
 ): Promise<Response> {
   if (
     props.protocolVersion !== APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION ||
@@ -430,6 +430,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           searchParams,
           scriptNonce: props.scriptNonce ?? undefined,
           renderMode: normalized.renderMode,
+          renderWholeDocument: stageOptions?.renderWholeDocument === true,
         });
       },
       {

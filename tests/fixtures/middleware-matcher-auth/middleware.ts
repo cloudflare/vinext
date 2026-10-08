@@ -41,6 +41,13 @@ export const config = {
       has: [{ type: "header", key: "x-encoded-path-auth", value: "1" }],
     },
     {
+      // Clerk's recommended static-asset exclusion. Its extension alternation
+      // has bounded optional branches (`html?`, `jpe?g`, `woff2?`).
+      source:
+        "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+      has: [{ type: "header", key: "x-static-asset-auth", value: "1" }],
+    },
+    {
       source: "/orders/:id(\\d+)",
       has: [{ type: "header", key: "x-encoded-delimiter-auth", value: "1" }],
     },

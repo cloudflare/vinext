@@ -25,6 +25,7 @@ that existed before.
 - `i18nContext` - locale info (`i18n-state.ts`)
 - `serverContext`, `serverInsertedHTMLCallbacks` - rsc server context (`navigation-state.ts`)
 - `requestScopedCacheLife` - per-request cache life override (`cache.ts`)
+- `cacheLifeSink` - collects a layout probe's cache life across nested scopes that reset `requestScopedCacheLife` (`cache-request-state.ts`)
 - `_privateCache` - per-request private cache map (`cache-runtime.ts`)
 - `currentRequestTags` - revalidation tags (`fetch-cache.ts`)
 - `executionContext` - cloudflare workers execution context (`request-context.ts`)

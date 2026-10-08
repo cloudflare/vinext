@@ -22,6 +22,7 @@ import {
 } from "vinext/shims/cache-handler";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { fnv1a64 } from "../utils/hash.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
@@ -30,7 +31,7 @@ import {
   getRscRenderModeCacheVariant,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
-import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-identity.js";
+import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 import type { RenderObservation } from "./cache-proof.js";
 import { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER } from "../utils/protocol-headers.js";
 export { normalizeMountedSlotsHeader };
@@ -369,6 +370,21 @@ export function isrCacheKey(router: string, pathname: string, buildId?: string):
   return buildCacheKey(prefix, pathname);
 }
 
+/** Build and request time share the same locale-stripped Pages pathname identity. */
+export function pagesIsrCacheKey(
+  pathname: string,
+  buildId?: string,
+  i18nCacheVariant?: string | null,
+): string {
+  // Decode once per segment, preserving escaped delimiters and literal escapes.
+  // Strip the pathname's trailing slash before appending the locale/domain variant.
+  const normalized = normalizeCachePathname(normalizePathnameForRouteMatch(pathname));
+  const variant = i18nCacheVariant ? `::i18n=${encodeURIComponent(i18nCacheVariant)}` : "";
+  // Legacy keys retained raw escapes. A stable build ID must not let a new
+  // literal-percent pathname reinterpret an old encoded-parameter entry.
+  return isrCacheKey("pages:v2", normalized + variant, buildId);
+}
+
 /**
  * Compute an App Router ISR key for one cache artifact.
  *
@@ -391,7 +407,10 @@ export function appIsrHtmlKey(pathname: string): string {
 }
 
 function normalizeInterceptionContextForCacheKey(interceptionContext: string): string | null {
-  return normalizeAppPageInterceptionProofPathname(interceptionContext);
+  // Key on the raw context. The source is matched on its raw segments, so two
+  // spellings that decode alike (`/feed` and `/%66eed`) can render different
+  // source trees and must not share an entry.
+  return isInterceptionMatchedUrlPath(interceptionContext) ? interceptionContext : null;
 }
 
 /**

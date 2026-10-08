@@ -755,7 +755,7 @@ function createNavigationCommitEffect(options: {
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
-}): () => void {
+}): (commit: { keepCurrentUrl: boolean; releaseSnapshot: boolean }) => void {
   const {
     activeRoutePaths,
     bfcacheIds,
@@ -767,13 +767,13 @@ function createNavigationCommitEffect(options: {
     targetHistoryIndex,
   } = options;
 
-  return () => {
+  return ({ keepCurrentUrl, releaseSnapshot }) => {
     // Only update URL if this is still the active navigation.
     // A newer navigation would have superseded this navigation id.
     if (!browserNavigationController.isCurrentNavigation(navId)) {
       // This transition was superseded before commit; balance the active
       // snapshot counter without clearing pendingPathname ownership.
-      commitClientNavigationState(undefined, { releaseSnapshot: true });
+      commitClientNavigationState(undefined, { releaseSnapshot });
       return;
     }
 
@@ -781,7 +781,9 @@ function createNavigationCommitEffect(options: {
       activeRoutePaths,
       bfcacheIds,
       href,
-      historyUpdateMode,
+      // Without an update mode the current entry keeps its URL and only
+      // records this render's metadata, as for a refresh.
+      historyUpdateMode: keepCurrentUrl ? undefined : historyUpdateMode,
       previousNextUrl,
       stageClientParams: () => stageClientParams(params),
       targetHistoryIndex,
@@ -789,7 +791,7 @@ function createNavigationCommitEffect(options: {
 
     // URL has been updated; the recovery hard-nav target is no longer needed.
     clearAppNavigationFailureTarget(href);
-    commitClientNavigationState(navId);
+    commitClientNavigationState(navId, { releaseSnapshot });
   };
 }
 
@@ -2617,7 +2619,8 @@ function bootstrapHydration(
         // the response body underneath createFromFetch and reports an unhandled
         // BodyStreamBuffer AbortError. The navigation id still prevents a late
         // decoded payload from committing. Refreshes retain ownership because
-        // their supplemental branch requests use the same signal until commit.
+        // their supplemental branch requests use the same signal until they
+        // settle.
         if (!hasSupplementalRefresh) {
           navigationAbortHandle.release();
         }
@@ -2700,7 +2703,15 @@ function bootstrapHydration(
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortHandle.signal,
             supplemental,
-          }).then(requireCompleteSupplementalRefresh);
+          })
+            .finally(() => {
+              // Settled supplemental requests stop listening to this signal, so
+              // it now guards only the primary Flight body React is about to
+              // render. Aborting that body would reject the refreshed tree's
+              // pending chunks into the nearest error boundary.
+              navigationAbortHandle.release();
+            })
+            .then(requireCompleteSupplementalRefresh);
         }
 
         // Static hosts cannot supply the compatibility response header used by
@@ -2938,6 +2949,18 @@ function bootstrapHydration(
       historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
     commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
       historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
+    discardPendingNavigation: () => {
+      if (
+        browserNavigationController.discardPendingNavigation(
+          historyController.readCurrentTreeSnapshot(),
+        )
+      ) {
+        // Only cancels a request still waiting for its response; a Flight body
+        // React is already decoding has released its abort handle.
+        navigationAbortCoordinator.abortActive();
+      }
+    },
+    flushCommittingNavigationUrl: () => browserNavigationController.flushCommittingNavigationUrl(),
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).

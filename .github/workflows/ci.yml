@@ -149,7 +149,7 @@ jobs:
       # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
       # coverage data embedded in each shard's blob, producing a unified report.
       # Only enabled on push-to-main, matching the shard config above.
-      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
+      - run: vp test run --merge-reports=.vitest-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
         env:
           CI: true
       - name: Publish coverage matrix to job summary
@@ -558,12 +558,24 @@ jobs:
             label: cloudflare-static-export
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-static-assets-pages
+            label: cloudflare-static-assets-pages
+            shardIndex: 1
+            shardTotal: 1
           - project: static-export-basepath
             label: static-export-basepath
             shardIndex: 1
             shardTotal: 1
           - project: app-with-src
             label: app-with-src
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-nitro
+            label: app-router-nitro
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-nitro-dev
+            label: app-router-nitro-dev
             shardIndex: 1
             shardTotal: 1
           - project: standalone-output

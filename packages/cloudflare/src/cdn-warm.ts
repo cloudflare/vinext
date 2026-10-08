@@ -923,8 +923,10 @@ function validateBuildIdentity(
   return null;
 }
 
+// A page's notFound(), forbidden(), unauthorized() or redirect() is stored with
+// its status, so its response is a route's own, still subject to admission.
 function isExpectedTerminalStatus(status: number): boolean {
-  return (status >= 300 && status < 400) || status === 404;
+  return (status >= 300 && status < 400) || status === 401 || status === 403 || status === 404;
 }
 
 function validateRscWarmResponse(

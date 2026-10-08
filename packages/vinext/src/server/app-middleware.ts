@@ -152,6 +152,8 @@ function requestWithMiddlewareRequestHeaders(
     method: request.method,
     headers: nextHeaders,
     body: request.body,
+    // Keep observing client disconnects after the header override.
+    signal: request.signal,
   };
   if (request.body) {
     Object.defineProperty(init, "duplex", { value: "half", enumerable: true });

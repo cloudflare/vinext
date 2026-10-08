@@ -31,6 +31,7 @@ import {
 } from "./report.js";
 import {
   buildUrlFromParams,
+  localizePagesPath,
   layoutOnlyParamSets,
   resolveParentParams,
   routeStaticParamSets,
@@ -60,7 +61,7 @@ import {
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
-import { resolveBuiltRscEntryPath } from "./server-entry.js";
+import { resolveBuiltPagesEntryPath, resolveBuiltRscEntryPath } from "./server-entry.js";
 import {
   matchesMiddlewarePathname,
   type MatcherConfig,
@@ -660,15 +661,6 @@ async function resolvePagesWarmRouteMetadata(options: {
     if (hasServerSideProps || hasStaticProps) dataPaths.push(pathname);
   }
   return { dataPaths, routePatterns };
-}
-
-function localizePagesPath(
-  pathname: string,
-  locale: string | undefined,
-  i18n: ResolvedNextConfig["i18n"],
-): string {
-  if (!i18n || !locale || locale === i18n.defaultLocale) return pathname;
-  return pathname === "/" ? `/${locale}` : `/${locale}${pathname}`;
 }
 
 /**
@@ -1422,7 +1414,11 @@ export async function discoverPrerenderPathManifest(
     !relativeRscEntryPath.startsWith("../") && !path.isAbsolute(relativeRscEntryPath)
       ? configuredRscServerDir
       : path.dirname(rscBundlePath);
-  const pagesBundlePath = options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js");
+  const pagesBundlePath =
+    options.pagesBundlePath ??
+    resolveBuiltPagesEntryPath(
+      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? path.join("dist", "server")),
+    );
   const bundleServerDir = fs.existsSync(rscBundlePath)
     ? rscServerDir
     : path.dirname(pagesBundlePath);

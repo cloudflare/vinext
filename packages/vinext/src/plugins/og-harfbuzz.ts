@@ -34,7 +34,12 @@ import MagicString from "magic-string";
 import { parseAst, type ESTree, type Plugin } from "vite";
 import { forEachAstChild, getAstName, staticStringValue } from "./ast-utils.js";
 import { isFunctionNode } from "./ast-scope.js";
-import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
+import { createTransformCache } from "./transform-cache.js";
+import {
+  magicStringTransformResult,
+  omitUnusedBuildSourcemap,
+  type MagicStringTransformResult,
+} from "./transform-result.js";
 
 const HARFBUZZ_WASM = "hb.wasm";
 
@@ -242,9 +247,89 @@ const INSTANTIATE_WASM = `function __vi_hb_instantiateWasm(imports, receiveInsta
   return instance.exports;
 }`;
 
+/**
+ * Patch one @vercel/og entry bundle. The result depends only on the bundle
+ * source, its id, the command and the callback module directory; callback
+ * modules are written once and reused by later calls.
+ */
+function patchHarfbuzzBundle(
+  code: string,
+  id: string,
+  isBuild: boolean,
+  callbackModuleDir: string,
+  error: (message: string) => never,
+): MagicStringTransformResult {
+  const ogEntry = toSlash(id.split("?", 1)[0]);
+  const isWorkerd = ogEntry.endsWith("/index.edge.js");
+  const fail = (reason: string): never =>
+    error(
+      `[vinext] Unsupported @vercel/og HarfBuzz bundle in ${ogEntry}: ${reason}. ` +
+        "vinext must be updated to support this @vercel/og version.",
+    );
+
+  const sites = findHarfbuzzPatchSites(parseAst(code, { lang: "js" }));
+  if (typeof sites === "string") return fail(sites);
+
+  const output = new MagicString(code);
+  for (const flag of sites.environmentFlags) {
+    output.overwrite(flag.start, flag.end, "false");
+  }
+  for (const member of sites.instantiateWasmReads) {
+    output.overwrite(member.start, member.end, "__vi_hb_instantiateWasm");
+  }
+
+  const harfbuzzWasm = resolveHarfbuzzWasmPath(ogEntry);
+  const preamble: string[] = [];
+  if (isWorkerd) {
+    // `convertJsFunctionToWasm(func, sig)` compiles a callback module per
+    // signature; substitute the precompiled adapter for that signature.
+    if (sites.moduleCompilations.length === 0) {
+      return fail("no callback module compilation (new WebAssembly.Module) was found");
+    }
+    for (const { node, enclosingFunction } of sites.moduleCompilations) {
+      const signature = isFunctionNode(enclosingFunction) ? enclosingFunction.params[1] : undefined;
+      if (signature?.type !== "Identifier") {
+        return fail("the callback compiler does not take a (func, sig) signature");
+      }
+      output.prependLeft(
+        node.start,
+        `(__vi_hb_callbacks[${signature.name}.replace(/p/g, "i")] || `,
+      );
+      output.appendRight(node.end, ")");
+    }
+
+    const callbacks = [...writeHarfbuzzCallbackModules(harfbuzzWasm, callbackModuleDir)];
+    preamble.push(
+      `import __vi_hb_wasm from ${JSON.stringify(`${harfbuzzWasm}?module`)};`,
+      ...callbacks.map(
+        ([, file], index) =>
+          `import __vi_hb_callback_${index} from ${JSON.stringify(`${file}?module`)};`,
+      ),
+      `var __vi_hb_callbacks = { ${callbacks
+        .map(([signature], index) => `${signature}: __vi_hb_callback_${index}`)
+        .join(", ")} };`,
+      "function __vi_hb_module() { return __vi_hb_wasm; }",
+    );
+  } else {
+    // Builds read the copy vinext:og-assets places beside the server
+    // output; dev reads the installed binary directly.
+    const location = isBuild
+      ? `new URL("./${HARFBUZZ_WASM}", import.meta.url)`
+      : JSON.stringify(harfbuzzWasm);
+    preamble.push(
+      `import { readFileSync as __vi_hb_readFileSync } from "node:fs";`,
+      `function __vi_hb_module() { return new WebAssembly.Module(__vi_hb_readFileSync(${location})); }`,
+    );
+  }
+
+  output.prepend(`${preamble.join("\n")}\n${INSTANTIATE_WASM}\n`);
+  return magicStringTransformResult(output);
+}
+
 export function createOgHarfbuzzPlugin(): Plugin {
   let callbackModuleDir: string;
   let isBuild = false;
+  const cached = createTransformCache<string, MagicStringTransformResult>();
 
   return {
     name: "vinext:og-harfbuzz",
@@ -259,73 +344,19 @@ export function createOgHarfbuzzPlugin(): Plugin {
         code: /["'`]hb\.wasm["'`]/,
       },
       handler(code, id) {
-        const ogEntry = toSlash(id.split("?", 1)[0]);
-        const isWorkerd = ogEntry.endsWith("/index.edge.js");
-        const fail = (reason: string): never =>
-          this.error(
-            `[vinext] Unsupported @vercel/og HarfBuzz bundle in ${ogEntry}: ${reason}. ` +
-              "vinext must be updated to support this @vercel/og version.",
+        const patch = () =>
+          patchHarfbuzzBundle(code, id, isBuild, callbackModuleDir, (message) =>
+            this.error(message),
           );
-
-        const sites = findHarfbuzzPatchSites(parseAst(code, { lang: "js" }));
-        if (typeof sites === "string") return fail(sites);
-
-        const output = new MagicString(code);
-        for (const flag of sites.environmentFlags) {
-          output.overwrite(flag.start, flag.end, "false");
-        }
-        for (const member of sites.instantiateWasmReads) {
-          output.overwrite(member.start, member.end, "__vi_hb_instantiateWasm");
-        }
-
-        const harfbuzzWasm = resolveHarfbuzzWasmPath(ogEntry);
-        const preamble: string[] = [];
-        if (isWorkerd) {
-          // `convertJsFunctionToWasm(func, sig)` compiles a callback module per
-          // signature; substitute the precompiled adapter for that signature.
-          if (sites.moduleCompilations.length === 0) {
-            return fail("no callback module compilation (new WebAssembly.Module) was found");
-          }
-          for (const { node, enclosingFunction } of sites.moduleCompilations) {
-            const signature = isFunctionNode(enclosingFunction)
-              ? enclosingFunction.params[1]
-              : undefined;
-            if (signature?.type !== "Identifier") {
-              return fail("the callback compiler does not take a (func, sig) signature");
-            }
-            output.prependLeft(
-              node.start,
-              `(__vi_hb_callbacks[${signature.name}.replace(/p/g, "i")] || `,
-            );
-            output.appendRight(node.end, ")");
-          }
-
-          const callbacks = [...writeHarfbuzzCallbackModules(harfbuzzWasm, callbackModuleDir)];
-          preamble.push(
-            `import __vi_hb_wasm from ${JSON.stringify(`${harfbuzzWasm}?module`)};`,
-            ...callbacks.map(
-              ([, file], index) =>
-                `import __vi_hb_callback_${index} from ${JSON.stringify(`${file}?module`)};`,
-            ),
-            `var __vi_hb_callbacks = { ${callbacks
-              .map(([signature], index) => `${signature}: __vi_hb_callback_${index}`)
-              .join(", ")} };`,
-            "function __vi_hb_module() { return __vi_hb_wasm; }",
-          );
-        } else {
-          // Builds read the copy vinext:og-assets places beside the server
-          // output; dev reads the installed binary directly.
-          const location = isBuild
-            ? `new URL("./${HARFBUZZ_WASM}", import.meta.url)`
-            : JSON.stringify(harfbuzzWasm);
-          preamble.push(
-            `import { readFileSync as __vi_hb_readFileSync } from "node:fs";`,
-            `function __vi_hb_module() { return new WebAssembly.Module(__vi_hb_readFileSync(${location})); }`,
-          );
-        }
-
-        output.prepend(`${preamble.join("\n")}\n${INSTANTIATE_WASM}\n`);
-        return omitUnusedBuildSourcemap(this.environment, magicStringTransformResult(output));
+        // Every scan and build pass (and every server environment) feeds the
+        // same bundle through this patch; parse it once per build. The
+        // resolved hb.wasm and the written callback modules are stable for the
+        // build. Dev keeps recomputing so a removed callback module is
+        // rewritten.
+        return omitUnusedBuildSourcemap(
+          this.environment,
+          isBuild ? cached(id, code, callbackModuleDir, patch) : patch(),
+        );
       },
     },
   };

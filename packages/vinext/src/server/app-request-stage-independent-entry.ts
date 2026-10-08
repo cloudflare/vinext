@@ -12,6 +12,7 @@ import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims
 // @ts-expect-error -- virtual module resolved by vinext
 import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
 import { registerLazyDataCacheHandler } from "vinext/shims/cache-handler";
+import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
@@ -25,7 +26,7 @@ import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-uti
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
-  isOpenRedirectShaped,
+  guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -36,7 +37,7 @@ import {
   RSC_HEADER,
 } from "./headers.js";
 import { readTrustedPrerenderStateFromHeaders } from "./prerender-route-params.js";
-import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
+import { badRequestResponse } from "./http-error-responses.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
   createWorkerPrerenderDiscoveryContext,
@@ -95,6 +96,9 @@ async function handleRequest(
       );
 
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  // Adapters can resolve their own asset binding. The revalidation context's
+  // closure reads this parameter at call time, so it sees the fallback too.
+  assets ??= getExplicitCdnCacheAdapter()?.assets;
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext
@@ -146,7 +150,8 @@ async function handleRequest(
       __imageConfig,
     );
   }
-  if (isOpenRedirectShaped(url.pathname)) return notFoundResponse();
+  const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
+  if (protocolRelativeGuard) return protocolRelativeGuard;
   try {
     decodeURIComponent(url.pathname);
   } catch {

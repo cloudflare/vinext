@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import {
   isrCacheKey,
+  pagesIsrCacheKey,
   appIsrCacheKey,
   appIsrHtmlKey,
   appIsrRscKey,
@@ -310,15 +311,16 @@ describe("App Router ISR cache key primitives", () => {
     expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
   });
 
-  it("normalizes source context before keying intercepted RSC variants", () => {
+  // The source is matched on its raw segments, so `/%66eed` does not reach a
+  // static `/feed` source and the two can render different source trees.
+  it("keys intercepted RSC variants by the raw source context", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    const encoded = appIsrRscKey("/photos/café", "modal", undefined, "/caf%C3%A9");
-    const decoded = appIsrRscKey("/photos/café", "modal", undefined, "/café");
-    const duplicateSlash = appIsrRscKey("/photos/café", "modal", undefined, "/café//");
+    const encoded = appIsrRscKey("/photos/1", "modal", undefined, "/%66eed");
+    const plain = appIsrRscKey("/photos/1", "modal", undefined, "/feed");
 
-    expect(encoded).toBe(decoded);
-    expect(duplicateSlash).toBe(decoded);
+    expect(encoded).not.toBe(plain);
+    expect(appIsrRscKey("/photos/1", "modal", undefined, "/feed")).toBe(plain);
   });
 
   it("ignores invalid source context before keying intercepted RSC variants", () => {
@@ -968,5 +970,59 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/about")).toBeNull();
     // /about/team should remain — only the exact path was invalidated
     expect(await handler.get("entry:/about/team")).not.toBeNull();
+  });
+});
+
+// Next.js decodes each segment before looking up the prerender/response cache.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/route-module.ts
+describe("Pages cache pathname identity", () => {
+  it("does not reinterpret persisted legacy keys when the build ID stays the same", async () => {
+    const cache = new MemoryCacheHandler();
+    const oldKey = isrCacheKey("pages", "/posts/%66irst", "stable");
+    const newKey = pagesIsrCacheKey("/posts/%2566irst", "stable");
+    await cache.set(
+      oldKey,
+      buildPagesCacheValue("<p>first</p>", { pageProps: { slug: "first" } }),
+      {},
+    );
+    expect(await cache.get(oldKey)).not.toBeNull();
+    expect(await cache.get(newKey)).toBeNull();
+  });
+
+  it.each([null, "locale:en", "locale:fr", JSON.stringify(["fr.example", "fr"])])(
+    "shares equivalent encodings and trailing slashes within variant %s",
+    (variant) => {
+      for (const [left, right] of [
+        ["/posts/first", "/posts/%66irst/"],
+        ["/posts/caf%C3%A9", "/posts/caf%c3%a9/"],
+        ["/posts/a%2Fb", "/posts/a%2fb/"],
+      ]) {
+        expect(pagesIsrCacheKey(left, "build-a", variant)).toBe(
+          pagesIsrCacheKey(right, "build-a", variant),
+        );
+      }
+    },
+  );
+
+  it("keeps escaped delimiters, literal escapes, locale and domain variants distinct", () => {
+    const paths = [
+      "/a/b",
+      "/a%2Fb",
+      "/a%252Fb",
+      "/a%252fb",
+      "/a%3Fb",
+      "/a%253Fb",
+      "/a%23b",
+      "/a%2523b",
+      "/a%5Cb",
+      "/a%255Cb",
+      "/first",
+      "/%2566irst",
+    ];
+    const variants = [null, "locale:en", "locale:fr", JSON.stringify(["en.example", "en"])];
+    const keys = paths.flatMap((pathname) =>
+      variants.map((variant) => pagesIsrCacheKey(pathname, "build-a", variant)),
+    );
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

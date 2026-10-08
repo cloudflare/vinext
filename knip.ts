@@ -53,6 +53,8 @@ export default {
         "oxc-transform-react",
         // OG tests resolve these from vinext's @vercel/og install, not the root workspace.
         "@vercel/og",
+        // The CommonJS syntax tests resolve this from vinext's install, not the root workspace.
+        "vite-plugin-commonjs",
         // scripts/version.mts resolves release APIs from the pinned Changesets CLI,
         // keeping its dependency tree authoritative instead of installing separate copies.
         "@manypkg/get-packages",
@@ -193,6 +195,7 @@ export default {
     "ps",
     "taskkill",
     "eslint",
+    "oxlint",
     "gh",
     "jq",
   ],

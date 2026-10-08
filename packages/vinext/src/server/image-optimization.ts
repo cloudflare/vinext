@@ -17,6 +17,7 @@
  * as-is (no transformation) with security headers applied.
  */
 
+import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
 
 /** The pathname that triggers image optimization (matches Next.js). */
@@ -262,11 +263,34 @@ function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
   );
 }
 
-function createPassthroughImageResponse(source: Response, config?: ImageConfig): Response {
-  const headers = new Headers(source.headers);
+/**
+ * Cache state for a successful image response, sent as both `X-Nextjs-Cache`
+ * and `X-Vinext-Cache`.
+ *
+ * Next.js keeps optimized images in an image cache and labels each 200 with
+ * where the bytes came from: `MISS` when the optimizer ran for this request,
+ * `HIT` or `STALE` when the cache served them. vinext has no image cache on any
+ * runtime, so every successful response is transformed (or passed through) from
+ * the source for the request that receives it. Next.js behaves the same way
+ * when its image cache is disabled (`images.maximumDiskCacheSize: 0`): every
+ * 200 is a `MISS`. `HIT` and `STALE` need a cache of optimized images.
+ *
+ * Next.js sets the header after its ETag check, so a 304 and error responses
+ * go out without it. Only full image responses carry either header here too.
+ */
+export const IMAGE_RESPONSE_CACHE_STATE = "MISS";
+
+/** Headers shared by every successful image response, transformed or not. */
+function setImageResponseHeaders(headers: Headers, config?: ImageConfig): void {
   headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
   headers.set("Vary", "Accept");
   setImageSecurityHeaders(headers, config);
+  setCacheStateHeaders(headers, IMAGE_RESPONSE_CACHE_STATE);
+}
+
+function createPassthroughImageResponse(source: Response, config?: ImageConfig): Response {
+  const headers = new Headers(source.headers);
+  setImageResponseHeaders(headers, config);
   return new Response(source.body, { status: 200, headers });
 }
 
@@ -340,9 +364,7 @@ export async function handleImageOptimization(
         quality,
       });
       const headers = new Headers(transformed.headers);
-      headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
-      headers.set("Vary", "Accept");
-      setImageSecurityHeaders(headers, imageConfig);
+      setImageResponseHeaders(headers, imageConfig);
 
       // Verify the transformed response also has a safe Content-Type.
       // A malicious or buggy transform handler could return HTML.

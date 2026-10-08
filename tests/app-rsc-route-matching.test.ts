@@ -157,14 +157,14 @@ describe("App RSC route matching", () => {
     ]);
 
     expect(matcher.findIntercept("/photos/a%2562", "/feed/a%2561")).toMatchObject({
-      matchedParams: { slug: "a%61", id: "a%2562" },
+      matchedParams: { slug: "a%2561", id: "a%2562" },
     });
     expect(matcher.findIntercept("/photos/a%2Fb", "/feed/a%2561")).toMatchObject({
-      matchedParams: { slug: "a%61", id: "a%2Fb" },
+      matchedParams: { slug: "a%2561", id: "a%2Fb" },
     });
     expect(matcher.findIntercept("/ph%6Ftos/a", "/feed/a%2561")).toBeNull();
     expect(matcher.findIntercept("/photos/%e2%9c%93", "/feed/a%2561")).toMatchObject({
-      matchedParams: { slug: "a%61", id: "%E2%9C%93" },
+      matchedParams: { slug: "a%2561", id: "%E2%9C%93" },
     });
   });
 
@@ -451,7 +451,7 @@ describe("App RSC route matching", () => {
     expect(matcher.findIntercept("/photos/42", "/gallery")).toBeNull();
   });
 
-  it("normalizes source path parts separately from encoded interception targets", () => {
+  it("matches static source segments on the raw path, like a direct request", () => {
     const matcher = createAppRscRouteMatcher([
       route("/_sites/:tenant", ["_sites", ":tenant"], {
         modal: {
@@ -467,13 +467,16 @@ describe("App RSC route matching", () => {
       }),
     ]);
 
-    expect(matcher.findIntercept("/photos/a%2Fb", "/%5Fsites/acme")).toMatchObject({
+    expect(matcher.findIntercept("/photos/a%2Fb", "/_sites/acme")).toMatchObject({
       targetPattern: "/photos/:id",
       matchedParams: { tenant: "acme", id: "a%2Fb" },
     });
+    // A direct request to `/%5Fsites/acme` does not reach `/_sites/:tenant`.
+    expect(matcher.matchRequestRoute("/%5Fsites/acme")).toBeNull();
+    expect(matcher.findIntercept("/photos/a%2Fb", "/%5Fsites/acme")).toBeNull();
   });
 
-  it("decodes an interception source exactly once", () => {
+  it("does not decode a static interception source", () => {
     const matcher = createAppRscRouteMatcher([
       route("/admin", ["admin"], {
         modal: {
@@ -490,9 +493,39 @@ describe("App RSC route matching", () => {
       }),
     ]);
 
-    expect(matcher.findIntercept("/photos/1", "/%61dmin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/admin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).toBeNull();
     expect(matcher.findIntercept("/photos/1", "/%2561dmin")).toBeNull();
   });
+
+  it.each(["caf%C3%A9", "caf%c3%a9", "a%2Fb", "%2561", "%252561", "100%25", "plain"])(
+    "gives source %s the params a direct request to it gets",
+    (tag) => {
+      const matcher = createAppRscRouteMatcher([
+        route("/tags/:tag", ["tags", ":tag"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/tags/:tag",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["modal-layout"],
+                page: "photo-page",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+      ]);
+      const source = `/tags/${tag}`;
+
+      const intercept = matcher.findIntercept("/photos/1", source);
+
+      expect(intercept?.sourceRouteIsConcrete).toBe(true);
+      expect({ ...intercept?.sourceMatchedParams }).toEqual({
+        ...matcher.matchRequestRoute(source)?.params,
+      });
+    },
+  );
 
   it("renders a root-slot interception from the concrete matched source route", () => {
     const matcher = createAppRscRouteMatcher([

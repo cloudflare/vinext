@@ -7,8 +7,12 @@ import createResponseStoreDataCacheAdapter, {
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
 } from "../packages/cloudflare/src/cache/response-store-data.runtime.js";
+import createResponseStoreCdnCacheAdapter from "../packages/cloudflare/src/cache/response-store-cdn.runtime.js";
 import { createCanonicalRscRequestHeaders } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_RSC_VARY_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 const stages = vi.hoisted(() => ({ request: vi.fn(), response: vi.fn() }));
 
@@ -31,6 +35,68 @@ describe("Cloudflare Response Store Worker", () => {
     );
   });
 
+  it("preserves explicit browser policy through the shared header builder", () => {
+    const adapter = createResponseStoreCdnCacheAdapter({});
+    expect(
+      adapter.buildResponseHeaders({
+        cacheControl: "max-age=3600",
+        browserCacheControl: "private, max-age=10",
+      }),
+    ).toMatchObject({
+      "Cache-Control": "private, max-age=10",
+      "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
+    });
+  });
+
+  it.each(["unchanged", "vary", "header", "cookie", "status", "marker"])(
+    "preserves browser policy after Response Store composition: %s",
+    async (mutation) => {
+      const store = {
+        fetch: vi.fn(
+          async () =>
+            new Response("cached", {
+              headers: {
+                "Cache-Control": "max-age=10, stale-while-revalidate=60",
+                Age: "2",
+              },
+            }),
+        ),
+        getTagExpiration: vi.fn(),
+        purge: vi.fn(),
+        put: vi.fn(),
+        invalidate: vi.fn(),
+        refresh: vi.fn(),
+      };
+      stages.request.mockImplementation(async (request, _env, _context, dispatch) => {
+        const response = await dispatch(
+          request,
+          { kind: "app-route" },
+          {
+            cache: "shared",
+          },
+        );
+        const headers = new Headers(response.headers);
+        if (mutation === "vary") headers.set("Vary", "Accept");
+        if (mutation === "header") headers.set("X-Visitor", "alice");
+        if (mutation === "cookie") headers.set("Set-Cookie", "visitor=alice");
+        if (mutation === "marker")
+          headers.set("x-vinext-cloudflare-shared-response-stage", "forged");
+        return new Response(response.body, { headers, status: mutation === "status" ? 201 : 200 });
+      });
+      const response = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/api/policy"),
+        {} as never,
+        { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+      );
+      expect(response.headers.get("Cache-Control")).toBe(
+        mutation === "marker" ? "no-store" : "max-age=10, stale-while-revalidate=60",
+      );
+      expect(response.headers.get("X-Vinext-Cache")).toBe(mutation === "marker" ? null : "HIT");
+      expect(response.headers.get("x-vinext-cloudflare-shared-response-stage")).toBeNull();
+      expect(await response.text()).toBe("cached");
+    },
+  );
+
   it("seals framework variance in opaque requests without changing cached responses", async () => {
     const requests: Request[] = [];
     const fetch = vi.fn(async (request: Request) => {
@@ -52,6 +118,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(async () => 0),
       purge: vi.fn(async () => mutationResult),
       put: vi.fn(async () => mutationResult),
+      invalidate: vi.fn(async () => mutationResult),
       refresh: vi.fn(async () => mutationResult),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -103,6 +170,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(async () => 0),
       purge: vi.fn(),
       put: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -144,6 +212,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(async () => 0),
       purge: vi.fn(async () => mutationResult),
       put,
+      invalidate: vi.fn(async () => mutationResult),
       refresh: vi.fn(async () => mutationResult),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -181,6 +250,7 @@ describe("Cloudflare Response Store Worker", () => {
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
         put: vi.fn(),
+        invalidate: vi.fn(),
         refresh: vi.fn(),
       };
       stages.response.mockResolvedValue(
@@ -208,6 +278,7 @@ describe("Cloudflare Response Store Worker", () => {
       fetch: vi.fn().mockRejectedValue(new Error("lookup unavailable")),
       getTagExpiration: vi.fn(),
       purge: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
       put: vi.fn().mockRejectedValue(new Error("fill unavailable")),
     };
@@ -232,6 +303,59 @@ describe("Cloudflare Response Store Worker", () => {
       expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     }
     expect(store.put).toHaveBeenCalledOnce();
+    // No client waits on a warm-up, so it renders the document whole.
+    expect(stages.response.mock.calls[0]?.[5]).toEqual(
+      warmup ? { cache: "shared", renderWholeDocument: true } : { cache: "shared" },
+    );
+  });
+
+  // A page's notFound(), forbidden() and unauthorized() are stored with their
+  // status, as in Next.js.
+  it.each(
+    [401, 403, 404].flatMap((status) =>
+      ["BLOB-FRESH", "BLOB-STALE", "MISS"].map((marker) => ({ marker, status })),
+    ),
+  )("distinguishes a stored $status from a 404 $marker lookup", async ({ marker, status }) => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = {
+      fetch: vi.fn(
+        async () =>
+          new Response("stored not found", {
+            status: marker === "MISS" ? 404 : status,
+            headers: {
+              "X-Workers-Response-Store": marker,
+              "Cache-Control": "private, max-age=300",
+            },
+          }),
+      ),
+      getTagExpiration: vi.fn(),
+      purge: vi.fn(),
+      put: vi.fn(),
+      invalidate: vi.fn(),
+      refresh: vi.fn(),
+    };
+    stages.response.mockResolvedValue(
+      new Response("rendered not found", {
+        status,
+        headers: {
+          "Cache-Control": "private, max-age=300",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+        },
+      }),
+    );
+    const response = await createVinextResponseStoreHandler(store).fetch(
+      new Request("https://example.com/metadata-404"),
+      {} as never,
+      { passThroughOnException: vi.fn(), waitUntil: vi.fn() },
+    );
+    const miss = marker === "MISS";
+    expect(response.status).toBe(status);
+    expect(response.headers.get("X-Vinext-Cache")).toBe(miss ? "MISS" : "HIT");
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+    expect(await response.text()).toBe(miss ? "rendered not found" : "stored not found");
+    expect(stages.response).toHaveBeenCalledTimes(miss ? 1 : 0);
+    expect(store.put).toHaveBeenCalledTimes(miss ? 1 : 0);
+    expect(errorLog).not.toHaveBeenCalled();
   });
 
   it.each([301, 302, 307, 308])("preserves a cached %s redirect", async (status) => {
@@ -240,6 +364,7 @@ describe("Cloudflare Response Store Worker", () => {
       getTagExpiration: vi.fn(),
       purge: vi.fn(),
       put: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
     };
     const response = await createVinextResponseStoreHandler(store).fetch(
@@ -280,6 +405,7 @@ describe("Cloudflare Response Store Worker", () => {
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
         put: vi.fn(),
+        invalidate: vi.fn(),
         refresh: vi.fn(),
       };
       stages.response.mockImplementation(async () => {
@@ -305,12 +431,15 @@ describe("Cloudflare Response Store Worker", () => {
     stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
       dispatchResponseStage(request, { toJSON }, { cache: "bypass" }),
     );
-    stages.response.mockResolvedValue(new Response("rendered"));
+    stages.response.mockResolvedValue(
+      new Response("rendered", { headers: { "Cache-Control": "private, max-age=10" } }),
+    );
     const store = {
       fetch: vi.fn(),
       getTagExpiration: vi.fn(),
       purge: vi.fn(),
       put: vi.fn(),
+      invalidate: vi.fn(),
       refresh: vi.fn(),
     };
     const handler = createVinextResponseStoreHandler(store);
@@ -322,6 +451,7 @@ describe("Cloudflare Response Store Worker", () => {
 
     expect(await response.text()).toBe("rendered");
     expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=10");
     expect(toJSON).toHaveBeenCalledOnce();
     expect(store.fetch).not.toHaveBeenCalled();
   });
@@ -329,7 +459,7 @@ describe("Cloudflare Response Store Worker", () => {
 
 describe("Cloudflare Response Store Worker query-free cache identity", () => {
   type PutOptions = { revalidator?: { id: string; args: unknown[] } };
-  type StoredEntry = { body: string; headers: Headers; options?: PutOptions };
+  type StoredEntry = { body: string; headers: Headers; options?: PutOptions; status: number };
 
   beforeEach(() => {
     stages.request.mockReset();
@@ -341,15 +471,21 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     const mutationResult = { backingStoreUpdated: true, edgePurgeAccepted: true };
     const fetch = vi.fn(async (request: Request) => {
       const entry = entries.get(request.url);
-      return entry
-        ? new Response(entry.body, { headers: entry.headers })
-        : new Response(null, { headers: { "X-Workers-Response-Store": "MISS" }, status: 404 });
+      if (!entry) {
+        return new Response(null, { headers: { "X-Workers-Response-Store": "MISS" }, status: 404 });
+      }
+      // The backend marks every stored entry, which tells a stored 404 from
+      // its miss.
+      const headers = new Headers(entry.headers);
+      headers.set("X-Workers-Response-Store", "BLOB-FRESH");
+      return new Response(entry.body, { headers, status: entry.status });
     });
     const put = vi.fn(async (request: Request, response: Response, options?: PutOptions) => {
       entries.set(request.url, {
         body: await response.text(),
         headers: new Headers(response.headers),
         options,
+        status: response.status,
       });
       return mutationResult;
     });
@@ -360,6 +496,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         getTagExpiration: vi.fn(async () => 0),
         purge: vi.fn(async () => mutationResult),
         put,
+        invalidate: vi.fn(async () => mutationResult),
         refresh: vi.fn(async () => mutationResult),
       },
     };
@@ -509,6 +646,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     await miss.text();
     const [entry] = [...entries.values()];
     expect(entry?.headers.get("Cache-Control")).toBe("public, max-age=60");
+    expect(entry?.headers.has("x-vinext-cloudflare-shared-response-stage")).toBe(false);
     expect(entry?.headers.has("X-Vinext-Params")).toBe(false);
     expect(entry?.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
 
@@ -522,12 +660,50 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       } as never,
       { ctx: context(), env: {} } as never,
     );
-    const [replayedRequest, , , replayedProps] = stages.response.mock.calls[0]!;
+    const [replayedRequest, , , replayedProps, , replayedOptions] = stages.response.mock.calls[0]!;
     expect((replayedRequest as Request).url).toBe("https://example.com/page");
     expect(replayedProps).toMatchObject({ resolvedUrl: "/page" });
+    // No client waits on a regeneration, so it renders the document whole.
+    expect(replayedOptions).toEqual({ cache: "shared", renderWholeDocument: true });
     expect(regenerated.headers.has("X-Vinext-Params")).toBe(false);
     expect(regenerated.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
   });
+
+  it.each(["private, max-age=10", "no-store", "no-cache"])(
+    "guards provisional browser policy before deferred admission: %s",
+    async (cacheControl) => {
+      dispatchWithIdentity(true, { kind: "app-page", isRscRequest: false });
+      stages.response.mockImplementation(async () => {
+        const response = new Response("provisional", {
+          headers: { "Cache-Control": cacheControl, "Cloudflare-CDN-Cache-Control": "max-age=60" },
+        });
+        return (
+          deferResponseStoreAdmission(response, async (admitted) => {
+            // Completion can discover a late dynamic API and reject admission.
+            await admitted.arrayBuffer();
+            return new Response(null, { headers: { "Cache-Control": "no-store" } });
+          }) ?? response
+        );
+      });
+      const { store } = createMemoryStore();
+      const ctx = context();
+      const response = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/provisional"),
+        {} as never,
+        ctx,
+      );
+      expect(response.headers.get("Cache-Control")).toBe(
+        cacheControl.startsWith("private")
+          ? "no-store, must-revalidate"
+          : cacheControl === "no-cache"
+            ? "no-cache"
+            : cacheControl,
+      );
+      await response.text();
+      await Promise.all(ctx.waitUntil.mock.calls.map(([promise]) => promise));
+      expect(store.put).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["an App route handler", "stored", { isRscRequest: false, kind: "app-route-handler" }],
@@ -559,6 +735,9 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         ctx,
       );
       expect(response.headers.get("X-Vinext-Cache")).toBe(expectedStatus);
+      if (path === "admitted" && expectedStatus === "MISS") {
+        expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+      }
       expect(response.headers.get("X-Vinext-Params")).toBe(routeHeaders["X-Vinext-Params"]);
       expect(response.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
         routeHeaders["X-Vinext-Rendered-Path-And-Search"],
@@ -642,5 +821,111 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect(rsc.headers.get("X-Vinext-Cache")).toBe("HIT");
     expect(await rsc.text()).toBe("rsc");
     expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  // As in Next.js, the page's RSC entry takes its document's status, and a
+  // redirect is a 200 that carries its location. The request stage sends a
+  // marked 403 or 404 to a Link's segment prefetch as a 200.
+  it.each([
+    { documentStatus: 404, location: null, marker: "404", rscStatus: 404 },
+    { documentStatus: 403, location: null, marker: "403", rscStatus: 403 },
+    { documentStatus: 307, location: "/target", marker: null, rscStatus: 200 },
+  ])(
+    "seeds the RSC entry of a $documentStatus document with status $rscStatus",
+    async ({ documentStatus, location, marker, rscStatus }) => {
+      dispatchWithIdentity();
+      stages.response.mockImplementation(async () => {
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+        return new Response("html", {
+          headers: {
+            "Cache-Control": "public, max-age=60",
+            ...(location ? { Location: location } : {}),
+          },
+          status: documentStatus,
+        });
+      });
+      const { entries, store } = createMemoryStore();
+
+      const warmup = await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/page", {
+          headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+        }),
+        {} as never,
+        context(),
+      );
+      await warmup.text();
+
+      const stored = [...entries.values()].map((entry) => ({
+        body: entry.body,
+        location: entry.headers.get("Location"),
+        marker: entry.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER),
+        status: entry.status,
+      }));
+      expect(stored).toEqual([
+        { body: "html", location, marker: null, status: documentStatus },
+        { body: "rsc", location, marker, status: rscStatus },
+      ]);
+    },
+  );
+
+  it("stores, serves and regenerates an admitted RSC response with its completed status", async () => {
+    dispatchWithIdentity(true, { isRscRequest: true });
+    stages.response.mockImplementation(async () => {
+      const response = new Response("rsc", {
+        headers: { "Cache-Control": "no-store, must-revalidate" },
+      });
+      return (
+        deferResponseStoreAdmission(
+          response,
+          async (admitted) =>
+            new Response(await admitted.arrayBuffer(), {
+              headers: { "Cache-Control": "public, max-age=60" },
+              status: 403,
+            }),
+        ) ?? response
+      );
+    });
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const missContext = context();
+    const miss = await handler.fetch(
+      new Request("https://example.com/page"),
+      {} as never,
+      missContext,
+    );
+    expect(miss.status).toBe(200);
+    expect(await miss.text()).toBe("rsc");
+    await Promise.all(missContext.waitUntil.mock.calls.map(([promise]) => promise));
+    const [entry] = [...entries.values()];
+    expect(entry?.status).toBe(403);
+
+    const hit = await handler.fetch(
+      new Request("https://example.com/page"),
+      {} as never,
+      context(),
+    );
+    expect(hit.status).toBe(403);
+    expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(await hit.text()).toBe("rsc");
+
+    stages.response.mockImplementation(
+      async () =>
+        new Response("regenerated", {
+          headers: { "Cache-Control": "public, max-age=60" },
+          status: 403,
+        }),
+    );
+    const regenerated = await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entry!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request("https://example.com/page"),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    expect(regenerated.status).toBe(403);
+    expect(await regenerated.text()).toBe("regenerated");
   });
 });

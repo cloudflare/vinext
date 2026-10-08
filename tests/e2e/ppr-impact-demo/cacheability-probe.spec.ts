@@ -106,10 +106,9 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     headers,
   });
   await expect(configPublicDynamicProbe.json()).resolves.toMatchObject({
-    cacheControl: "s-maxage=32",
     kind: "app-page",
     pattern: "/cacheability/config-public-dynamic",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });
@@ -129,10 +128,9 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     headers,
   });
   await expect(specialPatternProbe.json()).resolves.toMatchObject({
-    cacheControl: "s-maxage=33",
     kind: "app-page",
     pattern: "/cacheability/config-public-pattern/:slug",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });
@@ -141,10 +139,9 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     headers,
   });
   await expect(representationHtmlProbe.json()).resolves.toMatchObject({
-    cacheControl: "s-maxage=34",
     kind: "app-page",
     pattern: "/cacheability/config-public-representation",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });
@@ -198,9 +195,8 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
-  // A handler-owned public policy is an explicit cache opt-in even when the
-  // handler reads request data. Next.js preserves that policy rather than
-  // replacing it with the framework's dynamic default.
+  // An authored public browser policy does not make a request-dependent
+  // handler eligible for the framework cache in Next.js.
   const explicitDynamicRouteHandlerProbe = await request.get(
     "/cacheability/route-handler-explicit-dynamic",
     { headers: { ...headers, Accept: "*/*" } },
@@ -208,7 +204,7 @@ test("classifies completed App Page renders inside workerd", async ({ request })
   await expect(explicitDynamicRouteHandlerProbe.json()).resolves.toMatchObject({
     kind: "app-route",
     pattern: "/cacheability/route-handler-explicit-dynamic",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });

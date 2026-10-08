@@ -21,7 +21,12 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-og-harfbuzz-"));
 
 afterAll(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
-type TransformHandler = (code: string, id: string) => { code: string } | null;
+type BuildEnvironment = { mode: "build"; config: { build: { sourcemap: boolean } } };
+type TransformHandler = (
+  code: string,
+  id: string,
+  environment?: BuildEnvironment,
+) => { code: string; map?: unknown } | null;
 
 function createTransform(command: "build" | "serve", root: string): TransformHandler {
   const plugin = createOgHarfbuzzPlugin();
@@ -30,12 +35,10 @@ function createTransform(command: "build" | "serve", root: string): TransformHan
     command,
   });
   const { handler } = plugin.transform as { handler: TransformHandler };
-  const context = {
-    error(message: string): never {
-      throw new Error(message);
-    },
+  const error = (message: string): never => {
+    throw new Error(message);
   };
-  return (code, id) => handler.call(context, code, id);
+  return (code, id, environment) => handler.call({ environment, error }, code, id);
 }
 
 let copyCount = 0;
@@ -195,6 +198,46 @@ describe("@vercel/og HarfBuzz compatibility", () => {
   it("leaves yoga's instantiateWasm hook alone", () => {
     const result = createTransform("build", tmpRoot)(fs.readFileSync(edgeEntry, "utf8"), edgeEntry);
     expect(result!.code).toContain("t.instantiateWasm");
+  });
+
+  it("patches each bundle once per build", () => {
+    const code = fs.readFileSync(edgeEntry, "utf8");
+    const build = createTransform("build", path.join(tmpRoot, "cached-project"));
+    const first = build(code, edgeEntry);
+    expect(first).not.toBeNull();
+    // Scan and build passes feed the same source through the same plugin.
+    expect(build(code, edgeEntry)).toBe(first);
+
+    const changed = build(`${code}\n// changed`, edgeEntry);
+    expect(changed).not.toBe(first);
+    expect(changed!.code).toContain("// changed");
+  }, 30_000);
+
+  it("recomputes the patch in dev", () => {
+    const code = fs.readFileSync(edgeEntry, "utf8");
+    const dev = createTransform("serve", path.join(tmpRoot, "cached-project"));
+    const first = dev(code, edgeEntry);
+    const again = dev(code, edgeEntry);
+    expect(again).not.toBe(first);
+    expect(again!.code).toBe(first!.code);
+  }, 30_000);
+
+  it("omits the sourcemap per environment when the patch is shared", () => {
+    const code = fs.readFileSync(edgeEntry, "utf8");
+    const build = createTransform("build", path.join(tmpRoot, "sourcemap-project"));
+    const environment = (sourcemap: boolean): BuildEnvironment => ({
+      mode: "build",
+      config: { build: { sourcemap } },
+    });
+
+    const withMap = build(code, edgeEntry, environment(true));
+    const withoutMap = build(code, edgeEntry, environment(false));
+    expect(withoutMap!.map).toBeNull();
+    expect(withoutMap!.code).toBe(withMap!.code);
+    // The environment without sourcemaps must not strip the shared result.
+    const again = build(code, edgeEntry, environment(true));
+    expect(again).toBe(withMap);
+    expect(again!.map).toBeTruthy();
   });
 
   it("fails the build when the HarfBuzz factory no longer matches", () => {

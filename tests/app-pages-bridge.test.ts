@@ -1,3 +1,7 @@
+import {
+  CACHEABILITY_REQUEST_STATE,
+  readRouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -106,6 +110,60 @@ describe("renderPagesFallback", () => {
 
     return { encodedBody, observedRuntimes, response };
   }
+
+  it("passes cacheability execution context into the separate Pages renderer", async () => {
+    const context = { waitUntil() {} };
+    const request = new Request("https://example.com/page");
+    const renderPage = vi.fn(async (_request, _url, _manifest, receivedContext) => {
+      expect(receivedContext).toBe(context);
+      return new Response("page");
+    });
+    const response = await runWithExecutionContext(context, () =>
+      renderPagesFallback(
+        {
+          isRscRequest: false,
+          request,
+          url: new URL(request.url),
+          middlewareContext: { headers: null, requestHeaders: null, status: null },
+        },
+        { ...defaultDeps, loadPagesEntry: () => ({ renderPage }) },
+      ),
+    );
+    expect(renderPage).toHaveBeenCalledOnce();
+    await expect(response?.text()).resolves.toBe("page");
+  });
+
+  it("passes cacheability context and ownership into the separate Pages API renderer", async () => {
+    const context = { waitUntil() {}, [CACHEABILITY_REQUEST_STATE]: { mode: "admit" as const } };
+    const request = new Request("https://example.com/api/page");
+    const handleApiRoute = vi.fn(async (_request, _url, receivedContext) => {
+      expect(receivedContext).toBe(context);
+      expect(readRouteCacheabilityState()?.route).toEqual({
+        kind: "pages-api",
+        pattern: "/api/page",
+      });
+      return new Response("api");
+    });
+    const response = await runWithExecutionContext(context, () =>
+      renderPagesFallback(
+        {
+          isRscRequest: false,
+          request,
+          url: new URL(request.url),
+          middlewareContext: { headers: null, requestHeaders: null, status: null },
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({
+            handleApiRoute,
+            matchApiRoute: () => ({ route: { isDynamic: false, pattern: "/api/page" } }),
+          }),
+        },
+      ),
+    );
+    expect(handleApiRoute).toHaveBeenCalledOnce();
+    await expect(response?.text()).resolves.toBe("api");
+  });
 
   it("passes staged response headers to Pages API and GSSP user code", async () => {
     // Ported from Next.js:

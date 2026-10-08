@@ -34,6 +34,7 @@ import {
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
@@ -258,6 +259,16 @@ const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
   res.removeHeader("Transfer-Encoding");
+}
+
+/**
+ * Vite's `transformIndexHtml` treats its URL as the HTML document's path, so
+ * the request query carries no meaning there. Since Vite 8.3.3 it also maps
+ * `/?q` onto the project root directory and then watches the filesystem root
+ * for each inline `<style>` proxy module, so pass the bare path.
+ */
+function toHtmlTransformPath(url: string): string {
+  return stripViteModuleQuery(url);
 }
 
 /**
@@ -491,7 +502,7 @@ async function streamPageToResponseImpl(
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  let transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  let transformedShell = await server.transformIndexHtml(toHtmlTransformPath(url), shellTemplate);
   transformedShell = stripDocumentAssetPropsProtectionMarkers(
     applyDocumentAssetProps(transformedShell, documentAssetProps, {
       configuredCrossOrigin: crossOrigin,
@@ -998,7 +1009,7 @@ export function createSSRHandler(
         if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
           const pathsResult = await pageModule.getStaticPaths({
             locales: i18nConfig?.locales ?? [],
-            defaultLocale: currentDefaultLocale ?? "",
+            defaultLocale: i18nConfig?.defaultLocale ?? "",
           });
           const fallback = pathsResult?.fallback ?? false;
 
@@ -1006,7 +1017,11 @@ export function createSSRHandler(
           const routePattern = patternToNextFormat(route.pattern);
           const routeParams = getPagesRouteParams(routePattern);
           const isValidPath = paths.some((pathEntry) =>
-            matchesPagesStaticPath(pathEntry, params, routeParams, url),
+            matchesPagesStaticPath(pathEntry, params, routeParams, localeStrippedUrl, {
+              locale,
+              locales: i18nConfig?.locales,
+              defaultLocale: i18nConfig?.defaultLocale,
+            }),
           );
 
           if (fallback === false && !isValidPath && requestPreviewData === false) {
@@ -1458,6 +1473,7 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          dataHeaders["Cache-Control"] = DEV_PAGES_CACHE_CONTROL;
           applyDevPagesPreviewHeaders(dataHeaders, requestPreview);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
@@ -1637,6 +1653,7 @@ export function createSSRHandler(
         // Pages development cache boundary and font preload headers.
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
+          "Cache-Control": DEV_PAGES_CACHE_CONTROL,
         };
         if (typeof pageModule.getStaticProps === "function") {
           // Next's Pages handler never persists route responses in dev. It may
@@ -2117,7 +2134,7 @@ async function renderErrorPage(
 </html>`;
         const transformedHtml = stripDocumentAssetPropsProtectionMarkers(
           applyDocumentAssetProps(
-            await server.transformIndexHtml(url, html),
+            await server.transformIndexHtml(toHtmlTransformPath(url), html),
             {},
             {
               configuredCrossOrigin: context.crossOrigin,

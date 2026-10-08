@@ -28,6 +28,87 @@ Set `output: "standalone"` in `next.config`. A production build then emits a sel
 
 Set `PORT` and `HOST` to change the default bind address. Unlike Next.js standalone output, vinext uses `HOST`, not `HOSTNAME`.
 
+### Custom standalone entries
+
+The generated `server.js` is a small wrapper around `startProdServer` from `vinext/server/prod-server`. To control where the server loads the build output from, write your own entry and call `startProdServer` directly. All options are optional:
+
+<table>
+  <thead>
+    <tr>
+      <th>Option</th>
+      <th>Default</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>`port`</td>
+      <td>`PORT` env var, otherwise `3000`</td>
+      <td>Port to listen on.</td>
+    </tr>
+    <tr>
+      <td>`host`</td>
+      <td>`"0.0.0.0"`</td>
+      <td>
+        Address to bind to. Unlike the generated `server.js`, `startProdServer` doesn't read `HOST`,
+        so pass `process.env.HOST` yourself if you need it.
+      </td>
+    </tr>
+    <tr>
+      <td>`outDir`</td>
+      <td>`dist`, resolved against the current directory</td>
+      <td>
+        Build output directory containing `client/` and `server/`. Relative paths resolve against
+        the current directory. In standalone output, this is `dist/standalone/dist`.
+      </td>
+    </tr>
+    <tr>
+      <td>`serverDir`</td>
+      <td>`<outDir>/server`</td>
+      <td>Directory containing the server bundles, manifests, and prerendered output.</td>
+    </tr>
+    <tr>
+      <td>`rscEntryPath`</td>
+      <td>`<serverDir>/index.js`</td>
+      <td>App Router server entry. If this file exists, the server runs in App Router mode.</td>
+    </tr>
+    <tr>
+      <td>`serverEntryPath`</td>
+      <td>`<serverDir>/entry.js`</td>
+      <td>Pages Router server entry. Used when there's no App Router entry.</td>
+    </tr>
+    <tr>
+      <td>`noCompression`</td>
+      <td>`false`</td>
+      <td>Disable response compression.</td>
+    </tr>
+  </tbody>
+</table>
+
+`ProdServerOptions` also has `purpose` and `silent`, which vinext uses for its own build-time servers. Leave them unset. The returned promise resolves to `{ server, port }` once the server is listening.
+
+### Compiled single-file binaries
+
+A `bun build --compile` binary can't use the generated `server.js`. Bun fixes `import.meta.dirname` when it compiles the binary, so `join(import.meta.dirname, "dist")` doesn't point at the directory the binary runs from. Depending on the Bun version, it points at the build machine's path or at Bun's embedded `/$bunfs/root`. Resolve `outDir` from the executable's location instead:
+
+```js
+// server-bin.mjs, in your project root
+import path from "node:path";
+import { startProdServer } from "vinext/server/prod-server";
+
+await startProdServer({
+  port: Number.parseInt(process.env.PORT ?? "3000", 10),
+  host: process.env.HOST ?? "0.0.0.0",
+  outDir: path.join(path.dirname(process.execPath), "dist"),
+});
+```
+
+```bash
+bun build --compile --compile-autoload-package-json server-bin.mjs --outfile dist/standalone/server
+```
+
+Keep the entry outside `dist/standalone`: each build deletes and recreates that directory. Compile after `vite build`, then ship the whole `dist/standalone` directory, because the `server` binary needs the `dist/` and `node_modules/` directories next to it. The server bundles in `dist/server` still import their dependencies from `node_modules` at runtime. `--compile-autoload-package-json` lets the binary read package `exports` and `main` fields when it resolves them. Under plain Node, `process.execPath` is the Node binary, so use this entry only for compiled builds.
+
 ## Nitro adapters
 
 Add Nitro when you need a deployment preset for Vercel, Netlify, AWS, Deno Deploy, Azure, or another supported host.

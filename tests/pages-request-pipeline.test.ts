@@ -1087,6 +1087,33 @@ describe("beforeFiles rewrites", () => {
     },
   );
 
+  it("marks build-time renders whose URL a rewrite changed", async () => {
+    const deps = baseDeps({
+      configRewrites: {
+        beforeFiles: [
+          { source: "/account", destination: "/login", missing: [{ type: "cookie", key: "s" }] },
+        ],
+        afterFiles: [],
+        fallback: [],
+      },
+      renderPage: makeRenderPage(),
+    });
+    const markerFor = async (pathname: string) => {
+      const result = await runPagesRequest(makeRequest(pathname), deps);
+      if (result.type !== "response") throw new Error("Expected a response");
+      return result.response.headers.get("x-vinext-prerender-rewritten");
+    };
+
+    expect(await markerFor("/account")).toBeNull();
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      expect(await markerFor("/account")).toBe("1");
+      expect(await markerFor("/about")).toBe("0");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("does not match decoded literal aliases from the normalized route pathname", async () => {
     const renderPage = makeRenderPage();
     const result = await runPagesRequest(

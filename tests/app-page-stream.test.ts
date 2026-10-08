@@ -502,8 +502,8 @@ describe("app page stream helpers", () => {
     const tracker = createAppPageRscErrorTracker(baseOnError);
 
     // A genuine error that merely carries a (e.g. hashed) digest is not a
-    // navigation signal: it must reach the error boundary, not pre-empt the
-    // 307/404 swap slot reserved for real redirect/notFound signals.
+    // navigation signal: it must reach the error boundary, not take the slot
+    // reserved for real redirect/notFound signals.
     const realError = Object.assign(new Error("kaboom"), { digest: "1234567890" });
     tracker.onRenderError(realError, { path: "/test" }, { chunk: 1 });
 
@@ -516,6 +516,22 @@ describe("app page stream helpers", () => {
 
     expect(tracker.getCapturedSpecialError()).toBe(redirect);
     expect(tracker.getCapturedError()).toBe(realError);
+  });
+
+  it("finds the special errors the RSC render threw with a decoded error's digest", () => {
+    const tracker = createAppPageRscErrorTracker((error) => (error as { digest: string }).digest);
+    const metadataNotFound = { digest: "NEXT_HTTP_ERROR_FALLBACK;404", fromMetadata: true };
+    const pageNotFound = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const redirect = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+    tracker.onRenderError(metadataNotFound, null, null);
+    tracker.onRenderError(redirect, null, null);
+    tracker.onRenderError(pageNotFound, null, null);
+
+    const decoded = Object.assign(new Error("decoded"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
+    expect(tracker.getCapturedSpecialErrors(decoded)).toEqual([metadataNotFound, pageNotFound]);
+    expect(tracker.getCapturedSpecialErrors(new Error("no digest"))).toEqual([]);
   });
 
   it("correlates re-created RSC errors by digest and keeps custom-digest SSR errors reportable", () => {

@@ -8,10 +8,25 @@ import {
   onRenderDynamicLatched,
   runWithConnectionProbe,
   runWithHeadersContext,
+  runWithDetachedDynamicUsage,
   runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import {
+  addCollectedRequestTags,
+  getCollectedFetchTags,
+} from "../packages/vinext/src/shims/fetch-cache.js";
+import {
+  cacheLife,
+  MemoryCacheHandler,
+  setCacheHandler,
+  unstable_cache,
+} from "../packages/vinext/src/shims/cache.js";
+import { runWithDetachedCacheObservations } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
   runWithUnifiedStateMutation,
 } from "../packages/vinext/src/shims/unified-request-context.js";
@@ -255,7 +270,6 @@ describe("render dynamic latch", () => {
         dynamicUsageTarget: parent,
         interrupted: false,
         interrupt() {},
-        pending: new Promise<never>(() => {}),
       };
       const child: Partial<typeof parent> = { ...parent, connectionProbe: probe };
       delete child.renderDynamicLatch;
@@ -291,6 +305,165 @@ describe("render dynamic latch", () => {
           () => markDynamicUsage(),
         );
         expect(isRenderDynamicLatched()).toBe(true);
+      });
+    });
+  });
+
+  describe("detached dynamic usage", () => {
+    it("reports a probe's dynamic usage without marking the request", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const outcome = await runWithDetachedDynamicUsage(() => markDynamicUsage());
+        expect(outcome.dynamicDetected).toBe(true);
+        expect(consumeDynamicUsage()).toBe(false);
+        expect(isRenderDynamicLatched()).toBe(false);
+      });
+    });
+
+    it("keeps a probe's fetch observations and cacheLife out of the request", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        await runWithDetachedDynamicUsage(() => {
+          const probeContext = getRequestContext();
+          probeContext.cacheableFetchUrls.add("https://api.example.test/cached");
+          probeContext.currentRequestTags.push("probe-tag");
+          probeContext.dynamicFetchUrls.add("https://api.example.test/dynamic");
+          probeContext.requestScopedCacheLife = { revalidate: 1 };
+        });
+
+        const context = getRequestContext();
+        expect([...context.cacheableFetchUrls]).toEqual([]);
+        expect(context.currentRequestTags).toEqual([]);
+        expect([...context.dynamicFetchUrls]).toEqual([]);
+        expect(context.requestScopedCacheLife).toBeNull();
+      });
+    });
+
+    it("returns the probe's cacheLife from scopes that reset the request slot", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const outcome = await runWithDetachedDynamicUsage(async () => {
+          await runWithUnifiedStateMutation(
+            (context) => {
+              context.requestScopedCacheLife = null;
+            },
+            () => cacheLife({ stale: 45, revalidate: 60, expire: 300 }),
+          );
+          // A background regeneration's claims stay out of the probe's.
+          await runWithDetachedCacheObservations(async () => {
+            cacheLife({ stale: 10, revalidate: 60, expire: 300 });
+          });
+        });
+
+        expect(outcome.cacheLife?.stale).toBe(45);
+        expect(getRequestContext().requestScopedCacheLife).toBeNull();
+      });
+    });
+
+    describe("an unstable_cache background refresh", () => {
+      // Serves every unstable_cache entry stale, so each call schedules a refresh.
+      class StaleUnstableCacheHandler extends MemoryCacheHandler {
+        readonly refreshedBodies: string[] = [];
+
+        override async set(...args: Parameters<MemoryCacheHandler["set"]>) {
+          const [key, data] = args;
+          if (key.startsWith("unstable_cache:") && data?.kind === "FETCH") {
+            this.refreshedBodies.push(data.data.body);
+          }
+          return super.set(...args);
+        }
+
+        override async get(key: string, ctx?: Record<string, unknown>) {
+          if (!key.startsWith("unstable_cache:")) return super.get(key, ctx);
+          return {
+            cacheState: "stale" as const,
+            lastModified: Date.now() - 2_000,
+            value: {
+              kind: "FETCH" as const,
+              data: { body: JSON.stringify({ v: "stale" }), headers: {}, url: key },
+              revalidate: 1,
+              tags: [],
+            },
+          };
+        }
+      }
+
+      const runScenario = async (scenario: (refreshes: Promise<unknown>[]) => Promise<void>) => {
+        const handler = new StaleUnstableCacheHandler();
+        setCacheHandler(handler);
+        try {
+          const refreshes: Promise<unknown>[] = [];
+          const context = createRequestContext({
+            executionContext: { waitUntil: (promise) => refreshes.push(promise) },
+            unstableCacheRevalidation: "background",
+          });
+          await runWithRequestContext(context, () => scenario(refreshes));
+          // The refresh ran to completion and stored its result.
+          expect(handler.refreshedBodies).toEqual([JSON.stringify({ v: "short" })]);
+        } finally {
+          setCacheHandler(new MemoryCacheHandler());
+        }
+      };
+
+      // A refresh that reads a public cached function with a shorter stale time.
+      const createStaleRead = (key: string) => {
+        const readShortLived = registerCachedFunction(async () => {
+          cacheLife({ stale: 10, revalidate: 60, expire: 300 });
+          return "short";
+        }, `test:${key}:short-lived`);
+        return unstable_cache(
+          async () => {
+            // What a tagged fetch inside the refresh records.
+            addCollectedRequestTags([`${key}:fetch-tag`]);
+            return readShortLived();
+          },
+          [key],
+          { revalidate: 1 },
+        );
+      };
+
+      it("keeps its cacheLife out of the request", async () => {
+        const getValue = createStaleRead("refresh-request");
+        await runScenario(async (refreshes) => {
+          expect(await getValue()).toBe("stale");
+          await Promise.all(refreshes);
+
+          expect(refreshes).toHaveLength(1);
+          expect(getRequestContext().requestScopedCacheLife).toBeNull();
+          expect(getCollectedFetchTags()).toEqual([]);
+        });
+      });
+
+      it("keeps its cacheLife out of a probe and an enclosing cache", async () => {
+        const getValue = createStaleRead("refresh-probe");
+        await runScenario(async (refreshes) => {
+          const readOuter = registerCachedFunction(async () => {
+            cacheLife({ stale: 45, revalidate: 60, expire: 300 });
+            const value = await getValue();
+            // Let the refresh finish while the enclosing cache is still open.
+            await Promise.all(refreshes);
+            return value;
+          }, "test:refresh-probe:outer");
+
+          const outcome = await runWithDetachedDynamicUsage(() => readOuter());
+
+          expect(outcome.result).toBe("stale");
+          expect(refreshes).toHaveLength(1);
+          expect(outcome.cacheLife?.stale).toBe(45);
+        });
+      });
+    });
+
+    it("lets the render rerun a cacheForRequest factory the probe called", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const factory = vi.fn(() => {
+          markDynamicUsage();
+          return "session";
+        });
+        const getSession = cacheForRequest(factory);
+
+        await runWithDetachedDynamicUsage(() => getSession());
+        expect(getSession()).toBe("session");
+
+        expect(factory).toHaveBeenCalledTimes(2);
+        expect(consumeDynamicUsage()).toBe(true);
       });
     });
   });

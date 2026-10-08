@@ -893,6 +893,49 @@ describe("KVCacheHandler", () => {
       expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
     });
 
+    it("keeps an entry in KV until its expire when that outlasts the TTL", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+      // cacheLife("max"): stale after 30 days, servable as stale for a year.
+      await handler.set(
+        "max-profile",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" }, revalidate: 2_592_000 } as any,
+        { cacheControl: { revalidate: 2_592_000, expire: 31_536_000, stale: 300 } },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:max-profile", expect.any(String), {
+        expirationTtl: 31_536_000,
+        metadata: { tags: [] },
+      });
+
+      vi.setSystemTime(1_000 + 31 * 24 * 60 * 60 * 1000);
+      const hit = await handler.get("max-profile");
+      expect(hit?.cacheState).toBe("stale");
+
+      // A shorter expire keeps the configured TTL, and a fractional one rounds up.
+      await handler.set(
+        "short-expire",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" } } as any,
+        {
+          cacheControl: { revalidate: 60, expire: 3600 },
+        },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:short-expire", expect.any(String), {
+        expirationTtl: 30 * 24 * 3600,
+        metadata: { tags: [] },
+      });
+      await handler.set(
+        "fractional-expire",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" } } as any,
+        {
+          cacheControl: { revalidate: 60, expire: 2_592_000.5 },
+        },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:fractional-expire", expect.any(String), {
+        expirationTtl: 2_592_001,
+        metadata: { tags: [] },
+      });
+    });
+
     it.each([
       [90.9, 90],
       [2 ** 31, 2_147_483_647],

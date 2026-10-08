@@ -72,6 +72,10 @@ function mockRes(): http.ServerResponse & { _body: string | Buffer; _ended: bool
   const headers: Record<string, string | string[]> = {};
   const res = {
     statusCode: 200,
+    // Edge API requests derive their abort signal from the response lifetime.
+    once() {
+      return res;
+    },
     _body: "" as string | Buffer,
     _ended: false,
     setHeader(name: string, value: string | string[]) {

@@ -4,7 +4,8 @@
  * Covers the edge-managed adapter backed by the Workers Cache (ctx.cache):
  *  - get null / set no-op / ownsBackgroundRevalidation false
  *  - buildResponseHeaders emits a cacheable Cache-Control + Cache-Tag
- *  - revalidateTag purges via ctx.cache.purge({ tags })
+ *  - revalidateTag purges via ctx.cache.purge({ tags }), or invalidates via
+ *    ctx.cache.invalidate({ tags }) for stale-while-revalidate profiles
  *  - getCdnCacheAdapter() only selects the Cloudflare adapter when it is
  *    explicitly configured.
  */
@@ -240,7 +241,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(
       adapter.buildResponseHeaders({ cacheControl: "s-maxage=60, stale-while-revalidate" }),
     ).toEqual({
-      "Cache-Control": "public, max-age=0, must-revalidate",
+      "Cache-Control": "private, max-age=0, must-revalidate",
       "CDN-Cache-Control": null,
       "Cloudflare-CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
       "Cache-Tag": null,
@@ -260,6 +261,82 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
   });
 
+  it.each([
+    "max-age=10",
+    'max-age="10"',
+    "public, max-age=300, s-maxage=600, stale-while-revalidate=60",
+    "private, max-age=10",
+    "no-store",
+    "no-cache",
+    "public, s-maxage=600",
+    "public, foo=bar, s-maxage=600",
+    "must-revalidate, s-maxage=600",
+    "immutable, s-maxage=600",
+    "max-age=invalid, s-maxage=600",
+  ])("keeps browser policy %s separate from the edge", (browserCacheControl) => {
+    const headers = adapter.buildResponseHeaders({
+      cacheControl: "max-age=3600",
+      browserCacheControl,
+    });
+    expect(headers["Cache-Control"]).toBe(browserCacheControl);
+    expect(headers["Cloudflare-CDN-Cache-Control"]).toBe("public, max-age=3600");
+    expect(headers["CDN-Cache-Control"]).toBeNull();
+  });
+
+  it("does not let a browser policy bypass failed edge admission", () => {
+    for (const input of [
+      { cacheControl: "" },
+      { cacheControl: "max-age=3600", pendingDynamicCheck: true },
+    ]) {
+      const headers = adapter.buildResponseHeaders({ ...input, browserCacheControl: "max-age=10" });
+      expect(headers["Cache-Control"]).toBe("no-store");
+      expect(headers["Cloudflare-CDN-Cache-Control"]).toBeNull();
+    }
+  });
+
+  it.each(["public, max-age=10", "private, max-age=300", "no-store"])(
+    "preserves browser policy %s while rejecting shared admission",
+    (browserCacheControl) => {
+      const headers = new Headers(
+        Object.entries(
+          adapter.buildResponseHeaders({ cacheControl: "no-store", browserCacheControl }),
+        ).filter((entry): entry is [string, string] => entry[1] !== null),
+      );
+      expect(headers.get("Cache-Control")).toBe(browserCacheControl);
+      expect(adapter.responsePolicy.hasExplicitNonCacheablePolicy(headers)).toBe(true);
+      expect(headers.get("Cache-Tag")).toBeNull();
+    },
+  );
+
+  it("uses s-maxage for the edge when an endpoint also sets browser max-age", () => {
+    const policy = "public, max-age=10, s-maxage=3600, stale-while-revalidate=60";
+    const headers = adapter.buildResponseHeaders({
+      cacheControl: policy,
+      browserCacheControl: policy,
+    });
+    expect(headers["Cache-Control"]).toBe(policy);
+    expect(headers["Cloudflare-CDN-Cache-Control"]).toBe(
+      "public, max-age=3600, stale-while-revalidate=60",
+    );
+  });
+
+  it.each([
+    'foo="a,max-age=5"',
+    'foo="a,s-maxage=5,stale-while-revalidate=10"',
+    'foo="a,public,b"',
+    'foo="a\\\",max-age=5"',
+  ])("preserves the quoted cache extension %s", (extension) => {
+    const policy = `${extension}, max-age=10, s-maxage=60, stale-while-revalidate`;
+    const headers = adapter.buildResponseHeaders({
+      cacheControl: policy,
+      browserCacheControl: policy,
+    });
+    expect(headers["Cache-Control"]).toBe(policy);
+    expect(headers["Cloudflare-CDN-Cache-Control"]).toBe(
+      `public, ${extension}, max-age=60, stale-while-revalidate=31536000`,
+    );
+  });
+
   it("adds a Cache-Tag header from the page tags", () => {
     const headers = adapter.buildResponseHeaders({
       cacheControl: "s-maxage=60",
@@ -268,7 +345,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["Cache-Tag"]).toBe(
       ["/blog", "_N_T_/blog", "posts"].map(encodeCloudflareCacheTag).join(","),
     );
-    expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
+    expect(headers["Cache-Control"]).toBe("private, max-age=0, must-revalidate");
     expect(headers["CDN-Cache-Control"]).toBeNull();
     expect(headers["Cloudflare-CDN-Cache-Control"]).toBe("public, max-age=60");
   });
@@ -328,6 +405,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       async (context) => {
         const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
         state.route = { kind: "pages-page", pattern: "/posts" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60", tags: ["posts"] };
         const headers = new Headers();
         await runWithExecutionContext(context, () =>
           applyCdnResponseHeaders(headers, {
@@ -446,7 +524,8 @@ describe("CloudflareCdnCacheAdapter", () => {
       requestContext: makeRequestContext(),
     });
 
-    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("Cache-Control")).toBe("xprivate=1, s-maxage=60");
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("no-store");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
   });
 
@@ -708,6 +787,54 @@ describe("CloudflareCdnCacheAdapter", () => {
       await adapter.revalidateTag("");
     });
     expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("")] });
+  });
+
+  it("revalidateTag invalidates stale-while-revalidate tags instead of purging them", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    const invalidate = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge, invalidate } }, async () => {
+      await adapter.revalidateTag("posts", { expire: 31_536_000 });
+      await adapter.revalidateTag("drafts", {});
+    });
+    expect(invalidate.mock.calls).toEqual([
+      [{ tags: [encodeCloudflareCacheTag("posts")] }],
+      [{ tags: [encodeCloudflareCacheTag("drafts")] }],
+    ]);
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("revalidateTag purges immediately expired tags even when invalidation is available", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    const invalidate = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge, invalidate } }, async () => {
+      await adapter.revalidateTag("posts");
+      await adapter.revalidateTag("drafts", { expire: 0 });
+    });
+    expect(purge.mock.calls).toEqual([
+      [{ tags: [encodeCloudflareCacheTag("posts")] }],
+      [{ tags: [encodeCloudflareCacheTag("drafts")] }],
+    ]);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("revalidateTag falls back to purge when the runtime cannot invalidate", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag("posts", { expire: 60 });
+    });
+    expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("posts")] });
+  });
+
+  it("surfaces a resolved Workers Cache invalidation failure", async () => {
+    const invalidate = vi.fn(async () => ({
+      errors: [{ code: 10000, message: "rate limited" }],
+      success: false,
+    }));
+    await expect(
+      runWithExecutionContext({ waitUntil() {}, cache: { purge: vi.fn(), invalidate } }, () =>
+        adapter.revalidateTag("posts", { expire: 60 }),
+      ),
+    ).rejects.toThrow("Workers Cache invalidate failed: 10000: rate limited");
   });
 
   it("revalidateTag is a no-op when the Workers Cache is absent (e.g. Node dev)", async () => {

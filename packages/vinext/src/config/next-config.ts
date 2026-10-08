@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginOption } from "vite";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
-import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -280,6 +280,11 @@ export type NextConfig = {
   crossOrigin?: "anonymous" | "use-credentials";
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /**
+   * Compress responses from the Node production server. Defaults to true.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/compress
+   */
+  compress?: boolean;
   /** Keep the original request URL visible to middleware/proxy. */
   skipProxyUrlNormalize?: boolean;
   /** @deprecated Use `skipProxyUrlNormalize` instead. */
@@ -506,6 +511,8 @@ export type ResolvedNextConfig = {
    */
   assetPrefix: string;
   trailingSlash: boolean;
+  /** Whether the Node production server compresses responses (`compress`, default true). */
+  compress: boolean;
   skipProxyUrlNormalize: boolean;
   typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
@@ -784,6 +791,17 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
 }
 
 /**
+ * The `defaultConfig` handed to a function-form next.config. Next.js passes
+ * its full `defaultConfig` (packages/next/src/server/config-shared.ts); vinext
+ * passes the subset configs are known to read, with values matching Next.js,
+ * so `[...defaultConfig.pageExtensions, "page.js"]` works. Fresh per call so a
+ * config that mutates it cannot leak into later loads.
+ */
+function createFunctionConfigDefaults(): NextConfig {
+  return { pageExtensions: [...DEFAULT_PAGE_EXTENSIONS], compress: true };
+}
+
+/**
  * Resolve a Next-style config value, calling it if it's a function-form config
  * (Next.js supports `module.exports = (phase, opts) => config`).
  */
@@ -793,7 +811,7 @@ async function resolveConfigValue(
 ): Promise<NextConfig> {
   if (typeof config === "function") {
     const result = await config(phase, {
-      defaultConfig: {},
+      defaultConfig: createFunctionConfigDefaults(),
     });
     return result as NextConfig;
   }
@@ -1203,7 +1221,7 @@ async function loadNextConfigWithPackageIdentity(
               `const cjsExports = cjsModule && cjsModule.exports;\n` +
               `const cjsValue = cjsExports != null && (cjsExports !== cjsInitial || (typeof cjsExports === "object" && Object.keys(cjsExports).length > 0)) ? cjsExports : undefined;\n` +
               `const value = cjsValue ?? configModule.default ?? configModule;\n` +
-              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: {} }) : value;\n`
+              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: ${JSON.stringify(createFunctionConfigDefaults())} }) : value;\n`
             );
           },
         },
@@ -1694,6 +1712,7 @@ export async function resolveNextConfig(
       basePath: "",
       assetPrefix: "",
       trailingSlash: false,
+      compress: true,
       skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
@@ -2053,6 +2072,8 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
+    // Next.js disables compression only for an explicit `compress: false`.
+    compress: config.compress !== false,
     skipProxyUrlNormalize:
       config.skipProxyUrlNormalize ?? config.skipMiddlewareUrlNormalize ?? false,
     typescript:

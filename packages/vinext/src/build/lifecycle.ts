@@ -265,19 +265,6 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     return;
   }
 
-  if (context.nextConfig.output === "standalone") {
-    const { emitStandaloneOutput } = await import("./standalone.js");
-    const standalone = emitStandaloneOutput({
-      root: context.root,
-      outDir: path.resolve(context.root, "dist"),
-    });
-    console.log(
-      `  Generated standalone output in ${path.relative(context.root, standalone.standaloneDir)}/`,
-    );
-    console.log("  Start it with: node dist/standalone/server.js\n");
-    return;
-  }
-
   const prerenderDecision = resolveVinextPrerenderDecision({
     prerenderAllFlag: context.prerenderAll,
     vinextPrerenderConfig: context.prerenderConfig,
@@ -324,6 +311,23 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
         isConfiguredCdnResponsePolicyHeader(context.cacheConfig, name),
       routeRootConfig: buildOutput,
     });
+  }
+
+  // Next.js runs writeStandaloneDirectory after static generation and passes it
+  // the collected staticPages, so the standalone tree contains the prerendered
+  // output. Emit standalone after the prerender phase so dist/standalone ships
+  // the same artifacts instead of silently dropping them.
+  if (context.nextConfig.output === "standalone") {
+    const { emitStandaloneOutput } = await import("./standalone.js");
+    const standalone = emitStandaloneOutput({
+      root: context.root,
+      outDir: path.resolve(context.root, "dist"),
+    });
+    console.log(
+      `  Generated standalone output in ${path.relative(context.root, standalone.standaloneDir)}/`,
+    );
+    console.log("  Start it with: node dist/standalone/server.js\n");
+    return;
   }
 
   const { printBuildReport } = await import("./report.js");
