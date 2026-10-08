@@ -336,7 +336,7 @@ import {
   mayFoldChangeScannedImports,
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
-import { hasMdxFiles, loadMdxEsmReader } from "./utils/mdx-scan.js";
+import { hasMdxFiles, loadMdxEsmReader, pageExtensionsIncludeMdx } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
 import {
@@ -4939,7 +4939,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 globalNotFound: nextConfig?.globalNotFound,
                 cacheComponents: nextConfig?.cacheComponents,
                 readMdxEsm:
-                  !nextConfig?.cacheComponents && nextConfig?.pageExtensions.includes("mdx")
+                  !nextConfig?.cacheComponents &&
+                  pageExtensionsIncludeMdx(nextConfig?.pageExtensions ?? [])
                     ? await loadMdxEsmReader(root)
                     : null,
                 prefetchInlining: nextConfig?.prefetchInlining,

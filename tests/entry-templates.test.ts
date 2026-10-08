@@ -33,7 +33,10 @@ import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matc
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { createPagesDevHydrationScript } from "../packages/vinext/src/server/pages-dev-hydration.js";
-import { loadMdxEsmReader } from "../packages/vinext/src/utils/mdx-scan.js";
+import {
+  loadMdxEsmReader,
+  pageExtensionsIncludeMdx,
+} from "../packages/vinext/src/utils/mdx-scan.js";
 
 // ── Minimal App Router route fixtures ─────────────────────────────────
 // Use stable absolute paths so tests don't depend on the machine.
@@ -1434,6 +1437,14 @@ describe("App Router entry templates", () => {
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });
     }
+  });
+
+  it("reads MDX exports for plain and compound MDX page extensions", () => {
+    // The decoded-pathname list reads MDX segment config only when the build
+    // loads the MDX reader, which `page.mdx` files need as much as `.mdx` ones.
+    expect(pageExtensionsIncludeMdx(["tsx", "mdx"])).toBe(true);
+    expect(pageExtensionsIncludeMdx(["page.tsx", "page.mdx"])).toBe(true);
+    expect(pageExtensionsIncludeMdx(["tsx", "ts", "md"])).toBe(false);
   });
 
   it("lists the static App pages that answer their decoded pathname in both RSC entries", async () => {
