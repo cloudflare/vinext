@@ -8,6 +8,7 @@ import {
 import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 import {
   decodeMatchedParams,
+  decodeRouteSegment,
   splitPathnameForRouteMatch,
   splitPathSegments,
 } from "../routing/utils.js";
@@ -176,12 +177,18 @@ function normalizeMatchedParamsForRoute(result: {
   }
 }
 
+/**
+ * @param decodedPathnamePatterns Static page patterns that answer their
+ *   segment-decoded pathname (built by `buildAppDecodedPathnamePatterns`).
+ */
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
+  decodedPathnamePatterns: readonly string[] = [],
 ): {
   hasInterceptionId(interceptionId: string): boolean;
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
+  matchRawRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   findIntercept(
     pathname: string,
     sourcePathname?: string | null,
@@ -196,13 +203,45 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     ),
   );
   const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
+  const decodedPathnamePatternSet = new Set(decodedPathnamePatterns);
+  const decodedPathnameRoutes = new Map<string, Route>();
+  for (const route of routes) {
+    const key = route.patternParts.join("/");
+    if (decodedPathnamePatternSet.has(route.pattern) && !decodedPathnameRoutes.has(key)) {
+      decodedPathnameRoutes.set(key, route);
+    }
+  }
+
+  function matchRawRequestParts(
+    rawParts: string[],
+  ): { route: Route; params: AppRscRouteParams } | null {
+    const result = trieMatchRaw(routeTrie, rawParts);
+    if (result) normalizeMatchedParamsForRoute(result);
+    return result;
+  }
 
   function matchRequestParts(
     rawParts: string[],
   ): { route: Route; params: AppRscRouteParams } | null {
-    const result = trieMatchRaw(routeTrie, rawParts);
+    const result = matchRawRequestParts(rawParts);
     if (!result) return null;
-    normalizeMatchedParamsForRoute(result);
+    // Next.js matches the raw pathname, so `/%61` reaches `/[slug]`, but that
+    // page then answers from the response cached under the decoded pathname:
+    // the prerendered static `/a`. Render the static page itself instead, so
+    // the response and the cache entry it shares belong to one route. Encoded
+    // path delimiters (`%2F`) stay inside their segment, and a raw path that
+    // matches nothing or a Route Handler keeps that outcome, as in Next.js.
+    // Draft mode and server actions skip that cache, so the handler renders
+    // their `matchRawRequestRoute` instead.
+    if (
+      decodedPathnameRoutes.size > 0 &&
+      result.route.patternParts.some((part) => part.startsWith(":")) &&
+      !isAppRouteHandlerRoute(result.route) &&
+      rawParts.some((part) => part.includes("%"))
+    ) {
+      const route = decodedPathnameRoutes.get(rawParts.map(decodeRouteSegment).join("/"));
+      if (route && route !== result.route) return { route, params: createRouteParams() };
+    }
     return result;
   }
 
@@ -221,6 +260,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     matchRequestRoute(url) {
       return matchRequestParts(appRscPathnameParts(url, true));
     },
+    matchRawRequestRoute(url) {
+      return matchRawRequestParts(appRscPathnameParts(url, true));
+    },
     findIntercept(pathname, sourcePathname = null, interceptionId = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the
       // Next-URL header is present AND matches the intercepting route's regex
@@ -230,12 +272,12 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       if (sourcePathname === null) return null;
 
       const urlParts = appRscPathnameParts(pathname, true);
-      // Match the source like a direct request to it (`matchRequestRoute`):
-      // static segments compare against the raw, still-encoded path, as the
-      // Next-Url header regex does. Decoding first would let `/%66eed` claim
-      // the static `/feed` source, which a direct request to it cannot reach.
+      // Match the source against the raw, still-encoded path, as the Next-Url
+      // header regex does. Decoding first would let `/%66eed` claim the static
+      // `/feed` source, and the decoded static page substitution would let
+      // `/%61dmin` claim a static `/admin` that doesn't own the intercept.
       const sourceParts = appRscPathnameParts(sourcePathname, true);
-      const matchedSourceRoute = matchRequestParts(sourceParts);
+      const matchedSourceRoute = matchRawRequestParts(sourceParts);
 
       for (const entry of interceptLookup) {
         if (interceptionId !== null && entry.interceptionId !== interceptionId) continue;

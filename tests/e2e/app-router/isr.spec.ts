@@ -173,29 +173,33 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 
+  // An encoded spelling of a static sibling answers with that prerendered
+  // page, as Next.js serves it from the entry cached under the decoded path.
+  test("answers an encoded static route spelling with the static route", async ({ request }) => {
+    await resetIsrPath(request, "/route-cache-identity/about");
+
+    const encoded = await request.get(`${baseUrl()}/route-cache-identity/%61bout`);
+    expect(encoded.status()).toBe(200);
+    expect(await encoded.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+
+    const literal = await waitForCacheHit(request, "/route-cache-identity/about");
+    expect(await literal.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+  });
+
   // A request spelling that selects a catch-all route must not publish that
   // artifact under a static sibling's ISR key. Encoded delimiters and /index
   // remain distinct cache identities.
-  for (const { attackPath, expectedVictim, label, mustBypassCache, victimPath } of [
-    {
-      attackPath: "/route-cache-identity/%61bout",
-      expectedVictim: "CACHE_IDENTITY_STATIC_PAGE",
-      label: "encoded literal route divergence",
-      mustBypassCache: true,
-      victimPath: "/route-cache-identity/about",
-    },
+  for (const { attackPath, expectedVictim, label, victimPath } of [
     {
       attackPath: "/route-cache-identity/nested%2Fabout",
       expectedVictim: "CACHE_IDENTITY_NESTED_STATIC_PAGE",
       label: "encoded separator",
-      mustBypassCache: false,
       victimPath: "/route-cache-identity/nested/about",
     },
     {
       attackPath: "/route-cache-identity/index",
       expectedVictim: "CACHE_IDENTITY_ROOT_STATIC_PAGE",
       label: "/index alias",
-      mustBypassCache: false,
       victimPath: "/route-cache-identity",
     },
   ]) {
@@ -205,9 +209,6 @@ test.describe("App Router ISR", () => {
       const attacker = await request.get(`${baseUrl()}${attackPath}`);
       expect(attacker.status()).toBe(200);
       expect(await attacker.text()).toContain("CACHE_IDENTITY_CATCH_ALL:");
-      if (mustBypassCache) {
-        expect(attacker.headers()["cache-control"]).toContain("no-store");
-      }
 
       const victim = await waitForCacheHit(request, victimPath);
       expect(await victim.text()).toContain(expectedVictim);

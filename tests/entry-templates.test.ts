@@ -33,6 +33,10 @@ import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matc
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { createPagesDevHydrationScript } from "../packages/vinext/src/server/pages-dev-hydration.js";
+import {
+  loadMdxEsmReader,
+  pageExtensionsIncludeMdx,
+} from "../packages/vinext/src/utils/mdx-scan.js";
 
 // ── Minimal App Router route fixtures ─────────────────────────────────
 // Use stable absolute paths so tests don't depend on the machine.
@@ -1430,6 +1434,127 @@ describe("App Router entry templates", () => {
         "/slot-intercept": true,
         "/static": false,
       });
+    } finally {
+      fs.rmSync(tmpDir, { force: true, recursive: true });
+    }
+  });
+
+  it("reads MDX exports for plain and compound MDX page extensions", () => {
+    // The decoded-pathname list reads MDX segment config only when the build
+    // loads the MDX reader, which `page.mdx` files need as much as `.mdx` ones.
+    expect(pageExtensionsIncludeMdx(["tsx", "mdx"])).toBe(true);
+    expect(pageExtensionsIncludeMdx(["page.tsx", "page.mdx"])).toBe(true);
+    expect(pageExtensionsIncludeMdx(["tsx", "ts", "md"])).toBe(false);
+  });
+
+  it("lists the static App pages that answer their decoded pathname in both RSC entries", async () => {
+    // Next.js answers `/%61` beside `/[slug]` with the response cached under
+    // `/a`, which exists only for a prerendered page. Segment config that
+    // renders any segment of the direct tree dynamically, or on the edge
+    // runtime, leaves no such entry.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-decoded-routes-"));
+    const write = (name: string, source: string) => {
+      const filePath = path.join(tmpDir, name);
+      fs.writeFileSync(filePath, source);
+      return filePath;
+    };
+    const staticPage = write("static-page.tsx", "export default function Page() { return null; }");
+    const isrPage = write(
+      "isr-page.tsx",
+      "export const revalidate = 60; export default function Page() { return null; }",
+    );
+    const forceDynamicPage = write(
+      "force-dynamic-page.tsx",
+      'export const dynamic = "force-dynamic"; export default function Page() { return null; }',
+    );
+    const revalidateZeroLayout = write(
+      "revalidate-zero-layout.tsx",
+      "export const revalidate = 0; export default function Layout({ children }) { return children; }",
+    );
+    const edgePage = write(
+      "edge-page.tsx",
+      'export const runtime = "edge"; export default function Page() { return null; }',
+    );
+    const edgeLayout = write(
+      "edge-layout.tsx",
+      'export const runtime = "edge"; export default function Layout({ children }) { return children; }',
+    );
+    const mdxPage = write("mdx-page.mdx", "export const revalidate = 60;\n\n# Static\n");
+    const mdxEdgePage = write("mdx-edge-page.mdx", 'export const runtime = "edge";\n\n# Edge\n');
+    const handler = write("route.ts", "export function GET() { return new Response(); }");
+    const panelSlot = (pagePath: string) => ({
+      key: "panel@slot/@panel",
+      name: "panel",
+      ownerDir: tmpDir,
+      ownerTreePath: "/slot",
+      hasPage: true,
+      pagePath,
+      defaultPath: null,
+      layoutPath: null,
+      loadingPath: null,
+      errorPath: null,
+      interceptingRoutes: [],
+      layoutIndex: 0,
+      routeSegments: null,
+    });
+    const staticRoute = (pattern: string, overrides: Partial<AppRoute> = {}): AppRoute => ({
+      ...minimalAppRoutes[0],
+      pattern,
+      patternParts: pattern.split("/").filter(Boolean),
+      pagePath: staticPage,
+      layouts: [],
+      ...overrides,
+    });
+    const routes: AppRoute[] = [
+      staticRoute("/static"),
+      staticRoute("/café"),
+      staticRoute("/isr", { pagePath: isrPage }),
+      staticRoute("/force-dynamic", { pagePath: forceDynamicPage }),
+      staticRoute("/revalidate-zero-layout", { layouts: [revalidateZeroLayout] }),
+      staticRoute("/dynamic-slot", { parallelSlots: [panelSlot(forceDynamicPage)] }),
+      // A layout-only route renders, and prerenders, its slot page.
+      staticRoute("/slot-only", { pagePath: null, parallelSlots: [panelSlot(staticPage)] }),
+      staticRoute("/edge", { pagePath: edgePage }),
+      staticRoute("/edge-layout", { layouts: [edgeLayout] }),
+      // MDX exports are read with the parser the prerender listing uses.
+      staticRoute("/mdx", { pagePath: mdxPage }),
+      staticRoute("/mdx-edge", { pagePath: mdxEdgePage }),
+      // Intercepting trees never render for a direct request to the page.
+      staticRoute("/sibling-intercept", {
+        siblingIntercepts: [
+          {
+            convention: ".",
+            targetPattern: "/sibling-intercept/photo",
+            sourceMatchPattern: "/sibling-intercept",
+            pagePath: forceDynamicPage,
+            layoutPaths: [revalidateZeroLayout],
+            params: [],
+          },
+        ],
+      }),
+      staticRoute("/blog/:slug", { isDynamic: true, params: ["slug"] }),
+      staticRoute("/api", { pagePath: null, routePath: handler }),
+    ];
+    const expected = JSON.stringify([
+      "/static",
+      "/café",
+      "/isr",
+      "/slot-only",
+      "/mdx",
+      "/sibling-intercept",
+    ]);
+    const config = { readMdxEsm: await loadMdxEsmReader(process.cwd()) };
+    expect(config.readMdxEsm).not.toBeNull();
+
+    try {
+      for (const code of [
+        generateRscEntry(tmpDir, routes, null, [], null, "", false, config),
+        generateAppRequestRscEntry(tmpDir, routes, null, [], null, "", false, config),
+      ]) {
+        expect(
+          code.match(/^const __routeMatcher = __createAppRscRouteMatcher\(\w+, (.+)\);$/m)?.[1],
+        ).toBe(expected);
+      }
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });
     }

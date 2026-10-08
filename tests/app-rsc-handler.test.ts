@@ -227,6 +227,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
             }
           : null),
     matchRequestRoute: overrides.matchRequestRoute,
+    matchRawRequestRoute: overrides.matchRawRequestRoute,
     runMiddleware:
       overrides.runMiddleware ??
       (overrides.middlewareModule
@@ -3702,6 +3703,102 @@ describe("createAppRscHandler", () => {
       expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
     },
   );
+
+  describe("encoded request answered by a static page", () => {
+    // Next.js 16.2.7 serves `/%61bout` beside `/[slug]` from the prerendered
+    // `/about`, but draft mode and server actions skip that cache and render
+    // the raw-matched `/[slug]`.
+    const staticRoute = createPageRoute();
+    const dynamicRoute = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/:slug",
+      rootParamNames: ["slug"],
+    });
+    const encodedRouteOptions = (overrides: Partial<TestHandlerOptions> = {}) => ({
+      matchRoute: (pathname: string) =>
+        pathname === "/about" ? { params: {}, route: staticRoute } : null,
+      matchRequestRoute: (pathname: string) =>
+        pathname === "/%61bout" ? { params: {}, route: staticRoute } : null,
+      matchRawRequestRoute: (pathname: string) =>
+        pathname === "/%61bout" ? { params: { slug: "%61bout" }, route: dynamicRoute } : null,
+      ...overrides,
+    });
+
+    it("renders the static page", async () => {
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler(encodedRouteOptions({ dispatchMatchedPage }));
+
+      await handler(new Request("https://example.test/docs/%61bout"), null);
+
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({ route: staticRoute }),
+      );
+    });
+
+    it("renders the raw-matched page in draft mode", async () => {
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler(encodedRouteOptions({ dispatchMatchedPage }));
+
+      await handler(
+        new Request("https://example.test/docs/%61bout", {
+          headers: { Cookie: "__prerender_bypass=test-draft-secret" },
+        }),
+        null,
+      );
+
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({ params: { slug: "%61bout" }, route: dynamicRoute }),
+      );
+    });
+
+    it("transports the raw match through the split response stage in draft mode", async () => {
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("stage")),
+      );
+      const handler = createHandler(encodedRouteOptions({ dispatchMatchedPage }));
+      const request = new Request("https://example.test/docs/%61bout", {
+        headers: { Cookie: "__prerender_bypass=test-draft-secret" },
+      });
+
+      await handler(request, null, false, dispatchResponseStage);
+      const [stageRequest, props] = dispatchResponseStage.mock.calls[0]!;
+      expect(props).toMatchObject({ matchKind: "raw-request", routePattern: "/:slug" });
+
+      const response = await handler.handleResponseStage(stageRequest, null, props);
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({ params: { slug: "%61bout" }, route: dynamicRoute }),
+      );
+    });
+
+    it("runs a server action against the raw-matched page", async () => {
+      let observedRootParams: unknown = null;
+      const handleServerActionRequest = vi.fn(async () => {
+        const { getCurrentRootParams } =
+          await import("../packages/vinext/src/shims/root-params.js");
+        observedRootParams = getCurrentRootParams();
+        return new Response("action");
+      });
+      const handler = createHandler(encodedRouteOptions({ handleServerActionRequest }));
+
+      await handler(
+        new Request("https://example.test/docs/%61bout", {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+      );
+
+      expect(handleServerActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeMatch: { params: { slug: "%61bout" }, route: dynamicRoute },
+        }),
+      );
+      expect(observedRootParams).toEqual({ slug: "%61bout" });
+    });
+  });
 
   it.each(["afterFiles", "fallback"] as const)(
     "allows out-of-basePath Server Actions through %s rewrites",

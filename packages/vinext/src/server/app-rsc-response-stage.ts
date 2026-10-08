@@ -126,6 +126,8 @@ function rematchAppWorkerResponseStageRoute<TRoute extends AppRscHandlerRoute>(
           props.interceptionId,
         ) ?? null;
     }
+  } else if (props.matchKind === "raw-request") {
+    match = options.matchRawRequestRoute?.(props.routePathname) ?? null;
   } else if (props.matchKind === "request") {
     match = options.matchRequestRoute?.(props.routePathname) ?? null;
   } else {
