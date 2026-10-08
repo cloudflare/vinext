@@ -568,7 +568,7 @@ export function createPagesPageHandler(
         };
 
     const locale = localeInfo.locale;
-    const routeUrl = localeInfo.url;
+    let routeUrl = localeInfo.url;
     const currentDefaultLocale = i18nConfig
       ? localeInfo.domainLocale
         ? localeInfo.domainLocale.defaultLocale
@@ -619,10 +619,11 @@ export function createPagesPageHandler(
 
     // Pages routes match the raw pathname, as in Next.js, so `/q/%6Eew` reaches
     // `/q/[slug]`, but the ISR key decodes it to `/q/new`, which a literal
-    // request routes to the static `/q/new`. Next.js then answers from the
-    // entry cached under that key: for a `getStaticProps` page, its prerender.
-    // Render that page itself. Any other divergent render stays out of the
-    // shared caches so it never answers for, or replaces, that page's entry.
+    // request routes to the static `/q/new`. Outside draft mode, Next.js
+    // answers a `getStaticProps` page from the entry cached under that key:
+    // when `/q/new` is a `getStaticProps` page too, its prerender. Render that
+    // page for its literal pathname. Any other divergent render stays out of
+    // the shared caches so it never answers for, or replaces, that entry.
     const routePathname = routeUrl.split("?")[0];
     const cachePathname = normalizePathnameForRouteMatch(routePathname);
     let cacheIdentityDiverges = false;
@@ -636,12 +637,19 @@ export function createPagesPageHandler(
         const cachePathModule = cachePathRoute?.module;
         if (
           match.route.isDynamic &&
+          typeof match.route.module.getStaticProps === "function" &&
           cachePathRoute &&
           !cachePathRoute.isDynamic &&
           typeof cachePathModule?.getStaticProps === "function" &&
-          typeof cachePathModule.getServerSideProps !== "function"
+          typeof cachePathModule.getServerSideProps !== "function" &&
+          getPagesPreviewState(request.headers.get("cookie"), {
+            isOnDemandRevalidate: isOnDemandRevalidateRequest(
+              request.headers.get(PRERENDER_REVALIDATE_HEADER),
+            ),
+          }).data === false
         ) {
           match = { route: cachePathRoute, params: {} };
+          routeUrl = cachePathname + routeUrl.slice(routePathname.length);
         } else {
           cacheIdentityDiverges = true;
         }
@@ -686,6 +694,7 @@ export function createPagesPageHandler(
     const shouldCoalesceOnDemand =
       !options?.__skipOnDemandCoalesce &&
       !options?.__forcedRoute &&
+      !cacheIdentityDiverges &&
       isStaticPropsRoute &&
       isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER));
     if (shouldCoalesceOnDemand) {

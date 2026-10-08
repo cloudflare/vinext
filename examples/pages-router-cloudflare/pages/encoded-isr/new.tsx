@@ -1,5 +1,8 @@
+import { useRouter } from "next/router";
+
 export default function EncodedIsrStaticPage() {
-  return <p data-testid="encoded-isr">static encoded-isr new</p>;
+  const { asPath } = useRouter();
+  return <p data-testid="encoded-isr">{`static encoded-isr new at ${asPath}`}</p>;
 }
 
 export function getStaticProps() {
