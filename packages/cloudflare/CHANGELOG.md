@@ -1,5 +1,39 @@
 # @vinext/cloudflare
 
+## 1.1.0
+
+### Features
+
+- **Prerender:** write a page's special error that escapes the shell with its status (#3716)
+- **Response Store:** mark tag invalidations stale instead of regenerating them (#3712)
+- **Cloudflare:** soft-invalidate Workers Cache for stale-while-revalidate invalidations (#3707)
+
+### Bug Fixes
+
+#### App Router
+
+- stream a special error a Suspense boundary caught as a 200, as Next.js does (#3711)
+- store an RSC-first ISR render with its real status, and never cache unmatched 404s (#3710)
+- store a page's special-error render in the ISR cache (#3702)
+- let only the render decide whether a page is dynamic (#3698)
+
+#### Cloudflare
+
+- keep KV entries until their expire (#3735)
+- render Response Store and Workers Cache regenerations and warm-ups whole (#3737)
+- send no-store while Response Store admission is pending (#3708)
+- store the other entries a Response Store page replay recomputes (#3704)
+- store Response Store data entries without expire as stale indefinitely (#3675)
+
+#### Misc
+
+- **Cache:** use Flight arguments for cache identity and replay (#3600)
+- **Response Store:** let writers opt hard-expired reads into a miss (#3696)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.1
 
 ### Bug Fixes
