@@ -1435,6 +1435,95 @@ describe("App Router entry templates", () => {
     }
   });
 
+  it("lists the static App pages that answer their decoded pathname in both RSC entries", () => {
+    // Next.js answers `/%61` beside `/[slug]` with the response cached under
+    // `/a`, which exists only for a prerendered page. Segment config that
+    // renders any segment of the direct tree dynamically leaves no such entry.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-decoded-routes-"));
+    const write = (name: string, source: string) => {
+      const filePath = path.join(tmpDir, name);
+      fs.writeFileSync(filePath, source);
+      return filePath;
+    };
+    const staticPage = write("static-page.tsx", "export default function Page() { return null; }");
+    const isrPage = write(
+      "isr-page.tsx",
+      "export const revalidate = 60; export default function Page() { return null; }",
+    );
+    const forceDynamicPage = write(
+      "force-dynamic-page.tsx",
+      'export const dynamic = "force-dynamic"; export default function Page() { return null; }',
+    );
+    const revalidateZeroLayout = write(
+      "revalidate-zero-layout.tsx",
+      "export const revalidate = 0; export default function Layout({ children }) { return children; }",
+    );
+    const handler = write("route.ts", "export function GET() { return new Response(); }");
+    const staticRoute = (pattern: string, overrides: Partial<AppRoute> = {}): AppRoute => ({
+      ...minimalAppRoutes[0],
+      pattern,
+      patternParts: pattern.split("/").filter(Boolean),
+      pagePath: staticPage,
+      layouts: [],
+      ...overrides,
+    });
+    const routes: AppRoute[] = [
+      staticRoute("/static"),
+      staticRoute("/café"),
+      staticRoute("/isr", { pagePath: isrPage }),
+      staticRoute("/force-dynamic", { pagePath: forceDynamicPage }),
+      staticRoute("/revalidate-zero-layout", { layouts: [revalidateZeroLayout] }),
+      staticRoute("/dynamic-slot", {
+        parallelSlots: [
+          {
+            key: "panel@dynamic-slot/@panel",
+            name: "panel",
+            ownerDir: tmpDir,
+            ownerTreePath: "/dynamic-slot",
+            hasPage: true,
+            pagePath: forceDynamicPage,
+            defaultPath: null,
+            layoutPath: null,
+            loadingPath: null,
+            errorPath: null,
+            interceptingRoutes: [],
+            layoutIndex: 0,
+            routeSegments: null,
+          },
+        ],
+      }),
+      // Intercepting trees never render for a direct request to the page.
+      staticRoute("/sibling-intercept", {
+        siblingIntercepts: [
+          {
+            convention: ".",
+            targetPattern: "/sibling-intercept/photo",
+            sourceMatchPattern: "/sibling-intercept",
+            pagePath: forceDynamicPage,
+            layoutPaths: [revalidateZeroLayout],
+            params: [],
+          },
+        ],
+      }),
+      staticRoute("/blog/:slug", { isDynamic: true, params: ["slug"] }),
+      staticRoute("/api", { pagePath: null, routePath: handler }),
+    ];
+    const expected = JSON.stringify(["/static", "/café", "/isr", "/sibling-intercept"]);
+
+    try {
+      for (const code of [
+        generateRscEntry(tmpDir, routes, null, [], null, "", false),
+        generateAppRequestRscEntry(tmpDir, routes),
+      ]) {
+        expect(
+          code.match(/^const __routeMatcher = __createAppRscRouteMatcher\(\w+, (.+)\);$/m)?.[1],
+        ).toBe(expected);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { force: true, recursive: true });
+    }
+  });
+
   it("preserves exact and generated metadata identities in the App request stage", () => {
     const code = generateAppRequestRscEntry("/tmp/test/app", minimalAppRoutes, null, [
       {

@@ -8,6 +8,7 @@ import {
 import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 import {
   decodeMatchedParams,
+  decodeRouteSegment,
   splitPathnameForRouteMatch,
   splitPathSegments,
 } from "../routing/utils.js";
@@ -176,8 +177,13 @@ function normalizeMatchedParamsForRoute(result: {
   }
 }
 
+/**
+ * @param decodedPathnamePatterns Static page patterns that answer their
+ *   segment-decoded pathname (built by `buildAppDecodedPathnamePatterns`).
+ */
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
+  decodedPathnamePatterns: readonly string[] = [],
 ): {
   hasInterceptionId(interceptionId: string): boolean;
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
@@ -196,12 +202,34 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     ),
   );
   const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
+  const decodedPathnamePatternSet = new Set(decodedPathnamePatterns);
+  const decodedPathnameRoutes = new Map<string, Route>();
+  for (const route of routes) {
+    const key = route.patternParts.join("/");
+    if (decodedPathnamePatternSet.has(route.pattern) && !decodedPathnameRoutes.has(key)) {
+      decodedPathnameRoutes.set(key, route);
+    }
+  }
 
   function matchRequestParts(
     rawParts: string[],
   ): { route: Route; params: AppRscRouteParams } | null {
     const result = trieMatchRaw(routeTrie, rawParts);
     if (!result) return null;
+    // Next.js matches the raw pathname, so `/%61` reaches `/[slug]`, but that
+    // page then answers from the response cached under the decoded pathname:
+    // the prerendered static `/a`. Render the static page itself instead, so
+    // the response and the cache entry it shares belong to one route. Encoded
+    // path delimiters (`%2F`) stay inside their segment, and a raw path that
+    // matches nothing or a Route Handler keeps that outcome, as in Next.js.
+    if (
+      decodedPathnameRoutes.size > 0 &&
+      !isAppRouteHandlerRoute(result.route) &&
+      rawParts.some((part) => part.includes("%"))
+    ) {
+      const route = decodedPathnameRoutes.get(rawParts.map(decodeRouteSegment).join("/"));
+      if (route && route !== result.route) return { route, params: createRouteParams() };
+    }
     normalizeMatchedParamsForRoute(result);
     return result;
   }
@@ -230,10 +258,11 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       if (sourcePathname === null) return null;
 
       const urlParts = appRscPathnameParts(pathname, true);
-      // Match the source like a direct request to it (`matchRequestRoute`):
-      // static segments compare against the raw, still-encoded path, as the
-      // Next-Url header regex does. Decoding first would let `/%66eed` claim
-      // the static `/feed` source, which a direct request to it cannot reach.
+      // Resolve the concrete source like a direct request to it
+      // (`matchRequestRoute`). The source gate (`matchInterceptSource`)
+      // compares static segments against the raw, still-encoded path, as the
+      // Next-Url header regex does, so `/%66eed` never passes a `/feed` gate
+      // even when a direct request to it renders `/feed`.
       const sourceParts = appRscPathnameParts(sourcePathname, true);
       const matchedSourceRoute = matchRequestParts(sourceParts);
 

@@ -12,7 +12,7 @@ import fs from "node:fs";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { toSlash } from "pathslash";
-import { extractExportConstString } from "../build/report.js";
+import { extractExportConstNumber, extractExportConstString } from "../build/report.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -232,10 +232,10 @@ type AppRouterConfig = {
   prerenderSecret?: string;
 };
 
-function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
+function createSegmentSourceReader(): (filePath: string | null | undefined) => string | null {
   const sourceCache = new Map<string, string | null>();
-  const forcesDynamic = (filePath: string | null | undefined): boolean => {
-    if (!filePath) return false;
+  return (filePath) => {
+    if (!filePath) return null;
     let source = sourceCache.get(filePath);
     if (source === undefined) {
       try {
@@ -245,6 +245,59 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       }
       sourceCache.set(filePath, source);
     }
+    return source;
+  };
+}
+
+/** Segment config files of the tree a direct request to a page route renders. */
+function appPageSegmentConfigPaths(route: AppRoute): (string | null | undefined)[] {
+  return [
+    ...route.layouts,
+    route.pagePath,
+    ...route.parallelSlots.flatMap((slot) => [
+      slot.layoutPath,
+      ...(slot.configLayoutPaths ?? []),
+      slot.pagePath ?? slot.defaultPath,
+    ]),
+  ];
+}
+
+/**
+ * Patterns of the static App pages that answer a request whose raw pathname
+ * reaches a dynamic sibling but whose segment-decoded pathname names them, so
+ * `/%61` and `/caf%C3%A9` render `/a` and `/café` rather than `/[slug]`.
+ *
+ * Next.js serves those requests from the response cached under the decoded
+ * pathname, which exists only for a page it prerendered. A page whose segment
+ * config renders it dynamically (`dynamic = "force-dynamic"` or
+ * `revalidate = 0` on any segment) and a Route Handler have no such entry, so
+ * the dynamic sibling renders.
+ */
+function buildAppDecodedPathnamePatterns(routes: AppRoute[]): string[] {
+  const readSource = createSegmentSourceReader();
+  const rendersDynamically = (filePath: string | null | undefined): boolean => {
+    const source = readSource(filePath);
+    return (
+      source !== null &&
+      (extractExportConstString(source, "dynamic") === "force-dynamic" ||
+        extractExportConstNumber(source, "revalidate") === 0)
+    );
+  };
+  return routes
+    .filter(
+      (route) =>
+        !route.isDynamic &&
+        route.pagePath &&
+        !route.routePath &&
+        !appPageSegmentConfigPaths(route).some(rendersDynamically),
+    )
+    .map((route) => route.pattern);
+}
+
+function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
+  const readSource = createSegmentSourceReader();
+  const forcesDynamic = (filePath: string | null | undefined): boolean => {
+    const source = readSource(filePath);
     return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
   };
 
@@ -253,17 +306,13 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     forceDynamic: route.routePath
       ? forcesDynamic(route.routePath)
       : [
-          ...route.layouts,
-          route.pagePath,
-          ...route.parallelSlots.flatMap((slot) => [
-            slot.layoutPath,
-            ...(slot.configLayoutPaths ?? []),
-            slot.pagePath ?? slot.defaultPath,
-            ...slot.interceptingRoutes.flatMap((intercept) => [
+          ...appPageSegmentConfigPaths(route),
+          ...route.parallelSlots.flatMap((slot) =>
+            slot.interceptingRoutes.flatMap((intercept) => [
               ...intercept.layoutPaths,
               intercept.pagePath,
             ]),
-          ]),
+          ),
           ...route.siblingIntercepts.flatMap((intercept) => [
             ...intercept.layoutPaths,
             intercept.pagePath,
@@ -422,7 +471,7 @@ export const __imageConfig = ${JSON.stringify({
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
   })};
 const __routes = ${JSON.stringify(requestRoutes)};
-const __routeMatcher = __createAppRscRouteMatcher(__routes);
+const __routeMatcher = __createAppRscRouteMatcher(__routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes))});
 const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};
 
 function matchRoute(pathname) { return __routeMatcher.matchRoute(pathname); }
@@ -1059,7 +1108,7 @@ function __VINEXT_CLASS_REASONS(routeIdx) {
 const routes = [
 ${routeEntries.join(",\n")}
 ];
-const __routeMatcher = __createAppRscRouteMatcher(routes);
+const __routeMatcher = __createAppRscRouteMatcher(routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes))});
 
 ${
   instrumentationPath

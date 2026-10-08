@@ -3,9 +3,10 @@ import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 
 function getRawPath(
   path: string,
+  headers?: Record<string, string>,
 ): Promise<{ body: string; headers: IncomingHttpHeaders; location?: string; status: number }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({ host: "localhost", path, port: 4197 }, (res) => {
+    const req = httpRequest({ host: "localhost", path, port: 4197, headers }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (chunk) => (body += chunk));
@@ -162,5 +163,61 @@ test("redirects repeated slashes and backslashes like Next.js on Workers", async
   }
   for (const path of ["/%2F", "/%5C", "/%2F/evil.com", "/.//%2Fevil.com"]) {
     expect({ path, status: (await getRawPath(path)).status }).toEqual({ path, status: 404 });
+  }
+});
+
+// Next.js 16.2.7 answers an encoded static page pathname beside a dynamic
+// sibling with the static page it prerendered, under the decoded pathname.
+test("renders an encoded static page beside its dynamic sibling on Workers", async () => {
+  for (const [pathname, headers] of [
+    ["/encoded-parity/sibling/%6Eew", undefined],
+    ["/encoded-parity/sibling/%6Eew?_rsc", { RSC: "1" }],
+  ] as const) {
+    const encoded = await getRawPath(pathname, headers);
+    expect(encoded.status).toBe(200);
+    expect(encoded.body).toContain("static sibling new");
+    expect(encoded.body).not.toContain("dynamic sibling");
+  }
+
+  // The encoded request shares the static page's cache entry, never replaces it.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-parity/sibling/new");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("static sibling new");
+    expect(literal.body).not.toContain("dynamic sibling");
+  }
+});
+
+test("reaches a non-ASCII static page beside its dynamic sibling on Workers", async () => {
+  for (const pathname of [
+    "/encoded-parity/sibling/caf%C3%A9",
+    "/encoded-parity/sibling/caf%c3%a9",
+  ]) {
+    const response = await getRawPath(pathname);
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("static sibling café");
+    expect(response.body).not.toContain("dynamic sibling");
+  }
+});
+
+test("keeps raw routing where Next.js has no prerendered page to answer on Workers", async () => {
+  // A force-dynamic page has no prerender, so its dynamic sibling renders.
+  const forceDynamic = await getRawPath("/encoded-parity/sibling/%6Cive");
+  expect(forceDynamic.status).toBe(200);
+  expect(forceDynamic.body).toContain("dynamic sibling live");
+  expect(forceDynamic.body).not.toContain("forced dynamic page");
+  const forceDynamicLiteral = await getRawPath("/encoded-parity/sibling/live");
+  expect(forceDynamicLiteral.body).toContain("forced dynamic page live");
+
+  // Static segments below a dynamic parent compare against the raw path. The
+  // dynamic render must stay out of the static route's cache entry.
+  const encodedMember = await getRawPath("/encoded-parity/member/bob/%73ettings");
+  expect(encodedMember.status).toBe(200);
+  expect(encodedMember.body).toContain("tab settings for bob");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-parity/member/bob/settings");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("settings for bob");
+    expect(literal.body).not.toContain("tab settings");
   }
 });
