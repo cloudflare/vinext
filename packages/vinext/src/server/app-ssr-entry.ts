@@ -23,7 +23,7 @@ import { startCandidateSearchParamsGate } from "./app-ssr-search-params-gate.js"
 import { onRenderDynamicLatched } from "vinext/shims/internal/headers-state";
 import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-observation.js";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
-import { isOpenRedirectShaped } from "./open-redirect.js";
+import { isOpenRedirectShaped, repeatedSlashRedirectResponse } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
@@ -863,8 +863,11 @@ export async function handleSsr(
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    // Block protocol-relative URL open redirects (including percent-encoded
-    // variants like /%5Cevil.com/). See request-pipeline.ts for details.
+    // Redirect repeated slashes / backslashes like Next.js and block encoded
+    // protocol-relative shapes (/%5Cevil.com/). See
+    // `guardProtocolRelativeUrl` in request-pipeline.ts for details.
+    const slashRedirect = repeatedSlashRedirectResponse(url.pathname + url.search);
+    if (slashRedirect) return slashRedirect;
     if (isOpenRedirectShaped(url.pathname)) {
       return notFoundResponse();
     }

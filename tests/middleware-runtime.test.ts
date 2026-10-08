@@ -779,6 +779,19 @@ describe("middleware redirect protocol", () => {
     expect(result.response?.headers.get("Location")).toBe(target);
   });
 
+  it.each(["https://victim.example//", "https://victim.example//?next=1"])(
+    "keeps a same-host bare double-slash Location absolute (%s)",
+    async (target) => {
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: { default: () => Response.redirect(target, 307) },
+        request: new Request("https://victim.example/start"),
+      });
+
+      expect(result.response?.headers.get("Location")).toBe(target);
+    },
+  );
+
   it("translates same-host redirects to x-nextjs-redirect for data requests", async () => {
     const module = {
       default: (req: Request) => Response.redirect(new URL("/new-home", req.url).toString(), 307),

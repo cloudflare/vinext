@@ -144,6 +144,7 @@ import {
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
+  sendRepeatedSlashRedirect,
   VINEXT_INTERNAL_HEADERS,
 } from "./server/request-pipeline.js";
 import {
@@ -5611,24 +5612,6 @@ export const loadServerActionClient = ${
           next();
         });
 
-        // Match Next.js dev behavior: allow the server to start, then reject
-        // /_next requests while public/_next exists. This runs before Vite's
-        // public-file middleware and re-checks the filesystem on every request,
-        // so creating the directory after startup cannot bypass the guard.
-        server.middlewares.use((req, _res, next) => {
-          try {
-            assertNoPublicNextRequestConflict({
-              root: server.config.root,
-              publicDir: server.config.publicDir === "" ? null : server.config.publicDir,
-              basePath: nextConfig.basePath ?? "",
-              requestUrl: req.url ?? "/",
-            });
-            next();
-          } catch (error) {
-            next(error);
-          }
-        });
-
         // Watch route files for additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
 
@@ -6097,6 +6080,34 @@ export const loadServerActionClient = ${
             return;
           }
           next();
+        });
+
+        // Like Next.js, redirect any path containing a backslash or a repeated
+        // slash once the origin check has passed (router-server.ts runs
+        // blockCrossSiteDEV before resolveRoutes) and before anything below
+        // parses it: `new URL("//", base)` throws, and `//host/x` parses as a
+        // different origin.
+        server.middlewares.use((req, res, next) => {
+          if (!sendRepeatedSlashRedirect(req.url ?? "/", res)) next();
+        });
+
+        // Match Next.js dev behavior: allow the server to start, then reject
+        // /_next requests while public/_next exists. Like next-dev-server.ts,
+        // this runs after the repeated-slash redirect but before Vite's
+        // public-file middleware, and re-checks the filesystem on every request,
+        // so creating the directory after startup cannot bypass the guard.
+        server.middlewares.use((req, _res, next) => {
+          try {
+            assertNoPublicNextRequestConflict({
+              root: server.config.root,
+              publicDir: server.config.publicDir === "" ? null : server.config.publicDir,
+              basePath: nextConfig.basePath ?? "",
+              requestUrl: req.url ?? "/",
+            });
+            next();
+          } catch (error) {
+            next(error);
+          }
         });
 
         // Vite serves public files for every method. Intercept only mutations

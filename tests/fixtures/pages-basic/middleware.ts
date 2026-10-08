@@ -19,6 +19,12 @@ export function middleware(request: NextRequest) {
   // middleware runs (matching Next.js' `handleNextDataRequest` pipeline).
   response.headers.set("x-mw-pathname", url.pathname);
 
+  // Same-origin redirect to a double-slash path. vinext must keep the
+  // Location absolute so it never becomes protocol-relative.
+  if (url.pathname === "/mw-redirect-double-slash") {
+    return NextResponse.redirect(`${url.origin}//`);
+  }
+
   // Redirect /old-page to /about
   if (url.pathname === "/old-page") {
     return NextResponse.redirect(new URL("/about", request.url));

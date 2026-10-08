@@ -23,7 +23,7 @@ import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
-  isOpenRedirectShaped,
+  guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
@@ -374,15 +374,11 @@ async function handleRequestImpl(
       );
     }
 
-    // Block protocol-relative URL open redirects in all shapes:
-    //   literal  //evil.com, /\\evil.com
-    //   encoded  /%5Cevil.com, /%2F/evil.com
-    // Browsers normalize backslash to forward slash, and percent-decode
-    // Location headers, so encoded variants must be rejected before any
-    // downstream redirect can echo them.
-    if (isOpenRedirectShaped(pathname)) {
-      return new Response("This page could not be found", { status: 404 });
-    }
+    // Redirect repeated slashes / backslashes like Next.js (//evil.com →
+    // /evil.com) and block encoded protocol-relative shapes (/%5Cevil.com,
+    // /%2F/evil.com) before any downstream redirect can echo them.
+    const protocolRelativeGuard = guardProtocolRelativeUrl(pathname, url.search);
+    if (protocolRelativeGuard) return protocolRelativeGuard;
     try {
       normalizePathnameForRouteMatchStrict(pathname);
     } catch {

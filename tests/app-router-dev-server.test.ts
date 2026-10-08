@@ -5,7 +5,12 @@ import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { createLogger, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  expectRepeatedSlashRedirects,
+  fetchHtml,
+  startFixtureServer,
+} from "./helpers.js";
 import { createExternalStoreFixture } from "./use-sync-external-store-fixture.js";
 import vinext from "../packages/vinext/src/index.js";
 
@@ -86,6 +91,20 @@ describe("App Router integration", () => {
 
   afterAll(async () => {
     await server?.close();
+  });
+
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(baseUrl, { dev: true });
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${baseUrl}/middleware-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The App Router's trailingSlash: false rule strips the redirect target
+    // to the root; it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
   });
 
   it("renders the home page with root layout", async () => {

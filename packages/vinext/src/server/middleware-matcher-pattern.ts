@@ -1,5 +1,9 @@
 import type { HasCondition } from "../config/next-config.js";
-import { analyzeRegexSafety, regexAtomsMayOverlap } from "../utils/regex-safety.js";
+import {
+  analyzeRegexSafety,
+  mayHaveNamedGroups,
+  regexAtomsMayOverlap,
+} from "../utils/regex-safety.js";
 import {
   middlewarePathTokensToRegExp,
   normalizeMiddlewarePathTokens,
@@ -210,8 +214,8 @@ function hasOverlappingSequentialRepetition(pattern: string): boolean {
   return false;
 }
 
-function unsafeTokenReason(token: MiddlewarePathKey): string | null {
-  const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true });
+function unsafeTokenReason(token: MiddlewarePathKey, namedGroups: boolean): string | null {
+  const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true, namedGroups });
   if (regexSafetyIssue) {
     if (regexSafetyIssue === "analysis budget exceeded") {
       return `parameter "${token.name}" exceeds the regex analysis budget`;
@@ -237,9 +241,14 @@ function unsafeTokenReason(token: MiddlewarePathKey): string | null {
 }
 
 function validateTokens(tokens: MiddlewarePathToken[]): string | null {
+  // Every token pattern is compiled into one RegExp, so a named group in any
+  // of them turns `\k<name>` in another into a backreference.
+  const namedGroups = tokens.some(
+    (token) => typeof token !== "string" && mayHaveNamedGroups(token.pattern),
+  );
   for (const token of tokens) {
     if (typeof token === "string") continue;
-    const reason = unsafeTokenReason(token);
+    const reason = unsafeTokenReason(token, namedGroups);
     if (reason) return reason;
   }
   return null;

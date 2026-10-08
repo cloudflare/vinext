@@ -1808,9 +1808,9 @@ describe("readPagesRouterEntrySource", () => {
 
   it("includes an open-redirect guard that rejects encoded backslash and slash", () => {
     const content = readPagesRouterEntrySource();
-    expect(content).toContain("isOpenRedirectShaped");
+    expect(content).toContain("guardProtocolRelativeUrl");
     expect(content).toContain('from "./request-pipeline.js"');
-    expect(content).toContain("isOpenRedirectShaped(pathname)");
+    expect(content).toContain("guardProtocolRelativeUrl(pathname, url.search)");
   });
 
   it("delegates image transforms to the configured adapter", () => {

@@ -158,6 +158,42 @@ Environment variables: `PORT` (default `3000`), `HOST` (default `0.0.0.0`).
 
 > **Note:** Next.js standalone uses `HOSTNAME` for the bind address, but vinext uses `HOST` to avoid collision with the system-set `HOSTNAME` variable on Linux. Update your deployment config accordingly.
 
+#### Custom standalone entries
+
+The generated `server.js` is a small wrapper around `startProdServer` from `vinext/server/prod-server`. To control where the server loads the build output from, write your own entry and call `startProdServer` directly. All options are optional:
+
+| Option            | Default                                        | Description                                                                                                                                                            |
+| ----------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `port`            | `PORT` env var, otherwise `3000`               | Port to listen on.                                                                                                                                                     |
+| `host`            | `"0.0.0.0"`                                    | Address to bind to. Unlike the generated `server.js`, `startProdServer` doesn't read `HOST`, so pass `process.env.HOST` yourself if you need it.                       |
+| `outDir`          | `dist`, resolved against the current directory | Build output directory containing `client/` and `server/`. Relative paths resolve against the current directory. In standalone output, this is `dist/standalone/dist`. |
+| `serverDir`       | `<outDir>/server`                              | Directory containing the server bundles, manifests, and prerendered output.                                                                                            |
+| `rscEntryPath`    | `<serverDir>/index.js`                         | App Router server entry. If this file exists, the server runs in App Router mode.                                                                                      |
+| `serverEntryPath` | `<serverDir>/entry.js`                         | Pages Router server entry. Used when there's no App Router entry.                                                                                                      |
+| `noCompression`   | `false`                                        | Disable response compression.                                                                                                                                          |
+
+`ProdServerOptions` also has `purpose` and `silent`, which vinext uses for its own build-time servers. Leave them unset. The returned promise resolves to `{ server, port }` once the server is listening.
+
+**Compiled single-file binaries.** A `bun build --compile` binary can't use the generated `server.js`. Bun fixes `import.meta.dirname` when it compiles the binary, so `join(import.meta.dirname, "dist")` doesn't point at the directory the binary runs from. Depending on the Bun version, it points at the build machine's path or at Bun's embedded `/$bunfs/root`. Resolve `outDir` from the executable's location instead:
+
+```js
+// server-bin.mjs, in your project root
+import path from "node:path";
+import { startProdServer } from "vinext/server/prod-server";
+
+await startProdServer({
+  port: Number.parseInt(process.env.PORT ?? "3000", 10),
+  host: process.env.HOST ?? "0.0.0.0",
+  outDir: path.join(path.dirname(process.execPath), "dist"),
+});
+```
+
+```bash
+bun build --compile --compile-autoload-package-json server-bin.mjs --outfile dist/standalone/server
+```
+
+Keep the entry outside `dist/standalone`: each build deletes and recreates that directory. Compile after `vite build`, then ship the whole `dist/standalone` directory, because the `server` binary needs the `dist/` and `node_modules/` directories next to it. The server bundles in `dist/server` still import their dependencies from `node_modules` at runtime. `--compile-autoload-package-json` lets the binary read package `exports` and `main` fields when it resolves them. Under plain Node, `process.execPath` is the Node binary, so use this entry only for compiled builds.
+
 ### Starting a new vinext project
 
 Use `create-vinext-app` for new projects. It creates a TypeScript App Router project

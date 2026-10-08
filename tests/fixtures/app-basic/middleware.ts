@@ -114,6 +114,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
 
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
   // Ref: opennextjs-cloudflare middleware.ts — redirect with set-cookie header
+  // Same-origin redirect to a double-slash path. vinext must keep the
+  // Location absolute so it never becomes protocol-relative.
+  if (pathname === "/middleware-redirect-double-slash") {
+    return NextResponse.redirect(`${request.nextUrl.origin}//`);
+  }
+
   if (pathname === "/middleware-redirect") {
     return NextResponse.redirect(new URL("/about", request.url), {
       headers: { "set-cookie": "middleware-redirect=success; Path=/" },
@@ -452,6 +458,7 @@ export const config = {
     "/exists-but-not-routed",
     "/pages-data-rewrite-source",
     "/middleware-redirect",
+    "/middleware-redirect-double-slash",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",
     "/middleware-external-rewrite",

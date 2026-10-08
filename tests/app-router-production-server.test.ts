@@ -10,7 +10,12 @@ import {
   getPagesClientAssets,
   setPagesClientAssets,
 } from "../packages/vinext/src/server/pages-client-assets.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  createIsolatedFixture,
+  expectRepeatedSlashRedirects,
+  testCacheDir,
+} from "./helpers.js";
 
 const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
@@ -342,6 +347,20 @@ describe("App Router Production server (startProdServer)", () => {
     delete process.env.TEST_APP_STATIC_REVALIDATE_TARGET;
     delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
     fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(baseUrl);
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${baseUrl}/middleware-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The App Router's trailingSlash: false rule strips the redirect target
+    // to the root; it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
   });
 
   it("serves the home page with SSR HTML", async () => {

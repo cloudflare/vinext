@@ -49,7 +49,7 @@ import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-uti
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
-  isOpenRedirectShaped,
+  guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
 import {
   NEXT_ACTION_HEADER,
@@ -216,13 +216,13 @@ async function handleRequest(
     );
   }
 
-  // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,
-  // /%5Cevil.com/, /%2F/evil.com/). Check BEFORE decode so both literal and
-  // percent-encoded variants are caught — encoded forms survive segment-wise
-  // decoding and would otherwise reach trailing-slash redirect emitters.
-  if (isOpenRedirectShaped(url.pathname)) {
-    return notFoundResponse();
-  }
+  // Redirect repeated slashes / backslashes like Next.js (//evil.com/ →
+  // /evil.com/) and block encoded protocol-relative shapes (/%5Cevil.com/,
+  // /%2F/evil.com/). Check BEFORE decode so both literal and percent-encoded
+  // variants are caught — encoded forms survive segment-wise decoding and
+  // would otherwise reach trailing-slash redirect emitters.
+  const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
+  if (protocolRelativeGuard) return protocolRelativeGuard;
 
   // Validate that percent-encoding is well-formed. The RSC handler performs
   // the actual decode + normalize; we only check here to return a clean 400

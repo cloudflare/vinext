@@ -26,7 +26,7 @@ import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-uti
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
-  isOpenRedirectShaped,
+  guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -37,7 +37,7 @@ import {
   RSC_HEADER,
 } from "./headers.js";
 import { readTrustedPrerenderStateFromHeaders } from "./prerender-route-params.js";
-import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
+import { badRequestResponse } from "./http-error-responses.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
   createWorkerPrerenderDiscoveryContext,
@@ -150,7 +150,8 @@ async function handleRequest(
       __imageConfig,
     );
   }
-  if (isOpenRedirectShaped(url.pathname)) return notFoundResponse();
+  const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
+  if (protocolRelativeGuard) return protocolRelativeGuard;
   try {
     decodeURIComponent(url.pathname);
   } catch {
