@@ -396,7 +396,7 @@ type PerformanceComparisonMeasurementData = Omit<
   profileUrl: string | null;
 };
 
-const MAX_PERFORMANCE_RUNS = 250;
+const MAX_PERFORMANCE_RUNS = 200;
 
 export async function getPerformanceRuns(
   limit = MAX_PERFORMANCE_RUNS,
