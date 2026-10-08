@@ -188,6 +188,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   hasInterceptionId(interceptionId: string): boolean;
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
+  matchRawRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   findIntercept(
     pathname: string,
     sourcePathname?: string | null,
@@ -211,10 +212,18 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     }
   }
 
-  function matchRequestParts(
+  function matchRawRequestParts(
     rawParts: string[],
   ): { route: Route; params: AppRscRouteParams } | null {
     const result = trieMatchRaw(routeTrie, rawParts);
+    if (result) normalizeMatchedParamsForRoute(result);
+    return result;
+  }
+
+  function matchRequestParts(
+    rawParts: string[],
+  ): { route: Route; params: AppRscRouteParams } | null {
+    const result = matchRawRequestParts(rawParts);
     if (!result) return null;
     // Next.js matches the raw pathname, so `/%61` reaches `/[slug]`, but that
     // page then answers from the response cached under the decoded pathname:
@@ -222,6 +231,8 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     // the response and the cache entry it shares belong to one route. Encoded
     // path delimiters (`%2F`) stay inside their segment, and a raw path that
     // matches nothing or a Route Handler keeps that outcome, as in Next.js.
+    // Draft mode and server actions skip that cache, so the handler renders
+    // their `matchRawRequestRoute` instead.
     if (
       decodedPathnameRoutes.size > 0 &&
       !isAppRouteHandlerRoute(result.route) &&
@@ -230,7 +241,6 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       const route = decodedPathnameRoutes.get(rawParts.map(decodeRouteSegment).join("/"));
       if (route && route !== result.route) return { route, params: createRouteParams() };
     }
-    normalizeMatchedParamsForRoute(result);
     return result;
   }
 
@@ -248,6 +258,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     },
     matchRequestRoute(url) {
       return matchRequestParts(appRscPathnameParts(url, true));
+    },
+    matchRawRequestRoute(url) {
+      return matchRawRequestParts(appRscPathnameParts(url, true));
     },
     findIntercept(pathname, sourcePathname = null, interceptionId = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the

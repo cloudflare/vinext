@@ -486,6 +486,7 @@ const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};
 
 function matchRoute(pathname) { return __routeMatcher.matchRoute(pathname); }
 function matchRequestRoute(pathname) { return __routeMatcher.matchRequestRoute(pathname); }
+function matchRawRequestRoute(pathname) { return __routeMatcher.matchRawRequestRoute(pathname); }
 function hasInterceptionId(interceptionId) { return __routeMatcher.hasInterceptionId(interceptionId); }
 function __isMetadataPath(pathname) {
   const parts = pathname.split("/").filter(Boolean);
@@ -538,6 +539,7 @@ const __requestHandler = createAppRscRequestHandler({
   hasInterceptionId,
   matchRoute,
   matchRequestRoute,
+  matchRawRequestRoute,
   matchInterceptRoute(pathname, sourcePathname, interceptionId) {
     const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
     if (!intercept) return null;
@@ -1227,6 +1229,10 @@ function matchRoute(url) {
 
 function matchRequestRoute(url) {
   return __routeMatcher.matchRequestRoute(url);
+}
+
+function matchRawRequestRoute(url) {
+  return __routeMatcher.matchRawRequestRoute(url);
 }
 
 /**
@@ -1953,6 +1959,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   }
   matchRoute,
   matchRequestRoute,
+  matchRawRequestRoute,
   hasInterceptionId,
   matchInterceptRoute(pathname, sourcePathname, interceptionId) {
     const intercept = findIntercept(pathname, sourcePathname, interceptionId);

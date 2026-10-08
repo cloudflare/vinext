@@ -171,6 +171,11 @@ describe("App RSC route matching", () => {
     expect(pattern("/caf%c3%a9")).toBe("/café");
     expect(pattern("/%63af%C3%A9/")).toBe("/café");
     expect(pattern("/blog/%6Eew")).toBe("/blog/new");
+    // Draft mode and server actions render the raw match instead.
+    expect(matcher.matchRawRequestRoute("/%61")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "a" },
+    });
 
     expect(matcher.matchRequestRoute("/%6Cive")).toMatchObject({
       route: { pattern: "/:slug" },

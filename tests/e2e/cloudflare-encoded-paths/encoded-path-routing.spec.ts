@@ -188,6 +188,19 @@ test("renders an encoded static page beside its dynamic sibling on Workers", asy
   }
 });
 
+test("renders an encoded draft-mode request with its raw-matched page on Workers", async () => {
+  // Draft mode skips the cache Next.js answers from, so `[slug]` renders.
+  const enabled = await getRawPath("/api/draft-enable");
+  expect(enabled.status).toBe(200);
+  const setCookie = enabled.headers["set-cookie"] ?? [];
+  const cookie = setCookie.map((value) => value.split(";")[0]).join("; ");
+  expect(cookie).toContain("__prerender_bypass=");
+
+  const encoded = await getRawPath("/encoded-parity/sibling/%6Eew", { cookie });
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("dynamic sibling new");
+});
+
 test("reaches a non-ASCII static page beside its dynamic sibling on Workers", async () => {
   for (const pathname of [
     "/encoded-parity/sibling/caf%C3%A9",

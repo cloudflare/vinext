@@ -60,6 +60,7 @@ import { flattenErrorCauses } from "../utils/error-cause.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request-headers.js";
+import { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
@@ -655,6 +656,8 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  /** `matchRequestRoute` without its decoded static page substitution. */
+  matchRawRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -2012,6 +2015,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
+  // `matchRequestRoute` answers an encoded request such as `/%61`, which
+  // reaches `/[slug]` raw, with the static `/a` whose prerender Next.js
+  // serves, and routing (rewrites, Pages arbitration) treats it as `/a`, as
+  // Next.js's filesystem check does. Draft mode and server actions skip that
+  // cache in Next.js, so they render the raw-matched page.
+  const rendersRawRequestMatch =
+    options.matchRawRequestRoute !== undefined &&
+    (isPossibleAppRouteActionRequest(request) ||
+      isDraftModeRequest(request, options.draftModeSecret) ||
+      isDraftModeEnabled());
+  const renderedRouteMatch = <TMatch extends AppRscRouteMatch<TRoute> | null>(
+    routeMatch: TMatch,
+  ): TMatch =>
+    routeMatch !== null &&
+    rendersRawRequestMatch &&
+    cleanPathnameIsRequestPathname &&
+    !isInterceptionMatch
+      ? ((options.matchRawRequestRoute!(requestCleanPathname) as TMatch | null) ?? routeMatch)
+      : routeMatch;
 
   // A Pages client navigating to a path that middleware rewrites into App
   // territory needs `x-nextjs-rewrite` so it can hard-navigate; the body is an
@@ -2051,7 +2073,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         contentType,
         middlewareContext,
         request,
-        routeMatch: preActionMatch,
+        routeMatch: renderedRouteMatch(preActionMatch),
       });
     } else if (preActionMatch?.route.__loadPage && !preActionMatch.route.__loadRouteHandler) {
       return createMissingServerActionResponse(options, null);
@@ -2114,7 +2136,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           mountedSlotsHeader,
           request,
           scriptNonce,
-          routeMatch: preActionMatch,
+          routeMatch: renderedRouteMatch(preActionMatch),
           routePathname: preActionRoutePathname,
           dispatchRedirectTargetRequest: dispatchInternalRequest,
           sourceConfigHeaders,
@@ -2507,6 +2529,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return withUnmatchedRouteCacheControl(notFoundResponse({ headers }));
   }
 
+  match = renderedRouteMatch(match);
   const { route, params } = match;
   const requestPathnameDiffersFromCachePath = requestCleanPathname !== cleanPathname;
   const rawRequestPathnameIsObservable =
