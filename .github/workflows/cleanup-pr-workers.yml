@@ -1,0 +1,95 @@
+name: Clean up stale PR Workers
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the Workers that would be deleted without deleting them"
+        type: boolean
+        default: false
+
+concurrency:
+  group: cleanup-pr-workers
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  cleanup:
+    name: Delete pr-* Workers older than 3 days
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Delete stale PR Workers
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          MAX_AGE_DAYS: 3
+        run: |
+          set -euo pipefail
+
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts"
+          cutoff="$(date -u -d "${MAX_AGE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)"
+
+          scripts="$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$api")"
+          if [[ "$(jq -r '.success' <<<"$scripts")" != "true" ]]; then
+            echo "::error::Failed to list Workers: $(jq -c '.errors' <<<"$scripts")"
+            exit 1
+          fi
+
+          # Per-PR Workers are named pr-<number>-<suffix>. modified_on is bumped on
+          # every deploy, so a PR that was pushed recently keeps its Workers.
+          mapfile -t stale < <(jq -r --arg cutoff "$cutoff" '
+            .result[]
+            | select(.id | test("^pr-[0-9]+-"))
+            | select(.modified_on < $cutoff)
+            | .id
+          ' <<<"$scripts" | sort)
+
+          {
+            echo "## Stale PR Workers"
+            echo
+            echo "Cutoff: \`${cutoff}\` (last deployed more than ${MAX_AGE_DAYS} days ago)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ ${#stale[@]} -eq 0 ]]; then
+            echo "No stale PR Workers found."
+            echo "No stale PR Workers found." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Found ${#stale[@]} stale PR Workers."
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "**Dry run:** ${#stale[@]} Workers would be deleted." >> "$GITHUB_STEP_SUMMARY"
+            printf -- "- \`%s\`\n" "${stale[@]}" >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' "${stale[@]}"
+            exit 0
+          fi
+
+          failed=()
+          for name in "${stale[@]}"; do
+            # force=true also removes Workers that other (equally stale) PR Workers
+            # still reference through service bindings.
+            response="$(curl -sS -X DELETE -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/${name}?force=true" || true)"
+            if [[ "$(jq -r '.success // false' <<<"$response" 2>/dev/null)" == "true" ]]; then
+              echo "Deleted ${name}"
+            else
+              echo "::warning::Failed to delete ${name}: ${response}"
+              failed+=("$name")
+            fi
+          done
+
+          echo "Deleted $(( ${#stale[@]} - ${#failed[@]} )) of ${#stale[@]} stale PR Workers." >> "$GITHUB_STEP_SUMMARY"
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            {
+              echo
+              echo "Failed:"
+              printf -- "- \`%s\`\n" "${failed[@]}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
