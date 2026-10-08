@@ -25,11 +25,6 @@ vi.mock("@vitejs/plugin-rsc/utils/encryption-runtime", () => ({
     return encryption.values.get(await id);
   },
 }));
-vi.mock("@vitejs/plugin-rsc/react/rsc", async () => {
-  const { loadCacheFlightCodec } = await import("./helpers/cache-flight-codec.js");
-  return loadCacheFlightCodec();
-});
-
 beforeEach(() => {
   encryption.values.clear();
   setCacheHandler(new MemoryCacheHandler());

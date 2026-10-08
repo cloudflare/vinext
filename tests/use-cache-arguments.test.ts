@@ -9,11 +9,6 @@ import {
 const replyToCacheKey = async (reply: string | FormData) =>
   flightArgumentsKey(await snapshotFlightReply(reply));
 
-vi.mock("@vitejs/plugin-rsc/react/rsc", async () => {
-  const { loadCacheFlightCodec } = await import("./helpers/cache-flight-codec.js");
-  return loadCacheFlightCodec();
-});
-
 const file = (name = "private.txt", content = "", lastModified = 111, type = "text/plain") =>
   new File([content], name, { lastModified, type });
 

@@ -1,4 +1,3 @@
-const APP_PAGE_PROPS_CACHE_KEY_MARKER = Symbol.for("vinext.appPagePropsCacheKeyMarker");
 // Set by cache-runtime.ts on every wrapper returned by registerCachedFunction.
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 const SERVER_REFERENCE_TAG = Symbol.for("react.server.reference");
@@ -18,20 +17,6 @@ const USE_CACHE_SERVER_REFERENCE_ID_RE = /#\$\$vinext_cache_[0-9a-f]{64}$/;
 export const APP_PAGE_USE_CACHE_MARKER = "$$isPage";
 /** Layout marker, matching Next.js's `$$isLayout` prop (create-component-tree.tsx). */
 const APP_LAYOUT_USE_CACHE_MARKER = "$$isLayout";
-
-export function markAppPagePropsForUseCache<T extends object>(props: T): T {
-  Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
-    configurable: false,
-    enumerable: false,
-    value: true,
-    writable: false,
-  });
-  return props;
-}
-
-export function isMarkedAppPagePropsObject(value: object): boolean {
-  return Reflect.get(value, APP_PAGE_PROPS_CACHE_KEY_MARKER) === true;
-}
 
 /**
  * Whether `fn` is a transformed `"use cache"` function, including a bound
@@ -97,10 +82,7 @@ export function withoutUseCacheSegmentMarker(
   const marker = isPage ? APP_PAGE_USE_CACHE_MARKER : APP_LAYOUT_USE_CACHE_MARKER;
   if (props[marker] !== true) return props;
   const { [marker]: _marker, ...segmentProps } = props;
-  // Keep the page probe's non-enumerable marker, which the spread drops.
-  return isMarkedAppPagePropsObject(props)
-    ? markAppPagePropsForUseCache(segmentProps)
-    : segmentProps;
+  return segmentProps;
 }
 
 function hasUseCacheSegmentMarker(

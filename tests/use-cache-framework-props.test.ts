@@ -24,11 +24,6 @@ import {
   runWithPprFallbackShellState,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
-vi.mock("@vitejs/plugin-rsc/react/rsc", async () => {
-  const { loadCacheFlightCodec } = await import("./helpers/cache-flight-codec.js");
-  return loadCacheFlightCodec();
-});
-
 beforeEach(() => setCacheHandler(new MemoryCacheHandler()));
 
 // Next.js restores framework segment params separately from ordinary arguments:

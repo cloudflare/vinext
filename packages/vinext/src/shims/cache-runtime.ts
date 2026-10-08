@@ -19,9 +19,6 @@
  * and all RSC-serializable types — unlike JSON.stringify which silently
  * drops $$typeof Symbols and function values.
  *
- * When RSC APIs are unavailable (e.g. in unit tests), falls back to
- * JSON.stringify/parse with the same stableStringify cache key generation.
- *
  * Cache variants:
  * - "use cache"           — shared cache (default profile)
  * - "use cache: remote"   — shared cache (explicit)
@@ -69,7 +66,6 @@ import {
 import {
   hasUseCachePageMarker,
   hasUseCacheLayoutMarker,
-  isMarkedAppPagePropsObject,
   isUseCacheFunctionReference,
   withoutUseCacheSegmentMarker,
 } from "./internal/app-page-props-cache-key.js";
@@ -96,8 +92,6 @@ export function replayCachedFunction(fn: object, args: CacheFlightArguments): Pr
   if (!replay || args.version !== 1) throw new Error("Invalid cache function arguments");
   return replay(args);
 }
-
-export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
 // ---------------------------------------------------------------------------
 // Constants for nested-dynamic cache life detection
@@ -218,9 +212,8 @@ export function getCacheContext(): CacheContext | null {
 
 /**
  * RSC serialization APIs from @vitejs/plugin-rsc/react/rsc.
- * Lazily loaded because these are only available in the Vite RSC environment
- * (they depend on virtual modules set up by @vitejs/plugin-rsc).
- * In test environments, the import fails and we fall back to JSON.
+ * Lazily loaded because they require the `react-server` condition, which only
+ * the Vite RSC environment has; other environments may import this module.
  */
 type RscModule = {
   renderToReadableStream: (
@@ -291,17 +284,10 @@ export function buildUseCacheKey(
   return argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
 }
 
-const NOT_LOADED = Symbol("not-loaded");
-let _rscModule: RscModule | null | typeof NOT_LOADED = NOT_LOADED;
+let _rscModule: Promise<RscModule> | undefined;
 
-async function getRscModule(): Promise<RscModule | null> {
-  if (_rscModule !== NOT_LOADED) return _rscModule;
-  try {
-    _rscModule = (await import("@vitejs/plugin-rsc/react/rsc")) as RscModule;
-  } catch {
-    _rscModule = null;
-  }
-  return _rscModule;
+function getRscModule(): Promise<RscModule> {
+  return (_rscModule ??= import("@vitejs/plugin-rsc/react/rsc") as Promise<RscModule>);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,46 +337,41 @@ function uint8ToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
 
 async function serializeCacheResult<TResult>(
   result: TResult,
-  rsc: RscModule | null,
-): Promise<SerializedCacheResult<TResult> | null> {
-  if (rsc) {
-    let serializationError: { value: unknown } | undefined;
-    const stream = rsc.renderToReadableStream(result, {
-      onError(error) {
-        serializationError ??= { value: error };
-        return undefined;
-      },
-    });
-    const [returnStream, savedStream] = stream.tee();
+  rsc: RscModule,
+): Promise<SerializedCacheResult<TResult>> {
+  let serializationError: { value: unknown } | undefined;
+  const stream = rsc.renderToReadableStream(result, {
+    onError(error) {
+      serializationError ??= { value: error };
+      return undefined;
+    },
+  });
+  const [returnStream, savedStream] = stream.tee();
 
-    try {
-      // Decode the value that the caller receives from the same Flight stream
-      // whose other branch is persisted. This matches Next.js and ensures an
-      // errored Flight row rejects the callable-cache invocation instead of
-      // returning the original, unserializable object.
-      const [deserializedResult, bytes] = await Promise.all([
-        rsc.createFromReadableStream<TResult>(returnStream, {}, { preserveServerReferences: true }),
-        // Draining the saved branch is part of cache entry generation: lazy
-        // Server Components may execute here and contribute tags, cache life,
-        // or root param dependencies to the active cache scope.
-        collectStream(savedStream),
-      ]);
-      return {
-        result: deserializedResult,
-        cacheEntry: serializationError
-          ? null
-          : {
-              body: uint8ToBase64(bytes),
-              headers: { [VINEXT_RSC_MARKER_HEADER]: "1" },
-            },
-      };
-    } catch (error) {
-      throw serializationError?.value ?? error;
-    }
+  try {
+    // Decode the value that the caller receives from the same Flight stream
+    // whose other branch is persisted. This matches Next.js and ensures an
+    // errored Flight row rejects the callable-cache invocation instead of
+    // returning the original, unserializable object.
+    const [deserializedResult, bytes] = await Promise.all([
+      rsc.createFromReadableStream<TResult>(returnStream, {}, { preserveServerReferences: true }),
+      // Draining the saved branch is part of cache entry generation: lazy
+      // Server Components may execute here and contribute tags, cache life,
+      // or root param dependencies to the active cache scope.
+      collectStream(savedStream),
+    ]);
+    return {
+      result: deserializedResult,
+      cacheEntry: serializationError
+        ? null
+        : {
+            body: uint8ToBase64(bytes),
+            headers: { [VINEXT_RSC_MARKER_HEADER]: "1" },
+          },
+    };
+  } catch (error) {
+    throw serializationError?.value ?? error;
   }
-
-  const body = JSON.stringify(result);
-  return body === undefined ? null : { result, cacheEntry: { body, headers: {} } };
 }
 
 // ---------------------------------------------------------------------------
@@ -684,10 +665,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
     return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
       const codec = await getRscModule();
-      if (replay && !codec) throw new Error("Cannot replay cache arguments without Flight");
-      const clientReferences = codec?.createClientTemporaryReferenceSet();
-      const serverReferences = codec?.createTemporaryReferenceSet();
-      const rsc: RscModule | null = codec && {
+      const clientReferences = codec.createClientTemporaryReferenceSet();
+      const serverReferences = codec.createTemporaryReferenceSet();
+      const rsc: RscModule = {
         ...codec,
         renderToReadableStream: (value, options) =>
           codec.renderToReadableStream(value, {
@@ -761,63 +741,31 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         : executionArgs;
       const pagePropsIndex =
         omitAppPageSearchParams && isPageInvocation ? pagePropsArgIndex : undefined;
-      // Rendered page props carry searchParams that throw inside a public cache
-      // scope. When they are absent, as on a Response Store replay of the
-      // encoded args, access must still fail like Next's erroring searchParams.
-      let callArgs = (
+      // React owns argument semantics. Execute and persist exactly the same
+      // multipart snapshot, including native File metadata; key it like Next.js.
+      const keyArgs =
         pagePropsIndex === undefined
-          ? executionArgs
-          : withErroringPageSearchParams(executionArgs, pagePropsIndex)
-      ) as TArgs;
-
-      let cacheKey: string;
-      let flightArguments: CacheFlightArguments | undefined;
-      if (rsc) {
-        // React owns argument semantics. Execute and persist exactly the same
-        // multipart snapshot, including native File metadata; key it like Next.js.
-        const keyArgs =
-          pagePropsIndex === undefined
-            ? serializationArgs
-            : toReplayablePageArgs(serializationArgs, pagePropsIndex);
-        flightArguments =
-          replay ??
-          (await snapshotFlightReply(
-            await rsc.encodeReply(keyArgs, { temporaryReferences: clientReferences }),
-            isPageInvocation ? pagePropsArgIndex : undefined,
-          ));
-        if (!replay && layoutPropsArgIndex !== -1) {
-          flightArguments.layoutPropsIndex = layoutPropsArgIndex;
-        }
-        cacheKey = buildUseCacheKey(
-          cacheFunctionId,
-          keySeed,
-          await flightArgumentsKey(flightArguments),
-        );
-        callArgs = (await rsc.decodeReply(restoreFlightReply(flightArguments), {
-          temporaryReferences: serverReferences,
-        })) as TArgs;
-      } else {
-        // Without the RSC runtime (unit tests), key the JSON-serializable subset.
-        try {
-          const processedArgs =
-            serializationArgs.length > 0
-              ? unwrapThenableObjectArray(serializationArgs, {
-                  pagePropsIndex,
-                  omitMarkedAppPageSearchParams: omitAppPageSearchParams,
-                })
-              : [];
-          cacheKey = buildUseCacheKey(
-            cacheFunctionId,
-            keySeed,
-            processedArgs.length > 0 ? stableStringify(processedArgs) : undefined,
-          );
-        } catch {
-          // Non-serializable arguments — run without caching
-          return (await executeWithContext(fn, callArgs, cacheVariant)).result;
-        }
+          ? serializationArgs
+          : toReplayablePageArgs(serializationArgs, pagePropsIndex);
+      const flightArguments =
+        replay ??
+        (await snapshotFlightReply(
+          await rsc.encodeReply(keyArgs, { temporaryReferences: clientReferences }),
+          isPageInvocation ? pagePropsArgIndex : undefined,
+        ));
+      if (!replay && layoutPropsArgIndex !== -1) {
+        flightArguments.layoutPropsIndex = layoutPropsArgIndex;
       }
+      let cacheKey = buildUseCacheKey(
+        cacheFunctionId,
+        keySeed,
+        await flightArgumentsKey(flightArguments),
+      );
+      let callArgs = (await rsc.decodeReply(restoreFlightReply(flightArguments), {
+        temporaryReferences: serverReferences,
+      })) as TArgs;
 
-      if (segmentPropsIndex !== -1 && (rsc || fallbackParams)) {
+      if (segmentPropsIndex !== -1) {
         const props = callArgs[segmentPropsIndex] as Record<string, unknown>;
         callArgs = replaceArgument(callArgs, segmentPropsIndex, {
           ...props,
@@ -826,6 +774,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             outerParams,
           ),
         }) as TArgs;
+        // The encoded args omit a public page's searchParams. Access must still
+        // fail like Next's erroring searchParams, including on a replay.
         if (pagePropsIndex !== undefined) {
           callArgs = withErroringPageSearchParams(callArgs, pagePropsIndex) as TArgs;
         }
@@ -848,7 +798,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         if (privateHit !== undefined) {
           // The private cache is heterogeneous across cached functions; the key
           // includes this function's stable id, so a hit belongs to this TResult.
-          if (rsc && privateHit.serialized) {
+          if (privateHit.serialized) {
             return rsc.createFromReadableStream<TResult>(
               uint8ToStream(base64ToUint8(privateHit.serialized.body)),
               {},
@@ -948,7 +898,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         if (collectedResult?.cacheEntry) {
           try {
             let cacheFunctionInvocation: VinextCacheFunctionInvocation | undefined;
-            if (options.serverReferenceId && options.encodeInvocation && flightArguments) {
+            if (options.serverReferenceId && options.encodeInvocation) {
               try {
                 cacheFunctionInvocation = {
                   // Like the cache key, a public page cache replays without the
@@ -1028,6 +978,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (
         existing?.value &&
         existing.value.kind === "FETCH" &&
+        existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1" &&
         isServableCacheState(existing.cacheState) &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
@@ -1038,20 +989,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           // cache HIT — otherwise `revalidateTag()` could not evict the rendered
           // output that embeds this cached value (issue #1453).
           propagateCacheTagsToRequest(existing.value.tags);
-          let result: TResult;
-          if (rsc && existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1") {
-            // RSC-serialized entry: base64 → bytes → stream → deserialize
-            const bytes = base64ToUint8(existing.value.data.body);
-            const stream = uint8ToStream(bytes);
-            result = await rsc.createFromReadableStream<TResult>(
-              stream,
-              {},
-              { preserveServerReferences: true },
-            );
-          } else {
-            // JSON-serialized entry (legacy or no RSC available)
-            result = JSON.parse(existing.value.data.body);
-          }
+          const result = await rsc.createFromReadableStream<TResult>(
+            uint8ToStream(base64ToUint8(existing.value.data.body)),
+            {},
+            { preserveServerReferences: true },
+          );
           recordRequestScopedCacheControl(existing.cacheControl);
           if (existing.cacheState === "stale") regenerateInBackground(id, () => generate(false));
           return result;
@@ -1219,7 +1161,7 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-  rsc?: RscModule | null,
+  rsc: RscModule,
 ): Promise<{
   result: Awaited<ReturnType<T>>;
   cacheable: boolean;
@@ -1234,7 +1176,7 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
     fn,
     args,
     variant,
-    rsc ? (value) => serializeCacheResult(value, rsc) : undefined,
+    (value) => serializeCacheResult(value, rsc),
   );
   recordRequestScopedCacheLife(effectiveLife);
   return {
@@ -1490,89 +1432,6 @@ async function runCachedFunctionWithContext<
   return { result, ctx, effectiveLife, collectedResult };
 }
 
-// ---------------------------------------------------------------------------
-// JSON cache keys when the RSC runtime is unavailable (unit tests)
-// ---------------------------------------------------------------------------
-
-/**
- * Recursively unwrap "thenable objects" — values created by
- * `Object.assign(Promise.resolve(obj), obj)`, like Next.js 16 params and
- * searchParams — into plain objects, so their values reach the JSON key.
- * Only used for cache key generation — the original Promise-augmented
- * objects are still passed to the actual function on cache miss.
- */
-type UnwrapThenableObjectsOptions = {
-  omitAppPageSearchParamsAtRoot?: boolean;
-  /**
-   * Omit searchParams from props marked by `markAppPagePropsForUseCache` at
-   * any depth. False for private caches, which key by search params.
-   */
-  omitMarkedAppPageSearchParams: boolean;
-};
-
-type UnwrapThenableObjectArrayOptions = {
-  /** Index of the page props whose searchParams are omitted, if any. */
-  pagePropsIndex: number | undefined;
-  omitMarkedAppPageSearchParams: boolean;
-};
-
-function unwrapThenableObjects(value: unknown, options: UnwrapThenableObjectsOptions): unknown {
-  if (value === null || value === undefined || typeof value !== "object") {
-    return value;
-  }
-
-  const childOptions: UnwrapThenableObjectsOptions = {
-    omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
-  };
-
-  if (Array.isArray(value)) {
-    return value.map((item) => unwrapThenableObjects(item, childOptions));
-  }
-
-  if (isThenableObject(value)) {
-    const plain: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      // oxlint-disable-next-line typescript/no-explicit-any
-      plain[key] = unwrapThenableObjects((value as any)[key], childOptions);
-    }
-    return plain;
-  }
-  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof (value as any).then === "function") {
-    // Pure Promise with no own properties — leave as-is
-    return value;
-  }
-
-  // Regular object — recurse into values
-  const result: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    if (
-      key === "searchParams" &&
-      (options.omitAppPageSearchParamsAtRoot ||
-        (options.omitMarkedAppPageSearchParams && isMarkedAppPagePropsObject(value)))
-    ) {
-      continue;
-    }
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-    result[key] = unwrapThenableObjects((value as any)[key], childOptions);
-  }
-  return result;
-}
-
-/**
- * A thenable (not an array) with own enumerable properties — the
- * `Object.assign(Promise.resolve(obj), obj)` pattern Next.js params use. The
- * cache key is built from its fields instead of the promise.
- */
-function isThenableObject(value: object): value is PromiseLike<unknown> {
-  return (
-    !Array.isArray(value) &&
-    "then" in value &&
-    typeof value.then === "function" &&
-    Object.keys(value).length > 0
-  );
-}
-
 function isPagePropsObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -1612,63 +1471,4 @@ function withErroringPageSearchParams(args: readonly unknown[], index: number): 
       { observeParamAccess: () => throwIfInsideCacheScope("searchParams") },
     ),
   });
-}
-
-function unwrapThenableObjectArray(
-  values: readonly unknown[],
-  options: UnwrapThenableObjectArrayOptions,
-): unknown[] {
-  return values.map((value, index) =>
-    unwrapThenableObjects(value, {
-      omitAppPageSearchParamsAtRoot: index === options.pagePropsIndex,
-      omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
-    }),
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fallback: stable JSON serialization for cache keys (when RSC unavailable)
-// ---------------------------------------------------------------------------
-
-function stableStringify(value: unknown, seen?: Set<unknown>): string {
-  if (value === undefined) return "undefined";
-  if (value === null) return "null";
-
-  // Bail on non-serializable primitives so the caller can skip caching
-  if (typeof value === "function") throw new Error("Cannot serialize function");
-  if (typeof value === "symbol") throw new Error("Cannot serialize symbol");
-
-  if (Array.isArray(value)) {
-    // Circular reference detection
-    if (!seen) seen = new Set();
-    if (seen.has(value)) throw new Error("Circular reference");
-    seen.add(value);
-    const result = "[" + value.map((v) => stableStringify(v, seen)).join(",") + "]";
-    seen.delete(value);
-    return result;
-  }
-
-  if (typeof value === "object" && value !== null) {
-    if (value instanceof Date) {
-      return `Date(${value.getTime()})`;
-    }
-    // Circular reference detection
-    if (!seen) seen = new Set();
-    if (seen.has(value)) throw new Error("Circular reference");
-    seen.add(value);
-    const keys = Object.keys(value).sort();
-    const result =
-      "{" +
-      keys
-        .map(
-          (k) =>
-            `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k], seen)}`,
-        )
-        .join(",") +
-      "}";
-    seen.delete(value);
-    return result;
-  }
-
-  return JSON.stringify(value);
 }

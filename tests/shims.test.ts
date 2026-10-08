@@ -6518,6 +6518,14 @@ describe("next/cache shim", () => {
 // "use cache" runtime tests
 // ---------------------------------------------------------------------------
 
+/** The shared-cache key of a zero-argument "use cache" function. */
+async function zeroArgUseCacheKey(id: string): Promise<string> {
+  const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
+  const { flightArgumentsKey, snapshotFlightReply } =
+    await import("../packages/vinext/src/shims/cache-flight-arguments.js");
+  return buildUseCacheKey(id, undefined, await flightArgumentsKey(await snapshotFlightReply("[]")));
+}
+
 describe('"use cache" runtime', () => {
   it("runs cache misses in the matching work-unit scope", async () => {
     const { registerCachedFunction, clearPrivateCache } =
@@ -7133,7 +7141,7 @@ describe('"use cache" runtime', () => {
     await cached();
 
     // The cache entry should have tags
-    const entry = await handler.get("use-cache:test:tags");
+    const entry = await handler.get(await zeroArgUseCacheKey("test:tags"));
     expect(entry).not.toBeNull();
     expect(entry?.value).toHaveProperty("kind", "FETCH");
     if (entry?.value && entry.value.kind === "FETCH") {
@@ -7205,7 +7213,7 @@ describe('"use cache" runtime', () => {
     // Now build the outer entry; its body re-runs `inner()`, which HITs.
     await outer();
 
-    const outerEntry = await handler.get("use-cache:test:nested-outer");
+    const outerEntry = await handler.get(await zeroArgUseCacheKey("test:nested-outer"));
     expect(outerEntry?.value).toHaveProperty("kind", "FETCH");
     if (outerEntry?.value && outerEntry.value.kind === "FETCH") {
       // The outer entry must carry both its own tag and the nested inner tag.
@@ -7409,7 +7417,7 @@ describe('"use cache" runtime', () => {
     await cached();
 
     // The entry should have the minimum revalidate (1 second from "seconds" profile)
-    const entry = await handler.get("use-cache:test:min-wins");
+    const entry = await handler.get(await zeroArgUseCacheKey("test:min-wins"));
     expect(entry).not.toBeNull();
     if (entry?.value && entry.value.kind === "FETCH") {
       expect(entry.value.revalidate).toBe(1);
@@ -7421,27 +7429,20 @@ describe('"use cache" runtime', () => {
     expect(getCacheContext()).toBeNull();
   });
 
-  it("consistent cache keys for same objects regardless of key order", async () => {
+  // Like Next.js, Flight encodes properties in insertion order, which the
+  // cached function can observe.
+  it("keys argument objects by their property order", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     setCacheHandler(new MemoryCacheHandler());
-
-    let callCount = 0;
-    const fn = async (_opts: Record<string, unknown>) => {
-      callCount++;
-      return { result: "ok" };
-    };
-
+    const fn = vi.fn(async (opts: Record<string, unknown>) => Object.keys(opts));
     const cached = registerCachedFunction(fn, "test:stable-key");
-
-    // Different key order, same content — should be same cache key
-    await cached({ b: 2, a: 1 });
-    expect(callCount).toBe(1);
-
-    await cached({ a: 1, b: 2 });
-    expect(callCount).toBe(1); // Same cache key, still cached
+    expect(await cached({ b: 2, a: 1 })).toEqual(["b", "a"]);
+    expect(await cached({ a: 1, b: 2 })).toEqual(["a", "b"]);
+    expect(await cached({ b: 2, a: 1 })).toEqual(["b", "a"]);
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it("cached function with no args works correctly", async () => {
@@ -7549,34 +7550,9 @@ describe('"use cache" runtime', () => {
     expect(await cached(1, 2)).toEqual([1, 2]);
   });
 
-  it("falls back to JSON when RSC module is unavailable (test environment)", async () => {
-    // In vitest, @vitejs/plugin-rsc/react/rsc is not available (no Vite RSC
-    // environment). The runtime should gracefully fall back to JSON.stringify
-    // for cache values and stableStringify for cache keys.
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler } =
-      await import("../packages/vinext/src/shims/cache.js");
-    const handler = new MemoryCacheHandler();
-    setCacheHandler(handler);
-
-    const fn = async (x: number) => ({ doubled: x * 2 });
-    const cached = registerCachedFunction(fn, "test:json-fallback");
-
-    const r1 = await cached(3);
-    expect(r1).toEqual({ doubled: 6 });
-
-    // Verify the stored value is JSON (no x-vinext-rsc header)
-    // stableStringify wraps args as an array: [3]
-    const entry = await handler.get("use-cache:test:json-fallback:[3]");
-    expect(entry).not.toBeNull();
-    if (entry?.value && entry.value.kind === "FETCH") {
-      expect(entry.value.data.headers["x-vinext-rsc"]).toBeUndefined();
-      expect(JSON.parse(entry.value.data.body)).toEqual({ doubled: 6 });
-    }
-  });
-
-  it("skips caching for non-serializable args (functions)", async () => {
+  // Like Next.js, Flight passes functions through as temporary references
+  // that do not contribute to the key.
+  it("passes function arguments through without keying them", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
@@ -7595,11 +7571,10 @@ describe('"use cache" runtime', () => {
 
     const cached = registerCachedFunction(fn, "test:fn-arg");
 
-    // Functions can't be serialized — should execute every time (no caching)
     await workUnitAsyncStorage.run({ type: "request" }, () => cached(() => {}));
     await workUnitAsyncStorage.run({ type: "request" }, () => cached(() => {}));
-    expect(callCount).toBe(2);
-    expect(workUnitTypes).toEqual(["cache", "cache"]);
+    expect(callCount).toBe(1);
+    expect(workUnitTypes).toEqual(["cache"]);
   });
 
   it("produces different cache entries for Promise-augmented params with different values", async () => {
@@ -7651,55 +7626,6 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2); // Must have called the function again!
   });
 
-  it("does not read page searchParams while deriving a use cache key", async () => {
-    const { registerCachedFunction, markAppPagePropsForUseCache } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler } =
-      await import("../packages/vinext/src/shims/cache.js");
-    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
-    setCacheHandler(new MemoryCacheHandler());
-
-    let callCount = 0;
-    const observeSearchParams = vi.fn();
-    const cached = registerCachedFunction(
-      async (props: {
-        params: Promise<{ slug: string }>;
-        searchParams: Promise<Record<string, unknown>>;
-      }) => {
-        callCount++;
-        const params = await props.params;
-        return { slug: params.slug };
-      },
-      "test:page-props-searchparams",
-    );
-
-    const first = await cached(
-      markAppPagePropsForUseCache({
-        params: makeThenableParams({ slug: "same" }),
-        searchParams: makeThenableParams(
-          { q: "first" },
-          { observeParamAccess: observeSearchParams },
-        ),
-      }),
-    );
-    expect(first).toEqual({ slug: "same" });
-    expect(callCount).toBe(1);
-    expect(observeSearchParams).not.toHaveBeenCalled();
-
-    const second = await cached(
-      markAppPagePropsForUseCache({
-        params: makeThenableParams({ slug: "same" }),
-        searchParams: makeThenableParams(
-          { q: "second" },
-          { observeParamAccess: observeSearchParams },
-        ),
-      }),
-    );
-    expect(second).toEqual({ slug: "same" });
-    expect(callCount).toBe(1);
-    expect(observeSearchParams).not.toHaveBeenCalled();
-  });
-
   /** Props as a framework page or page-metadata call site passes them to a cache function. */
   function asPageInvocation<T extends object>(props: T): T {
     return { ...props, $$isPage: true };
@@ -7708,11 +7634,8 @@ describe('"use cache" runtime', () => {
   // Next.js: use-cache-wrapper.ts keeps `searchParams` in a private page
   // cache's serialized args and cache key (`if (isPrivate)`), since private
   // caches may read them.
-  it.each([
-    ["$$isPage marker", true],
-    ["probe-marked page props", false],
-  ])('keeps searchParams in "use cache: private" page keys (%s)', async (_label, viaPageMarker) => {
-    const { registerCachedFunction, markAppPagePropsForUseCache, clearPrivateCache } =
+  it('keeps searchParams in "use cache: private" page keys', async () => {
+    const { registerCachedFunction, clearPrivateCache } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
     clearPrivateCache();
@@ -7726,16 +7649,14 @@ describe('"use cache" runtime', () => {
         callCount++;
         return { q: (await props.searchParams).q };
       },
-      `/fixture/app/private-${String(viaPageMarker)}/page.tsx:default`,
+      "/fixture/app/private/page.tsx:default",
       "private",
     );
-    const pageProps = (q: string) => {
-      const props = {
+    const pageProps = (q: string) =>
+      asPageInvocation({
         params: makeThenableParams({ slug: "same" }),
         searchParams: makeThenableParams({ q }),
-      };
-      return viaPageMarker ? asPageInvocation(props) : markAppPagePropsForUseCache(props);
-    };
+      });
 
     await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
     await expect(cached(pageProps("second"))).resolves.toEqual({ q: "second" });

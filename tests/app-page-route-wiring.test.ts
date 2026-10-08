@@ -64,11 +64,6 @@ import type {
   RouteManifest,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 
-vi.mock("@vitejs/plugin-rsc/react/rsc", async () => {
-  const { loadCacheFlightCodec } = await import("./helpers/cache-flight-codec.js");
-  return loadCacheFlightCodec();
-});
-
 /**
  * Build the resolved semantic branch the route matcher hands to slot overrides.
  * Production parses filesystem syntax once, in
