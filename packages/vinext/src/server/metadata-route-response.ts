@@ -11,7 +11,7 @@ import {
   type SitemapEntry,
 } from "./metadata-routes.js";
 import { notFoundResponse } from "./http-error-responses.js";
-import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
+import { parseNextRedirectDigest } from "./next-error-digest.js";
 import {
   closeAfterResponse,
   createRequestContext,
@@ -58,8 +58,10 @@ import {
   getActiveDraftModeState,
   hasDraftModeCookieHeader,
   getAndClearPendingCookies,
+  getDraftModeCookieHeader,
   getHeadersContext,
   replaceHeadersContext,
+  setHeadersAccessPhase,
 } from "vinext/shims/headers";
 import { completeAppRouteHandlerResponse } from "./app-route-handler-execution.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
@@ -709,20 +711,44 @@ function findGeneratedImageId(
   return null;
 }
 
+/** Like Next.js's isRedirectError(): only push, replace or vinext's omitted type. */
+function parseMetadataRouteRedirect(digest: string) {
+  const redirect = parseNextRedirectDigest(digest);
+  return redirect &&
+    (redirect.type === null || redirect.type === "push" || redirect.type === "replace")
+    ? redirect
+    : null;
+}
+
 /**
- * Next.js compiles metadata files into Route Handlers, so `notFound()`,
- * `forbidden()`, `unauthorized()` and `redirect()` become empty status or
- * redirect responses (with the redirect URL used verbatim) instead of errors.
+ * Like Next.js's isHTTPAccessFallbackError(), which compares `Number()` of the
+ * status segment with 401, 403 and 404; any other fallback digest is a real
+ * error.
  */
-async function withMetadataRouteSpecialErrors<T extends Response | null>(
+function parseMetadataRouteAccessFallback(digest: string): 401 | 403 | 404 | null {
+  if (digest === "NEXT_NOT_FOUND") return 404;
+  const [prefix, status] = digest.split(";");
+  if (prefix !== "NEXT_HTTP_ERROR_FALLBACK") return null;
+  const code = Number(status);
+  return code === 401 || code === 403 || code === 404 ? code : null;
+}
+
+/**
+ * Next.js compiles metadata files into Route Handlers, so a dynamic metadata
+ * route runs like one: it may set cookies, and `notFound()`, `forbidden()`,
+ * `unauthorized()` and `redirect()` become empty status or redirect responses
+ * (with the redirect URL used verbatim) instead of errors.
+ */
+async function runDynamicMetadataRoute<T extends Response | null>(
   render: () => Promise<T>,
 ): Promise<T | Response> {
+  const previousPhase = setHeadersAccessPhase("route-handler");
   try {
     return await render();
   } catch (error) {
     if (!(error && typeof error === "object" && "digest" in error)) throw error;
     const digest = String(error.digest);
-    const redirect = parseNextRedirectDigest(digest);
+    const redirect = parseMetadataRouteRedirect(digest);
     if (redirect) {
       // As in Route Handlers, cookies set before redirect() go on the redirect.
       return markFullyBufferedBody(
@@ -732,15 +758,17 @@ async function withMetadataRouteSpecialErrors<T extends Response | null>(
         ),
       );
     }
-    // Like Next.js's isHTTPAccessFallbackError(), only 401, 403 and 404 are
-    // access fallbacks; any other fallback digest is a real error.
-    const status = parseNextHttpErrorDigest(digest)?.status;
-    if (status === 401 || status === 403 || status === 404) {
-      // Route Handlers drop cookies set before an access fallback.
+    const status = parseMetadataRouteAccessFallback(digest);
+    if (status !== null) {
+      // Route Handlers send no cookies with an access fallback, including the
+      // draft mode cookie the response stage would otherwise append.
       getAndClearPendingCookies();
+      getDraftModeCookieHeader();
       return markFullyBufferedBody(new Response(null, { status }));
     }
     throw error;
+  } finally {
+    setHeadersAccessPhase(previousPhase);
   }
 }
 
@@ -922,7 +950,7 @@ export async function handleMetadataRouteRequest(
           beginMetadataRouteCacheability(route);
           const render = async (): Promise<RenderedMetadataRoute | null> => {
             setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-            const response = await withMetadataRouteSpecialErrors(() =>
+            const response = await runDynamicMetadataRoute(() =>
               handleGeneratedSitemap(route, options.cleanPathname, functions),
             );
             return response
@@ -979,7 +1007,7 @@ export async function handleMetadataRouteRequest(
     const render = async (): Promise<RenderedMetadataRoute> => {
       setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
       const response = route.isDynamic
-        ? await withMetadataRouteSpecialErrors(() =>
+        ? await runDynamicMetadataRoute(() =>
             callDynamicMetadataRoute(route, match, options.makeThenableParams, functions),
           )
         : serveStaticMetadataRoute(route);
