@@ -109,6 +109,7 @@ export async function fetchWorkerFilesystemRoute(
   publicFiles: ReadonlySet<string>,
   basePath = "",
   assetPathPrefix = "",
+  hadBasePath = true,
 ): Promise<Response | false> {
   const isRetrievalMethod = request.method === "GET" || request.method === "HEAD";
   const assetUrl = new URL(request.url);
@@ -120,8 +121,11 @@ export async function fetchWorkerFilesystemRoute(
   } catch {
     return false;
   }
+  // Next.js serves public files under basePath, so a direct request outside it
+  // never matches one; only a rewrite can bring it into the public filesystem.
   const isPublicFile =
-    publicFiles.has(assetUrl.pathname) || publicFiles.has(decodedAssetUrl.pathname);
+    (phase !== "direct" || hadBasePath) &&
+    (publicFiles.has(assetUrl.pathname) || publicFiles.has(decodedAssetUrl.pathname));
   // Public files precede API routes in the filesystem order, so a file such as
   // public/api/schema.json is served rather than handed to API routing.
   if (!isPublicFile && (requestPathname === "/api" || requestPathname.startsWith("/api/"))) {

@@ -2470,6 +2470,44 @@ describe("fetchWorkerFilesystemRoute", () => {
     expect(fetchAsset).toHaveBeenCalledOnce();
   });
 
+  it.each(["GET", "POST"])(
+    "does not serve a direct %s for a public file outside basePath",
+    async (method) => {
+      const fetchAsset = vi.fn(async () => new Response("public"));
+
+      const result = await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/file.txt", { method }),
+        "/file.txt",
+        "direct",
+        fetchAsset,
+        new Set(["/file.txt"]),
+        "/docs",
+        "",
+        false,
+      );
+
+      expect(result).toBe(false);
+      expect(fetchAsset).not.toHaveBeenCalled();
+    },
+  );
+
+  it("serves a public file a rewrite brings in from outside basePath", async () => {
+    const fetchAsset = vi.fn(async () => new Response("public"));
+
+    const result = await fetchWorkerFilesystemRoute(
+      new Request("https://example.com/source"),
+      "/file.txt",
+      "beforeFiles",
+      fetchAsset,
+      new Set(["/file.txt"]),
+      "/docs",
+      "",
+      false,
+    );
+
+    expect(result).toBeInstanceOf(Response);
+  });
+
   it.each(["direct", "afterFiles"] as const)(
     "serves a public file under /api during %s",
     async (phase) => {

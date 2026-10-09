@@ -626,6 +626,7 @@ async function handleRequestImpl(
           publicFiles,
           basePath,
           assetPathPrefix,
+          hadBasePath,
         );
       },
     };
