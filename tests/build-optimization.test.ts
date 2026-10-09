@@ -4591,6 +4591,62 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it.each([
+    [
+      "at the top level",
+      "var { getServerSideProps, visible } = source;",
+      "var { visible } = source;",
+    ],
+    [
+      "in a block",
+      "if (flag) { var { getServerSideProps, visible } = source; }",
+      "if (flag) { var { visible } = source; }",
+    ],
+  ])("keeps a destructuring initializer that a surviving target %s reads", (_label, body, kept) => {
+    const code = `import source from './source';
+${body}
+export { getServerSideProps };
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("import source from './source';");
+    expect(result).toContain(kept);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a var declarator that also writes a catch binding", () => {
+    const code = `
+import secret from './secret';
+var getServerSideProps, helper = secret;
+getServerSideProps = () => helper;
+try { throw 0; } catch (helper) {
+  var [getServerSideProps, helper] = [null, 42];
+  console.log(helper);
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("var [getServerSideProps, helper] = [null, 42];");
+    expect(result).not.toContain("./secret");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps loops whose heads write only dead helpers running", () => {
+    const code = `
+let helper, count = 0;
+for (helper of [1, 2]) count++;
+for (var other in { a: 1 }) count++;
+export function getStaticProps() { return { props: { helper, other } }; }
+export default function Page() { return count; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("for (const __vinext_unused of [1, 2]) count++;");
+    expect(result).toContain("for (const __vinext_unused in { a: 1 }) count++;");
+    expect(result).not.toMatch(/\b(helper|other)\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("keeps nested assignments to shadowing locals", () => {
     const code = `
 import { visible } from './visible';

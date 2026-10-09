@@ -23,6 +23,8 @@ const SERVER_EXPORTS = new Set([
   "unstable_getStaticPaths",
 ]);
 
+const UNUSED_LOOP_TARGET = "const __vinext_unused";
+
 const SERVER_PROPS_SSG_CONFLICT =
   "You can not use getStaticProps or getStaticPaths with getServerSideProps. To use SSG, please remove getServerSideProps";
 const EXPORT_ALL_IN_PAGE_ERROR =
@@ -443,6 +445,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   const bindings = new Map<string, Binding>();
   const redeclarations: Binding[] = [];
   const loopHeadDeclarations = new Set<PositionedNode>();
+  const iterationHeadDeclarations = new Set<PositionedNode>();
   const declarationsOf = (name: string): Binding[] => {
     const binding = bindings.get(name);
     return [
@@ -603,14 +606,19 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       const owner = ancestors.at(-2);
       if (parent.kind === "var" && !varScope && owner && owner.type !== "ExportNamedDeclaration") {
         if (owner.init === parent || owner.left === parent) loopHeadDeclarations.add(parent);
+        if (owner.left === parent) iterationHeadDeclarations.add(parent);
         const declaredNames = bindingNames(node.id as PositionedNode);
         for (const identifier of bindingIdentifiers(node.id as PositionedNode)) {
           bindingPositions.add(identifier.start);
         }
-        for (const identifier of bindingIdentifiers(node.id as PositionedNode)) {
+        // A `var` redeclaring a catch parameter writes the catch binding, so a
+        // declarator with such a target is left alone.
+        const identifiers = bindingIdentifiers(node.id as PositionedNode);
+        const writesCatchBinding = identifiers.some((identifier) =>
+          isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
+        );
+        for (const identifier of writesCatchBinding ? [] : identifiers) {
           const name = identifier.name;
-          // A `var` redeclaring a catch parameter writes the catch binding.
-          if (isInsideRanges(identifier.start, shadowRanges.get(name) ?? [])) continue;
           const binding: Binding = {
             name,
             node,
@@ -784,6 +792,20 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           }
           continue;
         }
+        if (
+          ![...removableNames].some(
+            (name) => forcedBindings.has(name) || candidateBindings.has(name),
+          )
+        ) {
+          // Only dead helpers are written, so the loop still runs for its
+          // iterable and body; the head gets a throwaway target.
+          if (head.type !== "VariableDeclaration") {
+            edits.push({ start: head.start, end: head.end, replacement: UNUSED_LOOP_TARGET });
+          }
+          continue;
+        }
+        // The iterable is the data export's value, the server-only code being
+        // removed, so the loop goes like an assignment statement would.
         edits.push({
           start: expression.start,
           end: expression.end,
@@ -850,12 +872,18 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
         removableBindings.add(name);
       }
     }
+    // A destructuring initializer is shared by every target it declares, so it
+    // only belongs to removed code once all of those targets are removable.
+    const removableImplementations = (names: ReadonlySet<string>): PositionedNode[] =>
+      [...names].flatMap((name) =>
+        declarationsOf(name)
+          .filter((binding) => binding.declaredNames.every((declared) => names.has(declared)))
+          .map((binding) => binding.implementation),
+      );
     let closureChanged = true;
     while (closureChanged) {
       closureChanged = false;
-      const implementations = [...removableBindings].flatMap((name) =>
-        declarationsOf(name).map((binding) => binding.implementation),
-      );
+      const implementations = removableImplementations(removableBindings);
       for (const [name] of bindings) {
         if (removableBindings.has(name)) continue;
         if (
@@ -869,9 +897,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     let pruneChanged = true;
     while (pruneChanged) {
       pruneChanged = false;
-      const implementations = [...removableBindings].flatMap((name) =>
-        declarationsOf(name).map((binding) => binding.implementation),
-      );
+      const implementations = removableImplementations(removableBindings);
       for (const name of removableBindings) {
         if (forcedBindings.has(name)) continue;
         const hasLiveReference = (references.get(name) ?? []).some(
@@ -977,6 +1003,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           const terminator = loopHeadDeclarations.has(declaration) ? "" : ";";
           return `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")}${terminator}`;
         }
+        if (iterationHeadDeclarations.has(declaration)) return UNUSED_LOOP_TARGET;
         return exportStatement ||
           statements.includes(declaration) ||
           loopHeadDeclarations.has(declaration)
