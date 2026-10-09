@@ -82,6 +82,30 @@ async function assertFilesystemRewrite(baseUrl: string, pathname: string): Promi
   await expect(response.text()).resolves.toContain("hello from file.txt");
 }
 
+// Expected values observed against real Next.js 16 with the fixture's config:
+// unprefixed rules are locale-aware and the locale is detected
+// case-insensitively, so /EN/ and /SV/ must hit the same rules as /en/ and /sv/.
+async function assertMixedCaseLocaleConfigRules(baseUrl: string): Promise<void> {
+  for (const [pathname, location] of [
+    ["/EN/locale-case-gated", "/about"],
+    ["/SV/locale-case-gated", "/SV/about"],
+  ]) {
+    const response = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+    expect(response.status, pathname).toBe(307);
+    expect(response.headers.get("location"), pathname).toBe(location);
+  }
+  for (const pathname of ["/EN/about", "/SV/about"]) {
+    const response = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+    expect(response.status, pathname).toBe(200);
+    expect(response.headers.get("x-locale-case-header"), pathname).toBe("about");
+  }
+  for (const pathname of ["/EN/locale-case-rewrite", "/SV/locale-case-rewrite"]) {
+    const response = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+    expect(response.status, pathname).toBe(200);
+    await expect(response.text(), pathname).resolves.toContain("about page");
+  }
+}
+
 // Ported from Next.js: test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
 describe("Pages i18n locale:false public rewrites", () => {
@@ -203,6 +227,10 @@ describe("Pages i18n locale:false public rewrites", () => {
       const fallback = await fetch(`${prodBaseUrl}/sv/fallback-files/api/hello`);
       await expect(afterFiles.text()).resolves.toContain("hello from api");
       await expect(fallback.text()).resolves.toContain("hello from api");
+    });
+
+    it("applies unprefixed config rules to mixed-case locale prefixes", async () => {
+      await assertMixedCaseLocaleConfigRules(prodBaseUrl);
     });
 
     it("preserves page precedence over afterFiles rewrites", async () => {

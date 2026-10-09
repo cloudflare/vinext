@@ -509,6 +509,28 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/blog/[slug]");
   });
 
+  it("canonicalizes a mixed-case explicit locale on data responses", async () => {
+    // Next.js detects the locale case-insensitively and reports the configured
+    // casing (base-server's `/${locale}${pathname}`), not the default locale.
+    const result = await runPagesRequest(
+      makeRequest("/FR/source"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/FR/blog/example" }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: true, pattern: "/blog/:slug" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/blog/[slug]");
+  });
+
   it("does not add matched-path routing metadata to HTML responses", async () => {
     const result = await runPagesRequest(
       makeRequest("/ssr-page"),
