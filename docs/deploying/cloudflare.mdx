@@ -100,7 +100,7 @@ assets: {
 
 Middleware runs before `public/` files, and vinext then serves the file through the `ASSETS` binding. The hashed scripts and stylesheets under `/_next/static` still skip the Worker; they make up most static requests, so this avoids an invocation for each. The second exclusion covers that output under a `basePath` or a path `assetPrefix`. Unlike in Next.js, middleware does not run for the build output, which the recommended Next.js matchers exclude anyway.
 
-Keep both exclusions. vinext serves the build output only from Workers Static Assets, so `runWorkerFirst: true`, or a pattern list without these exclusions, makes the app's scripts and stylesheets return 404.
+Patterns use `*` for deep matching, and a `!` exclusion takes precedence over every other pattern; see Cloudflare's [`run_worker_first` reference](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first). Keep both exclusions. vinext serves the build output only from Workers Static Assets, so `runWorkerFirst: true`, or a pattern list without these exclusions, makes the app's scripts and stylesheets return 404.
 
 Configs created before this default, or written by hand, serve `public/` files without running middleware unless `runWorkerFirst` covers them. Add the patterns above, or list only the paths that need middleware, such as `["/downloads/*"]`; other public files then skip the Worker and middleware.
 

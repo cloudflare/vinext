@@ -324,7 +324,7 @@ defineWorker({
 });
 ```
 
-Avoid `runWorkerFirst: true`; it also routes the build output through the Worker, which returns 404 for it (see [Middleware and static files](/docs/deploying/cloudflare#middleware-and-static-files)). The `/*` pattern that `vinext init` generates already covers the private directory. Otherwise, preserve any other Worker-first routes when adding the private directory pattern. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns other than its build-output exclusions when configuring this cache.
+Avoid `runWorkerFirst: true`; it also routes the build output through the Worker, which returns 404 for it (see [Middleware and static files](/docs/deploying/cloudflare#middleware-and-static-files)). The `/*` pattern that `vinext init` generates already covers the private directory. Otherwise, preserve any other Worker-first routes when adding the private directory pattern. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns other than its build-output exclusions when configuring this cache. See Cloudflare's [`run_worker_first` reference](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first) for the pattern syntax.
 
 Existing typed configs require manual Static Assets setup; init stops before modifying the project so it cannot overwrite a custom binding or leave private files exposed.
 
