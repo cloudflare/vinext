@@ -1,6 +1,6 @@
 ---
 title: "Vinext 1.0: Next.js on Vite, ready for Cloudflare Workers"
-description: "Fourteen betas later: a new cache for Cloudflare Workers, deploys that warm it with your real bindings, and ISR that behaves like Next.js."
+description: "What the version number does and doesn't promise, a new cache built for Workers, and why deploys now warm it with your real bindings."
 date: "2026-09-28"
 authors:
   - name: James Anderson
@@ -14,11 +14,9 @@ tags:
   - caching
 ---
 
-It took fourteen betas and most of the summer to get here.
-
 If you missed the [original announcement](https://blog.cloudflare.com/vinext/), here's the short version. Vinext lets you build a Next.js app with Vite instead of `next build`. Your `app/` and `pages/` directories, your `next.config`, and your imports from `next/link` and `next/navigation` all stay where they are. Under the hood it's the Next.js API surface reimplemented as a Vite plugin, and it deploys to Cloudflare Workers with one command, or to Node, or anywhere Nitro runs.
 
-The early months were about breadth: routing, Server Components, Server Actions and middleware. The betas were a different kind of work. Most of it was caching, and most of the caching work was getting Vinext to agree with Next.js about what it's allowed to cache in the first place.
+The early months were about breadth: routing, Server Components, Server Actions and middleware. The fourteen betas over the summer were a different kind of work. Most of it was caching, and most of the caching work was getting Vinext to agree with Next.js about what it's allowed to cache in the first place.
 
 ## What 1.0 does and doesn't mean
 

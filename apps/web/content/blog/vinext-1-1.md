@@ -1,6 +1,6 @@
 ---
 title: "Vinext 1.1: faster builds and revalidation that doesn't block"
-description: "Faster production builds, quicker dev startup, and a revalidateTag on Cloudflare that keeps serving cached pages while fresh ones render in the background."
+description: "Benchmarks against Next.js since 1.0, the bug that rendered every page twice on navigation, and RSC payloads that were never compressed."
 date: "2026-10-08"
 authors:
   - name: James Anderson
@@ -14,7 +14,7 @@ tags:
   - use cache
 ---
 
-This one comes ten days after [1.0](/blog/vinext-1-0). It's a smaller release, but you'll probably notice it sooner, because builds and dev startup both got faster.
+To upgrade, bump both packages:
 
 ```sh
 npm install vinext@1.1.0 @vinext/cloudflare@1.1.0
