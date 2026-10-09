@@ -1,34 +1,30 @@
 import { hash } from "node:crypto";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import type { Plugin, ResolvedConfig } from "vite";
-import { getBuildBundlerOptions } from "../build/client-build-config.js";
 
 const INLINE_SOURCEMAP_RE =
   /(\/\/# sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,)([A-Za-z0-9+/=]+)(\s*)$/;
 
 type SourceMap = { sources?: (string | null)[]; sourcesContent?: (string | null)[] };
-type BuildConfig = Parameters<typeof getBuildBundlerOptions>[0] & {
-  sourcemap?: boolean | "inline" | "hidden";
-};
 
 const contentHash = (content: string) => hash("sha256", content);
 
-function hasConfiguredSourcemaps(build: BuildConfig): boolean {
-  if (build?.sourcemap) return true;
-  const output = getBuildBundlerOptions(build)?.output;
-  return (Array.isArray(output) ? output : [output]).some((options) => options?.sourcemap);
-}
-
-/** Null every source content not kept; returns whether anything changed. */
+/** Drop every source whose content is not kept; returns whether anything changed. */
 function scrubSourcesContent(map: SourceMap, keep: (content: string) => boolean): boolean {
   let changed = false;
-  map.sourcesContent?.forEach((content, index) => {
-    if (content == null || keep(content)) return;
-    map.sourcesContent![index] = null;
-    // A data: URL source carries the content itself (Rolldown may prefix it
-    // with a relative path).
-    if (/data:/i.test(map.sources?.[index] ?? "")) map.sources![index] = "data:,";
-    changed = true;
+  map.sources?.forEach((source, index) => {
+    const content = map.sourcesContent?.[index];
+    if (content != null && keep(content)) return;
+    if (content != null) {
+      map.sourcesContent![index] = null;
+      changed = true;
+    }
+    // A data: URL source carries the content itself, with or without a
+    // sourcesContent entry (Rolldown may prefix it with a relative path).
+    if (source && /data:/i.test(source)) {
+      map.sources![index] = "data:,";
+      changed = true;
+    }
   });
   return changed;
 }
@@ -95,16 +91,13 @@ export function createServerActionClientSourcemapPlugin(options: {
         if (!hashes) return;
         const contents = [code];
         // Earlier loaders and `enforce: "pre"` transforms can already map the
-        // code back to another original. Reading the combined map costs a
-        // collapse per module, so skip it when no sourcemap is configured;
-        // missing it only nulls more content.
-        if (hasConfiguredSourcemaps(this.environment.config.build)) {
-          try {
-            for (const content of this.getCombinedSourcemap().sourcesContent ?? []) {
-              if (content != null) contents.push(content);
-            }
-          } catch {}
-        }
+        // code back to another original. Read it even without a configured
+        // sourcemap: `outputOptions` can still enable one later.
+        try {
+          for (const content of this.getCombinedSourcemap().sourcesContent ?? []) {
+            if (content != null) contents.push(content);
+          }
+        } catch {}
         hashes.set(id, contents.map(contentHash));
       },
     },

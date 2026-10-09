@@ -48,7 +48,8 @@ async function generate(
   const plugin = createServerActionClientSourcemapPlugin({
     getManager: async () => ({ serverReferences: { metaMap } }) as never,
   });
-  const environment = { name: consumer, config: { consumer, build: { sourcemap: true } } };
+  // No configured sourcemap: `outputOptions` can still enable one after transforms.
+  const environment = { name: consumer, config: { consumer, build: {} } };
   (plugin.configResolved as (config: unknown) => void)({});
   (plugin.buildStart as (this: unknown) => void).call({ environment });
   for (const [id, code] of Object.entries(modules)) {
@@ -148,6 +149,15 @@ describe("vinext:server-action-client-sourcemap", () => {
     expect(map.sourcesContent).toEqual([null, CLIENT_SOURCE]);
   });
 
+  it("redacts data: URL sources without sourcesContent", async () => {
+    const dataUrl = `../app/data:text/javascript;base64,${Buffer.from(ACTION_SOURCE).toString("base64")}`;
+    const bundle = await generate(
+      withAsset({ version: 3, sources: [dataUrl, "../app/button.tsx"], mappings: "" }),
+    );
+    const map = JSON.parse(String(bundle["chunks/button.js.map"]!.source));
+    expect(map.sources).toEqual(["data:,", "../app/button.tsx"]);
+  });
+
   it("reads byte-backed .map assets", async () => {
     const bundle = await generate({
       "chunks/button.js": chunk(),
@@ -159,7 +169,7 @@ describe("vinext:server-action-client-sourcemap", () => {
     expect(assetContent(bundle)).toEqual([null, CLIENT_SOURCE]);
   });
 
-  it("keeps the original a public module's combined map already points to", async () => {
+  it("keeps the original a public module's combined map points to, even before sourcemaps are configured", async () => {
     const generated = `${CLIENT_SOURCE}export const injected = 1;\n`;
     const bundle = await generate(withAsset(DEFAULT_MAP), {
       modules: { [ACTION_ID]: ACTION_SOURCE, [CLIENT_ID]: generated },
