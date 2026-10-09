@@ -61,10 +61,12 @@ export function substituteDestinationParams(
 }
 
 /**
- * Parse a redirect destination's query the way Next.js does before merging
- * it with the request query: the template's query is parsed first (decoding
- * its literal text), then params are substituted verbatim into each value.
- * Keeping these boundaries means a param containing `&` stays one value.
+ * Split a redirect destination's query into parts before substituting params,
+ * as Next.js's prepareDestination parses the template query first. Each part
+ * is `[key, text]`: `text` is the part's template text with params substituted
+ * verbatim, and `key` is its decoded key, used only to match request params.
+ * Keeping these boundaries means a param containing `&` stays one value when
+ * the request query is merged in.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  */
@@ -78,10 +80,26 @@ export function substituteRedirectDestinationQuery(
   if (queryIndex === -1) return [];
 
   const paramRe = getDestinationParamRegex(params);
-  return [...new URLSearchParams(beforeHash.slice(queryIndex + 1))].map(([key, value]) => [
-    key,
-    paramRe ? value.replace(paramRe, (_token, paramKey: string) => params[paramKey]) : value,
-  ]);
+  const substitute = (value: string) =>
+    paramRe ? value.replace(paramRe, (_token, key: string) => params[key]) : value;
+
+  return beforeHash
+    .slice(queryIndex + 1)
+    .split("&")
+    .filter(Boolean)
+    .map((part) => {
+      const equalsIndex = part.indexOf("=");
+      const key = substitute(equalsIndex === -1 ? part : part.slice(0, equalsIndex));
+      return [decodeQueryKey(key), substitute(part)];
+    });
+}
+
+function decodeQueryKey(key: string): string {
+  try {
+    return decodeURIComponent(key.replace(/\+/g, " "));
+  } catch {
+    return key;
+  }
 }
 
 function getDestinationParamRegex(params: Record<string, string>): RegExp | null {

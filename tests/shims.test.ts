@@ -9947,12 +9947,20 @@ describe("middleware bypass prevention", () => {
       { source: "/h", destination: "/about#frag", permanent: false },
       { source: "/t", destination: "/about?a=%41&b=x+y&c", permanent: false },
       { source: "/role", destination: "/about?%72ole=user", permanent: false },
+      { source: "/s/:id", destination: "/d?:id=v", permanent: false },
+      { source: "/v/:id", destination: "/d?q=:id", permanent: false },
     ];
 
     for (const [pathname, requestSearch, location] of [
       ["/r/foo&utm=evil", "?utm=good&next=x", "/about?utm=good&next=/foo&utm=evil&safe=1"],
-      ["/role", "?role=admin", "/about?role=user"],
-      ["/t", "?u=1", "/about?u=1&a=A&b=x y&c="],
+      // Next.js emits the decoded template text here (`role=user`,
+      // `a=A&b=x y&c=`), and leaks an internal token for a param in a key
+      // (`__ESC_COLON_id=v`). vinext keeps the template text verbatim, as it
+      // does without a request query; the parsed values are the same.
+      ["/role", "?role=admin", "/about?%72ole=user"],
+      ["/t", "?u=1", "/about?u=1&a=%41&b=x+y&c"],
+      ["/s/foo", "", "/d?foo=v"],
+      ["/s/foo", "?x=1", "/d?x=1&foo=v"],
       ["/r/foo%2Fbar", "?utm=1", "/about?utm=1&next=/foo%2Fbar&safe=1"],
       [
         "/r/foo%26next%3Devil",
@@ -9967,6 +9975,10 @@ describe("middleware bypass prevention", () => {
       ["/p", "?s=%E2%9C%93&t=%2B", "/about?s=%E2%9C%93&t=%2B&a=1"],
       ["/n", "?z=%2F&_rsc=abc", "/about?z=%2F&_rsc=abc"],
       ["/h", "?utm=1", "/about?utm=1#frag"],
+      ["/v/caf%C3%A9", "", "/d?q=caf%C3%A9"],
+      ["/v/%E2%9C%93", "?z=1", "/d?z=1&q=%E2%9C%93"],
+      ["/v/a+b", "?a+b=1&q=old", "/d?a%20b=1&q=a+b"],
+      ["/v/x%26y", "?q=1&2=b&1=a", "/d?1=a&2=b&q=x%26y"],
     ]) {
       const redirect = matchRedirect(pathname, redirects, {
         headers: new Headers(),
@@ -14946,7 +14958,7 @@ describe("matchRedirect destination param substitution", () => {
     expect(result).toEqual({
       destination: "/home?authorized=yes",
       permanent: false,
-      destinationQuery: [["authorized", "yes"]],
+      destinationQuery: [["authorized", "authorized=yes"]],
     });
   });
 
@@ -14973,8 +14985,8 @@ describe("matchRedirect destination param substitution", () => {
         // The template query is parsed before substitution, so `next` stays
         // one value for the request query merge.
         destinationQuery: [
-          ["next", next],
-          ["safe", "1"],
+          ["next", `next=${next}`],
+          ["safe", "safe=1"],
         ],
       });
     }

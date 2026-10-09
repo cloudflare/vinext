@@ -793,9 +793,9 @@ export function matchConfigPattern(
 }
 
 /**
- * A matched config redirect. `destinationQuery` is the destination query as
- * Next.js sees it before merging the request query: parsed from the template,
- * with params substituted into each value.
+ * A matched config redirect. `destinationQuery` holds the destination query's
+ * `[decodedKey, text]` parts, split before params were substituted, for
+ * merging the request query.
  */
 export type RedirectMatch = {
   destination: string;
@@ -1185,9 +1185,9 @@ export function sanitizeDestination(dest: string): string {
  * `stringifyQuery`: request keys keep their order (integer-like keys first, as
  * in a JS object), a destination key overrides the request value in place,
  * and destination-only keys follow. Request keys and values are re-encoded;
- * destination keys and values are emitted verbatim. Pass the match's
+ * destination query text is emitted verbatim. Pass the match's
  * `destinationQuery` so substituted params keep their value boundaries;
- * without it the destination's own query is parsed. External destinations are returned untouched (a config redirect to another
+ * without it the destination's own query is split. External destinations are returned untouched (a config redirect to another
  * origin should not leak the original request's query).
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
@@ -1210,34 +1210,21 @@ export function preserveRedirectDestinationQuery(
 
   const queryIndex = beforeHash.indexOf("?");
   const pathPart = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-  const destQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
 
-  const requestQuery = collectQueryValues(requestParams);
-  const destinationValues = collectQueryValues(destinationQuery ?? new URLSearchParams(destQuery));
-
-  // Next.js only re-encodes strings that came from the request query.
-  const requestStrings = new Set<string>();
+  const requestParts: Record<string, string[]> = Object.create(null);
   for (const [key, value] of requestParams) {
-    requestStrings.add(key);
-    requestStrings.add(value);
+    (requestParts[key] ??= []).push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
   }
-  const encode = (value: string) => (requestStrings.has(value) ? encodeURIComponent(value) : value);
-
-  const mergedParts: string[] = [];
-  for (const [key, values] of Object.entries({ ...requestQuery, ...destinationValues })) {
-    for (const value of values) mergedParts.push(`${encode(key)}=${encode(value)}`);
+  const destinationParts: Record<string, string[]> = Object.create(null);
+  for (const [key, text] of destinationQuery ??
+    substituteRedirectDestinationQuery(destination, {})) {
+    (destinationParts[key] ??= []).push(text);
   }
 
-  const mergedQuery = mergedParts.join("&");
+  const mergedQuery = Object.values({ ...requestParts, ...destinationParts })
+    .flat()
+    .join("&");
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
-}
-
-function collectQueryValues(entries: Iterable<[string, string]>): Record<string, string[]> {
-  const query: Record<string, string[]> = Object.create(null);
-  for (const [key, value] of entries) {
-    (query[key] ??= []).push(value);
-  }
-  return query;
 }
 
 /**
