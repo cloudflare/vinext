@@ -4642,47 +4642,24 @@ export function getStaticProps() { return { props: { helper, other } }; }
 export default function Page() { return count; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (const __vinext_unused of [1, 2]) count++;");
-    expect(result).toContain("for (const __vinext_unused in { a: 1 }) count++;");
+    expect(result).toContain("for (({}).x of [1, 2]) count++;");
+    expect(result).toContain("for (({}).x in { a: 1 }) count++;");
     expect(result).not.toMatch(/\b(helper|other)\b/);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it("picks a throwaway loop target that does not collide with module names", () => {
-    const code = `
-let helper, __vinext_unused = 10, values = [];
-for (helper of [1, 2]) values.push(__vinext_unused);
-export function getStaticProps() { return { props: { helper } }; }
-export default function Page() { return values; }
-`;
-    const result = _stripServerExports(code);
-    expect(result).toContain(
-      "for (const ___vinext_unused of [1, 2]) values.push(__vinext_unused);",
-    );
-    expect(() => parseAst(result!)).not.toThrow();
-  });
-
-  it("treats names in source strings as taken loop target names", () => {
+  it("rewrites a helper-only loop head without introducing a binding", () => {
+    // Direct eval can name any binding, so the throwaway target is a member of a
+    // fresh object rather than a generated identifier.
     const code = `
 let helper, values = [];
-for (helper of [1, 2]) values.push(eval("__vinext_unused"));
+for (helper of [1, 2]) values.push(eval("__vinext_\\u0075nused"));
 export function getStaticProps() { return { props: { helper } }; }
 export default function Page() { return values; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (const ___vinext_unused of [1, 2])");
-    expect(() => parseAst(result!)).not.toThrow();
-  });
-
-  it("treats escaped identifier spellings as taken loop target names", () => {
-    const code = String.raw`
-let helper, __vinext_\u0075nused = 10, values = [];
-for (helper of [1, 2]) values.push(__vinext_\u0075nused);
-export function getStaticProps() { return { props: { helper } }; }
-export default function Page() { return values; }
-`;
-    const result = _stripServerExports(code);
-    expect(result).toContain("for (const ___vinext_unused of [1, 2])");
+    expect(result).toContain("for (({}).x of [1, 2]) values.push(eval(");
+    expect(result).not.toMatch(/\bhelper\b/);
     expect(() => parseAst(result!)).not.toThrow();
   });
 

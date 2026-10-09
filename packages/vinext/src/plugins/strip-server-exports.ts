@@ -23,6 +23,11 @@ const SERVER_EXPORTS = new Set([
   "unstable_getStaticPaths",
 ]);
 
+// Loop target for a head that only wrote dead helpers. A member of a fresh
+// object introduces no binding, so nothing in the loop body (including direct
+// `eval`) can observe it.
+const UNUSED_LOOP_TARGET = "({}).x";
+
 // Stands in for a catch-bound target in `declaredNames`; it is never dead.
 const CATCH_BOUND_NAME = "\0catch-bound";
 
@@ -453,23 +458,6 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     if (!catchBound) return deadBindings;
     return new Set([...deadBindings].filter((name) => !catchBound.has(name)));
   };
-  // A throwaway loop target that cannot collide with any identifier in the
-  // module: parsed names catch escaped spellings, and the source text catches
-  // names only reachable through strings such as direct `eval`.
-  let unusedLoopTargetName: string | undefined;
-  const unusedLoopTarget = (): string => {
-    if (!unusedLoopTargetName) {
-      const names = new Set<string>();
-      walkAstWithAncestors(ast.body, (node) => {
-        if (node.type === "Identifier") names.add(node.name);
-      });
-      unusedLoopTargetName = "__vinext_unused";
-      while (names.has(unusedLoopTargetName) || code.includes(unusedLoopTargetName)) {
-        unusedLoopTargetName = `_${unusedLoopTargetName}`;
-      }
-    }
-    return `const ${unusedLoopTargetName}`;
-  };
   const iterationHeadDeclarations = new Set<PositionedNode>();
   const declarationsOf = (name: string): Binding[] => {
     const binding = bindings.get(name);
@@ -831,7 +819,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           // Only dead helpers are written, so the loop still runs for its
           // iterable and body; the head gets a throwaway target.
           if (head.type !== "VariableDeclaration") {
-            edits.push({ start: head.start, end: head.end, replacement: unusedLoopTarget });
+            edits.push({ start: head.start, end: head.end, replacement: UNUSED_LOOP_TARGET });
           }
           continue;
         }
@@ -1043,7 +1031,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           const terminator = loopHeadDeclarations.has(declaration) ? "" : ";";
           return `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")}${terminator}`;
         }
-        if (iterationHeadDeclarations.has(declaration)) return unusedLoopTarget();
+        if (iterationHeadDeclarations.has(declaration)) return UNUSED_LOOP_TARGET;
         return exportStatement ||
           statements.includes(declaration) ||
           loopHeadDeclarations.has(declaration)
