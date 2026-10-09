@@ -4606,7 +4606,8 @@ describe("app page route wiring helpers", () => {
     }
   });
 
-  it("leaves an ancestor loading boundary off a slot owned by the loading's child layout", async () => {
+  // A layout at the group segment (position 2) owns a slow @panel slot.
+  async function renderSlotOwnerDocument(loadingTreePosition: number): Promise<string> {
     function DashboardLoading() {
       return createElement("p", { "data-loading": "dashboard" }, "Loading dashboard");
     }
@@ -4642,7 +4643,7 @@ describe("app page route wiring helpers", () => {
         layouts: [{ default: PanelLayout }],
         loading: null,
         loadings: [{ default: DashboardLoading }],
-        loadingTreePositions: [1],
+        loadingTreePositions: [loadingTreePosition],
         notFound: null,
         notFounds: [null],
         routeSegments: ["dashboard", "(protected)"],
@@ -4666,31 +4667,33 @@ describe("app page route wiring helpers", () => {
       rootNotFoundModule: null,
     });
 
-    // The layout entry's boundary sits outside the owner layout, so a
-    // suspending slot falls back above the layout instead of inside it. The
-    // panel stays pending until the shell is ready, so the fallback is emitted.
+    // The panel stays pending until the first chunk is read, so the nearest
+    // boundary around it emits its fallback.
     const { renderToReadableStream } = await import("react-dom/server.edge");
     const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
-    const stream = await renderToReadableStream(
-      createElement(
-        "html",
-        null,
-        createElement("head"),
+    const stream = await withTimeout(
+      renderToReadableStream(
         createElement(
-          "body",
+          "html",
           null,
+          createElement("head"),
           createElement(
-            ElementsContext.Provider,
-            { value: elements },
-            createElement(Slot, { id: "route:/dashboard" }),
+            "body",
+            null,
+            createElement(
+              ElementsContext.Provider,
+              { value: elements },
+              createElement(Slot, { id: "route:/dashboard" }),
+            ),
           ),
         ),
+        { onError: throwRenderError },
       ),
-      { onError: throwRenderError },
+      2_000,
     );
     const reader = stream.getReader();
     const decoder = new TextDecoder();
-    const first = await reader.read();
+    const first = await withTimeout(reader.read(), 2_000);
     let html = first.value ? decoder.decode(first.value, { stream: true }) : "";
     releasePanel();
     for (;;) {
@@ -4698,13 +4701,35 @@ describe("app page route wiring helpers", () => {
       if (done) break;
       html += decoder.decode(value, { stream: true });
     }
-    html += decoder.decode();
+    return html + decoder.decode();
+  }
+
+  it("leaves an ancestor loading boundary off a slot owned by the loading's child layout", async () => {
+    // The layout entry's boundary sits outside the owner layout, so a
+    // suspending slot falls back above the layout instead of inside it.
+    const html = await renderSlotOwnerDocument(1);
     const layoutStart = html.indexOf('<section data-layout="panel-owner"');
     const layoutEnd = html.indexOf("</section>", layoutStart);
     expect(layoutStart).toBeGreaterThan(-1);
     expect(html.slice(layoutStart, layoutEnd)).not.toContain('data-loading="dashboard"');
     expect(html.split('data-loading="dashboard"')).toHaveLength(2);
     expect(html.indexOf('data-loading="dashboard"')).toBeLessThan(layoutStart);
+    expect(html).toContain('data-slot-page="panel"');
+  });
+
+  it("keeps the owner segment's loading boundary on its slot inside the owner layout", async () => {
+    // Within one segment the layout wraps the loading, so the owner's own
+    // loading falls back inside the layout, around the suspending slot.
+    const html = await renderSlotOwnerDocument(2);
+    const layoutStart = html.indexOf('<section data-layout="panel-owner"');
+    const layoutEnd = html.indexOf("</section>", layoutStart);
+    expect(layoutStart).toBeGreaterThan(-1);
+    const panelStart = html.indexOf("<aside>", layoutStart);
+    const panelEnd = html.indexOf("</aside>", panelStart);
+    expect(panelStart).toBeGreaterThan(layoutStart);
+    expect(panelEnd).toBeLessThan(layoutEnd);
+    expect(html.slice(panelStart, panelEnd)).toContain('data-loading="dashboard"');
+    expect(html.split('data-loading="dashboard"')).toHaveLength(2);
     expect(html).toContain('data-slot-page="panel"');
   });
 

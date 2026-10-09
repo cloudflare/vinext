@@ -1228,7 +1228,11 @@ export function buildAppPageElements<
     // An ancestor loading never wraps a template entry: the route entry renders
     // the template in a Slot keyed by its child segment, so a boundary here
     // would remount with it. Next.js renders that template inside the parent's
-    // LoadingBoundary, which the route entry's per-segment boundary mirrors.
+    // LoadingBoundary, which the route entry's per-segment boundary mirrors
+    // outside a loading-shell prefetch. A shell renders no per-segment
+    // boundaries, so there an enclosing layout entry's boundary, if any,
+    // catches it. Browser commits preserve template entries across child-key
+    // changes, so a shell-only boundary here would leak into later navigations.
     elements[templateEntry.id] = renderAfterAppDependencies(templateElement, [
       ...(pageRenderDependency ? [pageRenderDependency] : []),
       ...(templateDependenciesBeforeById.get(templateEntry.id) ?? []),
