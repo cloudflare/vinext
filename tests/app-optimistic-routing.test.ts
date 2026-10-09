@@ -683,7 +683,7 @@ describe("App Router optimistic routing", () => {
 
   // Next.js keys a loading boundary by its child segment, so it stays mounted
   // while that child is shared, even with no layout in between.
-  it("does not commit a loading shell whose boundary's child segment is already mounted", () => {
+  it("decides whether a loading shell's boundary is already mounted", () => {
     const routeManifest = manifest([
       route({
         id: "route:/s/one",
@@ -753,7 +753,7 @@ describe("App Router optimistic routing", () => {
           ...(loadingTreePosition === null
             ? {}
             : { [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: loadingTreePosition }),
-          [`page:${pattern}`]: null,
+          [`page:${href}`]: null,
           [`route:${href}`]: createElement("p", null, "Loading"),
         },
         href,

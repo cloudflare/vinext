@@ -18,6 +18,8 @@ async function clickWithHeldNavigation(
   // the router prefetches and pushes the target instead.
   options: {
     beforeClick?: () => Promise<void>;
+    // Reaches `from` by a client navigation from this page instead of a load.
+    enterFrom?: string;
     from: string;
     current: string;
     link?: string;
@@ -47,8 +49,16 @@ async function clickWithHeldNavigation(
       new URL(response.url()).pathname === options.targetPath &&
       response.request().headers()["x-vinext-rsc-render-mode"] === "prefetch-loading-shell",
   );
-  await page.goto(options.from);
+  await page.goto(options.enterFrom ?? options.from);
   await waitForAppRouterHydration(page);
+  if (options.enterFrom !== undefined) {
+    await page.evaluate((href) => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push(href);
+    }, options.from);
+    await expect(page).toHaveURL(new RegExp(`${options.from}$`));
+  }
   await expect(page.locator(options.current)).toBeVisible();
   if (options.link === undefined) {
     await page.evaluate((href) => {
@@ -228,4 +238,20 @@ test("a prefetched loading shell shows the loading when leaving a not-found page
   await expect(page.locator("#ancestor-shared-layout-two")).toBeVisible({ timeout: 10_000 });
   // The not-found boundary unmounted, so the guard applies again.
   expect(await shownFallbacks()).toBe(0);
+});
+
+test("a prefetched loading shell shows the loading when leaving a not-found page reached by client navigation", async ({
+  page,
+}) => {
+  const releaseNavigation = await clickWithHeldNavigation(page, {
+    current: "text=404 - Page Not Found",
+    enterFrom: `${BASE}/plain/one`,
+    from: `${BASE}/plain/missing`,
+    loading: LOADING,
+    targetPath: `${BASE}/plain/two`,
+  });
+  await expect(page.locator(`#${LOADING}`)).toBeVisible();
+
+  releaseNavigation();
+  await expect(page.locator("#ancestor-shared-layout-two")).toBeVisible({ timeout: 10_000 });
 });
