@@ -19,6 +19,8 @@ Development, bundling, and production builds run on Vite 8 instead of the Next.j
 
 Cloudflare Workers is the primary native target. Standalone Node output and Nitro adapters cover other hosts. Next.js route config values such as `runtime` and `preferredRegion` don't choose where code runs, because runtime placement belongs to the selected deployment adapter. Outside `cacheComponents`, `runtime = "edge"` still opts an App Router page out of ISR, as it does in Next.js.
 
+On Cloudflare Workers, files in `public/` and the build output are served before middleware runs. See [Middleware and static files](/docs/deploying/cloudflare#middleware-and-static-files) to route chosen paths through middleware.
+
 ## Caching
 
 These differences apply to builds without `cacheComponents`, which follow their own caching rules.
