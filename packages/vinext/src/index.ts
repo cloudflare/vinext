@@ -2349,7 +2349,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
     // Preserve the `require` package-export condition before the CommonJS
     // transform below turns literal require() calls into static imports.
-    createRequireConditionResolutionPlugin(createIdResolver, commonjsTransformFilter),
+    createRequireConditionResolutionPlugin(
+      createIdResolver,
+      commonjsTransformFilter,
+      () => resolvedServerExternalPackages,
+    ),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //
