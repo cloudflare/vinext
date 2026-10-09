@@ -30,6 +30,22 @@ function typecheckProject(root: string): void {
   expect(types.status, `${types.stdout}\n${types.stderr}`).toBe(0);
 }
 
+type WorkerCacheConfig = {
+  cache?: { enabled?: boolean };
+  exports?: Record<string, { type?: string; cache?: { enabled?: boolean } }>;
+};
+
+// Entrypoints that may be served from Workers Cache before the Worker runs. A
+// per-export policy overrides the Worker-wide one, which unlisted exports inherit.
+// https://developers.cloudflare.com/workers/cache/configuration/
+function cachedEntrypoints(config: WorkerCacheConfig): string[] {
+  const exports = { default: { type: "worker" }, ...config.exports };
+  return Object.entries(exports)
+    .filter(([, entry]) => entry.type === "worker")
+    .filter(([, entry]) => entry.cache?.enabled ?? config.cache?.enabled ?? false)
+    .map(([name]) => name);
+}
+
 describe("default cf init build", () => {
   it("builds and type-checks a default create-vinext-app Cloudflare project", () => {
     const root = path.join(tempRoot, "created-cf-app");
@@ -231,6 +247,27 @@ describe("default cf init build", () => {
       expect(fs.existsSync(path.join(root, "worker-configuration.d.ts"))).toBe(false);
       if (responseStoreMode === "service-binding") typecheckProject(root);
       const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
+      const workerConfigs: WorkerCacheConfig[] = legacyWrangler
+        ? [JSON.parse(fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"))]
+        : fs
+            .readdirSync(workersDir)
+            .map((worker) =>
+              JSON.parse(
+                fs.readFileSync(path.join(workersDir, worker, "worker.config.json"), "utf8"),
+              ),
+            );
+      // Only the cache's internal entrypoint may be cached; the application's
+      // responses must never be served from Workers Cache before the Worker runs.
+      for (const workerConfig of workerConfigs) {
+        expect(workerConfig.cache?.enabled ?? false).toBe(false);
+      }
+      expect(workerConfigs.flatMap(cachedEntrypoints)).toEqual(
+        cdnCache === "response-store"
+          ? ["ResponseStoreBinding"]
+          : cdnCache === "workers-cache"
+            ? ["VinextCachedResponse"]
+            : [],
+      );
       if (legacyWrangler) {
         const workerConfig = JSON.parse(
           fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
@@ -378,23 +415,22 @@ describe("legacy Wrangler cache migration", () => {
       const config = JSON.parse(
         fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
       );
-      // A per-export policy overrides the Worker's top-level Workers Cache setting.
-      // https://developers.cloudflare.com/workers/cache/configuration/
-      return {
-        config,
-        defaultEntrypointCached: Boolean(
-          config.exports?.default?.cache?.enabled ?? config.cache?.enabled,
-        ),
-      };
+      return { config, defaultEntrypointCached: cachedEntrypoints(config).includes("default") };
     }
 
     const workersCache = await initAndBuild("workers-cache");
-    expect(workersCache.config.cache).toEqual({ enabled: true });
-    expect(workersCache.defaultEntrypointCached).toBe(false);
+    expect(workersCache.config.cache).toBeUndefined();
+    expect(cachedEntrypoints(workersCache.config)).toEqual(["VinextCachedResponse"]);
+
+    // Earlier releases enabled Workers Cache for the whole Worker in this setup.
+    const wranglerPath = path.join(root, "wrangler.jsonc");
+    fs.writeFileSync(
+      wranglerPath,
+      fs.readFileSync(wranglerPath, "utf8").replace(/^\{/, '{\n  "cache": { "enabled": true },'),
+    );
 
     // Init leaves the user's Vite config alone: a kept Workers Cache adapter
     // is rejected before any file is written, so no half-migrated config remains.
-    const wranglerPath = path.join(root, "wrangler.jsonc");
     const workersCacheWrangler = fs.readFileSync(wranglerPath, "utf8");
     await expect(runInit("static-assets")).rejects.toThrow(
       "does not match the selected Static Assets cache",

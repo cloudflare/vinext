@@ -739,8 +739,8 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).toContain("data: kvDataAdapter()");
     expect(readFile(tmpDir, "vite.config.ts")).toContain("cdn: workersCacheCdnAdapter()");
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).cache).toBeUndefined();
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
-      cache: { enabled: true },
       main: "vinext/server/fetch-handler",
       version_metadata: { binding: "CF_VERSION_METADATA" },
     });

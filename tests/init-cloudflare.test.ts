@@ -536,8 +536,10 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(service).toMatchObject({
       name: "my-app-response-store",
       main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
-      cache: { enabled: true },
+      cache: { enabled: false },
       exports: {
+        default: { type: "worker", cache: { enabled: false } },
+        ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
         CacheMetadata: { type: "durable-object", storage: "sqlite" },
       },
       r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "my-app-response-store-cache-bodies" }],
@@ -560,7 +562,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       { root: "/tmp/vinext-missing-response-store-config" },
     );
     expect(JSON.parse(selfContained)).toMatchObject({
-      cache: { enabled: true },
+      cache: { enabled: false },
       exports: {
         Other: { type: "worker", cache: { enabled: false } },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
@@ -1491,9 +1493,9 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
+    expect(JSON.parse(output).cache).toBeUndefined();
     expect(JSON.parse(output)).toMatchObject({
       name: "existing",
-      cache: { enabled: true },
       images: { binding: "IMAGES" },
       kv_namespaces: [{ binding: "VINEXT_KV_CACHE" }],
       version_metadata: { binding: "CF_VERSION_METADATA" },
@@ -1525,8 +1527,8 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
   });
 
-  it("enables an existing disabled Workers Cache config", () => {
-    const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": false } }\n`, {
+  it("disables a Worker-wide cache for Workers Cache, whose adapter enables only its own entrypoint", () => {
+    const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": true } }\n`, {
       dataCache: "none",
       cdnCache: "workers-cache",
       imageOptimization: "none",
@@ -1540,7 +1542,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
         binding: "ASSETS",
         run_worker_first: DEFAULT_RUN_WORKER_FIRST,
       },
-      cache: { enabled: true },
+      cache: { enabled: false },
       version_metadata: { binding: "CF_VERSION_METADATA" },
     });
   });
@@ -1564,14 +1566,14 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     },
   );
 
-  it("preserves the Workers Cache config chosen for Response Store", () => {
+  it("disables the Worker-wide cache for Response Store", () => {
     const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": true } }\n`, {
       dataCache: "none",
       cdnCache: "response-store",
       responseStoreMode: "self-contained",
       imageOptimization: "none",
     });
-    expect(JSON.parse(output).cache).toEqual({ enabled: true });
+    expect(JSON.parse(output).cache).toEqual({ enabled: false });
   });
 
   it("preserves a custom Wrangler version metadata binding for the CDN adapter", () => {
@@ -1652,7 +1654,7 @@ export default defineConfig({
       imageOptimization: "cloudflare-images",
     });
     expect(output).toContain('"images": { "binding": "CUSTOM_IMAGES" }');
-    expect(output).toContain('"cache": { "enabled": true }');
+    expect(output).not.toContain('"cache"');
     expect(getWranglerImagesBinding(output)).toBe("CUSTOM_IMAGES");
     const vite = generateAppRouterViteConfig(undefined, options, "CUSTOM_IMAGES");
     expect(vite).toContain('imagesOptimizer({ binding: "CUSTOM_IMAGES" })');
