@@ -84,9 +84,10 @@ function readClientJavaScript(dir: string, skipDir?: string): string {
   return output;
 }
 
+/** `extraPlugins` are registered for both the app and its worker builds. */
 async function buildFixture(
   root: string,
-  workerPlugins: import("vite").Plugin[] = [],
+  extraPlugins: import("vite").Plugin[] = [],
 ): Promise<void> {
   const { cloudflare } = (await import(pathToFileURL(CF_PLUGIN_PATH).href)) as {
     cloudflare: CloudflarePluginFactory;
@@ -97,8 +98,9 @@ async function buildFixture(
     plugins: [
       vinext({ appDir: root }),
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ...extraPlugins,
     ],
-    worker: { plugins: () => workerPlugins },
+    worker: { plugins: () => extraPlugins },
     // Mirrors the fixture's vite.config.ts.
     resolve: {
       alias: {
@@ -234,8 +236,8 @@ self.postMessage("worker.ts:" + typeof keyLength);
     return [...javaScript.matchAll(/[`"']([^`"'\s]+#keyLength)[`"']/g)].map((match) => match[1]!);
   }
 
-  async function buildAndReadWorkers(root: string, workerPlugins?: import("vite").Plugin[]) {
-    await buildFixture(root, workerPlugins);
+  async function buildAndReadWorkers(root: string, extraPlugins?: import("vite").Plugin[]) {
+    await buildFixture(root, extraPlugins);
     const clientDir = path.join(root, "dist/client");
     const workerDir = path.join(clientDir, "_next/static/workers");
     return {
@@ -359,6 +361,38 @@ self.postMessage("worker.ts:" + typeof keyLength);
     const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root, [
       virtualActions,
     ]);
+    expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
+    expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
+  }, 120_000);
+
+  it("expands export-all re-exports of virtual modules into server references", async () => {
+    const root = copyFixture();
+    // Worker-only: plugin-rsc's own export-all expansion reads re-export
+    // targets from disk, so the main graphs cannot import this barrel.
+    writeFile(
+      root,
+      "app/worker-actions.ts",
+      `"use server";\n\nexport * from "virtual:worker-action-impl";\n`,
+    );
+    writeFile(
+      root,
+      "app/worker.ts",
+      `import { keyLength } from "./worker-actions";
+
+self.postMessage("worker.ts:" + typeof keyLength);
+`,
+    );
+    const virtualImpl: import("vite").Plugin = {
+      name: "test:virtual-worker-action-impl",
+      resolveId: (source) =>
+        source === "virtual:worker-action-impl" ? "\0virtual:worker-action-impl" : null,
+      load: (id) =>
+        id === "\0virtual:worker-action-impl"
+          ? `const BODY = ${JSON.stringify(ACTION_BODY_MARKER)};\nexport async function keyLength() { return BODY.length; }\n`
+          : null,
+    };
+
+    const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root, [virtualImpl]);
     expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
     expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
   }, 120_000);

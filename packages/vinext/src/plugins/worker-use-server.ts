@@ -11,16 +11,34 @@ type RscPluginModule = typeof import("@vitejs/plugin-rsc");
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
 type RscCoreModule = { default: () => Plugin[] };
 
-// Globals are read through `globalThis` so Server Function exports named
-// `Promise`, `Error`, or `reportError` cannot shadow them.
-const WORKER_CALL_SERVER = `function $$vinextWorkerCallServer() {
-  return new globalThis.Promise(() => {
-    globalThis.reportError(
-      new globalThis.Error("Server Functions cannot be called from a browser Web Worker."),
-    );
+const WORKER_REFERENCE_RUNTIME_ID = "\0vinext:worker-server-reference";
+const WORKER_REFERENCE_RUNTIME_ID_RE = /^\0vinext:worker-server-reference$/;
+
+function workerReferenceRuntime(browserRuntime: string): string {
+  return `import { createServerReference } from ${JSON.stringify(browserRuntime)};
+
+function callServer() {
+  return new Promise(() => {
+    reportError(new Error("Server Functions cannot be called from a browser Web Worker."));
   });
 }
+
+export function createWorkerServerReference(id, name) {
+  return createServerReference(id, callServer, undefined, undefined, name);
+}
 `;
+}
+
+/** A module-local binding that cannot collide with any name in `code`. */
+function uniqueBinding(code: string, base: string): string {
+  let binding = base;
+  while (code.includes(binding)) binding += "_";
+  return binding;
+}
+
+function isPlainFilePath(id: string): boolean {
+  return !/[\0?#]/.test(id) && fs.existsSync(id);
+}
 
 function withPositionedError<T>(
   ctx: { error(message: string, pos?: number): never },
@@ -75,6 +93,14 @@ export async function createWorkerUseServerPlugins(options: {
       const mainConfig = (config as ResolvedConfig & { mainConfig?: ResolvedConfig }).mainConfig;
       manager = (await options.rscPluginModule).getPluginApi(mainConfig ?? config)?.manager;
     },
+    resolveId: {
+      filter: { id: WORKER_REFERENCE_RUNTIME_ID_RE },
+      handler: (source) => source,
+    },
+    load: {
+      filter: { id: WORKER_REFERENCE_RUNTIME_ID_RE },
+      handler: () => workerReferenceRuntime(browserRuntime),
+    },
     transform: {
       // Like `rsc:use-server`, match every module id (queries, hashes and
       // virtual modules included); the directive check below narrows it.
@@ -94,13 +120,18 @@ export async function createWorkerUseServerPlugins(options: {
             ast,
             importer: id,
             resolve: async (source, importer) => (await this.resolve(source, importer))?.id,
+            // Read plain files like `rsc:use-server` (export names only, no
+            // full transform); anything else (virtual modules, queries) has
+            // to come from the plugin pipeline.
             load: async (target) =>
               parseAstAsync(
-                (
-                  await transformWithOxc(await fs.promises.readFile(target, "utf-8"), target, {
-                    sourcemap: false,
-                  })
-                ).code,
+                isPlainFilePath(target)
+                  ? (
+                      await transformWithOxc(await fs.promises.readFile(target, "utf-8"), target, {
+                        sourcemap: false,
+                      })
+                    ).code
+                  : ((await this.load({ id: target })).code ?? ""),
               ),
           }),
         );
@@ -110,18 +141,19 @@ export async function createWorkerUseServerPlugins(options: {
         }
 
         const { referenceKey } = manager.serverReferences.resolve(id, "rsc");
+        const runtime = uniqueBinding(code, "$$vinextWorkerReference");
         const result = await withPositionedError(this, () =>
           transforms.transformDirectiveProxyExport(ast, {
             code,
             directive: "use server",
             rejectNonAsyncFunction: true,
             runtime: (name) =>
-              `$$ReactClient.createServerReference(${JSON.stringify(`${referenceKey}#${name}`)}, $$vinextWorkerCallServer, undefined, undefined, ${JSON.stringify(name)})`,
+              `${runtime}(${JSON.stringify(`${referenceKey}#${name}`)}, ${JSON.stringify(name)})`,
           }),
         );
         if (!result?.output.hasChanged()) return null;
         result.output.prepend(
-          `import * as $$ReactClient from ${JSON.stringify(browserRuntime)};\n${WORKER_CALL_SERVER}`,
+          `import { createWorkerServerReference as ${runtime} } from ${JSON.stringify(WORKER_REFERENCE_RUNTIME_ID)};\n`,
         );
         return magicStringTransformResult(result.output);
       },
