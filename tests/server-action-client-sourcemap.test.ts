@@ -19,11 +19,18 @@ const DEFAULT_MAP = sourcemap(
   [ACTION_SOURCE, CLIENT_SOURCE],
 );
 
-function chunk({ code = "export{};", map = null as object | null } = {}) {
+const toDataUrl = (content: string) =>
+  `../app/data:text/javascript;base64,${Buffer.from(content).toString("base64")}`;
+
+function chunk({
+  code = "export{};",
+  map = null as object | null,
+  sourcemapFileName = "chunks/button.js.map" as string | null,
+} = {}) {
   return {
     type: "chunk",
     fileName: "chunks/button.js",
-    sourcemapFileName: "chunks/button.js.map",
+    sourcemapFileName,
     moduleIds: Object.keys(MODULES),
     code,
     map,
@@ -37,11 +44,15 @@ async function generate(
     consumer = "client",
     modules = MODULES,
     originals = {},
+    combinedMaps = {},
+    between,
   }: {
     serverReferences?: string[];
     consumer?: "client" | "server";
     modules?: Record<string, string>;
     originals?: Record<string, string>;
+    combinedMaps?: Record<string, object>;
+    between?: (bundle: Bundle) => void;
   } = {},
 ) {
   const metaMap = new Map(serverReferences.map((id) => [id, {}]));
@@ -54,7 +65,7 @@ async function generate(
   (scrub!.buildStart as (this: unknown) => void).call({ environment });
   for (const [id, code] of Object.entries(modules)) {
     const original = originals[id];
-    const getCombinedSourcemap = () => ({ sourcesContent: [original ?? code] });
+    const getCombinedSourcemap = () => combinedMaps[id] ?? { sourcesContent: [original ?? code] };
     for (const plugin of [scrub!, track!]) {
       (plugin.transform as Hook).handler.call(
         { environment, getCombinedSourcemap },
@@ -64,6 +75,8 @@ async function generate(
     }
   }
   await (scrub!.generateBundle as Hook).handler.call({ environment }, {} as never, bundle as never);
+  between?.(bundle);
+  await (track!.generateBundle as Hook).handler.call({ environment }, {} as never, bundle as never);
   return bundle;
 }
 
@@ -82,6 +95,23 @@ describe("vinext:server-action-client-sourcemap", () => {
   it("only runs in builds", () => {
     const plugins = createServerActionClientSourcemapPlugin({ getManager: async () => undefined });
     expect(plugins.map((plugin) => plugin.apply)).toEqual(["build", "build"]);
+  });
+
+  it("scrubs before and after other generateBundle hooks", async () => {
+    const plugins = createServerActionClientSourcemapPlugin({ getManager: async () => undefined });
+    expect(plugins.map((plugin) => (plugin.generateBundle as { order: string }).order)).toEqual([
+      "pre",
+      "post",
+    ]);
+    let copied: unknown;
+    const bundle = await generate(withAsset(DEFAULT_MAP), {
+      between(bundle) {
+        copied = bundle["chunks/button.js.map"]!.source;
+        bundle["chunks/button.js.map"]!.source = JSON.stringify(DEFAULT_MAP);
+      },
+    });
+    expect(JSON.parse(String(copied)).sourcesContent).toEqual([null, CLIENT_SOURCE]);
+    expect(assetContent(bundle)).toEqual([null, CLIENT_SOURCE]);
   });
 
   it("nulls server action content in emitted .map assets", async () => {
@@ -142,7 +172,7 @@ describe("vinext:server-action-client-sourcemap", () => {
   });
 
   it("redacts data: URL sources that carry dropped content", async () => {
-    const dataUrl = `../app/data:text/javascript;base64,${Buffer.from(ACTION_SOURCE).toString("base64")}`;
+    const dataUrl = toDataUrl(ACTION_SOURCE);
     const bundle = await generate(
       withAsset(sourcemap([dataUrl, "../app/button.tsx"], [ACTION_SOURCE, CLIENT_SOURCE])),
     );
@@ -151,13 +181,22 @@ describe("vinext:server-action-client-sourcemap", () => {
     expect(map.sourcesContent).toEqual([null, CLIENT_SOURCE]);
   });
 
-  it("redacts data: URL sources without sourcesContent", async () => {
-    const dataUrl = `../app/data:text/javascript;base64,${Buffer.from(ACTION_SOURCE).toString("base64")}`;
+  it("redacts only private data: URL sources without sourcesContent", async () => {
+    const generated = `${CLIENT_SOURCE}export const injected = 1;\n`;
+    const publicOriginal = '"use client";\n// public loader original\n';
     const bundle = await generate(
-      withAsset({ version: 3, sources: [dataUrl, "../app/button.tsx"], mappings: "" }),
+      withAsset({
+        version: 3,
+        sources: [toDataUrl(ACTION_SOURCE), toDataUrl(publicOriginal)],
+        mappings: "",
+      }),
+      {
+        modules: { [ACTION_ID]: ACTION_SOURCE, [CLIENT_ID]: generated },
+        combinedMaps: { [CLIENT_ID]: { sources: [toDataUrl(publicOriginal)] } },
+      },
     );
     const map = JSON.parse(String(bundle["chunks/button.js.map"]!.source));
-    expect(map.sources).toEqual(["data:,", "../app/button.tsx"]);
+    expect(map.sources).toEqual(["data:,", toDataUrl(publicOriginal)]);
   });
 
   it("leaves source names that only contain data: alone", async () => {
@@ -168,6 +207,14 @@ describe("vinext:server-action-client-sourcemap", () => {
     };
     const bundle = await generate(withAsset(map));
     expect(bundle["chunks/button.js.map"]!.source).toBe(JSON.stringify(map));
+  });
+
+  it("ignores a same-named asset when the chunk has no external map", async () => {
+    const bundle = await generate({
+      "chunks/button.js": chunk({ sourcemapFileName: null }),
+      "chunks/button.js.map": { type: "asset", source: "not a sourcemap" },
+    });
+    expect(bundle["chunks/button.js.map"]!.source).toBe("not a sourcemap");
   });
 
   it("reads byte-backed .map assets", async () => {
