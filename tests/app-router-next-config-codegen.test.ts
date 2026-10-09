@@ -134,6 +134,22 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain('isDev: process.env.NODE_ENV !== "production"');
   });
 
+  it("wires the in-process image source only when serveImagesInProcess is set", () => {
+    const withNitro = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      imageConfig: { minimumCacheTTL: 600 },
+      serveImagesInProcess: true,
+    });
+    expect(withNitro).toContain(
+      'import { getNitroImageSourceFetch } from "vinext/server/image-optimization";',
+    );
+    expect(withNitro).toContain("resolveImageSourceFetch: getNitroImageSourceFetch");
+    expect(withNitro).toContain('"minimumCacheTTL":600');
+
+    const without = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {});
+    expect(without).not.toContain("getNitroImageSourceFetch");
+    expect(without).not.toContain("resolveImageSourceFetch");
+  });
+
   it("embeds resolved prefetchInlining thresholds in the RSC handler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       prefetchInlining: {

@@ -27367,6 +27367,25 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
+  it("reads the Nitro app's fetch only when it is running", async () => {
+    const { getNitroImageSourceFetch } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const nitroGlobal = globalThis as { __nitro__?: unknown };
+    const previous = nitroGlobal.__nitro__;
+    try {
+      nitroGlobal.__nitro__ = undefined;
+      expect(getNitroImageSourceFetch()).toBeUndefined();
+      nitroGlobal.__nitro__ = { default: {} };
+      expect(getNitroImageSourceFetch()).toBeUndefined();
+      const app = { fetch: async () => new Response("ok"), tag: "app" };
+      nitroGlobal.__nitro__ = { default: app };
+      const fetchSource = getNitroImageSourceFetch();
+      expect(await (await fetchSource!(new Request("http://localhost/x"))).text()).toBe("ok");
+    } finally {
+      nitroGlobal.__nitro__ = previous;
+    }
+  });
+
   it("calls transformImage when provided", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");

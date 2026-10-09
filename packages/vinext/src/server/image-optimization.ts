@@ -17,6 +17,7 @@
  * as-is (no transformation) with security headers applied.
  */
 
+import { assetPrefixPathname, ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
 
@@ -77,6 +78,12 @@ export type ImageConfig = {
    * via the image shim instead.
    */
   dangerouslyAllowLocalIP?: boolean;
+  /**
+   * Minimum `Cache-Control` max-age, in seconds, for optimized images served
+   * from a local source (`images.minimumCacheTTL`). Default: 14400 (4 hours),
+   * as in Next.js.
+   */
+  minimumCacheTTL?: number;
   /** Content-Disposition header value. Default: "inline". */
   contentDispositionType?: "inline" | "attachment";
   /** Content-Security-Policy header value. Default: "script-src 'none'; frame-src 'none'; sandbox;" */
@@ -495,4 +502,129 @@ export function handleConfiguredImageOptimization(
     allowedWidths,
     imageConfig,
   );
+}
+
+/** Next.js default for `images.minimumCacheTTL`: 4 hours, in seconds. */
+export const DEFAULT_IMAGE_MINIMUM_CACHE_TTL = 14400;
+
+/**
+ * Fetches a same-origin source image through the host application. Supplied by
+ * the generated server entry for hosts with no asset binding and no filesystem
+ * the handler can read (Nitro).
+ */
+export type ImageSourceFetch = (request: Request) => Promise<Response>;
+
+/**
+ * Resolve the in-process fetch of a Nitro production server, or `undefined`
+ * when the app is not running (in which case `/_next/image` keeps redirecting
+ * to the source).
+ *
+ * Nitro's own `fetch` export (`nitro/app`) cannot be imported here: the RSC
+ * environment would bundle a second copy of the Nitro app. The running app is
+ * published on `globalThis.__nitro__`, which Nitro declares in its types. It is
+ * read only by entries generated for a Nitro build, never sniffed on other
+ * hosts.
+ */
+export function getNitroImageSourceFetch(): ImageSourceFetch | undefined {
+  const app = (
+    globalThis as { __nitro__?: { default?: { fetch?: (request: Request) => Promise<Response> } } }
+  ).__nitro__?.default;
+  return typeof app?.fetch === "function" ? app.fetch.bind(app) : undefined;
+}
+
+/**
+ * Headers copied from the source response. Next.js forwards only the content
+ * type, cache control and ETag of an internal image response, so a middleware
+ * `Set-Cookie` never ends up on a publicly cached image.
+ */
+const LOCAL_IMAGE_SOURCE_HEADERS = [
+  "Content-Type",
+  "Content-Length",
+  "ETag",
+  "Last-Modified",
+  "Cache-Control",
+];
+
+/**
+ * Whether a source path is a content-hashed build asset, and so safe to mark
+ * immutable: under `/_next/static/media/` (or `/_next/static/immutable/media/`)
+ * after removing the configured `basePath` and the path part of `assetPrefix`.
+ * The path is normalised first, as the source fetch will resolve it: dot
+ * segments and percent-encoding are applied, so `/_next/static/media/../x` is
+ * not hashed media.
+ */
+export function isHashedStaticMediaPath(
+  sourcePath: string,
+  basePath = "",
+  assetPrefix = "",
+): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(decodeURIComponent(sourcePath), "http://n").pathname;
+    pathname = new URL(pathname, "http://n").pathname;
+  } catch {
+    return false;
+  }
+  const strip = (prefix: string) => {
+    if (prefix && (pathname === prefix || pathname.startsWith(prefix + "/"))) {
+      pathname = pathname.slice(prefix.length) || "/";
+    }
+  };
+  strip(basePath);
+  strip(assetPrefixPathname(assetPrefix));
+  return (
+    pathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/media/`) ||
+    pathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/immutable/media/`)
+  );
+}
+
+/**
+ * Serve `/_next/image` from a source image read through the host application,
+ * answering directly instead of redirecting to the source.
+ *
+ * Like Next.js, the source request carries none of the client's headers, only
+ * allowlisted source headers are kept, and the response is
+ * `public, max-age=<max(source max-age, minimumCacheTTL)>, must-revalidate`,
+ * `immutable` only for content-hashed build media.
+ */
+export async function handleImageOptimizationFromSource(
+  request: Request,
+  fetchSource: ImageSourceFetch,
+  options: {
+    allowedWidths?: number[];
+    imageConfig?: ImageConfig;
+    basePath?: string;
+    assetPrefix?: string;
+  } = {},
+): Promise<Response> {
+  const origin = new URL(request.url).origin;
+  let sourceMaxAge = 0;
+  const response = await handleConfiguredImageOptimization(
+    request,
+    async (assetPath) => {
+      const source = await fetchSource(new Request(new URL(assetPath, origin)));
+      const headers = new Headers();
+      for (const name of LOCAL_IMAGE_SOURCE_HEADERS) {
+        const value = source.headers.get(name);
+        if (value !== null) headers.set(name, value);
+      }
+      const match = /max-age=(\d+)/i.exec(headers.get("Cache-Control") ?? "");
+      sourceMaxAge = match ? Number.parseInt(match[1], 10) : 0;
+      return new Response(source.body, { status: source.status, headers });
+    },
+    options.allowedWidths,
+    options.imageConfig,
+  );
+  if (response.status !== 200) return response;
+  const sourceUrl = new URL(request.url).searchParams.get("url") ?? "";
+  if (isHashedStaticMediaPath(sourceUrl, options.basePath, options.assetPrefix)) {
+    response.headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+  } else {
+    const minimumTTL = options.imageConfig?.minimumCacheTTL ?? DEFAULT_IMAGE_MINIMUM_CACHE_TTL;
+    response.headers.set(
+      "Cache-Control",
+      `public, max-age=${Math.max(sourceMaxAge, minimumTTL)}, must-revalidate`,
+    );
+  }
+  return response;
 }

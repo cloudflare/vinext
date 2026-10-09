@@ -213,6 +213,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
         : undefined),
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
+    resolveImageSourceFetch: overrides.resolveImageSourceFetch,
     isMetadataRoute: overrides.isMetadataRoute,
     isDev: overrides.isDev ?? true,
     hasInterceptionId: overrides.hasInterceptionId ?? (() => false),
@@ -6482,6 +6483,133 @@ describe("createAppRscHandler", () => {
       null,
     );
     expect(response.status).toBe(302);
+  });
+
+  describe("/_next/image served through the host's in-process fetch", () => {
+    const imageUrl = (src: string, base = "https://example.test/docs") =>
+      `${base}/_next/image?url=${src}&w=640&q=75`;
+    const jpeg = (headers: Record<string, string> = {}) =>
+      new Response("img", { status: 200, headers: { "Content-Type": "image/jpeg", ...headers } });
+
+    it("answers directly in production and keeps redirecting in dev and without a host", async () => {
+      const fetchSource = vi.fn(async (_request: Request) => jpeg());
+      const handler = createHandler({ isDev: false, resolveImageSourceFetch: () => fetchSource });
+      const response = await handler(new Request(imageUrl("%2Fimg.jpg")), null);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("img");
+      expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
+      expect(fetchSource.mock.calls[0]?.[0].url).toBe("https://example.test/img.jpg");
+
+      fetchSource.mockResolvedValueOnce(new Response("", { status: 404 }));
+      const missing = await handler(new Request(imageUrl("%2Fnope.jpg")), null);
+      expect(missing.status).toBe(404);
+      expect(missing.headers.has("x-nextjs-cache")).toBe(false);
+
+      const dev = await createHandler({ isDev: true, resolveImageSourceFetch: () => fetchSource })(
+        new Request(imageUrl("%2Fimg.jpg")),
+        null,
+      );
+      expect(dev.status).toBe(302);
+
+      for (const resolve of [undefined, () => undefined]) {
+        const unavailable = await createHandler({
+          isDev: false,
+          resolveImageSourceFetch: resolve,
+        })(new Request(imageUrl("%2Fimg.jpg")), null);
+        expect(unavailable.status).toBe(302);
+      }
+    });
+
+    it("derives Cache-Control from images.minimumCacheTTL", async () => {
+      const handler = createHandler({
+        isDev: false,
+        imageConfig: { minimumCacheTTL: 600 },
+        resolveImageSourceFetch: () => async () => jpeg(),
+      });
+      const response = await handler(new Request(imageUrl("%2Fimg.jpg")), null);
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=600, must-revalidate");
+      // A longer source max-age still wins.
+      const longer = await createHandler({
+        isDev: false,
+        imageConfig: { minimumCacheTTL: 600 },
+        resolveImageSourceFetch: () => async () =>
+          jpeg({ "Cache-Control": "public, max-age=9000" }),
+      })(new Request(imageUrl("%2Fimg.jpg")), null);
+      expect(longer.headers.get("Cache-Control")).toBe("public, max-age=9000, must-revalidate");
+    });
+
+    it("keeps client headers and the source's Set-Cookie out of the sub-request and response", async () => {
+      const fetchSource = vi.fn(async (_request: Request) =>
+        jpeg({ "Set-Cookie": "session=abc", "X-Middleware": "1" }),
+      );
+      const handler = createHandler({ isDev: false, resolveImageSourceFetch: () => fetchSource });
+      const response = await handler(
+        new Request(imageUrl("%2Fimg.jpg"), {
+          headers: { cookie: "user=1", authorization: "Bearer x" },
+        }),
+        null,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.has("set-cookie")).toBe(false);
+      expect(response.headers.has("x-middleware")).toBe(false);
+      const sourceRequest = fetchSource.mock.calls[0]?.[0];
+      expect(sourceRequest?.headers.has("cookie")).toBe(false);
+      expect(sourceRequest?.headers.has("authorization")).toBe(false);
+    });
+
+    it("rejects non-image sources and cross-origin urls", async () => {
+      const fetchSource = vi.fn(
+        async (_request: Request) =>
+          new Response('{"secret":1}', {
+            status: 200,
+            headers: { "Content-Type": "application/json", "Set-Cookie": "s=1" },
+          }),
+      );
+      const handler = createHandler({ isDev: false, resolveImageSourceFetch: () => fetchSource });
+      const route = await handler(new Request(imageUrl("%2Fapi%2Fx")), null);
+      expect(route.status).toBe(400);
+      expect(route.headers.has("set-cookie")).toBe(false);
+      expect(route.headers.has("x-nextjs-cache")).toBe(false);
+
+      fetchSource.mockClear();
+      const remote = await handler(
+        new Request(imageUrl(encodeURIComponent("https://evil.test/a.jpg"))),
+        null,
+      );
+      expect(remote.status).toBe(400);
+      expect(fetchSource).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["no assetPrefix", undefined, "%2Fdocs%2F_next%2Fstatic%2Fmedia%2Fa.abc.png"],
+      ["a path assetPrefix", "/cdn", "%2Fdocs%2Fcdn%2F_next%2Fstatic%2Fmedia%2Fa.abc.png"],
+    ])("marks only hashed build media immutable (%s)", async (_label, assetPrefix, hashedSrc) => {
+      const handler = createHandler({
+        isDev: false,
+        assetPrefix,
+        resolveImageSourceFetch: () => async () =>
+          new Response("img", { status: 200, headers: { "Content-Type": "image/png" } }),
+      });
+      const hashed = await handler(new Request(imageUrl(hashedSrc)), null);
+      expect(hashed.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+
+      const prefix = assetPrefix ? "%2Fcdn" : "";
+      for (const src of [
+        // not under the build's media directory
+        "%2Fdocs%2Fmedia%2Fa.png",
+        "%2Fdocs%2F_next%2Fstatic%2Fchunks%2Fa.png",
+        // traversal out of the hashed directory, plain and percent-encoded
+        `%2Fdocs${prefix}%2F_next%2Fstatic%2Fmedia%2F..%2Fhero.png`,
+        `%2Fdocs${prefix}%2F_next%2Fstatic%2Fmedia%2F%2e%2e%2Fhero.png`,
+        `%2Fdocs${prefix}%2F_next%2Fstatic%2Fmedia%252f..%252fhero.png`,
+      ]) {
+        const response = await handler(new Request(imageUrl(src)), null);
+        expect(response.headers.get("Cache-Control"), src).toBe(
+          "public, max-age=14400, must-revalidate",
+        );
+      }
+    });
   });
 
   it("wraps dispatch responses with request-scoped finalization", async () => {

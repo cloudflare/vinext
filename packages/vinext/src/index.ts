@@ -4955,7 +4955,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
                   contentDispositionType: nextConfig?.images?.contentDispositionType,
                   contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+                  minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
                 },
+                serveImagesInProcess: hasNitroPlugin,
                 hasPagesDir,
                 publicFiles:
                   isServeCommand && devPublicFileRoutes
