@@ -329,6 +329,7 @@ import {
   isConditionalRequireScriptModuleId,
 } from "./plugins/require-condition-resolution.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
+import { createJsonImportAttributesPlugin } from "./plugins/json-import-attributes.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import {
   consumerEnvironmentConditionFilter,
@@ -7818,6 +7819,9 @@ export const loadServerActionClient = ${
     createDynamicPreloadMetadataPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
     importMetaUrlCapability.vitePlugin,
     createExtensionlessDynamicImportPlugin(),
+    // Honour `with { type: "json" }` on imports of files without a .json
+    // extension — see src/plugins/json-import-attributes.ts
+    createJsonImportAttributesPlugin(),
     // Expand Webpack's build-time `require.context(...)` into a static module
     // map backed by `import.meta.glob` — see src/plugins/require-context.ts
     createRequireContextPlugin(),
