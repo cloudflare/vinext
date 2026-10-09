@@ -230,5 +230,58 @@ describe("Pages i18n locale:false public rewrites", () => {
       expect(afterFilesStaticResponse.status).toBe(200);
       expect(fallbackStaticResponse.status).toBe(200);
     });
+
+    // A locale-prefixed render must not populate the default locale's ISR
+    // entry: Next.js keys Pages ISR by the locale-prefixed pathname.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+    it("keys Pages ISR entries by locale without i18n domains", async () => {
+      const nextData = (body: string) =>
+        JSON.parse(body.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/)![1]);
+      const get = async (pathname: string) => {
+        const response = await fetch(`${prodBaseUrl}${pathname}`);
+        return { cache: response.headers.get("x-vinext-cache"), body: await response.text() };
+      };
+
+      const sv = await get("/sv/isr-locale");
+      expect(sv.cache).toBe("MISS");
+      expect(sv.body).toContain('<p id="locale">sv</p>');
+      expect(nextData(sv.body)).toMatchObject({
+        locale: "sv",
+        props: { pageProps: { locale: "sv" } },
+      });
+
+      const en = await get("/isr-locale");
+      expect(en.cache).toBe("MISS");
+      expect(en.body).toContain('<p id="locale">en</p>');
+      expect(en.body).not.toContain('<p id="locale">sv</p>');
+      expect(nextData(en.body)).toMatchObject({
+        locale: "en",
+        props: { pageProps: { locale: "en" } },
+      });
+
+      const enHit = await get("/isr-locale");
+      expect(enHit.cache).toBe("HIT");
+      expect(nextData(enHit.body).props.pageProps).toEqual(nextData(en.body).props.pageProps);
+
+      const svHit = await get("/sv/isr-locale");
+      expect(svHit.cache).toBe("HIT");
+      expect(nextData(svHit.body).props.pageProps).toEqual(nextData(sv.body).props.pageProps);
+
+      // A locale-prefixed data request must not overwrite either locale's entry.
+      const { buildId } = nextData(en.body);
+      const nlData = await fetch(`${prodBaseUrl}/_next/data/${buildId}/nl/isr-locale.json`);
+      expect(nlData.status).toBe(200);
+      expect((await nlData.json()).pageProps.locale).toBe("nl");
+      const nlHtml = await get("/nl/isr-locale");
+      expect(nlHtml.body).toContain('<p id="locale">nl</p>');
+      for (const [pathname, cached] of [
+        ["/isr-locale", en],
+        ["/sv/isr-locale", sv],
+      ] as const) {
+        const hit = await get(pathname);
+        expect(hit.cache).toBe("HIT");
+        expect(nextData(hit.body).props.pageProps).toEqual(nextData(cached.body).props.pageProps);
+      }
+    });
   });
 });
