@@ -4485,6 +4485,72 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it("prunes only the removed targets of a loop head", () => {
+    const code = `
+let loader, visible;
+for ([loader, visible] of [[0, 1]]) console.log(visible);
+for (var [getStaticProps = loader, other] of [[0, 1]]) console.log(other);
+export { getStaticProps };
+export default function Page() { return visible + other; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("for ([, visible] of [[0, 1]]) console.log(visible);");
+    expect(result).toContain("for (var [, other] of [[0, 1]]) console.log(other);");
+    expect(result).not.toMatch(/\bloader\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it.each([
+    [
+      "an assignment",
+      `let getServerSideProps, visible;
+({ getServerSideProps = secret, visible } = source);
+export { getServerSideProps };`,
+      "({ visible } = source);",
+    ],
+    [
+      "a declaration",
+      `export const { getStaticProps = secret, visible } = source;`,
+      "export const { visible } = source;",
+    ],
+  ])("drops the dependencies of pruned destructuring defaults in %s", (_label, body, kept) => {
+    const code = `import secret from './secret';
+${body}
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain(kept);
+    expect(result).not.toContain("./secret");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it.each([
+    [
+      "a var redeclaration",
+      `var getStaticProps;
+try { throw []; } catch (getStaticProps) {
+  for (var getStaticProps of getStaticProps) {}
+}
+export { getStaticProps };`,
+      "for (var getStaticProps of getStaticProps) {}",
+    ],
+    [
+      "a parameter default",
+      `export let getServerSideProps;
+try { throw {}; } catch ({ getServerSideProps, fallback = (getServerSideProps = 1) }) {
+  console.log(getServerSideProps, fallback);
+}`,
+      "fallback = (getServerSideProps = 1)",
+    ],
+  ])("keeps writes to a catch binding in %s", (_label, body, kept) => {
+    const code = `${body}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain(kept);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("keeps nested assignments to shadowing locals", () => {
     const code = `
 import { visible } from './visible';

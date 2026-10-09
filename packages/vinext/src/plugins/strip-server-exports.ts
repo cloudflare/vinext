@@ -304,6 +304,36 @@ function renderBindingPattern(
   return slice(pattern.start, pattern.end);
 }
 
+/** Pattern parts `renderBindingPattern` drops, including their defaults and keys. */
+function prunedPatternParts(
+  pattern: PositionedNode,
+  removedNames: ReadonlySet<string>,
+): PositionedNode[] {
+  const isPruned = (part: PositionedNode) =>
+    renderBindingPattern((start, end) => "".padEnd(end - start), part, removedNames) === null;
+  if (isPruned(pattern)) return [pattern];
+  if (pattern.type === "AssignmentPattern") {
+    return prunedPatternParts(pattern.left as PositionedNode, removedNames);
+  }
+  if (pattern.type === "RestElement") {
+    return prunedPatternParts(pattern.argument as PositionedNode, removedNames);
+  }
+  if (pattern.type === "ArrayPattern") {
+    return (pattern.elements as Array<PositionedNode | null>).flatMap((element) =>
+      element ? prunedPatternParts(element, removedNames) : [],
+    );
+  }
+  if (pattern.type === "ObjectPattern") {
+    return (pattern.properties as PositionedNode[]).flatMap((property) => {
+      if (property.type === "RestElement") return prunedPatternParts(property, removedNames);
+      return isPruned(property.value as PositionedNode)
+        ? [property]
+        : prunedPatternParts(property.value as PositionedNode, removedNames);
+    });
+  }
+  return [];
+}
+
 /** Identifiers an assignment target writes: pattern bindings and member roots. */
 function assignmentTargetIdentifiers(node: PositionedNode | null | undefined): PositionedNode[] {
   if (!node) return [];
@@ -532,9 +562,8 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     } else if (node.type === "ClassExpression" && node.id) {
       addShadowRange(node.id.name, node);
     } else if (node.type === "CatchClause" && node.param) {
-      for (const name of bindingNames(node.param as PositionedNode)) {
-        addShadowRange(name, node.body as PositionedNode);
-      }
+      // The catch scope covers the parameter's own defaults as well.
+      for (const name of bindingNames(node.param as PositionedNode)) addShadowRange(name, node);
     } else if (node.type === "VariableDeclarator" && parent?.type === "VariableDeclaration") {
       const varScope =
         parent.kind === "var"
@@ -562,14 +591,15 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       // scope, so `export { getServerSideProps }` can name it.
       const owner = ancestors.at(-2);
       if (parent.kind === "var" && !varScope && owner && owner.type !== "ExportNamedDeclaration") {
-        if (owner.type === "ForStatement" && owner.init === parent) {
-          loopHeadDeclarations.add(parent);
-        }
+        if (owner.init === parent || owner.left === parent) loopHeadDeclarations.add(parent);
         const declaredNames = bindingNames(node.id as PositionedNode);
         for (const identifier of bindingIdentifiers(node.id as PositionedNode)) {
           bindingPositions.add(identifier.start);
         }
-        for (const name of declaredNames) {
+        for (const identifier of bindingIdentifiers(node.id as PositionedNode)) {
+          const name = identifier.name;
+          // A `var` redeclaring a catch parameter writes the catch binding.
+          if (isInsideRanges(identifier.start, shadowRanges.get(name) ?? [])) continue;
           const binding: Binding = {
             name,
             node,
@@ -725,6 +755,24 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       if (removedAssignments.has(expression)) continue;
       if (loop) {
         removedAssignments.add(expression);
+        const head = expression.left as PositionedNode;
+        const pattern =
+          head.type === "VariableDeclaration" ? (head.declarations[0].id as PositionedNode) : head;
+        if (renderBindingPattern((start, end) => code.slice(start, end), pattern, removableNames)) {
+          // Other head targets stay live, so only the removed ones are pruned;
+          // a `var` head is re-rendered with its declaration.
+          for (const part of prunedPatternParts(pattern, removableNames)) {
+            if (addDeadRange(part)) changed = true;
+          }
+          if (head.type !== "VariableDeclaration") {
+            edits.push({
+              start: head.start,
+              end: head.end,
+              replacement: () => renderBindingPattern(renderRange, head, removableNames)!,
+            });
+          }
+          continue;
+        }
         edits.push({
           start: expression.start,
           end: expression.end,
@@ -743,6 +791,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       removedAssignments.add(expression);
       const target = statement ?? expression;
       if (renderedLeft) {
+        for (const part of prunedPatternParts(left, removableNames)) {
+          if (addDeadRange(part)) changed = true;
+        }
         edits.push({
           start: target.start,
           end: target.end,
@@ -836,7 +887,13 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
 
     for (const binding of new Set([...bindings.values(), ...redeclarations])) {
       if (binding.kind !== "variable") continue;
-      if (!binding.declaredNames.every((name) => deadBindings.has(name))) continue;
+      if (!binding.declaredNames.every((name) => deadBindings.has(name))) {
+        // Defaults and computed keys of pruned pattern parts go with them.
+        for (const part of prunedPatternParts(binding.node.id as PositionedNode, deadBindings)) {
+          if (addDeadRange(part)) changed = true;
+        }
+        continue;
+      }
       if (addDeadRange(binding.implementation)) changed = true;
     }
   }
