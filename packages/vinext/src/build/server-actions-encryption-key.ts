@@ -112,14 +112,19 @@ export function loadOrGenerateServerActionsEncryptionKey(
   }
 
   const key = generateKey();
-  fs.mkdirSync(cacheDir, { recursive: true });
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({ [ENCRYPTION_KEY]: key, [ENCRYPTION_EXPIRE_AT]: now + EXPIRATION }),
-    { mode: 0o600 },
-  );
-  // `mode` only applies when the file is created.
-  restrictKeyCacheMode(configPath);
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ [ENCRYPTION_KEY]: key, [ENCRYPTION_EXPIRE_AT]: now + EXPIRATION }),
+      { mode: 0o600 },
+    );
+    // `mode` only applies when the file is created.
+    restrictKeyCacheMode(configPath);
+  } catch {
+    // An unwritable cache, e.g. a file owned by another user, only costs
+    // stable names across builds; the key itself is still valid.
+  }
   return key;
 }
 
