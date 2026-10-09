@@ -252,9 +252,9 @@ describe("App Router Production build", () => {
 
   describe("client output across rebuilds", () => {
     // With generateBuildId pinned, nothing that reaches the browser may vary
-    // between builds of identical source, even without a deploymentId. Otherwise every
-    // deploy renames unchanged chunks, defeating CDN/browser cache reuse and
-    // dropping long-lived tabs' chunks (vinext#3626).
+    // between builds of identical source, even without a deploymentId.
+    // Otherwise every deploy renames unchanged chunks, defeating CDN/browser
+    // cache reuse and dropping long-lived tabs' chunks (vinext#3626).
     const keyCacheDir = () => path.join(fixtureDir, ".vinext", "cache");
 
     async function buildClient() {
