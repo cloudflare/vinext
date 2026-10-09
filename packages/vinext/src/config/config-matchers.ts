@@ -1171,11 +1171,15 @@ export function sanitizeDestination(dest: string): string {
  * still treated as an RSC fetch. Dropping it breaks RSC fetch semantics
  * (issue #1529).
  *
- * Destination query params win — a request param is only carried over when
- * the destination does not already specify that key. Mirrors the merge
- * semantics in `proxyExternalRequest`. External destinations are returned
- * untouched (a config redirect to another origin should not leak the
- * original request's query).
+ * Ported from Next.js's `{ ...requestQuery, ...destinationQuery }` merge and
+ * `stringifyQuery`: request keys keep their order (integer-like keys first, as
+ * in a JS object), a destination key overrides the request value in place,
+ * and destination-only keys follow. Request keys and values are re-encoded;
+ * destination text, including substituted params, is emitted verbatim.
+ * External destinations are returned untouched (a config redirect to another
+ * origin should not leak the original request's query).
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
  */
 export function preserveRedirectDestinationQuery(
   destination: string,
@@ -1196,16 +1200,42 @@ export function preserveRedirectDestinationQuery(
   const pathPart = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
   const destQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
 
-  const merged = new URLSearchParams(destQuery);
-  const destKeys = new Set(merged.keys());
+  const requestQuery = collectQueryValues(requestParams);
+  const destinationQuery = collectQueryValues(
+    destQuery
+      .split("&")
+      .filter(Boolean)
+      .map((part): [string, string] => {
+        const equalsIndex = part.indexOf("=");
+        return equalsIndex === -1
+          ? [part, ""]
+          : [part.slice(0, equalsIndex), part.slice(equalsIndex + 1)];
+      }),
+  );
+
+  // Next.js only re-encodes strings that came from the request query.
+  const requestStrings = new Set<string>();
   for (const [key, value] of requestParams) {
-    if (!destKeys.has(key)) {
-      merged.append(key, value);
-    }
+    requestStrings.add(key);
+    requestStrings.add(value);
+  }
+  const encode = (value: string) => (requestStrings.has(value) ? encodeURIComponent(value) : value);
+
+  const mergedParts: string[] = [];
+  for (const [key, values] of Object.entries({ ...requestQuery, ...destinationQuery })) {
+    for (const value of values) mergedParts.push(`${encode(key)}=${encode(value)}`);
   }
 
-  const mergedQuery = merged.toString();
+  const mergedQuery = mergedParts.join("&");
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
+}
+
+function collectQueryValues(entries: Iterable<[string, string]>): Record<string, string[]> {
+  const query: Record<string, string[]> = Object.create(null);
+  for (const [key, value] of entries) {
+    (query[key] ??= []).push(value);
+  }
+  return query;
 }
 
 /**

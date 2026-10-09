@@ -16,6 +16,10 @@ test.describe("Config destination query params (Pages Router production)", () =>
       ],
       ["/query-param-redirect/foo&next=evil.example", "/about?next=/foo&next=evil.example&safe=1"],
       ["/query-param-redirect/caf%C3%A9", "/about?next=/caf%C3%A9&safe=1"],
+      [
+        "/query-param-redirect/foo%26next%3Devil?utm=a%20b&next=x",
+        "/about?utm=a%20b&next=/foo%26next%3Devil&safe=1",
+      ],
     ]) {
       const res = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
       expect(res.status()).toBe(307);

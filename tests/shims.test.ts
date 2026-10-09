@@ -9935,6 +9935,32 @@ describe("middleware bypass prevention", () => {
     expect(preserveRedirectDestinationQuery("/dest#frag", "?_rsc=abc")).toBe("/dest?_rsc=abc#frag");
   });
 
+  it("preserveRedirectDestinationQuery merges the request query in Next.js order and encoding", async () => {
+    const { preserveRedirectDestinationQuery } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    // Expected Locations were observed from Next.js 16.2.7 config redirects
+    // with these destinations and request queries.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
+    for (const [destination, requestSearch, location] of [
+      ["/about?a=1", "?2=x&1=y&a=9", "/about?1=y&2=x&a=1"],
+      ["/about?a=1", "?a=2&a=3&b=1&b=2", "/about?a=1&b=1&b=2"],
+      ["/about?a=1", "?q=a+b&e=&f", "/about?q=a%20b&e=&f=&a=1"],
+      ["/about?a=1", "?s=%E2%9C%93&t=%2B", "/about?s=%E2%9C%93&t=%2B&a=1"],
+      ["/about", "?z=%2F&_rsc=abc", "/about?z=%2F&_rsc=abc"],
+      ["/about?next=/foo%2Fbar&safe=1", "?utm=1", "/about?utm=1&next=/foo%2Fbar&safe=1"],
+      [
+        "/about?next=/foo%26next%3Devil&safe=1",
+        "?utm=a%20b&next=x",
+        "/about?utm=a%20b&next=/foo%26next%3Devil&safe=1",
+      ],
+      ["/about?next=/%41b&safe=1", "?utm=%41", "/about?utm=A&next=/%41b&safe=1"],
+      ["/about?next=/x&safe=1", "?next=keep&safe=0", "/about?next=/x&safe=1"],
+      ["/about#frag", "?utm=1", "/about?utm=1#frag"],
+    ]) {
+      expect(preserveRedirectDestinationQuery(destination, requestSearch)).toBe(location);
+    }
+  });
+
   it("config header matcher works with decoded percent-encoded paths", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePath } = await import("../packages/vinext/src/server/normalize-path.js");
