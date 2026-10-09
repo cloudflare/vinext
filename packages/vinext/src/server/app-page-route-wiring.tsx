@@ -1171,18 +1171,18 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  // The page and route are sibling values in vinext's flat Flight record. The
-  // route-level Suspense below cannot catch the page value suspending while the
-  // record itself is serialized, so the page entry needs its own boundary to
-  // expose the leaf loading's fallback. Once <Slot> reconnects the entries this
-  // is nested inside the route boundary; that duplication is an intentional
-  // transport artifact, not two independently selected loading conventions.
+  // The page and route are sibling values in vinext's flat Flight record, and
+  // the page entry carries its own boundary for the leaf loading. Once <Slot>
+  // reconnects the entries this is nested inside the route boundary; that
+  // duplication is an intentional transport artifact, not two independently
+  // selected loading conventions.
   // An ancestor loading stays off the page entry: the browser keys the page's
   // Slot by the page, so a boundary here would remount on every sibling
   // navigation, and it would sit inside any layout between the two. The route
-  // entry's per-segment boundary carries it instead, and so does the layout
-  // entry of the loading's child segment when it has one, as Next.js's
-  // LoadingBoundary wraps the loading segment's child.
+  // entry's per-segment boundary around the page Slot catches a suspending
+  // page instead, and so does the layout entry of the loading's child segment
+  // when it has one, as Next.js's LoadingBoundary wraps the loading segment's
+  // child.
   const nearestPageLoadingEntry = resolveAppPageLoadingEntryAtOrAbove(
     options.route,
     routeSegments.length,
