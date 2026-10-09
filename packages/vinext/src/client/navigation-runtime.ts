@@ -11,6 +11,8 @@ type NavigationRuntimeSnapshot = {
 export type NavigationRuntimeRscChunk = string | [3, string];
 
 export type NavigationRuntimeRscBootstrap = {
+  /** The server's App Router RSC compatibility ID for this page. */
+  compatibilityId?: string;
   done?: boolean;
   dynamicStaleTimeSeconds?: number;
   initialCacheKind?: "dynamic" | "static";
@@ -200,6 +202,7 @@ function isNavigationRuntimeParams(value: unknown): value is Record<string, stri
 
 function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRuntimeRscBootstrap {
   if (!isUnknownRecord(value)) return false;
+  const compatibilityId = Reflect.get(value, "compatibilityId");
   const done = Reflect.get(value, "done");
   const dynamicStaleTimeSeconds = Reflect.get(value, "dynamicStaleTimeSeconds");
   const initialCacheKind = Reflect.get(value, "initialCacheKind");
@@ -213,6 +216,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   // Keep full validation here so malformed ambient state is rejected before
   // hydration consumes it instead of caching a stale validation result.
   return (
+    (compatibilityId === undefined || typeof compatibilityId === "string") &&
     (done === undefined || typeof done === "boolean") &&
     isOptionalStaleTimeSeconds(dynamicStaleTimeSeconds) &&
     (initialCacheKind === undefined ||
