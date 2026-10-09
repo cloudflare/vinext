@@ -350,7 +350,11 @@ describe("basePath: rewrite/redirect/header gating", () => {
       basePath: "/docs",
       hadBasePath: true,
     });
-    expect(result).toEqual({ destination: "/somewhere-else", permanent: false });
+    expect(result).toEqual({
+      destination: "/somewhere-else",
+      permanent: false,
+      destinationQuery: [],
+    });
   });
 
   it("basePath: false redirect rule matches when request is outside basePath", async () => {
@@ -367,7 +371,11 @@ describe("basePath: rewrite/redirect/header gating", () => {
       basePath: "/docs",
       hadBasePath: false,
     });
-    expect(result).toEqual({ destination: "/another-destination", permanent: false });
+    expect(result).toEqual({
+      destination: "/another-destination",
+      permanent: false,
+      destinationQuery: [],
+    });
   });
 
   it("basePath: false redirect rule does NOT match when request is under basePath", async () => {
@@ -467,6 +475,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
     expect(matchRedirect("/x", redirects, emptyCtx())).toEqual({
       destination: "/y",
       permanent: false,
+      destinationQuery: [],
     });
     const headers = [{ source: "/x", headers: [{ key: "a", value: "b" }] }];
     expect(matchHeaders("/x", headers, emptyCtx())).toEqual([{ key: "a", value: "b" }]);

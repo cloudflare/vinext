@@ -9935,6 +9935,74 @@ describe("middleware bypass prevention", () => {
     expect(preserveRedirectDestinationQuery("/dest#frag", "?_rsc=abc")).toBe("/dest?_rsc=abc#frag");
   });
 
+  it("preserveRedirectDestinationQuery merges the request query in Next.js order and encoding", async () => {
+    const { matchRedirect, preserveRedirectDestinationQuery } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    // Expected Locations were observed from Next.js 16.2.7 with these rules.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
+    const redirects = [
+      { source: "/r/:next", destination: "/about?next=/:next&safe=1", permanent: false },
+      { source: "/p", destination: "/about?a=1", permanent: false },
+      { source: "/n", destination: "/about", permanent: false },
+      { source: "/h", destination: "/about#frag", permanent: false },
+      { source: "/t", destination: "/about?a=%41&b=x+y&c", permanent: false },
+      { source: "/role", destination: "/about?%72ole=user", permanent: false },
+      { source: "/s/:id", destination: "/d?:id=v", permanent: false },
+      { source: "/v/:id", destination: "/d?q=:id", permanent: false },
+      { source: "/m", destination: "/d?%41%=dest", permanent: false },
+    ];
+
+    for (const [pathname, requestSearch, location] of [
+      ["/r/foo&utm=evil", "?utm=good&next=x", "/about?utm=good&next=/foo&utm=evil&safe=1"],
+      // Next.js emits the decoded template text here (`role=user`,
+      // `a=A&b=x y&c=`), and leaks an internal token for a param in a key
+      // (`__ESC_COLON_id=v`). vinext keeps the template text verbatim, as it
+      // does without a request query; the parsed values are the same.
+      ["/role", "?role=admin", "/about?%72ole=user"],
+      ["/t", "?u=1", "/about?u=1&a=%41&b=x+y&c"],
+      ["/s/foo", "", "/d?foo=v"],
+      ["/s/foo", "?x=1", "/d?x=1&foo=v"],
+      // The malformed `%41%` key still overrides the request's `A%` key.
+      ["/m", "?A%25=req", "/d?%41%=dest"],
+      ["/r/foo%2Fbar", "?utm=1", "/about?utm=1&next=/foo%2Fbar&safe=1"],
+      [
+        "/r/foo%26next%3Devil",
+        "?utm=a%20b&next=x",
+        "/about?utm=a%20b&next=/foo%26next%3Devil&safe=1",
+      ],
+      ["/r/%41b", "?utm=%41", "/about?utm=A&next=/%41b&safe=1"],
+      ["/r/x", "?next=keep&safe=0", "/about?next=/x&safe=1"],
+      ["/p", "?2=x&1=y&a=9", "/about?1=y&2=x&a=1"],
+      ["/p", "?a=2&a=3&b=1&b=2", "/about?a=1&b=1&b=2"],
+      ["/p", "?q=a+b&e=&f", "/about?q=a%20b&e=&f=&a=1"],
+      ["/p", "?s=%E2%9C%93&t=%2B", "/about?s=%E2%9C%93&t=%2B&a=1"],
+      ["/n", "?z=%2F&_rsc=abc", "/about?z=%2F&_rsc=abc"],
+      ["/h", "?utm=1", "/about?utm=1#frag"],
+      ["/v/caf%C3%A9", "", "/d?q=caf%C3%A9"],
+      ["/v/%E2%9C%93", "?z=1", "/d?z=1&q=%E2%9C%93"],
+      ["/v/a+b", "?a+b=1&q=old", "/d?a%20b=1&q=a+b"],
+      ["/v/x%26y", "?q=1&2=b&1=a", "/d?1=a&2=b&q=x%26y"],
+      // Destination text equal to a request key or value is encoded too.
+      ["/v/a%20b", "?x=a%2520b", "/d?x=a%2520b&q=a%2520b"],
+      ["/v/a%20b", "?a%2520b=1", "/d?a%2520b=1&q=a%2520b"],
+      ["/v/foo", "?x=foo", "/d?x=foo&q=foo"],
+    ]) {
+      const redirect = matchRedirect(pathname, redirects, {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(requestSearch),
+        host: "localhost",
+      })!;
+      expect(
+        preserveRedirectDestinationQuery(
+          redirect.destination,
+          requestSearch,
+          redirect.destinationQuery,
+        ),
+      ).toBe(location);
+    }
+  });
+
   it("config header matcher works with decoded percent-encoded paths", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePath } = await import("../packages/vinext/src/server/normalize-path.js");
@@ -13568,7 +13636,11 @@ describe("matchRedirect locale-static index", () => {
       query: new URLSearchParams(),
       host: "localhost",
     });
-    expect(withLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+    expect(withLocalePrefix).toEqual({
+      destination: "/target/forced",
+      permanent: false,
+      destinationQuery: [],
+    });
 
     const withoutLocalePrefix = matchRedirect("/docs", redirects, {
       headers: new Headers({ "x-locale": "forced" }),
@@ -13576,7 +13648,11 @@ describe("matchRedirect locale-static index", () => {
       query: new URLSearchParams(),
       host: "localhost",
     });
-    expect(withoutLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+    expect(withoutLocalePrefix).toEqual({
+      destination: "/target/forced",
+      permanent: false,
+      destinationQuery: [],
+    });
   });
 
   it("falls back to linear matching for rules that are not locale-static", async () => {
@@ -14712,8 +14788,8 @@ describe("matchRewrite with external URLs", () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     // The named capture substitution shape is ported from documented Next.js behavior:
     // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/05-config/01-next-config-js/rewrites.mdx
-    // Deliberate hardening: Next.js prepareDestination substitutes non-path
-    // values verbatim here, but vinext keeps query value boundaries intact.
+    // Next.js parses a rewrite's query before substituting, so each param
+    // reaches the target as one query value.
     const rewrites = [
       {
         source: "/:path*",
@@ -14732,8 +14808,8 @@ describe("matchRewrite with external URLs", () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePathnameForRouteMatchStrict } =
       await import("../packages/vinext/src/routing/utils.js");
-    // Deliberate hardening: Next.js prepareDestination substitutes non-path
-    // values verbatim here, but vinext keeps query value boundaries intact.
+    // Next.js parses a rewrite's query before substituting, so each param
+    // reaches the target as one query value.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
     const rewrites = [{ source: "/search/:term", destination: "/api/search?q=:term&fixed=1" }];
     const pathname = normalizePathnameForRouteMatchStrict("/search/foo%26admin=true");
@@ -14841,7 +14917,7 @@ describe("matchRedirect destination param substitution", () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
     const redirects = [{ source: "/post/:id", destination: "/api/:id/:id", permanent: false }];
     const result = matchRedirect("/post/123", redirects, emptyCtx);
-    expect(result).toEqual({ destination: "/api/123/123", permanent: false });
+    expect(result).toEqual({ destination: "/api/123/123", permanent: false, destinationQuery: [] });
   });
 
   it("replaces adjacent params separated by literal characters in redirect destinations", async () => {
@@ -14850,7 +14926,11 @@ describe("matchRedirect destination param substitution", () => {
       { source: "/legacy/:year/:month", destination: "/archive/:year-:month", permanent: true },
     ];
     const result = matchRedirect("/legacy/2024/06", redirects, emptyCtx);
-    expect(result).toEqual({ destination: "/archive/2024-06", permanent: true });
+    expect(result).toEqual({
+      destination: "/archive/2024-06",
+      permanent: true,
+      destinationQuery: [],
+    });
   });
 
   it("replaces repeated locale params in locale-static redirect destinations", async () => {
@@ -14863,7 +14943,7 @@ describe("matchRedirect destination param substitution", () => {
       },
     ];
     const result = matchRedirect("/en/docs", redirects, emptyCtx);
-    expect(result).toEqual({ destination: "/en/en/docs", permanent: false });
+    expect(result).toEqual({ destination: "/en/en/docs", permanent: false, destinationQuery: [] });
   });
 
   it("substitutes named captures from has conditions into redirect destinations", async () => {
@@ -14882,26 +14962,41 @@ describe("matchRedirect destination param substitution", () => {
       ...emptyCtx,
       headers: new Headers({ "x-authorized": "yes" }),
     });
-    expect(result).toEqual({ destination: "/home?authorized=yes", permanent: false });
+    expect(result).toEqual({
+      destination: "/home?authorized=yes",
+      permanent: false,
+      destinationQuery: [["authorized", "authorized", "yes"]],
+    });
   });
 
-  it("escapes source params substituted into redirect destination query values", async () => {
+  it("substitutes source params verbatim into redirect destination query values", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
-    const { normalizePathnameForRouteMatchStrict } =
-      await import("../packages/vinext/src/routing/utils.js");
-    // Deliberate hardening: Next.js prepareDestination substitutes non-path
-    // values verbatim here, but vinext keeps query value boundaries intact.
-    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+    // Request pipelines match config sources against the raw encoded pathname.
+    // Next.js inserts the capture verbatim into the Location query, so the
+    // client decodes an already percent-encoded capture once.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
     const redirects = [
       { source: "/go/:next", destination: "/login?next=/:next&safe=1", permanent: false },
     ];
-    const pathname = normalizePathnameForRouteMatchStrict("/go/foo%26next%3Devil.example");
-    const result = matchRedirect(pathname, redirects, emptyCtx);
 
-    expect(result).toEqual({
-      destination: "/login?next=/foo%26next%3Devil.example&safe=1",
-      permanent: false,
-    });
+    for (const [pathname, next] of [
+      ["/go/foo%26next%3Devil.example", "/foo%26next%3Devil.example"],
+      ["/go/caf%C3%A9", "/caf%C3%A9"],
+      ["/go/x%25y", "/x%25y"],
+      ["/go/a+b", "/a+b"],
+      ["/go/foo&next=evil.example", "/foo&next=evil.example"],
+    ]) {
+      expect(matchRedirect(pathname, redirects, emptyCtx)).toEqual({
+        destination: `/login?next=${next}&safe=1`,
+        permanent: false,
+        // The template query is parsed before substitution, so `next` stays
+        // one value for the request query merge.
+        destinationQuery: [
+          ["next", "next", next],
+          ["safe", "safe", "1"],
+        ],
+      });
+    }
   });
 });
 

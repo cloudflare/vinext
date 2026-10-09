@@ -7531,7 +7531,8 @@ describe("createAppRscHandler", () => {
   it("preserves the original request query on config redirects for document requests (#1529)", async () => {
     // A plain (non-RSC) document request that hits a config redirect must
     // carry its original query onto the Location, matching Next.js
-    // resolve-routes.ts. The destination's own query wins on key conflicts.
+    // resolve-routes.ts. The destination's own query wins on key conflicts,
+    // overriding the request value in its request position.
     const handler = createHandler({
       configHeaders: [],
       configRedirects: [{ source: "/old-about", destination: "/about?from=old", permanent: true }],
@@ -7543,7 +7544,7 @@ describe("createAppRscHandler", () => {
     );
 
     expect(response.status).toBe(308);
-    expect(response.headers.get("location")).toBe("/docs/about?from=old&foo=bar");
+    expect(response.headers.get("location")).toBe("/docs/about?foo=bar&from=old");
   });
 
   it("redirects invalid RSC cache-busting requests before middleware", async () => {
