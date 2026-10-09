@@ -63,7 +63,11 @@ import {
   replaceHeadersContext,
   setHeadersAccessPhase,
 } from "vinext/shims/headers";
-import { completeAppRouteHandlerResponse } from "./app-route-handler-execution.js";
+import {
+  completeAppRouteHandlerResponse,
+  deferAppRouteHandlerCleanup,
+} from "./app-route-handler-execution.js";
+import { isFullyBufferedBody } from "./fully-buffered-response.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import { decodeMatchedParams } from "../routing/utils.js";
@@ -123,6 +127,8 @@ export type PrerenderableMetadataRoute = {
 };
 
 type RenderedMetadataRoute = {
+  /** The body has been read in full or was serialized by the framework. */
+  bodyComplete: boolean;
   browserCacheControl?: string;
   cacheLife: CacheLifeConfig | null;
   cacheable: boolean;
@@ -389,7 +395,14 @@ async function captureRenderedMetadataRoute(
     });
     applyPrerenderCacheTagsHeader(response.headers, collectedTags);
   }
-  return { browserCacheControl, cacheLife, cacheable, collectedTags, response };
+  return {
+    bodyComplete: completed || isFullyBufferedBody(response),
+    browserCacheControl,
+    cacheLife,
+    cacheable,
+    collectedTags,
+    response,
+  };
 }
 
 async function writeRenderedMetadataRoute(
@@ -734,15 +747,14 @@ function parseMetadataRouteAccessFallback(digest: string): 401 | 403 | 404 | nul
 }
 
 /**
- * Next.js compiles metadata files into Route Handlers, so a dynamic metadata
- * route runs like one: it may set cookies, and `notFound()`, `forbidden()`,
- * `unauthorized()` and `redirect()` become empty status or redirect responses
- * (with the redirect URL used verbatim) instead of errors.
+ * Next.js compiles metadata files into Route Handlers, so in a dynamic metadata
+ * route `notFound()`, `forbidden()`, `unauthorized()` and `redirect()` become
+ * empty status or redirect responses (with the redirect URL used verbatim)
+ * instead of errors.
  */
 async function runDynamicMetadataRoute<T extends Response | null>(
   render: () => Promise<T>,
 ): Promise<T | Response> {
-  const previousPhase = setHeadersAccessPhase("route-handler");
   try {
     return await render();
   } catch (error) {
@@ -767,9 +779,35 @@ async function runDynamicMetadataRoute<T extends Response | null>(
       return markFullyBufferedBody(new Response(null, { status }));
     }
     throw error;
-  } finally {
-    setHeadersAccessPhase(previousPhase);
   }
+}
+
+/**
+ * Keep the route-handler phase, as Next.js does for Route Handlers, until the
+ * metadata response body has completed. Capture reads most bodies in full; a
+ * body that is still streaming restores the phase when it ends.
+ */
+async function renderInRouteHandlerPhase<T extends RenderedMetadataRoute | null>(
+  render: () => Promise<T>,
+): Promise<T> {
+  const previousPhase = setHeadersAccessPhase("route-handler");
+  let rendered: T;
+  try {
+    rendered = await render();
+  } catch (error) {
+    setHeadersAccessPhase(previousPhase);
+    throw error;
+  }
+  if (!rendered || rendered.bodyComplete || !rendered.response.body) {
+    setHeadersAccessPhase(previousPhase);
+    return rendered;
+  }
+  return {
+    ...rendered,
+    response: deferAppRouteHandlerCleanup(rendered.response, async () => {
+      setHeadersAccessPhase(previousPhase);
+    }),
+  };
 }
 
 async function callDynamicMetadataRoute(
@@ -948,15 +986,16 @@ export async function handleMetadataRouteRequest(
       if (functions.generateSitemaps) {
         if (isGeneratedSitemapPath(route, options.cleanPathname)) {
           beginMetadataRouteCacheability(route);
-          const render = async (): Promise<RenderedMetadataRoute | null> => {
-            setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-            const response = await runDynamicMetadataRoute(() =>
-              handleGeneratedSitemap(route, options.cleanPathname, functions),
-            );
-            return response
-              ? captureRenderedMetadataRoute(response, route, options.cleanPathname)
-              : null;
-          };
+          const render = (): Promise<RenderedMetadataRoute | null> =>
+            renderInRouteHandlerPhase(async () => {
+              setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
+              const response = await runDynamicMetadataRoute(() =>
+                handleGeneratedSitemap(route, options.cleanPathname, functions),
+              );
+              return response
+                ? captureRenderedMetadataRoute(response, route, options.cleanPathname)
+                : null;
+            });
           const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
           if (cached.response) return cached.response;
           const rendered = await render();
@@ -1004,15 +1043,16 @@ export async function handleMetadataRouteRequest(
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }
 
-    const render = async (): Promise<RenderedMetadataRoute> => {
-      setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-      const response = route.isDynamic
-        ? await runDynamicMetadataRoute(() =>
-            callDynamicMetadataRoute(route, match, options.makeThenableParams, functions),
-          )
-        : serveStaticMetadataRoute(route);
-      return captureRenderedMetadataRoute(response, route, options.cleanPathname);
-    };
+    const render = (): Promise<RenderedMetadataRoute> =>
+      renderInRouteHandlerPhase(async () => {
+        setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
+        const response = route.isDynamic
+          ? await runDynamicMetadataRoute(() =>
+              callDynamicMetadataRoute(route, match, options.makeThenableParams, functions),
+            )
+          : serveStaticMetadataRoute(route);
+        return captureRenderedMetadataRoute(response, route, options.cleanPathname);
+      });
     const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
     if (cached.response) return cached.response;
 

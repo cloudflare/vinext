@@ -1227,6 +1227,51 @@ describe("handleMetadataRouteRequest", () => {
     expect(missing?.headers.getSetCookie()).toEqual([]);
   });
 
+  // Production capture reads the body in full; development streams it on.
+  it.each(["production", "development"])(
+    "keeps the route-handler phase until a streamed body completes in %s",
+    async (nodeEnv) => {
+      const result = await withEnvVar("NODE_ENV", nodeEnv, () =>
+        runWithRequestContext(
+          createRequestContext({ headersContext: { headers: new Headers(), cookies: new Map() } }),
+          async () => {
+            const response = await handleMetadataRouteRequest({
+              metadataRoutes: [
+                makeSlugImageRoute(
+                  () =>
+                    new Response(
+                      new ReadableStream({
+                        async pull(controller) {
+                          (await cookies()).set("lazy", "1");
+                          controller.enqueue(new TextEncoder().encode("lazy image"));
+                          controller.close();
+                        },
+                      }),
+                      { headers: { "Content-Type": "image/png" } },
+                    ),
+                ),
+              ],
+              cleanPathname: "/blog/post/opengraph-image",
+              makeThenableParams,
+            });
+            const body = await response?.text();
+            let afterBody: unknown = null;
+            try {
+              (await cookies()).set("after", "1");
+            } catch (error) {
+              afterBody = error;
+            }
+            return { body, afterBody };
+          },
+        ),
+      );
+
+      expect(result.body).toBe("lazy image");
+      // The phase is restored once the body has completed.
+      expect(result.afterBody).toBeInstanceOf(Error);
+    },
+  );
+
   it("drops the draft mode cookie on notFound() but keeps it on redirect()", async () => {
     const run = (slug: string) =>
       runWithRequestContext(
