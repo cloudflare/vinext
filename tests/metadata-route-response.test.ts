@@ -19,6 +19,12 @@ import {
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
 import {
+  forbidden,
+  notFound,
+  redirect,
+  unauthorized,
+} from "../packages/vinext/src/shims/navigation-errors.js";
+import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
@@ -1121,6 +1127,128 @@ describe("handleMetadataRouteRequest", () => {
     ).rejects.toThrow(
       "Dynamic metadata opengraph-image route /opengraph-image must return a Response.",
     );
+  });
+
+  // Next.js compiles metadata files into Route Handlers, whose module turns
+  // these errors into empty status or redirect responses (app-route/module.ts).
+  function makeSlugImageRoute(render: (slug: string) => Response | Promise<Response>) {
+    return {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/blog/[slug]/opengraph-image.tsx",
+      routePrefix: "/blog/[slug]",
+      routeSegments: ["blog", "[slug]"],
+      servedUrl: "/blog/[slug]/opengraph-image",
+      patternParts: ["blog", ":slug", "opengraph-image"],
+      contentType: "image/png",
+      module: {
+        revalidate: 60,
+        default: async ({ params }: { params: Promise<{ slug: string }> }) =>
+          render((await params).slug),
+      },
+    } satisfies MetadataFileRoute;
+  }
+
+  it.each([
+    ["notFound", notFound, 404],
+    ["forbidden", forbidden, 403],
+    ["unauthorized", unauthorized, 401],
+  ] as const)(
+    "returns an empty %s response when an image route calls it",
+    async (_, fn, status) => {
+      const response = await handleMetadataRouteRequest({
+        metadataRoutes: [makeSlugImageRoute(() => fn())],
+        cleanPathname: "/blog/missing/opengraph-image",
+        makeThenableParams,
+      });
+
+      expect(response?.status).toBe(status);
+      expect(await response?.text()).toBe("");
+    },
+  );
+
+  it("caches the 404 from notFound() like any other metadata route response", async () => {
+    const write = vi.fn(async () => {});
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [makeSlugImageRoute(() => notFound())],
+      cleanPathname: "/blog/missing/opengraph-image",
+      makeThenableParams,
+      isrRouteKey: (pathname) => pathname,
+      isrSet: write,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(write).toHaveBeenCalledOnce();
+    const [key, value] = write.mock.calls[0] as unknown as [string, unknown];
+    expect(key).toBe("/blog/missing/opengraph-image");
+    expect(value).toMatchObject({ kind: "APP_ROUTE", status: 404 });
+  });
+
+  it("returns a redirect response with the verbatim URL when an image route redirects", async () => {
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [
+        makeSlugImageRoute((slug) => redirect(`/blog/${slug}-renamed/opengraph-image`)),
+      ],
+      cleanPathname: "/blog/old/opengraph-image",
+      makeThenableParams,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("/blog/old-renamed/opengraph-image");
+  });
+
+  it("returns 404 when generateImageMetadata calls notFound()", async () => {
+    const route = makeSlugImageRoute(() => new Response("image"));
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [
+        {
+          ...route,
+          module: { ...route.module, generateImageMetadata: () => notFound() },
+        },
+      ],
+      cleanPathname: "/blog/missing/opengraph-image/small",
+      makeThenableParams,
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("returns 404 when a generated sitemap calls notFound()", async () => {
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [
+        {
+          type: "sitemap",
+          isDynamic: true,
+          filePath: "/tmp/app/sitemap.ts",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/sitemap.xml",
+          contentType: "application/xml",
+          module: {
+            generateSitemaps: () => [{ id: "0" }],
+            default: () => notFound(),
+          },
+        },
+      ],
+      cleanPathname: "/sitemap/0.xml",
+      makeThenableParams,
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("still throws other errors from metadata routes", async () => {
+    await expect(
+      handleMetadataRouteRequest({
+        metadataRoutes: [
+          makeSlugImageRoute(() => {
+            throw new Error("render failed");
+          }),
+        ],
+        cleanPathname: "/blog/post/opengraph-image",
+        makeThenableParams,
+      }),
+    ).rejects.toThrow("render failed");
   });
 });
 

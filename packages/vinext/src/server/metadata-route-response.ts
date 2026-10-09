@@ -11,6 +11,7 @@ import {
   type SitemapEntry,
 } from "./metadata-routes.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import {
   closeAfterResponse,
   createRequestContext,
@@ -706,6 +707,33 @@ function findGeneratedImageId(
   return null;
 }
 
+/**
+ * Next.js compiles metadata files into Route Handlers, so `notFound()`,
+ * `forbidden()`, `unauthorized()` and `redirect()` become empty status or
+ * redirect responses (with the redirect URL used verbatim) instead of errors.
+ */
+async function withMetadataRouteSpecialErrors<T extends Response | null>(
+  render: () => Promise<T>,
+): Promise<T | Response> {
+  try {
+    return await render();
+  } catch (error) {
+    if (!(error && typeof error === "object" && "digest" in error)) throw error;
+    const digest = String(error.digest);
+    const redirect = parseNextRedirectDigest(digest);
+    if (redirect) {
+      return markFullyBufferedBody(
+        new Response(null, { status: redirect.status, headers: { Location: redirect.url } }),
+      );
+    }
+    const httpError = parseNextHttpErrorDigest(digest);
+    if (httpError) {
+      return markFullyBufferedBody(new Response(null, { status: httpError.status }));
+    }
+    throw error;
+  }
+}
+
 async function callDynamicMetadataRoute(
   route: MetadataRuntimeRoute,
   match: MatchedMetadataRoute,
@@ -884,7 +912,9 @@ export async function handleMetadataRouteRequest(
           beginMetadataRouteCacheability(route);
           const render = async (): Promise<RenderedMetadataRoute | null> => {
             setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-            const response = await handleGeneratedSitemap(route, options.cleanPathname, functions);
+            const response = await withMetadataRouteSpecialErrors(() =>
+              handleGeneratedSitemap(route, options.cleanPathname, functions),
+            );
             return response
               ? captureRenderedMetadataRoute(response, route, options.cleanPathname)
               : null;
@@ -939,7 +969,9 @@ export async function handleMetadataRouteRequest(
     const render = async (): Promise<RenderedMetadataRoute> => {
       setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
       const response = route.isDynamic
-        ? await callDynamicMetadataRoute(route, match, options.makeThenableParams, functions)
+        ? await withMetadataRouteSpecialErrors(() =>
+            callDynamicMetadataRoute(route, match, options.makeThenableParams, functions),
+          )
         : serveStaticMetadataRoute(route);
       return captureRenderedMetadataRoute(response, route, options.cleanPathname);
     };
