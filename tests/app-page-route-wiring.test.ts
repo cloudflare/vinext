@@ -4523,7 +4523,7 @@ describe("app page route wiring helpers", () => {
       return createElement("p", null, "Loading dashboard");
     }
 
-    function GroupTemplate(props: Record<string, unknown>) {
+    function GroupTemplate(props: Record<string, unknown>): ReactElement {
       return createElement("div", null, props.children as ReactNode);
     }
 
@@ -4598,6 +4598,74 @@ describe("app page route wiring helpers", () => {
       expect(routeBoundary?.key).toBe(stableKey);
       expect(findSlotById(routeBoundary?.props.children, templateId)).not.toBeNull();
     }
+  });
+
+  it("leaves an ancestor loading boundary off a slot owned by the loading's child layout", async () => {
+    function DashboardLoading() {
+      return createElement("p", { "data-loading": "dashboard" }, "Loading dashboard");
+    }
+
+    function PanelLayout(props: Record<string, unknown>) {
+      return createElement(
+        "section",
+        { "data-layout": "panel-owner" },
+        createElement("aside", null, readChildren(props.panel)),
+        readChildren(props.children),
+      );
+    }
+
+    async function SlowPanelPage() {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return createElement("p", { "data-slot-page": "panel" }, "Panel");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [2],
+        layouts: [{ default: PanelLayout }],
+        loading: null,
+        loadings: [{ default: DashboardLoading }],
+        loadingTreePositions: [1],
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "(protected)"],
+        slots: {
+          panel: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "panel",
+            ownerTreePosition: 2,
+            page: { default: SlowPanelPage },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    // The layout entry's boundary sits outside the owner layout, so a
+    // suspending slot falls back above the layout instead of inside it.
+    const html = await withTimeout(renderRouteDocument(elements, "route:/dashboard"), 5_000);
+    const layoutStart = html.indexOf('<section data-layout="panel-owner"');
+    const layoutEnd = html.indexOf("</section>", layoutStart);
+    expect(layoutStart).toBeGreaterThan(-1);
+    expect(html.slice(layoutStart, layoutEnd)).not.toContain('data-loading="dashboard"');
+    expect(html.split('data-loading="dashboard"')).toHaveLength(2);
+    expect(html.indexOf('data-loading="dashboard"')).toBeLessThan(layoutStart);
+    expect(html).toContain('data-slot-page="panel"');
   });
 
   it("keys a shared group layout entry's ancestor loading boundary by the group", () => {

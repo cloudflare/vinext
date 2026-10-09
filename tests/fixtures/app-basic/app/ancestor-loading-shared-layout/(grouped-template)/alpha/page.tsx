@@ -7,7 +7,11 @@ export default async function AlphaPage() {
   return (
     <>
       <h1 id="ancestor-shared-layout-alpha">Alpha page</h1>
-      <Link href="/ancestor-loading-shared-layout/beta" id="ancestor-shared-layout-beta-link">
+      <Link
+        href="/ancestor-loading-shared-layout/beta"
+        prefetch={false}
+        id="ancestor-shared-layout-beta-link"
+      >
         Beta
       </Link>
     </>

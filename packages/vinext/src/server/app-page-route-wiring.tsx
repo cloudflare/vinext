@@ -1106,12 +1106,10 @@ export function buildAppPageElements<
   // Next.js renders a segment's loading boundary inside the wrapper keyed by
   // its immediate child segment (layout-router.tsx's TemplateContext.Provider),
   // the same key a template there gets. A route group is that child, so routes
-  // inside the group keep the boundary mounted. The leaf loading has no child
-  // segment and falls back to each call site's route-level key.
+  // inside the group keep the boundary mounted. Callers only pass ancestor
+  // loadings, which always have a child segment; the leaf loading wraps the page.
   const resolveLoadingResetKey = (treePosition: number): string =>
-    treePosition < routeSegments.length
-      ? resolveAppPageTemplateStateKey(routeSegments, treePosition, options.matchedParams)
-      : "";
+    resolveAppPageTemplateStateKey(routeSegments, treePosition, options.matchedParams);
   const metadataEntries = AppElementsWire.createMetadataEntries({
     bfcacheSegmentIdentities: segmentPlan.bfcacheSegmentIdentities,
     interception,
@@ -1336,9 +1334,11 @@ export function buildAppPageElements<
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
-      const loadingResetKey = resolveLoadingResetKey(ancestorLoadingEntry.treePosition);
       layoutElement = (
-        <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
+        <Suspense
+          key={resolveLoadingResetKey(ancestorLoadingEntry.treePosition)}
+          fallback={<AncestorLoadingComponent />}
+        >
           {layoutElement}
         </Suspense>
       );
@@ -1800,7 +1800,7 @@ export function buildAppPageElements<
         const SegmentLoadingComponent = segmentLoadingComponent;
         segmentChildren = (
           <Suspense
-            key={resolveLoadingResetKey(treePosition) || routeResetKey}
+            key={resolveLoadingResetKey(treePosition)}
             fallback={<SegmentLoadingComponent />}
           >
             {segmentChildren}

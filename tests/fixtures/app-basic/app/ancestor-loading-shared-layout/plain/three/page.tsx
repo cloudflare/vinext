@@ -7,7 +7,11 @@ export default async function PlainThreePage() {
   return (
     <>
       <h1 id="ancestor-shared-layout-three">Plain three page</h1>
-      <Link href="/ancestor-loading-shared-layout/plain/four" id="ancestor-shared-layout-four-link">
+      <Link
+        href="/ancestor-loading-shared-layout/plain/four"
+        prefetch={false}
+        id="ancestor-shared-layout-four-link"
+      >
         Four
       </Link>
     </>

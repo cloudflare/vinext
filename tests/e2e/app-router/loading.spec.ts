@@ -212,7 +212,9 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       shell: "tabs",
     },
     // A template's Slot is keyed by its child segment, so it remounts here; the
-    // ancestor loading must stay outside it, as in Next.js.
+    // ancestor loading must stay outside it, as in Next.js. This and the plain
+    // targets' links use prefetch={false}: with no omitted layout mounted, a
+    // prefetched loading shell may commit on click, which is a separate path.
     {
       name: "a sibling page under a group template",
       from: "/alpha",
@@ -242,7 +244,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       shell: null,
     },
   ]) {
-    test(`ancestor loading above a shared layout keeps the current page when navigating to ${target.name}`, async ({
+    test(`an ancestor loading keeps the current page when navigating to ${target.name}`, async ({
       page,
     }) => {
       await page.goto(`${BASE}/ancestor-loading-shared-layout${target.from}`);
@@ -299,7 +301,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       shell: null,
     },
   ] as { name: string; path: string; id?: string; heading: string; shell: string | null }[]) {
-    test(`ancestor loading above a shared layout wraps that layout on first entry to ${target.name}`, async ({
+    test(`an ancestor loading replaces the segments below it on first entry to ${target.name}`, async ({
       page,
     }) => {
       void page.goto(`${BASE}/ancestor-loading-shared-layout/${target.path}`);
