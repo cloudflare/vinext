@@ -4725,7 +4725,7 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it("prunes only the removed targets of a loop head", () => {
+  it("prunes data exports from a loop head and redirects its dead helpers", () => {
     const code = `
 let loader, visible;
 for ([loader, visible] of [[0, 1]]) console.log(visible);
