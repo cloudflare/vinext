@@ -2910,6 +2910,29 @@ describe("next/dynamic preload metadata transform", () => {
       await fsp.rm(linkParent, { recursive: true, force: true });
     }
   });
+
+  it("keys a module outside the root like Vite's manifest, with `../` segments", async () => {
+    // Monorepo workspace package (https://github.com/cloudflare/vinext/issues/3723):
+    // Vite keys the dynamic entry `path.relative(config.root, id)`, so dropping
+    // the escaping key would leave the boundary without preload/CSS links.
+    const workspaceRoot = path.resolve("/monorepo");
+    const appRoot = path.join(workspaceRoot, "apps/web");
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const HeroBanner = dynamic(() => import("@acme/ui/hero-banner"));`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      path.join(appRoot, "app/page.tsx"),
+      appRoot,
+      async () => path.join(workspaceRoot, "packages/ui/src/hero-banner.tsx?v=1"),
+    );
+
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["../../packages/ui/src/hero-banner.tsx"] }`,
+    );
+  });
 });
 
 describe("augmentSsrManifestFromBundle", () => {
