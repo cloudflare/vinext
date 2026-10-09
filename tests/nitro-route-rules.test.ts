@@ -306,6 +306,17 @@ describe("vinext Nitro setup integration", () => {
     expect(new Set(nitro.options.traceDeps).size).toBe(nitro.options.traceDeps?.length);
   });
 
+  it("traces React so bundled CommonJS requires share the server's React copy", async () => {
+    const root = createAppProject();
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = { options: { dev: false, routeRules: {} } };
+
+    await nitroPlugin.nitro!.setup!(nitro);
+
+    expect(nitro.options.traceDeps).toContain("react");
+    expect(nitro.options.traceDeps).toContain("react-dom");
+  });
+
   it("merges generated route rules into Nitro before build", async () => {
     const root = createAppProject();
     const nitroPlugin = await initializeNitroSetupPlugin(root);
