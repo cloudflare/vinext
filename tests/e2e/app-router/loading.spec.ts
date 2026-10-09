@@ -309,8 +309,9 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({
         timeout: 5_000,
       });
-      // The shell resolves within 100ms but the page takes 3s, so the loading
-      // UI must still replace the shell rather than render inside it.
+      // Whatever sits between the loading and the page (if anything) renders
+      // at once but the page takes 3s, so the loading UI must replace it rather
+      // than render inside it.
       await page.waitForTimeout(600);
       await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
       if (target.shell) {
