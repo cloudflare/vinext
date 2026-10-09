@@ -620,6 +620,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId, sharedLayoutId],
         currentParams: { projectId: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { projectId: "alpha" },
         targetUrlParts: ["projects", "alpha", "activity"],
         template,
@@ -631,6 +632,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId, sharedLayoutId],
         currentParams: { projectId: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { projectId: "beta" },
         targetUrlParts: ["projects", "beta", "activity"],
         template,
@@ -670,6 +672,7 @@ describe("App Router optimistic routing", () => {
             currentLayoutIds: [rootLayoutId, sharedLayoutId],
             currentParams: { projectId },
             routeManifest,
+            segmentFallbackShown: false,
             targetRouteParams: encodedPayload.routeParams,
             targetUrlParts: encodedPayload.urlParts,
             template: encodedPayload.template,
@@ -772,6 +775,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [],
         currentParams,
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams,
         targetUrlParts: [],
         template,
@@ -791,6 +795,20 @@ describe("App Router optimistic routing", () => {
     expect(canCommit(slotOnlyShell, "route:/s/one")).toBe(true);
     // A route outside the manifest keeps the shell.
     expect(canCommit(twoShell, "route:/missing")).toBe(true);
+    // So does a current page showing an error or HTTP access fallback, whose
+    // owner may sit above the loading boundary.
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: currentElementsFor("route:/s/one"),
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        segmentFallbackShown: true,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
     // A not-found or error boundary payload has no page tree.
     expect(
       canCommitOptimisticRouteTemplate({
@@ -801,6 +819,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [],
         currentParams: {},
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: {},
         targetUrlParts: [],
         template: twoShell,
@@ -829,6 +848,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [],
         currentParams: {},
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: {},
         targetUrlParts: [],
         template: twoShell,
@@ -848,6 +868,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [],
         currentParams: {},
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: {},
         targetUrlParts: [],
         template: twoShell,
@@ -1029,6 +1050,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId],
         currentParams: { slug: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { slug: "alpha" },
         targetUrlParts: ["alpha"],
         template: retainedTemplate,
@@ -1041,6 +1063,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId],
         currentParams: { slug: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { slug: "gamma" },
         targetUrlParts: ["gamma"],
         template: retainedTemplate,
@@ -1130,6 +1153,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId],
         currentParams: {},
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: {},
         targetUrlParts: ["dashboard"],
         template,

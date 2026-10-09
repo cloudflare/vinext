@@ -161,6 +161,7 @@ import {
 import {
   DevRecoveryBoundary,
   GlobalErrorBoundary,
+  isSegmentFallbackShown,
   RedirectBoundary,
 } from "vinext/shims/error-boundary";
 import DefaultGlobalError from "vinext/shims/default-global-error";
@@ -2479,6 +2480,7 @@ function bootstrapHydration(
                 currentLayoutIds: navigationInitiationState.layoutIds,
                 currentParams: navigationInitiationState.navigationSnapshot.params,
                 routeManifest,
+                segmentFallbackShown: isSegmentFallbackShown(),
                 targetRouteParams: optimisticPayload.routeParams,
                 targetUrlParts: optimisticPayload.urlParts,
                 template: optimisticPayload.template,

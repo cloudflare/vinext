@@ -1752,6 +1752,7 @@ describe("app page route wiring helpers", () => {
         currentLayoutIds: AppElementsWire.readMetadata(currentElements).layoutIds,
         currentParams: {},
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: {},
         targetUrlParts: ["dashboard"],
         template,

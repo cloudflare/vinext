@@ -547,11 +547,18 @@ function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
   currentParams: Readonly<Record<string, string | string[]>>;
   routeManifest: RouteManifest;
+  segmentFallbackShown: boolean;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   template: OptimisticRouteTemplate;
 }): boolean {
   const loadingTreePosition = options.template.loadingTreePosition;
   if (loadingTreePosition === null) return false;
+  // vinext renders a page's not-found, forbidden, unauthorized or error fallback
+  // inside the ancestor loading boundaries, while Next.js renders it from the
+  // segment that owns the fallback file. When that owner is above the loading,
+  // Next.js has unmounted the loading boundary, and it mounts fresh on
+  // navigation. The fallback's owner is not tracked, so keep the shell.
+  if (options.segmentFallbackShown) return false;
   const routes = options.routeManifest.segmentGraph.routes;
   const targetRoute = routes.get(options.template.routeId);
   if (targetRoute === undefined || loadingTreePosition > targetRoute.treeSegments.length) {
@@ -616,6 +623,8 @@ export function canCommitOptimisticRouteTemplate(options: {
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
   routeManifest: RouteManifest;
+  /** Whether an error or HTTP access fallback is on screen. */
+  segmentFallbackShown: boolean;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;

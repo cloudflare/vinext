@@ -101,6 +101,34 @@ function shouldResetBoundary(
   return nextResetState.previousPathname !== previousResetState.previousPathname;
 }
 
+// Segment boundaries currently rendering their fallback in place of children.
+// The browser entry reads this, and it can load these boundaries through a
+// separate module instance, so the set lives on a Symbol.for global.
+const _SHOWN_SEGMENT_FALLBACKS_KEY = Symbol.for("vinext.shownSegmentFallbacks");
+
+type ShownSegmentFallbacksGlobal = typeof globalThis & {
+  [_SHOWN_SEGMENT_FALLBACKS_KEY]?: Set<object>;
+};
+
+function getShownSegmentFallbacks(): Set<object> {
+  const globalState = globalThis as ShownSegmentFallbacksGlobal;
+  globalState[_SHOWN_SEGMENT_FALLBACKS_KEY] ??= new Set();
+  return globalState[_SHOWN_SEGMENT_FALLBACKS_KEY];
+}
+
+function trackSegmentFallback(boundary: object, shown: boolean): void {
+  if (shown) {
+    getShownSegmentFallbacks().add(boundary);
+  } else {
+    getShownSegmentFallbacks().delete(boundary);
+  }
+}
+
+/** Whether an error, not-found, forbidden or unauthorized fallback is on screen. */
+export function isSegmentFallbackShown(): boolean {
+  return getShownSegmentFallbacks().size > 0;
+}
+
 function addDevErrorRecoveryListener(listener: () => void): void {
   if (typeof window === "undefined") return;
   window.addEventListener(VINEXT_DEV_ERROR_RECOVERY_EVENT, listener);
@@ -281,10 +309,16 @@ export class ErrorBoundaryInner extends React.Component<
 
   componentDidMount(): void {
     addDevErrorRecoveryListener(this.handleDevErrorRecovery);
+    trackSegmentFallback(this, this.state.error !== null);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.error !== null);
   }
 
   componentWillUnmount(): void {
     removeDevErrorRecoveryListener(this.handleDevErrorRecovery);
+    trackSegmentFallback(this, false);
   }
 
   reset = () => {
@@ -402,6 +436,18 @@ class NotFoundBoundaryInner extends React.Component<
     throw error;
   }
 
+  componentDidMount(): void {
+    trackSegmentFallback(this, this.state.notFound);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.notFound);
+  }
+
+  componentWillUnmount(): void {
+    trackSegmentFallback(this, false);
+  }
+
   render() {
     if (this.state.notFound) {
       return (
@@ -478,6 +524,18 @@ export class ForbiddenBoundaryInner extends React.Component<
     throw error;
   }
 
+  componentDidMount(): void {
+    trackSegmentFallback(this, this.state.forbidden);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.forbidden);
+  }
+
+  componentWillUnmount(): void {
+    trackSegmentFallback(this, false);
+  }
+
   render() {
     if (this.state.forbidden) {
       return (
@@ -548,6 +606,18 @@ export class UnauthorizedBoundaryInner extends React.Component<
       }
     }
     throw error;
+  }
+
+  componentDidMount(): void {
+    trackSegmentFallback(this, this.state.unauthorized);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.unauthorized);
+  }
+
+  componentWillUnmount(): void {
+    trackSegmentFallback(this, false);
   }
 
   render() {

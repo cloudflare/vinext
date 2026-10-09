@@ -14,7 +14,9 @@ type LoadingWindow = { __sawLoading?: boolean };
 // optimistic loading shell can put the loading UI on screen.
 async function clickWithHeldNavigation(
   page: Page,
-  options: { from: string; current: string; link: string; loading: string; targetPath: string },
+  // `current` is a selector for what the starting page shows. Without a `link`,
+  // the router prefetches and pushes the target instead.
+  options: { from: string; current: string; link?: string; loading: string; targetPath: string },
 ): Promise<() => void> {
   let releaseNavigation!: () => void;
   let navigationRequestSeen = false;
@@ -40,7 +42,14 @@ async function clickWithHeldNavigation(
   );
   await page.goto(options.from);
   await waitForAppRouterHydration(page);
-  await expect(page.locator(`#${options.current}`)).toBeVisible();
+  await expect(page.locator(options.current)).toBeVisible();
+  if (options.link === undefined) {
+    await page.evaluate((href) => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      router.prefetch(href);
+    }, options.targetPath);
+  }
   await (await shellPrefetch).finished();
 
   await page.evaluate((loadingId) => {
@@ -64,7 +73,15 @@ async function clickWithHeldNavigation(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
   navigationRequestSeen = false;
-  await page.locator(`#${options.link}`).click();
+  if (options.link === undefined) {
+    await page.evaluate((href) => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push(href);
+    }, options.targetPath);
+  } else {
+    await page.locator(`#${options.link}`).click();
+  }
   // The navigation must reach the network, or the hold proves nothing. Any
   // optimistic commit has started by then, though it may not be on screen yet;
   // the observer stays installed, so the post-release check catches a late one.
@@ -80,7 +97,7 @@ for (const target of [
   {
     name: "a sibling page with nothing in between",
     from: `${BASE}/plain/one`,
-    current: "ancestor-shared-layout-one",
+    current: "#ancestor-shared-layout-one",
     link: "ancestor-shared-layout-two-link",
     loading: LOADING,
     target: "ancestor-shared-layout-two",
@@ -89,7 +106,7 @@ for (const target of [
   {
     name: "a sibling page from a dynamic page",
     from: `${BASE}/plain/5`,
-    current: "ancestor-shared-layout-dynamic",
+    current: "#ancestor-shared-layout-dynamic",
     link: "ancestor-shared-layout-two-from-dynamic-link",
     loading: LOADING,
     target: "ancestor-shared-layout-two",
@@ -98,7 +115,7 @@ for (const target of [
   {
     name: "a sibling page under a group template",
     from: `${BASE}/alpha`,
-    current: "ancestor-shared-layout-alpha",
+    current: "#ancestor-shared-layout-alpha",
     link: "ancestor-shared-layout-beta-link",
     loading: LOADING,
     target: "ancestor-shared-layout-beta",
@@ -107,7 +124,7 @@ for (const target of [
   {
     name: "a sibling page with its own layout below a layout-less segment",
     from: `${BASE}/plain/three`,
-    current: "ancestor-shared-layout-three",
+    current: "#ancestor-shared-layout-three",
     link: "ancestor-shared-layout-four-link",
     loading: LOADING,
     target: "ancestor-shared-layout-four",
@@ -117,7 +134,7 @@ for (const target of [
     // A leaf loading's page key ignores search params.
     name: "the same page with different search params",
     from: "/leaf-loading-search-only?q=first",
-    current: "leaf-loading-search-only-first",
+    current: "#leaf-loading-search-only-first",
     link: "leaf-loading-search-only-clear-link",
     loading: "leaf-loading-search-only-loading",
     target: "leaf-loading-search-only-none",
@@ -135,7 +152,7 @@ for (const target of [
       targetPath: target.path,
     });
     expect(await sawLoading(page)).toBe(false);
-    await expect(page.locator(`#${target.current}`)).toBeVisible();
+    await expect(page.locator(target.current)).toBeVisible();
 
     releaseNavigation();
     await expect(page.locator(`#${target.target}`)).toBeVisible({ timeout: 10_000 });
@@ -147,7 +164,7 @@ test("a prefetched loading shell still shows the loading when the boundary's chi
   page,
 }) => {
   const releaseNavigation = await clickWithHeldNavigation(page, {
-    current: "ancestor-shared-layout-one",
+    current: "#ancestor-shared-layout-one",
     from: `${BASE}/plain/one`,
     link: "ancestor-shared-layout-beta-from-one-link",
     loading: LOADING,
@@ -158,4 +175,21 @@ test("a prefetched loading shell still shows the loading when the boundary's chi
 
   releaseNavigation();
   await expect(page.locator("#ancestor-shared-layout-beta")).toBeVisible({ timeout: 10_000 });
+});
+
+test("a prefetched loading shell shows the loading when leaving a not-found page", async ({
+  page,
+}) => {
+  // The root not-found.tsx owns the fallback, so Next.js has unmounted the
+  // ancestor loading boundary and mounts it fresh on navigation.
+  const releaseNavigation = await clickWithHeldNavigation(page, {
+    current: "text=404 - Page Not Found",
+    from: `${BASE}/plain/missing`,
+    loading: LOADING,
+    targetPath: `${BASE}/plain/two`,
+  });
+  await expect(page.locator(`#${LOADING}`)).toBeVisible();
+
+  releaseNavigation();
+  await expect(page.locator("#ancestor-shared-layout-two")).toBeVisible({ timeout: 10_000 });
 });

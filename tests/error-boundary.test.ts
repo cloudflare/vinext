@@ -637,3 +637,35 @@ describe("UnauthorizedBoundary digest classification", () => {
     expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 });
+
+describe("shown segment fallback tracking", () => {
+  it("reports a boundary while it renders its fallback", async () => {
+    const { ErrorBoundaryInner, ForbiddenBoundaryInner, isSegmentFallbackShown } =
+      await import("../packages/vinext/src/shims/error-boundary.js");
+    const forbidden = new ForbiddenBoundaryInner({
+      children: null,
+      fallback: null,
+      pathname: "/s/one",
+    });
+    const error = new ErrorBoundaryInner({
+      children: null,
+      fallback: () => null,
+      pathname: "/s/one",
+    });
+    forbidden.componentDidMount();
+    error.componentDidMount();
+    expect(isSegmentFallbackShown()).toBe(false);
+
+    forbidden.state = { ...forbidden.state, forbidden: true };
+    forbidden.componentDidUpdate();
+    error.state = { ...error.state, error: { thrownValue: new Error("boom") } };
+    error.componentDidUpdate();
+    expect(isSegmentFallbackShown()).toBe(true);
+
+    forbidden.state = { ...forbidden.state, forbidden: false };
+    forbidden.componentDidUpdate();
+    expect(isSegmentFallbackShown()).toBe(true);
+    error.componentWillUnmount();
+    expect(isSegmentFallbackShown()).toBe(false);
+  });
+});
