@@ -1554,12 +1554,12 @@ export default { plugins: [vinext({ imageOptimization: true })] };
   "assets": { "directory": "dist/client", "binding": "ASSETS", "run_worker_first": ["/*"] },
   "cache": {
     // keep this comment
-    "enabled": true, // and this one
+    "enabled": /* before */ true /* after */, // trailing
     "cross_version_cache": true
   }
 }\n`;
       const output = updateWranglerConfigForCloudflare(input, options);
-      expect(output).toBe(input.replace('"enabled": true,', '"enabled": false,'));
+      expect(output).toBe(input.replace("*/ true /*", "*/ false /*"));
       expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
     },
   );

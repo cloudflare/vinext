@@ -644,6 +644,22 @@ function stripJsonComments(code: string): string {
   return output.replace(/,\s*([}\]])/g, "$1");
 }
 
+/** Offset of the first JSONC token in `code`, after whitespace and comments. */
+function skipJsonWhitespaceAndComments(code: string): number {
+  let index = 0;
+  while (index < code.length) {
+    if (/\s/.test(code[index])) index++;
+    else if (code.startsWith("//", index)) {
+      const lineEnd = code.indexOf("\n", index);
+      index = lineEnd === -1 ? code.length : lineEnd;
+    } else if (code.startsWith("/*", index)) {
+      const commentEnd = code.indexOf("*/", index + 2);
+      index = commentEnd === -1 ? code.length : commentEnd + 2;
+    } else break;
+  }
+  return index;
+}
+
 function findTopLevelJsonProperty(
   code: string,
   name: string,
@@ -1344,11 +1360,20 @@ export function updateWranglerConfigForCloudflare(
       const cacheCode = output.slice(cacheProperty.valueStart, cacheProperty.valueEnd);
       const cache = JSON.parse(stripJsonComments(cacheCode)) as unknown;
       const enabledProperty = findTopLevelJsonProperty(cacheCode, "enabled");
-      if (isUnknownRecord(cache) && cache.enabled === true && enabledProperty) {
+      const enabledToken = enabledProperty
+        ? enabledProperty.valueStart +
+          skipJsonWhitespaceAndComments(
+            cacheCode.slice(enabledProperty.valueStart, enabledProperty.valueEnd),
+          )
+        : -1;
+      if (
+        isUnknownRecord(cache) &&
+        cache.enabled === true &&
+        cacheCode.startsWith("true", enabledToken)
+      ) {
         // Replace only the flag so the rest of the user's cache block stays verbatim.
-        const enabledStart = cacheProperty.valueStart + enabledProperty.valueStart;
-        const enabledEnd = cacheProperty.valueStart + enabledProperty.valueEnd;
-        output = `${output.slice(0, enabledStart)}false${output.slice(enabledEnd)}`;
+        const enabledStart = cacheProperty.valueStart + enabledToken;
+        output = `${output.slice(0, enabledStart)}false${output.slice(enabledStart + "true".length)}`;
       }
     }
   }
