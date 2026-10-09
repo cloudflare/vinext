@@ -4366,6 +4366,23 @@ export { getServerSideProps };`,
 [getServerSideProps, visible = (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }))] = [];
 export { getServerSideProps };`,
     ],
+    [
+      "a for…of head declaration",
+      `for (var getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]) {}
+export { getServerSideProps };`,
+    ],
+    [
+      "a bare for…of head",
+      `let getServerSideProps;
+if (process.env.FEATURE) for (getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]);
+export { getServerSideProps };`,
+    ],
+    [
+      "a for…in head pattern",
+      `let getStaticProps;
+for ([getStaticProps] in { [SIGNING_KEY]: true }) {}
+export { getStaticProps };`,
+    ],
   ])("removes a data export assigned inside %s", (_label, dataExport) => {
     const code = `import { SIGNING_KEY } from '../lib/server-config';
 ${dataExport}
@@ -4451,6 +4468,20 @@ export default function Page() { return null; }
     expect(result).not.toContain("./secret");
     expect(result).toContain("function init(value = (void 0))");
     expect(result).not.toContain("let getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps loops whose heads write live bindings", () => {
+    const code = `
+import { items } from './items';
+export function getStaticProps() { return { props: {} }; }
+for (const item of items) console.log(item);
+for (var other of items) console.log(other);
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("for (const item of items) console.log(item);");
+    expect(result).toContain("for (var other of items) console.log(other);");
     expect(() => parseAst(result!)).not.toThrow();
   });
 

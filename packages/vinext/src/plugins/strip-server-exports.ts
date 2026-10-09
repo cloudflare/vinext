@@ -444,6 +444,8 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     statement: PositionedNode | undefined;
     topLevel: boolean;
     bindingNames: string[];
+    /** A `for…in/of` loop whose head writes the bindings. */
+    loop?: boolean;
   }> = [];
   const removedAssignments = new Set<PositionedNode>();
 
@@ -557,17 +559,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           : findLexicalScope(ancestors);
       for (const name of bindingNames(node.id as PositionedNode)) addShadowRange(name, scope);
       // A `var` nested in a block outside any function is hoisted to module
-      // scope, so `export { getServerSideProps }` can name it. A `for…in/of`
-      // head declaration cannot be dropped without changing the loop, but
-      // its values come from the live iterable, not from a declarator init.
+      // scope, so `export { getServerSideProps }` can name it.
       const owner = ancestors.at(-2);
-      if (
-        parent.kind === "var" &&
-        !varScope &&
-        owner &&
-        owner.type !== "ExportNamedDeclaration" &&
-        owner.left !== parent
-      ) {
+      if (parent.kind === "var" && !varScope && owner && owner.type !== "ExportNamedDeclaration") {
         if (owner.type === "ForStatement" && owner.init === parent) {
           loopHeadDeclarations.add(parent);
         }
@@ -616,13 +610,44 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       }
       return;
     }
+    if (node.type === "ForInStatement" || node.type === "ForOfStatement") {
+      // The head is written from the iterable, which is the right-hand side
+      // here, so a loop writing a removed binding is removed as a whole.
+      const left = node.left as PositionedNode;
+      const names = (
+        left.type === "VariableDeclaration"
+          ? bindingIdentifiers(left.declarations[0]?.id as PositionedNode)
+          : assignmentTargetIdentifiers(left)
+      )
+        .filter(
+          (identifier) =>
+            !isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
+        )
+        .map((identifier) => identifier.name);
+      if (names.length > 0) {
+        assignments.push({
+          expression: node,
+          statement: node,
+          topLevel: ancestors.length === 0,
+          bindingNames: names,
+          loop: true,
+        });
+      }
+      return;
+    }
     if (!isReferenceIdentifier(node, parent)) return;
     if (bindingPositions.has(node.start)) return;
     if (isInsideRanges(node.start, shadowRanges.get(node.name) ?? [])) return;
-    const assignment = [...ancestors]
+    const writer = [...ancestors]
       .reverse()
-      .find((ancestor) => ancestor.type === "AssignmentExpression");
-    if (assignment && isAssignmentTargetIdentifier(node, assignment.left as PositionedNode)) return;
+      .find(
+        (ancestor) =>
+          ancestor.type === "AssignmentExpression" ||
+          ((ancestor.type === "ForInStatement" || ancestor.type === "ForOfStatement") &&
+            node.start >= ancestor.left.start &&
+            node.end <= ancestor.left.end),
+      );
+    if (writer && isAssignmentTargetIdentifier(node, writer.left as PositionedNode)) return;
     const positions = references.get(node.name) ?? [];
     positions.push(node.start);
     references.set(node.name, positions);
@@ -692,12 +717,22 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   while (changed) {
     changed = false;
 
-    for (const { expression, statement, topLevel, bindingNames: names } of assignments) {
+    for (const { expression, statement, topLevel, bindingNames: names, loop } of assignments) {
       const removableNames = new Set(
         names.filter((name) => forcedBindings.has(name) || deadBindings.has(name)),
       );
       if (removableNames.size === 0) continue;
       if (removedAssignments.has(expression)) continue;
+      if (loop) {
+        removedAssignments.add(expression);
+        edits.push({
+          start: expression.start,
+          end: expression.end,
+          replacement: topLevel ? "" : ";",
+        });
+        if (addDeadRange(expression)) changed = true;
+        continue;
+      }
       const left = expression.left as PositionedNode;
       const renderedLeft =
         left.type === "ArrayPattern" || left.type === "ObjectPattern"
