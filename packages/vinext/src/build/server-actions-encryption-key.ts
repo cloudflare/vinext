@@ -10,7 +10,7 @@
  */
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 
 const CONFIG_FILE = ".rscinfo";
 const ENCRYPTION_KEY = "encryption.key";
@@ -106,7 +106,10 @@ export function loadOrGenerateServerActionsEncryptionKey(
     : path.join(options.root, ".vinext", "dev", "cache");
   const configPath = path.join(cacheDir, CONFIG_FILE);
   const cachedKey = readCachedKey(configPath, options.isBuild, providedKey, now);
-  if (cachedKey !== undefined) return cachedKey;
+  if (cachedKey !== undefined) {
+    restrictKeyCacheMode(configPath);
+    return cachedKey;
+  }
 
   const key = generateKey();
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -115,7 +118,17 @@ export function loadOrGenerateServerActionsEncryptionKey(
     JSON.stringify({ [ENCRYPTION_KEY]: key, [ENCRYPTION_EXPIRE_AT]: now + EXPIRATION }),
     { mode: 0o600 },
   );
+  // `mode` only applies when the file is created.
+  restrictKeyCacheMode(configPath);
   return key;
+}
+
+function restrictKeyCacheMode(configPath: string): void {
+  try {
+    fs.chmodSync(configPath, 0o600);
+  } catch {
+    // Best effort, e.g. on file systems without POSIX modes.
+  }
 }
 
 /**
@@ -127,11 +140,15 @@ export function getServerActionsKeyCacheFsDeny(configuredDeny: string[] | undefi
   return configuredDeny ? [KEY_CACHE_FS_DENY] : [...VITE_DEFAULT_FS_DENY, KEY_CACHE_FS_DENY];
 }
 
+// `<anything>/.vinext/cache/.rscinfo` or `<anything>/.vinext/dev/cache/.rscinfo`,
+// including the `/@fs/<absolute path>` form.
+const KEY_CACHE_REQUEST_PATH_RE = /(?:^|\/)\.vinext\/(?:dev\/)?cache\/\.rscinfo\/?$/i;
+
 /**
- * Whether a dev-server request URL names the key cache. Vite skips
+ * Whether a dev-server request URL names a key cache file. Vite skips
  * `server.fs.deny` when `server.fs.strict` is false, so a middleware rejects
- * these requests too. Vite decodes the path once and the file system may be
- * case-insensitive, so match the decoded, lowercased path.
+ * these requests too. The path is decoded once and normalized as Vite does, and
+ * matched case-insensitively for case-insensitive file systems.
  */
 export function isServerActionsKeyCacheRequest(url: string | undefined): boolean {
   if (!url) return false;
@@ -142,7 +159,7 @@ export function isServerActionsKeyCacheRequest(url: string | undefined): boolean
   } catch {
     // Vite rejects malformed paths itself; still check the raw path.
   }
-  return (
-    decoded.toLowerCase().includes(CONFIG_FILE) || pathname.toLowerCase().includes(CONFIG_FILE)
+  return [pathname, decoded].some((candidate) =>
+    KEY_CACHE_REQUEST_PATH_RE.test(path.normalize(toSlash(candidate))),
   );
 }
