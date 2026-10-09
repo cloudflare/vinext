@@ -8,7 +8,8 @@ export default async function LeafLoadingSearchOnlyPage({
 }) {
   await connection();
   const { q = "none" } = await searchParams;
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  // Only the navigation target streams slowly.
+  if (q === "none") await new Promise((resolve) => setTimeout(resolve, 3000));
 
   return (
     <>

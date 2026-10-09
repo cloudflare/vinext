@@ -63,9 +63,11 @@ async function clickWithHeldNavigation(
   await page.evaluate(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
+  navigationRequestSeen = false;
   await page.locator(`#${options.link}`).click();
   // The navigation must reach the network, or the hold proves nothing. Any
-  // optimistic commit has already started by then.
+  // optimistic commit has started by then, though it may not be on screen yet;
+  // the observer stays installed, so the post-release check catches a late one.
   await expect.poll(() => navigationRequestSeen).toBe(true);
   return releaseNavigation;
 }

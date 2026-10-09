@@ -745,13 +745,13 @@ describe("App Router optimistic routing", () => {
         allowLoadingShell: true,
         basePath: "",
         elements: {
-          ...currentElementsFor(`route:${pattern}`),
+          ...currentMetadataFor(`route:${href}`),
           [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
           ...(loadingTreePosition === null
             ? {}
             : { [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: loadingTreePosition }),
           [`page:${pattern}`]: null,
-          [`route:${pattern}`]: createElement("p", null, "Loading"),
+          [`route:${href}`]: createElement("p", null, "Loading"),
         },
         href,
         interceptionContext: null,
@@ -789,8 +789,7 @@ describe("App Router optimistic routing", () => {
     const slotOnlyShell = createShellTemplate("/s/two", "/s/two", null);
     expect(slotOnlyShell.loadingTreePosition).toBeNull();
     expect(canCommit(slotOnlyShell, "route:/s/one")).toBe(true);
-    // A route outside the manifest, or an intercepted current page, keeps the
-    // shell.
+    // A route outside the manifest keeps the shell.
     expect(canCommit(twoShell, "route:/missing")).toBe(true);
     // A not-found or error boundary payload has no page tree.
     expect(
@@ -807,6 +806,8 @@ describe("App Router optimistic routing", () => {
         template: twoShell,
       }),
     ).toBe(true);
+    // So does an intercepted current page, whose params may belong to the
+    // intercepted route.
     expect(
       canCommitOptimisticRouteTemplate({
         currentElements: {
@@ -815,8 +816,8 @@ describe("App Router optimistic routing", () => {
               sourceMatchedUrl: "/s/one",
               sourceRouteId: AppElementsWire.encodeRouteId("/s/one", null),
               slotId: AppElementsWire.encodeSlotId("modal", "/s/one"),
-              targetMatchedUrl: "/s/one",
-              targetRouteId: AppElementsWire.encodeRouteId("/s/one", null),
+              targetMatchedUrl: "/s/other",
+              targetRouteId: AppElementsWire.encodeRouteId("/s/other", null),
             },
             interceptionContext: null,
             layoutIds: [],

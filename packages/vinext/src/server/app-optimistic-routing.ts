@@ -537,6 +537,11 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
  * path through that child, route groups and params included. The shell would
  * commit the fallback instead. A leaf loading is keyed by the page segment
  * without search params, so a search-only navigation keeps it mounted too.
+ *
+ * Known limitation: the shell always stops at the shallowest nested loading.
+ * When that boundary is mounted, a deeper loading the navigation newly mounts
+ * waits for the real response, while Next.js prefetches from where the trees
+ * diverge and shows it at once.
  */
 function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
@@ -554,6 +559,8 @@ function isShellLoadingBoundaryMounted(options: {
   }
   // A not-found or error boundary payload renders its fallback in place of the
   // route's tree, so none of the route's loading boundaries is mounted.
+  // Synthetic children-slot routes have no page entry either and keep the
+  // shell.
   if (
     !Object.keys(options.currentElements).some(
       (key) => AppElementsWire.parseElementKey(key)?.kind === "page",

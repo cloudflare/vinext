@@ -1303,7 +1303,7 @@ describe("app page route wiring helpers", () => {
 
     expect(elements["page:/dashboard"]).toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
-    // A leaf loading sits one level below the route's last segment.
+    // A leaf loading's position equals the route's segment count.
     expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(1);
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
@@ -1339,6 +1339,38 @@ describe("app page route wiring helpers", () => {
 
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
     expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(0);
+    const html = await renderRouteEntry(elements, "route:/dashboard/slow");
+    expect(html).toContain("Route loading");
+    expect(html).not.toContain("Page");
+  });
+
+  it("marks a leaf loading-shell boundary at the route's segment count", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: RouteLoadingProbe },
+        loadings: [{ default: RouteLoadingProbe }],
+        loadingTreePositions: [2],
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "slow"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/slow",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(2);
     const html = await renderRouteEntry(elements, "route:/dashboard/slow");
     expect(html).toContain("Route loading");
     expect(html).not.toContain("Page");
