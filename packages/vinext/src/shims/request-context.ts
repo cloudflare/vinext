@@ -47,6 +47,12 @@ export type ExecutionContextLike = {
    * CDN cache adapters that know the concrete shape narrow it themselves.
    */
   cache?: unknown;
+  /**
+   * Host fetcher for files in `public/`, for hosts with no `assets` binding
+   * whose own static handler runs ahead of vinext (Nitro's Node-like presets).
+   * Only used for a public file reached through a rewrite.
+   */
+  publicFileFetcher?: { fetch(request: Request): Promise<Response> | Response };
   /** Server-owned origin for credential-bearing Pages revalidation loopbacks. */
   trustedRevalidateOrigin?: string;
   /** Worker-owned in-process dispatcher for authenticated Pages revalidation. */

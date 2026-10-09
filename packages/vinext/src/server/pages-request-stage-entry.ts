@@ -97,6 +97,7 @@ export type PagesWorkerExecutionContext = {
   waitUntil?(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
   cache?: unknown;
+  publicFileFetcher?: VinextAssetFetcher;
 } & VinextRequestStageContext;
 
 type PagesStageRuntimeDispatch = (
@@ -592,7 +593,21 @@ async function handleRequestImpl(
           : dispatched;
       },
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
-        if (!assets) return false;
+        if (!assets) {
+          // A host whose static handler runs ahead of vinext (Nitro) serves
+          // direct public-file requests itself; only a rewritten one gets here.
+          const publicFileFetcher = platformCtx?.publicFileFetcher;
+          if (!publicFileFetcher || isImageOptimizationPath(requestPathname)) return false;
+          return fetchWorkerFilesystemRoute(
+            request,
+            requestPathname,
+            phase,
+            (assetRequest) => Promise.resolve(publicFileFetcher.fetch(assetRequest)),
+            publicFiles,
+            basePath,
+            assetPathPrefix,
+          );
+        }
         if (isImageOptimizationPath(requestPathname)) {
           const imageUrl = new URL(resolvedUrl, request.url);
           const imageRequest = new Request(imageUrl, request);

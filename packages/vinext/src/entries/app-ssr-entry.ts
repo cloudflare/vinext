@@ -10,13 +10,30 @@ import { resolveRuntimeEntryModule } from "./runtime-entry-module.js";
  * entry also re-exports selected Pages server entry hooks from
  * `virtual:vinext-server-entry` so the RSC bundle can access Pages Router
  * route metadata and fallback dispatchers via `import("./ssr/index.js")`.
+ *
+ * When `nitroPublicFiles` is set (a Nitro build for a Node-like preset), the
+ * default export serves a public file that the RSC handler reached through a
+ * rewrite by fetching it back through the Nitro app, whose static handler
+ * runs before vinext.
  */
-export function generateSsrEntry(hasPagesDir = false): string {
+export function generateSsrEntry(
+  hasPagesDir = false,
+  options: { nitroPublicFiles?: string | null } = {},
+): string {
   const entryPath = resolveRuntimeEntryModule("app-ssr-entry");
+  const defaultExport = options.nitroPublicFiles
+    ? `import __ssrEntry from ${JSON.stringify(entryPath)};
+import { resolveNitroStaticFileSignal } from ${JSON.stringify(options.nitroPublicFiles)};
+export default {
+  async fetch(request) {
+    return resolveNitroStaticFileSignal(await __ssrEntry.fetch(request), request);
+  },
+};`
+    : `export { default } from ${JSON.stringify(entryPath)};`;
 
   return `
 export * from ${JSON.stringify(entryPath)};
-export { default } from ${JSON.stringify(entryPath)};
+${defaultExport}
 ${
   hasPagesDir
     ? `

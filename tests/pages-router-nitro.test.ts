@@ -130,6 +130,19 @@ export function proxy(request) {
 `,
       ),
       fs.writeFile(path.join(root, "public/asset.txt"), "nitro public asset"),
+      fs.writeFile(
+        path.join(root, "next.config.mjs"),
+        `export default {
+  async rewrites() {
+    return {
+      beforeFiles: [{ source: "/before/:path*", destination: "/:path*" }],
+      afterFiles: [{ source: "/after/:path*", destination: "/:path*" }],
+      fallback: [{ source: "/fallback/:path*", destination: "/:path*" }],
+    };
+  },
+};
+`,
+      ),
     ]);
 
     const nitroModule = (await import(
@@ -251,5 +264,22 @@ export default function handler() {
     expect(await errorResponse.text()).toContain("custom 500");
     expect(assetResponse.status).toBe(200);
     expect(await assetResponse.text()).toBe("nitro public asset");
+  });
+
+  // Ported from Next.js: test/e2e/custom-routes-catchall/custom-routes-catchall.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes-catchall/custom-routes-catchall.test.ts
+  it.each(["before", "after", "fallback"])(
+    "serves a public file reached through a %s rewrite",
+    async (phase) => {
+      const response = await fetch(`${baseUrl}/${phase}/asset.txt`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-nitro-middleware")).toBe(`/${phase}/asset.txt`);
+      expect(await response.text()).toBe("nitro public asset");
+    },
+  );
+
+  it("keeps the 404 for a rewrite to a missing public file", async () => {
+    const response = await fetch(`${baseUrl}/after/missing.txt`);
+    expect(response.status).toBe(404);
   });
 });

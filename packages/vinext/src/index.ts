@@ -1269,6 +1269,7 @@ const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-ind
 const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
 const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
+const NITRO_PUBLIC_FILES_MODULE = resolveRuntimeEntryModule("nitro-public-files");
 const WORKER_ROUTER_ENTRIES = new Set([
   resolveRuntimeEntryModule("app-router-entry"),
   resolveRuntimeEntryModule("pages-router-entry"),
@@ -4787,10 +4788,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
             if (!hasAppDir && hasNitroPlugin) {
+              // Nitro's Node-like presets serve public/ ahead of vinext and give
+              // it no ASSETS binding, so a rewrite to a public file is fetched
+              // back through the Nitro app.
+              const servesNitroPublicFiles = !isServeCommand && nitroHostRuntime === "node";
               return [
                 `import worker from ${JSON.stringify(entry)};`,
+                ...(servesNitroPublicFiles
+                  ? [
+                      `import { getNitroPublicFileFetcher } from ${JSON.stringify(NITRO_PUBLIC_FILES_MODULE)};`,
+                    ]
+                  : []),
                 "export default { fetch(request, env, ctx) {",
-                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
+                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)}${
+                  servesNitroPublicFiles ? ", publicFileFetcher: getNitroPublicFileFetcher()" : ""
+                } });`,
                 "} };",
               ].join("\n");
             }
@@ -4990,7 +5002,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
             recordServerEntryLoad(this.environment?.name, id);
-            return generateSsrEntry(hasPagesDir);
+            return generateSsrEntry(hasPagesDir, {
+              nitroPublicFiles:
+                hasNitroPlugin && !isServeCommand && nitroHostRuntime === "node"
+                  ? NITRO_PUBLIC_FILES_MODULE
+                  : null,
+            });
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
             const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
