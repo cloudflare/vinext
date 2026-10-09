@@ -4,6 +4,15 @@ import robots from "../apps/web/app/robots";
 import sitemap from "../apps/web/app/sitemap";
 import { addPreviewRobotsHeader, getCanonicalRedirect } from "../apps/web/worker/seo";
 
+vi.mock("../apps/web/app/blog/_source", () => ({
+  posts: [
+    { slug: "draft-post", date: "2026-10-10", draft: true },
+    { slug: "vinext-1-1", date: "2026-10-08", draft: false },
+    { slug: "vinext-1-0", date: "2026-09-28", updated: "2026-09-30", draft: false },
+  ],
+  postPath: (post: { slug: string }) => `/blog/${post.slug}`,
+}));
+
 vi.mock("../apps/web/app/docs/_source", () => ({
   docs: [
     { slug: "" },
@@ -50,6 +59,9 @@ describe("vinext.dev SEO metadata", () => {
       "https://vinext.dev",
       "https://vinext.dev/compatibility",
       "https://vinext.dev/benchmarks",
+      "https://vinext.dev/blog",
+      "https://vinext.dev/blog/vinext-1-1",
+      "https://vinext.dev/blog/vinext-1-0",
       "https://vinext.dev/docs",
       "https://vinext.dev/docs/getting-started",
       "https://vinext.dev/docs/getting-started/migrating",
