@@ -77,6 +77,9 @@ export async function handleResponseStage(
   if (!isAppWorkerResponseStageProps(props)) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
+  if (props.kind === "app-full-request" && props.headRequest) {
+    request = new Request(request, { method: "HEAD" });
+  }
   if (props.requestOrigin !== new URL(request.url).origin) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }

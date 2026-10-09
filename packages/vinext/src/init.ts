@@ -571,7 +571,7 @@ async function resolvesToStaticExport(
       try {
         const { loadConfigFromFile } = await import("vite");
         const loaded = await loadConfigFromFile(
-          { command: "build", mode: "production" },
+          { command: "build", mode: "production", isSsrBuild: false, isPreview: false },
           viteConfigPath,
           root,
           "silent",

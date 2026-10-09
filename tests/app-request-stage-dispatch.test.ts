@@ -10,6 +10,7 @@ import {
   createStaticFileSignal,
   isStaticFileSignal,
   readStaticFileSignal,
+  readStaticFileSignalRequestHeaders,
   serializeStaticFileSignalForTransport,
 } from "../packages/vinext/src/server/static-file-signal.js";
 
@@ -199,6 +200,7 @@ describe("App request-stage dispatch", () => {
           resolvedRoutePathname: "/docs/upload",
         },
         draftModeCookie: null,
+        headRequest: false,
         kind: "app-full-request",
         middlewareCookieOverlay: null,
         prerenderDiscovery: true,
@@ -217,6 +219,39 @@ describe("App request-stage dispatch", () => {
     expect(isStaticFileSignal(response)).toBe(true);
     expect(readStaticFileSignal(response)).toBe(encodeURIComponent("/public/logo.svg"));
     expect(response.headers.has("x-vinext-stage-static-file")).toBe(false);
+  });
+
+  it("dispatches a full HEAD request as GET so a HEAD transport keeps the signal body", async () => {
+    const request = new Request("https://example.test/docs/logo.svg", {
+      method: "HEAD",
+      headers: { Cookie: "__prerender_bypass=draft-secret" },
+    });
+    const dispatchResponseStage = vi.fn(async (stageRequest: Request, props) => {
+      if (props.kind !== "app-full-request") throw new Error("unexpected stage kind");
+      const response = serializeStaticFileSignalForTransport(
+        createStaticFileSignal(
+          "/logo.svg",
+          { headers: null, status: 200 },
+          new Headers({ "if-none-match": '"v1"' }),
+        ),
+        props.staticFileSignalToken,
+      );
+      // A transport with HTTP HEAD semantics drops the response body.
+      return stageRequest.method === "HEAD"
+        ? new Response(null, { headers: response.headers, status: response.status })
+        : response;
+    });
+
+    const response = await dispatchAppRequestStage(request, null, dispatchResponseStage, {
+      ...createOptions(),
+    });
+
+    const [stageRequest, props] = dispatchResponseStage.mock.calls[0];
+    expect(stageRequest.method).toBe("GET");
+    expect(stageRequest.headers.get("cookie")).toBe("__prerender_bypass=draft-secret");
+    expect(props).toMatchObject({ headRequest: true, kind: "app-full-request" });
+    expect(readStaticFileSignal(response)).toBe(encodeURIComponent("/logo.svg"));
+    expect(readStaticFileSignalRequestHeaders(response)?.get("if-none-match")).toBe('"v1"');
   });
 
   it("requires the adapter-owned response-stage dispatcher", async () => {

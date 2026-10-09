@@ -76,8 +76,11 @@ export async function dispatchAppRequestStage(
   }
   if (appRequestUsesFullResponseGraph(request, options)) {
     const staticFileSignalToken = crypto.randomUUID();
+    // A static-file signal carries its request headers in the body, which a
+    // HEAD transport may drop. The response stage restores the HEAD method.
+    const headRequest = request.method === "HEAD";
     const response = await dispatchResponseStage(
-      request,
+      headRequest ? new Request(request, { method: "GET" }) : request,
       {
         kind: "app-full-request",
         buildId: options.buildId,
@@ -87,6 +90,7 @@ export async function dispatchAppRequestStage(
           resolvedRoutePathname: new URL(request.url).pathname,
         },
         draftModeCookie: null,
+        headRequest,
         middlewareCookieOverlay: null,
         prerenderDiscovery: options.prerenderDiscovery,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
