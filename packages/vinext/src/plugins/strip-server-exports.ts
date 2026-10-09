@@ -876,10 +876,19 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           }
           continue;
         }
-        if (renderBindingPattern((start, end) => code.slice(start, end), pattern, removableNames)) {
+        // A `var` head keeps its dead helpers, as `removedNamesFor` does.
+        const prunedNames =
+          head.type === "VariableDeclaration"
+            ? new Set(
+                [...removableNames].filter(
+                  (name) => forcedBindings.has(name) || candidateBindings.has(name),
+                ),
+              )
+            : removableNames;
+        if (renderBindingPattern((start, end) => code.slice(start, end), pattern, prunedNames)) {
           // Other head targets stay live, so only the removed ones are pruned;
           // a `var` head is re-rendered with its declaration.
-          for (const part of prunedPatternParts(pattern, removableNames)) {
+          for (const part of prunedPatternParts(pattern, prunedNames)) {
             if (addDeadRange(part)) changed = true;
           }
           if (head.type !== "VariableDeclaration") {

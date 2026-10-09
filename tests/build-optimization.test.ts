@@ -4668,6 +4668,19 @@ export default function Page() { return reads; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it("keeps the dependencies of helper defaults in a pruned var loop head", () => {
+    const code = `
+import secret from "./secret";
+for (var [getStaticProps = () => ({ props: { helper } }), helper = secret, live] of [[, , 1]]) {}
+export { getStaticProps };
+export default function Page() { return live; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("for (var [, helper = secret, live] of [[, , 1]]) {}");
+    expect(result).toContain('import secret from "./secret";');
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("rewrites a helper-only loop head without introducing a binding", () => {
     // Direct eval can name any binding, so the throwaway target is a member of a
     // fresh object rather than a generated identifier.
