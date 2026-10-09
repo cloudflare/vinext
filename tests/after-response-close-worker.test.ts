@@ -57,13 +57,16 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
       // createIsolatedFixture swaps in a plain workspace node_modules symlink
       // (here, cf-app-basic's, for @cloudflare/vite-plugin + wrangler), which
       // drops app-basic's own `file:./__test_packages__/*` local packages.
-      // Exclude the three routes that depend on those — unrelated to this
+      // Exclude the four routes that depend on those — unrelated to this
       // regression — so the rest of the fixture still builds.
       (src) =>
         !src.includes(`${path.sep}app${path.sep}context-dedup-test`) &&
         !src.includes(`${path.sep}app${path.sep}nextjs-compat${path.sep}node-modules-css`) &&
         !src.includes(
           `${path.sep}app${path.sep}nextjs-compat${path.sep}dynamic${path.sep}out-of-root-package`,
+        ) &&
+        !src.includes(
+          `${path.sep}app${path.sep}nextjs-compat${path.sep}dynamic${path.sep}node-modules-call-site`,
         ),
       CLOUDFLARE_NODE_MODULES,
     );

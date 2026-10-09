@@ -528,6 +528,7 @@ export async function transformNextDynamicPreloadMetadata(
 
 export function createDynamicPreloadMetadataPlugin(): Plugin {
   let root = toSlash(process.cwd());
+  let isBuild = false;
 
   return {
     name: "vinext:dynamic-preload-metadata",
@@ -536,18 +537,24 @@ export function createDynamicPreloadMetadataPlugin(): Plugin {
     // See the parse note in `transformNextDynamicPreloadMetadata`.
     configResolved(config) {
       root = config.root;
+      isBuild = config.command === "build";
     },
     transform: {
+      // node_modules is NOT excluded: Next.js runs its next/dynamic transform
+      // over third-party code in every App Router layer, so a library's
+      // dynamic() boundaries get their CSS linked server-side too. The native
+      // `code` filter keeps this cheap — modules that never mention
+      // next/dynamic don't reach the JS handler.
       filter: {
-        id: {
-          include: /\.(tsx?|jsx?|mjs)$/,
-          exclude: /node_modules/,
-        },
+        id: /\.(tsx?|jsx?|mjs)$/,
         code: "next/dynamic",
       },
       async handler(code, id) {
-        if (id.includes("node_modules") || id.startsWith("\0")) return null;
+        if (id.startsWith("\0")) return null;
         if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
+        // The preload map only exists in production builds, so dev metadata is
+        // unused; skip dependencies (including pre-bundled ones) there.
+        if (!isBuild && id.includes("node_modules")) return null;
 
         const result = await transformNextDynamicPreloadMetadata(
           code,

@@ -911,28 +911,41 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
-  // Regression for https://github.com/cloudflare/vinext/issues/3723: a
-  // next/dynamic() loader whose target resolves OUTSIDE the Vite root (monorepo
-  // workspace packages, or a pnpm store hoisted to the workspace root) must still
-  // get its CSS linked server-side. Vite keys such dynamic entries root-relative
-  // with `../` segments, so the call site's loadableGenerated module ID must too.
-  it("links next/dynamic CSS for a loader target outside the Vite root", async () => {
+  // Both loader targets live in app-basic's `file:` test package, which pnpm
+  // installs in the workspace-root store, OUTSIDE the Vite root.
+  it.each([
+    {
+      // https://github.com/cloudflare/vinext/issues/3723: Vite keys an
+      // out-of-root dynamic entry root-relative with `../` segments, so the
+      // call site's loadableGenerated module ID must too.
+      label: "a loader target outside the Vite root",
+      route: "/nextjs-compat/dynamic/out-of-root-package",
+      moduleSuffix: "/fake-css-module-lib/dynamic-banner.js",
+      markerId: "out-of-root-dynamic-banner",
+    },
+    {
+      // Next.js runs its next/dynamic transform over node_modules in App Router
+      // layers, so a library's own dynamic() boundary gets its CSS linked too.
+      label: "a dynamic() call site inside node_modules",
+      route: "/nextjs-compat/dynamic/node-modules-call-site",
+      moduleSuffix: "/fake-css-module-lib/hosted-banner.js",
+      markerId: "node-modules-dynamic-banner",
+    },
+  ])("links next/dynamic CSS for $label", async ({ route, moduleSuffix, markerId }) => {
     const clientManifest = JSON.parse(
       fs.readFileSync(path.join(outDir, "client", ".vite", "manifest.json"), "utf8"),
     ) as Record<string, { file: string; css?: string[]; isDynamicEntry?: boolean }>;
-    const bannerKey = Object.keys(clientManifest).find((key) =>
-      key.endsWith("/fake-css-module-lib/dynamic-banner.js"),
-    );
+    const bannerKey = Object.keys(clientManifest).find((key) => key.endsWith(moduleSuffix));
     // Sanity: the banner really is an out-of-root dynamic entry with its own CSS.
     expect(bannerKey).toMatch(/^\.\.\//);
     const bannerEntry = clientManifest[bannerKey!];
     expect(bannerEntry.isDynamicEntry).toBe(true);
     expect(bannerEntry.css?.length).toBeGreaterThan(0);
 
-    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/out-of-root-package`);
+    const res = await fetch(`${baseUrl}${route}`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('id="out-of-root-dynamic-banner"');
+    expect(html).toContain(`id="${markerId}"`);
 
     const linkTags = html.match(/<link\b[^>]*>/g) ?? [];
     const hrefOf = (tag: string) => /\bhref="([^"]+)"/.exec(tag)?.[1];
