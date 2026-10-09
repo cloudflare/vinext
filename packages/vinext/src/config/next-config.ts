@@ -403,6 +403,12 @@ export type NextConfig = {
    * `experimental.serverComponentsExternalPackages`).
    */
   serverExternalPackages?: string[];
+  /**
+   * Extra files to include in (or exclude from) traced server output, keyed by
+   * route glob. Values are globs relative to the project root.
+   */
+  outputFileTracingIncludes?: Record<string, string[]>;
+  outputFileTracingExcludes?: Record<string, string[]>;
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
   /**
@@ -584,6 +590,12 @@ export type ResolvedNextConfig = {
    * `experimental.serverComponentsExternalPackages` in next.config.
    */
   serverExternalPackages: string[];
+  /**
+   * `outputFileTracingIncludes` / `outputFileTracingExcludes`: route-glob keys
+   * mapped to project-root-relative file globs. Malformed values are dropped.
+   */
+  outputFileTracingIncludes: Record<string, string[]>;
+  outputFileTracingExcludes: Record<string, string[]>;
   /** Enable sourcemaps for prerender error stack traces. Defaults to true. */
   enablePrerenderSourceMaps: boolean;
   /**
@@ -1437,6 +1449,32 @@ function readStringArray(value: unknown): string[] {
 }
 
 /**
+ * Keep the route keys of an `outputFileTracing*` map whose value has string
+ * globs, dropping malformed values.
+ */
+function readOutputFileTracingMap(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([routeGlob, globs]) => [routeGlob, readStringArray(globs)] as const)
+      .filter(([, globs]) => globs.length > 0),
+  );
+}
+
+/**
+ * Read an option that moved out of `experimental`. Like Next.js's
+ * `warnOptionHasBeenMovedOutOfExperimental`, a value under the old
+ * `experimental` key replaces the top-level one.
+ */
+function readMovedExperimentalOption(
+  config: NextConfig,
+  experimental: Record<string, unknown> | undefined,
+  key: "outputFileTracingIncludes" | "outputFileTracingExcludes",
+): unknown {
+  return experimental && key in experimental ? experimental[key] : config[key];
+}
+
+/**
  * Convert lightningcss feature names from `experimental.lightningCssFeatures`
  * into a numeric bitmask consumable by the `lightningcss` `transform()` /
  * `bundle()` API (the `include` / `exclude` options).
@@ -1744,6 +1782,8 @@ export async function resolveNextConfig(
       reactMaxHeadersLength: DEFAULT_REACT_MAX_HEADERS_LENGTH,
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
+      outputFileTracingIncludes: {},
+      outputFileTracingExcludes: {},
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       enablePrerenderSourceMaps: true,
@@ -2123,6 +2163,12 @@ export async function resolveNextConfig(
         : DEFAULT_REACT_MAX_HEADERS_LENGTH,
     htmlLimitedBots,
     serverExternalPackages,
+    outputFileTracingIncludes: readOutputFileTracingMap(
+      readMovedExperimentalOption(config, experimental, "outputFileTracingIncludes"),
+    ),
+    outputFileTracingExcludes: readOutputFileTracingMap(
+      readMovedExperimentalOption(config, experimental, "outputFileTracingExcludes"),
+    ),
     cacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,

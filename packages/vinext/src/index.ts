@@ -41,6 +41,7 @@ import {
   matchAppRoute,
 } from "./routing/app-router.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
+import type { TracedFiles, TracedPackages } from "./build/nitro-trace-includes.js";
 import {
   buildViteResolveExtensions,
   normalizeViteResolveExtensions,
@@ -1607,8 +1608,17 @@ type NitroSetupContext = {
     buildDir?: string;
     dev?: boolean;
     exportConditions?: string[];
+    node?: boolean;
+    output?: { serverDir?: string };
+    preset?: string;
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
+    traceOpts?: {
+      hooks?: {
+        tracedFiles?: (tracedFiles: TracedFiles) => void | Promise<void>;
+        tracedPackages?: (tracedPackages: TracedPackages) => void | Promise<void>;
+      };
+    };
   };
   logger?: {
     warn?: (message: string) => void;
@@ -1685,6 +1695,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
+  let writeNitroTraceIncludes: (() => void) | undefined;
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
@@ -7967,6 +7978,11 @@ export const loadServerActionClient = ${
     },
     {
       name: "vinext:nitro-route-rules",
+      // Runs after Nitro's dependency trace (its externals plugin's `buildEnd`)
+      // and before Nitro's `compiled` hook, where presets package serverDir.
+      writeBundle() {
+        if (this.environment?.name === "nitro") writeNitroTraceIncludes?.();
+      },
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
           nitroBuildDir = nitro.options.buildDir
@@ -7985,6 +8001,59 @@ export const loadServerActionClient = ${
           }
 
           if (nitro.options.dev) return;
+
+          const { collectTraceRouteNames, createNitroTraceIncludes } =
+            await import("./build/nitro-trace-includes.js");
+          const { outputFileTracingIncludes, outputFileTracingExcludes } = nextConfig;
+          const traceIncludes =
+            Object.keys(outputFileTracingIncludes).length > 0 ||
+            Object.keys(outputFileTracingExcludes).length > 0
+              ? createNitroTraceIncludes({
+                  root,
+                  routes: await collectTraceRouteNames({
+                    appDir: hasAppDir ? appDir : null,
+                    pagesDir: hasPagesDir ? pagesDir : null,
+                    pageExtensions: nextConfig.pageExtensions,
+                    // Next.js names root server entries after their file.
+                    rootEntries: [
+                      ...(instrumentationPath ? ["instrumentation"] : []),
+                      ...(middlewarePath
+                        ? [isProxyFile(middlewarePath) ? "proxy" : "middleware"]
+                        : []),
+                    ],
+                  }),
+                  includes: outputFileTracingIncludes,
+                  excludes: outputFileTracingExcludes,
+                  warn: nitro.logger?.warn ?? console.warn,
+                })
+              : null;
+          if (traceIncludes) {
+            const traceOpts = (nitro.options.traceOpts ??= {});
+            const hooks = (traceOpts.hooks ??= {});
+            const userTracedFiles = hooks.tracedFiles;
+            hooks.tracedFiles = async (tracedFiles) => {
+              traceIncludes.tracedFiles(tracedFiles);
+              await userTracedFiles?.(tracedFiles);
+            };
+            const userTracedPackages = hooks.tracedPackages;
+            hooks.tracedPackages = async (tracedPackages) => {
+              traceIncludes.tracedPackages(tracedPackages);
+              await userTracedPackages?.(tracedPackages);
+            };
+            // Nitro skips the dependency trace, and so the hook above, when the
+            // server bundle has no traced externals; `writeBundle` below copies
+            // the included files then, and the files of nested packages the
+            // hook could not hand to Nitro. Worker presets have no node_modules
+            // output at all.
+            const serverDir = nitro.options.output?.serverDir;
+            if (
+              serverDir &&
+              nitro.options.node !== false &&
+              nitro.options.preset !== "nitro-prerender"
+            ) {
+              writeNitroTraceIncludes = () => traceIncludes.write(serverDir);
+            }
+          }
 
           const { collectNitroRouteRules, mergeNitroRouteRules } =
             await import("./build/nitro-route-rules.js");

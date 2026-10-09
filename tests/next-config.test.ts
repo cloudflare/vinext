@@ -1994,6 +1994,54 @@ describe("parseBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig outputFileTracingIncludes/Excludes", () => {
+  it("defaults to empty maps", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.outputFileTracingIncludes).toEqual({});
+    expect(resolved.outputFileTracingExcludes).toEqual({});
+  });
+
+  it("keeps the globs of each route key", async () => {
+    const resolved = await resolveNextConfig({
+      outputFileTracingIncludes: {
+        "/": ["./node_modules/typescript/lib/lib.*.d.ts", "./data/**"],
+        "/api/*": ["./data/**", "./node_modules/@types/node/**"],
+      },
+      outputFileTracingExcludes: { "/": ["./node_modules/@swc/core-*/**"] },
+    });
+    expect(resolved.outputFileTracingIncludes).toEqual({
+      "/": ["./node_modules/typescript/lib/lib.*.d.ts", "./data/**"],
+      "/api/*": ["./data/**", "./node_modules/@types/node/**"],
+    });
+    expect(resolved.outputFileTracingExcludes).toEqual({ "/": ["./node_modules/@swc/core-*/**"] });
+  });
+
+  it("ignores values that are not a route-keyed map of string arrays", async () => {
+    const resolved = await resolveNextConfig({
+      outputFileTracingIncludes: ["./data/**"] as unknown as Record<string, string[]>,
+      outputFileTracingExcludes: { "/": [1, "./keep/**"], "/empty": "x" } as unknown as Record<
+        string,
+        string[]
+      >,
+    });
+    expect(resolved.outputFileTracingIncludes).toEqual({});
+    expect(resolved.outputFileTracingExcludes).toEqual({ "/": ["./keep/**"] });
+  });
+
+  it("reads the legacy experimental placement, which replaces the top-level value", async () => {
+    // Next.js: warnOptionHasBeenMovedOutOfExperimental
+    const resolved = await resolveNextConfig({
+      outputFileTracingIncludes: { "/": ["./top-level/**"] },
+      experimental: {
+        outputFileTracingIncludes: { "/": ["./legacy/**"] },
+        outputFileTracingExcludes: { "/api/*": ["./legacy-exclude/**"] },
+      },
+    });
+    expect(resolved.outputFileTracingIncludes).toEqual({ "/": ["./legacy/**"] });
+    expect(resolved.outputFileTracingExcludes).toEqual({ "/api/*": ["./legacy-exclude/**"] });
+  });
+});
+
 describe("resolveNextConfig serverExternalPackages", () => {
   it("defaults to empty array when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -2655,6 +2703,8 @@ describe("detectNextIntlConfig", () => {
       serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
+      outputFileTracingIncludes: {},
+      outputFileTracingExcludes: {},
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       hashSalt: "",
