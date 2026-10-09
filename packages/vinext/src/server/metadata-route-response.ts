@@ -22,6 +22,7 @@ import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-
 import {
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
+  finalizeRouteHandlerResponse,
 } from "./app-route-handler-response.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -56,6 +57,7 @@ import {
   isRenderDynamicLatched,
   getActiveDraftModeState,
   hasDraftModeCookieHeader,
+  getAndClearPendingCookies,
   getHeadersContext,
   replaceHeadersContext,
 } from "vinext/shims/headers";
@@ -722,14 +724,20 @@ async function withMetadataRouteSpecialErrors<T extends Response | null>(
     const digest = String(error.digest);
     const redirect = parseNextRedirectDigest(digest);
     if (redirect) {
+      // As in Route Handlers, cookies set before redirect() go on the redirect.
       return markFullyBufferedBody(
-        new Response(null, { status: redirect.status, headers: { Location: redirect.url } }),
+        finalizeRouteHandlerResponse(
+          new Response(null, { status: redirect.status, headers: { Location: redirect.url } }),
+          { pendingCookies: getAndClearPendingCookies(), draftCookie: null, isHead: false },
+        ),
       );
     }
     // Like Next.js's isHTTPAccessFallbackError(), only 401, 403 and 404 are
     // access fallbacks; any other fallback digest is a real error.
     const status = parseNextHttpErrorDigest(digest)?.status;
     if (status === 401 || status === 403 || status === 404) {
+      // Route Handlers drop cookies set before an access fallback.
+      getAndClearPendingCookies();
       return markFullyBufferedBody(new Response(null, { status }));
     }
     throw error;

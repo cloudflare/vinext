@@ -1,6 +1,8 @@
 import {
+  cookies,
   headers,
   draftMode,
+  setHeadersAccessPhase,
   getDraftModeCookieHeader,
 } from "../packages/vinext/src/shims/headers.js";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -1195,6 +1197,39 @@ describe("handleMetadataRouteRequest", () => {
 
     expect(response?.status).toBe(307);
     expect(response?.headers.get("location")).toBe("/blog/old-renamed/opengraph-image");
+  });
+
+  it("sends cookies set before redirect() but not before notFound()", async () => {
+    // Metadata routes don't enter the route-handler phase yet, so set it here
+    // to stage the cookies a Route Handler could write.
+    const run = (slug: string) =>
+      runWithRequestContext(
+        createRequestContext({ headersContext: { headers: new Headers(), cookies: new Map() } }),
+        () => {
+          setHeadersAccessPhase("route-handler");
+          return handleMetadataRouteRequest({
+            metadataRoutes: [
+              makeSlugImageRoute(async (slug) => {
+                (await cookies()).set("session", slug);
+                if (slug === "old") redirect("/blog/new/opengraph-image");
+                notFound();
+              }),
+            ],
+            cleanPathname: `/blog/${slug}/opengraph-image`,
+            makeThenableParams,
+          });
+        },
+      );
+
+    const redirected = await run("old");
+    expect(redirected?.status).toBe(307);
+    expect(redirected?.headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^session=old(;|$)/),
+    ]);
+
+    const missing = await run("missing");
+    expect(missing?.status).toBe(404);
+    expect(missing?.headers.getSetCookie()).toEqual([]);
   });
 
   it("returns 404 when generateImageMetadata calls notFound()", async () => {
