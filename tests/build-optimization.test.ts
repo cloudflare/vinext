@@ -4494,7 +4494,7 @@ export { getStaticProps };
 export default function Page() { return visible + other; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for ([, visible] of [[0, 1]]) console.log(visible);");
+    expect(result).toContain("for ([({ x: 0 }).x, visible] of [[0, 1]]) console.log(visible);");
     expect(result).toContain("for (var [, other] of [[0, 1]]) console.log(other);");
     expect(result).not.toMatch(/\bloader\b/);
     expect(() => parseAst(result!)).not.toThrow();
@@ -4643,8 +4643,28 @@ export default function Page() { return count; }
 `;
     const result = _stripServerExports(code);
     expect(result).toContain("for (({ x: 0 }).x of [1, 2]) count++;");
-    expect(result).toContain("for (({ x: 0 }).x in { a: 1 }) count++;");
-    expect(result).not.toMatch(/\b(helper|other)\b/);
+    expect(result).toContain("for (var other in { a: 1 }) count++;");
+    expect(result).not.toMatch(/\bhelper\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the destructuring reads of a helper-only loop head", () => {
+    const code = `
+let helper, reads = 0;
+const value = { get secret() { reads++; return 1; }, get other() { reads++; return 2; } };
+for ({ secret: helper, other: helper = reads } of [value]) {}
+for (var { secret: kept, other = reads } of [value]) {}
+for ({ helper } of [value]) {}
+export function getStaticProps() { return { props: { helper, kept, other } }; }
+export default function Page() { return reads; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain(
+      "for ({ secret: ({ x: 0 }).x, other: ({ x: 0 }).x = reads } of [value]) {}",
+    );
+    expect(result).toContain("for (var { secret: kept, other: other = reads } of [value]) {}");
+    expect(result).toContain("for ({ helper: ({ x: 0 }).x } of [value]) {}");
+    expect(result).not.toMatch(/\blet helper\b/);
     expect(() => parseAst(result!)).not.toThrow();
   });
 

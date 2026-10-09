@@ -313,6 +313,40 @@ function renderBindingPattern(
   return slice(pattern.start, pattern.end);
 }
 
+/** Edits pointing a loop head's removed targets at `UNUSED_LOOP_TARGET`. */
+function throwawayTargetEdits(pattern: PositionedNode, removedNames: ReadonlySet<string>): Edit[] {
+  if (pattern.type === "Identifier" || pattern.type === "MemberExpression") {
+    const root = assignmentTargetIdentifiers(pattern)[0];
+    return root && removedNames.has(root.name)
+      ? [{ start: pattern.start, end: pattern.end, replacement: UNUSED_LOOP_TARGET }]
+      : [];
+  }
+  if (pattern.type === "RestElement") {
+    return throwawayTargetEdits(pattern.argument as PositionedNode, removedNames);
+  }
+  if (pattern.type === "AssignmentPattern") {
+    return throwawayTargetEdits(pattern.left as PositionedNode, removedNames);
+  }
+  if (pattern.type === "ArrayPattern") {
+    return (pattern.elements as Array<PositionedNode | null>).flatMap((element) =>
+      element ? throwawayTargetEdits(element, removedNames) : [],
+    );
+  }
+  if (pattern.type === "ObjectPattern") {
+    return (pattern.properties as PositionedNode[]).flatMap((property) => {
+      if (property.type === "RestElement") return throwawayTargetEdits(property, removedNames);
+      const edits = throwawayTargetEdits(property.value as PositionedNode, removedNames);
+      // A shorthand target keeps its key: `{ helper }` becomes `{ helper: target }`.
+      if (!property.shorthand) return edits;
+      return edits.map((edit) => ({
+        ...edit,
+        replacement: `${property.key.name}: ${UNUSED_LOOP_TARGET}`,
+      }));
+    });
+  }
+  return [];
+}
+
 /** Pattern parts `renderBindingPattern` drops, including their defaults and keys. */
 function prunedPatternParts(
   pattern: PositionedNode,
@@ -453,11 +487,20 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   const redeclarations: Binding[] = [];
   const loopHeadDeclarations = new Set<PositionedNode>();
   const catchBoundNames = new Map<PositionedNode, ReadonlySet<string>>();
-  // Names a declarator's pattern drops: its dead module targets only.
+  const iterationHeadDeclarators = new Set<PositionedNode>();
+  // Names a declarator's pattern drops: its dead module targets only. A
+  // for-in/of head drops only data exports, so its reads all still run.
   const removedNamesFor = (declarator: PositionedNode): ReadonlySet<string> => {
     const catchBound = catchBoundNames.get(declarator);
-    if (!catchBound) return deadBindings;
-    return new Set([...deadBindings].filter((name) => !catchBound.has(name)));
+    const iterationHead = iterationHeadDeclarators.has(declarator);
+    if (!catchBound && !iterationHead) return deadBindings;
+    return new Set(
+      [...deadBindings].filter(
+        (name) =>
+          !catchBound?.has(name) &&
+          (!iterationHead || forcedBindings.has(name) || candidateBindings.has(name)),
+      ),
+    );
   };
   const iterationHeadDeclarations = new Set<PositionedNode>();
   const declarationsOf = (name: string): Binding[] => {
@@ -621,7 +664,10 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       const owner = ancestors.at(-2);
       if (parent.kind === "var" && !varScope && owner && owner.type !== "ExportNamedDeclaration") {
         if (owner.init === parent || owner.left === parent) loopHeadDeclarations.add(parent);
-        if (owner.left === parent) iterationHeadDeclarations.add(parent);
+        if (owner.left === parent) {
+          iterationHeadDeclarations.add(parent);
+          iterationHeadDeclarators.add(node);
+        }
         const identifiers = bindingIdentifiers(node.id as PositionedNode);
         for (const identifier of identifiers) bindingPositions.add(identifier.start);
         // A `var` redeclaring a catch parameter writes the catch binding: that
@@ -645,7 +691,10 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
             node,
             parent,
             kind: "variable",
-            implementation: (node.init as PositionedNode | null) ?? node,
+            // A kept for-in/of head keeps its defaults, which stay live.
+            implementation: iterationHeadDeclarators.has(node)
+              ? identifier
+              : ((node.init as PositionedNode | null) ?? node),
             declaredNames,
           };
           // `var` may redeclare a name, e.g. once per branch of an if/else;
@@ -813,6 +862,20 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
         const head = expression.left as PositionedNode;
         const pattern =
           head.type === "VariableDeclaration" ? (head.declarations[0].id as PositionedNode) : head;
+        if (
+          ![...removableNames].some(
+            (name) => forcedBindings.has(name) || candidateBindings.has(name),
+          )
+        ) {
+          // Only dead helpers are written, so the loop still runs for its
+          // iterable and body. The head keeps its pattern, and with it every
+          // property read and default; only the dead targets are redirected.
+          // A `var` head keeps its declaration, which reads nothing.
+          if (head.type !== "VariableDeclaration") {
+            edits.push(...throwawayTargetEdits(head, removableNames));
+          }
+          continue;
+        }
         if (renderBindingPattern((start, end) => code.slice(start, end), pattern, removableNames)) {
           // Other head targets stay live, so only the removed ones are pruned;
           // a `var` head is re-rendered with its declaration.
@@ -825,18 +888,6 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
               end: head.end,
               replacement: () => renderBindingPattern(renderRange, head, removableNames)!,
             });
-          }
-          continue;
-        }
-        if (
-          ![...removableNames].some(
-            (name) => forcedBindings.has(name) || candidateBindings.has(name),
-          )
-        ) {
-          // Only dead helpers are written, so the loop still runs for its
-          // iterable and body; the head gets a throwaway target.
-          if (head.type !== "VariableDeclaration") {
-            edits.push({ start: head.start, end: head.end, replacement: UNUSED_LOOP_TARGET });
           }
           continue;
         }
@@ -966,12 +1017,10 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
 
     for (const binding of new Set([...bindings.values(), ...redeclarations])) {
       if (binding.kind !== "variable") continue;
-      if (!binding.declaredNames.every((name) => deadBindings.has(name))) {
+      const removedNames = removedNamesFor(binding.node);
+      if (!binding.declaredNames.every((name) => removedNames.has(name))) {
         // Defaults and computed keys of pruned pattern parts go with them.
-        for (const part of prunedPatternParts(
-          binding.node.id as PositionedNode,
-          removedNamesFor(binding.node),
-        )) {
+        for (const part of prunedPatternParts(binding.node.id as PositionedNode, removedNames)) {
           if (addDeadRange(part)) changed = true;
         }
         continue;
