@@ -739,8 +739,8 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).toContain("data: kvDataAdapter()");
     expect(readFile(tmpDir, "vite.config.ts")).toContain("cdn: workersCacheCdnAdapter()");
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).cache).toBeUndefined();
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
-      cache: { enabled: true },
       main: "vinext/server/fetch-handler",
       version_metadata: { binding: "CF_VERSION_METADATA" },
     });
@@ -808,14 +808,61 @@ describe("init — basic functionality", () => {
     expect(output).toContain("run deploy:response-store");
   });
 
-  it("uses an existing Response Store config without rewriting its resource names", async () => {
+  // Earlier releases enabled the Worker-wide cache; init now generates it disabled.
+  it.each([{ cache: { enabled: true } }, { cache: { enabled: false } }, {}])(
+    "uses an existing Response Store config without rewriting its resource names (%j)",
+    async (cacheConfig) => {
+      setupProject(tmpDir, { router: "app" });
+      const responseStoreConfig = `${JSON.stringify(
+        {
+          name: "shared-response-store",
+          main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+          compatibility_date: "2026-09-14",
+          ...cacheConfig,
+          exports: {
+            ResponseStoreBinding: { cache: { enabled: true } },
+            CacheMetadata: { type: "durable-object", storage: "sqlite" },
+          },
+          r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
+          durable_objects: {
+            bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+          },
+        },
+        null,
+        2,
+      )}\n`;
+      writeFile(tmpDir, "wrangler.response-store.jsonc", responseStoreConfig);
+
+      await runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          legacyWrangler: true,
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "service-binding",
+        },
+      });
+
+      expect(readFile(tmpDir, "wrangler.response-store.jsonc")).toBe(responseStoreConfig);
+      expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).services).toContainEqual({
+        binding: "RESPONSE_STORE",
+        service: "shared-response-store",
+        entrypoint: "ResponseStoreService",
+      });
+    },
+  );
+
+  it("rejects a Response Store config with an invalid cache block before mutating the project", async () => {
     setupProject(tmpDir, { router: "app" });
-    const responseStoreConfig = `${JSON.stringify(
-      {
+    writeFile(
+      tmpDir,
+      "wrangler.response-store.jsonc",
+      JSON.stringify({
         name: "shared-response-store",
         main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
         compatibility_date: "2026-09-14",
-        cache: { enabled: true },
+        cache: { enabled: "yes" },
         exports: {
           ResponseStoreBinding: { cache: { enabled: true } },
           CacheMetadata: { type: "durable-object", storage: "sqlite" },
@@ -824,29 +871,23 @@ describe("init — basic functionality", () => {
         durable_objects: {
           bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
         },
-      },
-      null,
-      2,
-    )}\n`;
-    writeFile(tmpDir, "wrangler.response-store.jsonc", responseStoreConfig);
+      }),
+    );
+    const before = snapshotProject(tmpDir);
 
-    await runInit(tmpDir, {
-      install: false,
-      cloudflare: {
-        legacyWrangler: true,
-        dataCache: "none",
-        cdnCache: "response-store",
-        imageOptimization: "none",
-        responseStoreMode: "service-binding",
-      },
-    });
-
-    expect(readFile(tmpDir, "wrangler.response-store.jsonc")).toBe(responseStoreConfig);
-    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).services).toContainEqual({
-      binding: "RESPONSE_STORE",
-      service: "shared-response-store",
-      entrypoint: "ResponseStoreService",
-    });
+    await expect(
+      runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          legacyWrangler: true,
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "service-binding",
+        },
+      }),
+    ).rejects.toThrow("is missing required Response Store bindings");
+    expect(snapshotProject(tmpDir)).toBe(before);
   });
 
   it("rejects a Response Store config without ctx.exports before mutating the project", async () => {

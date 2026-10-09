@@ -15,7 +15,7 @@
     "binding": "ASSETS"
   },
   "cache": {
-    "enabled": true
+    "enabled": false
   },
   "images": {
     "binding": "IMAGES"

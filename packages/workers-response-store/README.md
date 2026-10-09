@@ -30,7 +30,7 @@ Point `main` at the installed service entrypoint:
   "compatibility_date": "2026-09-16",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
-  "cache": { "enabled": true },
+  "cache": { "enabled": false },
   "exports": {
     "default": { "type": "worker", "cache": { "enabled": false } },
     "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
@@ -43,6 +43,8 @@ Point `main` at the installed service entrypoint:
   "observability": { "enabled": true },
 }
 ```
+
+Workers Cache stays off for the Worker as a whole and for `default`; only `ResponseStoreBinding` opts in. Entrypoints that are not listed inherit the Worker-wide setting, so enabling it would let Cloudflare serve responses from other entrypoints from cache before the Worker runs.
 
 `CacheMetadata` is a declarative SQLite Durable Object export. Do not also add it to Wrangler `migrations`.
 
@@ -154,7 +156,7 @@ This is the minimum integration loop. A framework can add its own cacheability r
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-16",
   "compatibility_flags": ["nodejs_compat"],
-  "cache": { "enabled": true },
+  "cache": { "enabled": false },
   "exports": {
     "default": { "type": "worker", "cache": { "enabled": false } },
     "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
@@ -168,6 +170,8 @@ This is the minimum integration loop. A framework can add its own cacheability r
   "observability": { "enabled": true },
 }
 ```
+
+Workers Cache stays off for the Worker as a whole and for `default`; only `ResponseStoreBinding` opts in. Entrypoints that are not listed inherit the Worker-wide setting, so enabling it would let Cloudflare serve responses from other entrypoints from cache before the Worker runs.
 
 `CacheMetadata` is a declarative SQLite Durable Object export. Do not also add it to Wrangler `migrations`. Create the configured R2 bucket before deploying, then run `wrangler types` to generate `Env` from the completed configuration.
 

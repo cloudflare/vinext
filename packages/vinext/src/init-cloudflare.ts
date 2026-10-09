@@ -578,7 +578,6 @@ export function generateWranglerConfig(
   };
 
   if (options.cdnCache === "workers-cache") {
-    config.cache = { enabled: true };
     config.version_metadata = { binding: DEFAULT_VERSION_METADATA_BINDING };
   }
 
@@ -852,8 +851,9 @@ function readResponseStoreServiceName(root: string, appConfig: Record<string, un
       (Array.isArray(responseStoreConfig.migrations) &&
         responseStoreConfig.migrations.length === 0);
     if (
-      !isUnknownRecord(responseStoreConfig.cache) ||
-      responseStoreConfig.cache.enabled !== true ||
+      (responseStoreConfig.cache !== undefined &&
+        (!isUnknownRecord(responseStoreConfig.cache) ||
+          typeof responseStoreConfig.cache.enabled !== "boolean")) ||
       !isUnknownRecord(responseStoreExport) ||
       !isUnknownRecord(responseStoreExport.cache) ||
       responseStoreExport.cache.enabled !== true ||
@@ -946,10 +946,10 @@ function configureResponseStoreWrangler(
   if (cache !== undefined && !isUnknownRecord(cache)) {
     throw new Error("The existing Wrangler config has an invalid cache value.");
   }
-  code = setTopLevelJsonProperty(code, "cache", {
-    ...cache,
-    enabled: mode === "self-contained",
-  });
+  // Workers Cache runs only for entrypoints that opt in below; the default
+  // entrypoint never does, so no Worker response is served from the cache
+  // before the Worker runs.
+  code = setTopLevelJsonProperty(code, "cache", { ...cache, enabled: false });
 
   const exportsConfig = config.exports;
   if (exportsConfig !== undefined && !isUnknownRecord(exportsConfig)) {
@@ -1192,7 +1192,7 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
       compatibility_flags: compatibilityFlags,
       workers_dev: false,
       preview_urls: false,
-      cache: { enabled: true },
+      cache: { enabled: false },
       exports: {
         default: { type: "worker", cache: { enabled: false } },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
@@ -1318,18 +1318,6 @@ export function updateWranglerConfigForCloudflare(
     }
   }
   if (options.cdnCache === "workers-cache") {
-    const cacheProperty = findTopLevelJsonProperty(output, "cache");
-    if (!cacheProperty) {
-      output = appendTopLevelJsonProperty(output, '  "cache": { "enabled": true }');
-    } else {
-      const cache = JSON.parse(
-        stripJsonComments(output.slice(cacheProperty.valueStart, cacheProperty.valueEnd)),
-      ) as Record<string, unknown> | null;
-      if (!cache || cache.enabled !== true) {
-        const updatedCache = JSON.stringify({ ...cache, enabled: true });
-        output = `${output.slice(0, cacheProperty.valueStart)}${updatedCache}${output.slice(cacheProperty.valueEnd)}`;
-      }
-    }
     const versionMetadataProperty = findTopLevelJsonProperty(output, "version_metadata");
     if (!versionMetadataProperty) {
       output = appendTopLevelJsonProperty(
@@ -1350,11 +1338,12 @@ export function updateWranglerConfigForCloudflare(
         output = `${output.slice(0, versionMetadataProperty.valueStart)}{ "binding": "${DEFAULT_VERSION_METADATA_BINDING}" }${output.slice(versionMetadataProperty.valueEnd)}`;
       }
     }
-  } else if (options.cdnCache !== "response-store") {
-    // Only workersCacheCdnAdapter() emits the uncached default entrypoint that
-    // a top-level Workers Cache needs. Without it, a cache left by an earlier
-    // Workers Cache setup would serve every Worker response, private ones
-    // included, before the Worker runs.
+  }
+  if (options.cdnCache !== "response-store") {
+    // Workers Cache runs only for entrypoints that opt in: workersCacheCdnAdapter()
+    // enables its own response stage at build time. A Worker-wide cache, such
+    // as one left by an earlier setup, would serve every Worker response,
+    // private ones included, before the Worker runs.
     const cacheProperty = findTopLevelJsonProperty(output, "cache");
     if (cacheProperty) {
       const cacheCode = output.slice(cacheProperty.valueStart, cacheProperty.valueEnd);
