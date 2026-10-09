@@ -1371,8 +1371,9 @@ function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
  * the `X-Vinext-RSC-Compatibility-Id` response header; browser navigation
  * rejects RSC payloads whose token differs from its page's (deploy skew)
  * without exposing the raw build ID. It is never inlined into the client
- * bundle, where a per-build value would rename chunks on every build. When the user pins a `deploymentId` we reuse it (already stable
- * across plugin instances); otherwise we mint a random UUID.
+ * bundle, where a per-build value would rename chunks on every build. When
+ * the user pins a `deploymentId` we reuse it (already stable across plugin
+ * instances); otherwise we mint a random UUID.
  *
  * NOTE: like `resolveBuildId`, this is non-deterministic in the no-deploymentId
  * case, so a single `vite build` that instantiates the plugin more than once
