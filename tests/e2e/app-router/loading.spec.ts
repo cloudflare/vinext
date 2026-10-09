@@ -192,6 +192,8 @@ test.describe("Loading boundaries (loading.tsx)", () => {
   // Next.js renders a parent segment's loading.tsx around the child segment's
   // layout (layout-router.tsx's LoadingBoundary uses `parentLoadingData`), so
   // it never renders inside that layout. Regression for cloudflare/vinext#3725.
+  // Related Next.js test: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
   test("ancestor loading above a shared layout keeps the current page during navigation", async ({
     page,
   }) => {
@@ -210,7 +212,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     });
 
     await page.locator("#ancestor-shared-layout-settings-link").click();
-    // The settings page takes 1.5s; the overview and tabs stay on screen meanwhile.
+    // The settings page takes 3s; the overview and tabs stay on screen meanwhile.
     await page.waitForTimeout(500);
     await expect(page.locator("#ancestor-shared-layout-overview")).toBeVisible();
     await expect(page.locator("#ancestor-shared-layout-tabs")).toBeVisible();
@@ -232,7 +234,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     void page.goto(`${BASE}/ancestor-loading-shared-layout/settings`);
 
     await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({ timeout: 5_000 });
-    // The layout resolves after 100ms but the page takes 1.5s, so the loading
+    // The layout resolves after 100ms but the page takes 3s, so the loading
     // UI must still replace the layout rather than render inside its tabs.
     await page.waitForTimeout(600);
     await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
@@ -250,7 +252,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
 
     await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({ timeout: 5_000 });
     // The owner layout and its page render at once but the @panel slot takes
-    // 1.5s, so the loading UI must replace the layout rather than the slot.
+    // 3s, so the loading UI must replace the layout rather than the slot.
     await page.waitForTimeout(600);
     await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
     await expect(page.locator("#ancestor-shared-layout-slotted")).toBeHidden();

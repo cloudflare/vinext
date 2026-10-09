@@ -4496,6 +4496,8 @@ describe("app page route wiring helpers", () => {
 
     const overview = buildElements(["dashboard", "(protected)"], "/dashboard");
     const settings = buildElements(["dashboard", "(protected)", "settings"], "/dashboard/settings");
+    expect(overview["page:/dashboard"]).toBeDefined();
+    expect(settings["page:/dashboard/settings"]).toBeDefined();
     expect(countSuspenseWithFallback(overview["page:/dashboard"], "DashboardLoading")).toBe(0);
     expect(
       countSuspenseWithFallback(settings["page:/dashboard/settings"], "DashboardLoading"),
@@ -4513,6 +4515,85 @@ describe("app page route wiring helpers", () => {
       expect(
         findSlotById(boundary?.props.children, "layout:/dashboard/(protected)"),
       ).not.toBeNull();
+    }
+  });
+
+  it("keys template and slot-owner ancestor loading boundaries by the group they sit in", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    function GroupTemplate(props: Record<string, unknown>) {
+      return createElement("div", null, props.children as ReactNode);
+    }
+
+    // No layouts, so the template and slot entries are not gated on layout
+    // render dependencies and stay inspectable.
+    const buildElements = (
+      routeSegments: string[],
+      routePath: string,
+      templates: { default: typeof GroupTemplate }[],
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [],
+          routeSegments,
+          slots: {
+            panel: {
+              default: null,
+              error: null,
+              layout: null,
+              layoutIndex: -1,
+              loading: null,
+              name: "panel",
+              ownerTreePosition: 2,
+              page: { default: SlotPage },
+              routeSegments: [],
+            },
+          },
+          templateTreePositions: templates.length > 0 ? [2] : [],
+          templates,
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    const stableKey = JSON.stringify(["dashboard", "(protected)"]);
+    const slotId = AppElementsWire.encodeSlotId("panel", "/");
+    const templateId = "template:/dashboard/(protected)";
+    for (const [routeSegments, routePath] of [
+      [["dashboard", "(protected)"], "/dashboard"],
+      [["dashboard", "(protected)", "settings"], "/dashboard/settings"],
+    ] as const) {
+      const withoutTemplate = buildElements([...routeSegments], routePath, []);
+      expect(findSuspenseWithFallback(withoutTemplate[slotId], "DashboardLoading")?.key).toBe(
+        stableKey,
+      );
+
+      const withTemplate = buildElements([...routeSegments], routePath, [
+        { default: GroupTemplate },
+      ]);
+      expect(withTemplate[templateId]).toBeDefined();
+      expect(findSuspenseWithFallback(withTemplate[templateId], "DashboardLoading")?.key).toBe(
+        stableKey,
+      );
+      // The template between the loading and the slot owner carries the
+      // boundary, so the slot entry must not repeat it inside the template.
+      expect(withTemplate[slotId]).toBeDefined();
+      expect(countSuspenseWithFallback(withTemplate[slotId], "DashboardLoading")).toBe(0);
     }
   });
 
