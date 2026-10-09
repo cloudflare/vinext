@@ -80,6 +80,18 @@ describe("loadOrGenerateServerActionsEncryptionKey", () => {
     expect(generated).not.toBe("provided");
   });
 
+  it.skipIf(process.platform === "win32")("restricts an existing cache file to its owner", () => {
+    fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+    fs.writeFileSync(configPath(), "{not json", { mode: 0o644 });
+    fs.chmodSync(configPath(), 0o644);
+    const key = load();
+    expect(fs.statSync(configPath()).mode & 0o777).toBe(0o600);
+
+    fs.chmodSync(configPath(), 0o644);
+    expect(load()).toBe(key);
+    expect(fs.statSync(configPath()).mode & 0o777).toBe(0o600);
+  });
+
   it("regenerates when the cache file is broken", () => {
     fs.mkdirSync(path.dirname(configPath()), { recursive: true });
     fs.writeFileSync(configPath(), "{not json");
@@ -158,7 +170,12 @@ describe("server actions key cache in dev", () => {
     expect(isServerActionsKeyCacheRequest("/.vinext/cache/%2Erscinfo")).toBe(true);
     expect(isServerActionsKeyCacheRequest("/.vinext/cache/.RSCINFO?raw")).toBe(true);
     expect(isServerActionsKeyCacheRequest("/@fs/app/.vinext/dev/cache/.rscinfo")).toBe(true);
+    expect(isServerActionsKeyCacheRequest("/.vinext//cache/./.rscinfo")).toBe(true);
+    expect(isServerActionsKeyCacheRequest("/.vinext/x/../cache/.rscinfo")).toBe(true);
     expect(isServerActionsKeyCacheRequest("/about?ref=.rscinfo")).toBe(false);
+    expect(isServerActionsKeyCacheRequest("/docs/.rscinfo-guide")).toBe(false);
+    expect(isServerActionsKeyCacheRequest("/assets/report.rscinfo.json")).toBe(false);
+    expect(isServerActionsKeyCacheRequest("/.rscinfo")).toBe(false);
     expect(isServerActionsKeyCacheRequest("/about")).toBe(false);
     expect(isServerActionsKeyCacheRequest(undefined)).toBe(false);
   });
