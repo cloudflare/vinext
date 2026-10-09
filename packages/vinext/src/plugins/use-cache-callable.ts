@@ -10,7 +10,6 @@ import type {
 import { parseAstAsync, type Plugin } from "vite";
 import {
   getServerActionsKeyCacheFsDeny,
-  isServerActionsKeyCacheRequest,
   loadOrGenerateServerActionsEncryptionKey,
 } from "../build/server-actions-encryption-key.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
@@ -223,15 +222,6 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
     config(config) {
       // mergeConfig appends this to a configured deny list.
       return { server: { fs: { deny: getServerActionsKeyCacheFsDeny(config.server?.fs?.deny) } } };
-    },
-    configureServer(server) {
-      // Registered before Vite's own middlewares, so this also covers
-      // `server.fs.strict: false`, where Vite ignores the deny list.
-      server.middlewares.use((req, res, next) => {
-        if (!isServerActionsKeyCacheRequest(req.url)) return next();
-        res.statusCode = 403;
-        res.end();
-      });
     },
     configResolved(config) {
       const pluginApi = rscModule.getPluginApi(config);

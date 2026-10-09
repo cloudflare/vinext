@@ -5,7 +5,6 @@ import { mergeConfig, resolveConfig } from "vite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   getServerActionsKeyCacheFsDeny,
-  isServerActionsKeyCacheRequest,
   loadOrGenerateServerActionsEncryptionKey,
 } from "../packages/vinext/src/build/server-actions-encryption-key.js";
 import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
@@ -128,17 +127,6 @@ describe("server actions key cache in dev", () => {
     expect((await fetch(baseUrl + "/.vinext/dev/cache/.rscinfo?raw")).status).toBe(403);
   }
 
-  it("is not served without server.fs.strict", async () => {
-    const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, {
-      server: { fs: { strict: false } },
-    });
-    try {
-      await expectKeyCacheNotServed(baseUrl);
-    } finally {
-      await server.close();
-    }
-  }, 30000);
-
   it("is not served by the dev server, which keeps Vite's default deny list", async () => {
     const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR);
     try {
@@ -163,20 +151,5 @@ describe("server actions key cache in dev", () => {
         { server: { fs: { deny: getServerActionsKeyCacheFsDeny(deny) } } },
       ).server.fs.deny,
     ).toEqual(["custom-secret.txt", "**/.vinext/**/.rscinfo"]);
-  });
-
-  it("matches key cache request URLs the way Vite resolves them", () => {
-    expect(isServerActionsKeyCacheRequest("/.vinext/cache/.rscinfo?raw")).toBe(true);
-    expect(isServerActionsKeyCacheRequest("/.vinext/cache/%2Erscinfo")).toBe(true);
-    expect(isServerActionsKeyCacheRequest("/.vinext/cache/.RSCINFO?raw")).toBe(true);
-    expect(isServerActionsKeyCacheRequest("/@fs/app/.vinext/dev/cache/.rscinfo")).toBe(true);
-    expect(isServerActionsKeyCacheRequest("/.vinext//cache/./.rscinfo")).toBe(true);
-    expect(isServerActionsKeyCacheRequest("/.vinext/x/../cache/.rscinfo")).toBe(true);
-    expect(isServerActionsKeyCacheRequest("/about?ref=.rscinfo")).toBe(false);
-    expect(isServerActionsKeyCacheRequest("/docs/.rscinfo-guide")).toBe(false);
-    expect(isServerActionsKeyCacheRequest("/assets/report.rscinfo.json")).toBe(false);
-    expect(isServerActionsKeyCacheRequest("/.rscinfo")).toBe(false);
-    expect(isServerActionsKeyCacheRequest("/about")).toBe(false);
-    expect(isServerActionsKeyCacheRequest(undefined)).toBe(false);
   });
 });
