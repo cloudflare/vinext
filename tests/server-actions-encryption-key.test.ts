@@ -5,6 +5,7 @@ import { mergeConfig, resolveConfig } from "vite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   getServerActionsKeyCacheFsDeny,
+  isServerActionsKeyCacheRequest,
   loadOrGenerateServerActionsEncryptionKey,
 } from "../packages/vinext/src/build/server-actions-encryption-key.js";
 import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
@@ -46,15 +47,28 @@ describe("loadOrGenerateServerActionsEncryptionKey", () => {
       "encryption.expire_at": 1_000_000 + 14 * DAY,
     });
     expect(load({ now: 1_000_000 + 13 * DAY })).toBe(key);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(configPath()).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("rotates an expired key for builds but keeps it in dev", () => {
-    const key = load();
+    const buildKey = load();
+    const devKey = load({ isBuild: false });
     const expired = 1_000_000 + 15 * DAY;
-    expect(load({ isBuild: false, now: expired })).toBe(key);
+    expect(load({ isBuild: false, now: expired })).toBe(devKey);
     const rotated = load({ now: expired });
-    expect(rotated).not.toBe(key);
+    expect(rotated).not.toBe(buildKey);
     expect(readConfig()["encryption.key"]).toBe(rotated);
+  });
+
+  // Next resolves dev's distDir to `<distDir>/dev` (server/config.ts).
+  it("keeps the dev key cache separate from the build's", () => {
+    expect(load({ isBuild: false, providedKey: "dev-only" })).toBe("dev-only");
+    expect(fs.existsSync(path.join(root, ".vinext", "dev", "cache", ".rscinfo"))).toBe(true);
+    expect(fs.existsSync(configPath())).toBe(false);
+    expect(load()).not.toBe("dev-only");
+    expect(load({ isBuild: false })).toBe("dev-only");
   });
 
   it("prefers a provided key over a different cached key, and caches it", () => {
@@ -85,22 +99,38 @@ describe("loadOrGenerateServerActionsEncryptionKey", () => {
 });
 
 describe("server actions key cache in dev", () => {
+  async function expectKeyCacheNotServed(baseUrl: string): Promise<void> {
+    const configPath = path.join(APP_FIXTURE_DIR, ".vinext", "dev", "cache", ".rscinfo");
+    const key = JSON.parse(fs.readFileSync(configPath, "utf8"))["encryption.key"];
+    for (const url of [
+      "/.vinext/dev/cache/.rscinfo?raw",
+      "/.vinext/dev/cache/.rscinfo?import",
+      "/.vinext/dev/cache/.rscinfo",
+      "/.vinext/dev/cache/%2Erscinfo?raw",
+      `/@fs${configPath}?raw`,
+      `/@fs${configPath}`,
+    ]) {
+      const response = await fetch(baseUrl + url);
+      expect(await response.text(), url).not.toContain(key);
+    }
+    expect((await fetch(baseUrl + "/.vinext/dev/cache/.rscinfo?raw")).status).toBe(403);
+  }
+
+  it("is not served without server.fs.strict", async () => {
+    const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, {
+      server: { fs: { strict: false } },
+    });
+    try {
+      await expectKeyCacheNotServed(baseUrl);
+    } finally {
+      await server.close();
+    }
+  }, 30000);
+
   it("is not served by the dev server, which keeps Vite's default deny list", async () => {
     const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR);
     try {
-      const configPath = path.join(APP_FIXTURE_DIR, ".vinext", "cache", ".rscinfo");
-      const key = JSON.parse(fs.readFileSync(configPath, "utf8"))["encryption.key"];
-      for (const url of [
-        "/.vinext/cache/.rscinfo?raw",
-        "/.vinext/cache/.rscinfo?import",
-        "/.vinext/cache/.rscinfo",
-        `/@fs${configPath}?raw`,
-      ]) {
-        const response = await fetch(baseUrl + url);
-        expect(await response.text(), url).not.toContain(key);
-      }
-      expect((await fetch(baseUrl + "/.vinext/cache/.rscinfo?raw")).status).toBe(403);
-
+      await expectKeyCacheNotServed(baseUrl);
       const viteDefaults = await resolveConfig(
         { configFile: false, root: APP_FIXTURE_DIR, logLevel: "silent" },
         "serve",
@@ -120,6 +150,16 @@ describe("server actions key cache in dev", () => {
         { server: { fs: { deny } } },
         { server: { fs: { deny: getServerActionsKeyCacheFsDeny(deny) } } },
       ).server.fs.deny,
-    ).toEqual(["custom-secret.txt", "**/.vinext/cache/.rscinfo"]);
+    ).toEqual(["custom-secret.txt", "**/.vinext/**/.rscinfo"]);
+  });
+
+  it("matches key cache request URLs the way Vite resolves them", () => {
+    expect(isServerActionsKeyCacheRequest("/.vinext/cache/.rscinfo?raw")).toBe(true);
+    expect(isServerActionsKeyCacheRequest("/.vinext/cache/%2Erscinfo")).toBe(true);
+    expect(isServerActionsKeyCacheRequest("/.vinext/cache/.RSCINFO?raw")).toBe(true);
+    expect(isServerActionsKeyCacheRequest("/@fs/app/.vinext/dev/cache/.rscinfo")).toBe(true);
+    expect(isServerActionsKeyCacheRequest("/about?ref=.rscinfo")).toBe(false);
+    expect(isServerActionsKeyCacheRequest("/about")).toBe(false);
+    expect(isServerActionsKeyCacheRequest(undefined)).toBe(false);
   });
 });
