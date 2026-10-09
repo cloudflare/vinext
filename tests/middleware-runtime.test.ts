@@ -112,21 +112,31 @@ describe("middleware pathname matching", () => {
     expect(invoked).toBe(true);
   });
 
-  it.each(["%0A", "%0D", "%E2%80%A8", "%E2%80%A9"])(
-    "matches the encoded request pathname before the decoded %s form",
-    async (encoded) => {
+  // `.` cannot match a decoded line terminator, so every matcher whose token
+  // relies on `.*` must keep the request in scope through its encoded form.
+  it.each(
+    [
+      ["/((?!api|_next/static|_next/image|favicon.ico).*)", "/xx{}/admin/dashboard"],
+      ["/(.*)", "/xx{}/admin/dashboard"],
+      ["/orders/:id(.*)", "/orders/42{}"],
+    ].flatMap(([matcher, template]) =>
+      ["%0A", "%0D", "%E2%80%A8", "%E2%80%A9"].map((encoded) => [matcher, template, encoded]),
+    ),
+  )(
+    "keeps %s in scope for %s with an encoded %s line terminator",
+    async (matcher, template, encoded) => {
       let observedPathname: string | undefined;
-      const requestPathname = `/xx${encoded}/admin/dashboard`;
+      const requestPathname = template.replace("{}", encoded);
       const result = await executeMiddleware({
         isProxy: false,
         module: {
-          config: { matcher: "/((?!api|_next/static|_next/image|favicon.ico).*)" },
+          config: { matcher },
           default(request: NextRequest) {
             observedPathname = request.nextUrl.pathname;
             return new Response("blocked", { status: 403 });
           },
         },
-        normalizedPathname: `/xx${decodeURIComponent(encoded)}/admin/dashboard`,
+        normalizedPathname: template.replace("{}", decodeURIComponent(encoded)),
         request: new Request(`http://localhost:3000${requestPathname}`),
       });
 
