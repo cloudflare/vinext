@@ -35,19 +35,32 @@ async function generate(
   {
     serverReferences = [ACTION_ID],
     consumer = "client",
-  }: { serverReferences?: string[]; consumer?: "client" | "server" } = {},
+    modules = MODULES,
+    originals = {},
+  }: {
+    serverReferences?: string[];
+    consumer?: "client" | "server";
+    modules?: Record<string, string>;
+    originals?: Record<string, string>;
+  } = {},
 ) {
   const metaMap = new Map(serverReferences.map((id) => [id, {}]));
   const plugin = createServerActionClientSourcemapPlugin({
     getManager: async () => ({ serverReferences: { metaMap } }) as never,
   });
-  const context = { environment: { name: consumer, config: { consumer } } };
+  const environment = { name: consumer, config: { consumer, build: { sourcemap: true } } };
   (plugin.configResolved as (config: unknown) => void)({});
-  (plugin.buildStart as (this: unknown) => void).call(context);
-  for (const [id, code] of Object.entries(MODULES)) {
-    (plugin.transform as Hook).handler.call(context, code as never, id as never);
+  (plugin.buildStart as (this: unknown) => void).call({ environment });
+  for (const [id, code] of Object.entries(modules)) {
+    const original = originals[id];
+    const getCombinedSourcemap = () => ({ sourcesContent: [original ?? code] });
+    (plugin.transform as Hook).handler.call(
+      { environment, getCombinedSourcemap },
+      code as never,
+      id as never,
+    );
   }
-  await (plugin.generateBundle as Hook).handler.call(context, {} as never, bundle as never);
+  await (plugin.generateBundle as Hook).handler.call({ environment }, {} as never, bundle as never);
   return bundle;
 }
 
@@ -123,6 +136,36 @@ describe("vinext:server-action-client-sourcemap", () => {
     ],
   ])("keeps only the chunk's public module content for %s", async (_name, map) => {
     expect(assetContent(await generate(withAsset(map)))).toEqual([null, CLIENT_SOURCE]);
+  });
+
+  it("redacts data: URL sources that carry dropped content", async () => {
+    const dataUrl = `../app/data:text/javascript;base64,${Buffer.from(ACTION_SOURCE).toString("base64")}`;
+    const bundle = await generate(
+      withAsset(sourcemap([dataUrl, "../app/button.tsx"], [ACTION_SOURCE, CLIENT_SOURCE])),
+    );
+    const map = JSON.parse(String(bundle["chunks/button.js.map"]!.source));
+    expect(map.sources).toEqual(["data:,", "../app/button.tsx"]);
+    expect(map.sourcesContent).toEqual([null, CLIENT_SOURCE]);
+  });
+
+  it("reads byte-backed .map assets", async () => {
+    const bundle = await generate({
+      "chunks/button.js": chunk(),
+      "chunks/button.js.map": {
+        type: "asset",
+        source: new TextEncoder().encode(JSON.stringify(DEFAULT_MAP)),
+      },
+    });
+    expect(assetContent(bundle)).toEqual([null, CLIENT_SOURCE]);
+  });
+
+  it("keeps the original a public module's combined map already points to", async () => {
+    const generated = `${CLIENT_SOURCE}export const injected = 1;\n`;
+    const bundle = await generate(withAsset(DEFAULT_MAP), {
+      modules: { [ACTION_ID]: ACTION_SOURCE, [CLIENT_ID]: generated },
+      originals: { [CLIENT_ID]: CLIENT_SOURCE },
+    });
+    expect(assetContent(bundle)).toEqual([null, CLIENT_SOURCE]);
   });
 
   it.each([
