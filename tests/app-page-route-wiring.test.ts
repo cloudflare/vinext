@@ -4597,6 +4597,65 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("keeps the route-derived key for a loading at the slot owner's own segment", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    const buildElements = (routeSegments: string[], routePath: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [],
+          routeSegments,
+          slots: {
+            panel: {
+              default: null,
+              error: null,
+              layout: null,
+              layoutIndex: -1,
+              loading: null,
+              name: "panel",
+              ownerTreePosition: 1,
+              page: { default: SlotPage },
+              routeSegments: [],
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    // The boundary wraps the slot's own child segment here, so a children
+    // group that stays put must not pin it across slot navigations.
+    const slotId = AppElementsWire.encodeSlotId("panel", "/");
+    const overviewKey = findSuspenseWithFallback(
+      buildElements(["dashboard", "(overview)"], "/dashboard")[slotId],
+      "DashboardLoading",
+    )?.key;
+    const settingsKey = findSuspenseWithFallback(
+      buildElements(["dashboard", "(overview)", "settings"], "/dashboard/settings")[slotId],
+      "DashboardLoading",
+    )?.key;
+    expect(overviewKey).toBeDefined();
+    expect(settingsKey).toBeDefined();
+    expect(settingsKey).not.toBe(overviewKey);
+  });
+
   it("keys a page entry's ancestor loading boundary by the loading segment's child", () => {
     function RootLoading() {
       return createElement("p", null, "Loading root");

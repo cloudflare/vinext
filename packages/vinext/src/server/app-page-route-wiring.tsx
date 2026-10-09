@@ -1619,7 +1619,13 @@ export function buildAppPageElements<
     const ownerLoadingComponent = getDefaultExport(ownerLoadingEntry?.loadingModule);
     if (ownerLoadingComponent && ownerLoadingEntry) {
       const OwnerLoadingComponent = ownerLoadingComponent;
-      const ownerResetKey = resolveLoadingResetKey(ownerLoadingEntry.treePosition);
+      // Above the owner, the boundary's child segment is on the shared children
+      // spine. At the owner itself it wraps the slot's own child segment, which
+      // the children route cannot key, so keep the existing route-derived key.
+      const ownerResetKey =
+        ownerLoadingEntry.treePosition < ownerTreePosition
+          ? resolveLoadingResetKey(ownerLoadingEntry.treePosition)
+          : resolveRouteSegmentResetKey(ownerLoadingEntry.treePosition);
       slotElement = (
         <Suspense key={ownerResetKey || slotResetKey} fallback={<OwnerLoadingComponent />}>
           {slotElement}
