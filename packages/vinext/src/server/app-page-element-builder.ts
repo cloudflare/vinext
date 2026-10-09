@@ -650,9 +650,10 @@ export async function buildPageElements<
         if (isAppRenderSuspension(error)) {
           // React requires its internal use() suspension value to be rethrown
           // immediately. With loading UI, release from a microtask so the
-          // nearest loading boundary (the leaf loading on the page entry, or an
-          // ancestor loading on the route entry's per-segment boundary and the
-          // layout entry of its child segment) can serialize its fallback.
+          // nearest loading boundary (the leaf loading or a sibling intercept's
+          // loading on the page entry, or an ancestor loading on the route
+          // entry's per-segment boundary and the layout entry of its child
+          // segment) can serialize its fallback.
           // Without loading UI, the page retry releases the dependency after it
           // can render, preserving the same page-before-layout ordering as an
           // ordinary async return.

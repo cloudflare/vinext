@@ -4607,7 +4607,9 @@ describe("app page route wiring helpers", () => {
   });
 
   // A layout at the group segment (position 2) owns a slow @panel slot.
-  async function renderSlotOwnerDocument(loadingTreePosition: number): Promise<string> {
+  async function renderSlotOwnerDocument(
+    loadingTreePosition: number,
+  ): Promise<{ html: string; shell: string }> {
     function DashboardLoading() {
       return createElement("p", { "data-loading": "dashboard" }, "Loading dashboard");
     }
@@ -4694,20 +4696,23 @@ describe("app page route wiring helpers", () => {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     const first = await withTimeout(reader.read(), 2_000);
-    let html = first.value ? decoder.decode(first.value, { stream: true }) : "";
+    const shell = first.value ? decoder.decode(first.value, { stream: true }) : "";
+    let html = shell;
     releasePanel();
     for (;;) {
       const { done, value } = await withTimeout(reader.read(), 5_000);
       if (done) break;
       html += decoder.decode(value, { stream: true });
     }
-    return html + decoder.decode();
+    return { html: html + decoder.decode(), shell };
   }
 
   it("leaves an ancestor loading boundary off a slot owned by the loading's child layout", async () => {
     // The layout entry's boundary sits outside the owner layout, so a
     // suspending slot falls back above the layout instead of inside it.
-    const html = await renderSlotOwnerDocument(1);
+    const { html, shell } = await renderSlotOwnerDocument(1);
+    expect(shell).toContain('data-loading="dashboard"');
+    expect(shell).not.toContain('data-layout="panel-owner"');
     const layoutStart = html.indexOf('<section data-layout="panel-owner"');
     const layoutEnd = html.indexOf("</section>", layoutStart);
     expect(layoutStart).toBeGreaterThan(-1);
@@ -4720,7 +4725,12 @@ describe("app page route wiring helpers", () => {
   it("keeps the owner segment's loading boundary on its slot inside the owner layout", async () => {
     // Within one segment the layout wraps the loading, so the owner's own
     // loading falls back inside the layout, around the suspending slot.
-    const html = await renderSlotOwnerDocument(2);
+    const { html, shell } = await renderSlotOwnerDocument(2);
+    const shellPanelStart = shell.indexOf('<section data-layout="panel-owner"><aside>');
+    expect(shellPanelStart).toBeGreaterThan(-1);
+    expect(shell.slice(shellPanelStart, shell.indexOf("</aside>", shellPanelStart))).toContain(
+      'data-loading="dashboard"',
+    );
     const layoutStart = html.indexOf('<section data-layout="panel-owner"');
     const layoutEnd = html.indexOf("</section>", layoutStart);
     expect(layoutStart).toBeGreaterThan(-1);
@@ -4938,8 +4948,9 @@ describe("app page route wiring helpers", () => {
       buildElements(["dashboard", "(overview)", "settings"], "/dashboard/settings")[slotId],
       "DashboardLoading",
     )?.key;
-    // The existing key: the first visible children segment, else the slot's
-    // own reset key (empty for a slot with no route segments).
+    // The pre-existing key: the first visible children segment, else the
+    // slot's own reset key (empty for a slot with no route segments). Next.js
+    // keys this boundary by the slot's own child segment, not modelled here.
     expect(overviewKey).toBe("");
     expect(settingsKey).toBe("settings");
   });

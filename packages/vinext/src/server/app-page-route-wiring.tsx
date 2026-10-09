@@ -1595,8 +1595,10 @@ export function buildAppPageElements<
     if (ownerLoadingComponent && ownerLoadingEntry) {
       const OwnerLoadingComponent = ownerLoadingComponent;
       // Above the owner, the boundary's child segment is on the shared children
-      // spine. At the owner itself it wraps the slot's own child segment, which
-      // the children route cannot key, so keep the existing route-derived key.
+      // spine. At the owner itself Next.js keys it by the slot's own child
+      // segment, which is not modelled here; keep the pre-existing key (first
+      // visible children segment, else the slot reset key), since the group key
+      // would wrongly keep it mounted across slot navigations.
       const ownerResetKey =
         ownerLoadingEntry.treePosition < ownerTreePosition
           ? resolveLoadingResetKey(ownerLoadingEntry.treePosition)
