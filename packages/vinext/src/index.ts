@@ -2895,11 +2895,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Also used to namespace ISR cache keys so old cached entries from a
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
-        // Public browser-facing identity for App Router RSC compatibility
-        // checks. Prefer Next.js-style deploymentId when configured; otherwise
-        // generate a separate token so RSC headers do not expose
-        // generateBuildId() verbatim.
-        defines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] = JSON.stringify(rscCompatibilityId);
+        // Public identity for App Router RSC compatibility checks. Prefer
+        // Next.js-style deploymentId when configured; otherwise generate a
+        // separate token so RSC headers do not expose generateBuildId()
+        // verbatim. Like the build identity below, the real value is a
+        // server-only define: the server writes it into the page bootstrap and
+        // the browser reads it from there, so it never renames client chunks.
+        defines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] = JSON.stringify("");
         // Per-build server identity. Only server responses carry it, so the
         // real value is a server-only define (see vinext:compiler-define-server).
         // Baking it into the browser would rename every client chunk that
@@ -7514,6 +7516,10 @@ export const loadServerActionClient = ${
         if (revalidateSecret) {
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
             JSON.stringify(revalidateSecret);
+        }
+        if (rscCompatibilityId) {
+          serverDefines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] =
+            JSON.stringify(rscCompatibilityId);
         }
         if (rscBuildIdentity) {
           serverDefines["process.env.__VINEXT_RSC_BUILD_IDENTITY"] =

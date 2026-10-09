@@ -11,6 +11,7 @@ import {
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
+import { getVinextRscCompatibilityId } from "./app-rsc-cache-busting.js";
 
 type RscEmbedTransform = {
   flush(): string;
@@ -82,6 +83,29 @@ export function createNavigationRuntimeRscMetadataScript(
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +
+    "})"
+  );
+}
+
+/**
+ * The compatibility ID of the server rendering this page. The browser compares
+ * RSC responses against it, so it is sent with the page rather than inlined
+ * into the client bundle, where a per-build value would rename chunks on every
+ * build. Static export skips the check, so its pages omit it.
+ */
+export function createNavigationRuntimeRscCompatibilityScript(): string {
+  const compatibilityId = getVinextRscCompatibilityId();
+  if (
+    compatibilityId === null ||
+    (process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export")
+  ) {
+    return "";
+  }
+  return (
+    "Object.assign(" +
+    navigationRuntimeRscBootstrapExpression() +
+    ",{compatibilityId:" +
+    safeJsonStringify(compatibilityId) +
     "})"
   );
 }

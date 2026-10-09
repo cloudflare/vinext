@@ -251,10 +251,10 @@ describe("App Router Production build", () => {
   }, 30000);
 
   describe("client output across rebuilds", () => {
-    // With deploymentId and generateBuildId pinned, nothing that reaches the
-    // browser may vary between builds of identical source. Otherwise every
-    // deploy renames unchanged chunks, defeating CDN/browser cache reuse and
-    // dropping long-lived tabs' chunks (vinext#3626).
+    // With generateBuildId pinned, nothing that reaches the browser may vary
+    // between builds of identical source, even without a deploymentId.
+    // Otherwise every deploy renames unchanged chunks, defeating CDN/browser
+    // cache reuse and dropping long-lived tabs' chunks (vinext#3626).
     const keyCacheDir = () => path.join(fixtureDir, ".vinext", "cache");
 
     async function buildClient() {
@@ -266,7 +266,7 @@ describe("App Router Production build", () => {
         plugins: [
           vinext({
             appDir: fixtureDir,
-            nextConfig: { deploymentId: "pinned-test", generateBuildId: () => "pinned-build" },
+            nextConfig: { generateBuildId: () => "pinned-build" },
           }),
         ],
         logLevel: "silent",
@@ -295,6 +295,7 @@ describe("App Router Production build", () => {
 
     beforeEach(() => {
       vi.stubEnv("__VINEXT_SHARED_RSC_BUILD_IDENTITY", "");
+      vi.stubEnv("__VINEXT_SHARED_RSC_COMPATIBILITY_ID", "");
       vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
       fs.rmSync(keyCacheDir(), { recursive: true, force: true });
     });
@@ -444,9 +445,8 @@ describe("App Router Production build", () => {
     // random UUID per plugin instance when no deploymentId is pinned, so a hybrid
     // app+pages build would otherwise bake two different RSC-compat tokens. The
     // CLI resolves it once and shares it via __VINEXT_SHARED_RSC_COMPATIBILITY_ID;
-    // the plugin always adopts it when set. Both the App Router server bundle and
-    // the client bundle (which compares its baked token against the server's
-    // X-Vinext-RSC-Compatibility-Id header) must carry the shared value.
+    // the plugin always adopts it when set. The server bundles carry it; the
+    // browser reads it from the server-rendered page instead of its bundle.
     const sharedCompatId = "shared-rsc-compat-id-9012";
     const previous = process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
     process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = sharedCompatId;
@@ -460,13 +460,10 @@ describe("App Router Production build", () => {
       });
       await builder.buildApp();
 
-      // The compat token is baked via Vite `define`; depending on chunking it
-      // can land in the RSC entry or a shared server/client chunk, so scan the
-      // whole server and client output trees. Both sides must carry the same
-      // adopted token — that is what lets the client reject mismatched RSC
-      // payloads (the X-Vinext-RSC-Compatibility-Id header check).
+      // Depending on chunking the token can land in the RSC entry or a shared
+      // server chunk, so scan the whole server output tree.
       expect(readAllJs(path.join(outDir, "server"))).toContain(sharedCompatId);
-      expect(readAllJs(path.join(outDir, "client"))).toContain(sharedCompatId);
+      expect(readAllJs(path.join(outDir, "client"))).not.toContain(sharedCompatId);
     } finally {
       if (previous === undefined) delete process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
       else process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = previous;

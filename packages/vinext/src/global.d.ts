@@ -360,9 +360,10 @@ declare global {
       __VINEXT_SHARED_BUILD_ID?: string;
 
       /**
-       * Public App Router RSC compatibility identity injected via Vite
-       * `define`. Used by browser navigation code to reject RSC payloads from
-       * a different Vite build without exposing the raw build ID header.
+       * Public App Router RSC compatibility identity, a server-only Vite
+       * `define` (the browser bundle gets ""). The server sends it with each
+       * page and RSC response so browser navigation can reject RSC payloads
+       * from a different build without exposing the raw build ID.
        */
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 

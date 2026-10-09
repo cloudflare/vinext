@@ -1,5 +1,5 @@
 import { createContext, runInContext } from "node:vm";
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import {
@@ -8,6 +8,7 @@ import {
   type RscEmbeddedChunk,
 } from "../packages/vinext/src/server/app-rsc-embedded-chunks.js";
 import {
+  createNavigationRuntimeRscCompatibilityScript,
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
@@ -34,6 +35,23 @@ it("serializes browser search-param ownership into the early hydration bootstrap
       true,
     ),
   ).toContain("searchParamsFromBrowser:true");
+});
+
+it("sends the server's RSC compatibility ID with the page, except for static export", () => {
+  vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", "compat-a");
+  try {
+    expect(createNavigationRuntimeRscCompatibilityScript()).toBe(
+      'Object.assign(((self[Symbol.for("vinext.navigationRuntime")]??={bootstrap:{routeManifest:null},functions:{}}).bootstrap.rsc??={rsc:[]}),{compatibilityId:"compat-a"})',
+    );
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+    expect(createNavigationRuntimeRscCompatibilityScript()).toBe("");
+    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "");
+    vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", "");
+    expect(createNavigationRuntimeRscCompatibilityScript()).toBe("");
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 describe("App SSR stream helpers", () => {

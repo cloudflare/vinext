@@ -194,7 +194,6 @@ import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browse
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
-  getVinextRscCompatibilityId,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -271,11 +270,26 @@ const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const IS_STATIC_EXPORT =
   process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export";
 const CLIENT_DEPLOYMENT_VERSION = process.env.__VINEXT_BUILD_ID ?? null;
+// No server sends this (deployment IDs and UUIDs never contain ":"), so until
+// the page supplies its ID every RSC response is treated as another
+// deployment's, like Next.js' navigation build ID, which starts as "".
+const MISSING_RSC_COMPATIBILITY_ID = "vinext:missing";
+// The compatibility ID of the server that rendered this page, set once during
+// initialization. Like Next.js' setNavigationBuildId() (client/app-index.tsx),
+// it comes from the page rather than the bundle, so a per-build value doesn't
+// rename client chunks on every build.
 // Static asset hosts cannot attach vinext's compatibility header to `.txt`
 // files. The artifact and client bundle are emitted atomically by one build,
 // so export mode validates the deployment version embedded in the Flight
 // payload before committing it instead.
-const CLIENT_RSC_COMPATIBILITY_ID = IS_STATIC_EXPORT ? null : getVinextRscCompatibilityId();
+let clientRscCompatibilityId: string | null = IS_STATIC_EXPORT
+  ? null
+  : MISSING_RSC_COMPATIBILITY_ID;
+
+function setClientRscCompatibilityId(compatibilityId: string | null | undefined): void {
+  if (IS_STATIC_EXPORT || !compatibilityId) return;
+  clientRscCompatibilityId = compatibilityId;
+}
 const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
 const optimisticRouteTemplateSources = new Set<string>();
 const optimisticRouteTemplateLearning = new Map<string, Promise<void>>();
@@ -1739,6 +1753,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
   // same path after a transient failure still gets one recovery attempt.
   clearReloadFlag();
   clearHardNavigationLoopGuard();
+  setClientRscCompatibilityId(rscResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER));
 
   // Ignore malformed param headers and continue with hydration. The original
   // try/catch also swallowed errors from applyClientParams; preserve that.
@@ -1768,6 +1783,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
 }
 
 function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
+  setClientRscCompatibilityId(rsc.compatibilityId);
   const params = rsc.params ?? {};
   if (rsc.params) {
     applyClientParams(rsc.params);
@@ -1791,7 +1807,7 @@ function registerServerActionCallback(): void {
         invokeClientServerAction(id, args, actionInitiation, {
           basePath: __basePath,
           clearClientNavigationCaches,
-          clientRscCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+          clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
           performHardNavigation: (url, historyMode) =>
@@ -1905,7 +1921,7 @@ function bootstrapHydration(
       const rscUrl = await createRscRequestUrl(initialPathAndSearch, headers);
       if (cacheGeneration !== clientNavigationCacheGeneration) return;
       const snapshot = {
-        compatibilityIdHeader: CLIENT_RSC_COMPATIBILITY_ID,
+        compatibilityIdHeader: clientRscCompatibilityId,
         buffer,
         contentType: VINEXT_RSC_CONTENT_TYPE,
         ...(initialRscBootstrap?.dynamicStaleTimeSeconds !== undefined
@@ -2298,7 +2314,7 @@ function bootstrapHydration(
         });
         if (reuseDecision.kind === "reuseVisitedResponse" && cachedRoute) {
           const cachedFetchDecision = navigationPlanner.classifyRscFetchResult({
-            clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+            clientCompatibilityId: clientRscCompatibilityId,
             compatibilityIdHeader: cachedRoute.response.compatibilityIdHeader ?? null,
             currentHref,
             effectiveHistoryUpdateMode: currentHistoryMode ?? "replace",
@@ -2564,7 +2580,7 @@ function bootstrapHydration(
           return;
         }
         const liveFetchDecision = navigationPlanner.classifyRscFetchResult({
-          clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+          clientCompatibilityId: clientRscCompatibilityId,
           compatibilityIdHeader: navResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
           currentHref,
           effectiveHistoryUpdateMode: currentHistoryMode ?? "replace",

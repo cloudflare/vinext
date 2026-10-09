@@ -5009,33 +5009,31 @@ describe("Plugin config", () => {
       const configPlugin = plugins.find((p) => p.name === "vinext:config");
       expect(configPlugin).toBeDefined();
 
-      // The per-build identity is server-only; the browser bundle gets "".
-      const readServerRscBuildIdentity = (vinextPlugins: any[]) =>
+      // The compatibility ID and the per-build identity are server-only; the
+      // browser bundle gets "".
+      const readServerDefine = (vinextPlugins: any[], name: string) =>
         vinextPlugins
           .find((p) => p.name === "vinext:compiler-define-server")
-          .configEnvironment("rsc", {}, { command: "build" }).define[
-          "process.env.__VINEXT_RSC_BUILD_IDENTITY"
-        ];
+          .configEnvironment("rsc", {}, { command: "build" }).define[`process.env.${name}`];
+      const readServerRscBuildIdentity = (vinextPlugins: any[]) =>
+        readServerDefine(vinextPlugins, "__VINEXT_RSC_BUILD_IDENTITY");
       const result = await configPlugin.config(
         { root: tmpDir, plugins: [] },
         { command: "build", mode: "production" },
       );
       const rscBuildIdentity = readServerRscBuildIdentity(plugins);
+      const rscCompatibilityId = readServerDefine(plugins, "__VINEXT_RSC_COMPATIBILITY_ID");
       const repeatedResult = await configPlugin.config(
         { root: tmpDir, plugins: [] },
         { command: "build", mode: "production" },
       );
 
       expect(result.define["process.env.__VINEXT_BUILD_ID"]).toBe(JSON.stringify(buildId));
-      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).not.toBe(
-        JSON.stringify(buildId),
-      );
-      expect(JSON.parse(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"])).toMatch(
-        /^[0-9a-f-]{36}$/,
-      );
-      expect(repeatedResult.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe(
-        result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"],
-      );
+      expect(rscCompatibilityId).not.toBe(JSON.stringify(buildId));
+      expect(JSON.parse(rscCompatibilityId)).toMatch(/^[0-9a-f-]{36}$/);
+      expect(readServerDefine(plugins, "__VINEXT_RSC_COMPATIBILITY_ID")).toBe(rscCompatibilityId);
+      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe('""');
+      expect(repeatedResult.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe('""');
       expect(result.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe('""');
       expect(JSON.parse(rscBuildIdentity)).toMatch(/^[0-9a-f]{32}$/);
       expect(repeatedResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe('""');
@@ -5085,9 +5083,14 @@ describe("Plugin config", () => {
         { command: "build", mode: "production" },
       );
 
-      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe(
-        JSON.stringify("public-deployment-id"),
-      );
+      expect(
+        plugins
+          .find((p) => p.name === "vinext:compiler-define-server")
+          .configEnvironment("rsc", {}, { command: "build" }).define[
+          "process.env.__VINEXT_RSC_COMPATIBILITY_ID"
+        ],
+      ).toBe(JSON.stringify("public-deployment-id"));
+      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe('""');
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
