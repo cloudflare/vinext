@@ -552,8 +552,18 @@ function isShellLoadingBoundaryMounted(options: {
   if (targetRoute === undefined || loadingTreePosition > targetRoute.treeSegments.length) {
     return false;
   }
+  // A not-found or error boundary payload renders its fallback in place of the
+  // route's tree, so none of the route's loading boundaries is mounted.
+  if (
+    !Object.keys(options.currentElements).some(
+      (key) => AppElementsWire.parseElementKey(key)?.kind === "page",
+    )
+  ) {
+    return false;
+  }
   const currentMetadata = AppElementsWire.readMetadata(options.currentElements);
-  // An intercepted tree renders a different branch than its route id names.
+  // An intercepted tree's params may belong to the intercepted route rather
+  // than the one its route id names, so it keeps the shell.
   if (currentMetadata.interception !== null || currentMetadata.interceptionContext !== null) {
     return false;
   }
@@ -591,7 +601,8 @@ function isShellLoadingBoundaryMounted(options: {
  * rendered shell. Do not commit that ancestor fallback when one of those
  * omitted layouts is already mounted with the same semantic identity. Next.js
  * keeps the shared segment active in this case, which also means the ancestor
- * loading boundary does not re-trigger.
+ * loading boundary does not re-trigger. The shell is also refused when the
+ * boundary it stops at is itself already mounted under the same key.
  */
 export function canCommitOptimisticRouteTemplate(options: {
   currentElements: AppElements;

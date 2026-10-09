@@ -725,13 +725,17 @@ describe("App Router optimistic routing", () => {
         patternParts: ["p", ":id", "b"],
       }),
     ]);
-    const currentElementsFor = (routeId: string): AppElements =>
+    const currentMetadataFor = (routeId: string): AppElements =>
       AppElementsWire.createMetadataEntries({
         interceptionContext: null,
         layoutIds: [],
         rootLayoutTreePath: "/",
         routeId,
       });
+    const currentElementsFor = (routeId: string): AppElements => ({
+      ...currentMetadataFor(routeId),
+      [`page:${routeId.slice("route:".length)}`]: null,
+    });
     const createShellTemplate = (
       pattern: string,
       href: string,
@@ -788,21 +792,13 @@ describe("App Router optimistic routing", () => {
     // A route outside the manifest, or an intercepted current page, keeps the
     // shell.
     expect(canCommit(twoShell, "route:/missing")).toBe(true);
+    // A not-found or error boundary payload has no page tree.
     expect(
       canCommitOptimisticRouteTemplate({
-        currentElements: AppElementsWire.createMetadataEntries({
-          interception: {
-            sourceMatchedUrl: "/s/one",
-            sourceRouteId: AppElementsWire.encodeRouteId("/s/one", null),
-            slotId: AppElementsWire.encodeSlotId("modal", "/s/one"),
-            targetMatchedUrl: "/s/one",
-            targetRouteId: AppElementsWire.encodeRouteId("/s/one", null),
-          },
-          interceptionContext: null,
-          layoutIds: [],
-          rootLayoutTreePath: "/",
-          routeId: "route:/s/one",
-        }),
+        currentElements: {
+          ...currentMetadataFor("route:/s/one"),
+          "route:/s/one": createElement("p", null, "Not found"),
+        },
         currentLayoutIds: [],
         currentParams: {},
         routeManifest,
@@ -813,12 +809,41 @@ describe("App Router optimistic routing", () => {
     ).toBe(true);
     expect(
       canCommitOptimisticRouteTemplate({
-        currentElements: AppElementsWire.createMetadataEntries({
-          interceptionContext: "/s/one",
-          layoutIds: [],
-          rootLayoutTreePath: "/",
-          routeId: "route:/s/one",
-        }),
+        currentElements: {
+          ...AppElementsWire.createMetadataEntries({
+            interception: {
+              sourceMatchedUrl: "/s/one",
+              sourceRouteId: AppElementsWire.encodeRouteId("/s/one", null),
+              slotId: AppElementsWire.encodeSlotId("modal", "/s/one"),
+              targetMatchedUrl: "/s/one",
+              targetRouteId: AppElementsWire.encodeRouteId("/s/one", null),
+            },
+            interceptionContext: null,
+            layoutIds: [],
+            rootLayoutTreePath: "/",
+            routeId: "route:/s/one",
+          }),
+          "page:/s/one": null,
+        },
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: "/s/one",
+            layoutIds: [],
+            rootLayoutTreePath: "/",
+            routeId: "route:/s/one",
+          }),
+          "page:/s/one": null,
+        },
         currentLayoutIds: [],
         currentParams: {},
         routeManifest,
