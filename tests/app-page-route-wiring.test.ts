@@ -14,6 +14,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   AppElementsWire,
@@ -1335,6 +1336,7 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(0);
     const html = await renderRouteEntry(elements, "route:/dashboard/slow");
     expect(html).toContain("Route loading");
     expect(html).not.toContain("Page");
