@@ -24,7 +24,10 @@ export default defineConfig({
     compatibilityDate: "2026-04-08",
     compatibilityFlags: ["nodejs_compat"],
     previewUrls: true,
-    assets: { notFoundHandling: "none" },
+    assets: {
+      notFoundHandling: "none",
+      runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
+    },
     env: {
       ...responseStore.applicationWorker.env,
       ASSETS: bindings.assets(),
