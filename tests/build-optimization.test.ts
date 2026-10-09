@@ -2882,7 +2882,8 @@ describe("next/dynamic preload metadata transform", () => {
   it("normalises a symlinked resolved path to the real root-relative manifest key", async () => {
     // pnpm/Cloudflare resolve modules through symlinks; the resolved id may not
     // share the (possibly symlinked) root prefix. Without realpath normalisation
-    // the module is dropped and the preload silently disappears.
+    // it would get a `../` key that misses the manifest key, and the preload
+    // would silently disappear.
     const realRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-real-"));
     const linkParent = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-link-"));
     const linkRoot = path.join(linkParent, "root");
