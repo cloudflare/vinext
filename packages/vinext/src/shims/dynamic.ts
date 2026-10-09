@@ -220,8 +220,9 @@ function useIsAppRouterTree(): boolean {
  * after a text node leaves a `<!-- -->` separator behind. Next.js avoids it by
  * hinting scripts with ReactDOM.preload(), which renders nothing. vinext
  * renders real modulepreload links (preloadModule() drops the nonce and
- * fetchPriority), so they go where no text precedes them: first inside the
- * boundary, or after the content when there is no boundary. Stylesheets stay
+ * fetchPriority), so they go where text rarely precedes them: first inside the
+ * boundary, or after the content when there is no boundary (a component whose
+ * output ends in text still gets a separator after it). Stylesheets stay
  * before the boundary: a precedence stylesheet inside it makes React outline
  * the boundary even when its content is already resolved, and rendering them
  * ahead of the content keeps their nonce when the content links the same CSS.
