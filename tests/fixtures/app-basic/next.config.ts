@@ -278,6 +278,18 @@ const nextConfig: NextConfig = {
           { key: "X-Action-Header-Collision", value: "source" },
         ],
       },
+      // Header-only action redirects already carry the source config headers,
+      // so finalization must not apply them again (duplicate Set-Cookie, or a
+      // restored Flight Content-Type on an empty body). Gated on a probe header
+      // so only the integration test opts in.
+      {
+        source: "/nextjs-compat/action-redirect-middleware",
+        has: [{ type: "header", key: "x-action-config-header-probe" }],
+        headers: [
+          { key: "Set-Cookie", value: "action-config-cookie=1; Path=/" },
+          { key: "Content-Type", value: "text/x-component" },
+        ],
+      },
       // Regression for #2788: this discovery Link must coexist with the
       // React preload Link emitted by app/config-link-preload/page.tsx.
       // Both rules match intentionally: Next.js keeps the last non-cookie

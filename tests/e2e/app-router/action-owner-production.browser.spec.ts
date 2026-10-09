@@ -421,7 +421,10 @@ test.describe("production server action ownership", () => {
     const response = await postAction(page, "/ownership/report/public", app.actionIds.redirectTo, [
       "/ownership/report/admin/secret",
     ]);
-    expect(response.status).toBe(303);
+    // Client-handled (fetch) action redirects answer with 200, not 303 —
+    // see vercel/next.js#96310. A 303 is reserved for progressive
+    // enhancement (no-JS) form submissions.
+    expect(response.status).toBe(200);
     expect(response.headers["x-action-redirect"]).toBe("/ownership/report/admin/secret");
     expect(response.body).toBe("");
     expect(response.body).not.toContain("ADMIN_SECRET_MARKER_42");
@@ -431,9 +434,38 @@ test.describe("production server action ownership", () => {
     const response = await postAction(page, "/ownership/report/shared", app.actionIds.redirectTo, [
       "https://example.com/destination",
     ]);
-    expect(response.status).toBe(303);
+    // Client-handled (fetch) action redirects answer with 200, not 303 —
+    // see vercel/next.js#96310.
+    expect(response.status).toBe(200);
     expect(response.headers["x-action-redirect"]).toBe("https://example.com/destination");
     expect(response.body).toBe("");
+  });
+
+  test("applies config headers once to a forwarded header-only redirect", async () => {
+    // Node fetch, not the page: browser fetch hides Set-Cookie.
+    const response = await fetch(`${app.baseUrl}/ownership/report/shared`, {
+      body: JSON.stringify(["https://example.com/destination"]),
+      headers: {
+        "content-type": "text/plain;charset=UTF-8",
+        "next-action": app.actionIds.redirectTo,
+        origin: app.baseUrl,
+        "x-action-config-header-probe": "1",
+      },
+      method: "POST",
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-action-redirect")).toBe("https://example.com/destination");
+    expect(await response.text()).toBe("");
+    // A Flight Content-Type on the empty body would make the client decode it
+    // instead of taking the header-only navigation path.
+    expect(response.headers.get("content-type")).toBeNull();
+    expect(
+      response.headers
+        .getSetCookie()
+        .filter((cookie) => cookie.startsWith("action-config-cookie=")),
+    ).toHaveLength(1);
   });
 
   test("blocks encrypted closure replay across actions", async ({ page }) => {

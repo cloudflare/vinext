@@ -345,7 +345,7 @@ describe("server action forwarding", () => {
       options({
         async dispatch() {
           return new Response(null, {
-            status: 303,
+            status: 200,
             headers: {
               [ACTION_REDIRECT_HEADER]: "https://other.example/path",
               [ACTION_REDIRECT_STATUS_HEADER]: "307",
@@ -361,7 +361,7 @@ describe("server action forwarding", () => {
       }),
     );
 
-    expect(response?.status).toBe(303);
+    expect(response?.status).toBe(200);
     expect(response?.headers.get(ACTION_REDIRECT_HEADER)).toBe("https://other.example/path");
     expect(response?.headers.get(ACTION_REDIRECT_STATUS_HEADER)).toBe("307");
     expect(response?.headers.get(ACTION_REDIRECT_TYPE_HEADER)).toBe("push");

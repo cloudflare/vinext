@@ -1,6 +1,6 @@
 "use server";
 
-import { redirect } from "next/navigation";
+import { permanentRedirect, redirect } from "next/navigation";
 
 /**
  * Redirects to `/admin`, which this fixture's middleware blocks with a 403.
@@ -45,4 +45,12 @@ export async function redirectToAbout(): Promise<void> {
 
 export async function redirectToPagesRoute(): Promise<void> {
   redirect("/old-school");
+}
+
+export async function permanentRedirectToAbout(): Promise<void> {
+  permanentRedirect("/about");
+}
+
+export async function redirectToExternal(): Promise<void> {
+  redirect("https://example.com/destination");
 }

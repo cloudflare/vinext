@@ -9,6 +9,7 @@ import {
   NEXTJS_ACTION_NOT_FOUND_HEADER,
 } from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
 import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
@@ -125,11 +126,21 @@ function filterActionForwardResponse(
   const preserveResponseStatus =
     response.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
     response.headers.has(ACTION_REDIRECT_HEADER);
-  return new Response(response.body, {
+  const filteredResponse = new Response(response.body, {
     headers,
     status: preserveResponseStatus ? response.status : (sourceMiddlewareStatus ?? response.status),
     statusText: response.statusText,
   });
+  // The owner already applied config headers to a header-only action redirect
+  // and marked it; carry that through this new wrapper. At 200 the source
+  // request's finalization would otherwise apply its own on top (duplicate
+  // Set-Cookie, or a Flight Content-Type restored onto the empty body).
+  const isHeaderOnlyActionRedirect =
+    response.headers.has(ACTION_REDIRECT_HEADER) &&
+    !response.headers.get("content-type")?.startsWith("text/x-component");
+  return isHeaderOnlyActionRedirect
+    ? markAppRscResponseConfigHeadersApplied(filteredResponse)
+    : filteredResponse;
 }
 
 function emptyActionForwardResponse(middlewareContext: AppMiddlewareContext): Response {
