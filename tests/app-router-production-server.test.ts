@@ -849,7 +849,7 @@ describe("App Router Production server (startProdServer)", () => {
   it("links next/dynamic CSS for a loader target outside the Vite root", async () => {
     const clientManifest = JSON.parse(
       fs.readFileSync(path.join(outDir, "client", ".vite", "manifest.json"), "utf8"),
-    ) as Record<string, { css?: string[]; isDynamicEntry?: boolean }>;
+    ) as Record<string, { file: string; css?: string[]; isDynamicEntry?: boolean }>;
     const bannerKey = Object.keys(clientManifest).find((key) =>
       key.endsWith("/fake-css-module-lib/dynamic-banner.js"),
     );
@@ -864,12 +864,18 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html).toContain('id="out-of-root-dynamic-banner"');
 
-    const dynamicStylesheetHrefs = (html.match(/<link\b[^>]*>/g) ?? [])
+    const linkTags = html.match(/<link\b[^>]*>/g) ?? [];
+    const hrefOf = (tag: string) => /\bhref="([^"]+)"/.exec(tag)?.[1];
+    const dynamicStylesheetHrefs = linkTags
       .filter((tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag))
-      .map((tag) => /\bhref="([^"]+)"/.exec(tag)?.[1]);
+      .map(hrefOf);
     for (const cssFile of bannerEntry.css!) {
       expect(dynamicStylesheetHrefs).toContain(`/${cssFile}`);
     }
+    const dynamicScriptPreloadHrefs = linkTags
+      .filter((tag) => /\brel="modulepreload"/.test(tag) && /\bfetchpriority="low"/i.test(tag))
+      .map(hrefOf);
+    expect(dynamicScriptPreloadHrefs).toContain(`/${bannerEntry.file}`);
   });
 
   it("emits next/dynamic chunk preloads without a nonce when no CSP is set", async () => {
