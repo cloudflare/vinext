@@ -9,6 +9,7 @@ import {
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { DEFAULT_GLOBAL_NOT_FOUND_MODULE } from "./default-global-not-found-module.js";
 import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
+import { DEFAULT_ROOT_LAYOUT_MODULE } from "./default-root-layout-module.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
@@ -256,8 +257,14 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // Page-triggered notFound() calls (route is non-null) keep using the
       // regular not-found.tsx boundary inside the route's layouts.
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
-      const useGlobalNotFound =
-        statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
+      const isRouteMissNotFound = statusCode === 404 && !route && !opts?.boundaryComponent;
+      const useGlobalNotFound = isRouteMissNotFound && globalNotFoundEnabled;
+      // Without app/layout.tsx, Next.js wraps /_not-found in its built-in
+      // <html><body> layout rather than any nested root layout.
+      const routeMissRootLayouts =
+        isRouteMissNotFound && rootLayouts.length === 0
+          ? [DEFAULT_ROOT_LAYOUT_MODULE as unknown as TModule]
+          : rootLayouts;
 
       if (useGlobalNotFound && loadGlobalNotFoundModule) {
         const globalNotFoundModule = await resolveGlobalNotFoundModule();
@@ -340,7 +347,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         requestUrl: request.url,
         resolveChildSegments,
         rootForbiddenModule,
-        rootLayouts: useGlobalNotFound ? [] : rootLayouts,
+        rootLayouts: useGlobalNotFound ? [] : routeMissRootLayouts,
         rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
         route: useGlobalNotFound ? null : route,

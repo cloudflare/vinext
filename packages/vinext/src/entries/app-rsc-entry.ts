@@ -219,6 +219,13 @@ type AppRouterConfig = {
    */
   globalNotFoundPath?: string | null;
   /**
+   * Absolute path to `app/not-found.{tsx,ts,js,jsx}` when present. Route misses
+   * render it when there is no `app/layout.{tsx,ts,js,jsx}`.
+   */
+  appNotFoundPath?: string | null;
+  /** Absolute path to `app/layout.{tsx,ts,js,jsx}` when present. */
+  appLayoutPath?: string | null;
+  /**
    * When true, the project has a `pages/` directory alongside the App Router.
    * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
    * so `prerenderPages` can call `getStaticPaths` via `wrangler unstable_startWorker`
@@ -701,6 +708,8 @@ export function generateRscEntry(
     globalErrorPath,
     globalNotFoundPath:
       config?.globalNotFound === true ? (config.globalNotFoundPath ?? null) : null,
+    appNotFoundPath: config?.appNotFoundPath ?? null,
+    appLayoutPath: config?.appLayoutPath ?? null,
   });
   const {
     imports,

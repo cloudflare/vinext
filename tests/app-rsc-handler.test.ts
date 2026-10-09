@@ -162,7 +162,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
 
   return createAppRscHandler<TestRoute>({
     assetPrefix: overrides.assetPrefix,
-    basePath: "/docs",
+    basePath: overrides.basePath ?? "/docs",
     buildId: overrides.buildId ?? "build-id",
     cacheabilityRequestProjection: overrides.cacheabilityRequestProjection,
     clearRequestContext: overrides.clearRequestContext ?? (() => {}),
@@ -407,6 +407,80 @@ describe("createAppRscHandler", () => {
       expect(response.status).toBe(404);
       expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
       expect(await response.text()).toBe("styled-not-found");
+    });
+  });
+
+  // A URL can't stand in for Next.js's /_not-found when a top-level dynamic
+  // or catch-all route would claim it (#3680).
+  describe("prerender not-found endpoint", () => {
+    function createCatchAllHandler(basePath: string) {
+      const matchRoute = vi.fn((pathname: string) => ({
+        params: { slug: pathname.slice(1).split("/") },
+        route: createPageRoute(),
+      }));
+      const runMiddleware = vi.fn(async ({ cleanPathname }: { cleanPathname: string }) => ({
+        kind: "continue" as const,
+        cleanPathname,
+        rewritten: false,
+        search: null,
+      }));
+      const renderNotFound = vi.fn(async () => new Response("route-miss 404", { status: 404 }));
+      const handler = createHandler({
+        basePath,
+        configHeaders: [],
+        matchRoute,
+        renderNotFound,
+        runMiddleware,
+      });
+      return { handler, matchRoute, renderNotFound, runMiddleware };
+    }
+
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("renders the route-miss 404 without routing or middleware", async () => {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      const { handler, matchRoute, renderNotFound, runMiddleware } = createCatchAllHandler("");
+
+      const response = await handler(
+        new Request("https://example.test/__vinext/prerender/not-found"),
+        null,
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(await response.text()).toBe("route-miss 404");
+      expect(renderNotFound).toHaveBeenCalledWith(expect.objectContaining({ route: null }));
+      expect(matchRoute).not.toHaveBeenCalled();
+      expect(runMiddleware).not.toHaveBeenCalled();
+    });
+
+    it("routes the path like any URL outside the prerender phase", async () => {
+      const { handler, matchRoute, renderNotFound } = createCatchAllHandler("");
+
+      const response = await handler(
+        new Request("https://example.test/__vinext/prerender/not-found"),
+        null,
+      );
+
+      expect(await response.text()).toBe("page");
+      expect(matchRoute).toHaveBeenCalled();
+      expect(renderNotFound).not.toHaveBeenCalled();
+    });
+
+    // prod-server gates only the unprefixed spelling behind the prerender secret.
+    it("routes a basePath-prefixed copy of the path like any URL", async () => {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      const { handler, renderNotFound } = createCatchAllHandler("/docs");
+
+      const response = await handler(
+        new Request("https://example.test/docs/__vinext/prerender/not-found"),
+        null,
+      );
+
+      expect(await response.text()).toBe("page");
+      expect(renderNotFound).not.toHaveBeenCalled();
     });
   });
 

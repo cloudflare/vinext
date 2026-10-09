@@ -6,7 +6,12 @@ import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  buildAppFixture,
+  createIsolatedFixture,
+  testCacheDir,
+} from "./helpers.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
@@ -971,4 +976,243 @@ describe("use cache production argument isolation", () => {
     expect(result.after.value).toEqual(result.first.value);
     expect(result.after.execution).toBe(result.first.execution + 1);
   });
+});
+
+describe("hybrid static export 404", () => {
+  it("keeps the App route-miss 404.html when pages/ only has _error (#3680)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-hybrid-dynamic-root-404-"));
+    try {
+      const files: Record<string, string> = {
+        "package.json": JSON.stringify({ type: "module" }),
+        "next.config.mjs": `export default { output: "export" };`,
+        "app/[lang]/layout.tsx": `export function generateStaticParams() {
+  return [{ lang: "en" }];
+}
+export default async function RootLayout({
+  children,
+  params,
+}: {
+  children: React.ReactNode;
+  params: Promise<{ lang: string }>;
+}) {
+  const { lang } = await params;
+  return (
+    <html lang={lang}>
+      <body>
+        <header id="lang-header">Locale: {lang}</header>
+        {children}
+      </body>
+    </html>
+  );
+}
+`,
+        "app/[lang]/page.tsx": `import { notFound } from "next/navigation";
+export default async function Page({ params }: { params: Promise<{ lang: string }> }) {
+  const { lang } = await params;
+  if (lang !== "en") notFound();
+  return <h1>Localized home</h1>;
+}
+`,
+        "pages/_error.tsx": `export default function ErrorPage() {
+  return <p>Pages error</p>;
+}
+`,
+        "pages/about.tsx": `export default function About() {
+  return <p>About</p>;
+}
+`,
+      };
+      for (const [file, content] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(tmpDir, file)), { recursive: true });
+        fs.writeFileSync(path.join(tmpDir, file), content);
+      }
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      await runPrerender({ root: tmpDir, concurrency: 1 });
+
+      // Next.js exports the app's /_not-found as 404.html; `_error` would need
+      // a nonexistent URL, which app/[lang] claims.
+      const html404 = fs.readFileSync(path.join(tmpDir, "dist", "client", "404.html"), "utf-8");
+      expect(html404).toMatch(/^<!DOCTYPE html><html><head>/);
+      expect(html404).toContain("This page could not be found.");
+      expect(html404).not.toContain("lang-header");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+});
+
+describe("route miss without App routes", () => {
+  it("wraps app/not-found.tsx in app/layout.tsx and owns its actions when no App route exists", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-layout-no-routes-"));
+    try {
+      const files: Record<string, string> = {
+        "package.json": JSON.stringify({ type: "module" }),
+        "app/layout.tsx": `import { subscribe } from "./layout-actions";
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" data-root="app-layout">
+      <body>
+        <form action={subscribe}>
+          <button>Subscribe</button>
+        </form>
+        {children}
+      </body>
+    </html>
+  );
+}
+`,
+        "app/layout-actions.ts": `"use server";
+export async function subscribe() {}
+`,
+        "app/not-found.tsx": `export default function NotFound() {
+  return <h1 id="app-not-found">App not found</h1>;
+}
+`,
+        "pages/about.tsx": `export default function About() {
+  return <p>About</p>;
+}
+`,
+      };
+      for (const [file, content] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(tmpDir, file)), { recursive: true });
+        fs.writeFileSync(path.join(tmpDir, file), content);
+      }
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const rscEntryPath = path.join(tmpDir, "dist", "server", "index.js");
+      const built: { default?: unknown } = await import(pathToFileURL(rscEntryPath).href);
+      expect(isBuiltAppHandler(built.default)).toBe(true);
+      if (!isBuiltAppHandler(built.default)) return;
+      const response = await built.default(new Request("http://localhost/no/such/route"));
+      expect(response).toBeInstanceOf(Response);
+      if (!(response instanceof Response)) return;
+      expect(response.status).toBe(404);
+      const html = await response.text();
+      expect(html).toContain('data-root="app-layout"');
+      expect(html).toContain('<h1 id="app-not-found">App not found</h1>');
+
+      // The layout renders on route misses at any path, so its action has no
+      // owner route to forward to.
+      const { default: actionOwners } = (await import(
+        pathToFileURL(path.join(tmpDir, "dist", "server", "__vinext_action_owner_manifest.js")).href
+      )) as { default: Record<string, string[]> };
+      const subscribeOwners = Object.entries(actionOwners)
+        .filter(([actionId]) => actionId.endsWith("#subscribe"))
+        .map(([, owners]) => owners);
+      expect(subscribeOwners).toEqual([["*"]]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+});
+
+describe("server action owner manifest build", () => {
+  // With global-not-found, route misses render it instead of app/not-found.tsx.
+  for (const globalNotFound of [false, true]) {
+    it(`lets app/not-found.tsx own its actions at every path (globalNotFound: ${globalNotFound})`, async () => {
+      const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dynamic-root-actions-"));
+      try {
+        const files: Record<string, string> = {
+          "package.json": JSON.stringify({ type: "module" }),
+          ...(globalNotFound
+            ? {
+                "app/global-not-found.tsx": `export default function GlobalNotFound() {
+  return (
+    <html>
+      <body>Global not found</body>
+    </html>
+  );
+}
+`,
+              }
+            : {}),
+          "app/[lang]/layout.tsx": `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+          "app/[lang]/page.tsx": `export default function Page() {
+  return <h1>Localized home</h1>;
+}
+`,
+          // Every route reaches this boundary instead of app/not-found.tsx.
+          "app/[lang]/not-found.tsx": `export default function LocalizedNotFound() {
+  return <h1>Localized not found</h1>;
+}
+`,
+          "app/not-found-actions.ts": `"use server";
+export async function ping() {
+  return "pong";
+}
+`,
+          "app/not-found.tsx": `import { ping } from "./not-found-actions";
+export default function NotFound() {
+  return (
+    <form action={ping}>
+      <button>Ping</button>
+    </form>
+  );
+}
+`,
+        };
+        for (const [file, content] of Object.entries(files)) {
+          fs.mkdirSync(path.dirname(path.join(fixtureDir, file)), { recursive: true });
+          fs.writeFileSync(path.join(fixtureDir, file), content);
+        }
+        fs.symlinkSync(
+          path.resolve(import.meta.dirname, "../node_modules"),
+          path.join(fixtureDir, "node_modules"),
+          "junction",
+        );
+
+        const rscBundlePath = await buildAppFixture(
+          fixtureDir,
+          globalNotFound ? { experimental: { globalNotFound: true } } : undefined,
+        );
+        const manifestPath = path.join(
+          path.dirname(rscBundlePath),
+          "__vinext_action_owner_manifest.js",
+        );
+        const { default: manifest } = (await import(pathToFileURL(manifestPath).href)) as {
+          default: Record<string, string[]>;
+        };
+
+        // A route miss renders app/not-found.tsx at any path, so it has no
+        // owner route to forward its actions to.
+        const pingOwners = Object.entries(manifest).filter(([actionId]) =>
+          actionId.endsWith("#ping"),
+        );
+        expect(pingOwners.map(([, owners]) => owners)).toEqual(globalNotFound ? [] : [["*"]]);
+      } finally {
+        fs.rmSync(fixtureDir, { recursive: true, force: true });
+      }
+    }, 120_000);
+  }
 });

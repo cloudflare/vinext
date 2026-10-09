@@ -80,6 +80,7 @@ import type {
 import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret, readServerCompress } from "../build/server-manifest.js";
 import {
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -517,6 +518,15 @@ function installClientBuildManifestGlobals(
     crossOrigin,
   });
 }
+/** Pathname the RSC handler would see for `rawUrl`, or null if it is not a URL. */
+function parseWhatwgPathname(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl, "http://localhost").pathname;
+  } catch {
+    return null;
+  }
+}
+
 function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
 }
@@ -1875,8 +1885,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       return;
     }
 
-    // Internal prerender endpoint — only reachable with the correct build-time secret.
-    // Used by the prerender phase to fetch generateStaticParams results via HTTP.
+    // Internal prerender endpoints — only reachable with the correct build-time secret.
+    // Used by the prerender phase to fetch generateStaticParams results via HTTP
+    // and to render the route-miss 404 for 404.html.
     // We authenticate the request here and then forward to the RSC handler so that
     // the handler's in-process generateStaticParamsMap (not a named module export)
     // is used. This is required for Cloudflare Workers builds where the named export
@@ -1884,7 +1895,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     if (
       pathname === "/__vinext/prerender/static-params" ||
       pathname === "/__vinext/prerender/pages-static-paths" ||
-      pathname === "/__vinext/prerender/metadata-routes"
+      pathname === "/__vinext/prerender/metadata-routes" ||
+      pathname === VINEXT_PRERENDER_NOT_FOUND_PATH ||
+      // The RSC handler matches this endpoint on the WHATWG-parsed pathname,
+      // which differs from `pathname` above for absolute-form request targets
+      // (`GET http://host/__vinext/prerender/not-found`). That parse never
+      // decodes letters, so the raw URL contains "not-found".
+      (rawUrl.includes("not-found") &&
+        parseWhatwgPathname(rawUrl) === VINEXT_PRERENDER_NOT_FOUND_PATH)
     ) {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {

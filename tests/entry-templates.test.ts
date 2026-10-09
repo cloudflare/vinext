@@ -864,6 +864,132 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.rootLayoutVars).toEqual(["mod_3"]);
   });
 
+  // Next.js builds /_not-found from app/ alone, so without app/layout.tsx a
+  // route miss never renders a nested root layout, whether it needs params
+  // (app/[lang]/layout.tsx) or sits in a route group (app/(site)/layout.tsx).
+  for (const [rootDir, rootParamNames] of [
+    ["[lang]", ["lang"]],
+    ["(site)", []],
+  ] as const) {
+    it(`derives route-miss root boundaries from app/ alone when the root layout is app/${rootDir}/layout.tsx`, () => {
+      const routes = [
+        {
+          pattern: rootParamNames.length > 0 ? "/:lang" : "/",
+          patternParts: rootParamNames.length > 0 ? [":lang"] : [],
+          pagePath: `/tmp/test/app/${rootDir}/page.tsx`,
+          routePath: null,
+          layouts: [`/tmp/test/app/${rootDir}/layout.tsx`],
+          templates: [],
+          parallelSlots: [],
+          loadingPath: null,
+          errorPath: null,
+          layoutErrorPaths: [null],
+          notFoundPath: `/tmp/test/app/${rootDir}/not-found.tsx`,
+          notFoundPaths: [`/tmp/test/app/${rootDir}/not-found.tsx`],
+          forbiddenPath: `/tmp/test/app/${rootDir}/forbidden.tsx`,
+          forbiddenPaths: [`/tmp/test/app/${rootDir}/forbidden.tsx`],
+          unauthorizedPath: `/tmp/test/app/${rootDir}/unauthorized.tsx`,
+          unauthorizedPaths: [`/tmp/test/app/${rootDir}/unauthorized.tsx`],
+          routeSegments: [rootDir],
+          templateTreePositions: [],
+          layoutTreePositions: [1],
+          isDynamic: rootParamNames.length > 0,
+          params: [...rootParamNames],
+          rootParamNames: [...rootParamNames],
+          siblingIntercepts: [],
+        },
+      ] satisfies AppRoute[];
+
+      const withoutAppNotFound = buildAppRscManifestCode({
+        routes,
+        metadataRoutes: [],
+        globalErrorPath: null,
+      });
+      expect(withoutAppNotFound.rootNotFoundVar).toBeNull();
+      expect(withoutAppNotFound.rootLayoutVars).toEqual([]);
+
+      const withAppNotFound = buildAppRscManifestCode({
+        routes,
+        metadataRoutes: [],
+        globalErrorPath: null,
+        appNotFoundPath: "/tmp/test/app/not-found.tsx",
+      });
+      expect(withAppNotFound.imports).toContain(
+        `import * as ${withAppNotFound.rootNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+      );
+      expect(withAppNotFound.imports.join("\n")).not.toContain(`${rootDir}/not-found.tsx";`);
+      expect(withAppNotFound.rootLayoutVars).toEqual([]);
+    });
+  }
+
+  it("keeps nested group layouts and not-found files out of route misses under app/layout.tsx", () => {
+    const route = (notFoundPaths: (string | null)[]) =>
+      ({
+        pattern: "/",
+        patternParts: [],
+        pagePath: "/tmp/test/app/(main)/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx", "/tmp/test/app/(main)/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null, null],
+        notFoundPath: "/tmp/test/app/(main)/not-found.tsx",
+        notFoundPaths,
+        forbiddenPath: null,
+        forbiddenPaths: [null, null],
+        unauthorizedPath: null,
+        unauthorizedPaths: [null, null],
+        routeSegments: ["(main)"],
+        templateTreePositions: [],
+        layoutTreePositions: [0, 1],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      }) satisfies AppRoute;
+
+    const withAppNotFound = buildAppRscManifestCode({
+      routes: [route(["/tmp/test/app/not-found.tsx", "/tmp/test/app/(main)/not-found.tsx"])],
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+    expect(withAppNotFound.imports).toContain(
+      `import * as ${withAppNotFound.rootNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+    );
+    expect(withAppNotFound.rootLayoutVars).toHaveLength(1);
+    expect(withAppNotFound.imports).toContain(
+      `import * as ${withAppNotFound.rootLayoutVars[0]} from "/tmp/test/app/layout.tsx";`,
+    );
+
+    // Without app/not-found.tsx a route miss gets the built-in not-found.
+    const withoutAppNotFound = buildAppRscManifestCode({
+      routes: [route([null, "/tmp/test/app/(main)/not-found.tsx"])],
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+    expect(withoutAppNotFound.rootNotFoundVar).toBeNull();
+  });
+
+  // An app with no App pages (e.g. hybrid, with only pages/) has no routes to
+  // reveal app/layout.tsx, so it comes from the app directory scan.
+  it("derives route-miss root boundaries from app/ when there are no App routes", () => {
+    const manifest = buildAppRscManifestCode({
+      routes: [],
+      metadataRoutes: [],
+      globalErrorPath: null,
+      appLayoutPath: "/tmp/test/app/layout.tsx",
+      appNotFoundPath: "/tmp/test/app/not-found.tsx",
+    });
+    expect(manifest.imports).toContain(
+      `import * as ${manifest.rootLayoutVars[0]} from "/tmp/test/app/layout.tsx";`,
+    );
+    expect(manifest.rootLayoutVars).toHaveLength(1);
+    expect(manifest.imports).toContain(
+      `import * as ${manifest.rootNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+    );
+  });
+
   it("exposes layout-level generateStaticParams to App Router prerender", () => {
     // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts

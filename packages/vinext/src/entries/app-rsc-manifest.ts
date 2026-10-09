@@ -57,6 +57,13 @@ type BuildAppRscManifestCodeOptions = {
    * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
    */
   globalNotFoundPath?: string | null;
+  /** Optional `app/not-found.tsx` path, directly in the app directory. */
+  appNotFoundPath?: string | null;
+  /**
+   * Optional `app/layout.tsx` path, directly in the app directory. Routes
+   * reveal it too, but an app with no App pages has no routes.
+   */
+  appLayoutPath?: string | null;
 };
 
 function findRootBoundaryRoute(routes: readonly AppRoute[]): AppRoute | undefined {
@@ -64,14 +71,6 @@ function findRootBoundaryRoute(routes: readonly AppRoute[]): AppRoute | undefine
     routes.find((route) => route.pattern === "/") ??
     routes.find((route) => route.layouts.length > 0 && route.layoutTreePositions.length > 0)
   );
-}
-
-function rootRouteLayoutPaths(route: AppRoute | undefined): readonly string[] {
-  if (!route) return [];
-  if (route.pattern === "/") return route.layouts;
-
-  const rootPosition = route.layoutTreePositions[0];
-  return route.layouts.filter((_, index) => route.layoutTreePositions[index] === rootPosition);
 }
 
 function rootRouteBoundaryPath(
@@ -557,11 +556,19 @@ export function buildAppRscManifestCode(
   const routeEntries = buildRouteEntries(options.routes, imports);
 
   const rootRoute = findRootBoundaryRoute(options.routes);
-  const rootNotFoundPath = rootRouteBoundaryPath(
-    rootRoute,
-    rootRoute?.notFoundPaths,
-    rootRoute?.notFoundPath,
-  );
+  // Next.js builds /_not-found from app/ alone: app/layout.tsx, or without one
+  // its built-in <html><body> layout (which the fallback renderer adds when
+  // there are no root layouts), around app/not-found.tsx or the built-in one.
+  // A route miss never renders a nested layout or not-found, such as
+  // app/(site)/layout.tsx, or app/[lang]/layout.tsx (which would need params).
+  // @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+  const appLayoutRoute = rootRoute?.layoutTreePositions[0] === 0 ? rootRoute : undefined;
+  // Boundary arrays line up with layouts, so index 0 is the app/ boundary.
+  const rootNotFoundPath = appLayoutRoute
+    ? (appLayoutRoute.notFoundPaths[0] ?? null)
+    : (options.appNotFoundPath ?? null);
+  const appLayoutPath = appLayoutRoute?.layouts[0] ?? options.appLayoutPath ?? null;
+  const rootLayoutPaths = appLayoutPath ? [appLayoutPath] : [];
   const rootForbiddenPath = rootRouteBoundaryPath(
     rootRoute,
     rootRoute?.forbiddenPaths,
@@ -577,9 +584,7 @@ export function buildAppRscManifestCode(
   const rootUnauthorizedVar = rootUnauthorizedPath
     ? imports.getImportVar(rootUnauthorizedPath)
     : null;
-  const rootLayoutVars = rootRouteLayoutPaths(rootRoute).map((layoutPath) =>
-    imports.getImportVar(layoutPath),
-  );
+  const rootLayoutVars = rootLayoutPaths.map((layoutPath) => imports.getImportVar(layoutPath));
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;

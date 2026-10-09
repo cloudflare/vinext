@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { NextConfig } from "../packages/vinext/src/config/next-config.js";
@@ -201,4 +202,74 @@ describe("App Router Static export", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+});
+
+// Adapted from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+// ("should render the not found page without errors")
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+// Upstream checks the runtime route miss; this checks the exported 404.html
+// of the #3680 app, whose root layout throws for an unknown root param.
+describe("App Router static export with a dynamic root layout", () => {
+  it("renders 404.html without a root layout under a dynamic segment (#3680)", async () => {
+    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dynamic-root-export-"));
+    try {
+      const langDir = path.join(fixtureDir, "app", "[lang]");
+      fs.mkdirSync(langDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(langDir, "layout.tsx"),
+        `import { lang } from "next/root-params";
+export function generateStaticParams() {
+  return [{ lang: "en" }];
+}
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const locale = await lang();
+  if (locale !== "en") throw new Error(\`Unknown locale: \${locale}\`);
+  return (
+    <html lang={locale}>
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(langDir, "page.tsx"),
+        `export default function Page() {
+  return <h1>Localized home</h1>;
+}
+`,
+      );
+      fs.writeFileSync(path.join(fixtureDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(fixtureDir, "node_modules"),
+        "junction",
+      );
+
+      const rscBundlePath = await buildAppFixture(fixtureDir, { output: "export" });
+      const appDir = path.join(fixtureDir, "app");
+      const outDir = path.join(fixtureDir, "out");
+      const result = await staticExportApp({
+        routes: await appRouter(appDir),
+        appDir,
+        rscBundlePath,
+        outDir,
+        config: await resolveNextConfig({ output: "export" }),
+      });
+
+      expect(result.errors).toEqual([]);
+      expect(result.files).toContain("en.html");
+      expect(result.files).toContain("404.html");
+      const html404 = fs.readFileSync(path.join(outDir, "404.html"), "utf-8");
+      expect(html404).toMatch(/^<!DOCTYPE html><html><head>/);
+      expect(html404).toContain("This page could not be found.");
+      expect(html404).not.toContain("Unknown locale");
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

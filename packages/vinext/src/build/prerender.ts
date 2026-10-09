@@ -48,6 +48,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -159,6 +160,8 @@ export type PrerenderResult = {
   routes: PrerenderRouteResult[];
   /** Additional generated files that are not represented as route entries. */
   outputFiles?: string[];
+  /** True when the App Router's route-miss 404 was written as 404.html. */
+  appNotFoundRendered?: boolean;
 };
 
 export type PrerenderRouteResult =
@@ -312,6 +315,11 @@ type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
    * and passed here so `prerenderPages` does not need to locate the manifest itself.
    */
   _prerenderSecret?: string;
+  /**
+   * True when the App Router phase of a hybrid build already wrote 404.html.
+   * Next.js then uses the app's /_not-found instead of exporting `_error`.
+   */
+  _appRendered404?: boolean;
 };
 
 type PrerenderAppOptionsInternal = PrerenderAppOptions & {
@@ -1286,7 +1294,9 @@ export async function prerenderPages({
     const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
     const hasErrorPage = findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
     for (const locale of config.i18n?.locales ?? [undefined]) {
-      if (!hasCustom404 && !hasErrorPage) break;
+      // Next.js exports the app's /_not-found as 404.html instead of `_error`.
+      // @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+      if (!hasCustom404 && (!hasErrorPage || options._appRendered404)) break;
       try {
         const notFoundRes = await renderPage(
           localizePagesPath(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH, locale, config.i18n),
@@ -1423,8 +1433,8 @@ export async function prerenderApp({
     if (!prerenderSecret) {
       console.warn(
         "[vinext] Warning: prerender secret not found. " +
-          "/__vinext/prerender/* endpoints will return 403 and generateStaticParams will not be called. " +
-          "Run `vite build` to regenerate the secret.",
+          "/__vinext/prerender/* endpoints will return 403, generateStaticParams will not be called " +
+          "and 404.html will not be written. Run `vite build` to regenerate the secret.",
       );
     }
 
@@ -2209,17 +2219,13 @@ export async function prerenderApp({
         : [];
 
     // ── Render 404 page ───────────────────────────────────────────────────────
-    // Fetch a known-nonexistent URL to get the App Router's not-found response.
+    // Ask the server for its route-miss 404 directly. A nonexistent URL is not
+    // a reliable miss: a top-level dynamic or catch-all route would match it.
     // The RSC handler returns 404 with full HTML for the not-found.tsx page (or
     // the default Next.js 404). Write it to 404.html for static deployment.
+    let appNotFoundRendered = false;
     try {
-      const notFoundPath =
-        config.trailingSlash && !NOT_FOUND_SENTINEL_PATH.endsWith("/")
-          ? `${NOT_FOUND_SENTINEL_PATH}/`
-          : NOT_FOUND_SENTINEL_PATH;
-      const notFoundRequest = new Request(
-        `http://localhost${config.basePath ?? ""}${notFoundPath}`,
-      );
+      const notFoundRequest = new Request(`http://localhost${VINEXT_PRERENDER_NOT_FOUND_PATH}`);
       const notFoundRes = await runWithHeadersContext(
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),
@@ -2233,6 +2239,7 @@ export async function prerenderApp({
           revalidate: false,
           router: "app",
         });
+        appNotFoundRendered = true;
       }
     } catch (e) {
       // No custom 404. When the render-worker pool is active, a transport
@@ -2253,6 +2260,7 @@ export async function prerenderApp({
     return {
       routes: results,
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
+      ...(appNotFoundRendered ? { appNotFoundRendered } : {}),
     };
   } finally {
     try {

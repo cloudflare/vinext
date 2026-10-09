@@ -4890,6 +4890,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const globalNotFoundPath = nextConfig?.globalNotFound
               ? findFileWithExts(appDir, "global-not-found", fileMatcher)
               : null;
+            const appNotFoundPath = findFileWithExts(appDir, "not-found", fileMatcher);
+            const appLayoutPath = findFileWithExts(appDir, "layout", fileMatcher);
             // Collect Layer 1 (segment config) classifications for all layouts.
             // Layer 2 (module graph) runs later in renderChunk once Rollup's
             // module info is available.
@@ -4901,9 +4903,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               rscClassificationManifests.set(id, collectRouteClassificationManifest(routes));
               rscActionOwnerRoutes =
                 this.environment.config.command === "build" && hasServerActions ? routes : null;
-              rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
-                (path): path is string => path !== null,
-              );
+              // app/layout.tsx and app/not-found.tsx render for route misses at
+              // any path, so they own their actions everywhere, like Next.js's
+              // /_not-found entry. With global-not-found, route misses render
+              // that instead.
+              rscActionOwnerSharedRoots = [
+                globalErrorPath,
+                globalNotFoundPath,
+                ...(nextConfig?.globalNotFound ? [] : [appLayoutPath, appNotFoundPath]),
+              ].filter((path): path is string => path !== null);
             }
             const generateEntry =
               id === RESOLVED_APP_REQUEST_ENTRY
@@ -4967,6 +4975,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           : this.environment.config.publicDir,
                       ),
                 globalNotFoundPath,
+                appNotFoundPath,
+                appLayoutPath,
                 draftModeSecret,
                 prerenderSecret,
               },
