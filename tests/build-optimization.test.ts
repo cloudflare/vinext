@@ -4614,7 +4614,7 @@ export default function Page() { return visible; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it("keeps a var declarator that also writes a catch binding", () => {
+  it("keeps the catch-bound target of a var declarator", () => {
     const code = `
 import secret from './secret';
 var getServerSideProps, helper = secret;
@@ -4627,7 +4627,8 @@ export { getServerSideProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("var [getServerSideProps, helper] = [null, 42];");
+    expect(result).toContain("var [, helper] = [null, 42];");
+    expect(result).toContain("console.log(helper);");
     expect(result).not.toContain("./secret");
     expect(() => parseAst(result!)).not.toThrow();
   });
@@ -4644,6 +4645,50 @@ export default function Page() { return count; }
     expect(result).toContain("for (const __vinext_unused of [1, 2]) count++;");
     expect(result).toContain("for (const __vinext_unused in { a: 1 }) count++;");
     expect(result).not.toMatch(/\b(helper|other)\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("picks a throwaway loop target that does not collide with module names", () => {
+    const code = `
+let helper, __vinext_unused = 10, values = [];
+for (helper of [1, 2]) values.push(__vinext_unused);
+export function getStaticProps() { return { props: { helper } }; }
+export default function Page() { return values; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain(
+      "for (const ___vinext_unused of [1, 2]) values.push(__vinext_unused);",
+    );
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("prunes the module targets of a var declarator that also writes a catch binding", () => {
+    const code = `
+import secret from './secret';
+var getServerSideProps;
+try { throw 0; } catch (error) {
+  var [getServerSideProps = secret, error] = [, 42];
+  console.log(error);
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("var [, error] = [, 42];");
+    expect(result).not.toContain("./secret");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes destructuring co-targets that only the data export reads", () => {
+    const code = `
+import secret from './secret';
+const [getServerSideProps, helper] = [() => ({ props: { helper } }), secret];
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("./secret");
+    expect(result).not.toMatch(/\bhelper\b/);
     expect(() => parseAst(result!)).not.toThrow();
   });
 

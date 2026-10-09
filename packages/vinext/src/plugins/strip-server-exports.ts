@@ -23,7 +23,8 @@ const SERVER_EXPORTS = new Set([
   "unstable_getStaticPaths",
 ]);
 
-const UNUSED_LOOP_TARGET = "const __vinext_unused";
+// Stands in for a catch-bound target in `declaredNames`; it is never dead.
+const CATCH_BOUND_NAME = "\0catch-bound";
 
 const SERVER_PROPS_SSG_CONFLICT =
   "You can not use getStaticProps or getStaticPaths with getServerSideProps. To use SSG, please remove getServerSideProps";
@@ -445,6 +446,17 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   const bindings = new Map<string, Binding>();
   const redeclarations: Binding[] = [];
   const loopHeadDeclarations = new Set<PositionedNode>();
+  const catchBoundNames = new Map<PositionedNode, ReadonlySet<string>>();
+  // Names a declarator's pattern drops: its dead module targets only.
+  const removedNamesFor = (declarator: PositionedNode): ReadonlySet<string> => {
+    const catchBound = catchBoundNames.get(declarator);
+    if (!catchBound) return deadBindings;
+    return new Set([...deadBindings].filter((name) => !catchBound.has(name)));
+  };
+  // A throwaway loop target that cannot collide with any name in the module.
+  let unusedName = "__vinext_unused";
+  while (code.includes(unusedName)) unusedName = `_${unusedName}`;
+  const unusedLoopTarget = `const ${unusedName}`;
   const iterationHeadDeclarations = new Set<PositionedNode>();
   const declarationsOf = (name: string): Binding[] => {
     const binding = bindings.get(name);
@@ -607,18 +619,24 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       if (parent.kind === "var" && !varScope && owner && owner.type !== "ExportNamedDeclaration") {
         if (owner.init === parent || owner.left === parent) loopHeadDeclarations.add(parent);
         if (owner.left === parent) iterationHeadDeclarations.add(parent);
-        const declaredNames = bindingNames(node.id as PositionedNode);
-        for (const identifier of bindingIdentifiers(node.id as PositionedNode)) {
-          bindingPositions.add(identifier.start);
-        }
-        // A `var` redeclaring a catch parameter writes the catch binding, so a
-        // declarator with such a target is left alone.
         const identifiers = bindingIdentifiers(node.id as PositionedNode);
-        const writesCatchBinding = identifiers.some((identifier) =>
-          isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
+        for (const identifier of identifiers) bindingPositions.add(identifier.start);
+        // A `var` redeclaring a catch parameter writes the catch binding: that
+        // target is kept, and it keeps the shared initializer live.
+        const catchBound = new Set(
+          identifiers
+            .filter((identifier) =>
+              isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
+            )
+            .map((identifier) => identifier.name),
         );
-        for (const identifier of writesCatchBinding ? [] : identifiers) {
+        if (catchBound.size > 0) catchBoundNames.set(node, catchBound);
+        const declaredNames = identifiers.map((identifier) =>
+          catchBound.has(identifier.name) ? CATCH_BOUND_NAME : identifier.name,
+        );
+        for (const identifier of identifiers) {
           const name = identifier.name;
+          if (catchBound.has(name)) continue;
           const binding: Binding = {
             name,
             node,
@@ -800,7 +818,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           // Only dead helpers are written, so the loop still runs for its
           // iterable and body; the head gets a throwaway target.
           if (head.type !== "VariableDeclaration") {
-            edits.push({ start: head.start, end: head.end, replacement: UNUSED_LOOP_TARGET });
+            edits.push({ start: head.start, end: head.end, replacement: unusedLoopTarget });
           }
           continue;
         }
@@ -872,18 +890,24 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
         removableBindings.add(name);
       }
     }
-    // A destructuring initializer is shared by every target it declares, so it
-    // only belongs to removed code once all of those targets are removable.
-    const removableImplementations = (names: ReadonlySet<string>): PositionedNode[] =>
+    // A destructuring initializer is shared by every target it declares. The
+    // closure follows it from any removable target to find co-target
+    // dependencies, but it only counts as removed code once every target is.
+    const removableImplementations = (
+      names: ReadonlySet<string>,
+      { shared }: { shared: boolean },
+    ): PositionedNode[] =>
       [...names].flatMap((name) =>
         declarationsOf(name)
-          .filter((binding) => binding.declaredNames.every((declared) => names.has(declared)))
+          .filter(
+            (binding) => shared || binding.declaredNames.every((declared) => names.has(declared)),
+          )
           .map((binding) => binding.implementation),
       );
     let closureChanged = true;
     while (closureChanged) {
       closureChanged = false;
-      const implementations = removableImplementations(removableBindings);
+      const implementations = removableImplementations(removableBindings, { shared: true });
       for (const [name] of bindings) {
         if (removableBindings.has(name)) continue;
         if (
@@ -897,7 +921,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     let pruneChanged = true;
     while (pruneChanged) {
       pruneChanged = false;
-      const implementations = removableImplementations(removableBindings);
+      const implementations = removableImplementations(removableBindings, { shared: false });
       for (const name of removableBindings) {
         if (forcedBindings.has(name)) continue;
         const hasLiveReference = (references.get(name) ?? []).some(
@@ -925,7 +949,10 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       if (binding.kind !== "variable") continue;
       if (!binding.declaredNames.every((name) => deadBindings.has(name))) {
         // Defaults and computed keys of pruned pattern parts go with them.
-        for (const part of prunedPatternParts(binding.node.id as PositionedNode, deadBindings)) {
+        for (const part of prunedPatternParts(
+          binding.node.id as PositionedNode,
+          removedNamesFor(binding.node),
+        )) {
           if (addDeadRange(part)) changed = true;
         }
         continue;
@@ -992,7 +1019,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           const pattern = renderBindingPattern(
             renderRange,
             declarator.id as PositionedNode,
-            deadBindings,
+            removedNamesFor(declarator),
           );
           if (!pattern) return [];
           return [
@@ -1003,7 +1030,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           const terminator = loopHeadDeclarations.has(declaration) ? "" : ";";
           return `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")}${terminator}`;
         }
-        if (iterationHeadDeclarations.has(declaration)) return UNUSED_LOOP_TARGET;
+        if (iterationHeadDeclarations.has(declaration)) return unusedLoopTarget;
         return exportStatement ||
           statements.includes(declaration) ||
           loopHeadDeclarations.has(declaration)
