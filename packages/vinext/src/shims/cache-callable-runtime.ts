@@ -39,20 +39,23 @@ async function decryptArguments(
   return value;
 }
 
-export function encryptCacheCaptures(captures: unknown[]): CacheCaptureEnvelope {
+export function encryptCacheCaptures(
+  referenceId: string,
+  captures: unknown[],
+): CacheCaptureEnvelope {
   // Inline functions allocate a fresh capture tuple on each call. Memoize its
   // values so React.cache can recognize repeated bound calls in one render.
-  return memoizedCaptureEnvelope(...captures);
+  return memoizedCaptureEnvelope(referenceId, ...captures);
 }
 
 const memoizedCaptureEnvelope = memoizeInCacheScope(
-  (...captures: unknown[]): CacheCaptureEnvelope => ({
+  (referenceId: string, ...captures: unknown[]): CacheCaptureEnvelope => ({
     type: CACHE_CAPTURE_TYPE,
-    encrypted: encryptCaptures(captures),
+    encrypted: encryptCaptures(referenceId, captures),
   }),
 );
 
-async function encryptCaptures(captures: unknown[]): Promise<string> {
+async function encryptCaptures(referenceId: string, captures: unknown[]): Promise<string> {
   // Like Next.js, closure captures use the result codec, which can serialize
   // ReactNodes and global symbols. Divert only Files into native metadata
   // records via Flight's temporary-reference option; no second argument walk.
@@ -74,21 +77,28 @@ async function encryptCaptures(captures: unknown[]): Promise<string> {
   return encryptActionBoundArgs(
     JSON.stringify({
       version: 1,
+      referenceId,
       result: Buffer.from(bytes).toString("base64"),
       files: await snapshotFlightReply(files),
     }),
   );
 }
 
-async function decryptCacheCaptures(value: unknown): Promise<unknown[] | undefined> {
+// Like Next.js (use-cache-wrapper.ts, `boundArgsLength`), a function that
+// closes over values always decrypts its first argument. Anything else is
+// rejected, never passed through as plaintext captures: the client must not
+// choose the closure's server values. Like encryption.ts binding bound args to
+// their action id, an envelope only decrypts for the reference it was made for.
+async function decryptCacheCaptures(value: unknown, referenceId: string): Promise<unknown[]> {
   if (
     typeof value !== "object" ||
     value === null ||
     !("type" in value) ||
     value.type !== CACHE_CAPTURE_TYPE ||
     !("encrypted" in value)
-  )
-    return;
+  ) {
+    throw new Error("Invalid cache capture arguments");
+  }
   const encrypted = value.encrypted;
   if (
     typeof encrypted !== "string" &&
@@ -98,36 +108,50 @@ async function decryptCacheCaptures(value: unknown): Promise<unknown[] | undefin
       "then" in encrypted &&
       typeof encrypted.then === "function"
     )
-  )
-    return;
+  ) {
+    throw new Error("Invalid cache capture arguments");
+  }
   const serialized = await decryptActionBoundArgs(
     Promise.resolve(encrypted as string | PromiseLike<string>),
   );
   if (typeof serialized !== "string") throw new Error("Invalid cache capture arguments");
   const payload = JSON.parse(serialized) as {
     version: number;
+    referenceId: string;
     result: string;
     files: CacheFlightArguments;
   };
-  if (payload.version !== 1) throw new Error("Invalid cache capture arguments");
+  if (payload.version !== 1 || payload.referenceId !== referenceId) {
+    throw new Error("Invalid cache capture arguments");
+  }
   const files = restoreFlightReply(payload.files);
   if (typeof files === "string") throw new Error("Invalid cache capture files");
-  return await createFromReadableStream<unknown[]>(
+  const captures = await createFromReadableStream<unknown>(
     new Response(Buffer.from(payload.result, "base64")).body!,
     { temporaryReferences: new Map([...files].map(([id, file]) => [`$${id}`, file])) },
     { preserveServerReferences: true },
   );
+  if (!Array.isArray(captures)) throw new Error("Invalid cache capture arguments");
+  return captures;
 }
 
 export function registerCachedFunction<TArgs extends unknown[], TResult>(
   fn: (...args: TArgs) => Promise<TResult>,
   id: string,
   variant: string,
-  options: RegisterCachedFunctionOptions,
+  { hasCaptures, ...options }: RegisterCachedFunctionOptions & { hasCaptures?: boolean },
 ): (...args: TArgs) => Promise<TResult> {
+  let decryptCaptures: RegisterCachedFunctionOptions["decryptCaptures"];
+  if (hasCaptures) {
+    const referenceId = options.serverReferenceId;
+    if (referenceId === undefined) {
+      throw new Error(`Cache function ${id} has captures but no server reference`);
+    }
+    decryptCaptures = (value) => decryptCacheCaptures(value, referenceId);
+  }
   return registerCachedFunctionBase(fn, id, variant, {
     ...options,
-    decryptCaptures: decryptCacheCaptures,
+    ...(decryptCaptures ? { decryptCaptures } : {}),
     encodeInvocation: encryptArguments,
   });
 }

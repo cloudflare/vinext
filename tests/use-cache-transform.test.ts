@@ -365,16 +365,72 @@ describe("plugin-rsc inline use-cache references", () => {
       moduleId,
     );
     expect(result).not.toBeNull();
-    expect(result!.code).toMatch(
-      /\.bind\(null,\s*\$\$cacheRuntime\.encryptCacheCaptures\(\[capturedSecret\]\)\)/,
-    );
-    expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
-    expect(result!.code).toContain("const [capturedSecret] = $$hoist_encoded");
     const boundRegistration = result!.code.match(
       /registerCachedFunction\(\$\$hoist_[^,]+_getMessage\$\$impl,[^)]*\)/,
     )?.[0];
     expect(boundRegistration).toBeDefined();
     expect(boundRegistration).toContain('"argumentCount":0');
+    // The wrapper must require the encrypted captures, bound to this reference.
+    expect(boundRegistration).toContain('"hasCaptures":true');
+    const referenceId = boundRegistration!.match(/"serverReferenceId":("[^"]+")/)?.[1];
+    expect(referenceId).toBeDefined();
+    expect(result!.code).toContain(
+      `.bind(null, $$cacheRuntime.encryptCacheCaptures(${referenceId}, [capturedSecret]))`,
+    );
+    expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
+    expect(result!.code).toContain("const [capturedSecret] = $$hoist_encoded");
+    // The enclosing cached component has no captures.
+    const outerRegistration = result!.code.match(
+      /registerCachedFunction\(\$\$hoist_[^,]+_CachedSection\$\$impl,[^)]*\)/,
+    )?.[0];
+    expect(outerRegistration).toBeDefined();
+    expect(outerRegistration).not.toContain("hasCaptures");
+  });
+
+  it("binds each inline function's captures to its own reference", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const transform = unwrapHook(plugin.transform)!;
+    const code = [
+      `export async function Page({ tenant, label }) {`,
+      `  async function getOrders() {`,
+      `    "use cache";`,
+      `    return tenant;`,
+      `  }`,
+      `  async function getStatic() {`,
+      `    "use cache";`,
+      `    return 1;`,
+      `  }`,
+      `  async function getLabel() {`,
+      `    "use cache";`,
+      `    return label;`,
+      `  }`,
+      `  return [getOrders, getStatic, getLabel];`,
+      `}`,
+    ].join("\n");
+
+    const result = await transform.call(
+      { environment: { name: "rsc", mode: "build" } },
+      code,
+      moduleId,
+    );
+    const referenceIdOf = (name: string) =>
+      result!.code
+        .match(
+          new RegExp(`registerCachedFunction\\(\\$\\$hoist_\\d+_${name}\\$\\$impl,[^)]*\\)`),
+        )?.[0]
+        .match(/"serverReferenceId":("[^"]+")/)?.[1];
+    const orders = referenceIdOf("getOrders");
+    const label = referenceIdOf("getLabel");
+    expect(orders).toBeDefined();
+    expect(label).toBeDefined();
+    expect(orders).not.toBe(label);
+    expect(result!.code).toContain(`encryptCacheCaptures(${orders}, [tenant])`);
+    expect(result!.code).toContain(`encryptCacheCaptures(${label}, [label])`);
+    expect(result!.code.match(/"hasCaptures":true/g)).toHaveLength(2);
   });
 
   it.each(["ssr", "client"])(

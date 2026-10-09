@@ -45,6 +45,70 @@ test.describe('production "use cache" server function references', () => {
     }
   });
 
+  // Like Next.js, closure values reach the client only as captures encrypted
+  // for that function (use-cache-wrapper.ts `boundArgsLength`, encryption.ts
+  // `actionId`). The reference id is public in the page payload, so invoking
+  // it with forged, missing or another function's captures must not run it.
+  test("rejects forged captures for inline cache functions passed to Client Components", async ({
+    baseURL,
+    page,
+    request,
+  }) => {
+    const captureAction = async (button: string) => {
+      const [action] = await Promise.all([
+        page.waitForRequest(
+          (candidate) => candidate.method() === "POST" && !!candidate.headers()["x-rsc-action"],
+        ),
+        page.locator(button).click(),
+      ]);
+      return {
+        id: action.headers()["x-rsc-action"]!,
+        contentType: action.headers()["content-type"]!,
+        body: action.postDataBuffer()!,
+      };
+    };
+
+    await page.context().addCookies([{ name: "tenant", value: "acme", url: baseURL! }]);
+    await page.goto("/use-cache-capture-integrity");
+    await expect(page.locator("#tenant")).toHaveText("acme");
+    await waitForAppRouterHydration(page);
+    const getOrders = await captureAction("#load-orders");
+    await expect(page.locator("#orders")).toHaveText("ACME_PRIVATE_ORDER");
+
+    // Any visitor can obtain captures holding a value they chose.
+    await page.context().clearCookies();
+    await page.goto("/use-cache-capture-integrity?label=acme");
+    await expect(page.locator("#tenant")).toHaveText("anonymous");
+    await waitForAppRouterHydration(page);
+    const echoLabel = await captureAction("#echo-label");
+    await expect(page.locator("#label")).toHaveText("acme");
+    expect(echoLabel.id).not.toBe(getOrders.id);
+
+    // No session cookie: the request context is separate from the page's.
+    const invokeGetOrders = (data: string | Buffer, contentType = "text/plain;charset=UTF-8") =>
+      request.post("/use-cache-capture-integrity", {
+        data,
+        headers: {
+          Accept: "text/x-component",
+          "Content-Type": contentType,
+          "x-rsc-action": getOrders.id,
+        },
+      });
+    for (const forged of [
+      await invokeGetOrders(JSON.stringify([["acme"], ""])),
+      await invokeGetOrders(JSON.stringify([])),
+      await invokeGetOrders(echoLabel.body, echoLabel.contentType),
+    ]) {
+      expect(forged.status()).toBe(500);
+      expect(await forged.text()).not.toContain("ACME_PRIVATE_ORDER");
+    }
+
+    // Control: the genuine encrypted captures still decrypt for this function.
+    const genuine = await invokeGetOrders(getOrders.body, getOrders.contentType);
+    expect(genuine.status()).toBe(200);
+    expect(await genuine.text()).toContain("ACME_PRIVATE_ORDER");
+  });
+
   test("invokes default-exported server actions from cached modules", async ({ page }) => {
     await page.goto("/use-cache-client-import");
     await waitForAppRouterHydration(page);

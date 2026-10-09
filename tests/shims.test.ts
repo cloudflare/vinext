@@ -8062,8 +8062,10 @@ describe('"use cache" runtime', () => {
     setCacheHandler(new MemoryCacheHandler());
 
     const envelope = { captured: true };
-    const decryptCaptures = async (value: unknown) =>
-      value === envelope ? ["captured-value"] : undefined;
+    const decryptCaptures = async (value: unknown) => {
+      if (value !== envelope) throw new Error("Invalid cache capture arguments");
+      return ["captured-value"];
+    };
     type PageProps = {
       params: Promise<{ slug: string }>;
       searchParams?: Promise<Record<string, unknown>>;

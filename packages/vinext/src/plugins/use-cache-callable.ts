@@ -23,6 +23,7 @@ type Options = {
 type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
   argumentCount?: number;
+  hasCaptures?: boolean;
   serverReferenceId?: string;
 };
 
@@ -318,12 +319,14 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
+          hasCaptures: boolean,
         ) => {
           const variant = directiveMatch[1] ?? "";
           const secureName = secureExportName(name);
           secureExports.add(secureName);
           const wrapperOptions = {
             ...getCacheWrapperOptions(meta),
+            ...(hasCaptures ? { hasCaptures } : {}),
             serverReferenceId: `${reference.referenceKey}#${secureName}`,
           };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
@@ -334,13 +337,21 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
+          hasCaptures = false,
         ) => {
-          const cached = wrap(value, name, directiveMatch, meta);
+          const cached = wrap(value, name, directiveMatch, meta, hasCaptures);
           const secureName = secureExportName(name);
           needsReactServer = true;
           return `(${secureName} = $$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(secureName)}))`;
         };
 
+        // Like Next.js, a function that closes over values must receive its
+        // encrypted captures, bound to its own reference, as the first argument
+        // (use-cache-wrapper.ts `boundArgsLength`, encryption.ts `actionId`).
+        // For each inline function, plugin-rsc calls `decode` only when it has
+        // captures, then `runtime`, then `encode` with the same captures.
+        let capturesDecoded = false;
+        let captureReferenceId: string | undefined;
         const result = moduleDirective
           ? transforms.transformWrapExport(code, ast, {
               filter: (name, meta) => {
@@ -361,10 +372,34 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
               rejectNonAsyncFunction: true,
               hoistRuntime: true,
               noExport: true,
-              runtime: (value, name, meta) =>
-                runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta),
-              encode: (value) => `$$cacheRuntime.encryptCacheCaptures(${value})`,
-              decode: (value) => value,
+              runtime: (value, name, meta) => {
+                const hasCaptures = capturesDecoded;
+                capturesDecoded = false;
+                captureReferenceId = hasCaptures
+                  ? `${reference.referenceKey}#${secureExportName(name)}`
+                  : undefined;
+                return runtime(
+                  value,
+                  name,
+                  matchUseCacheDirective(meta.directiveMatch[0]),
+                  meta,
+                  hasCaptures,
+                );
+              },
+              encode: (value) => {
+                if (!captureReferenceId) {
+                  throw new Error(
+                    `vinext: inline "use cache" captures were encoded before their function was registered (${id}).`,
+                  );
+                }
+                const referenceId = captureReferenceId;
+                captureReferenceId = undefined;
+                return `$$cacheRuntime.encryptCacheCaptures(${JSON.stringify(referenceId)}, ${value})`;
+              },
+              decode: (value) => {
+                capturesDecoded = true;
+                return value;
+              },
             });
         if (!result.output.hasChanged()) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);

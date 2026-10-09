@@ -53,10 +53,10 @@ describe("cache callable Flight transport", () => {
       async (captures: unknown) => ({ child: await (captures as unknown[])[0] }),
       `test:lazy-capture:${kind}`,
       "",
-      {},
+      { hasCaptures: true, serverReferenceId: `test#lazy-capture:${kind}` },
     );
 
-    expect(await cached(encryptCacheCaptures([child]))).toMatchObject({
+    expect(await cached(encryptCacheCaptures(`test#lazy-capture:${kind}`, [child]))).toMatchObject({
       child: { type: "p", props: { children: "lazy captured child" } },
     });
   });
@@ -79,10 +79,10 @@ describe("cache callable Flight transport", () => {
       },
       "test:rich-captures",
       "",
-      { serverReferenceId: "test#rich-captures" },
+      { hasCaptures: true, serverReferenceId: "test#rich-captures" },
     );
     const result = await cached(
-      encryptCacheCaptures([
+      encryptCacheCaptures("test#rich-captures", [
         node,
         symbol,
         {
@@ -214,10 +214,10 @@ describe("cache callable Flight transport", () => {
       },
       "test:captures",
       "",
-      { serverReferenceId: "test#captures" },
+      { hasCaptures: true, serverReferenceId: "test#captures" },
     );
     const result = await cached(
-      encryptCacheCaptures([
+      encryptCacheCaptures("test#captures", [
         {
           get file() {
             reads++;
@@ -228,6 +228,50 @@ describe("cache callable Flight transport", () => {
     );
     expect(result).toEqual(["private.txt", 111, "private"]);
     expect(reads).toBe(1);
+  });
+
+  // Like Next.js (use-cache-wrapper.ts, `boundArgsLength`), a capturing function
+  // decrypts its first argument or fails. A client must not choose its captures.
+  it.each([
+    ["plaintext captures", [["victim"]]],
+    ["missing captures", []],
+    ["a malformed envelope", [{ type: "use-cache-captures", encrypted: 1 }]],
+    ["an envelope-shaped value", [{ type: "use-cache-captures", encrypted: "unknown" }]],
+  ])("rejects %s for a capturing function", async (_kind, args) => {
+    const fn = vi.fn(async (captures: unknown) => (captures as unknown[])[0]);
+    const cached = registerCachedFunction(fn, "test:forged-captures", "", {
+      hasCaptures: true,
+      serverReferenceId: "test#forged-captures",
+    }) as (...args: unknown[]) => Promise<unknown>;
+
+    await expect(cached(...args)).rejects.toThrow(/Invalid cache capture arguments/);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  // Like Next.js binding encrypted bound args to their action id, captures
+  // obtained from another function (e.g. a public page) cannot be replayed.
+  it("rejects captures encrypted for another function", async () => {
+    const fn = vi.fn(async (captures: unknown) => (captures as unknown[])[0]);
+    const cached = registerCachedFunction(fn, "test:tenant", "", {
+      hasCaptures: true,
+      serverReferenceId: "test#tenant",
+    });
+    const other = encryptCacheCaptures("test#public-label", ["victim"]);
+    // A client sends the envelope's encrypted string, not the pending promise.
+    const replayed = { type: other.type, encrypted: await other.encrypted };
+
+    await expect(cached(replayed)).rejects.toThrow(/Invalid cache capture arguments/);
+    expect(fn).not.toHaveBeenCalled();
+    await expect(cached(encryptCacheCaptures("test#tenant", ["acme"]))).resolves.toBe("acme");
+  });
+
+  it("never decrypts the first argument of a function without captures", async () => {
+    const value = { type: "use-cache-captures", encrypted: "plain-data" };
+    const cached = registerCachedFunction(async (arg: unknown) => arg, "test:no-captures", "", {
+      serverReferenceId: "test#no-captures",
+    });
+
+    await expect(cached(value)).resolves.toEqual(value);
   });
 
   it("uses React for iterables, nested promises, array holes and cycles", async () => {

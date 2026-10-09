@@ -90,8 +90,8 @@ describe("use cache React memoization scope boundaries", () => {
         reads: number;
       }[] = [];
       const record = async () => {
-        const envelope = encryptCacheCaptures([input]);
-        const repeated = encryptCacheCaptures([input]);
+        const envelope = encryptCacheCaptures("test#scope", [input]);
+        const repeated = encryptCacheCaptures("test#scope", [input]);
         await envelope.encrypted;
         observed.push({ envelope, same: envelope === repeated, reads });
         return null;
@@ -223,18 +223,20 @@ describe.each(["", "private"])("use cache React render memoization (%s)", (varia
         async (captures: unknown) => ({ value: (captures as unknown[])[0] }),
         `test:react-memo:captures:${kind}:${variant}`,
         variant,
-        {},
+        { hasCaptures: true, serverReferenceId: "test#react-memo:captures" },
       );
       const value = kind === "primitive" ? 1 : { label: "same" };
 
       expect(
         await renderProbe(async () => {
-          const envelope = encryptCacheCaptures([value]);
+          const envelope = encryptCacheCaptures("test#react-memo:captures", [value]);
           const first = await cached(envelope);
           const sameEnvelope = await cached(envelope);
           // Inline cache transforms allocate a fresh captures array and call
           // encryptCacheCaptures again every time the containing function runs.
-          const sameCaptures = await cached(encryptCacheCaptures([value]));
+          const sameCaptures = await cached(
+            encryptCacheCaptures("test#react-memo:captures", [value]),
+          );
           return {
             sameEnvelope: first === sameEnvelope,
             sameCaptures: first === sameCaptures,

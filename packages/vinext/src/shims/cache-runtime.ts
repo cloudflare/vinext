@@ -550,7 +550,12 @@ export type RegisterCachedFunctionOptions = {
   acceptsSecondArgument?: boolean;
   /** Number of declared arguments supplied by the directive transform. */
   argumentCount?: number;
-  decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
+  /**
+   * Set only for an inline function that closes over values. It decrypts the
+   * capture envelope bound ahead of the call arguments and must reject any
+   * other first argument.
+   */
+  decryptCaptures?: (value: unknown) => Promise<unknown[]>;
   encodeInvocation?: (args: CacheFlightArguments) => Promise<string>;
   serverReferenceId?: string;
 };

@@ -328,7 +328,10 @@ describe("use cache framework props", () => {
       argumentCount: kind === "direct" ? 1 : 2,
       decryptCaptures:
         kind === "captured"
-          ? async (value) => (value === envelope ? ["captured-value"] : undefined)
+          ? async (value) => {
+              if (value !== envelope) throw new Error("Invalid cache capture arguments");
+              return ["captured-value"];
+            }
           : undefined,
       serverReferenceId: `page-replay:${kind}`,
       encodeInvocation: async (args) => {
