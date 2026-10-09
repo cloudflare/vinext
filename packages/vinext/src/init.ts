@@ -37,7 +37,6 @@ import {
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
-import type { NextConfig } from "./config/next-config.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
