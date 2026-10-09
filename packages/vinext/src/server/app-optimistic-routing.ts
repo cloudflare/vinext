@@ -504,23 +504,18 @@ export function createOptimisticRouteTemplate(options: {
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
 
+  const isLoadingShell =
+    options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary";
   const loadingTreePosition = options.elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY];
   return {
     elements: options.elements,
     loadingTreePosition:
-      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary" &&
-      typeof loadingTreePosition === "number"
-        ? loadingTreePosition
-        : null,
+      isLoadingShell && typeof loadingTreePosition === "number" ? loadingTreePosition : null,
     mountedSlotsHeader: options.mountedSlotsHeader,
-    omittedBfcacheSegmentIds:
-      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
-        ? getOmittedBfcacheSegmentIds(options.elements)
-        : [],
-    omittedLayoutIds:
-      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
-        ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
-        : [],
+    omittedBfcacheSegmentIds: isLoadingShell ? getOmittedBfcacheSegmentIds(options.elements) : [],
+    omittedLayoutIds: isLoadingShell
+      ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
+      : [],
     pageElementIds,
     routeId: match.route.id,
   };
@@ -610,9 +605,8 @@ function isShellLoadingBoundaryMounted(options: {
   // Next.js has unmounted the loading boundary, and it mounts fresh on
   // navigation. The fallback's owner is not tracked, so any fallback on screen,
   // a parallel slot's or a userland catchError boundary's included, keeps the
-  // shell. Known limitation: when that
-  // owner sits below the loading, the loading shows where Next.js would keep
-  // the fallback.
+  // shell. Known limitation: when that owner sits below the loading, the
+  // loading shows where Next.js would keep the fallback.
   if (options.segmentFallbackShown) return false;
   const routes = options.routeManifest.segmentGraph.routes;
   const targetRoute = routes.get(options.template.routeId);
@@ -660,7 +654,7 @@ export function canCommitOptimisticRouteTemplate(options: {
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
   routeManifest: RouteManifest;
-  /** Whether an error or HTTP access fallback is on screen. */
+  /** Whether an error, catchError or HTTP access fallback is on screen. */
   segmentFallbackShown: boolean;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];

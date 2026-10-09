@@ -5,6 +5,8 @@ import { waitForAppRouterHydration } from "../helpers";
 // prefetched loading shell must not replace the current page while that child
 // is shared. Related Next.js test: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+// The search-only case follows test/e2e/app-dir/searchparams-reuse-loading:
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-reuse-loading/searchparams-reuse-loading.test.ts
 const BASE = "/ancestor-loading-shared-layout";
 const LOADING = "ancestor-shared-layout-loading";
 
@@ -68,7 +70,7 @@ async function clickWithHeldNavigation(
       if (!router) throw new Error("window.next.router is not installed");
       void router.push(href);
     }, options.from);
-    await expect(page).toHaveURL(new RegExp(`${options.from}$`));
+    await expect(page).toHaveURL((url) => url.pathname === options.from);
   }
   await expect(page.locator(options.current)).toBeVisible();
   if (options.link === undefined) {
@@ -106,7 +108,7 @@ async function clickWithHeldNavigation(
         >;
         return Array.from(cache.entries()).some(
           ([key, entry]) =>
-            key.includes(targetPath) &&
+            new URL(key, location.origin).pathname.replace(/\.rsc$/, "") === targetPath &&
             entry.optimisticRouteShell === true &&
             entry.outcome === "cache-seeded" &&
             entry.pending === undefined,

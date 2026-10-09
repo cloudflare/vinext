@@ -650,59 +650,74 @@ describe("shown segment fallback tracking", () => {
     Reflect.deleteProperty(globalThis, Symbol.for("vinext.shownSegmentFallbacks"));
   });
 
-  it("reports a boundary that mounts with its fallback shown", async () => {
-    const { NotFoundBoundaryInner, UnauthorizedBoundaryInner } =
-      await import("../packages/vinext/src/shims/error-boundary.js");
-    const notFound = new NotFoundBoundaryInner({
-      children: null,
-      fallback: null,
-      pathname: "/s/one",
-    });
-    notFound.state = { ...notFound.state, notFound: true };
-    notFound.componentDidMount();
-    expect(isSegmentFallbackShown()).toBe(true);
-    notFound.componentWillUnmount();
-    expect(isSegmentFallbackShown()).toBe(false);
+  it("reports each segment boundary while it renders its fallback", async () => {
+    const {
+      ErrorBoundaryInner,
+      ForbiddenBoundaryInner,
+      NotFoundBoundaryInner,
+      UnauthorizedBoundaryInner,
+    } = await import("../packages/vinext/src/shims/error-boundary.js");
+    const props = { children: null, pathname: "/s/one" };
+    const boundaries = [
+      {
+        instance: new ErrorBoundaryInner({ ...props, fallback: () => null }),
+        shown: { error: { thrownValue: new Error("boom") } },
+        hidden: { error: null },
+      },
+      {
+        instance: new NotFoundBoundaryInner({ ...props, fallback: null }),
+        shown: { notFound: true },
+        hidden: { notFound: false },
+      },
+      {
+        instance: new ForbiddenBoundaryInner({ ...props, fallback: null }),
+        shown: { forbidden: true },
+        hidden: { forbidden: false },
+      },
+      {
+        instance: new UnauthorizedBoundaryInner({ ...props, fallback: null }),
+        shown: { unauthorized: true },
+        hidden: { unauthorized: false },
+      },
+    ];
+    for (const { instance, shown, hidden } of boundaries) {
+      const boundary = instance as unknown as {
+        state: object;
+        componentDidMount(): void;
+        componentDidUpdate(): void;
+        componentWillUnmount(): void;
+      };
+      boundary.componentDidMount();
+      expect(isSegmentFallbackShown()).toBe(false);
+      boundary.state = { ...boundary.state, ...shown };
+      boundary.componentDidUpdate();
+      expect(isSegmentFallbackShown()).toBe(true);
+      boundary.state = { ...boundary.state, ...hidden };
+      boundary.componentDidUpdate();
+      expect(isSegmentFallbackShown()).toBe(false);
+      boundary.state = { ...boundary.state, ...shown };
+      boundary.componentDidUpdate();
+      boundary.componentWillUnmount();
+      expect(isSegmentFallbackShown()).toBe(false);
+      // A boundary can also mount with its fallback already shown.
+      boundary.componentDidMount();
+      expect(isSegmentFallbackShown()).toBe(true);
+      boundary.componentWillUnmount();
+      expect(isSegmentFallbackShown()).toBe(false);
+    }
 
-    const unauthorized = new UnauthorizedBoundaryInner({
-      children: null,
-      fallback: null,
-      pathname: "/s/one",
-    });
-    unauthorized.state = { ...unauthorized.state, unauthorized: true };
-    unauthorized.componentDidMount();
+    // Any one boundary still showing its fallback keeps the flag set.
+    const [first, second] = boundaries.map(
+      ({ instance }) => instance as unknown as { componentWillUnmount(): void },
+    );
+    for (const { instance, shown } of boundaries.slice(0, 2)) {
+      const boundary = instance as unknown as { state: object; componentDidMount(): void };
+      boundary.state = { ...boundary.state, ...shown };
+      boundary.componentDidMount();
+    }
+    first.componentWillUnmount();
     expect(isSegmentFallbackShown()).toBe(true);
-    unauthorized.componentWillUnmount();
-    expect(isSegmentFallbackShown()).toBe(false);
-  });
-
-  it("reports a boundary while it renders its fallback", async () => {
-    const { ErrorBoundaryInner, ForbiddenBoundaryInner } =
-      await import("../packages/vinext/src/shims/error-boundary.js");
-    const forbidden = new ForbiddenBoundaryInner({
-      children: null,
-      fallback: null,
-      pathname: "/s/one",
-    });
-    const error = new ErrorBoundaryInner({
-      children: null,
-      fallback: () => null,
-      pathname: "/s/one",
-    });
-    forbidden.componentDidMount();
-    error.componentDidMount();
-    expect(isSegmentFallbackShown()).toBe(false);
-
-    forbidden.state = { ...forbidden.state, forbidden: true };
-    forbidden.componentDidUpdate();
-    error.state = { ...error.state, error: { thrownValue: new Error("boom") } };
-    error.componentDidUpdate();
-    expect(isSegmentFallbackShown()).toBe(true);
-
-    forbidden.state = { ...forbidden.state, forbidden: false };
-    forbidden.componentDidUpdate();
-    expect(isSegmentFallbackShown()).toBe(true);
-    error.componentWillUnmount();
+    second.componentWillUnmount();
     expect(isSegmentFallbackShown()).toBe(false);
   });
 
