@@ -72,13 +72,14 @@ function writeFile(root: string, filePath: string, content: string) {
   fs.writeFileSync(absPath, content);
 }
 
-function readClientJavaScript(dir: string): string {
+function readClientJavaScript(dir: string, skipDir?: string): string {
   if (!fs.existsSync(dir)) return "";
   let output = "";
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) output += readClientJavaScript(entryPath);
-    else if (entry.name.endsWith(".js")) output += fs.readFileSync(entryPath, "utf8");
+    if (entry.isDirectory()) {
+      if (entryPath !== skipDir) output += readClientJavaScript(entryPath, skipDir);
+    } else if (entry.name.endsWith(".js")) output += fs.readFileSync(entryPath, "utf8");
   }
   return output;
 }
@@ -146,37 +147,6 @@ export default "shared-worker-dep:" + SESSION_KEY.length;
     await expect(buildFixture(root)).rejects.toThrow(SERVER_ONLY_ERROR);
   }, 120_000);
 
-  // Next.js turns this import into a Server Function reference. Vite's worker
-  // container has no Server Function transform and would emit the module
-  // body, so vinext fails closed instead.
-  it("fails the build when a worker imports a server-only Server Functions module", async () => {
-    const root = copyFixture();
-    writeFile(
-      root,
-      "app/actions-server-only.ts",
-      `"use server";
-
-import "server-only";
-
-const SESSION_KEY = ${JSON.stringify(SECRET_MARKER)};
-
-export async function keyLength() {
-  return SESSION_KEY.length;
-}
-`,
-    );
-    writeFile(
-      root,
-      "app/worker.ts",
-      `import { keyLength } from "./actions-server-only";
-
-void keyLength().then((length) => self.postMessage("worker.ts:" + length));
-`,
-    );
-
-    await expect(buildFixture(root)).rejects.toThrow(SERVER_ONLY_ERROR);
-  }, 120_000);
-
   const key = JSON.stringify(SECRET_MARKER);
   it.each([
     [
@@ -223,5 +193,111 @@ void import("./worker-dep").then((mod) => {
     const workerJavaScript = readClientJavaScript(workerDir);
     expect(workerJavaScript).toContain("hello ");
     expect(readClientJavaScript(path.join(root, "dist/client"))).not.toContain(SECRET_MARKER);
+  }, 120_000);
+});
+
+// Next.js compiles workers as part of the browser graph, so a worker that
+// imports a "use server" module receives `createServerReference(...)` proxies
+// (webpack and Turbopack both build, and neither ships the module body).
+describe("Server Functions in browser Web Worker graphs", () => {
+  const ACTION_BODY_MARKER = "__VINEXT_WORKER_ACTION_BODY__";
+
+  function writeWorkerActionFixture(root: string, actionSource: string) {
+    writeFile(root, "app/worker-actions.ts", actionSource);
+    writeFile(
+      root,
+      "app/worker.ts",
+      `import { keyLength } from "./worker-actions";
+
+self.postMessage("worker.ts:" + typeof keyLength);
+`,
+    );
+    // The client page imports the same module so the main client graph's
+    // reference key can be compared with the worker's.
+    const pagePath = path.join(root, "app/module/page.js");
+    fs.writeFileSync(
+      pagePath,
+      fs
+        .readFileSync(pagePath, "utf8")
+        .replace(
+          'import { useState } from "react";',
+          'import { useState } from "react";\nimport { keyLength } from "../worker-actions";\nglobalThis.__workerActionsKeyLength = keyLength;',
+        ),
+    );
+  }
+
+  function serverReferenceIds(javaScript: string): string[] {
+    return [...javaScript.matchAll(/[`"']([^`"'\s]+#keyLength)[`"']/g)].map((match) => match[1]!);
+  }
+
+  async function buildAndReadWorkers(root: string) {
+    await buildFixture(root);
+    const clientDir = path.join(root, "dist/client");
+    const workerDir = path.join(clientDir, "_next/static/workers");
+    return {
+      clientJavaScript: readClientJavaScript(clientDir),
+      pageJavaScript: readClientJavaScript(clientDir, workerDir),
+      workerJavaScript: readClientJavaScript(workerDir),
+    };
+  }
+
+  it("emits server references with the client graph's ids instead of the module body", async () => {
+    const root = copyFixture();
+    writeWorkerActionFixture(
+      root,
+      `"use server";
+
+const BODY = ${JSON.stringify(ACTION_BODY_MARKER)};
+
+export async function keyLength() {
+  return BODY.length;
+}
+`,
+    );
+
+    const { clientJavaScript, pageJavaScript, workerJavaScript } = await buildAndReadWorkers(root);
+    expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
+    const workerIds = serverReferenceIds(workerJavaScript);
+    expect(workerIds).toHaveLength(1);
+    expect(serverReferenceIds(pageJavaScript)).toEqual(workerIds);
+  }, 120_000);
+
+  it("builds a worker that imports a server-only Server Functions module", async () => {
+    const root = copyFixture();
+    writeWorkerActionFixture(
+      root,
+      `"use server";
+
+import "server-only";
+import { SESSION_KEY } from "./lib/session-key";
+
+export async function keyLength() {
+  return SESSION_KEY.length;
+}
+`,
+    );
+
+    const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root);
+    expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
+    expect(clientJavaScript).not.toContain(SECRET_MARKER);
+  }, 120_000);
+
+  it("expands export-all re-exports into server references", async () => {
+    const root = copyFixture();
+    writeFile(
+      root,
+      "app/worker-action-impl.ts",
+      `const BODY = ${JSON.stringify(ACTION_BODY_MARKER)};
+
+export async function keyLength() {
+  return BODY.length;
+}
+`,
+    );
+    writeWorkerActionFixture(root, `"use server";\n\nexport * from "./worker-action-impl";\n`);
+
+    const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root);
+    expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
+    expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
   }, 120_000);
 });

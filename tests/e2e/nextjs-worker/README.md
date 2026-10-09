@@ -14,3 +14,9 @@ only these harness adaptations:
 - The deployment-token listener is scoped to worker-owned requests because vinext deliberately keeps
   ordinary application JavaScript on one unversioned native-ESM module identity.
 - Mechanical formatting and narrow type/lint annotations follow vinext's checked-in test rules.
+
+vinext additions beyond the upstream suite:
+
+- `app/server-action/`, `app/server-action-worker.ts`, and `app/server-action.ts` check that a
+  worker importing a `"use server"` module receives Server Function references (as Next.js
+  compiles it) instead of the module body.

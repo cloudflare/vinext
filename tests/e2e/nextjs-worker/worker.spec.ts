@@ -131,4 +131,39 @@ test.describe("app dir - workers", () => {
 
     void consoleErrors;
   });
+
+  // vinext addition: Next.js compiles workers as part of the browser graph, so
+  // a "use server" import becomes a Server Function reference rather than the
+  // module body. Calling it from the worker reports a global error and never
+  // reaches the server.
+  test("should import Server Functions in web workers as references", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const workerScripts: Promise<string>[] = [];
+    const postRequests: string[] = [];
+    page.on("response", (response) => {
+      if (new URL(response.url()).pathname.includes("/_next/static/workers/")) {
+        workerScripts.push(response.text());
+      }
+    });
+    page.on("request", (request) => {
+      if (request.method() === "POST") postRequests.push(request.url());
+    });
+
+    await page.goto("/server-action");
+    await expect(page.locator("#worker-state")).toHaveText("default");
+
+    await page.locator("button").click();
+
+    await expect(page.locator("#worker-state")).toHaveText(
+      "server-action-worker.ts:function:error",
+    );
+    expect(workerScripts.length).toBeGreaterThan(0);
+    for (const script of await Promise.all(workerScripts)) {
+      expect(script).not.toContain("server-action-body");
+    }
+    expect(postRequests).toEqual([]);
+    void consoleErrors;
+  });
 });
