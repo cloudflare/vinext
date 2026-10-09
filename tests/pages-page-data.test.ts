@@ -1195,6 +1195,44 @@ describe("pages page data", () => {
     expect(result.pageProps).toEqual({});
   });
 
+  it.each([
+    ["persists props for a nonce-bearing fallback data request", "nonce-value", 1],
+    ["leaves the full fallback data entry to the document render", undefined, 0],
+  ])("%s", async (_name, scriptNonce, writes) => {
+    const isrSet = vi.fn(async () => {});
+    await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        isrSet,
+        pageModule: {
+          async getStaticPaths() {
+            return { fallback: true, paths: [] };
+          },
+          async getStaticProps() {
+            return { props: { slug: "unknown" }, revalidate: 60 };
+          },
+        },
+        params: { slug: "unknown" },
+        query: { slug: "unknown" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/unknown",
+        scriptNonce,
+      }),
+    );
+
+    expect(isrSet).toHaveBeenCalledTimes(writes);
+    if (writes) {
+      expect(isrSet).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          generatedFromDataRequest: true,
+          pageData: { pageProps: { slug: "unknown" } },
+        }),
+        expect.anything(),
+      );
+    }
+  });
+
   it("skips the fallback shell after its data request generated the path", async () => {
     const getStaticProps = vi.fn(async () => ({ props: { slug: "regenerated" } }));
     const result = await resolvePagesPageData(

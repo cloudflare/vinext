@@ -29,10 +29,7 @@ import { hasUserDocumentGetInitialProps } from "./document-initial-head.js";
 import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import {
-  renderPagesPageResponse,
-  schedulePagesDataRequestIsrWrite,
-} from "./pages-page-response.js";
+import { renderPagesPageResponse } from "./pages-page-response.js";
 import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
@@ -1279,6 +1276,10 @@ export function createPagesPageHandler(
               headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
             }
           }
+          // Next.js renders the document for a getStaticProps data request
+          // and caches it with the page data before replying, so the next
+          // HTML request is a hit.
+          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
           if (
             isStaticPropsRender &&
             previewData === false &&
@@ -1286,11 +1287,7 @@ export function createPagesPageHandler(
             isrRevalidateSeconds !== null &&
             (isrRevalidateSeconds === false || isrRevalidateSeconds > 0)
           ) {
-            const write = schedulePagesDataRequestIsrWrite(
-              pageResponseOptions,
-              renderTracedPagesPageResponse,
-            );
-            if (isOnDemandRevalidate) await write;
+            await renderTracedPagesPageResponse({ ...pageResponseOptions, cacheOnly: true });
           }
           return finalizePagesPreviewResponse(
             withBrowserPolicy(

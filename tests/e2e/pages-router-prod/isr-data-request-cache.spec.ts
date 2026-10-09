@@ -17,41 +17,35 @@ test.describe("Pages Router ISR population from _next/data", () => {
     buildId = nextData(await (await request.get(`${BASE}/`)).text()).buildId;
   });
 
-  // The entry is written after the JSON response, so each attempt uses a fresh
-  // path: an HTML request that beats the write must not poison the next one.
   test("a data miss stores the HTML for a getStaticProps route", async ({ request }) => {
-    let attempt = 0;
-    await expect(async () => {
-      const slug = `data-first-${Date.now()}-${attempt++}`;
-      const data = await request.get(`${BASE}/_next/data/${buildId}/isr-data-first/${slug}.json`);
-      expect(data.status()).toBe(200);
-      const { pageProps } = await data.json();
-      expect(pageProps.slug).toBe(slug);
+    const slug = `data-first-${Date.now()}`;
+    const data = await request.get(
+      `${BASE}/_next/data/${buildId}/revalidate-only-generated/${slug}.json`,
+    );
+    expect(data.status()).toBe(200);
+    const { pageProps } = await data.json();
+    expect(pageProps.slug).toBe(slug);
 
-      const html = await request.get(`${BASE}/isr-data-first/${slug}`);
-      expect(html.headers()["x-vinext-cache"]).toBe("HIT");
-      expect(nextData(await html.text())).toMatchObject({
-        page: "/isr-data-first/[slug]",
-        query: { slug },
-        isFallback: false,
-        props: { pageProps },
-      });
-    }).toPass({ timeout: 10_000 });
+    const html = await request.get(`${BASE}/revalidate-only-generated/${slug}`);
+    expect(html.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(nextData(await html.text())).toMatchObject({
+      page: "/revalidate-only-generated/[slug]",
+      query: { slug },
+      isFallback: false,
+      props: { pageProps },
+    });
   });
 
   test("a fallback data request stores the full page", async ({ request }) => {
-    let attempt = 0;
-    await expect(async () => {
-      const pid = `data-first-${Date.now()}-${attempt++}`;
-      const data = await request.get(`${BASE}/_next/data/${buildId}/products/${pid}.json`);
-      expect(data.status()).toBe(200);
-      expect((await data.json()).pageProps.pid).toBe(pid);
+    const pid = `data-first-${Date.now()}`;
+    const data = await request.get(`${BASE}/_next/data/${buildId}/products/${pid}.json`);
+    expect(data.status()).toBe(200);
+    expect((await data.json()).pageProps.pid).toBe(pid);
 
-      const html = await request.get(`${BASE}/products/${pid}`);
-      expect(html.headers()["x-vinext-cache"]).toBe("HIT");
-      const body = await html.text();
-      expect(body).toContain(`Product ID: <!-- -->${pid}`);
-      expect(nextData(body).isFallback).toBe(false);
-    }).toPass({ timeout: 10_000 });
+    const html = await request.get(`${BASE}/products/${pid}`);
+    expect(html.headers()["x-vinext-cache"]).toBe("HIT");
+    const body = await html.text();
+    expect(body).toContain(`Product ID: <!-- -->${pid}`);
+    expect(nextData(body).isFallback).toBe(false);
   });
 });

@@ -1233,6 +1233,7 @@ export async function resolvePagesPageData(
   // (`/_next/data/...json`) still call `getStaticProps` so the client can
   // hydrate the page after the fallback shell ships.
   let isFallback = false;
+  let shouldPersistFallbackData = false;
   let previousCacheEntry: ISRCacheEntry | null | undefined;
   const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
 
@@ -1360,6 +1361,10 @@ export async function resolvePagesPageData(
     ) {
       isFallback = true;
     }
+    // A nonce keeps the document out of the cache, so a fallback data request
+    // persists its props; otherwise every HTML request would get the shell.
+    shouldPersistFallbackData =
+      fallback === true && !isValidPath && options.isDataReq === true && !!options.scriptNonce;
   }
 
   if (
@@ -1896,6 +1901,22 @@ export async function resolvePagesPageData(
     ) {
       isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? false;
       isrExpireSeconds = cached?.value.cacheControl?.expire;
+    }
+
+    if (shouldPersistFallbackData && previewData === false) {
+      const revalidateSeconds = isrRevalidateSeconds ?? false;
+      await options.isrSet(
+        cacheKey,
+        {
+          kind: "PAGES",
+          html: "",
+          pageData: renderProps,
+          generatedFromDataRequest: true,
+          headers: undefined,
+          status: undefined,
+        },
+        { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds: isrExpireSeconds }) },
+      );
     }
   }
 
