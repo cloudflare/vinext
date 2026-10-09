@@ -4754,26 +4754,29 @@ describe("app page route wiring helpers", () => {
       buildElements(["dashboard", "(overview)", "settings"], "/dashboard/settings")[slotId],
       "DashboardLoading",
     )?.key;
-    const childrenGroupKey = JSON.stringify(["dashboard", "(overview)"]);
-    expect(overviewKey).toBeDefined();
-    expect(settingsKey).toBeDefined();
-    expect(overviewKey).not.toBe(childrenGroupKey);
-    expect(settingsKey).not.toBe(childrenGroupKey);
+    // The existing key: the first visible children segment, else the slot's
+    // own reset key (empty for a slot with no route segments).
+    expect(overviewKey).toBe("");
+    expect(settingsKey).toBe("settings");
   });
 
-  it("keys a page entry's ancestor loading boundary by the loading segment's child", () => {
+  it("leaves an ancestor loading boundary off the page entry even with nothing in between", () => {
     function RootLoading() {
       return createElement("p", null, "Loading root");
     }
 
-    const buildElements = (routeSegments: string[], routePath: string) =>
+    const buildElements = (
+      routeSegments: string[],
+      routePath: string,
+      withPageRenderDependency = true,
+    ) =>
       buildAppPageElements({
         element: createElement(PageProbe),
         makeThenableParams(params) {
           return Promise.resolve(params);
         },
         matchedParams: {},
-        pageRenderDependency: createAppPageRenderDependency(),
+        pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
         route: {
           error: null,
           errors: [],
@@ -4793,17 +4796,24 @@ describe("app page route wiring helpers", () => {
         rootNotFoundModule: null,
       });
 
-    const first = buildElements(["reports", "a"], "/reports/a");
-    const second = buildElements(["reports", "b"], "/reports/b");
-
-    // Without a layout in between, the page entry keeps the duplicated
-    // boundary, keyed like the one it duplicates so sibling pages share it.
-    expect(findSuspenseWithFallback(first["page:/reports/a"], "RootLoading")?.key).toBe(
-      JSON.stringify(["reports"]),
-    );
-    expect(findSuspenseWithFallback(second["page:/reports/b"], "RootLoading")?.key).toBe(
-      JSON.stringify(["reports"]),
-    );
+    // The browser keys the page's Slot by the page, so a boundary on the page
+    // entry would remount between sibling pages. The route entry's
+    // per-segment boundary, keyed by the loading segment's child, carries it.
+    for (const [routeSegments, routePath] of [
+      [["reports", "a"], "/reports/a"],
+      [["reports", "b"], "/reports/b"],
+    ] as const) {
+      const pageId = `page:${routePath}`;
+      const withDependency = buildElements([...routeSegments], routePath);
+      expect(withDependency[pageId]).toBeDefined();
+      expect(countSuspenseWithFallback(withDependency[pageId], "RootLoading")).toBe(0);
+      const routeBoundary = findSuspenseWithFallback(
+        buildElements([...routeSegments], routePath, false)[`route:${routePath}`],
+        "RootLoading",
+      );
+      expect(routeBoundary?.key).toBe(JSON.stringify(["reports"]));
+      expect(findSlotById(routeBoundary?.props.children, pageId)).not.toBeNull();
+    }
   });
 
   it("threads route state reset keys into loading, error, and not-found boundaries", () => {

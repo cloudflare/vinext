@@ -221,6 +221,16 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       heading: "Beta page",
       shell: "grouped-template",
     },
+    // Nothing sits between the loading and the pages, and the browser keys the
+    // page's Slot by the page, so the boundary must not live on the page entry.
+    {
+      name: "a sibling page with nothing in between",
+      from: "/plain/one",
+      current: "one",
+      link: "two",
+      heading: "Plain two page",
+      shell: null,
+    },
   ]) {
     test(`ancestor loading above a shared layout keeps the current page when navigating to ${target.name}`, async ({
       page,
@@ -243,7 +253,9 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       // The target page takes 3s; the current page and its shell stay on screen meanwhile.
       await page.waitForTimeout(500);
       await expect(page.locator(`#ancestor-shared-layout-${target.current}`)).toBeVisible();
-      await expect(page.locator(`#ancestor-shared-layout-${target.shell}`)).toBeVisible();
+      if (target.shell) {
+        await expect(page.locator(`#ancestor-shared-layout-${target.shell}`)).toBeVisible();
+      }
       await expect(page.locator(`#ancestor-shared-layout-${target.link}`)).toHaveText(
         target.heading,
         { timeout: 10_000 },
@@ -259,9 +271,24 @@ test.describe("Loading boundaries (loading.tsx)", () => {
   }
 
   for (const target of [
-    { name: "a page", path: "settings", heading: "Settings page" },
-    { name: "a templated page", path: "templated", heading: "Templated page" },
-  ]) {
+    { name: "a page", path: "settings", heading: "Settings page", shell: "tabs" },
+    { name: "a templated page", path: "templated", heading: "Templated page", shell: "tabs" },
+    // Only a template sits between the loading and the page, so the route
+    // entry's per-segment boundary is the one that streams the fallback.
+    {
+      name: "a page under a group template",
+      path: "beta",
+      heading: "Beta page",
+      shell: "grouped-template",
+    },
+    {
+      name: "a page with nothing in between",
+      path: "plain/two",
+      id: "two",
+      heading: "Plain two page",
+      shell: null,
+    },
+  ] as { name: string; path: string; id?: string; heading: string; shell: string | null }[]) {
     test(`ancestor loading above a shared layout wraps that layout on first entry to ${target.name}`, async ({
       page,
     }) => {
@@ -270,12 +297,14 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({
         timeout: 5_000,
       });
-      // The layout resolves after 100ms but the page takes 3s, so the loading
-      // UI must still replace the layout rather than render inside its tabs.
+      // The shell resolves within 100ms but the page takes 3s, so the loading
+      // UI must still replace the shell rather than render inside it.
       await page.waitForTimeout(600);
       await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
-      await expect(page.locator("#ancestor-shared-layout-tabs")).toBeHidden();
-      await expect(page.locator(`#ancestor-shared-layout-${target.path}`)).toHaveText(
+      if (target.shell) {
+        await expect(page.locator(`#ancestor-shared-layout-${target.shell}`)).toBeHidden();
+      }
+      await expect(page.locator(`#ancestor-shared-layout-${target.id ?? target.path}`)).toHaveText(
         target.heading,
         { timeout: 10_000 },
       );

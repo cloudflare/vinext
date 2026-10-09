@@ -527,9 +527,9 @@ export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModu
  * Whether a layout or template renders between a loading boundary and an entry
  * inside it. A segment's loading convention wraps the layouts and templates of
  * the segments below it, like Next.js's LoadingBoundary around each child
- * segment, so the outermost such layout or template carries the boundary on its
- * own entry. A flat entry rendered inside it (a nested layout or template, the
- * page, or a slot) must not repeat that boundary, or the fallback would mount
+ * segment, so the outermost such layout entry, or the route entry's
+ * per-segment boundary, carries it. A flat entry rendered inside them (a nested
+ * layout or a slot) must not repeat that boundary, or the fallback would mount
  * inside the layout. Within one segment the layout wraps the template, which
  * wraps the loading, so the bounds are inclusive tree positions per kind.
  */
@@ -1205,41 +1205,33 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
+  // The page and route are sibling values in vinext's flat Flight record. The
+  // route-level Suspense below cannot catch the page value suspending while the
+  // record itself is serialized, so the page entry needs its own boundary to
+  // expose the leaf loading's fallback. Once <Slot> reconnects the entries this
+  // is nested inside the route boundary; that duplication is an intentional
+  // transport artifact, not two independently selected loading conventions.
+  // An ancestor loading stays off the page entry: the browser keys the page's
+  // Slot by the page, so a boundary here would remount on every sibling
+  // navigation, and it would sit inside any layout between the two. The
+  // outermost layout entry below that loading, or the route entry's
+  // per-segment boundary, carries it instead, as Next.js's LoadingBoundary
+  // wraps the loading segment's child.
   const nearestPageLoadingEntry = resolveAppPageLoadingEntryAtOrAbove(
     options.route,
     routeSegments.length,
   );
-  const pageLoadingEntry =
-    nearestPageLoadingEntry &&
-    !hasAppPageSegmentBelowLoading(
-      nearestPageLoadingEntry.treePosition,
-      { layoutsThrough: routeSegments.length, templatesThrough: routeSegments.length },
-      layoutEntries,
-      templateEntries,
-    )
-      ? nearestPageLoadingEntry
+  const PageLoadingComponent =
+    pageRenderDependency && nearestPageLoadingEntry?.treePosition === routeSegments.length
+      ? getDefaultExport(nearestPageLoadingEntry.loadingModule)
       : null;
-  // The page and route are sibling values in vinext's flat Flight record. The
-  // route-level Suspense below cannot catch the page value suspending while the
-  // record itself is serialized, so the page entry needs its own boundary to
-  // expose the fallback. Once <Slot> reconnects the entries this is nested
-  // inside the route boundary; that duplication is an intentional transport
-  // artifact, not two independently selected loading conventions. It mirrors
-  // the boundary it duplicates, so it shares that boundary's reset key.
-  const PageLoadingComponent = pageRenderDependency
-    ? getDefaultExport(pageLoadingEntry?.loadingModule)
-    : null;
-  const pageElement =
-    PageLoadingComponent && pageLoadingEntry ? (
-      <Suspense
-        key={resolveLoadingResetKey(pageLoadingEntry.treePosition) || routeResetKey}
-        fallback={<PageLoadingComponent />}
-      >
-        {options.element}
-      </Suspense>
-    ) : (
-      options.element
-    );
+  const pageElement = PageLoadingComponent ? (
+    <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
+      {options.element}
+    </Suspense>
+  ) : (
+    options.element
+  );
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
     : pageRenderDependency
