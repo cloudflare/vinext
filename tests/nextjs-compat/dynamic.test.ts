@@ -144,6 +144,26 @@ describe("Next.js compat: next/dynamic", () => {
     });
   }
 
+  // Without a boundary of its own, a slow dynamic() suspends to the nearest
+  // parent boundary, here the route's loading.tsx: its fallback is in the
+  // shell, and the component streams in behind it with no boundary of its
+  // own. This must be the first request for its URL: a cached render resolves
+  // synchronously.
+  it("SSR: dynamic() without loading suspends to the parent loading.tsx boundary", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/default-parent-loading");
+    expect(html).toContain("<!--$?-->");
+    expect(html).toContain('<p id="parent-loading">Loading page...</p>');
+    // The page streams in behind that fallback with the component in place, or
+    // with a placeholder for it as part of the same boundary, never inside a
+    // boundary of its own (`<div><!--$?--><template id="B:…`).
+    expect(html).toMatch(
+      /<div hidden id="S:\d+"><div>(?:<template id="P:\d+"><\/template>|<div id="dynamic-component">)/,
+    );
+    expect(html).toContain(
+      '<div id="dynamic-component">This is a dynamically imported component</div>',
+    );
+  });
+
   // Next.js: 'should render loading by default if loading is specified and loader is slow'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L53-L60
   //
@@ -228,11 +248,6 @@ describe("Next.js compat: next/dynamic", () => {
   //   WHY: Dev-only behavior — slow loader shows loading component. In production
   //   the component resolves. The test patches a file at runtime (dev-only).
   //   N/A for HTTP-level SSR testing.
-  //
-  // SKIP: 'should not render loading by default'
-  //   Source: dynamic.test.ts#L52-L55
-  //   WHY: Tests that dynamic component without loading option doesn't show "loading" text.
-  //   Could be tested but needs a dedicated fixture. Low value.
   //
   // SKIP: 'should ignore next/dynamic in routes'
   //   Source: dynamic.test.ts#L57-L60
