@@ -26,6 +26,7 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
+import { attachRequestCfMetadata } from "./request-pipeline.js";
 import { serializeResponseStageLinkProvenance } from "./app-response-header-provenance.js";
 import {
   attachFrameworkRequestError,
@@ -78,7 +79,7 @@ export async function handleResponseStage(
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
   if (props.kind === "app-full-request" && props.headRequest) {
-    request = new Request(request, { method: "HEAD" });
+    request = attachRequestCfMetadata(new Request(request, { method: "HEAD" }), request);
   }
   if (props.requestOrigin !== new URL(request.url).origin) {
     return new Response("Invalid vinext App response stage", { status: 400 });

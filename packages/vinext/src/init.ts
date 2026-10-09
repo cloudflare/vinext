@@ -524,10 +524,12 @@ export function updateGitignore(
 }
 
 /**
- * Read `output` from the effective Next.js config, as `vinext build` does: an
- * inline `vinext({ nextConfig })` in the Vite config wins over next.config,
- * and both are evaluated with NODE_ENV set to production and `.env.production`
- * loaded as the build loads it. A config that cannot load here keeps the Worker-first default.
+ * Read `output` from the Next.js config as `vinext build` does: an inline
+ * `vinext({ nextConfig })` in the Vite config wins over next.config, and both
+ * are evaluated with NODE_ENV set to production and `.env.production` loaded as
+ * the build loads it. The Vite config is read as written, without running
+ * plugin `config` hooks, so a plugin that changes `root`, `envDir` or `mode` is
+ * not seen. A config that cannot load here keeps the Worker-first default.
  * The loader is imported lazily because it needs Vite, which create-vinext-app
  * runs without.
  */

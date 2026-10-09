@@ -9,6 +9,7 @@ import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "./headers.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
 import type { TrustedPrerenderState } from "./prerender-route-params.js";
+import { attachRequestCfMetadata } from "./request-pipeline.js";
 import { restoreStaticFileSignalFromTransport } from "./static-file-signal.js";
 
 export type AppRequestStageDispatchOptions = {
@@ -80,7 +81,9 @@ export async function dispatchAppRequestStage(
     // HEAD transport may drop. The response stage restores the HEAD method.
     const headRequest = request.method === "HEAD";
     const response = await dispatchResponseStage(
-      headRequest ? new Request(request, { method: "GET" }) : request,
+      headRequest
+        ? attachRequestCfMetadata(new Request(request, { method: "GET" }), request)
+        : request,
       {
         kind: "app-full-request",
         buildId: options.buildId,

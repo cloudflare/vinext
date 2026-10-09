@@ -226,6 +226,8 @@ describe("App request-stage dispatch", () => {
       method: "HEAD",
       headers: { Cookie: "__prerender_bypass=draft-secret" },
     });
+    const cf = { country: "NZ" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
     const dispatchResponseStage = vi.fn(async (stageRequest: Request, props) => {
       if (props.kind !== "app-full-request") throw new Error("unexpected stage kind");
       const response = serializeStaticFileSignalForTransport(
@@ -248,6 +250,7 @@ describe("App request-stage dispatch", () => {
 
     const [stageRequest, props] = dispatchResponseStage.mock.calls[0];
     expect(stageRequest.method).toBe("GET");
+    expect(Reflect.get(stageRequest, "cf")).toBe(cf);
     expect(stageRequest.headers.get("cookie")).toBe("__prerender_bypass=draft-secret");
     expect(props).toMatchObject({ headRequest: true, kind: "app-full-request" });
     expect(readStaticFileSignal(response)).toBe(encodeURIComponent("/logo.svg"));

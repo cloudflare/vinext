@@ -443,8 +443,13 @@ describe("App Worker response stage", () => {
       trustedPrerenderState: null,
     } satisfies AppWorkerResponseStageProps;
 
+    const request = new Request("https://example.com/logo.svg", {
+      headers: { "if-none-match": '"v1"' },
+    });
+    const cf = { country: "NZ" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
     await handleResponseStage(
-      new Request("https://example.com/logo.svg", { headers: { "if-none-match": '"v1"' } }),
+      request,
       undefined,
       undefined,
       props,
@@ -455,6 +460,7 @@ describe("App Worker response stage", () => {
     const [renderedRequest] = stages.renderFullRequest.mock.calls[0];
     expect(renderedRequest.method).toBe("HEAD");
     expect(renderedRequest.headers.get("if-none-match")).toBe('"v1"');
+    expect(Reflect.get(renderedRequest, "cf")).toBe(cf);
   });
 
   it("returns a captured route when the full response graph rejects", async () => {
