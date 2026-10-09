@@ -187,6 +187,40 @@ function getDynamicErrorBoundary() {
 const isServer = typeof window === "undefined";
 
 /**
+ * The element tree around an SSR-enabled dynamic() component. The client
+ * renders empty slots where the server renders the preload chunks, so both
+ * sides render the same shape and useId values inside the dynamic component
+ * match on hydration.
+ *
+ * React hoists the preload links out of place, but a hoisted <link> right
+ * after a text node leaves a `<!-- -->` separator behind. Next.js avoids it by
+ * hinting scripts with ReactDOM.preload(), which renders nothing. vinext
+ * renders real modulepreload links (preloadModule() drops the nonce and
+ * fetchPriority), so they go first inside the boundary, where no text precedes
+ * them. Stylesheets stay before the boundary: a precedence stylesheet inside it
+ * makes React outline the boundary even when its content is already resolved,
+ * and rendering them ahead of the content keeps their nonce when the content
+ * links the same CSS. A dynamic component with CSS right after text therefore
+ * still gets the separator.
+ */
+function createDynamicBoundary(
+  fallback: React.ReactNode,
+  content: React.ReactNode,
+  preloadModuleIds: readonly string[] | undefined,
+): React.ReactElement {
+  const preloadChunks = (assets: "styles" | "scripts") =>
+    isServer
+      ? React.createElement(DynamicPreloadChunks, { moduleIds: preloadModuleIds, assets })
+      : null;
+  return React.createElement(
+    React.Fragment,
+    null,
+    preloadChunks("styles"),
+    React.createElement(React.Suspense, { fallback }, preloadChunks("scripts"), content),
+  );
+}
+
+/**
  * Retained for the Pages Router render pipeline, which calls this before
  * rendering. Dynamic imports now use React.lazy + Suspense, so there is no
  * separate preload work to await.
@@ -326,34 +360,7 @@ function dynamic<P = {}>(
           );
         }
       }
-      // React hoists the preload links out of place, but a hoisted <link>
-      // right after a text node leaves a `<!-- -->` separator behind. Next.js
-      // avoids it by hinting scripts with ReactDOM.preload(), which renders
-      // nothing. vinext renders real modulepreload links (preloadModule()
-      // drops the nonce and fetchPriority), so they go first inside the
-      // boundary, where no text precedes them.
-      // Stylesheets stay before the boundary: a precedence stylesheet inside
-      // it makes React outline the boundary even when its content is already
-      // resolved, and rendering them ahead of the content keeps their nonce
-      // when the content links the same CSS. A dynamic component with CSS
-      // right after text therefore still gets the separator.
-      return React.createElement(
-        React.Fragment,
-        null,
-        React.createElement(DynamicPreloadChunks, {
-          moduleIds: preloadModuleIds,
-          assets: "styles",
-        }),
-        React.createElement(
-          React.Suspense,
-          { fallback },
-          React.createElement(DynamicPreloadChunks, {
-            moduleIds: preloadModuleIds,
-            assets: "scripts",
-          }),
-          content,
-        ),
-      );
+      return createDynamicBoundary(fallback, content, preloadModuleIds);
     };
 
     ServerDynamic.displayName = "DynamicServer";
@@ -382,7 +389,7 @@ function dynamic<P = {}>(
         );
       }
     }
-    return React.createElement(React.Suspense, { fallback }, content);
+    return createDynamicBoundary(fallback, content, preloadModuleIds);
   };
 
   ClientDynamic.displayName = "DynamicClient";
