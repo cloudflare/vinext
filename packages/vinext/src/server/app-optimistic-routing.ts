@@ -535,8 +535,9 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
  * (layout-router.tsx's TemplateContext.Provider), so the boundary stays mounted,
  * and its fallback stays hidden, while the current and target routes share the
  * path through that child, route groups and params included. The shell would
- * commit the fallback instead. A leaf loading wraps the page itself, whose key
- * always changes, so only ancestor boundaries are compared.
+ * commit the fallback instead. Next.js shows a leaf loading even on a
+ * search-only navigation (test/e2e/app-dir/searchparams-reuse-loading), so only
+ * ancestor boundaries are compared.
  */
 function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
@@ -553,8 +554,21 @@ function isShellLoadingBoundaryMounted(options: {
     return false;
   }
   const currentMetadata = AppElementsWire.readMetadata(options.currentElements);
-  if (currentMetadata.interception !== null) return false;
-  const currentRoute = routes.get(currentMetadata.routeId);
+  // An intercepted tree renders a different branch than its route id names.
+  if (currentMetadata.interception !== null || currentMetadata.interceptionContext !== null) {
+    return false;
+  }
+  // Payload route ids carry the concrete matched pathname, so a dynamic route
+  // is found by matching that path against the manifest.
+  const currentRoute =
+    routes.get(currentMetadata.routeId) ??
+    (currentMetadata.routeId.startsWith("route:/")
+      ? matchOptimisticRouteManifestRoute({
+          basePath: "",
+          href: currentMetadata.routeId.slice("route:".length),
+          routeManifest: options.routeManifest,
+        })?.route
+      : undefined);
   if (currentRoute === undefined || loadingTreePosition >= currentRoute.treeSegments.length) {
     return false;
   }

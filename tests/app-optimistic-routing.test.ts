@@ -774,17 +774,60 @@ describe("App Router optimistic routing", () => {
     expect(canCommit(twoShell, "route:/s/one")).toBe(false);
     expect(canCommit(twoShell, "route:/s/alpha")).toBe(true);
     expect(canCommit(twoShell, "route:/s/other")).toBe(true);
-    // A route outside the manifest, or under an interception context, keeps
-    // the shell.
+    // A route outside the manifest, or an intercepted current page, keeps the
+    // shell.
     expect(canCommit(twoShell, "route:/missing")).toBe(true);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: AppElementsWire.createMetadataEntries({
+          interception: {
+            sourceMatchedUrl: "/s/one",
+            sourceRouteId: AppElementsWire.encodeRouteId("/s/one", null),
+            slotId: AppElementsWire.encodeSlotId("modal", "/s/one"),
+            targetMatchedUrl: "/s/one",
+            targetRouteId: AppElementsWire.encodeRouteId("/s/one", null),
+          },
+          interceptionContext: null,
+          layoutIds: [],
+          rootLayoutTreePath: "/",
+          routeId: "route:/s/one",
+        }),
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: AppElementsWire.createMetadataEntries({
+          interceptionContext: "/s/one",
+          layoutIds: [],
+          rootLayoutTreePath: "/",
+          routeId: "route:/s/one",
+        }),
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
 
-    // A leaf loading wraps the page, whose key always changes.
-    expect(canCommit(createShellTemplate("/s/two", "/s/two", 3), "route:/s/one")).toBe(true);
+    // A leaf loading wraps the page, whose key changes even for a search-only
+    // navigation on the same route.
+    const leafShell = createShellTemplate("/s/two", "/s/two", 3);
+    expect(canCommit(leafShell, "route:/s/one")).toBe(true);
+    expect(canCommit(leafShell, "route:/s/two")).toBe(true);
 
     // The child segment's params are part of its key.
     const dynamicShell = createShellTemplate("/p/:id/a", "/p/1/a", 1);
-    expect(canCommit(dynamicShell, "route:/p/:id/b", { id: "1" }, { id: "1" })).toBe(false);
-    expect(canCommit(dynamicShell, "route:/p/:id/b", { id: "2" }, { id: "1" })).toBe(true);
+    // Payload route ids carry the concrete matched pathname.
+    expect(canCommit(dynamicShell, "route:/p/1/b", { id: "1" }, { id: "1" })).toBe(false);
+    expect(canCommit(dynamicShell, "route:/p/2/b", { id: "2" }, { id: "1" })).toBe(true);
   });
 
   it("preserves raw encoded catch-all params in optimistic payloads", () => {

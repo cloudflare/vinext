@@ -194,6 +194,8 @@ test.describe("Loading boundaries (loading.tsx)", () => {
   // it never renders inside that layout. Regression for cloudflare/vinext#3725.
   // Related Next.js test: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  // Dev never prefetches links, so the prefetched loading-shell path is covered
+  // by app-router-prod/ancestor-loading-prefetch.spec.ts.
   for (const target of [
     {
       name: "a sibling page",
@@ -212,8 +214,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       shell: "tabs",
     },
     // A template's Slot is keyed by its child segment, so it remounts here; the
-    // ancestor loading must stay outside it, as in Next.js. The prefetched
-    // loading-shell path is covered by app-router-prod/ancestor-loading-prefetch.
+    // ancestor loading must stay outside it, as in Next.js.
     {
       name: "a sibling page under a group template",
       from: "/alpha",

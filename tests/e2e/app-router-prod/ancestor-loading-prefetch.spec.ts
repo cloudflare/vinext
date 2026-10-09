@@ -7,10 +7,29 @@ import { waitForAppRouterHydration } from "../helpers";
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
 const BASE = "/ancestor-loading-shared-layout";
 
-async function navigateAfterLoadingShellPrefetch(
+type LoadingWindow = { __sawAncestorSharedLayoutLoading?: boolean };
+
+// Holds the real navigation request so that, until it is released, only the
+// optimistic loading shell can put the loading UI on screen.
+async function clickWithHeldNavigation(
   page: Page,
   options: { from: string; current: string; link: string; targetPath: string },
-): Promise<boolean> {
+): Promise<() => void> {
+  let releaseNavigation!: () => void;
+  const navigationReleased = new Promise<void>((resolve) => {
+    releaseNavigation = resolve;
+  });
+  await page.route(`**${BASE}${options.targetPath}*`, async (route) => {
+    const headers = route.request().headers();
+    if (
+      headers.rsc === "1" &&
+      headers["x-vinext-rsc-render-mode"] !== "prefetch-loading-shell" &&
+      headers["next-router-prefetch"] === undefined
+    ) {
+      await navigationReleased;
+    }
+    await route.continue();
+  });
   const shellPrefetch = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname.startsWith(`${BASE}${options.targetPath}`) &&
@@ -22,7 +41,7 @@ async function navigateAfterLoadingShellPrefetch(
   await (await shellPrefetch).finished();
 
   await page.evaluate(() => {
-    const state = window as unknown as { __sawAncestorSharedLayoutLoading?: boolean };
+    const state = window as unknown as LoadingWindow;
     state.__sawAncestorSharedLayoutLoading = false;
     new MutationObserver(() => {
       if (document.getElementById("ancestor-shared-layout-loading")) {
@@ -31,18 +50,11 @@ async function navigateAfterLoadingShellPrefetch(
     }).observe(document.body, { childList: true, subtree: true });
   });
   await page.locator(`#${options.link}`).click();
-  return page
-    .waitForFunction(
-      () =>
-        (window as unknown as { __sawAncestorSharedLayoutLoading?: boolean })
-          .__sawAncestorSharedLayoutLoading,
-      undefined,
-      { timeout: 1_000 },
-    )
-    .then(
-      () => true,
-      () => false,
-    );
+  return releaseNavigation;
+}
+
+function sawLoading(page: Page): Promise<boolean | undefined> {
+  return page.evaluate(() => (window as unknown as LoadingWindow).__sawAncestorSharedLayoutLoading);
 }
 
 for (const target of [
@@ -51,6 +63,15 @@ for (const target of [
     from: "/plain/one",
     current: "one",
     link: "two",
+    target: "two",
+    path: "/plain/two",
+  },
+  {
+    name: "a sibling page from a dynamic page",
+    from: "/plain/5",
+    current: "dynamic",
+    link: "two-from-dynamic",
+    target: "two",
     path: "/plain/two",
   },
   {
@@ -58,6 +79,7 @@ for (const target of [
     from: "/alpha",
     current: "alpha",
     link: "beta",
+    target: "beta",
     path: "/beta",
   },
   {
@@ -65,35 +87,43 @@ for (const target of [
     from: "/plain/three",
     current: "three",
     link: "four",
+    target: "four",
     path: "/plain/four",
   },
 ]) {
   test(`a prefetched loading shell keeps the current page when navigating to ${target.name}`, async ({
     page,
   }) => {
-    const sawLoading = await navigateAfterLoadingShellPrefetch(page, {
+    const releaseNavigation = await clickWithHeldNavigation(page, {
       current: target.current,
       from: target.from,
       link: `ancestor-shared-layout-${target.link}-link`,
       targetPath: target.path,
     });
-    expect(sawLoading).toBe(false);
+    await page.waitForTimeout(1_000);
+    expect(await sawLoading(page)).toBe(false);
     await expect(page.locator(`#ancestor-shared-layout-${target.current}`)).toBeVisible();
-    await expect(page.locator(`#ancestor-shared-layout-${target.link}`)).toBeVisible({
+
+    releaseNavigation();
+    await expect(page.locator(`#ancestor-shared-layout-${target.target}`)).toBeVisible({
       timeout: 10_000,
     });
+    expect(await sawLoading(page)).toBe(false);
   });
 }
 
 test("a prefetched loading shell still shows the loading when the boundary's child segment changes", async ({
   page,
 }) => {
-  const sawLoading = await navigateAfterLoadingShellPrefetch(page, {
+  const releaseNavigation = await clickWithHeldNavigation(page, {
     current: "one",
     from: "/plain/one",
     link: "ancestor-shared-layout-beta-from-one-link",
     targetPath: "/beta",
   });
-  expect(sawLoading).toBe(true);
+  // The real navigation is held, so this fallback comes from the shell.
+  await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({ timeout: 2_000 });
+
+  releaseNavigation();
   await expect(page.locator("#ancestor-shared-layout-beta")).toBeVisible({ timeout: 10_000 });
 });

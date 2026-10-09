@@ -1380,6 +1380,7 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements["layout:/parent/slow"]).toBeUndefined();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(1);
     const html = await renderRouteEntry(elements, "route:/parent/slow");
     expect(html).toContain("Parent loading");
     expect(html).not.toContain("Leaf loading");
