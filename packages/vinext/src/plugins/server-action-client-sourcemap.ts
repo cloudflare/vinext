@@ -1,23 +1,29 @@
+import { hash } from "node:crypto";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
-import path from "pathslash";
 import type { Plugin, ResolvedConfig } from "vite";
 
 const INLINE_SOURCEMAP_RE =
   /(\/\/# sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,)([A-Za-z0-9+/=]+)(\s*)$/;
 
-type SourceMap = { sources?: string[]; sourcesContent?: (string | null)[] };
+type SourceMap = { sourcesContent?: (string | null)[] };
 
-/** Null the content of every source not kept; returns the new JSON when it changed. */
-function scrubSourcemap(json: string, keep: (source: string) => boolean): string | null {
-  const map = JSON.parse(json) as SourceMap;
+const contentHash = (content: string) => hash("sha256", content);
+
+/** Null every source content not kept; returns whether anything changed. */
+function scrubSourcesContent(map: SourceMap, keep: (content: string) => boolean): boolean {
   let changed = false;
-  map.sources?.forEach((source, index) => {
-    if (map.sourcesContent?.[index] != null && !keep(source)) {
-      map.sourcesContent[index] = null;
+  map.sourcesContent?.forEach((content, index) => {
+    if (content != null && !keep(content)) {
+      map.sourcesContent![index] = null;
       changed = true;
     }
   });
-  return changed ? JSON.stringify(map) : null;
+  return changed;
+}
+
+function scrubSourcemapJson(json: string, keep: (content: string) => boolean): string | null {
+  const map = JSON.parse(json) as SourceMap;
+  return scrubSourcesContent(map, keep) ? JSON.stringify(map) : null;
 }
 
 /**
@@ -37,18 +43,22 @@ function scrubSourcemap(json: string, keep: (source: string) => boolean): string
  *
  * Rolldown takes a module's original source from whichever loader returned it
  * (including any map that loader supplied), and later transforms cannot
- * replace it. So this scrubs the emitted maps instead (`.map` assets and
- * inline maps), which holds for any loader and for sourcemaps enabled late
- * through `outputOptions`. Action modules are the ones plugin-rsc itself
- * registered as server references; its client transform drops the claim for
- * every module it does not proxy. In a chunk containing one, only the sources
- * that match the chunk's other modules keep their content. The proxy's
- * mappings still name the action module, without its content.
+ * replace it. So this scrubs the emitted maps instead: the chunk's `map`, its
+ * `.map` asset and any inline map. That holds for any loader and for
+ * sourcemaps enabled late through `outputOptions`. Action modules are the ones
+ * plugin-rsc itself registered as server references; its client transform
+ * drops the claim for every module it does not proxy. In a chunk containing
+ * one, a source keeps its content only when that content is the loaded code
+ * of one of the chunk's other modules, recorded before any other transform.
+ * Matching content rather than source names holds for colliding names,
+ * loader-supplied maps and custom map locations. The proxy's mappings still
+ * name the action module, without its content.
  */
 export function createServerActionClientSourcemapPlugin(options: {
   getManager: (config: ResolvedConfig) => Promise<RscPluginManager | undefined>;
 }): Plugin {
   let config: ResolvedConfig;
+  const loadedCode = new Map<string, Map<string, string>>();
 
   return {
     name: "vinext:server-action-client-sourcemap",
@@ -56,40 +66,48 @@ export function createServerActionClientSourcemapPlugin(options: {
     configResolved(resolvedConfig) {
       config = resolvedConfig;
     },
+    buildStart() {
+      if (this.environment?.config.consumer === "client") {
+        loadedCode.set(this.environment.name, new Map());
+      }
+    },
+    transform: {
+      order: "pre",
+      handler(code, id) {
+        const hashes = this.environment && loadedCode.get(this.environment.name);
+        hashes?.set(id, contentHash(code));
+      },
+    },
     generateBundle: {
       order: "post",
-      async handler(outputOptions, bundle) {
-        if (this.environment?.config.consumer !== "client") return;
+      async handler(_outputOptions, bundle) {
+        const hashes = this.environment && loadedCode.get(this.environment.name);
+        if (!hashes) return;
         const serverReferences = (await options.getManager(config))?.serverReferences.metaMap;
         if (!serverReferences?.size) return;
-        const outDir = outputOptions.dir ?? path.dirname(outputOptions.file ?? "");
 
         for (const chunk of Object.values(bundle)) {
           if (chunk.type !== "chunk") continue;
           if (!chunk.moduleIds.some((id) => serverReferences.has(id))) continue;
 
-          const sourcemapFileName = chunk.sourcemapFileName ?? `${chunk.fileName}.map`;
-          const sourcemapPath = path.resolve(outDir, sourcemapFileName);
-          const publicSources = new Set(
-            chunk.moduleIds
-              .filter((id) => !serverReferences.has(id))
-              .map((id) => {
-                const source = path.relative(path.dirname(sourcemapPath), id);
-                return outputOptions.sourcemapPathTransform?.(source, sourcemapPath) ?? source;
-              }),
+          const publicContent = new Set(
+            chunk.moduleIds.filter((id) => !serverReferences.has(id)).map((id) => hashes.get(id)),
           );
-          const keep = (source: string) => publicSources.has(source);
+          const keep = (content: string) => publicContent.has(contentHash(content));
 
-          const asset = bundle[sourcemapFileName];
+          // Rolldown only syncs top-level assignments back from the bundle.
+          const map = chunk.map;
+          if (map && scrubSourcesContent(map, keep)) chunk.map = map;
+          const asset = bundle[chunk.sourcemapFileName ?? `${chunk.fileName}.map`];
           if (asset?.type === "asset") {
-            const scrubbed = scrubSourcemap(String(asset.source), keep);
+            const scrubbed = scrubSourcemapJson(String(asset.source), keep);
             if (scrubbed !== null) asset.source = scrubbed;
           }
 
           const inline = INLINE_SOURCEMAP_RE.exec(chunk.code);
           if (inline) {
             const json = Buffer.from(inline[2]!, "base64").toString("utf8");
-            const scrubbed = scrubSourcemap(json, keep);
+            const scrubbed = scrubSourcemapJson(json, keep);
             if (scrubbed !== null) {
               chunk.code =
                 chunk.code.slice(0, inline.index) +
