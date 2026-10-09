@@ -1334,6 +1334,21 @@ export function updateWranglerConfigForCloudflare(
         output = `${output.slice(0, versionMetadataProperty.valueStart)}{ "binding": "${DEFAULT_VERSION_METADATA_BINDING}" }${output.slice(versionMetadataProperty.valueEnd)}`;
       }
     }
+  } else if (options.cdnCache !== "response-store") {
+    // Only workersCacheCdnAdapter() emits the uncached default entrypoint that
+    // a top-level Workers Cache needs. Without it, a cache left by an earlier
+    // Workers Cache setup would serve every Worker response, private ones
+    // included, before the Worker runs.
+    const cacheProperty = findTopLevelJsonProperty(output, "cache");
+    if (cacheProperty) {
+      const cache = JSON.parse(
+        stripJsonComments(output.slice(cacheProperty.valueStart, cacheProperty.valueEnd)),
+      ) as unknown;
+      if (isUnknownRecord(cache) && cache.enabled === true) {
+        const updatedCache = JSON.stringify({ ...cache, enabled: false });
+        output = `${output.slice(0, cacheProperty.valueStart)}${updatedCache}${output.slice(cacheProperty.valueEnd)}`;
+      }
+    }
   }
   if (options.imageOptimization === "cloudflare-images") {
     const imagesProperty = findTopLevelJsonProperty(output, "images");

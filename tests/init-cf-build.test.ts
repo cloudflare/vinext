@@ -332,3 +332,70 @@ describe("default cf init build", () => {
     130_000,
   );
 });
+
+describe("legacy Wrangler cache migration", () => {
+  it("does not keep the default Worker entrypoint cached after switching from Workers Cache to Static Assets", async () => {
+    const fixture = path.resolve(import.meta.dirname, "fixtures/cf-app-basic");
+    const root = path.join(tempRoot, "cf-app-basic-cache-migration");
+    fs.cpSync(fixture, root, {
+      recursive: true,
+      filter: (source) => source !== path.join(fixture, "node_modules"),
+    });
+    fs.symlinkSync(path.join(fixture, "node_modules"), path.join(root, "node_modules"), "junction");
+
+    async function initAndBuild(cdnCache: "workers-cache" | "static-assets") {
+      // Removing the Vite config lets init regenerate it for the new adapter.
+      fs.rmSync(path.join(root, "vite.config.ts"));
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await init({
+          root,
+          platform: "cloudflare",
+          skipCheck: true,
+          install: false,
+          _today: "2026-09-23",
+          cloudflare: {
+            dataCache: "none",
+            cdnCache,
+            legacyWrangler: true,
+            imageOptimization: "none",
+          },
+        });
+      } finally {
+        log.mockRestore();
+      }
+      const build = spawnSync(path.join(webRoot, "node_modules/.bin/vinext"), ["build"], {
+        cwd: root,
+        encoding: "utf-8",
+        timeout: 120_000,
+        env: { ...process.env, CI: "true" },
+      });
+      expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
+      const config = JSON.parse(
+        fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
+      );
+      // A per-export policy overrides the Worker's top-level Workers Cache setting.
+      // https://developers.cloudflare.com/workers/cache/configuration/
+      return {
+        config,
+        defaultEntrypointCached: Boolean(
+          config.exports?.default?.cache?.enabled ?? config.cache?.enabled,
+        ),
+      };
+    }
+
+    const workersCache = await initAndBuild("workers-cache");
+    expect(workersCache.config.cache).toEqual({ enabled: true });
+    expect(workersCache.defaultEntrypointCached).toBe(false);
+
+    const staticAssets = await initAndBuild("static-assets");
+    expect(fs.readFileSync(path.join(root, "vite.config.ts"), "utf8")).toContain(
+      "staticAssetsAdapter()",
+    );
+    expect(staticAssets.config.exports?.default).toBeUndefined();
+    // Cloudflare caches a response without Cache-Control heuristically, so a
+    // cached default entrypoint would serve one visitor's cookie-dependent
+    // response to another before the Worker runs.
+    expect(staticAssets.defaultEntrypointCached).toBe(false);
+  }, 280_000);
+});
