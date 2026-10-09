@@ -4,7 +4,8 @@
  *
  * Next salts server-reference IDs with this key, so keeping it stable keeps
  * client chunk names stable across rebuilds of identical source. Next caches
- * a generated key under `<distDir>/cache`; vinext uses `<root>/.vinext/cache`
+ * a generated key under `<distDir>/cache` for builds and `<distDir>/dev/cache`
+ * for dev; vinext uses `<root>/.vinext/cache` and `<root>/.vinext/dev/cache`
  * because `dist/` is wiped by every build.
  */
 import { randomBytes } from "node:crypto";
@@ -27,7 +28,7 @@ const VITE_DEFAULT_FS_DENY = [
   ".yarnrc.yml",
   "**/.git/**",
 ];
-const KEY_CACHE_FS_DENY = `**/.vinext/cache/${CONFIG_FILE}`;
+const KEY_CACHE_FS_DENY = `**/.vinext/**/${CONFIG_FILE}`;
 
 type LoadEncryptionKeyOptions = {
   root: string;
@@ -98,7 +99,11 @@ export function loadOrGenerateServerActionsEncryptionKey(
   if (!(options.hasPersistentStorage ?? !isDocker())) return generateKey();
 
   const now = options.now ?? Date.now();
-  const cacheDir = path.join(options.root, ".vinext", "cache");
+  // Next resolves dev's distDir to `<distDir>/dev`, so dev never reads or
+  // writes the build's key.
+  const cacheDir = options.isBuild
+    ? path.join(options.root, ".vinext", "cache")
+    : path.join(options.root, ".vinext", "dev", "cache");
   const configPath = path.join(cacheDir, CONFIG_FILE);
   const cachedKey = readCachedKey(configPath, options.isBuild, providedKey, now);
   if (cachedKey !== undefined) return cachedKey;
@@ -108,6 +113,7 @@ export function loadOrGenerateServerActionsEncryptionKey(
   fs.writeFileSync(
     configPath,
     JSON.stringify({ [ENCRYPTION_KEY]: key, [ENCRYPTION_EXPIRE_AT]: now + EXPIRATION }),
+    { mode: 0o600 },
   );
   return key;
 }
@@ -119,4 +125,24 @@ export function loadOrGenerateServerActionsEncryptionKey(
  */
 export function getServerActionsKeyCacheFsDeny(configuredDeny: string[] | undefined): string[] {
   return configuredDeny ? [KEY_CACHE_FS_DENY] : [...VITE_DEFAULT_FS_DENY, KEY_CACHE_FS_DENY];
+}
+
+/**
+ * Whether a dev-server request URL names the key cache. Vite skips
+ * `server.fs.deny` when `server.fs.strict` is false, so a middleware rejects
+ * these requests too. Vite decodes the path once and the file system may be
+ * case-insensitive, so match the decoded, lowercased path.
+ */
+export function isServerActionsKeyCacheRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = url.split("?", 1)[0]!;
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    // Vite rejects malformed paths itself; still check the raw path.
+  }
+  return (
+    decoded.toLowerCase().includes(CONFIG_FILE) || pathname.toLowerCase().includes(CONFIG_FILE)
+  );
 }
