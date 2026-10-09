@@ -9936,28 +9936,51 @@ describe("middleware bypass prevention", () => {
   });
 
   it("preserveRedirectDestinationQuery merges the request query in Next.js order and encoding", async () => {
-    const { preserveRedirectDestinationQuery } =
+    const { matchRedirect, preserveRedirectDestinationQuery } =
       await import("../packages/vinext/src/config/config-matchers.js");
-    // Expected Locations were observed from Next.js 16.2.7 config redirects
-    // with these destinations and request queries.
+    // Expected Locations were observed from Next.js 16.2.7 with these rules.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
-    for (const [destination, requestSearch, location] of [
-      ["/about?a=1", "?2=x&1=y&a=9", "/about?1=y&2=x&a=1"],
-      ["/about?a=1", "?a=2&a=3&b=1&b=2", "/about?a=1&b=1&b=2"],
-      ["/about?a=1", "?q=a+b&e=&f", "/about?q=a%20b&e=&f=&a=1"],
-      ["/about?a=1", "?s=%E2%9C%93&t=%2B", "/about?s=%E2%9C%93&t=%2B&a=1"],
-      ["/about", "?z=%2F&_rsc=abc", "/about?z=%2F&_rsc=abc"],
-      ["/about?next=/foo%2Fbar&safe=1", "?utm=1", "/about?utm=1&next=/foo%2Fbar&safe=1"],
+    const redirects = [
+      { source: "/r/:next", destination: "/about?next=/:next&safe=1", permanent: false },
+      { source: "/p", destination: "/about?a=1", permanent: false },
+      { source: "/n", destination: "/about", permanent: false },
+      { source: "/h", destination: "/about#frag", permanent: false },
+      { source: "/t", destination: "/about?a=%41&b=x+y&c", permanent: false },
+      { source: "/role", destination: "/about?%72ole=user", permanent: false },
+    ];
+
+    for (const [pathname, requestSearch, location] of [
+      ["/r/foo&utm=evil", "?utm=good&next=x", "/about?utm=good&next=/foo&utm=evil&safe=1"],
+      ["/role", "?role=admin", "/about?role=user"],
+      ["/t", "?u=1", "/about?u=1&a=A&b=x y&c="],
+      ["/r/foo%2Fbar", "?utm=1", "/about?utm=1&next=/foo%2Fbar&safe=1"],
       [
-        "/about?next=/foo%26next%3Devil&safe=1",
+        "/r/foo%26next%3Devil",
         "?utm=a%20b&next=x",
         "/about?utm=a%20b&next=/foo%26next%3Devil&safe=1",
       ],
-      ["/about?next=/%41b&safe=1", "?utm=%41", "/about?utm=A&next=/%41b&safe=1"],
-      ["/about?next=/x&safe=1", "?next=keep&safe=0", "/about?next=/x&safe=1"],
-      ["/about#frag", "?utm=1", "/about?utm=1#frag"],
+      ["/r/%41b", "?utm=%41", "/about?utm=A&next=/%41b&safe=1"],
+      ["/r/x", "?next=keep&safe=0", "/about?next=/x&safe=1"],
+      ["/p", "?2=x&1=y&a=9", "/about?1=y&2=x&a=1"],
+      ["/p", "?a=2&a=3&b=1&b=2", "/about?a=1&b=1&b=2"],
+      ["/p", "?q=a+b&e=&f", "/about?q=a%20b&e=&f=&a=1"],
+      ["/p", "?s=%E2%9C%93&t=%2B", "/about?s=%E2%9C%93&t=%2B&a=1"],
+      ["/n", "?z=%2F&_rsc=abc", "/about?z=%2F&_rsc=abc"],
+      ["/h", "?utm=1", "/about?utm=1#frag"],
     ]) {
-      expect(preserveRedirectDestinationQuery(destination, requestSearch)).toBe(location);
+      const redirect = matchRedirect(pathname, redirects, {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(requestSearch),
+        host: "localhost",
+      })!;
+      expect(
+        preserveRedirectDestinationQuery(
+          redirect.destination,
+          requestSearch,
+          redirect.destinationQuery,
+        ),
+      ).toBe(location);
     }
   });
 
@@ -13594,7 +13617,11 @@ describe("matchRedirect locale-static index", () => {
       query: new URLSearchParams(),
       host: "localhost",
     });
-    expect(withLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+    expect(withLocalePrefix).toEqual({
+      destination: "/target/forced",
+      permanent: false,
+      destinationQuery: [],
+    });
 
     const withoutLocalePrefix = matchRedirect("/docs", redirects, {
       headers: new Headers({ "x-locale": "forced" }),
@@ -13602,7 +13629,11 @@ describe("matchRedirect locale-static index", () => {
       query: new URLSearchParams(),
       host: "localhost",
     });
-    expect(withoutLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+    expect(withoutLocalePrefix).toEqual({
+      destination: "/target/forced",
+      permanent: false,
+      destinationQuery: [],
+    });
   });
 
   it("falls back to linear matching for rules that are not locale-static", async () => {
@@ -14867,7 +14898,7 @@ describe("matchRedirect destination param substitution", () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
     const redirects = [{ source: "/post/:id", destination: "/api/:id/:id", permanent: false }];
     const result = matchRedirect("/post/123", redirects, emptyCtx);
-    expect(result).toEqual({ destination: "/api/123/123", permanent: false });
+    expect(result).toEqual({ destination: "/api/123/123", permanent: false, destinationQuery: [] });
   });
 
   it("replaces adjacent params separated by literal characters in redirect destinations", async () => {
@@ -14876,7 +14907,11 @@ describe("matchRedirect destination param substitution", () => {
       { source: "/legacy/:year/:month", destination: "/archive/:year-:month", permanent: true },
     ];
     const result = matchRedirect("/legacy/2024/06", redirects, emptyCtx);
-    expect(result).toEqual({ destination: "/archive/2024-06", permanent: true });
+    expect(result).toEqual({
+      destination: "/archive/2024-06",
+      permanent: true,
+      destinationQuery: [],
+    });
   });
 
   it("replaces repeated locale params in locale-static redirect destinations", async () => {
@@ -14889,7 +14924,7 @@ describe("matchRedirect destination param substitution", () => {
       },
     ];
     const result = matchRedirect("/en/docs", redirects, emptyCtx);
-    expect(result).toEqual({ destination: "/en/en/docs", permanent: false });
+    expect(result).toEqual({ destination: "/en/en/docs", permanent: false, destinationQuery: [] });
   });
 
   it("substitutes named captures from has conditions into redirect destinations", async () => {
@@ -14908,7 +14943,11 @@ describe("matchRedirect destination param substitution", () => {
       ...emptyCtx,
       headers: new Headers({ "x-authorized": "yes" }),
     });
-    expect(result).toEqual({ destination: "/home?authorized=yes", permanent: false });
+    expect(result).toEqual({
+      destination: "/home?authorized=yes",
+      permanent: false,
+      destinationQuery: [["authorized", "yes"]],
+    });
   });
 
   it("substitutes source params verbatim into redirect destination query values", async () => {
@@ -14921,16 +14960,22 @@ describe("matchRedirect destination param substitution", () => {
       { source: "/go/:next", destination: "/login?next=/:next&safe=1", permanent: false },
     ];
 
-    for (const [pathname, destination] of [
-      ["/go/foo%26next%3Devil.example", "/login?next=/foo%26next%3Devil.example&safe=1"],
-      ["/go/caf%C3%A9", "/login?next=/caf%C3%A9&safe=1"],
-      ["/go/x%25y", "/login?next=/x%25y&safe=1"],
-      ["/go/a+b", "/login?next=/a+b&safe=1"],
-      ["/go/foo&next=evil.example", "/login?next=/foo&next=evil.example&safe=1"],
+    for (const [pathname, next] of [
+      ["/go/foo%26next%3Devil.example", "/foo%26next%3Devil.example"],
+      ["/go/caf%C3%A9", "/caf%C3%A9"],
+      ["/go/x%25y", "/x%25y"],
+      ["/go/a+b", "/a+b"],
+      ["/go/foo&next=evil.example", "/foo&next=evil.example"],
     ]) {
       expect(matchRedirect(pathname, redirects, emptyCtx)).toEqual({
-        destination,
+        destination: `/login?next=${next}&safe=1`,
         permanent: false,
+        // The template query is parsed before substitution, so `next` stays
+        // one value for the request query merge.
+        destinationQuery: [
+          ["next", next],
+          ["safe", "1"],
+        ],
       });
     }
   });

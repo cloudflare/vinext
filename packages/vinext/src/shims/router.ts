@@ -1866,7 +1866,11 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
     !hasBasePath(redirect.destination, __basePath)
       ? __basePath + redirect.destination
       : redirect.destination;
-  return preserveRedirectDestinationQuery(destination, routeContext.search);
+  return preserveRedirectDestinationQuery(
+    destination,
+    routeContext.search,
+    redirect.destinationQuery,
+  );
 }
 
 async function applyClientConfigRewrite(

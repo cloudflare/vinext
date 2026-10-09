@@ -1112,7 +1112,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const location =
       isRscRequest && request.headers.get(RSC_HEADER) === "1"
         ? await createRscRedirectLocation(destination, request)
-        : configMatchers.preserveRedirectDestinationQuery(destination, url.search);
+        : configMatchers.preserveRedirectDestinationQuery(
+            destination,
+            url.search,
+            redirect.destinationQuery,
+          );
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },

@@ -30,7 +30,10 @@ import {
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
-import { substituteDestinationParams } from "./destination-params.js";
+import {
+  substituteDestinationParams,
+  substituteRedirectDestinationQuery,
+} from "./destination-params.js";
 
 export {
   normalizeHost,
@@ -790,6 +793,17 @@ export function matchConfigPattern(
 }
 
 /**
+ * A matched config redirect. `destinationQuery` is the destination query as
+ * Next.js sees it before merging the request query: parsed from the template,
+ * with params substituted into each value.
+ */
+export type RedirectMatch = {
+  destination: string;
+  permanent: boolean;
+  destinationQuery: [string, string][];
+};
+
+/**
  * Apply redirect rules from next.config.js.
  * Returns the redirect info if a redirect was matched, or null.
  *
@@ -830,7 +844,7 @@ export function matchRedirect(
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
   onRuleSourceMatch?: (rule: NextRedirect) => void,
-): { destination: string; permanent: boolean } | null {
+): RedirectMatch | null {
   if (redirects.length === 0) return null;
 
   // Strip trailing slash for the locale-static fast path (Map.get on the
@@ -854,7 +868,7 @@ export function matchRedirect(
   // second slash, which is O(n) on the path length but far cheaper than
   // running 63 compiled regexes.
 
-  let localeMatch: { destination: string; permanent: boolean } | null = null;
+  let localeMatch: RedirectMatch | null = null;
   let localeMatchIndex = Infinity;
 
   if (index.localeStatic.size > 0) {
@@ -877,15 +891,10 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        const dest = substituteAndSanitizeDestination(
-          redirect.destination,
-          {
-            [entry.paramName]: "",
-            ...conditionParams,
-          },
-          "redirect",
-        );
-        localeMatch = { destination: dest, permanent: redirect.permanent };
+        localeMatch = resolveRedirectMatch(redirect, {
+          [entry.paramName]: "",
+          ...conditionParams,
+        });
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
       }
@@ -912,15 +921,10 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          const dest = substituteAndSanitizeDestination(
-            redirect.destination,
-            {
-              [entry.paramName]: localePart,
-              ...conditionParams,
-            },
-            "redirect",
-          );
-          localeMatch = { destination: dest, permanent: redirect.permanent };
+          localeMatch = resolveRedirectMatch(redirect, {
+            [entry.paramName]: localePart,
+            ...conditionParams,
+          });
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
         }
@@ -947,16 +951,10 @@ export function matchRedirect(
           ? collectConditionParams(redirect.has, redirect.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      const dest = substituteAndSanitizeDestination(
-        redirect.destination,
-        {
-          ...params,
-          ...conditionParams,
-        },
-        "redirect",
-      );
-      return { destination: dest, permanent: redirect.permanent };
+      return resolveRedirectMatch(redirect, {
+        ...params,
+        ...conditionParams,
+      });
     }
   }
 
@@ -1040,6 +1038,18 @@ function substituteAndSanitizeDestination(
   kind: "redirect" | "rewrite",
 ): string {
   return sanitizeDestination(substituteDestinationParams(destination, params, kind));
+}
+
+function resolveRedirectMatch(
+  redirect: NextRedirect,
+  params: Record<string, string>,
+): RedirectMatch {
+  return {
+    // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+    destination: substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
+    permanent: redirect.permanent,
+    destinationQuery: substituteRedirectDestinationQuery(redirect.destination, params),
+  };
 }
 
 /**
@@ -1175,8 +1185,9 @@ export function sanitizeDestination(dest: string): string {
  * `stringifyQuery`: request keys keep their order (integer-like keys first, as
  * in a JS object), a destination key overrides the request value in place,
  * and destination-only keys follow. Request keys and values are re-encoded;
- * destination text, including substituted params, is emitted verbatim.
- * External destinations are returned untouched (a config redirect to another
+ * destination keys and values are emitted verbatim. Pass the match's
+ * `destinationQuery` so substituted params keep their value boundaries;
+ * without it the destination's own query is parsed. External destinations are returned untouched (a config redirect to another
  * origin should not leak the original request's query).
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
@@ -1184,6 +1195,7 @@ export function sanitizeDestination(dest: string): string {
 export function preserveRedirectDestinationQuery(
   destination: string,
   requestSearch: string,
+  destinationQuery?: [string, string][],
 ): string {
   if (requestSearch === "" || requestSearch === "?" || isExternalUrl(destination)) {
     return destination;
@@ -1201,17 +1213,7 @@ export function preserveRedirectDestinationQuery(
   const destQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
 
   const requestQuery = collectQueryValues(requestParams);
-  const destinationQuery = collectQueryValues(
-    destQuery
-      .split("&")
-      .filter(Boolean)
-      .map((part): [string, string] => {
-        const equalsIndex = part.indexOf("=");
-        return equalsIndex === -1
-          ? [part, ""]
-          : [part.slice(0, equalsIndex), part.slice(equalsIndex + 1)];
-      }),
-  );
+  const destinationValues = collectQueryValues(destinationQuery ?? new URLSearchParams(destQuery));
 
   // Next.js only re-encodes strings that came from the request query.
   const requestStrings = new Set<string>();
@@ -1222,7 +1224,7 @@ export function preserveRedirectDestinationQuery(
   const encode = (value: string) => (requestStrings.has(value) ? encodeURIComponent(value) : value);
 
   const mergedParts: string[] = [];
-  for (const [key, values] of Object.entries({ ...requestQuery, ...destinationQuery })) {
+  for (const [key, values] of Object.entries({ ...requestQuery, ...destinationValues })) {
     for (const value of values) mergedParts.push(`${encode(key)}=${encode(value)}`);
   }
 

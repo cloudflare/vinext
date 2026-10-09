@@ -254,6 +254,10 @@ test.describe("Config destination query params", () => {
         "/query-param-redirect/foo%26next%3Devil?utm=a%20b&next=x",
         "/about?utm=a%20b&next=/foo%26next%3Devil&safe=1",
       ],
+      [
+        "/query-param-redirect/foo&utm=evil?utm=good&next=x",
+        "/about?utm=good&next=/foo&utm=evil&safe=1",
+      ],
     ]) {
       const res = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
       expect(res.status()).toBe(307);

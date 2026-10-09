@@ -37,24 +37,8 @@ export function substituteDestinationParams(
   params: Record<string, string>,
   kind: "redirect" | "rewrite",
 ): string {
-  const keys = Object.keys(params);
-  if (keys.length === 0) return destination;
-
-  // Match only the concrete param keys captured from the source pattern.
-  // Sorting longest-first ensures hyphenated names like `auth-method`
-  // win over shorter prefixes like `auth`. The negative lookahead keeps
-  // alphanumeric/underscore suffixes attached, while allowing `-` to act
-  // as a literal delimiter in destinations like `:year-:month`.
-  const sortedKeys = [...keys].sort((a, b) => b.length - a.length);
-  const cacheKey = sortedKeys.join("\0");
-  let paramRe = _compiledDestinationParamCache.get(cacheKey);
-  if (!paramRe) {
-    const paramAlternation = sortedKeys
-      .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-      .join("|");
-    paramRe = new RegExp(`:(${paramAlternation})([+*])?(?![A-Za-z0-9_])`, "g");
-    _compiledDestinationParamCache.set(cacheKey, paramRe);
-  }
+  const paramRe = getDestinationParamRegex(params);
+  if (!paramRe) return destination;
 
   const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
     value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
@@ -74,6 +58,53 @@ export function substituteDestinationParams(
   }
 
   return replaceParams(destination, (value) => value);
+}
+
+/**
+ * Parse a redirect destination's query the way Next.js does before merging
+ * it with the request query: the template's query is parsed first (decoding
+ * its literal text), then params are substituted verbatim into each value.
+ * Keeping these boundaries means a param containing `&` stays one value.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ */
+export function substituteRedirectDestinationQuery(
+  destination: string,
+  params: Record<string, string>,
+): [string, string][] {
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  if (queryIndex === -1) return [];
+
+  const paramRe = getDestinationParamRegex(params);
+  return [...new URLSearchParams(beforeHash.slice(queryIndex + 1))].map(([key, value]) => [
+    key,
+    paramRe ? value.replace(paramRe, (_token, paramKey: string) => params[paramKey]) : value,
+  ]);
+}
+
+function getDestinationParamRegex(params: Record<string, string>): RegExp | null {
+  const keys = Object.keys(params);
+  if (keys.length === 0) return null;
+
+  // Match only the concrete param keys captured from the source pattern.
+  // Sorting longest-first ensures hyphenated names like `auth-method`
+  // win over shorter prefixes like `auth`. The negative lookahead keeps
+  // alphanumeric/underscore suffixes attached, while allowing `-` to act
+  // as a literal delimiter in destinations like `:year-:month`.
+  const sortedKeys = [...keys].sort((a, b) => b.length - a.length);
+  const cacheKey = sortedKeys.join("\0");
+  let paramRe = _compiledDestinationParamCache.get(cacheKey);
+  if (!paramRe) {
+    const paramAlternation = sortedKeys
+      .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    paramRe = new RegExp(`:(${paramAlternation})([+*])?(?![A-Za-z0-9_])`, "g");
+    _compiledDestinationParamCache.set(cacheKey, paramRe);
+  }
+
+  return paramRe;
 }
 
 function encodeRewriteQueryParamValue(value: string): string {
