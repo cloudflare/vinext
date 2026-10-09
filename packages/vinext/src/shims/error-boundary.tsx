@@ -10,6 +10,7 @@ import {
 import DefaultGlobalError from "./default-global-error.js";
 import { handleAppNavigationFailure } from "../client/app-nav-failure-handler.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
+import { trackSegmentFallback } from "./internal/shown-segment-fallbacks.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 export type ErrorBoundaryProps = {
@@ -99,34 +100,6 @@ function shouldResetBoundary(
   }
 
   return nextResetState.previousPathname !== previousResetState.previousPathname;
-}
-
-// Segment boundaries currently rendering their fallback in place of children.
-// The browser entry reads this, and it can load these boundaries through a
-// separate module instance, so the set lives on a Symbol.for global.
-const _SHOWN_SEGMENT_FALLBACKS_KEY = Symbol.for("vinext.shownSegmentFallbacks");
-
-type ShownSegmentFallbacksGlobal = typeof globalThis & {
-  [_SHOWN_SEGMENT_FALLBACKS_KEY]?: Set<object>;
-};
-
-function getShownSegmentFallbacks(): Set<object> {
-  const globalState = globalThis as ShownSegmentFallbacksGlobal;
-  globalState[_SHOWN_SEGMENT_FALLBACKS_KEY] ??= new Set();
-  return globalState[_SHOWN_SEGMENT_FALLBACKS_KEY];
-}
-
-function trackSegmentFallback(boundary: object, shown: boolean): void {
-  if (shown) {
-    getShownSegmentFallbacks().add(boundary);
-  } else {
-    getShownSegmentFallbacks().delete(boundary);
-  }
-}
-
-/** Whether an error, not-found, forbidden or unauthorized fallback is on screen. */
-export function isSegmentFallbackShown(): boolean {
-  return getShownSegmentFallbacks().size > 0;
 }
 
 function addDevErrorRecoveryListener(listener: () => void): void {
@@ -405,7 +378,7 @@ type NotFoundBoundaryState = {
  * The ErrorBoundary above re-throws notFound errors so they propagate up to this
  * boundary. This must be placed above the ErrorBoundary in the component tree.
  */
-class NotFoundBoundaryInner extends React.Component<
+export class NotFoundBoundaryInner extends React.Component<
   NotFoundBoundaryInnerProps,
   NotFoundBoundaryState
 > {

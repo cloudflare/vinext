@@ -639,13 +639,31 @@ describe("UnauthorizedBoundary digest classification", () => {
 });
 
 describe("shown segment fallback tracking", () => {
+  let isSegmentFallbackShown: () => boolean;
+
+  beforeAll(async () => {
+    ({ isSegmentFallbackShown } =
+      await import("../packages/vinext/src/shims/internal/shown-segment-fallbacks.js"));
+  });
+
   afterEach(() => {
     Reflect.deleteProperty(globalThis, Symbol.for("vinext.shownSegmentFallbacks"));
   });
 
   it("reports a boundary that mounts with its fallback shown", async () => {
-    const { UnauthorizedBoundaryInner, isSegmentFallbackShown } =
+    const { NotFoundBoundaryInner, UnauthorizedBoundaryInner } =
       await import("../packages/vinext/src/shims/error-boundary.js");
+    const notFound = new NotFoundBoundaryInner({
+      children: null,
+      fallback: null,
+      pathname: "/s/one",
+    });
+    notFound.state = { ...notFound.state, notFound: true };
+    notFound.componentDidMount();
+    expect(isSegmentFallbackShown()).toBe(true);
+    notFound.componentWillUnmount();
+    expect(isSegmentFallbackShown()).toBe(false);
+
     const unauthorized = new UnauthorizedBoundaryInner({
       children: null,
       fallback: null,
@@ -659,7 +677,7 @@ describe("shown segment fallback tracking", () => {
   });
 
   it("reports a boundary while it renders its fallback", async () => {
-    const { ErrorBoundaryInner, ForbiddenBoundaryInner, isSegmentFallbackShown } =
+    const { ErrorBoundaryInner, ForbiddenBoundaryInner } =
       await import("../packages/vinext/src/shims/error-boundary.js");
     const forbidden = new ForbiddenBoundaryInner({
       children: null,
@@ -685,6 +703,41 @@ describe("shown segment fallback tracking", () => {
     forbidden.componentDidUpdate();
     expect(isSegmentFallbackShown()).toBe(true);
     error.componentWillUnmount();
+    expect(isSegmentFallbackShown()).toBe(false);
+  });
+
+  it("reports a catchError boundary while it renders its fallback", async () => {
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { catchError } = await import("../packages/vinext/src/shims/error.js");
+    const Boundary = catchError(() => null) as unknown as (props: object) => React.ReactElement;
+    // The class component is internal, so read it off the element the wrapper
+    // renders.
+    let CatchErrorClass: unknown = null;
+    function Capture(): null {
+      CatchErrorClass = Boundary({}).type;
+      return null;
+    }
+    renderToStaticMarkup(React.createElement(Capture));
+    const boundary = new (CatchErrorClass as new (props: object) => {
+      state: { error: { thrownValue: unknown } | null; previousPathname: string | null };
+      componentDidMount(): void;
+      componentDidUpdate(): void;
+      componentWillUnmount(): void;
+    })({
+      children: null,
+      fallback: () => null,
+      isPagesRouter: false,
+      pathname: "/s/one",
+      props: {},
+    });
+    boundary.componentDidMount();
+    expect(isSegmentFallbackShown()).toBe(false);
+
+    boundary.state = { ...boundary.state, error: { thrownValue: new Error("boom") } };
+    boundary.componentDidUpdate();
+    expect(isSegmentFallbackShown()).toBe(true);
+    boundary.componentWillUnmount();
     expect(isSegmentFallbackShown()).toBe(false);
   });
 });

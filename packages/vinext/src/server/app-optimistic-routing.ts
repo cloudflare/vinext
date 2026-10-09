@@ -40,7 +40,10 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
-  /** Tree position of the children loading boundary a loading shell stops at. */
+  /**
+   * Tree position of the children loading boundary a loading shell stops at,
+   * or null when the shell stops only at a slot's loading.
+   */
   loadingTreePosition: number | null;
   mountedSlotsHeader: string | null;
   omittedBfcacheSegmentIds: readonly string[];
@@ -589,9 +592,7 @@ function hasCurrentPageTree(
  * Known limitation: the shell always stops at the shallowest nested loading.
  * When that boundary is mounted, a deeper loading the navigation newly mounts
  * waits for the real response, while Next.js prefetches from where the trees
- * diverge and shows it at once. Also, any error or HTTP access fallback on
- * screen keeps the shell, so when that fallback's owner sits below the loading,
- * the loading shows where Next.js would keep the fallback.
+ * diverge and shows it at once.
  */
 function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
@@ -608,7 +609,10 @@ function isShellLoadingBoundaryMounted(options: {
   // segment that owns the fallback file. When that owner is above the loading,
   // Next.js has unmounted the loading boundary, and it mounts fresh on
   // navigation. The fallback's owner is not tracked, so any fallback on screen,
-  // a parallel slot's included, keeps the shell.
+  // a parallel slot's or a userland catchError boundary's included, keeps the
+  // shell. Known limitation: when that
+  // owner sits below the loading, the loading shows where Next.js would keep
+  // the fallback.
   if (options.segmentFallbackShown) return false;
   const routes = options.routeManifest.segmentGraph.routes;
   const targetRoute = routes.get(options.template.routeId);
