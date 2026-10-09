@@ -4279,121 +4279,321 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it.each([
-    [
-      "an if block",
-      `let getServerSideProps;
+  it("removes a data export assigned inside an if block", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
 if (process.env.FEATURE) {
   getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
 }
-export { getServerSideProps };`,
-    ],
-    [
-      "a braceless if",
-      `let getServerSideProps;
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) {
+        ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a braceless if", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
 if (process.env.FEATURE) getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
 else getServerSideProps = undefined;
-export { getServerSideProps };`,
-    ],
-    [
-      "a try block",
-      `export let getStaticProps;
-try { getStaticProps = async () => ({ props: { key: SIGNING_KEY } }); } catch {}`,
-    ],
-    [
-      "a switch case",
-      `let getServerSideProps;
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) ;
+      else ;
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a try block", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+export let getStaticProps;
+try { getStaticProps = async () => ({ props: { key: SIGNING_KEY } }); } catch {}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      try { ; } catch {}
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a switch case", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
 switch (process.env.MODE) {
   case "private":
     getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
 }
-export { getServerSideProps };`,
-    ],
-    [
-      "a logical expression",
-      `let getServerSideProps;
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      switch (process.env.MODE) {
+        case "private":
+          ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a logical expression", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
 process.env.FEATURE && (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }));
-export { getServerSideProps };`,
-    ],
-    [
-      "a block-scoped var declaration",
-      `if (process.env.FEATURE) {
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      process.env.FEATURE && (void 0);
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a block-scoped var declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+if (process.env.FEATURE) {
   var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
 }
-export { getServerSideProps };`,
-    ],
-    [
-      "both branches of an if/else",
-      `if (process.env.FEATURE) {
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      if (process.env.FEATURE) {
+        ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside both branches of an if/else", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+if (process.env.FEATURE) {
   var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
 } else {
   var getServerSideProps = async () => ({ props: { key: SIGNING_KEY.slice(1) } });
 }
-export { getServerSideProps };`,
-    ],
-    [
-      "a block after a top-level var declaration",
-      `export var getServerSideProps;
-if (process.env.FEATURE) {
-  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
-}`,
-    ],
-    [
-      "a braceless loop body",
-      `for (const mode of ["private"]) var getServerSideProps = async () => ({ props: { key: SIGNING_KEY, mode } });
-export { getServerSideProps };`,
-    ],
-    [
-      "an argument of a kept declaration",
-      `let getServerSideProps;
-const client = connect(SIGNING_KEY), registered = register((getServerSideProps = async () => ({ props: { key: client.key } })));
-export { getServerSideProps };`,
-    ],
-    [
-      "a for-loop head",
-      `for (var attempt = 0, getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }); attempt < 1; attempt++) {}
-export { getServerSideProps };`,
-    ],
-    [
-      "a member target of a destructuring assignment",
-      `let getServerSideProps = async () => ({ props: {} });
-[getServerSideProps.config] = [SIGNING_KEY];
-export { getServerSideProps };`,
-    ],
-    [
-      "a destructuring default",
-      `let getServerSideProps, visible;
-[getServerSideProps, visible = (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }))] = [];
-export { getServerSideProps };`,
-    ],
-    [
-      "a for…of head declaration",
-      `for (var getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]) {}
-export { getServerSideProps };`,
-    ],
-    [
-      "a bare for…of head",
-      `let getServerSideProps;
-if (process.env.FEATURE) for (getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]);
-export { getServerSideProps };`,
-    ],
-    [
-      "a for…in head pattern",
-      `let getStaticProps;
-for ([getStaticProps] in { [SIGNING_KEY]: true }) {}
-export { getStaticProps };`,
-    ],
-  ])("removes a data export assigned inside %s", (_label, dataExport) => {
-    const code = `import { SIGNING_KEY } from '../lib/server-config';
-${dataExport}
+export { getServerSideProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).not.toBeNull();
-    expect(result).not.toContain("server-config");
-    expect(result).not.toContain("SIGNING_KEY");
-    expect(result).not.toMatch(/\bget(ServerSideProps|StaticProps)\b/);
-    expect(result).toContain("export default function Page()");
+    expect(result).toMatchInlineSnapshot(`
+      "
+      if (process.env.FEATURE) {
+        ;
+      } else {
+        ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a block after a top-level var declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+export var getServerSideProps;
+if (process.env.FEATURE) {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) {
+        ;
+      }
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a braceless loop body", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+for (const mode of ["private"]) var getServerSideProps = async () => ({ props: { key: SIGNING_KEY, mode } });
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      for (const mode of ["private"]) ;
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside an argument of a kept declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+const client = connect(SIGNING_KEY), registered = register((getServerSideProps = async () => ({ props: { key: client.key } })));
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      const registered = register((void 0));
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a for-loop head", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+for (var attempt = 0, getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }); attempt < 1; attempt++) {}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      for (var attempt = 0; attempt < 1; attempt++) {}
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a member target of a destructuring assignment", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps = async () => ({ props: {} });
+[getServerSideProps.config] = [SIGNING_KEY];
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a destructuring default", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps, visible;
+[getServerSideProps, visible = (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }))] = [];
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let visible;
+      [, visible = void 0] = [];
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a for…of head declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+for (var getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]) {}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a bare for…of head", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+if (process.env.FEATURE) for (getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]);
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) ;
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a for…in head pattern", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getStaticProps;
+for ([getStaticProps] in { [SIGNING_KEY]: true }) {}
+export { getStaticProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4409,9 +4609,15 @@ export function getStaticProps() {
 export default Page;
 `;
     const result = _stripServerExports(code);
-    expect(result).not.toContain("./secret");
-    expect(result).not.toMatch(/\bcache\b/);
-    expect(result).toContain("function Page()");
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      function Page() { ; return null; }
+
+      export default Page;
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4425,10 +4631,15 @@ export function getServerSideProps() { return { props: { store: store ?? null } 
 export default function Page() { return useStore().value; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("import { createStore } from './store';");
-    expect(result).toContain("return (createStore());");
-    expect(result).not.toContain("let store");
-    expect(result).not.toContain("store ??=");
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import { createStore } from './store';
+
+      function useStore() { return (createStore()); }
+
+      export default function Page() { return useStore().value; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4446,8 +4657,20 @@ export async function getServerSideProps() { return { props: { secret } }; }
 export default function Page() { return Store.value; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("getServerSideProps = createValue();");
-    expect(result).not.toContain("./secret");
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      class Store {
+        static {
+          var getServerSideProps;
+          getServerSideProps = createValue();
+          Store.value = getServerSideProps;
+        }
+      }
+
+      export default function Page() { return Store.value; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4465,9 +4688,19 @@ export { getServerSideProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).not.toContain("./secret");
-    expect(result).toContain("function init(value = (void 0))");
-    expect(result).not.toContain("let getServerSideProps");
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      function init(value = (void 0)) {
+        var getServerSideProps;
+        return value;
+      }
+      init();
+
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4480,8 +4713,15 @@ for (var other of items) console.log(other);
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (const item of items) console.log(item);");
-    expect(result).toContain("for (var other of items) console.log(other);");
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import { items } from './items';
+
+      for (const item of items) console.log(item);
+      for (var other of items) console.log(other);
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4494,85 +4734,127 @@ export { getStaticProps };
 export default function Page() { return visible + other; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for ([({ x: 0 }).x, visible] of [[0, 1]]) console.log(visible);");
-    expect(result).toContain("for (var [, other] of [[0, 1]]) console.log(other);");
-    expect(result).not.toMatch(/\bloader\b/);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let visible;
+      for ([({ x: 0 }).x, visible] of [[0, 1]]) console.log(visible);
+      for (var [, other] of [[0, 1]]) console.log(other);
+
+      export default function Page() { return visible + other; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it.each([
-    [
-      "an assignment",
-      `let getServerSideProps, visible;
-({ getServerSideProps = secret, visible } = source);
-export { getServerSideProps };`,
-      "({ visible } = source);",
-    ],
-    [
-      "a declaration",
-      `export const { getStaticProps = secret, visible } = source;`,
-      "export const { visible } = source;",
-    ],
-  ])("drops the dependencies of pruned destructuring defaults in %s", (_label, body, kept) => {
+  it("drops the dependencies of pruned destructuring defaults in an assignment", () => {
     const code = `import secret from './secret';
-${body}
+let getServerSideProps, visible;
+({ getServerSideProps = secret, visible } = source);
+export { getServerSideProps };
 export default function Page() { return visible; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain(kept);
-    expect(result).not.toContain("./secret");
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let visible;
+      ({ visible } = source);
+
+      export default function Page() { return visible; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it.each([
-    [
-      "a var redeclaration",
-      `var getStaticProps;
+  it("drops the dependencies of pruned destructuring defaults in a declaration", () => {
+    const code = `import secret from './secret';
+export const { getStaticProps = secret, visible } = source;
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      export const { visible } = source;
+      export default function Page() { return visible; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps writes to a catch binding in a var redeclaration", () => {
+    const code = `var getStaticProps;
 try { throw []; } catch (getStaticProps) {
   for (var getStaticProps of getStaticProps) {}
 }
-export { getStaticProps };`,
-      "for (var getStaticProps of getStaticProps) {}",
-    ],
-    [
-      "a parameter default",
-      `export let getServerSideProps;
-try { throw {}; } catch ({ getServerSideProps, fallback = (getServerSideProps = 1) }) {
-  console.log(getServerSideProps, fallback);
-}`,
-      "fallback = (getServerSideProps = 1)",
-    ],
-  ])("keeps writes to a catch binding in %s", (_label, body, kept) => {
-    const code = `${body}
+export { getStaticProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain(kept);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      try { throw []; } catch (getStaticProps) {
+        for (var getStaticProps of getStaticProps) {}
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it.each([
-    [
-      "an assignment",
-      "[getServerSideProps = helper, helper = secret, live] = [];",
-      "[, , live] = [];",
-    ],
-    [
-      "a loop head",
-      "for ([getServerSideProps = helper, helper = secret, live] of [[]]);",
-      "for ([, , live] of [[]]);",
-    ],
-  ])("prunes pattern targets in %s that die in a later pass", (_label, write, kept) => {
+  it("keeps writes to a catch binding in a parameter default", () => {
+    const code = `export let getServerSideProps;
+try { throw {}; } catch ({ getServerSideProps, fallback = (getServerSideProps = 1) }) {
+  console.log(getServerSideProps, fallback);
+}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      try { throw {}; } catch ({ getServerSideProps, fallback = (getServerSideProps = 1) }) {
+        console.log(getServerSideProps, fallback);
+      }
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("prunes pattern targets in an assignment that die in a later pass", () => {
     const code = `import secret from './secret';
 let getServerSideProps, helper, live;
-${write}
+[getServerSideProps = helper, helper = secret, live] = [];
 export { getServerSideProps };
 export default function Page() { return live; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain(kept);
-    expect(result).not.toContain("./secret");
-    expect(result).not.toMatch(/\bhelper\b/);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let live;
+      [, , live] = [];
+
+      export default function Page() { return live; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("prunes pattern targets in a loop head that die in a later pass", () => {
+    const code = `import secret from './secret';
+let getServerSideProps, helper, live;
+for ([getServerSideProps = helper, helper = secret, live] of [[]]);
+export { getServerSideProps };
+export default function Page() { return live; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let live;
+      for ([, , live] of [[]]);
+
+      export default function Page() { return live; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4585,32 +4867,49 @@ export { loader as getServerSideProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("import secret from './secret';");
-    expect(result).toContain("if (flag) var loader = secret;");
-    expect(result).toContain("switch (consume(loader))");
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import secret from './secret';
+      if (flag) var loader = secret;
+      switch (consume(loader)) { case 0: let loader; }
+
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it.each([
-    [
-      "at the top level",
-      "var { getServerSideProps, visible } = source;",
-      "var { visible } = source;",
-    ],
-    [
-      "in a block",
-      "if (flag) { var { getServerSideProps, visible } = source; }",
-      "if (flag) { var { visible } = source; }",
-    ],
-  ])("keeps a destructuring initializer that a surviving target %s reads", (_label, body, kept) => {
+  it("keeps a destructuring initializer that a surviving target at the top level reads", () => {
     const code = `import source from './source';
-${body}
+var { getServerSideProps, visible } = source;
 export { getServerSideProps };
 export default function Page() { return visible; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("import source from './source';");
-    expect(result).toContain(kept);
+    expect(result).toMatchInlineSnapshot(`
+      "import source from './source';
+      var { visible } = source;
+
+      export default function Page() { return visible; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a destructuring initializer that a surviving target in a block reads", () => {
+    const code = `import source from './source';
+if (flag) { var { getServerSideProps, visible } = source; }
+export { getServerSideProps };
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import source from './source';
+      if (flag) { var { visible } = source; }
+
+      export default function Page() { return visible; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4627,9 +4926,19 @@ export { getServerSideProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("var [, helper] = [null, 42];");
-    expect(result).toContain("console.log(helper);");
-    expect(result).not.toContain("./secret");
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      try { throw 0; } catch (helper) {
+        var [, helper] = [null, 42];
+        console.log(helper);
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4642,9 +4951,15 @@ export function getStaticProps() { return { props: { helper, other } }; }
 export default function Page() { return count; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (({ x: 0 }).x of [1, 2]) count++;");
-    expect(result).toContain("for (var other in { a: 1 }) count++;");
-    expect(result).not.toMatch(/\bhelper\b/);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let count = 0;
+      for (({ x: 0 }).x of [1, 2]) count++;
+      for (var other in { a: 1 }) count++;
+
+      export default function Page() { return count; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4659,12 +4974,17 @@ export function getStaticProps() { return { props: { helper, kept, other } }; }
 export default function Page() { return reads; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain(
-      "for ({ secret: ({ x: 0 }).x, other: ({ x: 0 }).x = reads } of [value]) {}",
-    );
-    expect(result).toContain("for (var { secret: kept, other: other = reads } of [value]) {}");
-    expect(result).toContain("for ({ helper: ({ x: 0 }).x } of [value]) {}");
-    expect(result).not.toMatch(/\blet helper\b/);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let reads = 0;
+      const value = { get secret() { reads++; return 1; }, get other() { reads++; return 2; } };
+      for ({ secret: ({ x: 0 }).x, other: ({ x: 0 }).x = reads } of [value]) {}
+      for (var { secret: kept, other: other = reads } of [value]) {}
+      for ({ helper: ({ x: 0 }).x } of [value]) {}
+
+      export default function Page() { return reads; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4676,8 +4996,14 @@ export { getStaticProps };
 export default function Page() { return live; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (var [, helper = secret, live] of [[, , 1]]) {}");
-    expect(result).toContain('import secret from "./secret";');
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import secret from "./secret";
+      for (var [, helper = secret, live] of [[, , 1]]) {}
+
+      export default function Page() { return live; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4691,8 +5017,14 @@ export function getStaticProps() { return { props: { helper } }; }
 export default function Page() { return values; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (({ x: 0 }).x of [1, 2]) values.push(eval(");
-    expect(result).not.toMatch(/\bhelper\b/);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let values = [];
+      for (({ x: 0 }).x of [1, 2]) values.push(eval("__vinext_\\u0075nused"));
+
+      export default function Page() { return values; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4707,9 +5039,16 @@ export function getStaticProps() { return { props: { helper } }; }
 export default function Page() { return total; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("const helper = { set value(v) { total += v; } };");
-    expect(result).toContain("for (helper.value of [1, 2]) {}");
-    expect(result).toContain("[helper.value] = [3];");
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let total = 0;
+      const helper = { set value(v) { total += v; } };
+      for (helper.value of [1, 2]) {}
+      [helper.value] = [3];
+
+      export default function Page() { return total; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4725,8 +5064,18 @@ export { getServerSideProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("var [, error] = [, 42];");
-    expect(result).not.toContain("./secret");
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      try { throw 0; } catch (error) {
+        var [, error] = [, 42];
+        console.log(error);
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4738,48 +5087,18 @@ export { getServerSideProps };
 export default function Page() { return null; }
 `;
     const result = _stripServerExports(code);
-    expect(result).not.toContain("./secret");
-    expect(result).not.toMatch(/\bhelper\b/);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      export default function Page() { return null; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it.each([
-    [
-      "a catch clause",
-      `try { throw new Error("x"); } catch (label) { void label; }
-  return label(2);`,
-    ],
-    [
-      "a switch",
-      `switch (label(3)) {
-    case "a": const label = 0; return String(label);
-    default: return "b";
-  }`,
-    ],
-    [
-      "a class static block",
-      `class Widget { static { var label = 0; void label; } static value = label(5); }
-  return Widget.value;`,
-    ],
-    [
-      "a nested var",
-      `if (Math.random() > 2) { var label2 = label(6); }
-  function inner() { if (true) { var label = 1; } return label; }
-  return String(inner()) + label2;`,
-    ],
-    [
-      "a loop",
-      `let out = "";
-  for (const label of [1]) out += label;
-  for (let i = 0; i < 1; i++) out += label(i);
-  return out;`,
-    ],
-    [
-      "a parameter default",
-      `const read = (label = 1) => label;
-  return label(read());`,
-    ],
-  ])("keeps a helper shared with the client when the client use is in %s", (_label, body) => {
+  it("keeps a helper shared with the client when the client use is in a catch clause", () => {
     const code = `import { format } from "./format";
 const label = (value) => format(value);
 let getServerSideProps;
@@ -4788,77 +5107,343 @@ if (process.env.ENABLED) {
 }
 export { getServerSideProps };
 export default function Page() {
-  ${body}
+  try { throw new Error("x"); } catch (label) { void label; }
+  return label(2);
 }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain('import { format } from "./format";');
-    expect(result).toContain("const label = (value) => format(value);");
-    expect(result).toContain(body);
-    expect(result).not.toContain("getServerSideProps");
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        try { throw new Error("x"); } catch (label) { void label; }
+        return label(2);
+      }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it.each([
-    [
-      "a try block",
-      `try {
+  it("keeps a helper shared with the client when the client use is in a switch", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
   getServerSideProps = async () => ({ props: { value: label(1) } });
-  cache = label(2);
-} catch {}`,
-      "cache = label(2);",
-    ],
-    [
-      "a switch case",
-      `switch (process.env.MODE) {
-  case "ssr":
-    getServerSideProps = async () => ({ props: { value: label(1) } });
-    cache = label(2);
-    break;
-}`,
-      "cache = label(2);",
-    ],
-    [
-      "a class static block",
-      `class Init {
-  static {
-    getServerSideProps = async () => ({ props: { value: label(1) } });
-    cache = label(2);
+}
+export { getServerSideProps };
+export default function Page() {
+  switch (label(3)) {
+    case "a": const label = 0; return String(label);
+    default: return "b";
   }
-}`,
-      "cache = label(2);",
-    ],
-    [
-      "a block with nested vars",
-      `if (process.env.ENABLED) {
-  var getServerSideProps = async () => ({ props: { value: label(1) } });
-  var nested = label(2);
-  cache = nested;
-}`,
-      "var nested = label(2);",
-    ],
-    [
-      "a loop body",
-      `for (const mode of ["ssr"]) {
-  if (mode) getServerSideProps = async () => ({ props: { value: label(1) } });
-  cache = label(2);
-}`,
-      "cache = label(2);",
-    ],
-  ])("keeps the client half of %s that also assigns the data export", (_label, block, kept) => {
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        switch (label(3)) {
+          case "a": const label = 0; return String(label);
+          default: return "b";
+        }
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a class static block", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  class Widget { static { var label = 0; void label; } static value = label(5); }
+  return Widget.value;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        class Widget { static { var label = 0; void label; } static value = label(5); }
+        return Widget.value;
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a nested var", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  if (Math.random() > 2) { var label2 = label(6); }
+  function inner() { if (true) { var label = 1; } return label; }
+  return String(inner()) + label2;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        if (Math.random() > 2) { var label2 = label(6); }
+        function inner() { if (true) { var label = 1; } return label; }
+        return String(inner()) + label2;
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a loop", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  let out = "";
+  for (const label of [1]) out += label;
+  for (let i = 0; i < 1; i++) out += label(i);
+  return out;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        let out = "";
+        for (const label of [1]) out += label;
+        for (let i = 0; i < 1; i++) out += label(i);
+        return out;
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a parameter default", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  const read = (label = 1) => label;
+  return label(read());
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        const read = (label = 1) => label;
+        return label(read());
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a try block that also assigns the data export", () => {
     const code = `import { format } from "./format";
 const label = (value) => format(value);
 let cache;
-${block.includes("var getServerSideProps") ? "" : "let getServerSideProps;\n"}${block}
+let getServerSideProps;
+try {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+  cache = label(2);
+} catch {}
 export { getServerSideProps };
 export default function Page() { return cache; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain('import { format } from "./format";');
-    expect(result).toContain("const label = (value) => format(value);");
-    expect(result).toContain(kept);
-    expect(result).not.toContain("getServerSideProps");
-    expect(result).not.toContain("label(1)");
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      try {
+        ;
+        cache = label(2);
+      } catch {}
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a switch case that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+let getServerSideProps;
+switch (process.env.MODE) {
+  case "ssr":
+    getServerSideProps = async () => ({ props: { value: label(1) } });
+    cache = label(2);
+    break;
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      switch (process.env.MODE) {
+        case "ssr":
+          ;
+          cache = label(2);
+          break;
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a class static block that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+let getServerSideProps;
+class Init {
+  static {
+    getServerSideProps = async () => ({ props: { value: label(1) } });
+    cache = label(2);
+  }
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      class Init {
+        static {
+          ;
+          cache = label(2);
+        }
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a block with nested vars that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+if (process.env.ENABLED) {
+  var getServerSideProps = async () => ({ props: { value: label(1) } });
+  var nested = label(2);
+  cache = nested;
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+      if (process.env.ENABLED) {
+        ;
+        var nested = label(2);
+        cache = nested;
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a loop body that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+let getServerSideProps;
+for (const mode of ["ssr"]) {
+  if (mode) getServerSideProps = async () => ({ props: { value: label(1) } });
+  cache = label(2);
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      for (const mode of ["ssr"]) {
+        if (mode) ;
+        cache = label(2);
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
@@ -4874,9 +5459,18 @@ export { getServerSideProps };
 export default function Page() { return helper(); }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("import { visible } from './visible';");
-    expect(result).toContain("getServerSideProps = visible;");
-    expect(result).not.toContain("let getServerSideProps");
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import { visible } from './visible';
+
+      function helper(getServerSideProps) {
+        getServerSideProps = visible;
+        return getServerSideProps;
+      }
+
+      export default function Page() { return helper(); }
+      "
+    `);
     expect(() => parseAst(result!)).not.toThrow();
   });
 
