@@ -1,6 +1,6 @@
 ---
 title: "Vinext 1.1"
-description: "Faster builds and dev server startup, background revalidation on Cloudflare, and a fix for pages rendering twice on client navigation."
+description: "Faster builds and dev server startup, background revalidation on Cloudflare, and less server work per client navigation."
 date: "2026-10-08"
 authors:
   - name: James Anderson
@@ -47,11 +47,11 @@ Vinext now does the same. On Workers Cache it uses the new `ctx.cache.invalidate
 
 `"use cache"` entries work the same way now. A stale entry is returned immediately and recomputed in the background, instead of being recomputed before the response continues.
 
-## Pages rendered twice on client navigation
+## Client navigation
 
-Before 1.1, Vinext called your page component outside React on every client-side navigation to check for `redirect()` or `notFound()`, then rendered it again. Data fetching in the page ran twice, and the first call didn't share React's `cache()`. That extra call has been removed. Redirects and `notFound()` now reach the client router in the RSC payload, as in Next.js.
+Vinext used to call a page component once before rendering it, so it could catch a `redirect()` or `notFound()` early and respond straight away. Next.js doesn't do this. It renders the page once and sends redirects and `notFound()` to the client router in the RSC payload. Vinext now does the same for client-side navigations, so data fetching in a page runs once per navigation, inside React's `cache()`.
 
-Layouts had a related issue. [@justYu2001](https://github.com/justYu2001) reported that next-intl's `setRequestLocale()` was lost because layouts also ran outside `cache()` first. next-intl then read `headers()`, which made static pages dynamic, so they weren't prerendered or cached. Now only the actual render determines whether a page is dynamic.
+Layouts have a similar early check. [@justYu2001](https://github.com/justYu2001) reported that it broke next-intl's `setRequestLocale()`. The check ran outside `cache()`, so next-intl fell back to reading `headers()`, and static pages were treated as dynamic and never prerendered or cached. The check no longer affects whether a page is dynamic; only the actual render decides that.
 
 `generateMetadata()` and the page also share React's `cache()` now.
 
