@@ -21,6 +21,7 @@ import {
   type AppPageSpecialError,
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
+import { createArtifactCompatibilityEnvelope } from "./artifact-compatibility.js";
 import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
@@ -358,13 +359,21 @@ function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
   const layoutEntries = createAppPageBoundaryLayoutEntries(options.route, options.layoutModules);
   const sourcePageSegments = options.sourcePageSegments ?? options.route?.routeSegments;
 
+  const rootLayoutTreePath = layoutEntries[0]?.treePath ?? null;
+
   return {
     ...AppElementsWire.createMetadataEntries({
       interceptionContext: null,
       layoutIds: layoutEntries.map((entry) => entry.id),
-      rootLayoutTreePath: layoutEntries[0]?.treePath ?? null,
+      rootLayoutTreePath,
       routeId,
       sourcePage: sourcePageSegments ? createAppPageSourcePage(sourcePageSegments) : null,
+    }),
+    // Like Next.js' build ID in every initial RSC payload, so a static export
+    // 404 page can compare later payloads against its own deployment.
+    [AppElementsWire.keys.artifactCompatibility]: createArtifactCompatibilityEnvelope({
+      deploymentVersion: process.env.__VINEXT_BUILD_ID ?? null,
+      rootBoundaryId: rootLayoutTreePath,
     }),
     [routeId]: options.element,
   };
