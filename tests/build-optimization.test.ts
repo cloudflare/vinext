@@ -4642,8 +4642,8 @@ export function getStaticProps() { return { props: { helper, other } }; }
 export default function Page() { return count; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (({ x: undefined }).x of [1, 2]) count++;");
-    expect(result).toContain("for (({ x: undefined }).x in { a: 1 }) count++;");
+    expect(result).toContain("for (({ x: 0 }).x of [1, 2]) count++;");
+    expect(result).toContain("for (({ x: 0 }).x in { a: 1 }) count++;");
     expect(result).not.toMatch(/\b(helper|other)\b/);
     expect(() => parseAst(result!)).not.toThrow();
   });
@@ -4658,7 +4658,7 @@ export function getStaticProps() { return { props: { helper } }; }
 export default function Page() { return values; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (({ x: undefined }).x of [1, 2]) values.push(eval(");
+    expect(result).toContain("for (({ x: 0 }).x of [1, 2]) values.push(eval(");
     expect(result).not.toMatch(/\bhelper\b/);
     expect(() => parseAst(result!)).not.toThrow();
   });

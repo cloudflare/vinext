@@ -24,9 +24,10 @@ const SERVER_EXPORTS = new Set([
 ]);
 
 // Loop target for a head that only wrote dead helpers. An own data property of
-// a fresh object introduces no binding and invokes no inherited setter, so
-// nothing in the loop body (including direct `eval`) can observe it.
-const UNUSED_LOOP_TARGET = "({ x: undefined }).x";
+// a fresh object, initialized with a literal, reads no binding and invokes no
+// inherited setter, so nothing in the loop (including direct `eval`) can
+// observe it.
+const UNUSED_LOOP_TARGET = "({ x: 0 }).x";
 
 // Stands in for a catch-bound target in `declaredNames`; it is never dead.
 const CATCH_BOUND_NAME = "\0catch-bound";
