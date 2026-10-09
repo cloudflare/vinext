@@ -8,6 +8,7 @@ import {
   type RscEmbeddedChunk,
 } from "../packages/vinext/src/server/app-rsc-embedded-chunks.js";
 import {
+  createNavigationRuntimeRscCompatibilityScript,
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
@@ -36,14 +37,18 @@ it("serializes browser search-param ownership into the early hydration bootstrap
   ).toContain("searchParamsFromBrowser:true");
 });
 
-it("serializes the server's RSC compatibility ID into the hydration bootstrap", () => {
-  const createScript = () =>
-    createNavigationRuntimeRscMetadataScript({}, { pathname: "/", searchParams: [] });
+it("sends the server's RSC compatibility ID with the page, except for static export", () => {
   vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", "compat-a");
   try {
-    expect(createScript()).toContain('compatibilityId:"compat-a"');
+    expect(createNavigationRuntimeRscCompatibilityScript()).toBe(
+      'Object.assign(((self[Symbol.for("vinext.navigationRuntime")]??={bootstrap:{routeManifest:null},functions:{}}).bootstrap.rsc??={rsc:[]}),{compatibilityId:"compat-a"})',
+    );
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+    expect(createNavigationRuntimeRscCompatibilityScript()).toBe("");
+    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "");
     vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", "");
-    expect(createScript()).not.toContain("compatibilityId");
+    expect(createNavigationRuntimeRscCompatibilityScript()).toBe("");
   } finally {
     vi.unstubAllEnvs();
   }

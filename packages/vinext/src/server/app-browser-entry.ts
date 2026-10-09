@@ -270,6 +270,10 @@ const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const IS_STATIC_EXPORT =
   process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export";
 const CLIENT_DEPLOYMENT_VERSION = process.env.__VINEXT_BUILD_ID ?? null;
+// No server sends this (deployment IDs and UUIDs never contain ":"), so until
+// the page supplies its ID every RSC response is treated as another
+// deployment's, like Next.js' navigation build ID, which starts as "".
+const MISSING_RSC_COMPATIBILITY_ID = "vinext:missing";
 // The compatibility ID of the server that rendered this page, set once during
 // initialization. Like Next.js' setNavigationBuildId() (client/app-index.tsx),
 // it comes from the page rather than the bundle, so a per-build value doesn't
@@ -278,11 +282,13 @@ const CLIENT_DEPLOYMENT_VERSION = process.env.__VINEXT_BUILD_ID ?? null;
 // files. The artifact and client bundle are emitted atomically by one build,
 // so export mode validates the deployment version embedded in the Flight
 // payload before committing it instead.
-let clientRscCompatibilityId: string | null = null;
+let clientRscCompatibilityId: string | null = IS_STATIC_EXPORT
+  ? null
+  : MISSING_RSC_COMPATIBILITY_ID;
 
 function setClientRscCompatibilityId(compatibilityId: string | null | undefined): void {
-  if (IS_STATIC_EXPORT) return;
-  clientRscCompatibilityId = compatibilityId || null;
+  if (IS_STATIC_EXPORT || !compatibilityId) return;
+  clientRscCompatibilityId = compatibilityId;
 }
 const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
 const optimisticRouteTemplateSources = new Set<string>();

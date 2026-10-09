@@ -1367,10 +1367,11 @@ function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
 /**
  * Resolve the App Router RSC compatibility identity for a build.
  *
- * This token is baked into the client bundle and echoed by the server in the
- * `X-Vinext-RSC-Compatibility-Id` response header; browser navigation rejects
- * RSC payloads whose token differs (deploy skew) without exposing the raw
- * build ID. When the user pins a `deploymentId` we reuse it (already stable
+ * The server sends this token with each page (the navigation bootstrap) and in
+ * the `X-Vinext-RSC-Compatibility-Id` response header; browser navigation
+ * rejects RSC payloads whose token differs from its page's (deploy skew)
+ * without exposing the raw build ID. It is never inlined into the client
+ * bundle, where a per-build value would rename chunks on every build. When the user pins a `deploymentId` we reuse it (already stable
  * across plugin instances); otherwise we mint a random UUID.
  *
  * NOTE: like `resolveBuildId`, this is non-deterministic in the no-deploymentId

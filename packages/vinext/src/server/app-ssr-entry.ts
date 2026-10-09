@@ -40,6 +40,7 @@ import {
 import { renderBeforeInteractiveInlineScripts } from "./before-interactive-head.js";
 import {
   createNavigationRuntimeRenderedSearchScript,
+  createNavigationRuntimeRscCompatibilityScript,
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
@@ -344,6 +345,11 @@ function buildHeadInjectionHtml(
     ),
     scriptNonce,
   );
+  // Rendered with the page, so a cached page keeps the ID of the deployment
+  // that rendered its embedded payload.
+  const compatibilityScript = createNavigationRuntimeRscCompatibilityScript();
+  const rscCompatibilityScript =
+    compatibilityScript === "" ? "" : createInlineScriptTag(compatibilityScript, scriptNonce);
   const formStateScript =
     formState === null
       ? ""
@@ -354,6 +360,7 @@ function buildHeadInjectionHtml(
 
   return (
     rscMetadataScript +
+    rscCompatibilityScript +
     formStateScript +
     buildModulePreloadHtml(bootstrapModuleUrl, scriptNonce) +
     insertedHTML +

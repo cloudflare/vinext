@@ -70,10 +70,6 @@ export function createNavigationRuntimeRscMetadataScript(
   dynamicStaleTimeSeconds?: number,
   searchParamsFromBrowser?: boolean,
 ): string {
-  // The browser compares RSC responses against this page's compatibility ID.
-  // It is sent here rather than inlined into the client bundle, where a
-  // per-build value would rename chunks on every build.
-  const compatibilityId = getVinextRscCompatibilityId();
   return (
     "Object.assign(" +
     navigationRuntimeRscBootstrapExpression() +
@@ -87,7 +83,29 @@ export function createNavigationRuntimeRscMetadataScript(
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +
-    (compatibilityId === null ? "" : ",compatibilityId:" + safeJsonStringify(compatibilityId)) +
+    "})"
+  );
+}
+
+/**
+ * The compatibility ID of the server rendering this page. The browser compares
+ * RSC responses against it, so it is sent with the page rather than inlined
+ * into the client bundle, where a per-build value would rename chunks on every
+ * build. Static export skips the check, so its pages omit it.
+ */
+export function createNavigationRuntimeRscCompatibilityScript(): string {
+  const compatibilityId = getVinextRscCompatibilityId();
+  if (
+    compatibilityId === null ||
+    (process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export")
+  ) {
+    return "";
+  }
+  return (
+    "Object.assign(" +
+    navigationRuntimeRscBootstrapExpression() +
+    ",{compatibilityId:" +
+    safeJsonStringify(compatibilityId) +
     "})"
   );
 }
