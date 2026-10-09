@@ -332,8 +332,8 @@ describe("plugin-rsc inline use-cache references", () => {
       // Without a key, names stay unguessable and differ between builds.
       expect(await buildSecureExportName()).not.toBe(await buildSecureExportName());
 
-      // Ported from Next.js: packages/next/src/server/app-render/encryption-utils-server.ts
-      // A pinned key makes rebuilds of identical source emit identical names,
+      // Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
+      // (hash_salt is NEXT_SERVER_ACTIONS_ENCRYPTION_KEY). A pinned key makes rebuilds of identical source emit identical names,
       // derived under a label rather than from the raw key.
       vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", key);
       const keyed = await buildSecureExportName();
