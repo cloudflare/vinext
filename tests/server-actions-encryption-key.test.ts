@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mergeConfig, resolveConfig } from "vite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { loadOrGenerateServerActionsEncryptionKey } from "../packages/vinext/src/build/server-actions-encryption-key.js";
+import {
+  getServerActionsKeyCacheFsDeny,
+  loadOrGenerateServerActionsEncryptionKey,
+} from "../packages/vinext/src/build/server-actions-encryption-key.js";
+import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
 // Ported from Next.js: packages/next/src/server/app-render/encryption-utils-server.ts
 // (loadOrGenerateKey). Next covers the observable result in
@@ -76,5 +81,45 @@ describe("loadOrGenerateServerActionsEncryptionKey", () => {
     expect(load({ hasPersistentStorage: false })).not.toBe(first);
     expect(load({ hasPersistentStorage: false, providedKey: "provided" })).toBe("provided");
     expect(fs.existsSync(configPath())).toBe(false);
+  });
+});
+
+describe("server actions key cache in dev", () => {
+  it("is not served by the dev server, which keeps Vite's default deny list", async () => {
+    const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR);
+    try {
+      const configPath = path.join(APP_FIXTURE_DIR, ".vinext", "cache", ".rscinfo");
+      const key = JSON.parse(fs.readFileSync(configPath, "utf8"))["encryption.key"];
+      for (const url of [
+        "/.vinext/cache/.rscinfo?raw",
+        "/.vinext/cache/.rscinfo?import",
+        "/.vinext/cache/.rscinfo",
+        `/@fs${configPath}?raw`,
+      ]) {
+        const response = await fetch(baseUrl + url);
+        expect(await response.text(), url).not.toContain(key);
+      }
+      expect((await fetch(baseUrl + "/.vinext/cache/.rscinfo?raw")).status).toBe(403);
+
+      const viteDefaults = await resolveConfig(
+        { configFile: false, root: APP_FIXTURE_DIR, logLevel: "silent" },
+        "serve",
+      );
+      expect(server.config.server.fs.deny).toEqual(
+        expect.arrayContaining(viteDefaults.server.fs.deny),
+      );
+    } finally {
+      await server.close();
+    }
+  }, 30000);
+
+  it("is appended to a configured deny list", () => {
+    const deny = ["custom-secret.txt"];
+    expect(
+      mergeConfig(
+        { server: { fs: { deny } } },
+        { server: { fs: { deny: getServerActionsKeyCacheFsDeny(deny) } } },
+      ).server.fs.deny,
+    ).toEqual(["custom-secret.txt", "**/.vinext/cache/.rscinfo"]);
   });
 });

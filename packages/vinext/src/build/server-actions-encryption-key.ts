@@ -16,6 +16,19 @@ const ENCRYPTION_KEY = "encryption.key";
 const ENCRYPTION_EXPIRE_AT = "encryption.expire_at";
 const EXPIRATION = 1000 * 60 * 60 * 24 * 14; // 14 days
 
+// Vite's default `server.fs.deny` (`_serverConfigDefaults` in
+// vite/src/node/server/index.ts). A configured list replaces these defaults
+// instead of extending them, so they are restated when none is configured.
+const VITE_DEFAULT_FS_DENY = [
+  ".env",
+  ".env.*",
+  "*.{crt,pem,key,p12,pfx,cer,der}",
+  ".npmrc",
+  ".yarnrc.yml",
+  "**/.git/**",
+];
+const KEY_CACHE_FS_DENY = `**/.vinext/cache/${CONFIG_FILE}`;
+
 type LoadEncryptionKeyOptions = {
   root: string;
   isBuild: boolean;
@@ -97,4 +110,13 @@ export function loadOrGenerateServerActionsEncryptionKey(
     JSON.stringify({ [ENCRYPTION_KEY]: key, [ENCRYPTION_EXPIRE_AT]: now + EXPIRATION }),
   );
   return key;
+}
+
+/**
+ * The cached key lives inside the project root, which the dev server serves.
+ * Return the `server.fs.deny` entries that keep it private, preserving Vite's
+ * defaults and any configured entries.
+ */
+export function getServerActionsKeyCacheFsDeny(configuredDeny: string[] | undefined): string[] {
+  return configuredDeny ? [KEY_CACHE_FS_DENY] : [...VITE_DEFAULT_FS_DENY, KEY_CACHE_FS_DENY];
 }
