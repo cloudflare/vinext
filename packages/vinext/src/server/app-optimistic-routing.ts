@@ -571,7 +571,9 @@ function readChildrenSlotState(
 /**
  * A not-found or error boundary payload renders its fallback in place of the
  * route's tree, so none of the route's loading boundaries is mounted. A page
- * rendered through an active implicit children slot is a page tree too.
+ * rendered through an active implicit children slot is a page tree too, while
+ * a synthetic route's default or unmatched children slot is not, for the same
+ * reason as {@link hasInactiveChildrenSlot}.
  */
 function hasCurrentPageTree(
   elements: AppElements,
@@ -592,9 +594,8 @@ function hasCurrentPageTree(
 /**
  * A synthetic route's default or unmatched children slot takes the place of the
  * children segment Next.js keys the boundary by, while the route's tree
- * segments name the slot's sub-path. So either route having one keeps the
- * shell, even where Next.js would keep a loading above the slot's owner
- * mounted.
+ * segments name the slot's sub-path. So a target with one keeps the shell, even
+ * where Next.js would keep a loading above the slot's owner mounted.
  */
 function hasInactiveChildrenSlot(route: RouteManifestRoute, routeManifest: RouteManifest): boolean {
   return route.slotIds.some((slotId) => {
@@ -629,12 +630,14 @@ function isShellLoadingBoundaryMounted(options: {
   if (loadingTreePosition === null) return false;
   // vinext renders a page's not-found, forbidden, unauthorized or error fallback
   // inside the ancestor loading boundaries, while Next.js renders it from the
-  // segment that owns the fallback file. When that owner is above the loading,
-  // Next.js has unmounted the loading boundary, and it mounts fresh on
-  // navigation. The fallback's owner is not tracked, so any fallback on screen,
-  // a parallel slot's or a userland catchError boundary's included, keeps the
-  // shell. Known limitation: when that owner sits below the loading, the
-  // loading shows where Next.js would keep the fallback.
+  // segment that owns the fallback file: an error.tsx outside that segment's
+  // loading, an HTTP access fallback inside it. When the fallback sits outside
+  // the loading, Next.js has unmounted the loading boundary, and it mounts fresh
+  // on navigation. A catchError boundary wrapping the loading does the same.
+  // The fallback's placement is not tracked, so any fallback on screen, a
+  // parallel slot's or any catchError boundary's included, keeps the shell.
+  // Known limitation: when the fallback sits inside the loading, or elsewhere
+  // in the tree, the loading shows where Next.js would keep the current page.
   if (options.segmentFallbackShown) return false;
   const routes = options.routeManifest.segmentGraph.routes;
   const targetRoute = routes.get(options.template.routeId);
@@ -652,11 +655,7 @@ function isShellLoadingBoundaryMounted(options: {
     return false;
   }
   const currentRoute = resolveCurrentRoute(currentMetadata, routes);
-  if (
-    currentRoute === undefined ||
-    loadingTreePosition > currentRoute.treeSegments.length ||
-    hasInactiveChildrenSlot(currentRoute, options.routeManifest)
-  ) {
+  if (currentRoute === undefined || loadingTreePosition > currentRoute.treeSegments.length) {
     return false;
   }
   if (!hasCurrentPageTree(options.currentElements, currentRoute, options.routeManifest)) {

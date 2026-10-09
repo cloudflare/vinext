@@ -752,6 +752,13 @@ describe("shown segment fallback tracking", () => {
     boundary.state = { ...boundary.state, error: { thrownValue: new Error("boom") } };
     boundary.componentDidUpdate();
     expect(isSegmentFallbackShown()).toBe(true);
+    boundary.state = { ...boundary.state, error: null };
+    boundary.componentDidUpdate();
+    expect(isSegmentFallbackShown()).toBe(false);
+    // A child that throws on its first render mounts the fallback directly.
+    boundary.state = { ...boundary.state, error: { thrownValue: new Error("boom") } };
+    boundary.componentDidMount();
+    expect(isSegmentFallbackShown()).toBe(true);
     boundary.componentWillUnmount();
     expect(isSegmentFallbackShown()).toBe(false);
   });
