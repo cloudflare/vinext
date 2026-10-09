@@ -101,7 +101,6 @@ export async function startFixtureServer(
       host?: string;
       allowedHosts?: true | string[];
       cors?: boolean;
-      fs?: { strict?: boolean };
       port?: number;
     };
   },
