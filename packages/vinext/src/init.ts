@@ -590,10 +590,10 @@ async function resolvesToStaticExport(
         // next.config still decides.
       }
     }
-    // The plugin's config hook sets NODE_ENV again before loading next.config,
-    // whatever the Vite config assigned while it evaluated.
-    Reflect.set(process.env, "NODE_ENV", "production");
     if (envDir !== false) dotenvModule.loadDotenv({ root: envDir ?? configRoot, mode });
+    // After loading that dotenv, the plugin's config hook sets NODE_ENV again
+    // before loading next.config, whatever the Vite config assigned.
+    Reflect.set(process.env, "NODE_ENV", "production");
     const nextConfig = inline
       ? await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD)
       : await loadNextConfig(configRoot, PHASE_PRODUCTION_BUILD);

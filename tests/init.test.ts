@@ -1416,6 +1416,17 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       isStaticExport: true,
     },
     {
+      name: "a Vite envDir dotenv expanding the NODE_ENV a Vite config set",
+      files: {
+        "config/.env.production": "STATIC_EXPORT=$NODE_ENV\n",
+        "vite.config.ts":
+          'process.env.NODE_ENV = "development";\nexport default { envDir: "config" };\n',
+        "next.config.mjs":
+          'export default process.env.STATIC_EXPORT === "development" ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
       name: "a commented-out output",
       files: { "next.config.mjs": '// output: "export",\nexport default {};\n' },
       isStaticExport: false,
