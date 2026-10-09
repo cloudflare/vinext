@@ -9,7 +9,7 @@
  * Ported from Next.js: test/e2e/app-dir/error-boundary/error-boundary.test.ts
  * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/error-boundary/error-boundary.test.ts
  */
-import { describe, it, expect, beforeAll, vi } from "vite-plus/test";
+import { afterEach, describe, it, expect, beforeAll, vi } from "vite-plus/test";
 
 // Mock next/navigation since it's a virtual module provided by the vinext plugin.
 // We only need usePathname for the NotFoundBoundary wrapper, not for the static
@@ -639,6 +639,25 @@ describe("UnauthorizedBoundary digest classification", () => {
 });
 
 describe("shown segment fallback tracking", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, Symbol.for("vinext.shownSegmentFallbacks"));
+  });
+
+  it("reports a boundary that mounts with its fallback shown", async () => {
+    const { UnauthorizedBoundaryInner, isSegmentFallbackShown } =
+      await import("../packages/vinext/src/shims/error-boundary.js");
+    const unauthorized = new UnauthorizedBoundaryInner({
+      children: null,
+      fallback: null,
+      pathname: "/s/one",
+    });
+    unauthorized.state = { ...unauthorized.state, unauthorized: true };
+    unauthorized.componentDidMount();
+    expect(isSegmentFallbackShown()).toBe(true);
+    unauthorized.componentWillUnmount();
+    expect(isSegmentFallbackShown()).toBe(false);
+  });
+
   it("reports a boundary while it renders its fallback", async () => {
     const { ErrorBoundaryInner, ForbiddenBoundaryInner, isSegmentFallbackShown } =
       await import("../packages/vinext/src/shims/error-boundary.js");

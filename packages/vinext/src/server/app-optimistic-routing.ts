@@ -541,7 +541,9 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
  * Known limitation: the shell always stops at the shallowest nested loading.
  * When that boundary is mounted, a deeper loading the navigation newly mounts
  * waits for the real response, while Next.js prefetches from where the trees
- * diverge and shows it at once.
+ * diverge and shows it at once. Also, any error or HTTP access fallback on
+ * screen keeps the shell, so when that fallback's owner sits below the loading,
+ * the loading shows where Next.js would keep the fallback.
  */
 function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
@@ -557,7 +559,8 @@ function isShellLoadingBoundaryMounted(options: {
   // inside the ancestor loading boundaries, while Next.js renders it from the
   // segment that owns the fallback file. When that owner is above the loading,
   // Next.js has unmounted the loading boundary, and it mounts fresh on
-  // navigation. The fallback's owner is not tracked, so keep the shell.
+  // navigation. The fallback's owner is not tracked, so any fallback on screen,
+  // a parallel slot's included, keeps the shell.
   if (options.segmentFallbackShown) return false;
   const routes = options.routeManifest.segmentGraph.routes;
   const targetRoute = routes.get(options.template.routeId);

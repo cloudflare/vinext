@@ -16,7 +16,14 @@ async function clickWithHeldNavigation(
   page: Page,
   // `current` is a selector for what the starting page shows. Without a `link`,
   // the router prefetches and pushes the target instead.
-  options: { from: string; current: string; link?: string; loading: string; targetPath: string },
+  options: {
+    beforeClick?: () => Promise<void>;
+    from: string;
+    current: string;
+    link?: string;
+    loading: string;
+    targetPath: string;
+  },
 ): Promise<() => void> {
   let releaseNavigation!: () => void;
   let navigationRequestSeen = false;
@@ -68,10 +75,25 @@ async function clickWithHeldNavigation(
       }
     }).observe(document.body, { childList: true, subtree: true });
   }, options.loading);
-  // Let the prefetch response settle into the client cache before the click.
-  await page.evaluate(
-    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-  );
+  // The client only commits a shell whose prefetch entry has settled.
+  await expect
+    .poll(() =>
+      page.evaluate((targetPath) => {
+        const cache = Reflect.get(window, "__VINEXT_RSC_PREFETCH_CACHE__") as Map<
+          string,
+          { optimisticRouteShell?: boolean; outcome?: string; pending?: Promise<void> }
+        >;
+        return Array.from(cache.entries()).some(
+          ([key, entry]) =>
+            key.includes(targetPath) &&
+            entry.optimisticRouteShell === true &&
+            entry.outcome === "cache-seeded" &&
+            entry.pending === undefined,
+        );
+      }, options.targetPath),
+    )
+    .toBe(true);
+  await options.beforeClick?.();
   navigationRequestSeen = false;
   if (options.link === undefined) {
     await page.evaluate((href) => {
@@ -182,7 +204,19 @@ test("a prefetched loading shell shows the loading when leaving a not-found page
 }) => {
   // The root not-found.tsx owns the fallback, so Next.js has unmounted the
   // ancestor loading boundary and mounts it fresh on navigation.
+  const shownFallbacks = () =>
+    page.evaluate(
+      () =>
+        (
+          Reflect.get(globalThis, Symbol.for("vinext.shownSegmentFallbacks")) as
+            | Set<object>
+            | undefined
+        )?.size ?? 0,
+    );
   const releaseNavigation = await clickWithHeldNavigation(page, {
+    // The guard keeps the shell because of the shown fallback, not because the
+    // payload lacks a page entry.
+    beforeClick: async () => expect(await shownFallbacks()).toBeGreaterThan(0),
     current: "text=404 - Page Not Found",
     from: `${BASE}/plain/missing`,
     loading: LOADING,
@@ -192,4 +226,6 @@ test("a prefetched loading shell shows the loading when leaving a not-found page
 
   releaseNavigation();
   await expect(page.locator("#ancestor-shared-layout-two")).toBeVisible({ timeout: 10_000 });
+  // The not-found boundary unmounted, so the guard applies again.
+  expect(await shownFallbacks()).toBe(0);
 });
