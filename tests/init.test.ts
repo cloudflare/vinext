@@ -1360,6 +1360,15 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       isStaticExport: true,
     },
     {
+      name: "an inline Vite nextConfig reading the root .env.production",
+      files: {
+        ".env.production": "STATIC_EXPORT=1\n",
+        "vite.config.ts":
+          'export default { plugins: [{ name: "vinext", __vinextNextConfig: { output: process.env.STATIC_EXPORT ? "export" : undefined } }] };\n',
+      },
+      isStaticExport: true,
+    },
+    {
       name: "an output set from .env.production in the Vite envDir",
       files: {
         "config/.env.production": "STATIC_EXPORT=1\n",

@@ -97,7 +97,7 @@ export async function dispatchAppRequestStage(
       },
       { cache: "bypass" },
     );
-    return restoreStaticFileSignalFromTransport(response, staticFileSignalToken, request.headers);
+    return await restoreStaticFileSignalFromTransport(response, staticFileSignalToken);
   }
   return options.handleRequest(request, ctx, false, dispatchResponseStage, options.probeMode);
 }

@@ -527,7 +527,7 @@ export function updateGitignore(
  * Read `output` from the effective Next.js config, as `vinext build` does: an
  * inline `vinext({ nextConfig })` in the Vite config wins over next.config,
  * and both are evaluated with NODE_ENV set to production and `.env.production`
- * loaded from the Vite `envDir`. A config that cannot load here keeps the Worker-first default.
+ * loaded as the build loads it. A config that cannot load here keeps the Worker-first default.
  * The loader is imported lazily because it needs Vite, which create-vinext-app
  * runs without.
  */
@@ -557,6 +557,10 @@ async function resolvesToStaticExport(
   // Next.js's vendored global declarations mark NODE_ENV readonly.
   Reflect.set(process.env, "NODE_ENV", "production");
   try {
+    // As in a Vite CLI build, the root production dotenv loads before the Vite
+    // config evaluates, then the Vite envDir loads before either config source
+    // resolves.
+    dotenvModule.loadDotenv({ root, mode: "production" });
     let inline: Awaited<ReturnType<typeof findVinextNextConfigInPlugins>> = null;
     let envDir: string | false = root;
     if (viteConfigPath) {
@@ -578,9 +582,9 @@ async function resolvesToStaticExport(
         // next.config still decides.
       }
     }
-    // As in the build, dotenv loads from the Vite envDir before either config
-    // source resolves.
-    if (envDir !== false) dotenvModule.loadDotenv({ root: envDir, mode: "production" });
+    if (envDir !== false && envDir !== root) {
+      dotenvModule.loadDotenv({ root: envDir, mode: "production" });
+    }
     const nextConfig = inline
       ? await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD)
       : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);

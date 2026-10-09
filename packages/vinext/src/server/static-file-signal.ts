@@ -113,36 +113,10 @@ export function readStaticFileSignalRequestHeaders(response: Response): Headers 
   return headers instanceof Headers ? headers : null;
 }
 
-type RequestHeadersDelta = { r: string[]; s: [string, string][] };
-
-// Transport only what middleware changed against the request both stages hold,
-// so large cookies or credentials are not repeated in a response header.
-function diffRequestHeaders(source: Headers, target: Headers): RequestHeadersDelta {
-  const delta: RequestHeadersDelta = { r: [], s: [] };
-  for (const name of source.keys()) {
-    if (!target.has(name)) delta.r.push(name);
-  }
-  for (const [name, value] of target) {
-    if (source.get(name) !== value) delta.s.push([name, value]);
-  }
-  return delta;
-}
-
-function applyRequestHeadersDelta(source: Headers, delta: RequestHeadersDelta): Headers {
-  const headers = new Headers(source);
-  for (const name of delta.r) headers.delete(name);
-  for (const [name, value] of delta.s) headers.set(name, value);
-  return headers;
-}
-
-function isRequestHeadersDelta(value: unknown): value is RequestHeadersDelta {
-  if (typeof value !== "object" || value === null) return false;
-  const { r, s } = value as Partial<RequestHeadersDelta>;
+function isHeaderEntries(value: unknown): value is [string, string][] {
   return (
-    Array.isArray(r) &&
-    r.every((name) => typeof name === "string") &&
-    Array.isArray(s) &&
-    s.every(
+    Array.isArray(value) &&
+    value.every(
       (entry) =>
         Array.isArray(entry) &&
         entry.length === 2 &&
@@ -154,60 +128,59 @@ function isRequestHeadersDelta(value: unknown): value is RequestHeadersDelta {
 
 /**
  * Encode a framework-authenticated signal for a standards-only stage transport.
- * `sourceHeaders` are the headers of the request this stage received; the
- * restoring stage passes the same request's headers.
+ * Post-middleware request headers travel in the body, which has no platform
+ * size limit, rather than in a response header. Their marker header carries
+ * the real status, since the body needs a status that allows one.
  */
-export function serializeStaticFileSignalForTransport(
-  response: Response,
-  token: string,
-  sourceHeaders: Headers = new Headers(),
-): Response {
+export function serializeStaticFileSignalForTransport(response: Response, token: string): Response {
   const signal = readStaticFileSignal(response);
   if (signal === null) return response;
   const headers = new Headers(response.headers);
   for (const name of STATIC_FILE_REPRESENTATION_HEADERS) headers.delete(name);
   headers.set(STATIC_FILE_SIGNAL_TRANSPORT_HEADER, `${token}:${signal}`);
   const requestHeaders = readStaticFileSignalRequestHeaders(response);
-  if (requestHeaders) {
-    headers.set(
-      STATIC_FILE_REQUEST_HEADERS_TRANSPORT_HEADER,
-      `${token}:${encodeURIComponent(JSON.stringify(diffRequestHeaders(sourceHeaders, requestHeaders)))}`,
-    );
+  if (!requestHeaders) {
+    return new Response(null, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
   }
-  return new Response(null, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
+  headers.set(STATIC_FILE_REQUEST_HEADERS_TRANSPORT_HEADER, `${token}:${response.status}`);
+  return new Response(JSON.stringify([...requestHeaders]), { headers });
 }
 
 /** Restore and consume a signal returned by the trusted response-stage wrapper. */
-export function restoreStaticFileSignalFromTransport(
+export async function restoreStaticFileSignalFromTransport(
   response: Response,
   token: string,
-  sourceHeaders: Headers = new Headers(),
-): Response {
+): Promise<Response> {
   const transported = response.headers.get(STATIC_FILE_SIGNAL_TRANSPORT_HEADER);
-  const transportedRequestHeaders = response.headers.get(
-    STATIC_FILE_REQUEST_HEADERS_TRANSPORT_HEADER,
-  );
+  const requestHeadersMarker = response.headers.get(STATIC_FILE_REQUEST_HEADERS_TRANSPORT_HEADER);
   const cleaned = withoutTransportHeader(response);
   const prefix = `${token}:`;
   if (transported === null || !transported.startsWith(prefix)) return cleaned;
   const encodedPathname = transported.slice(prefix.length);
-  let requestHeaders: Headers | null = null;
   try {
     if (!decodeURIComponent(encodedPathname).startsWith("/")) return cleaned;
-    if (transportedRequestHeaders !== null) {
-      if (!transportedRequestHeaders.startsWith(prefix)) return cleaned;
-      const delta: unknown = JSON.parse(
-        decodeURIComponent(transportedRequestHeaders.slice(prefix.length)),
-      );
-      if (!isRequestHeadersDelta(delta)) return cleaned;
-      requestHeaders = applyRequestHeadersDelta(sourceHeaders, delta);
-    }
   } catch {
     return cleaned;
   }
-  return markEncodedStaticFileSignal(cleaned, encodedPathname, requestHeaders);
+  if (requestHeadersMarker === null) {
+    return markEncodedStaticFileSignal(cleaned, encodedPathname, null);
+  }
+  const status = Number(
+    requestHeadersMarker.startsWith(prefix) ? requestHeadersMarker.slice(prefix.length) : NaN,
+  );
+  if (!Number.isInteger(status) || status < 200 || status > 599) return cleaned;
+  // The token authenticates this body as the response stage's own output.
+  const entries: unknown = JSON.parse(await cleaned.text());
+  if (!isHeaderEntries(entries)) {
+    throw new Error("Invalid static-file request headers from the response stage");
+  }
+  return markEncodedStaticFileSignal(
+    new Response(null, { headers: cleaned.headers, status }),
+    encodedPathname,
+    new Headers(entries),
+  );
 }
