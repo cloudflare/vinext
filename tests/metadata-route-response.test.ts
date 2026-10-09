@@ -1250,6 +1250,24 @@ describe("handleMetadataRouteRequest", () => {
       }),
     ).rejects.toThrow("render failed");
   });
+
+  it.each(["NEXT_HTTP_ERROR_FALLBACK;500", "NEXT_HTTP_ERROR_FALLBACK;abc", "NEXT_REDIRECT"])(
+    "still throws errors with a non-access-fallback digest (%s)",
+    async (digest) => {
+      const error = Object.assign(new Error("digest error"), { digest });
+      await expect(
+        handleMetadataRouteRequest({
+          metadataRoutes: [
+            makeSlugImageRoute(() => {
+              throw error;
+            }),
+          ],
+          cleanPathname: "/blog/post/opengraph-image",
+          makeThenableParams,
+        }),
+      ).rejects.toBe(error);
+    },
+  );
 });
 
 describe("metadata route cacheability registration", () => {

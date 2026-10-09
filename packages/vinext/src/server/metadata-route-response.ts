@@ -726,9 +726,11 @@ async function withMetadataRouteSpecialErrors<T extends Response | null>(
         new Response(null, { status: redirect.status, headers: { Location: redirect.url } }),
       );
     }
-    const httpError = parseNextHttpErrorDigest(digest);
-    if (httpError) {
-      return markFullyBufferedBody(new Response(null, { status: httpError.status }));
+    // Like Next.js's isHTTPAccessFallbackError(), only 401, 403 and 404 are
+    // access fallbacks; any other fallback digest is a real error.
+    const status = parseNextHttpErrorDigest(digest)?.status;
+    if (status === 401 || status === 403 || status === 404) {
+      return markFullyBufferedBody(new Response(null, { status }));
     }
     throw error;
   }
