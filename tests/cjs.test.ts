@@ -79,6 +79,14 @@ describe("CJS interop (App Router)", () => {
     expect(visibleTextByTestId(html, "cjs-mixed-esm")).toBe("esm");
   });
 
+  // Ported from Next.js: test/integration/hashbang/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/integration/hashbang/test/index.test.ts
+  it("renders modules that start with a hashbang line", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/cjs/hashbang");
+    expect(res.status).toBe(200);
+    expect(visibleTextByTestId(html, "cjs-hashbang")).toBe("JS: 123 MJS: 456 CJS: 789");
+  });
+
   it("renders page that uses CJS require('server-only')", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/cjs/server-only");
     expect(res.status).toBe(200);

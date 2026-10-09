@@ -453,6 +453,16 @@ describe("App Router Production server (startProdServer)", () => {
     expect(await res.text()).toContain('data-testid="cjs-mixed-esm">esm</div>');
   });
 
+  // Ported from Next.js: test/integration/hashbang/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/integration/hashbang/test/index.test.ts
+  it("builds modules that start with a hashbang line", async () => {
+    const res = await fetch(`${baseUrl}/cjs/hashbang`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(
+      'data-testid="cjs-hashbang">JS: 123 MJS: 456 CJS: 789</div>',
+    );
+  });
+
   it("serves static asset byte ranges from the identity representation", async () => {
     const html = await (await fetch(`${baseUrl}/`)).text();
     const href = html.match(/["'](\/_next\/static\/[^"']+\.(?:js|css))["']/)?.[1];
