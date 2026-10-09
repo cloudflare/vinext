@@ -107,6 +107,15 @@ export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Me
  */
 export const VINEXT_SPECIAL_ERROR_STATUS_HEADER = "x-vinext-special-error-status";
 
+/**
+ * Marks a hybrid Pages response that is the 404 for its route's `notFound`
+ * result (getStaticProps/getServerSideProps `notFound`, or a `fallback: false`
+ * miss), so the App Router renders its not-found in its place, as Next.js does
+ * when the app directory is enabled. Only set when the App bridge asks for it;
+ * middleware can't set it, and the App request stage strips it.
+ */
+export const VINEXT_PAGES_NOT_FOUND_HEADER = "x-vinext-pages-not-found";
+
 /** URL-encoded rendered path and search after middleware/config rewrites. */
 export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
 

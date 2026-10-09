@@ -10005,3 +10005,111 @@ describe("createAppRscHandler", () => {
     });
   });
 });
+
+describe("hybrid Pages notFound", () => {
+  // With the app directory enabled, Next.js renders the App Router not-found
+  // for a Pages route's notFound and keeps the source route's Cache-Control
+  // (pages-handler.ts render404, base-server.ts renderErrorToResponseImpl).
+  // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/not-found-with-pages-i18n
+  // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/pages-router-app-not-found
+  const SOURCE_CACHE_CONTROL = "s-maxage=1, stale-while-revalidate=31535999";
+
+  function markedPagesNotFound(): Response {
+    return new Response("<h1>PAGES 404</h1>", {
+      status: 404,
+      headers: {
+        "Cache-Control": SOURCE_CACHE_CONTROL,
+        "Content-Type": "text/html",
+        "x-vinext-pages-not-found": "1",
+      },
+    });
+  }
+
+  it("renders the App not-found in place of a marked Pages 404", async () => {
+    const renderNotFound = vi.fn(
+      async () =>
+        new Response("<h1>APP 404</h1>", {
+          status: 404,
+          headers: { "Content-Type": "text/html" },
+        }),
+    );
+    const handler = createHandler({
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderNotFound,
+      renderPagesFallback: async () => markedPagesNotFound(),
+    });
+
+    const response = await handler(new Request("https://example.test/docs/foo"), null);
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("<h1>APP 404</h1>");
+    expect(response.headers.get("Cache-Control")).toBe(SOURCE_CACHE_CONTROL);
+    expect(response.headers.get("x-vinext-pages-not-found")).toBeNull();
+    expect(renderNotFound).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an unmarked Pages 404 and does not render the App not-found", async () => {
+    const renderNotFound = vi.fn(async () => new Response("<h1>APP 404</h1>", { status: 404 }));
+    const handler = createHandler({
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderNotFound,
+      renderPagesFallback: async () => new Response("<h1>OWN 404</h1>", { status: 404 }),
+    });
+
+    const response = await handler(new Request("https://example.test/docs/foo"), null);
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("<h1>OWN 404</h1>");
+    expect(renderNotFound).not.toHaveBeenCalled();
+  });
+
+  it("strips the marker when there is no App not-found to render", async () => {
+    const handler = createHandler({
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderNotFound: async () => null,
+      renderPagesFallback: async () => markedPagesNotFound(),
+    });
+
+    const response = await handler(new Request("https://example.test/docs/foo"), null);
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("<h1>PAGES 404</h1>");
+    expect(response.headers.get("x-vinext-pages-not-found")).toBeNull();
+  });
+
+  it("renders the App not-found response stage after a marked hybrid Pages stage", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async (_request, props) =>
+      props.kind === "hybrid-pages"
+        ? markedPagesNotFound()
+        : new Response("<h1>APP 404</h1>", {
+            status: 404,
+            headers: { "Content-Type": "text/html" },
+          }),
+    );
+    const handler = createHandler({
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page") ?? null,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/foo"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls.map((call) => call[1].kind)).toEqual([
+      "hybrid-pages",
+      "app-not-found",
+    ]);
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("<h1>APP 404</h1>");
+    expect(response.headers.get("Cache-Control")).toBe(SOURCE_CACHE_CONTROL);
+    expect(response.headers.get("x-vinext-pages-not-found")).toBeNull();
+  });
+});

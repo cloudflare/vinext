@@ -42,6 +42,7 @@ import {
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+  VINEXT_PAGES_NOT_FOUND_HEADER,
 } from "./headers.js";
 import type { ReactFormState } from "react-dom/client";
 import {
@@ -875,6 +876,37 @@ function withUnmatchedRouteCacheControl(response: Response): Response {
   const markedResponse = withNeverCacheControl(response);
   unmatchedRouteResponses.add(markedResponse);
   return markedResponse;
+}
+
+function withoutPagesNotFoundMarker(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.delete(VINEXT_PAGES_NOT_FOUND_HEADER);
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
+}
+
+/** Give an App not-found that replaces a Pages notFound the source route's Cache-Control. */
+function withPagesNotFoundCacheControl(
+  appNotFoundResponse: Response,
+  pagesNotFoundResponse: Response,
+): Response {
+  const cacheControl = pagesNotFoundResponse.headers.get("Cache-Control");
+  const headers = new Headers(appNotFoundResponse.headers);
+  if (cacheControl !== null) headers.set("Cache-Control", cacheControl);
+  return preserveFullyBufferedBodyMetadata(
+    appNotFoundResponse,
+    new Response(appNotFoundResponse.body, {
+      headers,
+      status: appNotFoundResponse.status,
+      statusText: appNotFoundResponse.statusText,
+    }),
+  );
 }
 
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
@@ -2151,6 +2183,38 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   let match = preActionMatch;
+  const renderAppNotFound = async (): Promise<Response | null> => {
+    setFrameworkRequestRoute("/404", isRscRequest);
+    const notFoundResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
+    if (notFoundResponseStage) {
+      const response = await notFoundResponseStage(responseStageRequest(), {
+        kind: "app-not-found",
+        buildId: options.buildId,
+        cacheability: responseStageCacheability(resolvedUrl),
+        canonicalPathname,
+        cleanPathname,
+        draftModeCookie,
+        isRscRequest,
+        middlewareCookieOverlay,
+        mountedSlotsHeader,
+        protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: url.origin,
+        renderMode,
+        resolvedUrl,
+        scriptNonce: scriptNonce ?? null,
+      });
+      return composeResponseStageResponse(response);
+    }
+    return traceAppPageRender("/404", "render", () =>
+      options.renderNotFound({
+        isRscRequest,
+        middlewareContext,
+        request,
+        route: null,
+        scriptNonce,
+      }),
+    );
+  };
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
@@ -2233,7 +2297,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           return response;
         }
       : undefined;
-    const response =
+    let response =
       !isInterceptionMatch && (match === null || match.route.isDynamic)
         ? ((await options.renderPagesFallback?.({
             appRouteMatch: match ?? null,
@@ -2250,6 +2314,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             url,
           })) ?? null)
         : null;
+    if (response?.headers.has(VINEXT_PAGES_NOT_FOUND_HEADER)) {
+      // With the app directory enabled, Next.js renders the App Router
+      // not-found for a Pages route's notFound result, and keeps the source
+      // route's Cache-Control (pages-handler.ts render404, base-server.ts
+      // renderErrorToResponseImpl).
+      const appNotFoundResponse = await renderAppNotFound();
+      if (appNotFoundResponse) {
+        options.clearRequestContext();
+        return withPagesNotFoundCacheControl(appNotFoundResponse, response);
+      }
+      response = withoutPagesNotFoundMarker(response);
+    }
     if (response) preserveRouteCacheabilityResponsePolicy();
     if (!response) return null;
     if (sharedOuterPolicyNeedsReconciliation) {
@@ -2489,39 +2565,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response("", { status: 404 });
     }
 
-    setFrameworkRequestRoute("/404", isRscRequest);
-    const notFoundResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
-    if (notFoundResponseStage) {
-      const response = await notFoundResponseStage(responseStageRequest(), {
-        kind: "app-not-found",
-        buildId: options.buildId,
-        cacheability: responseStageCacheability(resolvedUrl),
-        canonicalPathname,
-        cleanPathname,
-        draftModeCookie,
-        isRscRequest,
-        middlewareCookieOverlay,
-        mountedSlotsHeader,
-        protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
-        requestOrigin: url.origin,
-        renderMode,
-        resolvedUrl,
-        scriptNonce: scriptNonce ?? null,
-      });
-      // As in Next.js, an unmatched route's 404 is never cached.
-      return withUnmatchedRouteCacheControl(await composeResponseStageResponse(response));
-    }
-
-    const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
-      options.renderNotFound({
-        isRscRequest,
-        middlewareContext,
-        request,
-        route: null,
-        scriptNonce,
-      }),
-    );
+    const renderedNotFoundResponse = await renderAppNotFound();
     if (renderedNotFoundResponse) {
+      // As in Next.js, an unmatched route's 404 is never cached.
       return withUnmatchedRouteCacheControl(renderedNotFoundResponse);
     }
 

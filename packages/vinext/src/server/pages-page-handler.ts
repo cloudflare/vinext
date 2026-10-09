@@ -83,6 +83,7 @@ import {
   NEXTJS_CACHE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_PAGES_NOT_FOUND_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
@@ -167,6 +168,16 @@ function withPagesCacheState(
   } else {
     setCacheStateHeaders(headers, state);
   }
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function withPagesNotFoundMarker(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set(VINEXT_PAGES_NOT_FOUND_HEADER, "1");
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -374,6 +385,12 @@ export type CreatePagesPageHandlerOptions = {
 // Internal render options (mirrors the options shape passed to `renderPage`).
 type RenderPageOptions = {
   isDataReq?: boolean;
+  /**
+   * Set by the App Router's hybrid Pages bridge. A document 404 rendered for
+   * this route's `notFound` result carries VINEXT_PAGES_NOT_FOUND_HEADER so
+   * the App Router can render its not-found instead.
+   */
+  markNotFound?: boolean;
   statusCode?: number;
   asPath?: string;
   originalUrl?: string;
@@ -1076,6 +1093,9 @@ export function createPagesPageHandler(
             );
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
+          }
+          if (options?.markNotFound) {
+            notFoundResponse = withPagesNotFoundMarker(notFoundResponse);
           }
           return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }

@@ -4,6 +4,7 @@ import { beginRouteCacheability } from "vinext/shims/cacheability-classification
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import { VINEXT_PAGES_NOT_FOUND_HEADER } from "./headers.js";
 import { mergeHeaders } from "./worker-utils.js";
 
 export type PagesEntry = {
@@ -23,7 +24,7 @@ export type PagesEntry = {
     query: Record<string, unknown>,
     parsedUrl: unknown,
     middlewareRequestHeaders?: Headers | null,
-    options?: { isDataReq?: boolean },
+    options?: { isDataReq?: boolean; markNotFound?: boolean },
     initialResponseHeaders?: Headers,
   ) => Promise<Response> | Response;
 };
@@ -96,7 +97,10 @@ function applyPagesMiddlewareContext(
   const middlewareHeaders: Record<string, string | string[]> = {};
   if (middlewareContext.headers) {
     for (const [key, value] of middlewareContext.headers) {
-      if (key.toLowerCase() !== "set-cookie") {
+      const lowerKey = key.toLowerCase();
+      // Only the Pages renderer may mark its notFound 404 for the App Router.
+      if (lowerKey === VINEXT_PAGES_NOT_FOUND_HEADER) continue;
+      if (lowerKey !== "set-cookie") {
         middlewareHeaders[key] = value;
       }
     }
@@ -226,9 +230,15 @@ export async function renderPagesFallback(
     ? await (initialResponseHeaders
         ? pagesEntry.renderPage(...renderArgs, { isDataReq: true }, initialResponseHeaders)
         : pagesEntry.renderPage(...renderArgs, { isDataReq: true }))
-    : await (initialResponseHeaders
-        ? pagesEntry.renderPage(...renderArgs, undefined, initialResponseHeaders)
-        : pagesEntry.renderPage(...renderArgs));
+    : pagesDataRequest
+      ? await (initialResponseHeaders
+          ? pagesEntry.renderPage(...renderArgs, undefined, initialResponseHeaders)
+          : pagesEntry.renderPage(...renderArgs))
+      : // A document notFound is marked so the App Router can render its
+        // not-found in its place (see VINEXT_PAGES_NOT_FOUND_HEADER).
+        await (initialResponseHeaders
+          ? pagesEntry.renderPage(...renderArgs, { markNotFound: true }, initialResponseHeaders)
+          : pagesEntry.renderPage(...renderArgs, { markNotFound: true }));
   if (pagesRes.status === 404 && pageMatch === null) return null;
   return applyDraftModeCookie(
     applyPagesMiddlewareContext(pagesRes, middlewareContext),

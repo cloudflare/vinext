@@ -1616,3 +1616,66 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
     }
   });
 });
+
+describe("createPagesPageHandler — notFound marker for the App Router", () => {
+  function makeNotFoundHandler(pageModule: Record<string, unknown>) {
+    const pageRoute = makeRoute("/missing", { ...makePageModule(), ...pageModule });
+    return createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [pageRoute, makeRoute("/404")],
+        matchRoute: (url, routes) => {
+          const pathname = url.split("?")[0];
+          const route = routes.find((candidate) => candidate.pattern === pathname);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+  }
+
+  it("marks a document notFound 404 when the App bridge asks for it", async () => {
+    const handler = makeNotFoundHandler({ getStaticProps: async () => ({ notFound: true }) });
+
+    const response = await handler(makeRequest("/missing"), "/missing", null, null, {
+      markNotFound: true,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-vinext-pages-not-found")).toBe("1");
+  });
+
+  it("does not mark a notFound 404 when the App bridge did not ask", async () => {
+    const handler = makeNotFoundHandler({ getStaticProps: async () => ({ notFound: true }) });
+
+    const response = await handler(makeRequest("/missing"), "/missing", null, null, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-vinext-pages-not-found")).toBeNull();
+  });
+
+  it("does not mark a data request's notFound response", async () => {
+    const handler = makeNotFoundHandler({ getStaticProps: async () => ({ notFound: true }) });
+
+    const response = await handler(makeRequest("/missing"), "/missing", null, null, {
+      isDataReq: true,
+      markNotFound: true,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-vinext-pages-not-found")).toBeNull();
+  });
+
+  it("does not mark a page that renders with its own 404 status", async () => {
+    const handler = makeNotFoundHandler({
+      getServerSideProps: async ({ res }: { res: { statusCode: number } }) => {
+        res.statusCode = 404;
+        return { props: {} };
+      },
+    });
+
+    const response = await handler(makeRequest("/missing"), "/missing", null, null, {
+      markNotFound: true,
+    });
+
+    expect(response.headers.get("x-vinext-pages-not-found")).toBeNull();
+  });
+});

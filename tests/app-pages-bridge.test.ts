@@ -193,8 +193,10 @@ describe("renderPagesFallback", () => {
 
     const pageRequest = new Request("http://localhost/page");
     const renderPage = vi.fn<NonNullable<PagesEntry["renderPage"]>>(
-      (_request, _url, _query, _parsedUrl, _middlewareHeaders, _options, headers) => {
+      (_request, _url, _query, _parsedUrl, _middlewareHeaders, options, headers) => {
         expect(headers).toEqual(initialResponseHeaders);
+        // The staged-headers call still asks for the notFound marker.
+        expect(options).toEqual({ markNotFound: true });
         return new Response("page");
       },
     );
@@ -519,6 +521,7 @@ describe("renderPagesFallback", () => {
       {},
       undefined,
       null,
+      { markNotFound: true },
     );
     expect(await response?.text()).toBe("rewritten");
   });
@@ -801,6 +804,7 @@ describe("renderPagesFallback", () => {
       {},
       undefined,
       null,
+      { markNotFound: true },
     );
   });
 
@@ -930,5 +934,57 @@ describe("renderPagesFallback", () => {
 
     expect(renderPage).toHaveBeenCalledTimes(1);
     expect(res).toBeNull();
+  });
+  // Next.js renders the App Router not-found for a Pages route's notFound when
+  // the app directory is enabled. The bridge asks the Pages renderer to mark
+  // that 404 so the App request stage can tell it from a page's own 404.
+  // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/not-found-with-pages-i18n
+  it("asks the Pages renderer to mark a document notFound for the App Router", async () => {
+    const renderPage = vi.fn(() => new Response("page"));
+    const request = new Request("http://localhost/foo");
+
+    await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        url: new URL(request.url),
+      },
+      { ...defaultDeps, loadPagesEntry: () => ({ renderPage }) },
+    );
+
+    expect(renderPage).toHaveBeenCalledWith(request, "/foo", {}, undefined, null, {
+      markNotFound: true,
+    });
+  });
+
+  it("does not let middleware headers mark a Pages 404 for the App Router", async () => {
+    const request = new Request("http://localhost/foo");
+    const response = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: {
+          headers: new Headers({
+            "x-from-middleware": "1",
+            "x-vinext-pages-not-found": "1",
+          }),
+          requestHeaders: null,
+          status: null,
+        },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          renderPage: () => new Response("own 404", { status: 404 }),
+          matchPageRoute: () => ({ route: { isDynamic: false, pattern: "/foo" } }),
+        }),
+      },
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-from-middleware")).toBe("1");
+    expect(response?.headers.get("x-vinext-pages-not-found")).toBeNull();
   });
 });
