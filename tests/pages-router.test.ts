@@ -2527,6 +2527,20 @@ export const config = { matcher: "${matcher}" };
     expect(html).toContain("Loaded dynamically");
   });
 
+  // Issue #3718 only changes the App Router: a Pages dynamic() without a
+  // loading option keeps its Suspense boundary on the server, matching the
+  // boundary the hydrating client renders. This differs from Next.js on
+  // purpose until Pages parity lands: Next's Pages next/dynamic
+  // (react-loadable) preloads before SSR and renders no boundary.
+  it("keeps the Suspense boundary for dynamic() without loading during SSR", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-no-loading`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/<!--\$\??-->/);
+    expect(html).toContain("Loaded without loading option");
+  });
+
   // --- Hydration ---
 
   // --- next/config ---

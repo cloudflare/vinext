@@ -9,6 +9,7 @@ type ClientAssetFileNameInfo = {
 };
 
 const ROUTE_OWNED_CLIENT_SHIMS = new Set([
+  "app-router-tree-context",
   "compat-router",
   "dynamic",
   "dynamic-preload-chunks",

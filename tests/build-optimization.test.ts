@@ -177,6 +177,7 @@ describe("clientManualChunks", () => {
   });
 
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
+    expect(appClientManualChunks("/vinext/shims/app-router-tree-context.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/compat-router.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
