@@ -1,4 +1,5 @@
 import { builtinModules } from "node:module";
+import { toSlash } from "pathslash";
 
 const BUILTIN_MODULES = new Set(
   builtinModules.flatMap((name) =>
@@ -20,4 +21,17 @@ export function packageNameFromSpecifier(specifier: string): string | null {
   const packageName = match?.groups?.scoped ?? match?.groups?.unscoped ?? null;
   if (!packageName || BUILTIN_MODULES.has(packageName)) return null;
   return packageName;
+}
+
+/**
+ * Turbopack's "foreign code" condition: a module under node_modules whose
+ * package is not in the (Turbopack) transpile list. Next.js skips its
+ * app-code transforms, such as next/dynamic, for foreign code.
+ */
+export function isForeignNodeModule(id: string, transpiledPackages: readonly string[]): boolean {
+  const normalizedId = toSlash(id);
+  if (!normalizedId.includes("/node_modules/")) return false;
+  return !transpiledPackages.some((packageName) =>
+    normalizedId.includes(`/node_modules/${packageName}/`),
+  );
 }

@@ -7815,7 +7815,7 @@ export const loadServerActionClient = ${
     // module IDs belong to each dynamic() boundary. The runtime resolves those
     // IDs through Vite's build manifest so it can emit boundary-scoped preload
     // hints with the request CSP nonce.
-    createDynamicPreloadMetadataPlugin(),
+    createDynamicPreloadMetadataPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
     importMetaUrlCapability.vitePlugin,
     createExtensionlessDynamicImportPlugin(),
     // Expand Webpack's build-time `require.context(...)` into a static module

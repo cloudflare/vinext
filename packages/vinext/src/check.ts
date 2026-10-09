@@ -226,7 +226,8 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   transpilePackages: {
     status: "supported",
-    detail: "listed packages are bundled instead of externalized on the server",
+    detail:
+      "listed packages are bundled instead of externalized on the server, and their next/dynamic() calls get SSR preload links",
   },
   serverExternalPackages: {
     status: "supported",

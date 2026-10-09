@@ -26,6 +26,11 @@ const nextConfig: NextConfig = {
     gestureTransition: true,
   },
 
+  // Used by Vitest: app-router-production-server.test.ts — a next/dynamic()
+  // call site inside this package only gets preload metadata when the package
+  // is transpiled, matching Turbopack's foreign-code rule.
+  transpilePackages: ["fake-css-module-lib"],
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 
