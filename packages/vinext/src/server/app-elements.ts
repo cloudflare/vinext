@@ -2,6 +2,9 @@ import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { AppElementsWire, UNMATCHED_SLOT, type AppElements } from "./app-elements-wire.js";
 
 export const APP_PREFETCH_LOADING_SHELL_MARKER_KEY = "__prefetchLoadingShell";
+// Tree position of the children loading boundary a loading-shell prefetch
+// stops at, so the client can tell whether that boundary is already mounted.
+export const APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY = "__prefetchLoadingShellTreePosition";
 
 export {
   AppElementsWire,

@@ -212,9 +212,8 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       shell: "tabs",
     },
     // A template's Slot is keyed by its child segment, so it remounts here; the
-    // ancestor loading must stay outside it, as in Next.js. This and the plain
-    // targets' links use prefetch={false}: with no omitted layout mounted, a
-    // prefetched loading shell may commit on click, which is a separate path.
+    // ancestor loading must stay outside it, as in Next.js. The prefetched
+    // loading-shell path is covered by app-router-prod/ancestor-loading-prefetch.
     {
       name: "a sibling page under a group template",
       from: "/alpha",

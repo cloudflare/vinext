@@ -308,6 +308,7 @@ function createTestRouteManifest(routes: readonly TestRouteManifestRoute[]): Rou
       routeHandlerId: null,
       slotIds,
       templateIds: [],
+      treeSegments: patternParts,
     });
 
     for (const binding of routeSlotBindings) {

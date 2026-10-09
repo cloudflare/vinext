@@ -135,6 +135,7 @@ function createTestRouteManifest(routes: readonly TestManifestRoute[]): RouteMan
       routeHandlerId: null,
       slotIds,
       templateIds: [],
+      treeSegments: patternParts,
     });
 
     for (const binding of routeSlotBindings) {

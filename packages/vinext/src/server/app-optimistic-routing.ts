@@ -13,6 +13,7 @@ import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
@@ -20,6 +21,7 @@ import {
   canonicalizeAppPageParams,
   resolveAppPagePatternStateKey,
   resolveAppPageSemanticSegmentStateKey,
+  resolveAppPageTemplateStateKey,
 } from "./app-page-segment-state.js";
 
 type OptimisticRouteTrieNode = {
@@ -37,6 +39,8 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
+  /** Tree position of the children loading boundary a loading shell stops at. */
+  loadingTreePosition: number | null;
   mountedSlotsHeader: string | null;
   omittedBfcacheSegmentIds: readonly string[];
   omittedLayoutIds: readonly string[];
@@ -496,8 +500,14 @@ export function createOptimisticRouteTemplate(options: {
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
 
+  const loadingTreePosition = options.elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY];
   return {
     elements: options.elements,
+    loadingTreePosition:
+      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary" &&
+      typeof loadingTreePosition === "number"
+        ? loadingTreePosition
+        : null,
     mountedSlotsHeader: options.mountedSlotsHeader,
     omittedBfcacheSegmentIds:
       options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
@@ -521,6 +531,48 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
 }
 
 /**
+ * Next.js keys a segment's loading boundary by its immediate child segment
+ * (layout-router.tsx's TemplateContext.Provider), so the boundary stays mounted,
+ * and its fallback stays hidden, while the current and target routes share the
+ * path through that child, route groups and params included. The shell would
+ * commit the fallback instead. A leaf loading wraps the page itself, whose key
+ * always changes, so only ancestor boundaries are compared.
+ */
+function isShellLoadingBoundaryMounted(options: {
+  currentElements: AppElements;
+  currentParams: Readonly<Record<string, string | string[]>>;
+  routeManifest: RouteManifest;
+  targetRouteParams: Readonly<Record<string, string | string[]>>;
+  template: OptimisticRouteTemplate;
+}): boolean {
+  const loadingTreePosition = options.template.loadingTreePosition;
+  if (loadingTreePosition === null) return false;
+  const routes = options.routeManifest.segmentGraph.routes;
+  const targetRoute = routes.get(options.template.routeId);
+  if (targetRoute === undefined || loadingTreePosition >= targetRoute.treeSegments.length) {
+    return false;
+  }
+  const currentMetadata = AppElementsWire.readMetadata(options.currentElements);
+  if (currentMetadata.interception !== null) return false;
+  const currentRoute = routes.get(currentMetadata.routeId);
+  if (currentRoute === undefined || loadingTreePosition >= currentRoute.treeSegments.length) {
+    return false;
+  }
+  return (
+    resolveAppPageTemplateStateKey(
+      currentRoute.treeSegments,
+      loadingTreePosition,
+      options.currentParams,
+    ) ===
+    resolveAppPageTemplateStateKey(
+      targetRoute.treeSegments,
+      loadingTreePosition,
+      options.targetRouteParams,
+    )
+  );
+}
+
+/**
  * A loading-shell prefetch stops at the first loading boundary, so layouts
  * below that boundary are present in the route metadata but absent from the
  * rendered shell. Do not commit that ancestor fallback when one of those
@@ -537,6 +589,8 @@ export function canCommitOptimisticRouteTemplate(options: {
   targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;
 }): boolean {
+  if (isShellLoadingBoundaryMounted(options)) return false;
+
   if (
     options.template.omittedLayoutIds.length === 0 &&
     options.template.omittedBfcacheSegmentIds.length === 0

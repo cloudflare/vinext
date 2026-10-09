@@ -1668,6 +1668,7 @@ describe("app page route wiring helpers", () => {
               paramNames: [],
               pattern: "/dashboard",
               patternParts: ["dashboard"],
+              treeSegments: ["dashboard"],
               rootBoundaryId: null,
               rootParamNames: [],
               routeHandlerId: null,
