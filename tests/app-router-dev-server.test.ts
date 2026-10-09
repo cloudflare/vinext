@@ -2241,22 +2241,40 @@ describe("App Router integration", () => {
     expect(defaultVictim.status).toBe(200);
     expect(await defaultVictim.text()).toContain("VICTIM_DEFAULT_PRIVATE_RECORD");
 
-    for (const [exportName, secret] of [
-      ["readRecord", "VICTIM_PRIVATE_RECORD"],
-      ["default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+    for (const [actionId, secret] of [
+      ["/app/use-cache-hidden-reference/records.ts#readRecord", "VICTIM_PRIVATE_RECORD"],
+      ["/app/use-cache-hidden-reference/records.ts#default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+      [
+        "/app/use-cache-hidden-reference/inline-records.ts#readInlineRecord",
+        "VICTIM_INLINE_PRIVATE_RECORD",
+      ],
     ] as const) {
-      const exploit = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain",
-          "x-rsc-action": `/app/use-cache-hidden-reference/records.ts#${exportName}`,
-        },
-        body: JSON.stringify(["victim"]),
-      });
+      const form = new FormData();
+      form.append(`$ACTION_ID_${actionId}`, "");
+      form.append("id", "victim");
+      for (const [url, init] of [
+        [
+          "/use-cache-hidden-reference",
+          {
+            headers: { "Content-Type": "text/plain;charset=UTF-8", "Next-Action": actionId },
+            body: JSON.stringify(["victim"]),
+          },
+        ],
+        [
+          "/use-cache-hidden-reference.rsc",
+          {
+            headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
+            body: JSON.stringify(["victim"]),
+          },
+        ],
+        ["/use-cache-hidden-reference", { body: form }],
+      ] as const) {
+        const exploit = await fetch(`${baseUrl}${url}`, { method: "POST", ...init });
 
-      expect(exploit.status).toBe(404);
-      expect(exploit.headers.get("x-nextjs-action-not-found")).toBe("1");
-      expect(await exploit.text()).not.toContain(secret);
+        expect(exploit.status).toBe(404);
+        expect(exploit.headers.get("x-nextjs-action-not-found")).toBe("1");
+        expect(await exploit.text()).not.toContain(secret);
+      }
     }
   });
 

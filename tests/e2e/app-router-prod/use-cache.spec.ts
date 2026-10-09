@@ -2,48 +2,96 @@ import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
+// plugin-rsc's production reference key is a public function of the module
+// path, so these are the identities an attacker can derive offline.
+function derivedReferenceKey(modulePath: string): string {
+  return createHash("sha256").update(modulePath).digest("hex").slice(0, 12);
+}
+
+const recordsKey = derivedReferenceKey("app/use-cache-hidden-reference/records.ts");
+const inlineRecordsKey = derivedReferenceKey("app/use-cache-hidden-reference/inline-records.ts");
+
+const HIDDEN_CACHE_HELPERS = [
+  { source: "named", actionId: `${recordsKey}#readRecord`, secret: "VICTIM_PRIVATE_RECORD" },
+  { source: "default", actionId: `${recordsKey}#default`, secret: "VICTIM_DEFAULT_PRIVATE_RECORD" },
+  {
+    source: "inline",
+    actionId: `${inlineRecordsKey}#readInlineRecord`,
+    secret: "VICTIM_INLINE_PRIVATE_RECORD",
+  },
+  {
+    source: "inline",
+    actionId: `${inlineRecordsKey}#$$hoist_0_readInlineRecord`,
+    secret: "VICTIM_INLINE_PRIVATE_RECORD",
+  },
+] as const;
+
 test.describe('production "use cache" server function references', () => {
-  test("does not expose server-only cache helpers through derived source identities", async ({
+  // Next.js only makes a "use cache" function remotely callable through a
+  // build-salted server-reference id that never reaches a client unless the
+  // function itself does. A server-only cache helper must not be callable
+  // through an id derived from its source path and export name, whichever
+  // way the action request is sent.
+  // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/src/transforms/server_actions.rs
+  test("serves server-only cache helpers only through the page's authorization check", async ({
     request,
   }) => {
     const anonymous = await request.get("/use-cache-hidden-reference?record=victim");
     expect(anonymous.status()).toBe(200);
-    expect(await anonymous.text()).toContain("FORBIDDEN");
+    const anonymousHtml = await anonymous.text();
+    expect(anonymousHtml).toContain("FORBIDDEN");
+    expect(anonymousHtml).not.toMatch(/VICTIM_\w*PRIVATE_RECORD/);
 
-    const victim = await request.get("/use-cache-hidden-reference?record=victim", {
-      headers: { Authorization: "Bearer fixture-victim-session" },
-    });
-    expect(victim.status()).toBe(200);
-    expect(await victim.text()).toContain("VICTIM_PRIVATE_RECORD");
+    for (const { source, secret } of HIDDEN_CACHE_HELPERS) {
+      const victim = await request.get(
+        `/use-cache-hidden-reference?record=victim&source=${source}`,
+        {
+          headers: { Authorization: "Bearer fixture-victim-session" },
+        },
+      );
+      expect(victim.status()).toBe(200);
+      expect(await victim.text()).toContain(secret);
+    }
+  });
 
-    const defaultVictim = await request.get(
-      "/use-cache-hidden-reference?record=victim&source=default",
-      { headers: { Authorization: "Bearer fixture-victim-session" } },
-    );
-    expect(defaultVictim.status()).toBe(200);
-    expect(await defaultVictim.text()).toContain("VICTIM_DEFAULT_PRIVATE_RECORD");
-
-    const predictableReferenceKey = createHash("sha256")
-      .update("app/use-cache-hidden-reference/records.ts")
-      .digest("hex")
-      .slice(0, 12);
-    for (const [exportName, secret] of [
-      ["readRecord", "VICTIM_PRIVATE_RECORD"],
-      ["default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
-    ] as const) {
-      const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+  for (const { actionId, secret } of HIDDEN_CACHE_HELPERS) {
+    test(`rejects a Next-Action request for derived id ${actionId}`, async ({ request }) => {
+      const exploit = await request.post("/use-cache-hidden-reference", {
         data: JSON.stringify(["victim"]),
         headers: {
-          "Content-Type": "text/plain",
-          "x-rsc-action": `${predictableReferenceKey}#${exportName}`,
+          Accept: "text/x-component",
+          "Content-Type": "text/plain;charset=UTF-8",
+          "Next-Action": actionId,
         },
       });
 
       expect(exploit.status()).toBe(404);
       expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
       expect(await exploit.text()).not.toContain(secret);
-    }
-  });
+    });
+
+    test(`rejects an RSC action request for derived id ${actionId}`, async ({ request }) => {
+      const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+        data: JSON.stringify(["victim"]),
+        headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
+      });
+
+      expect(exploit.status()).toBe(404);
+      expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
+      expect(await exploit.text()).not.toContain(secret);
+    });
+
+    test(`rejects a progressive form action for derived id ${actionId}`, async ({ request }) => {
+      const exploit = await request.post("/use-cache-hidden-reference", {
+        // Playwright drops empty multipart fields; the action id is read only
+        // from the field name.
+        multipart: { [`$ACTION_ID_${actionId}`]: "1", id: "victim" },
+      });
+
+      expect(exploit.status()).toBe(404);
+      expect(await exploit.text()).not.toContain(secret);
+    });
+  }
 
   // Like Next.js, closure values reach the client only as captures encrypted
   // for that function (use-cache-wrapper.ts `boundArgsLength`, encryption.ts
