@@ -8257,12 +8257,17 @@ export const loadServerActionClient = ${
           const envConfig = this.environment?.config;
           if (!envConfig) return;
 
+          // Read both directories from the resolved environment config:
+          // platform plugins such as Nitro move the client output (to
+          // .output/public) and the RSC entry (under Nitro's build directory).
           const buildRoot = envConfig.root ?? process.cwd();
-          const clientDir = path.resolve(buildRoot, "dist", "client");
+          const clientDir = path.resolve(buildRoot, envConfig.build.outDir);
           const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
           const rscOutDir = path.resolve(
             buildRoot,
-            options.rscOutDir ?? path.join("dist", "server"),
+            this.environment.getTopLevelConfig().environments.rsc?.build.outDir ??
+              options.rscOutDir ??
+              path.join("dist", "server"),
           );
           for (const entryFile of ["index.js", "index.mjs"]) {
             if (injectInlineCssManifestGlobal(path.join(rscOutDir, entryFile), manifest)) break;
