@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "pathslash";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import type {
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
 import { parseAstAsync, type Plugin } from "vite";
+import { loadOrGenerateServerActionsEncryptionKey } from "../build/server-actions-encryption-key.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
@@ -184,16 +185,13 @@ function getCacheWrapperOptions(
 /**
  * Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
  * salts server-reference IDs with the encryption key (`serverReferenceHashSalt`
- * in packages/next/src/build/webpack-config.ts), which is
- * NEXT_SERVER_ACTIONS_ENCRYPTION_KEY when set (see
- * packages/next/src/server/app-render/encryption-utils-server.ts). Pinning it
- * makes rebuilds of identical source emit identical client chunks. Without it,
- * Next generates a key and caches it in distDir; vinext keeps build caches
- * ephemeral, so it stays random per build. The secret is derived under a label
- * rather than used directly so the reference names reveal nothing about the key.
+ * in packages/next/src/build/webpack-config.ts), so rebuilds of identical
+ * source emit identical client chunks. See
+ * loadOrGenerateServerActionsEncryptionKey for where the key comes from. The
+ * secret is derived under a label rather than used directly so the reference
+ * names reveal nothing about the key.
  */
-function createReferenceSecret(encryptionKey: string | undefined): Buffer {
-  if (!encryptionKey) return randomBytes(32);
+function createReferenceSecret(encryptionKey: string): Buffer {
   return createHmac("sha256", encryptionKey).update("vinext use cache reference").digest();
 }
 
@@ -219,11 +217,16 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
   return {
     name: PLUGIN_NAME,
     configResolved(config) {
-      // Read after vinext's config hook has loaded `.env` files.
-      referenceSecret ??= createReferenceSecret(process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY);
       const pluginApi = rscModule.getPluginApi(config);
       const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
       if (!pluginApi && options.allowMissingRsc && !hasRscPlugin) return;
+      // Read after vinext's config hook has loaded `.env` files.
+      referenceSecret ??= createReferenceSecret(
+        loadOrGenerateServerActionsEncryptionKey({
+          root: config.root,
+          isBuild: config.command === "build",
+        }),
+      );
       if (!pluginApi?.manager.serverReferences) {
         throw new Error("vinext: callable use cache requires @vitejs/plugin-rsc 0.5.34 or newer.");
       }
