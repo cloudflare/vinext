@@ -113,8 +113,55 @@ export function readStaticFileSignalRequestHeaders(response: Response): Headers 
   return headers instanceof Headers ? headers : null;
 }
 
-/** Encode a framework-authenticated signal for a standards-only stage transport. */
-export function serializeStaticFileSignalForTransport(response: Response, token: string): Response {
+type RequestHeadersDelta = { r: string[]; s: [string, string][] };
+
+// Transport only what middleware changed against the request both stages hold,
+// so large cookies or credentials are not repeated in a response header.
+function diffRequestHeaders(source: Headers, target: Headers): RequestHeadersDelta {
+  const delta: RequestHeadersDelta = { r: [], s: [] };
+  for (const name of source.keys()) {
+    if (!target.has(name)) delta.r.push(name);
+  }
+  for (const [name, value] of target) {
+    if (source.get(name) !== value) delta.s.push([name, value]);
+  }
+  return delta;
+}
+
+function applyRequestHeadersDelta(source: Headers, delta: RequestHeadersDelta): Headers {
+  const headers = new Headers(source);
+  for (const name of delta.r) headers.delete(name);
+  for (const [name, value] of delta.s) headers.set(name, value);
+  return headers;
+}
+
+function isRequestHeadersDelta(value: unknown): value is RequestHeadersDelta {
+  if (typeof value !== "object" || value === null) return false;
+  const { r, s } = value as Partial<RequestHeadersDelta>;
+  return (
+    Array.isArray(r) &&
+    r.every((name) => typeof name === "string") &&
+    Array.isArray(s) &&
+    s.every(
+      (entry) =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        typeof entry[1] === "string",
+    )
+  );
+}
+
+/**
+ * Encode a framework-authenticated signal for a standards-only stage transport.
+ * `sourceHeaders` are the headers of the request this stage received; the
+ * restoring stage passes the same request's headers.
+ */
+export function serializeStaticFileSignalForTransport(
+  response: Response,
+  token: string,
+  sourceHeaders: Headers = new Headers(),
+): Response {
   const signal = readStaticFileSignal(response);
   if (signal === null) return response;
   const headers = new Headers(response.headers);
@@ -124,7 +171,7 @@ export function serializeStaticFileSignalForTransport(response: Response, token:
   if (requestHeaders) {
     headers.set(
       STATIC_FILE_REQUEST_HEADERS_TRANSPORT_HEADER,
-      `${token}:${encodeURIComponent(JSON.stringify([...requestHeaders]))}`,
+      `${token}:${encodeURIComponent(JSON.stringify(diffRequestHeaders(sourceHeaders, requestHeaders)))}`,
     );
   }
   return new Response(null, {
@@ -135,7 +182,11 @@ export function serializeStaticFileSignalForTransport(response: Response, token:
 }
 
 /** Restore and consume a signal returned by the trusted response-stage wrapper. */
-export function restoreStaticFileSignalFromTransport(response: Response, token: string): Response {
+export function restoreStaticFileSignalFromTransport(
+  response: Response,
+  token: string,
+  sourceHeaders: Headers = new Headers(),
+): Response {
   const transported = response.headers.get(STATIC_FILE_SIGNAL_TRANSPORT_HEADER);
   const transportedRequestHeaders = response.headers.get(
     STATIC_FILE_REQUEST_HEADERS_TRANSPORT_HEADER,
@@ -149,9 +200,11 @@ export function restoreStaticFileSignalFromTransport(response: Response, token: 
     if (!decodeURIComponent(encodedPathname).startsWith("/")) return cleaned;
     if (transportedRequestHeaders !== null) {
       if (!transportedRequestHeaders.startsWith(prefix)) return cleaned;
-      requestHeaders = new Headers(
-        JSON.parse(decodeURIComponent(transportedRequestHeaders.slice(prefix.length))),
+      const delta: unknown = JSON.parse(
+        decodeURIComponent(transportedRequestHeaders.slice(prefix.length)),
       );
+      if (!isRequestHeadersDelta(delta)) return cleaned;
+      requestHeaders = applyRequestHeadersDelta(sourceHeaders, delta);
     }
   } catch {
     return cleaned;

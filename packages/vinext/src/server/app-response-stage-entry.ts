@@ -155,6 +155,7 @@ export async function handleResponseStage(
         const serialized = serializeStaticFileSignalForTransport(
           result,
           props.staticFileSignalToken,
+          request.headers,
         );
         return attachFrameworkRequestRoute(
           failed

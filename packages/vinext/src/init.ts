@@ -527,8 +527,8 @@ export function updateGitignore(
 /**
  * Read `output` from the effective Next.js config, as `vinext build` does: an
  * inline `vinext({ nextConfig })` in the Vite config wins over next.config,
- * and both are evaluated with `.env.production` loaded and NODE_ENV set to
- * production. A config that cannot load here keeps the Worker-first default.
+ * and both are evaluated with NODE_ENV set to production and `.env.production`
+ * loaded from the Vite `envDir`. A config that cannot load here keeps the Worker-first default.
  * The loader is imported lazily because it needs Vite, which create-vinext-app
  * runs without.
  */
@@ -555,11 +555,11 @@ async function resolvesToStaticExport(
   // Restore the environment afterwards so the build-time values do not leak
   // into the rest of init, such as the dependency install.
   const savedEnv = { ...process.env };
-  dotenvModule.loadDotenv({ root, mode: "production" });
   // Next.js's vendored global declarations mark NODE_ENV readonly.
   Reflect.set(process.env, "NODE_ENV", "production");
   try {
-    let nextConfig: NextConfig | null = null;
+    let inline: Awaited<ReturnType<typeof findVinextNextConfigInPlugins>> = null;
+    let envDir: string | false = root;
     if (viteConfigPath) {
       try {
         const { loadConfigFromFile } = await import("vite");
@@ -569,19 +569,25 @@ async function resolvesToStaticExport(
           root,
           "silent",
         );
-        const inline = await findVinextNextConfigInPlugins(loaded?.config.plugins);
-        if (inline) nextConfig = await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD);
+        const configuredEnvDir = loaded?.config.envDir;
+        if (configuredEnvDir === false) envDir = false;
+        else if (typeof configuredEnvDir === "string")
+          envDir = path.resolve(root, configuredEnvDir);
+        inline = await findVinextNextConfigInPlugins(loaded?.config.plugins);
       } catch {
         // A Vite config whose plugins are not installed yet cannot load here;
         // next.config still decides.
       }
     }
-    try {
-      nextConfig ??= await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
-    } catch {
-      return false;
-    }
+    // As in the build, dotenv loads from the Vite envDir before either config
+    // source resolves.
+    if (envDir !== false) dotenvModule.loadDotenv({ root: envDir, mode: "production" });
+    const nextConfig = inline
+      ? await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD)
+      : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
     return nextConfig?.output === "export";
+  } catch {
+    return false;
   } finally {
     for (const key of Object.keys(process.env)) {
       if (!Object.hasOwn(savedEnv, key)) delete process.env[key];

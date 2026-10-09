@@ -381,31 +381,36 @@ describe("resolvePublicFileRoute", () => {
   });
 
   it("carries middleware's request header overrides through the stage transport", () => {
+    const cookie = "session=" + "x".repeat(4096);
+    const request = new Request("https://example.com/video.mp4", {
+      headers: { accept: "*/*", cookie, "if-none-match": '"original"', range: "bytes=0-1" },
+    });
     const response = resolvePublicFileRoute({
       cleanPathname: "/video.mp4",
       middlewareContext: {
         headers: new Headers({ "x-from-middleware": "1" }),
         // NextResponse.next({ request: { headers } }) with Range deleted.
         requestHeaders: new Headers({
-          "x-middleware-override-headers": "accept,if-none-match",
+          "x-middleware-override-headers": "accept,cookie,if-none-match",
           "x-middleware-request-accept": "video/*",
+          "x-middleware-request-cookie": cookie,
           "x-middleware-request-if-none-match": '"replaced"',
         }),
         status: null,
       },
       pathname: "/video.mp4",
       publicFiles: new Set(["/video.mp4"]),
-      request: new Request("https://example.com/video.mp4", {
-        headers: { accept: "*/*", "if-none-match": '"original"', range: "bytes=0-1" },
-      }),
+      request,
     });
 
-    const expected = { accept: "video/*", "if-none-match": '"replaced"' };
+    const expected = { accept: "video/*", cookie, "if-none-match": '"replaced"' };
     expect(Object.fromEntries(readStaticFileSignalRequestHeaders(response!)!)).toEqual(expected);
-    const restored = restoreStaticFileSignalFromTransport(
-      serializeStaticFileSignalForTransport(response!, "token"),
-      "token",
-    );
+    const serialized = serializeStaticFileSignalForTransport(response!, "token", request.headers);
+    // Only the changes travel, not the unchanged cookie.
+    expect(
+      serialized.headers.get("x-vinext-stage-static-file-request-headers")!.length,
+    ).toBeLessThan(200);
+    const restored = restoreStaticFileSignalFromTransport(serialized, "token", request.headers);
     expect(readStaticFileSignal(restored)).toBe("%2Fvideo.mp4");
     expect(Object.fromEntries(readStaticFileSignalRequestHeaders(restored)!)).toEqual(expected);
     expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
