@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -188,6 +189,10 @@ describe("App Router Production build", () => {
     // client chunk, every build renames that chunk and all of its importers.
     expect(readAllJs(path.join(outDir, "server"))).toContain(rscBuildId);
     expect(clientJs).not.toContain(rscBuildId);
+    // Nor may the random default build ID (generateBuildId is not pinned
+    // here). Next.js keeps it out of client chunks, so pinning only
+    // deploymentId keeps chunk names stable.
+    expect(clientJs).not.toContain(buildId);
 
     const warmupManifestPath = path.join(outDir, "server", "vinext-prerender-paths.json");
     expect(fs.existsSync(warmupManifestPath)).toBe(false);
@@ -262,7 +267,14 @@ describe("App Router Production build", () => {
         });
         await builder.buildApp();
         return {
-          files: listFiles(path.join(outDir, "client")),
+          // Compare contents too: some client files (build manifests,
+          // .vite/manifest.json) carry no content hash in their name.
+          files: listFiles(path.join(outDir, "client")).map(
+            (file) =>
+              `${file}:${createHash("sha256")
+                .update(fs.readFileSync(path.join(outDir, "client", file)))
+                .digest("hex")}`,
+          ),
           rscBuildId: fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8"),
         };
       };
