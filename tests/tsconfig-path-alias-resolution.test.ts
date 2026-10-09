@@ -403,3 +403,108 @@ export default function Layout({ children }) { return <html><body>{children}</bo
     120_000,
   );
 });
+describe("tsconfig paths with several targets", () => {
+  function writeFallbackFixture(root: string) {
+    linkRepoNodeModules(root);
+    writeFixtureFile(
+      root,
+      "package.json",
+      JSON.stringify({ name: "fallback-alias-fixture", private: true, type: "module" }),
+    );
+    // Mirrors Next.js test/e2e/typescript-paths: TypeScript tries each target
+    // in order, and Next.js skips a `.d.ts` target.
+    writeFixtureFile(
+      root,
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: {
+          jsx: "react-jsx",
+          paths: {
+            "@lib/*": ["./lib/a/*", "./lib/b/*"],
+            "d-ts-alias": ["./components/alias-to-d-ts.d.ts", "./components/alias-to-d-ts.tsx"],
+          },
+        },
+      }),
+    );
+    writeFixtureFile(root, "lib/a/api.ts", `export default () => "api-from-a";\n`);
+    writeFixtureFile(root, "lib/b/api.ts", `export default () => "api-from-b";\n`);
+    writeFixtureFile(root, "lib/b/b-only.ts", `export default () => "only-in-b";\n`);
+    writeFixtureFile(root, "components/alias-to-d-ts.d.ts", `export default () => any;\n`);
+    writeFixtureFile(
+      root,
+      "components/alias-to-d-ts.tsx",
+      `export default () => "not-the-d-ts-file";\n`,
+    );
+    writeFixtureFile(
+      root,
+      "app/layout.tsx",
+      `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "app/page.tsx",
+      `import api from "@lib/api";
+import bOnly from "@lib/b-only";
+import notDts from "d-ts-alias";
+
+export default function HomePage() {
+  return (
+    <main>
+      <p>{api()}</p>
+      <p>{bOnly()}</p>
+      <p>{notDts()}</p>
+    </main>
+  );
+}
+`,
+    );
+  }
+
+  it("resolves the first target, falls back to later ones, and skips .d.ts targets", async () => {
+    const root = makeTmpDir("vinext-fallback-alias-");
+    writeFallbackFixture(root);
+
+    const { server, baseUrl } = await startFixtureServer(root, {
+      appDir: root,
+    });
+    try {
+      const { res, html } = await fetchHtml(baseUrl, "/");
+      expect(res.status).toBe(200);
+      // `@lib/api` exists under both targets: the first one wins.
+      expect(html).toContain("api-from-a");
+      expect(html).not.toContain("api-from-b");
+      // `@lib/b-only` exists only under the second target.
+      expect(html).toContain("only-in-b");
+      // The `.d.ts` target is skipped in favour of the real module.
+      expect(html).toContain("not-the-d-ts-file");
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+
+  it("build: resolves a module that only exists under a later target", async () => {
+    const root = makeTmpDir("vinext-fallback-alias-build-");
+    writeFallbackFixture(root);
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+    const files = fs.readdirSync(path.join(root, "dist"), { recursive: true }).map(String);
+    const output = files
+      .filter((file) => /\.m?js$/.test(file))
+      .map((file) => fs.readFileSync(path.join(root, "dist", file), "utf8"))
+      .join("\n");
+    expect(output).toContain("only-in-b");
+    expect(output).toContain("not-the-d-ts-file");
+  }, 120_000);
+});
