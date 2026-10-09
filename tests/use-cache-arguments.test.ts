@@ -1,4 +1,5 @@
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import { createElement, type ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
@@ -73,6 +74,21 @@ describe("use cache argument identity", () => {
     const cached = registerCachedFunction(fn, `test:temporary-return:${variant}`, variant);
     expect((await cached(first)).value).toBe(first);
     expect((await cached(second)).value).toBe(second);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds pass-through children to the current invocation on a hit", async () => {
+    const fn = vi.fn(async ({ children }: { children: ReactElement }) =>
+      createElement("section", null, children),
+    );
+    const cached = registerCachedFunction(fn, "test:passthrough-children");
+    const alice = createElement("p", null, "ALICE_PRIVATE_SECRET");
+    const guest = createElement("p", null, "PUBLIC_GUEST");
+    const childOf = async (children: ReactElement) =>
+      ((await cached({ children })) as ReactElement<{ children: unknown }>).props.children;
+
+    expect(await childOf(alice)).toBe(alice);
+    expect(await childOf(guest)).toBe(guest);
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
