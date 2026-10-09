@@ -492,10 +492,10 @@ function createAppPageLoadingEntries<TModule extends AppPageModule>(
   });
 }
 
-export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModule>(
+function resolveAppPageLoadingEntryAtOrAbove<TModule extends AppPageModule>(
   route: Pick<AppPageRouteWiringRoute<TModule>, "loading" | "loadings" | "loadingTreePositions">,
   treePosition: number,
-): TModule | null {
+): AppPageLoadingEntry<TModule> | null {
   let nearest: AppPageLoadingEntry<TModule> | null = null;
   for (const entry of createAppPageLoadingEntries(route)) {
     if (
@@ -507,10 +507,45 @@ export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModu
     }
   }
 
-  if (nearest?.loadingModule) {
-    return nearest.loadingModule;
+  if (nearest) {
+    return nearest;
   }
-  return getDefaultExport(route.loading) === null ? null : (route.loading ?? null);
+  // Legacy/eager route fixtures may only expose the leaf loading field.
+  return getDefaultExport(route.loading) === null
+    ? null
+    : { loadingModule: route.loading, treePosition };
+}
+
+export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModule>(
+  route: Pick<AppPageRouteWiringRoute<TModule>, "loading" | "loadings" | "loadingTreePositions">,
+  treePosition: number,
+): TModule | null {
+  return resolveAppPageLoadingEntryAtOrAbove(route, treePosition)?.loadingModule ?? null;
+}
+
+/**
+ * The loading boundary the page entry renders directly inside. A segment's
+ * loading convention wraps the layouts and templates of the segments below it,
+ * like Next.js's LoadingBoundary around each child segment. When one of those
+ * renders between the nearest loading and the page, its own entry carries the
+ * boundary, so the page entry gets none rather than a copy inside that layout.
+ */
+function resolveAppPageEntryLoadingEntry<TModule extends AppPageModule>(
+  route: Pick<AppPageRouteWiringRoute<TModule>, "loading" | "loadings" | "loadingTreePositions">,
+  pageTreePosition: number,
+  layoutEntries: readonly { layoutModule?: TModule | null; treePosition: number }[],
+  templateEntries: readonly AppPageTemplateEntry<TModule>[],
+): AppPageLoadingEntry<TModule> | null {
+  const loadingEntry = resolveAppPageLoadingEntryAtOrAbove(route, pageTreePosition);
+  if (!loadingEntry) return null;
+  const rendersBelowLoading = (treePosition: number, module: TModule | null | undefined): boolean =>
+    treePosition > loadingEntry.treePosition &&
+    treePosition <= pageTreePosition &&
+    getDefaultExport(module) !== null;
+  const hasInterveningSegment =
+    layoutEntries.some((entry) => rendersBelowLoading(entry.treePosition, entry.layoutModule)) ||
+    templateEntries.some((entry) => rendersBelowLoading(entry.treePosition, entry.templateModule));
+  return hasInterveningSegment ? null : loadingEntry;
 }
 
 function getPrefetchLoadingEntry<TModule extends AppPageModule>(
@@ -1062,6 +1097,15 @@ export function buildAppPageElements<
   const slotPlansByKey = new Map(segmentPlan.slots.map((slot) => [slot.key, slot]));
   const resolveRouteSegmentResetKey = (treePosition: number): string =>
     resolveAppPageSegmentStateKey(routeSegments, treePosition, options.matchedParams);
+  // Next.js renders a segment's loading boundary inside the wrapper keyed by
+  // its immediate child segment (layout-router.tsx's TemplateContext.Provider),
+  // the same key a template there gets. A route group is that child, so routes
+  // inside the group keep the boundary mounted. The leaf loading has no child
+  // segment and falls back to each call site's route-level key.
+  const resolveLoadingResetKey = (treePosition: number): string =>
+    treePosition < routeSegments.length
+      ? resolveAppPageTemplateStateKey(routeSegments, treePosition, options.matchedParams)
+      : "";
   const metadataEntries = AppElementsWire.createMetadataEntries({
     bfcacheSegmentIdentities: segmentPlan.bfcacheSegmentIdentities,
     interception,
@@ -1154,24 +1198,33 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  const pageLoadingModule = resolveAppPageLoadingModuleAtOrAbove(
+  const pageLoadingEntry = resolveAppPageEntryLoadingEntry(
     options.route,
     routeSegments.length,
+    layoutEntries,
+    templateEntries,
   );
   // The page and route are sibling values in vinext's flat Flight record. The
   // route-level Suspense below cannot catch the page value suspending while the
   // record itself is serialized, so the page entry needs its own boundary to
   // expose the fallback. Once <Slot> reconnects the entries this is nested
   // inside the route boundary; that duplication is an intentional transport
-  // artifact, not two independently selected loading conventions.
-  const PageLoadingComponent = pageRenderDependency ? getDefaultExport(pageLoadingModule) : null;
-  const pageElement = PageLoadingComponent ? (
-    <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
-      {options.element}
-    </Suspense>
-  ) : (
-    options.element
-  );
+  // artifact, not two independently selected loading conventions. It mirrors
+  // the boundary it duplicates, so it shares that boundary's reset key.
+  const PageLoadingComponent = pageRenderDependency
+    ? getDefaultExport(pageLoadingEntry?.loadingModule)
+    : null;
+  const pageElement =
+    PageLoadingComponent && pageLoadingEntry ? (
+      <Suspense
+        key={resolveLoadingResetKey(pageLoadingEntry.treePosition) || routeResetKey}
+        fallback={<PageLoadingComponent />}
+      >
+        {options.element}
+      </Suspense>
+    ) : (
+      options.element
+    );
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
     : pageRenderDependency
@@ -1203,7 +1256,7 @@ export function buildAppPageElements<
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
-      const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
+      const loadingResetKey = resolveLoadingResetKey(ancestorLoadingEntry.treePosition);
       templateElement = (
         <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
           {templateElement}
@@ -1273,7 +1326,7 @@ export function buildAppPageElements<
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
-      const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
+      const loadingResetKey = resolveLoadingResetKey(ancestorLoadingEntry.treePosition);
       layoutElement = (
         <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
           {layoutElement}
@@ -1550,7 +1603,7 @@ export function buildAppPageElements<
     const ownerLoadingComponent = getDefaultExport(ownerLoadingEntry?.loadingModule);
     if (ownerLoadingComponent && ownerLoadingEntry) {
       const OwnerLoadingComponent = ownerLoadingComponent;
-      const ownerResetKey = resolveRouteSegmentResetKey(ownerLoadingEntry.treePosition);
+      const ownerResetKey = resolveLoadingResetKey(ownerLoadingEntry.treePosition);
       slotElement = (
         <Suspense key={ownerResetKey || slotResetKey} fallback={<OwnerLoadingComponent />}>
           {slotElement}
@@ -1713,7 +1766,10 @@ export function buildAppPageElements<
       if (segmentLoadingComponent) {
         const SegmentLoadingComponent = segmentLoadingComponent;
         segmentChildren = (
-          <Suspense key={segmentResetKey || routeResetKey} fallback={<SegmentLoadingComponent />}>
+          <Suspense
+            key={resolveLoadingResetKey(treePosition) || routeResetKey}
+            fallback={<SegmentLoadingComponent />}
+          >
             {segmentChildren}
           </Suspense>
         );

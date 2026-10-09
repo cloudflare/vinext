@@ -4445,11 +4445,120 @@ describe("app page route wiring helpers", () => {
     const parentBoundary = findSuspenseWithFallback(routeEntry, "ParentLoading");
     const leafBoundary = findSuspenseWithFallback(routeEntry, "LeafLoading");
 
-    expect(parentBoundary?.key).toBe("slow");
+    expect(parentBoundary?.key).toBe(JSON.stringify(["parent", "slow"]));
     expect(leafBoundary?.key).toBe(JSON.stringify(["parent", "slow"]));
     expect(findSuspenseWithFallback(parentBoundary?.props.children, "LeafLoading")).not.toBeNull();
     expect(findSlotById(parentBoundary?.props.children, "layout:/parent/slow")).not.toBeNull();
     expect(countSuspenseWithFallback(routeEntry, "LeafLoading")).toBe(1);
+  });
+
+  // cloudflare/vinext#3725: app/dashboard/loading.tsx above
+  // app/dashboard/(protected)/layout.tsx must wrap that layout, like Next.js's
+  // LoadingBoundary around each child segment, and stay mounted while the
+  // pages inside the group change.
+  it("keeps an ancestor loading boundary around a shared group layout instead of the page", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    const buildElements = (
+      routeSegments: string[],
+      routePath: string,
+      withPageRenderDependency = true,
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        // The page render dependency gives the page entry its own boundary;
+        // without it, entries stay unwrapped and inspectable.
+        pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 2],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    const overview = buildElements(["dashboard", "(protected)"], "/dashboard");
+    const settings = buildElements(["dashboard", "(protected)", "settings"], "/dashboard/settings");
+    expect(countSuspenseWithFallback(overview["page:/dashboard"], "DashboardLoading")).toBe(0);
+    expect(
+      countSuspenseWithFallback(settings["page:/dashboard/settings"], "DashboardLoading"),
+    ).toBe(0);
+
+    const stableKey = JSON.stringify(["dashboard", "(protected)"]);
+    for (const routeEntry of [
+      buildElements(["dashboard", "(protected)"], "/dashboard", false)["route:/dashboard"],
+      buildElements(["dashboard", "(protected)", "settings"], "/dashboard/settings", false)[
+        "route:/dashboard/settings"
+      ],
+    ]) {
+      const boundary = findSuspenseWithFallback(routeEntry, "DashboardLoading");
+      expect(boundary?.key).toBe(stableKey);
+      expect(
+        findSlotById(boundary?.props.children, "layout:/dashboard/(protected)"),
+      ).not.toBeNull();
+    }
+  });
+
+  it("keys a page entry's ancestor loading boundary by the loading segment's child", () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading root");
+    }
+
+    const buildElements = (routeSegments: string[], routePath: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        pageRenderDependency: createAppPageRenderDependency(),
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: RootLoading }],
+          loadingTreePositions: [0],
+          notFound: null,
+          notFounds: [],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    const first = buildElements(["reports", "a"], "/reports/a");
+    const second = buildElements(["reports", "b"], "/reports/b");
+
+    // Without a layout in between, the page entry keeps the duplicated
+    // boundary, keyed like the one it duplicates so sibling pages share it.
+    expect(findSuspenseWithFallback(first["page:/reports/a"], "RootLoading")?.key).toBe(
+      JSON.stringify(["reports"]),
+    );
+    expect(findSuspenseWithFallback(second["page:/reports/b"], "RootLoading")?.key).toBe(
+      JSON.stringify(["reports"]),
+    );
   });
 
   it("threads route state reset keys into loading, error, and not-found boundaries", () => {
