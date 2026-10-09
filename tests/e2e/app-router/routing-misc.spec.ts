@@ -6,7 +6,6 @@
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/dynamic.catch-all.hypen.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/host.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/query.test.ts
- * Tests: ON-13, ON-14 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
 

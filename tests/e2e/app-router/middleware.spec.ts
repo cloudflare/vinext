@@ -4,7 +4,6 @@
  * Ported from:
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/middleware.redirect.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/middleware.rewrite.test.ts
- * Tests: ON-11 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";

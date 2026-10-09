@@ -2,7 +2,6 @@
  * Search query test page — displays searchParams from props and middleware.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/open-next/app/search-query/page.tsx
- * Tests: ON-14 in TRACKING.md
  */
 import { headers } from "next/headers";
 

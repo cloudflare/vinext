@@ -511,7 +511,6 @@ test.describe("ISR dynamicParams cache headers", () => {
  * OpenNext Compat: revalidateTag / revalidatePath E2E lifecycle tests.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/revalidateTag.test.ts
- * Tests: ON-2 in TRACKING.md
  *
  * OpenNext verifies the full tag-based cache invalidation lifecycle:
  * 1. Load tagged ISR page -> cached (HIT)
@@ -630,7 +629,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
   });
 
   // Ref: opennextjs-cloudflare revalidateTag.test.ts — "nested page shares tag"
-  // Tests: ON-2 #2 in TRACKING.md
   test("nested page sharing same tag is also invalidated", async ({ request }) => {
     test.setTimeout(30_000);
 
@@ -658,7 +656,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
  * OpenNext Compat: ISR data cache (unstable_cache) separation from page cache.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
- * Tests: ON-1 #8 in TRACKING.md
  *
  * Verifies that unstable_cache (data cache) works alongside ISR page caching.
  */

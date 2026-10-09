@@ -2,7 +2,6 @@
  * Server-Sent Events streaming API route.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/open-next/app/sse/
- * Tests: ON-5 in TRACKING.md
  *
  * Sends 4 messages with 1-second delays between them to verify streaming
  * is working correctly (messages arrive incrementally, not buffered).
