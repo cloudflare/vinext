@@ -101,6 +101,16 @@ describe("loadOrGenerateServerActionsEncryptionKey", () => {
     expect(load()).not.toBe(key);
   });
 
+  it("still returns a key when the cache cannot be written", () => {
+    // A file where the cache directory belongs fails like an unwritable cache.
+    fs.mkdirSync(path.join(root, ".vinext"));
+    fs.writeFileSync(path.join(root, ".vinext", "cache"), "");
+    const first = load();
+    expect(Buffer.from(first, "base64")).toHaveLength(32);
+    expect(load()).not.toBe(first);
+    expect(load({ providedKey: "provided" })).toBe("provided");
+  });
+
   it("generates a fresh key without caching when storage is likely ephemeral", () => {
     const first = load({ hasPersistentStorage: false });
     expect(load({ hasPersistentStorage: false })).not.toBe(first);
