@@ -130,6 +130,9 @@ export async function createWorkerUseServerPlugins(options: {
                   `vinext: a "use server" module imported by a Web Worker cannot \`export *\` from ${JSON.stringify(target)}; re-export its names explicitly.`,
                 );
               }
+              // The proxy drops the `export *` edge, so watch the target for
+              // export-name changes explicitly.
+              this.addWatchFile(target);
               const source = await fs.promises.readFile(target, "utf-8");
               return parseAstAsync(
                 (await transformWithOxc(source, target, { sourcemap: false })).code,
