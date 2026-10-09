@@ -1,6 +1,6 @@
 ---
-title: "Vinext 1.0: Workers Response Store and cache warming"
-description: "The first stable release of Vinext, which builds Next.js apps with Vite and deploys them to Cloudflare Workers."
+title: "Vinext 1.0: stable APIs and cache warming"
+description: "Caching that follows Next.js's rules, a durable cache for Cloudflare Workers, typed Cloudflare config, and OpenTelemetry tracing."
 date: "2026-09-28"
 authors:
   - name: James Anderson
@@ -24,6 +24,24 @@ From 1.0 we'll follow semver for Vinext's own APIs: the plugin options, the cach
 
 Next.js compatibility is a separate question. Some App Router features, including Cache Components and Partial Prerendering, are still incomplete. The [differences page](/docs/reference/differences) lists the gaps we know about, and the [compatibility dashboard](/compatibility) shows nightly results from the Next.js deploy test suite. It's worth checking both before moving a production app over.
 
+## Cache warming
+
+Earlier versions prerendered pages on the machine running the deploy and uploaded them to KV. Because that happened outside your Worker, pages that read from D1, R2 or a service binding while rendering didn't work.
+
+`--warm-cache` now uploads the new version, keeps it at 0% of traffic, and requests every cacheable page through it, so pages render with your real bindings. The version is only promoted once warming succeeds. If it fails, the deploy stops and the current version stays live.
+
+```sh
+npx @vinext/cloudflare deploy --warm-cache
+```
+
+For sites with a lot of pages, `--traffic-aware-warm-cache` uses your zone analytics to warm the most visited paths. That includes dynamic paths that aren't in `generateStaticParams()`.
+
+## Caching rules
+
+We spent a lot of the later betas porting Next.js's rules for what gets cached, rather than approximating them. Vinext now only caches an App Router page if Next.js would treat the route as static or SSG, and it never stores a render that used `cookies()` or `headers()`.
+
+A static page has one cache entry for all its query strings, as in Next.js. `useSearchParams()` renders the nearest `<Suspense>` fallback on the server, then the real value after hydration. If a background regeneration fails, the previous version of the page keeps being served.
+
 ## Workers Response Store
 
 Response Store is a new cache for Vinext on Cloudflare. Before it, you could use Workers Cache, which is fast but regional and has no durable copy, or KV, which is durable but eventually consistent and still runs your Worker on every request.
@@ -37,24 +55,6 @@ vinext({ cache: responseStoreAdapter() });
 ```
 
 It's the default when you enable caching with `vinext init`, and it's what vinext.dev runs on. The [caching guide](/docs/guides/caching#workers-response-store) explains the two deployment modes and when to use sharding.
-
-## Caching rules
-
-We spent a lot of the later betas porting Next.js's rules for what gets cached, rather than approximating them. Vinext now only caches an App Router page if Next.js would treat the route as static or SSG, and it never stores a render that used `cookies()` or `headers()`.
-
-A static page has one cache entry for all its query strings, as in Next.js. `useSearchParams()` renders the nearest `<Suspense>` fallback on the server, then the real value after hydration. If a background regeneration fails, the previous version of the page keeps being served.
-
-## Cache warming
-
-Earlier versions prerendered pages on the machine running the deploy and uploaded them to KV. Because that happened outside your Worker, pages that read from D1, R2 or a service binding while rendering didn't work.
-
-`--warm-cache` now uploads the new version, keeps it at 0% of traffic, and requests every cacheable page through it, so pages render with your real bindings. The version is only promoted once warming succeeds. If it fails, the deploy stops and the current version stays live.
-
-```sh
-npx @vinext/cloudflare deploy --warm-cache
-```
-
-For sites with a lot of pages, `--traffic-aware-warm-cache` uses your zone analytics to warm the most visited paths. That includes dynamic paths that aren't in `generateStaticParams()`.
 
 ## Other changes
 
