@@ -1314,8 +1314,9 @@ describe("createPagesPageHandler — internal error guard", () => {
     // Data requests skip renderToReadableStream (JSON envelope path), so we
     // need to throw earlier — in createPageElement, which is called inside
     // resolvePagesPageData to build the element for ISR/SSR rendering.
+    // Other data tests populate `/about` in the shared ISR cache.
     const routes = [
-      makeRoute("/about", {
+      makeRoute("/gsp-failure", {
         ...makePageModule(),
         getStaticProps: async () => {
           throw new Error("gssp failure");
@@ -1337,7 +1338,9 @@ describe("createPagesPageHandler — internal error guard", () => {
       }),
     );
     // isDataReq=true → no error-page recursion, direct 500
-    const res = await handler(makeRequest("/about"), "/about", null, null, { isDataReq: true });
+    const res = await handler(makeRequest("/gsp-failure"), "/gsp-failure", null, null, {
+      isDataReq: true,
+    });
     expect(res.status).toBe(500);
   });
 });

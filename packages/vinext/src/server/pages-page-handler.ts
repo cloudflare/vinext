@@ -29,7 +29,10 @@ import { hasUserDocumentGetInitialProps } from "./document-initial-head.js";
 import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import { renderPagesPageResponse } from "./pages-page-response.js";
+import {
+  renderPagesPageResponse,
+  schedulePagesDataRequestIsrWrite,
+} from "./pages-page-response.js";
 import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
@@ -1144,66 +1147,6 @@ export function createPagesPageHandler(
           });
         }
 
-        // ── _next/data JSON envelope short-circuit ─────────────────────────
-        // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
-        // and expects the full props envelope (pageProps plus any app-level
-        // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
-        if (isDataReq) {
-          const headers = new Headers();
-          if (gsspRes && typeof gsspRes.getHeaders === "function") {
-            const gsspHeaders = gsspRes.getHeaders();
-            for (const k of Object.keys(gsspHeaders)) {
-              const v = gsspHeaders[k];
-              if (v === undefined || v === null) continue;
-              if (k.toLowerCase() === "set-cookie" && Array.isArray(v)) {
-                for (const cookie of v) headers.append(k, String(cookie));
-              } else {
-                headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
-              }
-            }
-          }
-          if (hasCdnResponsePolicy(headers)) markRouteCacheabilityExplicitResponsePolicy();
-          if (gsspRes) {
-            // Default Cache-Control for gSSP-driven _next/data responses —
-            // skip when gSSP already set one via res.setHeader. Fixes #1461.
-            if (!headers.has("Cache-Control"))
-              headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
-          } else if (isStaticPropsRoute) {
-            if (isrRevalidateSeconds !== null) {
-              const stem = isrCachePathname.endsWith("/")
-                ? isrCachePathname.slice(0, -1)
-                : isrCachePathname;
-              applyCdnResponseHeaders(headers, {
-                cacheControl: buildMissIsrCacheControl(
-                  isrRevalidateSeconds,
-                  vinextConfig.expireTime,
-                ),
-                tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
-              });
-            } else if (shouldUseNextDeployCacheControl()) {
-              headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
-            }
-          }
-          // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
-          // every _next/data response so the client router can detect a new
-          // deployment and trigger a hard navigation (deployment-skew
-          // protection). Next.js skips the success path for /_error and /500
-          // (`!isErrorPage && !is500Page`). Fixes #1829.
-          if (routePattern !== "/_error" && routePattern !== "/500") {
-            const deploymentId =
-              process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-            if (deploymentId) {
-              headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
-            }
-          }
-          return finalizePagesPreviewResponse(
-            withBrowserPolicy(
-              buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers }),
-            ),
-            preview,
-          );
-        }
-
         // Include both the global _app module and the matched page module.
         // _app is wrapped around every page and any CSS/JS it imports must
         // be linked from the rendered HTML (LHF-5 symptom). Match Next.js
@@ -1284,6 +1227,79 @@ export function createPagesPageHandler(
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         };
+        // ── _next/data JSON envelope short-circuit ─────────────────────────
+        // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
+        // and expects the full props envelope (pageProps plus any app-level
+        // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
+        if (isDataReq) {
+          const headers = new Headers();
+          if (gsspRes && typeof gsspRes.getHeaders === "function") {
+            const gsspHeaders = gsspRes.getHeaders();
+            for (const k of Object.keys(gsspHeaders)) {
+              const v = gsspHeaders[k];
+              if (v === undefined || v === null) continue;
+              if (k.toLowerCase() === "set-cookie" && Array.isArray(v)) {
+                for (const cookie of v) headers.append(k, String(cookie));
+              } else {
+                headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+              }
+            }
+          }
+          if (hasCdnResponsePolicy(headers)) markRouteCacheabilityExplicitResponsePolicy();
+          if (gsspRes) {
+            // Default Cache-Control for gSSP-driven _next/data responses —
+            // skip when gSSP already set one via res.setHeader. Fixes #1461.
+            if (!headers.has("Cache-Control"))
+              headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+          } else if (isStaticPropsRoute) {
+            if (isrRevalidateSeconds !== null) {
+              const stem = isrCachePathname.endsWith("/")
+                ? isrCachePathname.slice(0, -1)
+                : isrCachePathname;
+              applyCdnResponseHeaders(headers, {
+                cacheControl: buildMissIsrCacheControl(
+                  isrRevalidateSeconds,
+                  vinextConfig.expireTime,
+                ),
+                tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+              });
+            } else if (shouldUseNextDeployCacheControl()) {
+              headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+            }
+          }
+          // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
+          // every _next/data response so the client router can detect a new
+          // deployment and trigger a hard navigation (deployment-skew
+          // protection). Next.js skips the success path for /_error and /500
+          // (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (routePattern !== "/_error" && routePattern !== "/500") {
+            const deploymentId =
+              process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+            if (deploymentId) {
+              headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
+            }
+          }
+          if (
+            isStaticPropsRender &&
+            previewData === false &&
+            !scriptNonce &&
+            isrRevalidateSeconds !== null &&
+            (isrRevalidateSeconds === false || isrRevalidateSeconds > 0)
+          ) {
+            const write = schedulePagesDataRequestIsrWrite(
+              pageResponseOptions,
+              renderTracedPagesPageResponse,
+            );
+            if (isOnDemandRevalidate) await write;
+          }
+          return finalizePagesPreviewResponse(
+            withBrowserPolicy(
+              buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers }),
+            ),
+            preview,
+          );
+        }
+
         let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);
         if (shouldApplyErrorResponsePolicy) {
           pageResponse = applyPagesErrorCachePolicy(

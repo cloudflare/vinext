@@ -163,6 +163,8 @@ type RenderPagesPageResponseOptions = {
   isrRevalidateSeconds: number | false | null;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
+  /** Background render for a data request; cache persistence must finish before returning. */
+  awaitIsrCacheWrite?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
@@ -515,6 +517,37 @@ function applyGsspHeaders(
   return statusCode ?? gsspRes.statusCode;
 }
 
+/**
+ * Persist the full ISR entry behind a `_next/data` miss. Next.js renders the
+ * document for getStaticProps data requests and caches its HTML alongside the
+ * page data, so a later HTML request is a hit. The client only waits for the
+ * JSON, so the document renders in the background.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+ */
+export function schedulePagesDataRequestIsrWrite(
+  options: RenderPagesPageResponseOptions,
+  render: (options: RenderPagesPageResponseOptions) => Promise<Response> = renderPagesPageResponse,
+): Promise<void> {
+  const cacheKey = options.isrCacheKey(
+    "pages",
+    options.isrCachePathname ?? options.routeUrl.split("?")[0],
+  );
+  const write = render({
+    ...options,
+    awaitIsrCacheWrite: true,
+    // The discarded document must not take the bot or conditional-request paths.
+    userAgent: undefined,
+    ifNoneMatch: undefined,
+    requestCacheControl: undefined,
+  })
+    .then((response) => response.body?.cancel())
+    .catch((error: unknown) =>
+      reportPagesIsrCacheWriteError(error, cacheKey, options.routePattern),
+    );
+  getRequestExecutionContext()?.waitUntil(write);
+  return write;
+}
+
 export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
@@ -686,7 +719,7 @@ export async function renderPagesPageResponse(
       status: finalStatus,
       stream: cacheBodyStream,
     };
-    if (options.isOnDemandRevalidate) {
+    if (options.isOnDemandRevalidate || options.awaitIsrCacheWrite) {
       // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.
       // Do the equivalent here so `await res.revalidate()` cannot resolve
       // before the regenerated HTML is fully rendered and persisted.
