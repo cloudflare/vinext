@@ -558,9 +558,10 @@ async function resolvesToStaticExport(
   Reflect.set(process.env, "NODE_ENV", "production");
   try {
     // As in a Vite CLI build, the root production dotenv loads before the Vite
-    // config evaluates, then the Vite envDir loads before either config source
-    // resolves.
+    // config evaluates, then the plugin loads the Vite envDir for the config's
+    // mode before either config source resolves.
     dotenvModule.loadDotenv({ root, mode: "production" });
+    let mode = "production";
     let inline: Awaited<ReturnType<typeof findVinextNextConfigInPlugins>> = null;
     let envDir: string | false = root;
     if (viteConfigPath) {
@@ -572,6 +573,7 @@ async function resolvesToStaticExport(
           root,
           "silent",
         );
+        if (typeof loaded?.config.mode === "string") mode = loaded.config.mode;
         const configuredEnvDir = loaded?.config.envDir;
         if (configuredEnvDir === false) envDir = false;
         else if (typeof configuredEnvDir === "string")
@@ -582,9 +584,7 @@ async function resolvesToStaticExport(
         // next.config still decides.
       }
     }
-    if (envDir !== false && envDir !== root) {
-      dotenvModule.loadDotenv({ root: envDir, mode: "production" });
-    }
+    if (envDir !== false) dotenvModule.loadDotenv({ root: envDir, mode });
     const nextConfig = inline
       ? await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD)
       : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);

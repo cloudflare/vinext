@@ -137,6 +137,9 @@ export function serializeStaticFileSignalForTransport(response: Response, token:
   if (signal === null) return response;
   const headers = new Headers(response.headers);
   for (const name of STATIC_FILE_REPRESENTATION_HEADERS) headers.delete(name);
+  // Middleware response headers ride on the signal, so an application value
+  // under the reserved marker name must not reach the restoring stage.
+  headers.delete(STATIC_FILE_REQUEST_HEADERS_TRANSPORT_HEADER);
   headers.set(STATIC_FILE_SIGNAL_TRANSPORT_HEADER, `${token}:${signal}`);
   const requestHeaders = readStaticFileSignalRequestHeaders(response);
   if (!requestHeaders) {

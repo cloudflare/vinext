@@ -480,10 +480,14 @@ export async function runPagesRequest(
     if (served instanceof Response) {
       const isStaticMethodNotAllowed =
         served.status === 405 && served.headers.get("allow") === "GET, HEAD";
+      // As for App Router public files, keep a partial or conditional asset
+      // status (206, 304) rather than masking it while keeping its headers.
       const response = mergeHeaders(
         served,
         middlewareHeaders,
-        isStaticMethodNotAllowed ? undefined : middlewareStatus,
+        isStaticMethodNotAllowed || !served.ok || served.status === 206
+          ? undefined
+          : middlewareStatus,
       );
       if (isStaticMethodNotAllowed) {
         sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");

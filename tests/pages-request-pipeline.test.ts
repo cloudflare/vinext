@@ -1637,6 +1637,42 @@ describe("serveFilesystemRoute", () => {
     expect(result.response.headers.get("x-from-middleware")).toBe("1");
   });
 
+  it.each([
+    { status: 206, headers: [["content-range", "bytes 0-2/10"]] as [string, string][] },
+    { status: 304, headers: [] as [string, string][] },
+  ])("keeps a $status public-file status over a middleware status", async ({ status, headers }) => {
+    const serveFilesystemRoute = vi.fn(
+      async () => new Response(status === 304 ? null : "abc", { status, headers }),
+    );
+    const result = await runPagesRequest(
+      new Request("https://example.com/file.txt"),
+      baseDeps({
+        serveFilesystemRoute,
+        runMiddleware: makeMiddleware({
+          status: 403,
+          responseHeaders: [["x-from-middleware", "1"]],
+        }),
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(status);
+    expect(result.response.headers.get("x-from-middleware")).toBe("1");
+  });
+
+  it("applies a middleware status to a full public-file response", async () => {
+    const result = await runPagesRequest(
+      new Request("https://example.com/file.txt"),
+      baseDeps({
+        serveFilesystemRoute: vi.fn(async () => new Response("file")),
+        runMiddleware: makeMiddleware({ status: 403 }),
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(403);
+  });
+
   it("falls through to render when serveFilesystemRoute returns false", async () => {
     const renderPage = makeRenderPage(200);
     const serveFilesystemRoute = vi.fn(async () => false);

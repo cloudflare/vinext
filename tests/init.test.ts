@@ -1369,6 +1369,16 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       isStaticExport: true,
     },
     {
+      name: "an output set from the dotenv of the Vite config's mode",
+      files: {
+        ".env.staging": "STATIC_EXPORT=1\n",
+        "vite.config.ts": 'export default { mode: "staging" };\n',
+        "next.config.mjs":
+          'export default process.env.STATIC_EXPORT ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
       name: "an output set from .env.production in the Vite envDir",
       files: {
         "config/.env.production": "STATIC_EXPORT=1\n",

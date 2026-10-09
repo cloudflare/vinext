@@ -433,6 +433,19 @@ describe("resolvePublicFileRoute", () => {
     });
   });
 
+  it("ignores an application header under the reserved transport marker name", async () => {
+    const signal = createStaticFileSignal("/logo.svg", {
+      headers: new Headers({ "x-vinext-stage-static-file-request-headers": "app-value" }),
+      status: null,
+    });
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(signal, "token"),
+      "token",
+    );
+    expect(readStaticFileSignal(restored)).toBe("%2Flogo.svg");
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+  });
+
   it("leaves the asset request headers alone when middleware overrides none", async () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/logo.svg",
