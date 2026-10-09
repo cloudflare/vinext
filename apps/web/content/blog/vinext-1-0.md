@@ -1,6 +1,6 @@
 ---
-title: "Vinext 1.0: Next.js on Vite, ready for Cloudflare Workers"
-description: "What the version number does and doesn't promise, a new cache built for Workers, and why deploys now warm it with your real bindings."
+title: "Vinext 1.0"
+description: "The first stable release of Vinext, which builds Next.js apps with Vite and deploys them to Cloudflare Workers."
 date: "2026-09-28"
 authors:
   - name: James Anderson
@@ -14,25 +14,21 @@ tags:
   - caching
 ---
 
-If you missed the [original announcement](https://blog.cloudflare.com/vinext/), here's the short version. Vinext lets you build a Next.js app with Vite instead of `next build`. Your `app/` and `pages/` directories, your `next.config`, and your imports from `next/link` and `next/navigation` all stay where they are. Under the hood it's the Next.js API surface reimplemented as a Vite plugin, and it deploys to Cloudflare Workers with one command, or to Node, or anywhere Nitro runs.
+Vinext builds Next.js apps with Vite instead of `next build`. You keep your `app/` or `pages/` directory, your `next.config` and your `next/*` imports, and deploy to Cloudflare Workers, Node, or anywhere Nitro supports. If you haven't come across it before, the [original announcement](https://blog.cloudflare.com/vinext/) explains how it started.
 
-The early months were about breadth: routing, Server Components, Server Actions and middleware. The fourteen betas over the summer were a different kind of work. Most of it was caching, and most of the caching work was getting Vinext to agree with Next.js about what it's allowed to cache in the first place.
+We released fourteen betas between July and September. Most of the work in them went into caching, so most of this post is about caching too.
 
-## What 1.0 does and doesn't mean
+## Stability
 
-"1.0" means different things to different people, so I'll be specific.
+From 1.0 we'll follow semver for Vinext's own APIs: the plugin options, the cache adapters, the deploy flags and the files `vinext init` generates. Breaking changes to any of those will wait for 2.0.
 
-It means Vinext's own surface is settled: the plugin options, the cache adapters, the deploy flags and the project that `vinext init` generates. If we need to break any of that, it'll be in a 2.0.
+Next.js compatibility is a separate question. Some App Router features, including Cache Components and Partial Prerendering, are still incomplete. The [differences page](/docs/reference/differences) lists the gaps we know about, and the [compatibility dashboard](/compatibility) shows nightly results from the Next.js deploy test suite. It's worth checking both before moving a production app over.
 
-It doesn't mean every Next.js app runs unchanged. Cache Components and Partial Prerendering are still incomplete, for one. We keep a [list of the differences that matter](/docs/reference/differences), and the [compatibility dashboard](/compatibility) runs the Next.js deploy test suite against `main` every night and shows the failures as well as the passes. Look at both before you move a production app.
+## Workers Response Store
 
-## A cache built for Workers
+Response Store is a new cache for Vinext on Cloudflare. Before it, you could use Workers Cache, which is fast but regional and has no durable copy, or KV, which is durable but eventually consistent and still runs your Worker on every request.
 
-The biggest thing to land during the betas is Workers Response Store. It exists because each option we already had fell short in a different way.
-
-Workers Cache is fast, but it's regional. A page cached in London does nothing for someone in Sydney, and there's no durable copy behind it. KV is durable, but it's eventually consistent, and every request still has to run your Worker to read from it.
-
-Response Store stacks the pieces. Workers Cache serves hot pages at the edge. R2 keeps a durable copy of every rendered response, so an edge miss reads from R2 instead of rendering the page again. A SQLite Durable Object tracks metadata, tags and invalidations, so `revalidateTag()` knows exactly which entries to touch. It handles the data cache too (`fetch`, `unstable_cache` and `"use cache"`), so there's one thing to configure:
+Response Store uses Workers Cache for hot responses at the edge, R2 for a durable copy of every rendered response, and a SQLite Durable Object for metadata, tags and invalidation. When the edge cache misses, Vinext reads the response from R2 rather than rendering the page again. It also covers the data cache (`fetch`, `unstable_cache` and `"use cache"`).
 
 ```ts
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
@@ -40,57 +36,50 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 vinext({ cache: responseStoreAdapter() });
 ```
 
-`vinext init` sets it up by default when you turn caching on. vinext.dev runs on it, this blog included. The [caching guide](/docs/guides/caching#workers-response-store) covers the two ways to deploy it, and when sharding is worth it.
+It's the default when you enable caching with `vinext init`, and it's what vinext.dev runs on. The [caching guide](/docs/guides/caching#workers-response-store) explains the two deployment modes and when to use sharding.
 
-## Caching what Next.js caches, and nothing more
+## Caching rules
 
-A cache that stores the wrong thing is worse than having no cache. The bug you really don't want here is a visitor getting a page that was rendered for somebody else.
+We spent a lot of the later betas porting Next.js's rules for what gets cached, rather than approximating them. Vinext now only caches an App Router page if Next.js would treat the route as static or SSG, and it never stores a render that used `cookies()` or `headers()`.
 
-So a big chunk of the late betas went into porting Next.js's rules instead of approximating them. Vinext now only caches an App Router page when Next.js would class the route as static or SSG. It never stores a render that called `cookies()` or `headers()`. Query strings on a static page share one cache entry, as they do in Next.js. `useSearchParams()` renders the nearest `<Suspense>` fallback on the server and fills in the real value after hydration. And if a background regeneration throws, visitors keep getting the last good page.
+A static page has one cache entry for all its query strings, as in Next.js. `useSearchParams()` renders the nearest `<Suspense>` fallback on the server, then the real value after hydration. If a background regeneration fails, the previous version of the page keeps being served.
 
-None of that is exciting work, but I'm glad it's done.
+## Cache warming
 
-## Warming the cache with your real bindings
+Earlier versions prerendered pages on the machine running the deploy and uploaded them to KV. Because that happened outside your Worker, pages that read from D1, R2 or a service binding while rendering didn't work.
 
-Older versions prerendered your pages on your laptop or CI machine during deploy, then bulk-uploaded the results to KV. It was quick, but it ran outside your Worker. Anything that read from D1, R2 or a service binding while rendering either broke or rendered the wrong thing.
-
-That's gone now. With `--warm-cache`, Vinext uploads the new version and holds it at 0% of traffic. It finds your routes through that staged Worker and requests each cacheable page, so every page renders with your real bindings. The version only goes live once the cache is warm. If warming fails, the deploy stops and your current version keeps serving.
+`--warm-cache` now uploads the new version, keeps it at 0% of traffic, and requests every cacheable page through it, so pages render with your real bindings. The version is only promoted once warming succeeds. If it fails, the deploy stops and the current version stays live.
 
 ```sh
 npx @vinext/cloudflare deploy --warm-cache
 ```
 
-If you have more pages than you'd want to warm on every deploy, `--traffic-aware-warm-cache` checks your zone analytics and warms the pages people actually visit, including dynamic paths that `generateStaticParams()` never listed.
+For sites with a lot of pages, `--traffic-aware-warm-cache` uses your zone analytics to warm the most visited paths. That includes dynamic paths that aren't in `generateStaticParams()`.
 
-## Smaller things you'll notice
+## Other changes
 
-New Cloudflare projects use the `cf` CLI and a typed `cloudflare.config.ts`. Bindings, domains and the cache Worker are written in TypeScript, instead of living in a config file you keep in sync by hand, and KV namespaces are created for you. Existing Wrangler projects are left alone, and `--legacy-wrangler-cloudflare-init` keeps Wrangler for new ones.
+- New Cloudflare projects use the `cf` CLI with a typed `cloudflare.config.ts`, and KV namespaces are created automatically. Existing Wrangler projects aren't changed, and `--legacy-wrangler-cloudflare-init` keeps Wrangler for new ones.
+- `vite dev` and `vite build` work directly. Vinext now requires Vite 8.
+- Vinext emits Next.js-compatible OpenTelemetry spans. Set it up in `instrumentation.ts` as you would with Next.js. It works with Sentry and with Cloudflare's Workers tracing; see the [tracing guide](/docs/guides/tracing).
+- `create-vinext-app` creates new projects.
+- `@vinext/types` provides the Next.js types, so you can remove `next` from your dependencies.
+- `vinext check` lists the `next.config` options Vinext ignores.
+- React Compiler support is available as an experimental option, with `react: { compiler: true }`.
 
-You can run `vite dev` and `vite build` directly now. Vinext requires Vite 8, so your builds go through Rolldown.
+## Getting started
 
-Tracing works the way it does in Next.js. Register OpenTelemetry in `instrumentation.ts` and Vinext emits spans for requests, renders, `fetch` calls and metadata. Sentry picks them up, and on Workers they show up in Cloudflare's own tracing. The [tracing guide](/docs/guides/tracing) has the setup.
-
-There are a few odds and ends as well:
-
-- `create-vinext-app` starts new projects.
-- `@vinext/types` keeps TypeScript happy once you've removed `next` from your `package.json`.
-- `vinext check` tells you which `next.config` options Vinext ignores.
-- React Compiler support is available as an experimental option, behind `react: { compiler: true }`.
-
-## Try it
-
-Start a new app:
+To start a new project:
 
 ```sh
 pnpm create vinext-app@latest my-app
 ```
 
-Or run this in an existing Next.js app:
+For an existing Next.js app, run this in the project:
 
 ```sh
 npx vinext init
 ```
 
-`init` checks compatibility first. It then adds Vinext alongside Next.js without touching your source files, so `next dev` still works while you try Vinext out. The [migration guide](/docs/getting-started/migrating) walks through the whole thing.
+`init` runs a compatibility check, then adds Vinext alongside Next.js without changing your source files, so `next dev` keeps working. The [migration guide](/docs/getting-started/migrating) has the details.
 
-If something breaks, the quickest way to get it fixed is a small reproduction in a [GitHub issue](https://github.com/cloudflare/vinext/issues). The full changelog is in the [1.0.0 release notes](https://github.com/cloudflare/vinext/releases/tag/vinext%401.0.0).
+Bug reports with a small reproduction are very welcome on [GitHub](https://github.com/cloudflare/vinext/issues). The [release notes](https://github.com/cloudflare/vinext/releases/tag/vinext%401.0.0) have the full list of changes.
