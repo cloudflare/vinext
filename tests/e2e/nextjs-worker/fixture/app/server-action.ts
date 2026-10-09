@@ -12,6 +12,7 @@ export async function reportError() {
   return ACTION_BODY;
 }
 
+// oxlint-disable-next-line no-shadow-restricted-names -- deliberate collision coverage
 export async function globalThis() {
   return ACTION_BODY;
 }

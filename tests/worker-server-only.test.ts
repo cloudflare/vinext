@@ -365,7 +365,7 @@ self.postMessage("worker.ts:" + typeof keyLength);
     expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
   }, 120_000);
 
-  it("expands export-all re-exports of virtual modules into server references", async () => {
+  it("rejects export-all re-exports of virtual modules", async () => {
     const root = copyFixture();
     // Worker-only: plugin-rsc's own export-all expansion reads re-export
     // targets from disk, so the main graphs cannot import this barrel.
@@ -388,13 +388,13 @@ self.postMessage("worker.ts:" + typeof keyLength);
         source === "virtual:worker-action-impl" ? "\0virtual:worker-action-impl" : null,
       load: (id) =>
         id === "\0virtual:worker-action-impl"
-          ? `const BODY = ${JSON.stringify(ACTION_BODY_MARKER)};\nexport async function keyLength() { return BODY.length; }\n`
+          ? `const BODY = ${JSON.stringify(ACTION_BODY_MARKER)};\nimport "server-only";\nexport async function keyLength() { return BODY.length; }\n`
           : null,
     };
 
-    const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root, [virtualImpl]);
-    expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
-    expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
+    await expect(buildFixture(root, [virtualImpl])).rejects.toThrow(
+      /cannot `export \*` from .*virtual:worker-action-impl.*re-export its names explicitly/,
+    );
   }, 120_000);
 
   it("leaves webpack runtime tokens in other worker modules untouched", async () => {

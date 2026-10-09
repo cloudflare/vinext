@@ -120,19 +120,21 @@ export async function createWorkerUseServerPlugins(options: {
             ast,
             importer: id,
             resolve: async (source, importer) => (await this.resolve(source, importer))?.id,
-            // Read plain files like `rsc:use-server` (export names only, no
-            // full transform); anything else (virtual modules, queries) has
-            // to come from the plugin pipeline.
-            load: async (target) =>
-              parseAstAsync(
-                isPlainFilePath(target)
-                  ? (
-                      await transformWithOxc(await fs.promises.readFile(target, "utf-8"), target, {
-                        sourcemap: false,
-                      })
-                    ).code
-                  : ((await this.load({ id: target })).code ?? ""),
-              ),
+            // Read export names from disk like `rsc:use-server` does. Loading
+            // other ids through the plugin pipeline would pull their imports
+            // into the worker graph, and plugin-rsc cannot expand them in the
+            // main graphs either, so reject them.
+            load: async (target) => {
+              if (!isPlainFilePath(target)) {
+                throw new Error(
+                  `vinext: a "use server" module imported by a Web Worker cannot \`export *\` from ${JSON.stringify(target)}; re-export its names explicitly.`,
+                );
+              }
+              const source = await fs.promises.readFile(target, "utf-8");
+              return parseAstAsync(
+                (await transformWithOxc(source, target, { sourcemap: false })).code,
+              );
+            },
           }),
         );
         if (expanded) {
