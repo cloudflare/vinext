@@ -35,7 +35,11 @@ import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
-import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
+import {
+  detectPathnameLocale,
+  normalizeDefaultLocalePathname,
+  stripI18nLocaleForApiRoute,
+} from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
@@ -615,8 +619,8 @@ export async function runPagesRequest(
   const matchedPathnameForRoute = (routePattern: string | undefined): string => {
     const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
     if (!i18nConfig) return matchedPathname;
-    const resolvedLocale = resolvedPathname.split("/", 3)[1];
-    if (resolvedLocale && i18nConfig.locales.includes(resolvedLocale)) {
+    const resolvedLocale = detectPathnameLocale(resolvedPathname, i18nConfig.locales);
+    if (resolvedLocale) {
       return matchedPathname === "/"
         ? `/${resolvedLocale}`
         : `/${resolvedLocale}${matchedPathname}`;

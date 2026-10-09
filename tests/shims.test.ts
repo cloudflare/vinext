@@ -30777,6 +30777,23 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
     expect(normalizeDefaultLocalePathname("/nl", i18n)).toBe("/nl");
   });
 
+  it("normalizeDefaultLocalePathname detects locale prefixes case-insensitively", async () => {
+    // Next.js's normalizeLocalePath lowercases before comparing, so /EN/about
+    // already carries a locale. Prepending the default (/en/EN/about) would
+    // make every unprefixed redirects()/headers()/rewrites() rule miss while
+    // the router still serves the page.
+    const { normalizeDefaultLocalePathname, detectPathnameLocale } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl-NL"], defaultLocale: "en" };
+    expect(normalizeDefaultLocalePathname("/EN/about", i18n)).toBe("/EN/about");
+    expect(normalizeDefaultLocalePathname("/Sv/about", i18n)).toBe("/Sv/about");
+    expect(normalizeDefaultLocalePathname("/nl-nl", i18n)).toBe("/nl-nl");
+    expect(detectPathnameLocale("/NL-nl/about", i18n.locales)).toBe("nl-NL");
+    expect(detectPathnameLocale("/", i18n.locales)).toBeUndefined();
+    expect(detectPathnameLocale("//en/about", i18n.locales)).toBeUndefined();
+    expect(detectPathnameLocale("/english", i18n.locales)).toBeUndefined();
+  });
+
   it("normalizeDefaultLocalePathname is a no-op when i18n is not configured", async () => {
     const { normalizeDefaultLocalePathname } =
       await import("../packages/vinext/src/server/pages-i18n.js");
