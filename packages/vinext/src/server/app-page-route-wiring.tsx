@@ -524,28 +524,25 @@ export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModu
 }
 
 /**
- * The loading boundary the page entry renders directly inside. A segment's
- * loading convention wraps the layouts and templates of the segments below it,
- * like Next.js's LoadingBoundary around each child segment. When one of those
- * renders between the nearest loading and the page, its own entry carries the
- * boundary, so the page entry gets none rather than a copy inside that layout.
+ * Whether a layout or template renders in `(loadingTreePosition, treePosition]`.
+ * A segment's loading convention wraps the layouts and templates of the
+ * segments below it, like Next.js's LoadingBoundary around each child segment,
+ * so such a layout or template carries the boundary on its own entry. A flat
+ * entry rendered inside it (the page, or a slot it owns) must not repeat that
+ * boundary, or the fallback would render inside the layout.
  */
-function resolveAppPageEntryLoadingEntry<TModule extends AppPageModule>(
-  route: Pick<AppPageRouteWiringRoute<TModule>, "loading" | "loadings" | "loadingTreePositions">,
-  pageTreePosition: number,
+function hasAppPageSegmentBelowLoading<TModule extends AppPageModule>(
+  loadingTreePosition: number,
+  treePosition: number,
   layoutEntries: readonly { layoutModule?: TModule | null; treePosition: number }[],
   templateEntries: readonly AppPageTemplateEntry<TModule>[],
-): AppPageLoadingEntry<TModule> | null {
-  const loadingEntry = resolveAppPageLoadingEntryAtOrAbove(route, pageTreePosition);
-  if (!loadingEntry) return null;
-  const rendersBelowLoading = (treePosition: number, module: TModule | null | undefined): boolean =>
-    treePosition > loadingEntry.treePosition &&
-    treePosition <= pageTreePosition &&
-    getDefaultExport(module) !== null;
-  const hasInterveningSegment =
+): boolean {
+  const rendersBelowLoading = (position: number, module: TModule | null | undefined): boolean =>
+    position > loadingTreePosition && position <= treePosition && getDefaultExport(module) !== null;
+  return (
     layoutEntries.some((entry) => rendersBelowLoading(entry.treePosition, entry.layoutModule)) ||
-    templateEntries.some((entry) => rendersBelowLoading(entry.treePosition, entry.templateModule));
-  return hasInterveningSegment ? null : loadingEntry;
+    templateEntries.some((entry) => rendersBelowLoading(entry.treePosition, entry.templateModule))
+  );
 }
 
 function getPrefetchLoadingEntry<TModule extends AppPageModule>(
@@ -1198,12 +1195,20 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  const pageLoadingEntry = resolveAppPageEntryLoadingEntry(
+  const nearestPageLoadingEntry = resolveAppPageLoadingEntryAtOrAbove(
     options.route,
     routeSegments.length,
-    layoutEntries,
-    templateEntries,
   );
+  const pageLoadingEntry =
+    nearestPageLoadingEntry &&
+    !hasAppPageSegmentBelowLoading(
+      nearestPageLoadingEntry.treePosition,
+      routeSegments.length,
+      layoutEntries,
+      templateEntries,
+    )
+      ? nearestPageLoadingEntry
+      : null;
   // The page and route are sibling values in vinext's flat Flight record. The
   // route-level Suspense below cannot catch the page value suspending while the
   // record itself is serialized, so the page entry needs its own boundary to
@@ -1597,9 +1602,20 @@ export function buildAppPageElements<
     // child slot, not only the flattened `children` branch. The slot payload is
     // serialized as a separate element entry, so the boundary must wrap this
     // entry directly rather than only the <Slot> placeholder in routeChildren.
-    const ownerLoadingEntry = isPrefetchLoadingShell
+    // An ancestor loading above the owner layout wraps that layout instead.
+    const nearestOwnerLoadingEntry = isPrefetchLoadingShell
       ? undefined
       : findNearestLoadingEntryAtOrAbove(ownerTreePosition);
+    const ownerLoadingEntry =
+      nearestOwnerLoadingEntry &&
+      !hasAppPageSegmentBelowLoading(
+        nearestOwnerLoadingEntry.treePosition,
+        ownerTreePosition,
+        layoutEntries,
+        templateEntries,
+      )
+        ? nearestOwnerLoadingEntry
+        : undefined;
     const ownerLoadingComponent = getDefaultExport(ownerLoadingEntry?.loadingModule);
     if (ownerLoadingComponent && ownerLoadingEntry) {
       const OwnerLoadingComponent = ownerLoadingComponent;

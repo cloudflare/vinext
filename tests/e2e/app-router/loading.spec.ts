@@ -243,6 +243,24 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     await expect(page.locator("#ancestor-shared-layout-loading")).toHaveCount(0);
   });
 
+  test("ancestor loading above a slot's owner layout wraps that layout on first entry", async ({
+    page,
+  }) => {
+    void page.goto(`${BASE}/ancestor-loading-shared-layout/slotted`);
+
+    await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({ timeout: 5_000 });
+    // The owner layout and its page render at once but the @panel slot takes
+    // 1.5s, so the loading UI must replace the layout rather than the slot.
+    await page.waitForTimeout(600);
+    await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
+    await expect(page.locator("#ancestor-shared-layout-slotted")).toBeHidden();
+    await expect(page.locator("#ancestor-shared-layout-panel")).toHaveText("Panel slot", {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#ancestor-shared-layout-slotted-page")).toBeVisible();
+    await expect(page.locator("#ancestor-shared-layout-loading")).toHaveCount(0);
+  });
+
   test("slow nested layout and page include both loading fallbacks in initial HTML", async ({
     request,
   }) => {
