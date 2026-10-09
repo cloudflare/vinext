@@ -300,6 +300,10 @@ async function hydrate() {
   `
   }
 
+  // Load the next/dynamic modules the server rendered so hydration renders
+  // them in place instead of their loading state, like Next.js.
+  await window.__NEXT_PRELOADREADY?.(nextData.dynamicIds);
+
   let resolveHydrationCommit;
   const hydrationCommitted = new Promise((resolve) => {
     resolveHydrationCommit = resolve;

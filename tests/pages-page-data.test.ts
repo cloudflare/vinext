@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import React, { type ReactNode } from "react";
+import { renderToReadableStream } from "react-dom/server.edge";
+import dynamic, { flushPreloads } from "../packages/vinext/src/shims/dynamic.js";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   getPagesRouteParams,
@@ -382,6 +384,48 @@ describe("pages page data", () => {
     expect(html).toContain('"page":"/posts/[slug]"');
     expect(html).toContain('"slug":"post"');
     expect(html).toContain('"__vinext":{"hasMiddleware":true}');
+  });
+
+  // Next.js regenerates through the same render as a request: it preloads
+  // every dynamic() first and lists the rendered modules in dynamicIds.
+  it("preloads dynamic() and lists its module in the regenerated __NEXT_DATA__", async () => {
+    const Widget = dynamic(
+      () =>
+        new Promise<{ default: () => ReactNode }>((resolve) => {
+          setTimeout(
+            () => resolve({ default: () => React.createElement("p", null, "widget") }),
+            10,
+          );
+        }),
+      { loadableGenerated: { modules: ["components/widget.tsx"] } } as never,
+    );
+    const preload = vi.fn(flushPreloads);
+
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head></head><body><div id="__next"><div>stale-body</div></div><script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>',
+      createPageElement() {
+        return React.createElement(Widget);
+      },
+      flushPreloads: preload,
+      i18n: { locale: undefined, locales: undefined, defaultLocale: undefined, domainLocales: [] },
+      pageProps: {},
+      params: {},
+      async renderIsrPassToStringAsync(element) {
+        const stream = await renderToReadableStream(element);
+        await stream.allReady;
+        return new Response(stream).text();
+      },
+      routePattern: "/widget",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(preload).toHaveBeenCalledTimes(1);
+    expect(html).toContain('<div id="__next"><p>widget</p></div>');
+    expect(html).toContain('"dynamicIds":["components/widget.tsx"]');
   });
 
   it("refreshes next/head tags in the regenerated shell without disturbing document markup", async () => {
@@ -1808,6 +1852,70 @@ describe("pages page data", () => {
     expect(appGip).not.toHaveBeenCalled();
   });
 
+  // Next.js preloads in renderToHTMLImpl, which a response-cache hit never
+  // reaches, and before getStaticProps on a miss.
+  it("preloads dynamic() before getStaticProps on a miss but not for an ISR cache hit", async () => {
+    const calls: string[] = [];
+    const flushPreloads = vi.fn(async () => {
+      calls.push("flushPreloads");
+    });
+    const pageModule = {
+      async getStaticProps() {
+        calls.push("getStaticProps");
+        return { props: {}, revalidate: 60 };
+      },
+    };
+    const hit = await resolvePagesPageData(
+      createOptions({
+        flushPreloads,
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheState: "fresh",
+            value: {
+              kind: "PAGES",
+              html: '<!DOCTYPE html><html><body><div id="__next"></div></body></html>',
+              pageData: {},
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule,
+      }),
+    );
+    expect(hit.kind).toBe("response");
+    expect(calls).toEqual([]);
+
+    const miss = await resolvePagesPageData(
+      createOptions({ flushPreloads, isrGet: vi.fn().mockResolvedValue(null), pageModule }),
+    );
+    expect(miss.kind).toBe("render");
+    expect(calls).toEqual(["flushPreloads", "getStaticProps"]);
+  });
+
+  it("preloads dynamic() before a page getInitialProps without an _app one", async () => {
+    const calls: string[] = [];
+    const result = await resolvePagesPageData(
+      createOptions({
+        flushPreloads: vi.fn(async () => {
+          calls.push("flushPreloads");
+        }),
+        pageModule: {
+          default: Object.assign(() => null, {
+            getInitialProps() {
+              calls.push("getInitialProps");
+              return {};
+            },
+          }),
+        },
+      }),
+    );
+    expect(result.kind).toBe("render");
+    expect(calls).toEqual(["flushPreloads", "getInitialProps"]);
+  });
+
   it("only runs _app.getInitialProps in the stale ISR regeneration path, not on the immediate stale response", async () => {
     let regenPromise: Promise<void> | null = null;
     const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
@@ -1818,7 +1926,12 @@ describe("pages page data", () => {
     let insideRegenContext = false;
     let foregroundGipCalls = 0;
     let regenGipCalls = 0;
+    const order: string[] = [];
+    const flushPreloads = vi.fn(async () => {
+      order.push(insideRegenContext ? "regen:flushPreloads" : "foreground:flushPreloads");
+    });
     const appGip = vi.fn().mockImplementation(() => {
+      order.push("getInitialProps");
       if (insideRegenContext) {
         regenGipCalls++;
       } else {
@@ -1835,6 +1948,7 @@ describe("pages page data", () => {
           },
           { getInitialProps: appGip },
         ),
+        flushPreloads,
         isrGet: vi.fn().mockResolvedValue({
           isStale: true,
           value: {
@@ -1883,6 +1997,10 @@ describe("pages page data", () => {
 
     // App GIP must run exactly once, inside the background regeneration callback.
     expect(regenGipCalls).toBe(1);
+    // Like Next.js, the stale response doesn't preload dynamic(), and the
+    // regeneration preloads before its data fetching.
+    expect(order.slice(0, 2)).toEqual(["regen:flushPreloads", "getInitialProps"]);
+    expect(order).not.toContain("foreground:flushPreloads");
     expect(appGip).toHaveBeenCalledOnce();
     expect(isrSet).toHaveBeenCalledOnce();
   });

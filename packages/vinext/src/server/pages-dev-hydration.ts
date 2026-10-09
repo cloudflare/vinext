@@ -126,6 +126,8 @@ async function hydrate() {
   const PageComponent = pageModule.default;
   let element;
   ${createElement}
+  // Load the next/dynamic modules the server rendered before hydrating.
+  await window.__NEXT_PRELOADREADY?.(nextData.dynamicIds);
   let resolveHydrationCommit;
   const hydrationCommitted = new Promise((resolve) => { resolveHydrationCommit = resolve; });
   element = wrapWithRouterContext(element, resolveHydrationCommit);

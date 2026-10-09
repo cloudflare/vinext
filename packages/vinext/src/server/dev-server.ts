@@ -23,6 +23,7 @@ import {
 // These modules must be imported before any rendering occurs.
 import "vinext/shims/router-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { createLoadableModuleCollector } from "vinext/shims/loadable-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
 import {
   applyDocumentAssetProps,
@@ -65,6 +66,7 @@ import {
 import { sanitizeDestination } from "../config/config-matchers.js";
 import { collectPagesDevInitialStylesheetHeadHTML } from "./pages-dev-stylesheets.js";
 import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { DEFERRED_PAGES_DYNAMIC_IDS, fillPagesDynamicIds } from "./pages-dynamic-ids.js";
 import {
   createPagesDevHydrationScript,
   type PagesDevHydrationOptions,
@@ -331,6 +333,12 @@ async function streamPageToResponseImpl(
     bufferBodyBeforeHeaders?: boolean;
     /** Keep a response Content-Type set before rendering a notFound page. */
     preserveExistingContentType?: boolean;
+    /**
+     * Fills in values that are only known after rendering (such as
+     * `__NEXT_DATA__.dynamicIds`): the document prefix once the shell has
+     * rendered, the suffix once the whole body has.
+     */
+    fillRenderedHtml?: (html: string) => string;
     onDocumentBody?: (stream: ReadableStream<Uint8Array>) => void;
   },
 ): Promise<void> {
@@ -352,6 +360,7 @@ async function streamPageToResponseImpl(
     crossOrigin,
     bufferBodyBeforeHeaders = false,
     preserveExistingContentType = false,
+    fillRenderedHtml = (html: string) => html,
     onDocumentBody,
   } = options;
 
@@ -533,9 +542,12 @@ async function streamPageToResponseImpl(
     );
   }
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
-  const prefix = transformedShell.slice(0, markerIdx);
-  const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
+  const getSuffix = () =>
+    fillRenderedHtml(transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length));
   const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
+  // Filled after a buffered body has rendered, so a prefix that carries
+  // __NEXT_DATA__ (a _document with <NextScript /> before <Main />) is exact.
+  const prefix = fillRenderedHtml(transformedShell.slice(0, markerIdx));
 
   // Send headers and start streaming.
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
@@ -560,7 +572,7 @@ async function streamPageToResponseImpl(
   res.write(prefix);
 
   if (bufferedBody !== null) {
-    res.end(bufferedBody + suffix);
+    res.end(bufferedBody + getSuffix());
     return;
   }
 
@@ -577,7 +589,7 @@ async function streamPageToResponseImpl(
   }
 
   // Write the document suffix (closing tags, scripts)
-  res.end(suffix);
+  res.end(getSuffix());
 }
 
 async function streamPageToResponse(
@@ -989,6 +1001,13 @@ export function createSSRHandler(
               return;
             }
           }
+        }
+
+        // Load every dynamic() before data fetching, like Next.js's
+        // render.tsx, so an AppTree render in getInitialProps sees them loaded.
+        const dynamicShim = await importModule(runner, "next/dynamic");
+        if (typeof dynamicShim.flushPreloads === "function") {
+          await dynamicShim.flushPreloads();
         }
 
         // Collect page props via data fetching methods
@@ -1517,6 +1536,9 @@ export function createSSRHandler(
         if (wrapWithRouterContext) {
           element = wrapWithRouterContext(element);
         }
+        // Collects the rendered next/dynamic modules for __NEXT_DATA__.dynamicIds.
+        const loadableModules = createLoadableModuleCollector();
+        element = loadableModules.wrap(element);
 
         // Reset SSR head collector before rendering so <Head> tags are captured
         const headShim = await importModule(runner, "next/head");
@@ -1524,8 +1546,7 @@ export function createSSRHandler(
           headShim.resetSSRHead();
         }
 
-        // Flush any pending dynamic() preloads so components are ready
-        const dynamicShim = await importModule(runner, "next/dynamic");
+        // Also load any dynamic() a module imported during data fetching.
         if (typeof dynamicShim.flushPreloads === "function") {
           await dynamicShim.flushPreloads();
         }
@@ -1635,6 +1656,8 @@ export function createSSRHandler(
             defaultLocale: currentDefaultLocale,
             domainLocales,
             ...serializedPagesNextData,
+            // Last, so the placeholder can be found after the user data.
+            dynamicIds: DEFERRED_PAGES_DYNAMIC_IDS,
           },
         )}</script>`;
 
@@ -1731,7 +1754,7 @@ export function createSSRHandler(
             if (wrapWithRouterContext) {
               enhancedElement = wrapWithRouterContext(enhancedElement);
             }
-            return enhancedElement;
+            return loadableModules.wrap(enhancedElement);
           },
           // Collect head HTML AFTER the shell renders (inside streamPageToResponse,
           // after renderToReadableStream resolves). Head tags from Suspense
@@ -1749,6 +1772,8 @@ export function createSSRHandler(
               : undefined,
           crossOrigin,
           bufferBodyBeforeHeaders: true,
+          fillRenderedHtml: (html) =>
+            fillPagesDynamicIds(html, loadableModules.getDynamicIds(), safeJsonStringify),
         });
         _renderEnd = now();
 
@@ -1907,6 +1932,13 @@ async function renderErrorPage(
       }
       const serverRouter = errorRouterShim?.default ?? errorRouter;
       const wrapFn = wrapWithRouterContext ?? errorRouterShim?.wrapWithRouterContext;
+      // Error pages render `_app` too, so they preload and report next/dynamic
+      // modules like any other page, preloading before data fetching.
+      const loadableModules = createLoadableModuleCollector();
+      const dynamicShim = await importModule(runner, "next/dynamic");
+      if (typeof dynamicShim.flushPreloads === "function") {
+        await dynamicShim.flushPreloads();
+      }
       const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
         req,
         res,
@@ -1994,6 +2026,11 @@ async function renderErrorPage(
         renderProps = { pageProps: errorProps };
       }
 
+      // Also load any dynamic() a module imported during data fetching.
+      if (typeof dynamicShim.flushPreloads === "function") {
+        await dynamicShim.flushPreloads();
+      }
+
       const createErrorElement = (
         // oxlint-disable-next-line typescript/no-explicit-any
         FinalApp: any,
@@ -2008,9 +2045,10 @@ async function renderErrorPage(
             })
           : createElement(FinalComponent, errorProps);
         if (wrapFn) errorElement = wrapFn(errorElement);
-        return errorElement;
+        return loadableModules.wrap(errorElement);
       };
-
+      const fillRenderedHtml = (html: string) =>
+        fillPagesDynamicIds(html, loadableModules.getDynamicIds(), safeJsonStringify);
       const element = createErrorElement(AppComponent, ErrorComponent);
       const headShim = await importModule(runner, "next/head");
       if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
@@ -2052,6 +2090,8 @@ async function renderErrorPage(
             hasMiddleware: context.hasMiddleware,
             clientMiddlewareMatcher: context.clientMiddlewareMatcher,
           },
+          // Last, so the placeholder can be found after the user data.
+          dynamicIds: DEFERRED_PAGES_DYNAMIC_IDS,
         },
       )}</script>`;
       const errorHydrationScript = createPagesDevHydrationScript({
@@ -2103,6 +2143,7 @@ async function renderErrorPage(
               : undefined,
           crossOrigin: context.crossOrigin,
           preserveExistingContentType: statusCode === 404,
+          fillRenderedHtml,
         });
       } else {
         const bodyHtml = await tracePagesDocument(errorPage, () => renderToStringAsync(element));
@@ -2149,7 +2190,7 @@ async function renderErrorPage(
             ? undefined
             : { "Content-Type": "text/html; charset=utf-8" },
         );
-        res.end(transformedHtml);
+        res.end(fillRenderedHtml(transformedHtml));
       }
       return;
     } catch (error) {

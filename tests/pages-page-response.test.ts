@@ -7,7 +7,9 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import React from "react";
+import { renderToReadableStream as reactRenderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it, vi } from "vite-plus/test";
+import dynamic, { flushPreloads } from "../packages/vinext/src/shims/dynamic.js";
 import {
   renderPagesPageResponse,
   isPagesStreamingBot,
@@ -324,6 +326,93 @@ describe("pages page response", () => {
       }),
       { cacheControl: { revalidate: 60, expire: 300 } },
     );
+  });
+
+  // The dynamicIds placeholder sits in the document suffix, which must be
+  // filled only after the whole body (including late Suspense content) has
+  // rendered, in both the response and the cached HTML.
+  it("lists a dynamic() rendered after the shell in the response and the ISR cache", async () => {
+    const common = createCommonOptions();
+    const Widget = dynamic(
+      async () => ({ default: () => React.createElement("p", null, "widget") }),
+      {
+        loadableGenerated: {
+          modules: ["widget.tsx"],
+          loadableKeys: ["pages/post.tsx -> ./widget"],
+        },
+      } as never,
+    );
+    let releaseLate!: () => void;
+    const late = new Promise<void>((resolve) => {
+      releaseLate = resolve;
+    });
+    function Late() {
+      React.use(late);
+      return React.createElement(Widget);
+    }
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      createPageElement: () =>
+        React.createElement(React.Suspense, { fallback: null }, React.createElement(Late)),
+      DocumentComponent: null,
+      expireSeconds: 300,
+      flushPreloads,
+      getSSRHeadHTML: undefined,
+      isrRevalidateSeconds: 60,
+      renderToReadableStream: (element: React.ReactNode) => {
+        setTimeout(releaseLate, 10);
+        return reactRenderToReadableStream(element);
+      },
+    });
+
+    const html = await response.text();
+    expect(html).toContain("<p>widget</p>");
+    expect(html).toContain('"dynamicIds":["pages/post.tsx -> ./widget"]');
+    await settleMicrotasks();
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({
+        html: expect.stringContaining('"dynamicIds":["pages/post.tsx -> ./widget"]'),
+      }),
+      expect.anything(),
+    );
+  });
+
+  // Next.js reruns its next-dynamic suite with a _document whose
+  // getInitialProps calls ctx.defaultGetInitialProps (the CSS-in-JS setup),
+  // where renderPage renders the body instead of the streamed page element.
+  it("lists a dynamic() rendered through _document.getInitialProps renderPage", async () => {
+    const common = createCommonOptions();
+    const Widget = dynamic(
+      async () => ({ default: () => React.createElement("p", null, "widget") }),
+      {
+        loadableGenerated: {
+          modules: ["widget.tsx"],
+          loadableKeys: ["pages/post.tsx -> ./widget"],
+        },
+      } as never,
+    );
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      defaultGetInitialProps: (ctx: unknown) => Promise<{ html: string }>;
+    }) => ctx.defaultGetInitialProps(ctx);
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      createPageElement: () => React.createElement("p", null, "not-rendered"),
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement: () => React.createElement(Widget),
+      flushPreloads,
+      renderToReadableStream: (element: React.ReactNode) =>
+        reactRenderToReadableStream(element as React.ReactElement),
+    });
+
+    const html = await response.text();
+    expect(html).toContain("<p>widget</p>");
+    expect(html).toContain('"dynamicIds":["pages/post.tsx -> ./widget"]');
   });
 
   it("reports the resolved Pages tag after an on-demand regeneration", async () => {

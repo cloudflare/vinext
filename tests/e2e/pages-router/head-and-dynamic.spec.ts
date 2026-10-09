@@ -51,9 +51,8 @@ test.describe("next/dynamic", () => {
 
   // Next's Pages Router loadable never suspends: a dynamic() that mounts on a
   // client navigation renders its (null by default) loading state in place,
-  // so the new page commits right away. vinext keeps its Suspense boundary
-  // in Pages trees so a navigation commits the same way instead of keeping the
-  // previous page on screen until the slow chunk loads.
+  // so the new page commits right away instead of keeping the previous page on
+  // screen until the slow chunk loads.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/loadable.shared-runtime.tsx
   test("client navigation commits before a dynamic() without loading resolves", async ({
     page,

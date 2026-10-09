@@ -1,4 +1,5 @@
 import { recordRouteCacheability } from "vinext/shims/cacheability-classification";
+import { createLoadableModuleCollector } from "vinext/shims/loadable-context";
 import type { ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
@@ -235,6 +236,7 @@ type RenderPagesIsrHtmlOptions = {
   cachedHtml: string;
   collectIsrHeadHTML?: (() => string) | undefined;
   createPageElement: (props: Record<string, unknown>) => ReactNode;
+  flushPreloads?: (() => Promise<void> | void) | undefined;
   i18n: PagesI18nRenderContext;
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
@@ -359,6 +361,12 @@ export type ResolvePagesPageDataOptions = {
    * `next/head` output derived from the refreshed `getStaticProps` data.
    */
   collectIsrHeadHTML?: (() => string) | undefined;
+  /**
+   * `flushPreloads` from `next/dynamic`, awaited before data fetching and
+   * before a regeneration render, but not for cache hits (Next.js preloads in
+   * `renderToHTMLImpl`, which a response-cache hit never reaches).
+   */
+  flushPreloads?: (() => Promise<void> | void) | undefined;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
   /**
@@ -1184,8 +1192,10 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
   const renderProps = options.props ?? { pageProps: options.pageProps };
   const collectHead = options.collectIsrHeadHTML;
   let freshHead = "";
+  await options.flushPreloads?.();
+  const loadableModules = createLoadableModuleCollector();
   const freshBody = await options.renderIsrPassToStringAsync(
-    options.createPageElement(renderProps),
+    loadableModules.wrap(options.createPageElement(renderProps)),
     collectHead &&
       (async () => {
         freshHead = collectHead();
@@ -1204,6 +1214,7 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     // `router.isReady` the server computed instead of a flag-less fallback.
     nextData: options.nextData,
     vinext: options.vinext,
+    dynamicIds: loadableModules.getDynamicIds(),
   });
 
   return rewritePagesCachedHtml(
@@ -1403,6 +1414,11 @@ export async function resolvePagesPageData(
   if (previewData !== false) renderProps.__N_PREVIEW = true;
 
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
+    // The foreground _app.getInitialProps, gSSP and gSP paths start here
+    // (a page-only getInitialProps flushes below). Load every dynamic()
+    // first, like Next.js's render.tsx, so an AppTree render in
+    // getInitialProps sees them loaded.
+    await options.flushPreloads?.();
     const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
     if (result.kind === "response") {
       return {
@@ -1533,6 +1549,7 @@ export async function resolvePagesPageData(
         async function () {
           return options.runInFreshUnifiedContext(async () => {
             options.applyRequestContexts();
+            await options.flushPreloads?.();
             const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
               options.createGsspReqRes(),
             );
@@ -1599,6 +1616,7 @@ export async function resolvePagesPageData(
                   params: options.params,
                   renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                   collectIsrHeadHTML: options.collectIsrHeadHTML,
+                  flushPreloads: options.flushPreloads,
                   routePattern: options.routePattern,
                   safeJsonStringify: options.safeJsonStringify,
                   nextData: options.nextData,
@@ -1934,6 +1952,7 @@ export async function resolvePagesPageData(
     !hasPagesGetInitialProps(options.AppComponent) &&
     hasPagesGetInitialProps(options.pageModule.default)
   ) {
+    await options.flushPreloads?.();
     const { req, res, responsePromise } = getSharedReqRes();
     const initialProps = await loadPagesGetInitialProps(options.pageModule.default, {
       req,

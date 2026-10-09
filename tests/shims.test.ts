@@ -15622,14 +15622,16 @@ describe("next/dynamic shim", () => {
   });
 
   it("returns a component for SSR-enabled dynamic imports", async () => {
-    const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { default: dynamic, flushPreloads } =
+      await import("../packages/vinext/src/shims/dynamic.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
     const FakeComponent = () => React.createElement("div", null, "Hello from dynamic");
     const DynamicComponent = dynamic(() => Promise.resolve({ default: FakeComponent }));
 
-    // renderToReadableStream handles React.lazy + Suspense
+    // Outside an App Router tree, the Pages Router preloads before rendering.
+    await flushPreloads();
     const stream = await renderToReadableStream(React.createElement(DynamicComponent));
     await stream.allReady;
     const html = await new Response(stream).text();
@@ -15704,13 +15706,15 @@ describe("next/dynamic shim", () => {
   });
 
   it("accepts module without default export (bare component)", async () => {
-    const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { default: dynamic, flushPreloads } =
+      await import("../packages/vinext/src/shims/dynamic.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
     const BareComponent = () => React.createElement("p", null, "Bare export");
     const DynamicComponent = dynamic(() => Promise.resolve(BareComponent));
 
+    await flushPreloads();
     const stream = await renderToReadableStream(React.createElement(DynamicComponent));
     await stream.allReady;
     const html = await new Response(stream).text();
@@ -15718,7 +15722,8 @@ describe("next/dynamic shim", () => {
   });
 
   it("forwards props to the underlying component", async () => {
-    const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { default: dynamic, flushPreloads } =
+      await import("../packages/vinext/src/shims/dynamic.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
@@ -15726,6 +15731,7 @@ describe("next/dynamic shim", () => {
       React.createElement("span", null, `Hello ${name}`);
     const DynamicGreeter = dynamic(() => Promise.resolve({ default: Greeter }));
 
+    await flushPreloads();
     const stream = await renderToReadableStream(
       React.createElement(DynamicGreeter, { name: "World" }),
     );
@@ -15736,6 +15742,8 @@ describe("next/dynamic shim", () => {
 
   it("renders loading fallback when component not yet resolved (SSR)", async () => {
     const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { withAppRouterTree } =
+      await import("../packages/vinext/src/shims/app-router-tree-context.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
@@ -15748,8 +15756,10 @@ describe("next/dynamic shim", () => {
 
     const DynamicSlow = dynamic(() => loaderPromise as any, { loading: Loading });
 
-    // Start streaming — the shell includes the Suspense fallback
-    const stream = await renderToReadableStream(React.createElement(DynamicSlow));
+    // Start streaming — in an App Router tree, the shell includes the Suspense fallback
+    const stream = await renderToReadableStream(
+      withAppRouterTree(React.createElement(DynamicSlow)),
+    );
     // Resolve the loader so the stream can complete
     resolveLoader({ default: SlowComponent });
     await stream.allReady;
@@ -15761,6 +15771,8 @@ describe("next/dynamic shim", () => {
 
   it("streaming renderer resolves multiple dynamic components", async () => {
     const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { withAppRouterTree } =
+      await import("../packages/vinext/src/shims/app-router-tree-context.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
@@ -15774,12 +15786,12 @@ describe("next/dynamic shim", () => {
       () => new Promise<any>((r) => setTimeout(() => r({ default: CompB }), 10)),
     );
 
-    // renderToReadableStream handles React.lazy via Suspense
-    const streamA = await renderToReadableStream(React.createElement(DynA));
+    // In an App Router tree, renderToReadableStream waits for React.lazy
+    const streamA = await renderToReadableStream(withAppRouterTree(React.createElement(DynA)));
     await streamA.allReady;
     const htmlA = await new Response(streamA).text();
 
-    const streamB = await renderToReadableStream(React.createElement(DynB));
+    const streamB = await renderToReadableStream(withAppRouterTree(React.createElement(DynB)));
     await streamB.allReady;
     const htmlB = await new Response(streamB).text();
 
@@ -15787,16 +15799,24 @@ describe("next/dynamic shim", () => {
     expect(htmlB).toContain("Component B");
   });
 
-  it("flushPreloads remains an immediate no-op across repeated calls", async () => {
-    const { flushPreloads } = await import("../packages/vinext/src/shims/dynamic.js");
+  it("flushPreloads resolves once every dynamic() has loaded", async () => {
+    const { default: dynamic, flushPreloads } =
+      await import("../packages/vinext/src/shims/dynamic.js");
 
+    let loaded = false;
+    dynamic(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      loaded = true;
+      return { default: () => null };
+    });
     await flushPreloads();
-    const result = await flushPreloads();
-    expect(result).toEqual([]);
+    expect(loaded).toBe(true);
   });
 
   it("loading component receives App Router loading props (pastDelay:true)", async () => {
     const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { withAppRouterTree } =
+      await import("../packages/vinext/src/shims/app-router-tree-context.js");
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
 
@@ -15812,7 +15832,7 @@ describe("next/dynamic shim", () => {
       loading: Loading,
     });
 
-    renderToStaticMarkup(React.createElement(DynComp));
+    renderToStaticMarkup(withAppRouterTree(React.createElement(DynComp)));
     expect(receivedProps).not.toBeNull();
     expect(receivedProps.isLoading).toBe(true);
     // pastDelay is true on the server to match the client first render and the
@@ -15841,7 +15861,8 @@ describe("next/dynamic shim", () => {
   });
 
   it("handles module with both default and named exports", async () => {
-    const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { default: dynamic, flushPreloads } =
+      await import("../packages/vinext/src/shims/dynamic.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
@@ -15850,25 +15871,36 @@ describe("next/dynamic shim", () => {
 
     const DynComp = dynamic(() => Promise.resolve({ default: MainComponent, namedHelper }));
 
+    await flushPreloads();
     const stream = await renderToReadableStream(React.createElement(DynComp));
     await stream.allReady;
     const html = await new Response(stream).text();
     expect(html).toContain("Main");
   });
 
-  it("loader rejection does not crash flushPreloads", async () => {
+  it("loader rejection is logged, not thrown, by flushPreloads", async () => {
     const { default: dynamic, flushPreloads } =
       await import("../packages/vinext/src/shims/dynamic.js");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    dynamic(() => Promise.reject(new Error("Module not found")));
+    try {
+      await flushPreloads();
+      dynamic(() => Promise.reject(new Error("Module not found")));
 
-    // flushPreloads should not throw (it's now a no-op for the server lazy path,
-    // but kept for backward compatibility with Pages Router)
-    await expect(flushPreloads()).resolves.not.toThrow();
+      await expect(flushPreloads()).resolves.toBeUndefined();
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("next/dynamic failed to load"),
+        expect.objectContaining({ message: "Module not found" }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("loader rejection renders loading component with error", async () => {
     const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { withAppRouterTree } =
+      await import("../packages/vinext/src/shims/app-router-tree-context.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
@@ -15884,7 +15916,7 @@ describe("next/dynamic shim", () => {
     });
 
     // The error boundary renders the loading component with the error
-    const stream = await renderToReadableStream(React.createElement(DynComp));
+    const stream = await renderToReadableStream(withAppRouterTree(React.createElement(DynComp)));
     await stream.allReady;
     const html = await new Response(stream).text();
     expect(html).toContain("Error: chunk load fail");
@@ -15892,25 +15924,31 @@ describe("next/dynamic shim", () => {
 
   it("loader rejection without loading component propagates via onError", async () => {
     const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { withAppRouterTree } =
+      await import("../packages/vinext/src/shims/app-router-tree-context.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
     const DynComp = dynamic(() => Promise.reject(new Error("fail")));
 
-    // Without a loading component, the Suspense fallback is null.
-    // The rejected loader throws during rendering, caught by onError.
+    // Without a loading component there is no boundary, so the rejected
+    // loader errors the shell and reaches onError.
     const errors: Error[] = [];
-    const stream = await renderToReadableStream(React.createElement(DynComp), {
+    await renderToReadableStream(withAppRouterTree(React.createElement(DynComp)), {
       onError(err: unknown) {
         if (err instanceof Error) errors.push(err);
       },
-    });
-    await stream.allReady.catch(() => {});
+    }).then(
+      (stream) => stream.allReady,
+      () => {},
+    );
     expect(errors.some((e) => e.message === "fail")).toBe(true);
   });
 
   it("loader rejection with non-Error value is caught during SSR", async () => {
     const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
+    const { withAppRouterTree } =
+      await import("../packages/vinext/src/shims/app-router-tree-context.js");
     const React = await import("react");
     const { renderToReadableStream } = await import("react-dom/server.edge");
 
@@ -15918,12 +15956,14 @@ describe("next/dynamic shim", () => {
 
     // Non-Error rejection values are caught by React's SSR error handling
     const errors: unknown[] = [];
-    const stream = await renderToReadableStream(React.createElement(DynComp), {
+    await renderToReadableStream(withAppRouterTree(React.createElement(DynComp)), {
       onError(err: unknown) {
         errors.push(err);
       },
-    });
-    await stream.allReady.catch(() => {});
+    }).then(
+      (stream) => stream.allReady,
+      () => {},
+    );
     expect(errors.length).toBeGreaterThan(0);
   });
 });
