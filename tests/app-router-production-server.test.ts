@@ -948,24 +948,54 @@ describe("App Router Production server (startProdServer)", () => {
     expect(dynamicScriptPreloadHrefs).toContain(`/${bannerEntry.file}`);
   });
 
-  it("renders a resolved next/dynamic component with CSS inline and keeps the stylesheet nonce", async () => {
-    // A precedence stylesheet inside a Suspense boundary makes React outline it
-    // (a `<!--$?-->` placeholder, content in a hidden segment after the shell)
-    // even when the content is already resolved, so the dynamic stylesheet must
-    // render outside the boundary. It must also render ahead of the content,
-    // which links the same CSS without the nonce. Render twice so the lazy
-    // import is resolved.
-    await (await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`)).text();
-    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`);
+  it.each([
+    // No `loading`: in the App Router the component has no boundary of its own.
+    ["rsc-imports-client", /<\/h1><p id="rsc-imports-client-widget">/],
+    // With `loading`: the component is inside its own (resolved) boundary.
+    ["rsc-imports-client-loading", /<\/h1><!--\$--><p id="rsc-imports-client-widget">/],
+  ])(
+    "renders a resolved next/dynamic component with CSS inline and keeps the stylesheet nonce (%s)",
+    async (page, expectedMarkup) => {
+      // A precedence stylesheet inside a Suspense boundary makes React outline it
+      // (a `<!--$?-->` placeholder, content in a hidden segment after the shell)
+      // even when the content is already resolved, so the dynamic stylesheet must
+      // render outside the boundary. It must also render ahead of the content,
+      // which links the same CSS without the nonce. Render twice so the lazy
+      // import is resolved.
+      const url = `${baseUrl}/nextjs-compat/dynamic/${page}?csp-nonce=1`;
+      await (await fetch(url)).text();
+      const res = await fetch(url);
+      expect(res.status).toBe(200);
+
+      const html = await res.text();
+      expect(html).toMatch(expectedMarkup);
+      const dynamicStylesheets = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag),
+      );
+      expect(dynamicStylesheets).toHaveLength(1);
+      expect(dynamicStylesheets[0]).toContain('nonce="vinext-test-nonce"');
+    },
+  );
+
+  it("leaves no text separator before a next/dynamic component without loading that follows text", async () => {
+    // Render twice so the lazy import is resolved.
+    await (await fetch(`${baseUrl}/nextjs-compat/dynamic/use-id`)).text();
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/use-id`);
     expect(res.status).toBe(200);
 
     const html = await res.text();
-    expect(html).toMatch(/<\/h1><!--\$--><p id="rsc-imports-client-widget">/);
-    const dynamicStylesheets = (html.match(/<link\b[^>]*>/g) ?? []).filter(
-      (tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag),
+    // Text right before the component, whose chunk is JS-only. With no boundary
+    // of its own, its script preload links must not follow the text, or React
+    // leaves a `<!-- -->` separator in their place, which Next.js doesn't emit.
+    expect(html).toMatch(/<div>Index<p id="dynamic-use-id">/);
+    // The component's script preload is still rendered (and hoisted).
+    const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+      (tag) =>
+        /\brel="modulepreload"/.test(tag) &&
+        /\bfetchpriority="low"/i.test(tag) &&
+        /use-id-field[^"]*\.js"/.test(tag),
     );
-    expect(dynamicStylesheets).toHaveLength(1);
-    expect(dynamicStylesheets[0]).toContain('nonce="vinext-test-nonce"');
+    expect(dynamicScriptPreloads).toHaveLength(1);
   });
 
   it("emits next/dynamic chunk preloads without a nonce when no CSP is set", async () => {
@@ -987,6 +1017,22 @@ describe("App Router Production server (startProdServer)", () => {
       expect(tag).not.toContain("nonce=");
     }
   });
+
+  // Issue #3718: a production build renders dynamic() without a loading option
+  // inline in the shell, with no Suspense boundary, for client and server
+  // component call sites.
+  it.each(["/nextjs-compat/dynamic/default", "/nextjs-compat/dynamic/default-server"])(
+    "renders next/dynamic without loading inline in the shell (%s)",
+    async (urlPath) => {
+      const res = await fetch(`${baseUrl}${urlPath}`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain(
+        '<div><div id="dynamic-component">This is a dynamically imported component</div></div>',
+      );
+      expect(html).not.toContain("<!--$?-->");
+    },
+  );
 
   it("does not emit a server preload for an ssr:false next/dynamic boundary", async () => {
     // Next.js parity (lazy-dynamic/loadable.tsx): <PreloadChunks> renders only on

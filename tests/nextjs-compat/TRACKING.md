@@ -65,7 +65,7 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 | 1. app-rendering | 8     | 6    | 2    | 0   | 0    | Done   |
 | 2. not-found     | 17    | 12   | 0    | 5   | 0    | Done   |
 | 3. global-error  | 12    | 7    | 0    | 5   | 0    | Done   |
-| 4. dynamic       | 17    | 8    | 0    | 9   | 0    | Done   |
+| 4. dynamic       | 17    | 10   | 0    | 7   | 0    | Done   |
 
 ---
 
@@ -119,21 +119,22 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 | 9   | should handle ssr:false in pages (Pages Router)            | N/A           | Pages Router test, not App Router                               |
 | 10  | should handle next/dynamic in hydration correctly          | N/A           | Requires Playwright — ssr:false content appears after hydration |
 | 11  | should generate correct client manifest for dynamic chunks | N/A           | Tests chunk loading manifest, build-specific                    |
-| 12  | should render loading by default (slow loader, dev)        | N/A           | Dev-only behavior, tests HMR file patching                      |
-| 13  | should not render loading by default                       | N/A           | Would need dedicated fixture, low priority                      |
+| 12  | should render loading by default (slow loader, dev)        | PASS          | Loading UI in the shell, component streamed behind it           |
+| 13  | should not render loading by default                       | PASS          | No boundary: component inline in the shell (client + server)    |
 | 14  | should ignore next/dynamic in routes                       | N/A           | Route handlers covered in Chunk 5                               |
 | 15  | should ignore next/dynamic in sitemap                      | N/A           | Sitemap generation not in scope                                 |
 | 16  | ssr:false in edge runtime + manifest inspection            | N/A           | Edge runtime + build, not applicable                            |
 | 17  | dynamic import with TLA in client components               | N/A           | Partially testable but key assertion needs Playwright           |
 
-**Result: 8/8 pass (HTTP-level), 0 skip, 9 N/A (browser-only, build-only, Pages Router)**
+**Result: 10/10 pass (HTTP-level), 0 skip, 7 N/A (browser-only, build-only, Pages Router)**
 
 ### Findings
 
 - **next/dynamic works well in App Router SSR**: All four dynamic import patterns (React.lazy, server dynamic, client dynamic, server-importing-client) render correctly in SSR HTML.
 - **ssr: false correctly excluded**: Content from `dynamic(() => import(...), { ssr: false })` is properly excluded from SSR HTML, matching Next.js behavior.
 - **Named exports via .then()**: The pattern `dynamic(() => import('./mod').then(m => ({ default: m.NamedExport })))` works correctly.
-- **No issues found**: This is the first chunk with 100% pass rate on all HTTP-testable assertions.
+- **100% pass rate** on all HTTP-testable assertions.
+- **Fixed (#3718)**: `dynamic()` without `loading` used to always add a Suspense boundary, so the shell streamed an empty boundary and the component popped in after first paint. App Router now matches Next.js: a boundary only for `ssr: false` or `loading`. Pages Router still always adds the boundary (Next.js Pages next/dynamic renders inline after preloading); Pages parity is a follow-up.
 
 ---
 
@@ -311,8 +312,13 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 2   | dynamic() components remain visible after hydration       | PASS   | All 4 dynamic import patterns still present post-hydration                |
 | 3   | named export via dynamic() renders button after hydration | PASS   | `#client-button` interactive in browser                                   |
 | 4   | ssr:false page shows dynamic content after hydration      | PASS   | Static text immediate, dynamic appears after hydration                    |
+| 5   | ssr:false from server component loads after hydration     | PASS   | Client reference emitted, content appears after hydration                 |
+| 6   | dynamic() without loading hydrates the server node        | PASS   | Server and client trees agree, SSR node kept (#3718)                      |
+| 7   | dynamic() without loading hydrates a useId component      | PASS   | Client keeps the server's child slots, so useId values match (#3718)      |
+| 8   | dynamic() with loading hydrates a useId component         | PASS   | Same, inside dynamic()'s own boundary (#3718)                             |
+| 9   | client navigation to dynamic() without loading            | PASS   | Commits with the component in place, never an empty slot (#3718)          |
 
-**Result: 4/4 pass, 0 skip**
+**Result: 9/9 pass, 0 skip**
 
 ### Chunk 6: metadata (Playwright)
 
@@ -357,7 +363,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 1. app-rendering         | 8        | 6       | 2     | 0        | 0     | Done          |
 | 2. not-found             | 17       | 12      | 0     | 5        | 0     | Done          |
 | 3. global-error          | 11       | 6       | 0     | 5        | 0     | Done          |
-| 4. dynamic               | 17       | 8       | 0     | 9        | 0     | Done          |
+| 4. dynamic               | 17       | 10      | 0     | 7        | 0     | Done          |
 | 5. app-routes            | 37       | 23      | 0     | 14       | 0     | Done          |
 | 6. metadata              | 45       | 30      | 0     | 15       | 0     | Done          |
 | 7. navigation            | 30+      | 5       | 0     | 25+      | 0     | Done          |
@@ -372,13 +378,13 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 21. prefetch             | 4        | 4       | 0     | 0        | 0     | Done          |
 | 22. metadata-suspense    | 3        | 2       | 1     | 0        | 0     | Done          |
 | P5. shim/core unit tests | 230      | 230     | 0     | 0        | 0     | Done          |
-| **Total**                | **555+** | **365** | **3** | **188+** | **0** |               |
+| **Total**                | **555+** | **367** | **3** | **186+** | **0** |               |
 
 ### Playwright Browser Tests
 
 | Chunk                  | Tests  | Pass   | Skip  | Fail  | Status |
 | ---------------------- | ------ | ------ | ----- | ----- | ------ |
-| 4. dynamic             | 4      | 4      | 0     | 0     | Done   |
+| 4. dynamic             | 9      | 9      | 0     | 0     | Done   |
 | 6. metadata            | 8      | 8      | 0     | 0     | Done   |
 | 7. navigation          | 6      | 5      | 1     | 0     | Done   |
 | 11. hooks              | 8      | 5      | 3     | 0     | Done   |
@@ -390,14 +396,14 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 21. prefetch           | 3      | 3      | 0     | 0     | Done   |
 | 24. external-redirect  | 1      | 0      | 1     | 0     | Done   |
 | 25. search-params-key  | 2      | 2      | 0     | 0     | Done   |
-| **Total**              | **46** | **38** | **8** | **0** |        |
+| **Total**              | **51** | **43** | **8** | **0** |        |
 
 ### Combined Key Metrics
 
-- **400 tests passing** (362 Vitest + 38 Playwright) across 35 test files
+- **407 tests passing** (364 Vitest + 43 Playwright) across 35 test files
 - **11 tests skipped** (6 Vitest + 5 Playwright) with detailed root-cause analysis and fix locations
 - **0 failures** — all non-skipped tests pass
-- **188+ N/A** — build-only, or already covered by existing tests
+- **186+ N/A** — build-only, or already covered by existing tests
 - **2 new issues found** in Phase 3: duplicate title with Suspense layout, external redirect in server actions
 
 ### Issues Found (Fix Backlog)

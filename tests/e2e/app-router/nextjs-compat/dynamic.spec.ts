@@ -90,27 +90,122 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
     }).toPass({ timeout: 10_000 });
   });
 
-  // vinext-specific: the server renders preload chunks around a dynamic()
-  // component, so the client must render the same element shape for useId
-  // values inside it to match on hydration.
-  test("useId() inside a dynamic() component matches on hydration", async ({ page }) => {
+  // dynamic() without a loading option has no Suspense boundary (issue #3718).
+  // The server and client trees must agree, so hydration keeps the
+  // server-rendered node instead of client-rendering the subtree.
+  test("dynamic() without loading hydrates the server-rendered component", async ({ page }) => {
     const errors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") errors.push(msg.text());
     });
     page.on("pageerror", (error) => errors.push(error.message));
 
-    const response = await page.goto(`${BASE}/nextjs-compat/dynamic/use-id`);
-    const html = await response!.text();
-    const ssrId = /<span id="dynamic-use-id-value">([^<]+)<\/span>/.exec(html)?.[1];
-    expect(ssrId).toBeTruthy();
+    // Capture the first #dynamic-component the HTML parser inserts, before
+    // any script can run, so a hydration replacement can't be captured instead.
+    await page.addInitScript(() => {
+      const state = window as unknown as { __ssrNode?: Element | null };
+      const observer = new MutationObserver(() => {
+        const node = document.querySelector("#dynamic-component");
+        if (node) {
+          state.__ssrNode = node;
+          observer.disconnect();
+        }
+      });
+      observer.observe(document, { childList: true, subtree: true });
+    });
+    await page.goto(`${BASE}/nextjs-compat/dynamic/default`);
 
     await waitForAppRouterHydration(page);
-    // A mismatched id makes React client-render the boundary with its own id.
-    await expect(page.locator("#dynamic-use-id[data-hydrated] #dynamic-use-id-value")).toHaveText(
-      ssrId!,
+    // Wait until React owns the current node (hydrated or client-rendered).
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const el = document.querySelector("#dynamic-component");
+          return el != null && Object.keys(el).some((key) => key.startsWith("__reactFiber$"));
+        }),
+      )
+      .toBe(true);
+
+    expect(
+      await page.evaluate(() => {
+        const ssrNode = (window as unknown as { __ssrNode?: Element | null }).__ssrNode;
+        return ssrNode != null && ssrNode === document.querySelector("#dynamic-component");
+      }),
+    ).toBe(true);
+    await expect(page.locator("#dynamic-component")).toHaveText(
+      "This is a dynamically imported component",
     );
-    await expect(page.locator("#dynamic-use-id input")).toHaveAttribute("id", ssrId!);
+    expect(errors).toEqual([]);
+  });
+
+  // vinext-specific: the server renders preload chunks around a dynamic()
+  // component, so the client must render the same element shape for useId
+  // values inside it to match on hydration, with or without dynamic()'s own
+  // Suspense boundary (only `loading` adds one in the App Router).
+  for (const [route, description] of [
+    ["use-id", "without loading"],
+    ["use-id-loading", "with loading"],
+  ] as const) {
+    test(`useId() inside a dynamic() component ${description} matches on hydration`, async ({
+      page,
+    }) => {
+      const errors: string[] = [];
+      page.on("console", (msg) => {
+        if (msg.type() === "error") errors.push(msg.text());
+      });
+      page.on("pageerror", (error) => errors.push(error.message));
+
+      const response = await page.goto(`${BASE}/nextjs-compat/dynamic/${route}`);
+      const html = await response!.text();
+      const ssrId = /<span id="dynamic-use-id-value">([^<]+)<\/span>/.exec(html)?.[1];
+      expect(ssrId).toBeTruthy();
+
+      await waitForAppRouterHydration(page);
+      // A mismatched id makes React client-render the component with its own id.
+      await expect(page.locator("#dynamic-use-id[data-hydrated] #dynamic-use-id-value")).toHaveText(
+        ssrId!,
+      );
+      await expect(page.locator("#dynamic-use-id input")).toHaveAttribute("id", ssrId!);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  // App Router navigations commit in a transition. With no boundary around a
+  // dynamic() without loading, Next keeps the previous page on screen until the
+  // chunk loads and then commits the new page with the component in place,
+  // never an intermediate commit with an empty slot.
+  test("client navigation to dynamic() without loading commits with the component", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    await page.goto(`${BASE}/nextjs-compat/dynamic/default-link`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      const state = window as unknown as { __sawEmptySlot?: boolean };
+      state.__sawEmptySlot = false;
+      new MutationObserver(() => {
+        if (
+          !document.querySelector("#default-link-title") &&
+          !document.querySelector("#dynamic-component")
+        ) {
+          state.__sawEmptySlot = true;
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+
+    await page.click("#to-dynamic-default");
+    await expect(page.locator("#dynamic-component")).toHaveText(
+      "This is a dynamically imported component",
+    );
+    await expect(page.locator("#default-link-title")).toHaveCount(0);
+    expect(
+      await page.evaluate(() => (window as unknown as { __sawEmptySlot?: boolean }).__sawEmptySlot),
+    ).toBe(false);
     expect(errors).toEqual([]);
   });
 });

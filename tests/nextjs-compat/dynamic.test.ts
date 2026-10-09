@@ -15,6 +15,8 @@
  * - fixtures/app-basic/app/nextjs-compat/dynamic/ (main page + components)
  * - fixtures/app-basic/app/nextjs-compat/dynamic/named-export/ (named export sub-page)
  * - fixtures/app-basic/app/nextjs-compat/dynamic/ssr-false-only/ (isolated ssr:false test)
+ * - fixtures/app-basic/app/nextjs-compat/dynamic/{default,default-server,default-loading}/
+ *   (slow loader with and without a loading option)
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
@@ -112,13 +114,58 @@ describe("Next.js compat: next/dynamic", () => {
     expect(html).not.toContain("next-dynamic dynamic no ssr on client");
   });
 
+  // ── Suspense boundary only with ssr:false or loading ─────────
+
+  // Next.js: 'should not render loading by default'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L62-L65
+  //
+  // Next's Loadable only wraps the lazy component in <Suspense> when
+  // `ssr: false` or a `loading` component is set:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/loadable.tsx
+  // Without a boundary, the slow import blocks the shell, so the component is
+  // in the initial HTML rather than streamed into a hidden segment and
+  // revealed after first paint (issue #3718).
+  //
+  // The lazy component is cached at module level, so only the first render
+  // of each page suspends. The exact markup assertion still catches a
+  // boundary on a cached render (it emits <!--$-->), but keep these the first
+  // requests for their URLs so they also cover the pending-shell case.
+  for (const [label, urlPath] of [
+    ["client", "/nextjs-compat/dynamic/default"],
+    ["server", "/nextjs-compat/dynamic/default-server"],
+  ] as const) {
+    it(`SSR: dynamic() without loading renders inline in the shell (${label} component)`, async () => {
+      const { html } = await fetchHtml(baseUrl, urlPath);
+      expect(html).toContain(
+        '<div><div id="dynamic-component">This is a dynamically imported component</div></div>',
+      );
+      expect(html).not.toContain("<!--$?-->");
+      expect(html).not.toMatch(/<div hidden id="S:/);
+    });
+  }
+
+  // Next.js: 'should render loading by default if loading is specified and loader is slow'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L53-L60
+  //
+  // An explicit loading component keeps the Suspense boundary: the shell
+  // flushes the loading UI and the component streams in behind it. This must
+  // be the first request for its URL: a cached render resolves synchronously.
+  it("SSR: dynamic() with loading streams the component behind the loading fallback", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/default-loading");
+    expect(html).toContain("<div><!--$?-->");
+    expect(html).toContain("<p>Loading...</p>");
+    expect(html).toMatch(
+      /<div hidden id="S:\d+"><div id="dynamic-component">This is a dynamically imported component<\/div>/,
+    );
+  });
+
   // ── RSC (pure server component) dynamic() ────────────────────
 
   // Regression test for: https://github.com/cloudflare/vinext/pull/466
   //
   // Verifies that dynamic() works when called from a pure server component.
   // In React 19.x, React.lazy IS available in the react-server condition,
-  // so this exercises the standard LazyServer + Suspense path in RSC.
+  // so this exercises the standard LazyServer path in RSC.
   // The AsyncServerDynamic fallback (for hypothetical future React versions
   // that strip lazy) is covered by unit tests in tests/dynamic.test.ts.
 

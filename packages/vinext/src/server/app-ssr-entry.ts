@@ -26,6 +26,7 @@ import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-param
 import { isOpenRedirectShaped, repeatedSlashRedirectResponse } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
   BeforeInteractiveContext,
   type BeforeInteractiveInlineScript,
@@ -587,7 +588,10 @@ export async function handleSsr(
           { value: registerBeforeInteractiveInlineScript },
           ssrTree,
         );
-        const ssrRoot = withScriptNonce(treeWithBeforeInteractive, options?.scriptNonce);
+        const ssrRoot = withScriptNonce(
+          withAppRouterTree(treeWithBeforeInteractive),
+          options?.scriptNonce,
+        );
 
         // plugin-rsc returns the bootstrap as `import("<url>")` so callers can
         // inject it via `bootstrapScriptContent`. We hand the URL to React's
@@ -699,6 +703,10 @@ export async function handleSsr(
             ...renderOptions,
             signal: htmlAbortController.signal,
           });
+          // Known limitation: unlike Next.js, nothing waits for modules that are
+          // still loading. A next/dynamic() without `loading` whose import is
+          // pending here has no Suspense boundary of its own, so it suspends to
+          // the nearest one; with no loading.js above it, the shell is empty.
           setTimeout(() => htmlAbortController.abort(), 0);
           htmlStream = (await pendingHtml).prelude;
         } else {
