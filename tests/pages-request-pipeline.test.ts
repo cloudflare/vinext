@@ -1662,7 +1662,9 @@ describe("serveFilesystemRoute", () => {
   });
 
   it("passes the request with middleware's header overrides", async () => {
-    const serveFilesystemRoute = vi.fn(async () => true);
+    const serveFilesystemRoute = vi.fn(
+      async (..._args: Parameters<NonNullable<PagesPipelineDeps["serveFilesystemRoute"]>>) => true,
+    );
     const middleware = makeMiddleware({
       responseHeaders: [
         ["x-middleware-override-headers", "if-none-match"],
@@ -1673,7 +1675,7 @@ describe("serveFilesystemRoute", () => {
       makeRequest("/file.txt", { Range: "bytes=0-1", "If-None-Match": '"original"' }),
       baseDeps({ serveFilesystemRoute, runMiddleware: middleware }),
     );
-    const filesystemRequest = serveFilesystemRoute.mock.calls[0][4] as Request;
+    const filesystemRequest = serveFilesystemRoute.mock.calls[0][4];
     expect(filesystemRequest.headers.get("if-none-match")).toBe('"override"');
     expect(filesystemRequest.headers.get("range")).toBeNull();
   });
