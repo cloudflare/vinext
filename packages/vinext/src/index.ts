@@ -7474,8 +7474,8 @@ export const loadServerActionClient = ${
     // serialized define environments, never to `client`.
     {
       name: "vinext:compiler-define-server",
-      configEnvironment(name) {
-        if (name === "client") return null;
+      configEnvironment(name, config) {
+        if (name === "client" || config.consumer === "client") return null;
 
         const serverDefines: Record<string, string> = { ...nextConfig.compilerDefineServer };
 

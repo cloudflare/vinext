@@ -185,6 +185,14 @@ describe("compiler.define forwarding to Vite", () => {
       });
       // Client environment must never receive server-only defines.
       expect(clientResult).toBeNull();
+      // Neither may a custom-named environment that Vite consumes as a client.
+      expect(
+        serverDefinePlugin!.configEnvironment!(
+          "custom-client",
+          { consumer: "client" },
+          { command: "build" },
+        ),
+      ).toBeNull();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
