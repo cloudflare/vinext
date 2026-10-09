@@ -5119,6 +5119,104 @@ describe("app page route wiring helpers", () => {
     expect(countSuspenseWithFallback(layoutEntry, "RootLoading")).toBe(0);
   });
 
+  it("keeps an ancestor loading boundary off template entries of a loading-shell prefetch", () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading root");
+    }
+
+    function SettingsLoading() {
+      return createElement("p", null, "Loading settings");
+    }
+
+    function GroupTemplate(props: Record<string, unknown>): ReactElement {
+      return createElement("div", null, props.children as ReactNode);
+    }
+
+    // The shell cuts off at the settings loading, so it includes the template
+    // at position 2 below the root loading.
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        loadings: [{ default: RootLoading }, { default: SettingsLoading }],
+        loadingTreePositions: [0, 3],
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["dashboard", "(protected)", "settings"],
+        slots: {},
+        templateTreePositions: [2],
+        templates: [{ default: GroupTemplate }],
+      },
+      routePath: "/dashboard/settings",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    const templateEntry = elements["template:/dashboard/(protected)"];
+    expect(templateEntry).toBeDefined();
+    expect(countSuspenseWithFallback(templateEntry, "RootLoading")).toBe(0);
+  });
+
+  it("keys ancestor loading boundaries by the dynamic child segment's params", () => {
+    function ProductsLoading() {
+      return createElement("p", null, "Loading products");
+    }
+
+    // The [id] layout is the only layout, so its entry is not gated on another
+    // layout's render dependency and stays inspectable.
+    const buildElements = (id: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { id },
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [2],
+          layouts: [{ default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: ProductsLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["products", "[id]"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/products/[id]",
+        rootNotFoundModule: null,
+      });
+
+    // Next.js keys the boundary by its child segment, so a param change there
+    // remounts it and shows the fallback.
+    const keys = ["1", "2"].map((id) => {
+      const elements = buildElements(id);
+      const layoutKey = findSuspenseWithFallback(
+        elements["layout:/products/[id]"],
+        "ProductsLoading",
+      )?.key;
+      const routeKey = findSuspenseWithFallback(
+        elements["route:/products/[id]"],
+        "ProductsLoading",
+      )?.key;
+      expect(layoutKey).toBe(routeKey);
+      return layoutKey;
+    });
+    expect(keys[0]).toBe(JSON.stringify(["products", "id|1|d"]));
+    expect(keys[1]).toBe(JSON.stringify(["products", "id|2|d"]));
+  });
+
   it("threads route state reset keys into loading, error, and not-found boundaries", () => {
     function RouteLoading() {
       return createElement("p", null, "Loading");
