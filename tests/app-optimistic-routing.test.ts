@@ -817,11 +817,14 @@ describe("App Router optimistic routing", () => {
       }),
     ).toBe(true);
 
-    // A leaf loading wraps the page, whose key changes even for a search-only
-    // navigation on the same route.
+    // A leaf loading wraps the page, whose key ignores search params, so a
+    // search-only navigation on the same route keeps it mounted.
     const leafShell = createShellTemplate("/s/two", "/s/two", 3);
     expect(canCommit(leafShell, "route:/s/one")).toBe(true);
-    expect(canCommit(leafShell, "route:/s/two")).toBe(true);
+    expect(canCommit(leafShell, "route:/s/two")).toBe(false);
+    const dynamicLeafShell = createShellTemplate("/p/:id/a", "/p/1/a", 3);
+    expect(canCommit(dynamicLeafShell, "route:/p/1/a", { id: "1" }, { id: "1" })).toBe(false);
+    expect(canCommit(dynamicLeafShell, "route:/p/2/a", { id: "2" }, { id: "1" })).toBe(true);
 
     // The child segment's params are part of its key.
     const dynamicShell = createShellTemplate("/p/:id/a", "/p/1/a", 1);

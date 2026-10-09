@@ -535,9 +535,8 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
  * (layout-router.tsx's TemplateContext.Provider), so the boundary stays mounted,
  * and its fallback stays hidden, while the current and target routes share the
  * path through that child, route groups and params included. The shell would
- * commit the fallback instead. Next.js shows a leaf loading even on a
- * search-only navigation (test/e2e/app-dir/searchparams-reuse-loading), so only
- * ancestor boundaries are compared.
+ * commit the fallback instead. A leaf loading is keyed by the page segment
+ * without search params, so a search-only navigation keeps it mounted too.
  */
 function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
@@ -550,7 +549,7 @@ function isShellLoadingBoundaryMounted(options: {
   if (loadingTreePosition === null) return false;
   const routes = options.routeManifest.segmentGraph.routes;
   const targetRoute = routes.get(options.template.routeId);
-  if (targetRoute === undefined || loadingTreePosition >= targetRoute.treeSegments.length) {
+  if (targetRoute === undefined || loadingTreePosition > targetRoute.treeSegments.length) {
     return false;
   }
   const currentMetadata = AppElementsWire.readMetadata(options.currentElements);
@@ -569,7 +568,7 @@ function isShellLoadingBoundaryMounted(options: {
           routeManifest: options.routeManifest,
         })?.route
       : undefined);
-  if (currentRoute === undefined || loadingTreePosition >= currentRoute.treeSegments.length) {
+  if (currentRoute === undefined || loadingTreePosition > currentRoute.treeSegments.length) {
     return false;
   }
   return (
