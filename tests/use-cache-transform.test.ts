@@ -4,9 +4,11 @@
  * provides directive transforms and aggregates independently owned server
  * reference claims.
  */
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash, createHmac } from "node:crypto";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
@@ -45,7 +47,20 @@ const fileCacheCode = [
 
 const SECURE_CACHE_EXPORT_RE = /^\$\$vinext_cache_[0-9a-f]{64}$/;
 
-async function configurePluginRsc(plugins: Plugin[]) {
+// The generated-key cache lives under the project root; keep it out of the
+// checked-in fixture.
+const keyCacheRoots: string[] = [];
+function createKeyCacheRoot(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-use-cache-key-"));
+  keyCacheRoots.push(root);
+  return root;
+}
+const defaultKeyCacheRoot = createKeyCacheRoot();
+afterAll(() => {
+  for (const root of keyCacheRoots) fs.rmSync(root, { recursive: true, force: true });
+});
+
+async function configurePluginRsc(plugins: Plugin[], keyCacheRoot = defaultKeyCacheRoot) {
   const minimal = plugins.find((plugin) => plugin.name === "rsc:minimal")!;
   const configResolved = unwrapHook(minimal.configResolved)!;
   configResolved.call(minimal, {
@@ -58,7 +73,11 @@ async function configurePluginRsc(plugins: Plugin[]) {
   const useCachePlugin = plugins.find(
     (plugin) => plugin.name === "vinext:server-function-directives",
   )!;
-  unwrapHook(useCachePlugin.configResolved)!.call(useCachePlugin, { plugins });
+  unwrapHook(useCachePlugin.configResolved)!.call(useCachePlugin, {
+    plugins,
+    root: keyCacheRoot,
+    command: "build",
+  });
   // oxlint-disable-next-line typescript/no-explicit-any
   return (minimal as any).api.manager;
 }
@@ -72,9 +91,9 @@ async function configureVinext(plugins: Plugin[]) {
   );
 }
 
-async function transformRsc(source: string): Promise<string> {
+async function transformRsc(source: string, keyCacheRoot?: string): Promise<string> {
   const plugins = await getPlugins();
-  await configurePluginRsc(plugins);
+  await configurePluginRsc(plugins, keyCacheRoot);
   const plugin = plugins.find(
     (candidate) => candidate.name === "vinext:server-function-directives",
   )!;
@@ -319,26 +338,30 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).not.toContain(`${expectedKey}#$$hoist_0_getData`);
   });
 
-  it("keys reference names on NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, else a random secret", async () => {
+  it("keys reference names on NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, else a cached generated key", async () => {
     // Each call configures a fresh plugin instance, i.e. a separate build.
-    const buildSecureExportName = async () => {
-      const code = await transformRsc(inlineCacheCode);
+    const buildSecureExportName = async (keyCacheRoot: string) => {
+      const code = await transformRsc(inlineCacheCode, keyCacheRoot);
       return code.match(/\$\$vinext_cache_[0-9a-f]{64}/)![0];
     };
     const key = Buffer.alloc(32, 7).toString("base64");
 
     vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
     try {
-      // Without a key, names stay unguessable and differ between builds.
-      expect(await buildSecureExportName()).not.toBe(await buildSecureExportName());
+      // Without a key, builds sharing a project reuse its cached generated
+      // key, while another project's names can't be derived from them.
+      const project = createKeyCacheRoot();
+      const generated = await buildSecureExportName(project);
+      expect(await buildSecureExportName(project)).toBe(generated);
+      expect(await buildSecureExportName(createKeyCacheRoot())).not.toBe(generated);
 
       // Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
       // (hash_salt is NEXT_SERVER_ACTIONS_ENCRYPTION_KEY). A pinned key makes
       // rebuilds of identical source emit identical names, derived under a
       // label rather than from the raw key.
       vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", key);
-      const keyed = await buildSecureExportName();
-      expect(await buildSecureExportName()).toBe(keyed);
+      const keyed = await buildSecureExportName(createKeyCacheRoot());
+      expect(await buildSecureExportName(createKeyCacheRoot())).toBe(keyed);
       const relativeImportId = (await configurePluginRsc(await getPlugins())).toRelativeId(
         moduleId,
       );
@@ -354,7 +377,7 @@ describe("plugin-rsc inline use-cache references", () => {
       );
 
       vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", Buffer.alloc(32, 8).toString("base64"));
-      expect(await buildSecureExportName()).not.toBe(keyed);
+      expect(await buildSecureExportName(project)).not.toBe(keyed);
     } finally {
       vi.unstubAllEnvs();
     }
