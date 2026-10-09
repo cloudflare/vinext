@@ -17,7 +17,7 @@ export function generateStaticParams() {
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const post = postsBySlug[(await params).slug];
+  const post = postsBySlug.get((await params).slug);
   if (!post) return {};
 
   const path = postPath(post);
@@ -52,7 +52,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function BlogPostPage({ params }: Props) {
-  const post = postsBySlug[(await params).slug];
+  const post = postsBySlug.get((await params).slug);
   if (!post) notFound();
 
   const url = `${SITE_URL}${postPath(post)}`;

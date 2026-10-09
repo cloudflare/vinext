@@ -158,7 +158,7 @@ export const blogLastModified = posts
     undefined,
   );
 
-export const postsBySlug = Object.fromEntries(posts.map((post) => [post.slug, post]));
+export const postsBySlug = new Map(posts.map((post) => [post.slug, post]));
 
 export const SITE_URL = "https://vinext.dev";
 
