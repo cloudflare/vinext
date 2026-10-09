@@ -2882,7 +2882,8 @@ describe("next/dynamic preload metadata transform", () => {
   it("normalises a symlinked resolved path to the real root-relative manifest key", async () => {
     // pnpm/Cloudflare resolve modules through symlinks; the resolved id may not
     // share the (possibly symlinked) root prefix. Without realpath normalisation
-    // the module is dropped and the preload silently disappears.
+    // it would get a `../` key that misses the manifest key, and the preload
+    // would silently disappear.
     const realRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-real-"));
     const linkParent = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-link-"));
     const linkRoot = path.join(linkParent, "root");
@@ -2909,6 +2910,29 @@ describe("next/dynamic preload metadata transform", () => {
       await fsp.rm(realRoot, { recursive: true, force: true });
       await fsp.rm(linkParent, { recursive: true, force: true });
     }
+  });
+
+  it("keys a module outside the root like Vite's manifest, with `../` segments", async () => {
+    // Monorepo workspace package (https://github.com/cloudflare/vinext/issues/3723):
+    // Vite keys the dynamic entry `path.relative(config.root, id)`, so dropping
+    // the escaping key would leave the boundary without preload/CSS links.
+    const workspaceRoot = path.resolve("/monorepo");
+    const appRoot = path.join(workspaceRoot, "apps/web");
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const HeroBanner = dynamic(() => import("@acme/ui/hero-banner"));`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      path.join(appRoot, "app/page.tsx"),
+      appRoot,
+      async () => path.join(workspaceRoot, "packages/ui/src/hero-banner.tsx?v=1"),
+    );
+
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["../../packages/ui/src/hero-banner.tsx"] }`,
+    );
   });
 });
 

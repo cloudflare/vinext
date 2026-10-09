@@ -29,15 +29,18 @@ function isWindowsAbsolutePath(candidate: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(candidate) || candidate.startsWith("\\\\");
 }
 
-export function relativeWithinRoot(root: string, moduleId: string): string | null {
+/** Forward-slash `path.relative(root, moduleId)`, which may escape with `../`. */
+export function relativeToRoot(root: string, moduleId: string): string {
   // pathslash's `relative` emits forward slashes and (via native win32
   // semantics) tolerates mixed separators / drive-letter casing on Windows.
   // On POSIX it is plain posix.relative, so Windows-style absolute inputs
   // still need routing through the (also slash-emitting) win32 variant.
   const useWindowsPath = isWindowsAbsolutePath(root) || isWindowsAbsolutePath(moduleId);
-  const relativeId = useWindowsPath
-    ? path.win32.relative(root, moduleId)
-    : path.relative(root, moduleId);
+  return useWindowsPath ? path.win32.relative(root, moduleId) : path.relative(root, moduleId);
+}
+
+export function relativeWithinRoot(root: string, moduleId: string): string | null {
+  const relativeId = relativeToRoot(root, moduleId);
   // path.relative(root, root) returns "", which is not a usable manifest key and should be
   // treated the same as "outside root" for this helper.
   if (!relativeId || relativeId === ".." || relativeId.startsWith("../")) return null;

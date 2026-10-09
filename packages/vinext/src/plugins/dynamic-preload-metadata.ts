@@ -3,7 +3,7 @@ import { parseAst } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { hasTrailingComma } from "../utils/has-trailing-comma.js";
-import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
+import { relativeToRoot, relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { collectBindingNames, forEachAstChild, stringLiteralValue, walkAst } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
@@ -368,9 +368,10 @@ function toManifestModuleId(root: string, resolvedId: string): string | null {
   // pnpm stores dependencies behind symlinks and the project root itself may be
   // symlinked, so `this.resolve()` can hand back a realpath that does not share
   // the (possibly symlinked) `root` prefix. Without this, `path.relative` yields
-  // a `../…` escape, the module is dropped, and the preload silently disappears
-  // — exactly in vinext's primary pnpm/Cloudflare setups. Reuses the same
-  // realpath-candidate strategy as the SSR-manifest module-id normaliser.
+  // a `../…` escape that does not match the manifest key, and the preload
+  // silently disappears — exactly in vinext's primary pnpm/Cloudflare setups.
+  // Reuses the same realpath-candidate strategy as the SSR-manifest module-id
+  // normaliser.
   //
   // NB: this realpaths both sides, while the preload map is keyed by Vite's raw
   // manifest key (`computeDynamicImportPreloads`). They agree because Vite's
@@ -391,7 +392,14 @@ function toManifestModuleId(root: string, resolvedId: string): string | null {
       if (relative) return relative;
     }
   }
-  return null;
+
+  // Outside the root (monorepo workspace packages, a pnpm store hoisted to the
+  // workspace root): Vite keys the dynamic entry as
+  // `normalizePath(path.relative(config.root, facadeModuleId))`, `../` segments
+  // included, and `root` here IS `config.root` (which Vite already realpaths).
+  // Mirror that key rather than dropping the module, or the boundary's JS/CSS
+  // is never linked server-side and its styles pop in after hydration.
+  return relativeToRoot(root, cleaned) || null;
 }
 
 async function resolveManifestModuleIds(

@@ -911,6 +911,43 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
+  // Regression for https://github.com/cloudflare/vinext/issues/3723: a
+  // next/dynamic() loader whose target resolves OUTSIDE the Vite root (monorepo
+  // workspace packages, or a pnpm store hoisted to the workspace root) must still
+  // get its CSS linked server-side. Vite keys such dynamic entries root-relative
+  // with `../` segments, so the call site's loadableGenerated module ID must too.
+  it("links next/dynamic CSS for a loader target outside the Vite root", async () => {
+    const clientManifest = JSON.parse(
+      fs.readFileSync(path.join(outDir, "client", ".vite", "manifest.json"), "utf8"),
+    ) as Record<string, { file: string; css?: string[]; isDynamicEntry?: boolean }>;
+    const bannerKey = Object.keys(clientManifest).find((key) =>
+      key.endsWith("/fake-css-module-lib/dynamic-banner.js"),
+    );
+    // Sanity: the banner really is an out-of-root dynamic entry with its own CSS.
+    expect(bannerKey).toMatch(/^\.\.\//);
+    const bannerEntry = clientManifest[bannerKey!];
+    expect(bannerEntry.isDynamicEntry).toBe(true);
+    expect(bannerEntry.css?.length).toBeGreaterThan(0);
+
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/out-of-root-package`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="out-of-root-dynamic-banner"');
+
+    const linkTags = html.match(/<link\b[^>]*>/g) ?? [];
+    const hrefOf = (tag: string) => /\bhref="([^"]+)"/.exec(tag)?.[1];
+    const dynamicStylesheetHrefs = linkTags
+      .filter((tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag))
+      .map(hrefOf);
+    for (const cssFile of bannerEntry.css!) {
+      expect(dynamicStylesheetHrefs).toContain(`/${cssFile}`);
+    }
+    const dynamicScriptPreloadHrefs = linkTags
+      .filter((tag) => /\brel="modulepreload"/.test(tag) && /\bfetchpriority="low"/i.test(tag))
+      .map(hrefOf);
+    expect(dynamicScriptPreloadHrefs).toContain(`/${bannerEntry.file}`);
+  });
+
   it("emits next/dynamic chunk preloads without a nonce when no CSP is set", async () => {
     // No ?csp-nonce → middleware applies no CSP header, so no nonce is threaded.
     // The preload optimization is independent of CSP: the links must still be
