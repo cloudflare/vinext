@@ -318,6 +318,7 @@ import {
   type EmittedModuleFileNameResolver,
 } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
+import { createWorkerServerOnlyImportsPlugin } from "./plugins/worker-server-only-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import {
   commonJsEsmFacadeOptimizeDepsPlugin,
@@ -3461,6 +3462,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // plugin here rather than copying user plugins and duplicating them.
             plugins: () => [
               createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+              createWorkerServerOnlyImportsPlugin(),
             ],
           },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
