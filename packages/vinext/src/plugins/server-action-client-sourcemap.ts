@@ -10,7 +10,7 @@ type SourceMap = {
   sources?: (string | null)[];
   sourcesContent?: (string | null)[];
   // An index map keeps its originals in its sections' maps.
-  sections?: { map?: SourceMap; url?: string }[];
+  sections?: { map?: SourceMap }[];
 };
 
 // A data: URL segment, possibly behind a relative prefix added by Rolldown.
@@ -90,11 +90,6 @@ function scrubSourcesContent(map: SourceMap, keep: (content: string) => boolean)
   });
   for (const section of map.sections ?? []) {
     if (section.map && scrubSourcesContent(section.map, keep)) changed = true;
-    // A section can also embed its map as a data: URL.
-    if (!isKeptDataUrl(section.url, keep)) {
-      section.url = "data:,";
-      changed = true;
-    }
   }
   return changed;
 }

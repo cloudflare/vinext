@@ -256,16 +256,6 @@ describe("vinext:server-action-client-sourcemap", () => {
     expect(map.sections[1].map.sources).toEqual(["data:,"]);
   });
 
-  it("redacts index map sections that embed their map as a data: URL", async () => {
-    const embedded = `data:application/json;base64,${Buffer.from(JSON.stringify(DEFAULT_MAP)).toString("base64")}`;
-    const bundle = await generate(
-      withAsset({ version: 3, sections: [{ offset: { line: 0, column: 0 }, url: embedded }] }),
-    );
-    expect(JSON.parse(String(bundle["chunks/button.js.map"]!.source)).sections[0].url).toBe(
-      "data:,",
-    );
-  });
-
   it("keeps public originals from an index combined map", async () => {
     const generated = `${CLIENT_SOURCE}export const injected = 1;\n`;
     const publicOriginal = '"use client";\n// sectioned original\n';
