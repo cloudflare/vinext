@@ -5,8 +5,8 @@
  * reference claims.
  */
 import path from "node:path";
-import { createHash } from "node:crypto";
-import { describe, expect, it } from "vite-plus/test";
+import { createHash, createHmac } from "node:crypto";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
@@ -317,6 +317,42 @@ describe("plugin-rsc inline use-cache references", () => {
       exportNames: [secureExportName],
     });
     expect(result!.code).not.toContain(`${expectedKey}#$$hoist_0_getData`);
+  });
+
+  it("keys reference names on NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, else a random secret", async () => {
+    // Each call configures a fresh plugin instance, i.e. a separate build.
+    const buildSecureExportName = async () => {
+      const code = await transformRsc(inlineCacheCode);
+      return code.match(/\$\$vinext_cache_[0-9a-f]{64}/)![0];
+    };
+    const key = Buffer.alloc(32, 7).toString("base64");
+
+    vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
+    try {
+      // Without a key, names stay unguessable and differ between builds.
+      expect(await buildSecureExportName()).not.toBe(await buildSecureExportName());
+
+      // Ported from Next.js: packages/next/src/server/app-render/encryption-utils-server.ts
+      // A pinned key makes rebuilds of identical source emit identical names,
+      // derived under a label rather than from the raw key.
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", key);
+      const keyed = await buildSecureExportName();
+      expect(await buildSecureExportName()).toBe(keyed);
+      const relativeImportId = (await configurePluginRsc(await getPlugins())).toRelativeId(
+        moduleId,
+      );
+      const rawKeyName = `$$vinext_cache_${createHmac("sha256", key)
+        .update(relativeImportId)
+        .update("\0")
+        .update("$$hoist_0_getData")
+        .digest("hex")}`;
+      expect(keyed).not.toBe(rawKeyName);
+
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", Buffer.alloc(32, 8).toString("base64"));
+      expect(await buildSecureExportName()).not.toBe(keyed);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("removes its claim when the directive is removed", async () => {
