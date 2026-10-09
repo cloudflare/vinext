@@ -63,6 +63,148 @@ describe("default loader emits /_next/image URLs (issue #1513)", () => {
   });
 });
 
+// ─── trailingSlash: the image optimizer's own path obeys the config ────
+//
+// Ported from Next.js e2e fixtures:
+//   test/e2e/next-image-new/trailing-slash/trailing-slash.test.ts
+//   test/e2e/next-image-legacy/trailing-slash/trailing-slash.test.ts
+// Both expect /_next/image/?url=... (trailing slash before the query
+// string) once next.config.js sets `trailingSlash: true`. imageOptimizationUrl
+// is shared by the legacy Image shim (shims/legacy-image.tsx wraps this
+// component), so fixing it here fixes both fixtures.
+
+describe("imageOptimizationUrl honors trailingSlash", () => {
+  afterEach(() => {
+    delete process.env.__VINEXT_TRAILING_SLASH;
+    vi.resetModules();
+  });
+
+  it("adds a trailing slash before the query string when trailingSlash is set", async () => {
+    process.env.__VINEXT_TRAILING_SLASH = "true";
+    vi.resetModules();
+    const { imageOptimizationUrl: imageOptimizationUrlWithTrailingSlash } =
+      await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrlWithTrailingSlash("/test.jpg", 828, 75)).toBe(
+      "/_next/image/?url=%2Ftest.jpg&w=828&q=75",
+    );
+  });
+
+  it("does not add a trailing slash when trailingSlash is unset", async () => {
+    delete process.env.__VINEXT_TRAILING_SLASH;
+    vi.resetModules();
+    const { imageOptimizationUrl: imageOptimizationUrlDefault } =
+      await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrlDefault("/test.jpg", 828, 75)).toBe(
+      "/_next/image?url=%2Ftest.jpg&w=828&q=75",
+    );
+  });
+
+  it("the Image component's SSR src carries the trailing slash", async () => {
+    process.env.__VINEXT_TRAILING_SLASH = "true";
+    vi.resetModules();
+    const { default: TrailingSlashImage } = await import("../packages/vinext/src/shims/image.js");
+    const html = ReactDOMServer.renderToString(
+      React.createElement(TrailingSlashImage, {
+        id: "test1",
+        alt: "test",
+        src: "/_next/static/media/test.hash.jpg",
+        width: 400,
+        height: 300,
+      }),
+    );
+    expect(html).toMatch(/src="\/_next\/image\/\?url=/);
+  });
+});
+
+// ─── images.loader / images.loaderFile validation ──────────────────────
+//
+// Ported from the loader checks at the top of Next.js's getImgProps
+// (packages/next/src/shared/lib/get-img-props.ts).
+
+describe("images.loader config validation", () => {
+  afterEach(() => {
+    delete process.env.__VINEXT_IMAGE_CUSTOM_LOADER;
+    delete process.env.__VINEXT_IMAGE_LOADER_FILE;
+    vi.resetModules();
+  });
+
+  it('throws for an image without a loader prop when images.loader is "custom"', async () => {
+    process.env.__VINEXT_IMAGE_CUSTOM_LOADER = "true";
+    vi.resetModules();
+    const shim = await import("../packages/vinext/src/shims/image-external.js");
+    const imageProps = { alt: "a", src: "/photo.jpg", width: 100, height: 100 };
+    const message = 'Image with src "/photo.jpg" is missing "loader" prop.';
+
+    expect(() =>
+      ReactDOMServer.renderToString(React.createElement(shim.default, imageProps)),
+    ).toThrow(message);
+    expect(() => shim.getImageProps({ ...imageProps, unoptimized: true })).toThrow(message);
+    expect(
+      shim.getImageProps({ ...imageProps, loader: ({ src, width }) => `${src}?w=${width}` }).props
+        .src,
+    ).toBe("/photo.jpg?w=256");
+  });
+
+  it("throws when images.loaderFile has no default export", async () => {
+    process.env.__VINEXT_IMAGE_LOADER_FILE = "true";
+    vi.resetModules();
+    const shim = await import("../packages/vinext/src/shims/image-external.js");
+
+    expect(() =>
+      shim.getImageProps({ alt: "a", src: "/photo.jpg", width: 100, height: 100 }),
+    ).toThrow("images.loaderFile detected but the file is missing default export.");
+  });
+
+  // Next.js's next/legacy/image never imports the loaderFile module, and its
+  // "custom" loader only throws when it has to build a URL (client/legacy/image.tsx).
+  it("keeps next/legacy/image off loaderFile and lets unoptimized images through", async () => {
+    process.env.__VINEXT_IMAGE_CUSTOM_LOADER = "true";
+    process.env.__VINEXT_IMAGE_LOADER_FILE = "true";
+    vi.resetModules();
+    const loaderFileEvaluated = vi.fn();
+    vi.doMock("vinext/shims/image-loader-file", () => {
+      loaderFileEvaluated();
+      return { default: undefined };
+    });
+    try {
+      const { default: LegacyImage } = await import("../packages/vinext/src/shims/legacy-image.js");
+      const imageProps = { alt: "a", src: "/photo.jpg", width: 100, height: 100 };
+
+      expect(
+        ReactDOMServer.renderToString(
+          React.createElement(LegacyImage, { ...imageProps, unoptimized: true }),
+        ),
+      ).toContain('src="/photo.jpg"');
+      expect(() =>
+        ReactDOMServer.renderToString(React.createElement(LegacyImage, imageProps)),
+      ).toThrow('Image with src "/photo.jpg" is missing "loader" prop.');
+      expect(loaderFileEvaluated).not.toHaveBeenCalled();
+
+      // The next/image entry is the only importer of the loader file.
+      await import("../packages/vinext/src/shims/image-external.js");
+      expect(loaderFileEvaluated).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("vinext/shims/image-loader-file");
+    }
+  });
+
+  // Next.js's legacy image marks data: and blob: sources unoptimized before
+  // it builds a URL, so its "custom" loader neither throws nor runs for them.
+  it("renders inline next/legacy/image sources as-is when images.loader is custom", async () => {
+    process.env.__VINEXT_IMAGE_CUSTOM_LOADER = "true";
+    vi.resetModules();
+    const { default: LegacyImage } = await import("../packages/vinext/src/shims/legacy-image.js");
+
+    for (const src of ["data:image/png;base64,iVBORw0KGgo=", "blob:https://example.com/id"]) {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(LegacyImage, { alt: "a", src, width: 100, height: 100 }),
+      );
+      expect(html).toContain(`src="${src}"`);
+      expect(html).not.toContain("/_next/image");
+    }
+  });
+});
+
 // ─── SSR rendering ──────────────────────────────────────────────────────
 
 describe("Image SSR rendering", () => {
@@ -212,7 +354,135 @@ describe("Image SSR rendering", () => {
         loader,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=200&amp;q=75"');
+    // A custom loader gets the same per-width srcSet treatment as the
+    // built-in loader: src is the 2x (larger) breakpoint, srcSet carries
+    // both the 1x and 2x breakpoints rounded up from [200, 400].
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=640&amp;q=75"');
+    expect(html).toContain(
+      'srcSet="https://cdn.example.com/photo.jpg?w=256&amp;q=75 1x, https://cdn.example.com/photo.jpg?w=640&amp;q=75 2x"',
+    );
+  });
+
+  // Next.js getWidths(config, undefined, sizes): a width-less (fill) image
+  // offers every device size and defaults sizes to 100vw.
+  it("gives a fill image's custom loader every device width and sizes=100vw", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+    const deviceSizes = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+    const expectedSrcSet = deviceSizes
+      .map((w) => `https://cdn.example.com/photo.jpg?w=${w} ${w}w`)
+      .join(", ");
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, { alt: "fill", src: "/photo.jpg", fill: true, loader }),
+    );
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=3840"');
+    expect(html).toContain(`srcSet="${expectedSrcSet}"`);
+    expect(html).toContain('sizes="100vw"');
+
+    const { props } = getImageProps({ alt: "fill", src: "/photo.jpg", fill: true, loader });
+    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=3840");
+    expect(props.srcSet).toBe(expectedSrcSet);
+    expect(props.sizes).toBe("100vw");
+  });
+
+  // Next.js: `src: overrideSrc || imgAttributes.src`, keeping the loader srcSet.
+  it("applies overrideSrc on top of custom loader attributes", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+    const imageProps = {
+      alt: "override",
+      src: "/photo.jpg",
+      width: 200,
+      height: 150,
+      loader,
+      overrideSrc: "/override.jpg",
+    };
+    const srcSet =
+      "https://cdn.example.com/photo.jpg?w=256 1x, https://cdn.example.com/photo.jpg?w=640 2x";
+
+    const html = ReactDOMServer.renderToString(React.createElement(Image, imageProps));
+    expect(html).toContain('src="/override.jpg"');
+    expect(html).toContain(`srcSet="${srcSet}"`);
+
+    const { props } = getImageProps(imageProps);
+    expect(props.src).toBe("/override.jpg");
+    expect(props.srcSet).toBe(srcSet);
+  });
+
+  // Next.js marks data:/blob: sources unoptimized before generateImgAttrs.
+  it("never passes data:, blob: or empty sources to a custom loader or /_next/image", () => {
+    const loader = vi.fn(({ src, width }: { src: string; width: number }) => `${src}?w=${width}`);
+    for (const src of ["data:image/png;base64,iVBORw0KGgo=", "blob:https://example.com/uuid", ""]) {
+      for (const imageProps of [
+        { alt: "inline", src, width: 100, height: 100, loader },
+        { alt: "inline", src, width: 100, height: 100 },
+      ]) {
+        const html = ReactDOMServer.renderToString(React.createElement(Image, imageProps));
+        // React omits an empty src attribute entirely.
+        if (src) expect(html).toContain(`src="${src}"`);
+        expect(html).not.toContain("srcSet");
+        expect(html).not.toContain("/_next/image");
+
+        const { props } = getImageProps(imageProps);
+        expect(props.src).toBe(src);
+        expect(props.srcSet).toBeUndefined();
+      }
+    }
+    expect(loader).not.toHaveBeenCalled();
+  });
+
+  // Next.js deletes a caller-provided srcSet before building the attributes.
+  it("ignores a caller-provided srcSet", () => {
+    const loader = ({ src, width }: { src: string; width: number }) => `${src}?w=${width}`;
+    const imageProps = {
+      alt: "srcset",
+      src: "/photo.jpg",
+      width: 100,
+      height: 100,
+      loader,
+      srcSet: "/evil.jpg 1x",
+    } as Parameters<typeof getImageProps>[0];
+    const srcSet = "/photo.jpg?w=128 1x, /photo.jpg?w=256 2x";
+
+    const html = ReactDOMServer.renderToString(React.createElement(Image, imageProps));
+    expect(html).toContain(`srcSet="${srcSet}"`);
+    expect(html).not.toContain("/evil.jpg");
+    expect(getImageProps(imageProps).props.srcSet).toBe(srcSet);
+  });
+
+  // Next.js applies these attributes regardless of which loader built the URL.
+  it("keeps priority, data-nimg and blur placeholder styles for custom loaders", () => {
+    const loader = ({ src, width }: { src: string; width: number }) => `${src}?w=${width}`;
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "blur",
+        src: "/photo.jpg",
+        width: 100,
+        height: 100,
+        loader,
+        priority: true,
+        placeholder: "blur",
+        blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      }),
+    );
+    const img = html.match(/<img\b[^>]*>/)?.[0] ?? "";
+    expect(img).toContain('fetchPriority="high"');
+    expect(img).toContain('data-nimg="1"');
+    expect(img).toContain("background-image:url(data:image/png;base64,iVBORw0KGgo=)");
+  });
+
+  // Next.js keeps `src` after `sizes`/`srcSet` so Safari doesn't fetch it early.
+  it("orders src after srcSet and sizes for custom loaders", () => {
+    const loader = ({ src, width }: { src: string; width: number }) => `${src}?w=${width}`;
+    const imageProps = { alt: "order", src: "/photo.jpg", width: 100, height: 100, loader };
+
+    const html = ReactDOMServer.renderToString(React.createElement(Image, imageProps));
+    expect(html.indexOf(" src=")).toBeGreaterThan(html.indexOf(" srcSet="));
+
+    const keys = Object.keys(getImageProps(imageProps).props);
+    expect(keys.indexOf("src")).toBeGreaterThan(keys.indexOf("srcSet"));
+    expect(keys.indexOf("src")).toBeGreaterThan(keys.indexOf("sizes"));
   });
 
   it("renders StaticImageData (import result)", () => {
@@ -431,7 +701,12 @@ describe("getImageProps", () => {
       loader,
     });
 
-    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=300");
+    // Same per-width srcSet treatment as the built-in loader: [300, 600]
+    // round up to the nearest configured breakpoints, 384 and 640.
+    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=640");
+    expect(props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=384 1x, https://cdn.example.com/photo.jpg?w=640 2x",
+    );
   });
 
   it("returns blur placeholder styles", () => {

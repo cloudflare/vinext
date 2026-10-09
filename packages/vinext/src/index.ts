@@ -1314,11 +1314,34 @@ const _appBrowserServerActionClientPath = resolveShimModulePath(
 const _appRscCombinedHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-combined-handler");
 const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
 const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
+const _imageLoaderFilePath = resolveShimModulePath(_shimsDir, "image-loader-file");
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
 // do not execute a stale dist build. Published packages resolve to emitted JS,
 // which Node can load natively outside the RSC transform graph.
 const _canExternalizeAppRscHandler =
   _appRscHandlerPath.endsWith(".js") && _appRscCombinedHandlerPath.endsWith(".js");
+
+/**
+ * Resolve the module behind `vinext/shims/image-loader-file`. Ported from
+ * Next.js's `images.loaderFile` normalization in server/config.ts: the file
+ * is used when `images.loader` is unset, "default" or "custom", and must exist.
+ */
+function resolveImageLoaderFile(images: NextConfig["images"], root: string): string {
+  const loaderFile = images?.loaderFile;
+  if (!loaderFile) return _imageLoaderFilePath;
+  const loader = images.loader ?? "default";
+  if (loader !== "default" && loader !== "custom") {
+    throw new Error(
+      `Specified images.loader property (${loader}) cannot be used with images.loaderFile property. Please set images.loader to "custom".`,
+    );
+  }
+  // path.join (not resolve), as in Next.js: "/loader.js" is project-relative.
+  const absolutePath = path.join(root, loaderFile);
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(`Specified images.loaderFile does not exist at "${absolutePath}".`);
+  }
+  return absolutePath;
+}
 
 function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
@@ -2890,6 +2913,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_UNOPTIMIZED"] = JSON.stringify(
           String(nextConfig.images?.unoptimized === true),
         );
+        // images.loader / images.loaderFile modes the next/image shim validates
+        // against at render time (shims/image-external.tsx, shims/image.tsx).
+        defines["process.env.__VINEXT_IMAGE_CUSTOM_LOADER"] = JSON.stringify(
+          String(nextConfig.images?.loader === "custom"),
+        );
+        defines["process.env.__VINEXT_IMAGE_LOADER_FILE"] = JSON.stringify(
+          String(Boolean(nextConfig.images?.loaderFile)),
+        );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.
         // Also used to namespace ISR cache keys so old cached entries from a
@@ -3537,6 +3568,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ...nextConfig.aliases,
                   ...nextShimMap,
                   "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+                  // shims/image-external.tsx imports this slot for `images.loaderFile`.
+                  // Like Next.js (which aliases next/dist/shared/lib/image-loader
+                  // to the file), point it at the user's file, resolved against
+                  // the project root; otherwise keep vinext's `undefined` default.
+                  "vinext/shims/image-loader-file": resolveImageLoaderFile(nextConfig.images, root),
                 },
                 tsconfigPathAliases,
                 { ...nextConfig.aliases, ...nextShimMap },

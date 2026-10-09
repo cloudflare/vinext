@@ -26363,8 +26363,14 @@ describe("next/image enhancements", () => {
       height: 600,
       loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
     });
-    // Custom loader bypasses the /_next/image endpoint
-    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
+    // Custom loader bypasses the /_next/image endpoint and gets the same
+    // per-width srcSet treatment as the built-in loader: src is the 2x
+    // (larger) breakpoint, with quality passed through as given
+    // (undefined here, since no quality prop was set).
+    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=1920&q=undefined");
+    expect(result.props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=828&q=undefined 1x, https://cdn.example.com/photo.jpg?w=1920&q=undefined 2x",
+    );
     expect(result.props.src).not.toContain("/_next/image");
   });
 
@@ -26519,7 +26525,13 @@ describe("next/image component rendering", () => {
           `https://cdn.example.com${src}?w=${width}&q=${quality}`,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=800&amp;q=75"');
+    // Per-width srcSet treatment: src is the 2x breakpoint, srcSet carries
+    // both the 1x and 2x breakpoints; quality passed through as given
+    // (undefined here, since no quality prop was set).
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=1920&amp;q=undefined"');
+    expect(html).toContain(
+      'srcSet="https://cdn.example.com/photo.jpg?w=828&amp;q=undefined 1x, https://cdn.example.com/photo.jpg?w=1920&amp;q=undefined 2x"',
+    );
   });
 
   it("renders with custom sizes attribute", async () => {

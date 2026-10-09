@@ -2221,6 +2221,9 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.34(@voidzero-dev/vite-plus-core@1.1.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
+      ipaddr.js:
+        specifier: 'catalog:'
+        version: 2.4.0
       react:
         specifier: 'catalog:'
         version: 19.2.7
