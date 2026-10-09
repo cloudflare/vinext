@@ -89,4 +89,28 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
       expect(text).toContain("next-dynamic dynamic no ssr on client");
     }).toPass({ timeout: 10_000 });
   });
+
+  // vinext-specific: the server renders preload chunks around a dynamic()
+  // component, so the client must render the same element shape for useId
+  // values inside it to match on hydration.
+  test("useId() inside a dynamic() component matches on hydration", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    const response = await page.goto(`${BASE}/nextjs-compat/dynamic/use-id`);
+    const html = await response!.text();
+    const ssrId = /<span id="dynamic-use-id-value">([^<]+)<\/span>/.exec(html)?.[1];
+    expect(ssrId).toBeTruthy();
+
+    await waitForAppRouterHydration(page);
+    // A mismatched id makes React client-render the boundary with its own id.
+    await expect(page.locator("#dynamic-use-id[data-hydrated] #dynamic-use-id-value")).toHaveText(
+      ssrId!,
+    );
+    await expect(page.locator("#dynamic-use-id input")).toHaveAttribute("id", ssrId!);
+    expect(errors).toEqual([]);
+  });
 });
