@@ -2523,6 +2523,12 @@ describe("Pages Router entry template", () => {
     expect(reactBootstrapIndex).toBeLessThan(instrumentationIndex);
     expect(reactBootstrapIndex).toBeLessThan(pageImportIndex);
     expect(reactBootstrapIndex).toBeLessThan(hydrateRootIndex);
+
+    const preloadReadyIndex = code.indexOf(
+      "await window.__NEXT_PRELOADREADY?.(nextData.dynamicIds);",
+    );
+    expect(preloadReadyIndex).toBeGreaterThan(pageImportIndex);
+    expect(preloadReadyIndex).toBeLessThan(hydrateRootIndex);
   });
 
   it("omits the user instrumentation-client import when no file is present", async () => {
@@ -2686,6 +2692,15 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("router: Router,");
       expect(code).not.toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
+      // Like Next.js's client/index.tsx, preload the server-rendered dynamic()
+      // modules before hydrating.
+      const preloadReadyIndex = code.indexOf(
+        "await window.__NEXT_PRELOADREADY?.(nextData.dynamicIds);",
+      );
+      // After _app loads, so its module-scope dynamic() calls are registered.
+      expect(code).toContain("await appLoader()");
+      expect(preloadReadyIndex).toBeGreaterThan(code.indexOf("await appLoader()"));
+      expect(preloadReadyIndex).toBeLessThan(code.indexOf("hydrateRoot("));
       expect(code).toContain("await hydrationCommitted;");
       expect(code).toContain("const shouldHydrateQuery =");
       expect(code).toContain("const initialMatchesMiddleware =");

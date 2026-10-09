@@ -2,6 +2,7 @@ import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { createLoadableModuleCollector } from "vinext/shims/loadable-context";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -37,6 +38,7 @@ import {
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
 import { matchesIfNoneMatch } from "./http-conditional.js";
+import { DEFERRED_PAGES_DYNAMIC_IDS, fillPagesDynamicIds } from "./pages-dynamic-ids.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -263,6 +265,8 @@ export function buildPagesNextDataScript(
     | "nextData"
   > & {
     vinext?: VinextNextData["__vinext"];
+    /** next/dynamic modules the render used, or a placeholder filled in after rendering. */
+    dynamicIds?: readonly string[] | typeof DEFERRED_PAGES_DYNAMIC_IDS;
   },
 ): string {
   const nextDataPayload: Record<string, unknown> = {
@@ -296,6 +300,11 @@ export function buildPagesNextDataScript(
       ...options.nextData?.__vinext,
       ...options.vinext,
     };
+  }
+
+  // Last, so a deferred placeholder can be found after the user data.
+  if (options.dynamicIds !== undefined) {
+    nextDataPayload.dynamicIds = options.dynamicIds;
   }
 
   return `<script id="__NEXT_DATA__" type="application/json"${createNonceAttribute(options.scriptNonce)}>${options.safeJsonStringify(nextDataPayload)}</script>`;
@@ -398,7 +407,7 @@ async function buildPagesShellHtml(
 async function buildPagesCompositeStream(
   bodyStream: ReadableStream<Uint8Array>,
   shellPrefix: string,
-  shellSuffix: string,
+  getShellSuffix: () => string,
 ): Promise<ReadableStream<Uint8Array>> {
   const encoder = new TextEncoder();
 
@@ -417,7 +426,7 @@ async function buildPagesCompositeStream(
       } finally {
         reader.releaseLock();
       }
-      controller.enqueue(encoder.encode(shellSuffix));
+      controller.enqueue(encoder.encode(getShellSuffix()));
       controller.close();
     },
   });
@@ -452,7 +461,7 @@ async function writePagesIsrCache(options: {
   revalidateSeconds: number | false;
   routePattern: string;
   shellPrefix: string;
-  shellSuffix: string;
+  getShellSuffix: () => string;
   status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
@@ -462,7 +471,7 @@ async function writePagesIsrCache(options: {
     options.cacheKey,
     {
       kind: "PAGES",
-      html: options.shellPrefix + bodyHtml + options.shellSuffix,
+      html: options.shellPrefix + bodyHtml + options.getShellSuffix(),
       pageData: options.pageData,
       headers: undefined,
       status: options.status,
@@ -521,6 +530,7 @@ export async function renderPagesPageResponse(
   const renderProps = options.props ?? { pageProps: options.pageProps };
   options.resetSSRHead?.();
   await options.flushPreloads?.();
+  const loadableModules = createLoadableModuleCollector();
 
   const fontHeadHTML = buildPagesFontHeadHtml(
     options.getFontLinks(),
@@ -540,6 +550,7 @@ export async function renderPagesPageResponse(
     scriptNonce: options.scriptNonce,
     nextData: options.nextData,
     vinext: options.vinext,
+    dynamicIds: DEFERRED_PAGES_DYNAMIC_IDS,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
 
@@ -554,9 +565,12 @@ export async function renderPagesPageResponse(
   // prod and dev stay in lockstep.
   const traceDocument = options.traceDocument ?? ((callback) => callback());
   const documentResult = await traceDocument(async () => {
+    const { enhancePageElement } = options;
     const documentRenderPage = await runDocumentRenderPage({
       DocumentComponent: options.DocumentComponent,
-      enhancePageElement: options.enhancePageElement,
+      enhancePageElement:
+        enhancePageElement &&
+        ((renderPageOpts) => loadableModules.wrap(enhancePageElement(renderPageOpts))),
       renderToReadableStream: options.renderToReadableStream,
       // Render the collected `styles` fragment with the plain stream renderer
       // rather than the full `<Document>` shell renderer — the styles tree is a
@@ -590,7 +604,7 @@ export async function renderPagesPageResponse(
       // Start the body render before collecting its head state, then let the
       // tracing adapter keep the span alive without delaying the response.
       const pageElement = withScriptNonce(
-        React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
+        loadableModules.wrap(options.createPageElement(renderProps)),
         options.scriptNonce,
         options.initialStylesheetHrefs,
       );
@@ -648,8 +662,13 @@ export async function renderPagesPageResponse(
   options.clearSsrContext();
 
   const markerIndex = shellHtml.indexOf(bodyMarker);
-  const shellPrefix = shellHtml.slice(0, markerIndex);
-  const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
+  // The shell has rendered, so dynamic components outside Suspense have
+  // reported their modules. The suffix waits for the whole body, like Next.js,
+  // which builds `__NEXT_DATA__` after the render is complete.
+  const fillDynamicIds = (html: string) =>
+    fillPagesDynamicIds(html, loadableModules.getDynamicIds(), options.safeJsonStringify);
+  const shellPrefix = fillDynamicIds(shellHtml.slice(0, markerIndex));
+  const getShellSuffix = () => fillDynamicIds(shellHtml.slice(markerIndex + bodyMarker.length));
   const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
@@ -682,7 +701,7 @@ export async function renderPagesPageResponse(
       routePattern: options.routePattern,
       setCache: options.isrSet,
       shellPrefix,
-      shellSuffix,
+      getShellSuffix,
       status: finalStatus,
       stream: cacheBodyStream,
     };
@@ -699,7 +718,7 @@ export async function renderPagesPageResponse(
   const compositeStream = await buildPagesCompositeStream(
     responseBodyStream,
     shellPrefix,
-    shellSuffix,
+    getShellSuffix,
   );
 
   // Capture user-set Cache-Control (from getServerSideProps's res.setHeader)

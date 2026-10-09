@@ -55,6 +55,15 @@ declare global {
     __VINEXT_REACT_STRICT_MODE__: boolean | undefined;
 
     /**
+     * Loads the next/dynamic modules the server rendered
+     * (`__NEXT_DATA__.dynamicIds`) so hydration renders them right away.
+     * Installed by `shims/dynamic.ts` when it loads; the Pages Router client
+     * entry and dev hydration script await it before `hydrateRoot()`, matching
+     * Next.js's `client/index.tsx`.
+     */
+    __NEXT_PRELOADREADY: ((ids?: readonly (string | number)[]) => Promise<void>) | undefined;
+
+    /**
      * High-resolution timestamp recorded after client hydration is usable.
      * Pages Router writes from the stable router provider after passive
      * effects can attach; App Router writes after the first committed tree

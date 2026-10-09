@@ -994,6 +994,7 @@ export function createPagesPageHandler(
           asPath: routerAsPath,
           resolvedUrl: pagesResolvedUrl,
           renderIsrPassToStringAsync,
+          flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
           // Regeneration re-renders the page but reuses the cached shell, so
           // the refreshed `next/head` output has to be read out of the render
           // pass explicitly.

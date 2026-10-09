@@ -2527,18 +2527,227 @@ export const config = { matcher: "${matcher}" };
     expect(html).toContain("Loaded dynamically");
   });
 
-  // Issue #3718 only changes the App Router: a Pages dynamic() without a
-  // loading option keeps its Suspense boundary on the server, matching the
-  // boundary the hydrating client renders. This differs from Next.js on
-  // purpose until Pages parity lands: Next's Pages next/dynamic
-  // (react-loadable) preloads before SSR and renders no boundary.
-  it("keeps the Suspense boundary for dynamic() without loading during SSR", async () => {
+  // Ported from Next.js's Pages Router react-loadable: the server preloads
+  // every dynamic() before rendering, so a slow dynamic() without a loading
+  // option renders inline with no Suspense boundary, and the rendered modules
+  // are listed in __NEXT_DATA__.dynamicIds for the client to preload.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/loadable.shared-runtime.tsx
+  it("renders dynamic() inline and lists its module in __NEXT_DATA__.dynamicIds", async () => {
     const res = await fetch(`${baseUrl}/dynamic-no-loading`);
     expect(res.status).toBe(200);
 
     const html = await res.text();
-    expect(html).toMatch(/<!--\$\??-->/);
-    expect(html).toContain("Loaded without loading option");
+    expect(html).not.toContain("<!--$");
+    expect(html).toMatch(
+      /<h1 id="dynamic-no-loading-title">Dynamic Without Loading<\/h1><div class="slow-dynamic-content"><p>Loaded without loading option<\/p><\/div>/,
+    );
+    const nextData = JSON.parse(
+      html.match(/<script id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/)![1],
+    ) as { dynamicIds?: string[] };
+    // Keyed by call site, like Next.js's loadableGenerated.modules.
+    expect(nextData.dynamicIds).toEqual([
+      "pages/dynamic-no-loading.tsx -> ../components/slow-dynamic-content",
+    ]);
+  });
+
+  it("omits __NEXT_DATA__.dynamicIds when no dynamic() rendered", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    const html = await res.text();
+    const nextData = JSON.parse(
+      html.match(/<script id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/)![1],
+    ) as Record<string, unknown>;
+    expect(nextData).not.toHaveProperty("dynamicIds");
+    expect(html).not.toContain("__VINEXT_DYNAMIC_IDS__");
+
+    const notFound = await fetch(`${baseUrl}/does-not-exist`);
+    expect(notFound.status).toBe(404);
+    expect(await notFound.text()).not.toContain("__VINEXT_DYNAMIC_IDS__");
+  });
+
+  // Next.js's render.tsx preloads every dynamic() before data fetching, for
+  // pages and error pages alike, and reports the rendered ones in dynamicIds.
+  // The _document calls ctx.defaultGetInitialProps, like Next's
+  // next-dynamic-custom-document test, so renderPage renders the body.
+  it("preloads dynamic() before data fetching on dev pages and error pages", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-dev-dynamic-preload-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "components"));
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(path.join(pagesDir, "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(pagesDir, "_document.tsx"),
+      `import Document, { Head, Html, Main, NextScript, type DocumentContext } from "next/document";
+
+export default class MyDocument extends Document {
+  static async getInitialProps(ctx: DocumentContext) {
+    return ctx.defaultGetInitialProps(ctx);
+  }
+
+  render() {
+    return (
+      <Html>
+        <Head />
+        <body>
+          <Main />
+          <NextScript />
+        </body>
+      </Html>
+    );
+  }
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "components", "widget.tsx"),
+      `export default function Widget() {
+  return <p className="widget">widget</p>;
+}
+`,
+    );
+    // Each page renders the dynamic() to a string while fetching data: it is
+    // only there if it was preloaded first.
+    const pageSource = (dataMethod: string) => `import dynamic from "next/dynamic";
+import { renderToStaticMarkup } from "react-dom/server";
+
+const Widget = dynamic(() => import("../components/widget"));
+
+export async function ${dataMethod}() {
+  return { props: { duringData: renderToStaticMarkup(<Widget />) } };
+}
+
+export default function Page({ duringData }: { duringData: string }) {
+  return (
+    <main>
+      <pre id="during-data">{duringData}</pre>
+      <Widget />
+    </main>
+  );
+}
+`;
+    fs.writeFileSync(path.join(pagesDir, "gssp.tsx"), pageSource("getServerSideProps"));
+    fs.writeFileSync(path.join(pagesDir, "404.tsx"), pageSource("getStaticProps"));
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+      for (const [pathname, status, importer] of [
+        ["/gssp", 200, "pages/gssp.tsx"],
+        ["/missing", 404, "pages/404.tsx"],
+      ] as const) {
+        const res = await fetch(`${started.baseUrl}${pathname}`);
+        expect(res.status).toBe(status);
+        const html = await res.text();
+        expect(html).toContain(
+          '<main><pre id="during-data">&lt;p class=&quot;widget&quot;&gt;widget&lt;/p&gt;</pre><p class="widget">widget</p></main>',
+        );
+        const nextData = JSON.parse(
+          html.match(/<script id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/)![1],
+        ) as { dynamicIds?: string[] };
+        expect(nextData.dynamicIds).toEqual([`${importer} -> ../components/widget`]);
+      }
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Without a custom _document, dev error pages build the document as a
+  // string instead of streaming it, so the ids are filled there. Like
+  // Next.js, a dynamic() declared by a module the error page's data fetching
+  // imports loads before the render too.
+  it("lists dynamic() ids on a dev error page without a custom _document", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-dev-dynamic-no-document-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "components"));
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(path.join(pagesDir, "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(tmpDir, "components", "widget.tsx"),
+      `export default function Widget() {
+  return <p className="widget">widget</p>;
+}
+`,
+    );
+    // A module imported during data fetching declares a dynamic() of its own,
+    // which must also load before the error page renders.
+    fs.writeFileSync(
+      path.join(tmpDir, "components", "late-holder.tsx"),
+      `import dynamic from "next/dynamic";
+
+const LateWidget = dynamic(() => import("./late-widget"));
+
+export default function LateHolder() {
+  return <LateWidget />;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "components", "late-widget.tsx"),
+      `export default function LateWidget() {
+  return <p className="late-widget">late</p>;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      `import type { ComponentType } from "react";
+import dynamic from "next/dynamic";
+
+const Widget = dynamic(() => import("../components/widget"));
+let LateHolder: ComponentType | null = null;
+
+export async function getStaticProps() {
+  LateHolder = (await import("../components/late-holder")).default;
+  return { props: {} };
+}
+
+export default function NotFound() {
+  return (
+    <>
+      <Widget />
+      {LateHolder && <LateHolder />}
+    </>
+  );
+}
+`,
+    );
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+      const res = await fetch(`${started.baseUrl}/missing`);
+      expect(res.status).toBe(404);
+      const html = await res.text();
+      expect(html).toContain('<p class="widget">widget</p><p class="late-widget">late</p>');
+      const nextData = JSON.parse(
+        html.match(/<script id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/)![1],
+      ) as { dynamicIds?: string[] };
+      expect(nextData.dynamicIds).toEqual([
+        "pages/404.tsx -> ../components/widget",
+        "components/late-holder.tsx -> ./late-widget",
+      ]);
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Next.js asserts the same (no dynamicIds for a page with only an ssr: false
+  // dynamic()) in test/development/basic/next-dynamic/next-dynamic.test.ts
+  // ("ssr:false option" > "should not render loading on the server side")
+  // https://github.com/vercel/next.js/blob/canary/test/development/basic/next-dynamic/next-dynamic.test.ts
+  it("does not list an ssr: false dynamic() in __NEXT_DATA__.dynamicIds", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-ssr-false`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain('"dynamicIds"');
+    expect(html).not.toContain("__VINEXT_DYNAMIC_IDS__");
   });
 
   // --- Hydration ---
@@ -5803,7 +6012,7 @@ export const config = { matcher: ["/protected"] };
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(32 * 1024); // < 32 KB, including storage-policy and encoded-path fixture routes
+      expect(entrySize).toBeLessThan(34 * 1024); // < 34 KB, including storage-policy, encoded-path and next/dynamic fixture routes
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -7665,6 +7874,14 @@ describe("Production server middleware (Pages Router)", () => {
     );
   });
 
+  it("never caches the __NEXT_DATA__.dynamicIds placeholder in Pages ISR HTML", async () => {
+    const first = await fetch(`${prodUrl}/isr-test`);
+    expect(await first.text()).not.toContain("__VINEXT_DYNAMIC_IDS__");
+    const cached = await fetch(`${prodUrl}/isr-test`);
+    expect(["HIT", "STALE"]).toContain(cached.headers.get("x-vinext-cache"));
+    expect(await cached.text()).not.toContain("__VINEXT_DYNAMIC_IDS__");
+  });
+
   it("rewrites /rewritten to render /ssr content", async () => {
     const res = await fetch(`${prodUrl}/rewritten`);
     expect(res.status).toBe(200);
@@ -8873,6 +9090,32 @@ describe("Production Pages Router SSR streaming", () => {
     }
   });
 
+  // Ported from Next.js's Pages Router react-loadable: dynamic() renders
+  // inline after the server preloads it, and __NEXT_DATA__.dynamicIds lists
+  // the rendered modules so the client preloads them before hydrating.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/loadable.shared-runtime.tsx
+  it("renders dynamic() inline and lists the rendered modules in __NEXT_DATA__.dynamicIds", async () => {
+    const res = await fetch(`${prodUrl}/nextjs-compat/next-dynamic`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain("<!--$");
+    const nextData = JSON.parse(
+      html.match(/<script id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/)![1],
+    ) as { dynamicIds?: string[] };
+    expect([...(nextData.dynamicIds ?? [])].sort()).toEqual([
+      "pages/nextjs-compat/next-dynamic.tsx -> ../../components/next-dynamic/four",
+      "pages/nextjs-compat/next-dynamic.tsx -> ../../components/next-dynamic/one",
+      "pages/nextjs-compat/next-dynamic.tsx -> ../../components/next-dynamic/three",
+      "pages/nextjs-compat/next-dynamic.tsx -> ../../components/next-dynamic/two",
+    ]);
+
+    const slowRes = await fetch(`${prodUrl}/dynamic-no-loading`);
+    const slowHtml = await slowRes.text();
+    expect(slowHtml).toMatch(
+      /<h1 id="dynamic-no-loading-title">Dynamic Without Loading<\/h1><div class="slow-dynamic-content"><p>Loaded without loading option<\/p><\/div>/,
+    );
+  });
+
   it("streams Pages SSR responses incrementally in production with br compression", async () => {
     // Parity target: Next.js streams Node responses via sendResponse() ->
     // pipeToNodeResponse() instead of buffering the full HTML first, while
@@ -8911,11 +9154,15 @@ describe("Production Pages Router SSR streaming", () => {
   });
 
   it("streams Pages SSR responses incrementally in production with gzip compression", async () => {
-    const response = await withFreshStreamingProdServer((freshProdUrl) =>
-      captureStreamedResponse(`${freshProdUrl}/streaming-ssr`, {
+    const response = await withFreshStreamingProdServer(async (freshProdUrl) => {
+      // Like Next.js's preloadAll(), the first render on a fresh server loads
+      // every dynamic() in the app (two fixture loaders take 300ms), so warm
+      // it up to time the streaming alone.
+      await (await fetch(`${freshProdUrl}/`)).text();
+      return captureStreamedResponse(`${freshProdUrl}/streaming-ssr`, {
         headers: { "accept-encoding": "gzip" },
-      }),
-    );
+      });
+    });
     const partialHtml = response.snapshot.toString("utf8");
     const finalHtml = response.body.toString("utf8");
 
@@ -10071,7 +10318,9 @@ describe("Pages Router response lifecycle", () => {
       let callbackRan = false;
       const runner = {
         async import(id: string) {
-          if (id === "vinext/head-state" || id === "vinext/router-state") return {};
+          if (id === "vinext/head-state" || id === "vinext/router-state" || id === "next/dynamic") {
+            return {};
+          }
           if (id === "next/router") {
             return {
               default: {},

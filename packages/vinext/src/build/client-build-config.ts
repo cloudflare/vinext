@@ -19,6 +19,7 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "layout-segment-context",
   "legacy-image",
   "link",
+  "loadable-context",
   "offline",
   "router",
   "script",

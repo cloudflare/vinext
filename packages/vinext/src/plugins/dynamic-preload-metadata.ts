@@ -6,7 +6,13 @@ import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeToRoot, relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 import { isForeignNodeModule } from "../utils/package-name.js";
 import { stripViteModuleQuery } from "../utils/path.js";
-import { collectBindingNames, forEachAstChild, stringLiteralValue, walkAst } from "./ast-utils.js";
+import {
+  collectBindingNames,
+  forEachAstChild,
+  staticStringValue,
+  stringLiteralValue,
+  walkAst,
+} from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type TransformResult = {
@@ -99,7 +105,8 @@ function collectVarBindingNames(value: ESTree.Node | null, names: Set<string>): 
   if (
     type === "FunctionDeclaration" ||
     type === "FunctionExpression" ||
-    type === "ArrowFunctionExpression"
+    type === "ArrowFunctionExpression" ||
+    type === "StaticBlock"
   ) {
     return;
   }
@@ -181,6 +188,17 @@ function visitDynamicCalls(
     return;
   }
 
+  // A class static block scopes its `var` declarations as well.
+  if (type === "StaticBlock") {
+    const names = collectBlockScopedBindingNames(value.body);
+    for (const statement of value.body) collectVarBindingNames(statement, names);
+    const scoped = withoutBindings(dynamicLocals, names);
+    for (const statement of value.body) {
+      visitDynamicCalls(statement, scoped, visitor);
+    }
+    return;
+  }
+
   if (type === "SwitchStatement") {
     visitDynamicCalls(value.discriminant, dynamicLocals, visitor);
 
@@ -236,7 +254,8 @@ function collectImportSpecifiers(node: ESTree.Node | undefined): string[] {
   if (!node) return specifiers;
   walkAst(node, (item) => {
     if (item.type === "ImportExpression") {
-      const specifier = stringLiteralValue(item.source);
+      // Like Next.js, accept a template literal without interpolations.
+      const specifier = staticStringValue(item.source);
       if (specifier && !seen.has(specifier)) {
         seen.add(specifier);
         specifiers.push(specifier);
@@ -423,9 +442,30 @@ async function resolveManifestModuleIds(
   return resolvedIds;
 }
 
-function shouldSkipCall(firstArg: ESTree.Node, secondArg: ESTree.Node | undefined): boolean {
-  if (hasObjectProperty(firstArg, "loadableGenerated")) return true;
-  return hasObjectProperty(secondArg, "loadableGenerated");
+/**
+ * Identifies a dynamic() call site the same way in every environment, like
+ * Next.js's react-loadable keys (`importer -> specifier`). The Pages Router
+ * reports these in `__NEXT_DATA__.dynamicIds` for the browser to preload, so
+ * they must not depend on how the server and the browser resolve an import
+ * (a package's `browser` and `node` builds, SSR externals).
+ */
+function loadableKeys(specifiers: readonly string[], importer: string, root: string): string[] {
+  const importerId = toManifestModuleId(root, importer) ?? cleanResolvedId(importer);
+  return Array.from(new Set(specifiers), (specifier) => `${importerId} -> ${specifier}`);
+}
+
+function findLoadableGenerated(
+  firstArg: ESTree.Node,
+  secondArg: ESTree.Node | undefined,
+): ESTree.ObjectProperty | null {
+  return (
+    (firstArg.type === "ObjectExpression"
+      ? findObjectProperty(firstArg, "loadableGenerated")
+      : null) ??
+    (secondArg?.type === "ObjectExpression"
+      ? findObjectProperty(secondArg, "loadableGenerated")
+      : null)
+  );
 }
 
 function applyLoadableGenerated(
@@ -433,14 +473,29 @@ function applyLoadableGenerated(
   code: string,
   callNode: ESTree.CallExpression,
   moduleIds: readonly string[],
+  keys: readonly string[],
 ): boolean {
   const args = callNode.arguments;
   const firstArg = args[0];
   const secondArg = args[1];
   if (!firstArg) return false;
-  if (shouldSkipCall(firstArg, secondArg)) return false;
+  const modulesProperty = `modules: ${JSON.stringify(moduleIds)}`;
+  const keysProperty = `loadableKeys: ${JSON.stringify(keys)}`;
+  const existing = findLoadableGenerated(firstArg, secondArg);
+  if (existing) {
+    // Precompiled output (e.g. Next.js's own, with `webpack` or `modules`)
+    // keeps its metadata, plus the keys the Pages Router preloads by, so the
+    // server and the browser report and preload the same call site.
+    if (existing.value.type !== "ObjectExpression") return false;
+    const missing = [
+      hasObjectProperty(existing.value, "modules") ? null : modulesProperty,
+      hasObjectProperty(existing.value, "loadableKeys") ? null : keysProperty,
+    ].filter((property) => property !== null);
+    if (missing.length === 0) return false;
+    return appendObjectProperty(output, existing.value, missing.join(", "));
+  }
 
-  const property = `loadableGenerated: { modules: ${JSON.stringify(moduleIds)} }`;
+  const property = `loadableGenerated: { ${modulesProperty}, ${keysProperty} }`;
   const firstArgIsObject = firstArg.type === "ObjectExpression";
   if (firstArgIsObject) {
     return appendObjectProperty(output, firstArg, property);
@@ -507,14 +562,21 @@ export async function transformNextDynamicPreloadMetadata(
         `next/dynamic only accepts 2 arguments (${id}${formatNodeLocation(code, node)})`,
       );
     }
+    // Next.js also rejects non-literal options, which it can't add
+    // `loadableGenerated` to (Pages Router hydration preloads by those keys).
+    if (args[1] && args[1].type !== "ObjectExpression") {
+      throw new Error(
+        `next/dynamic options must be an object literal (${id}${formatNodeLocation(code, node)}).\nRead more: https://nextjs.org/docs/messages/invalid-dynamic-options-type`,
+      );
+    }
 
     const specifiers = collectImportSpecifiers(dynamicLoaderNode(args[0]));
     if (specifiers.length === 0) return;
 
     pending.push(
       resolveManifestModuleIds(specifiers, id, root, resolveDynamicImport).then((moduleIds) => {
-        if (moduleIds.length === 0) return;
-        if (applyLoadableGenerated(output, code, node, moduleIds)) {
+        const keys = loadableKeys(specifiers, id, root);
+        if (applyLoadableGenerated(output, code, node, moduleIds, keys)) {
           changed = true;
         }
       }),
@@ -527,11 +589,15 @@ export async function transformNextDynamicPreloadMetadata(
   return magicStringTransformResult(output);
 }
 
+// JS, TS and compiled MDX modules. Allows Vite's dev `?v=` version query,
+// which the browser environment adds to node_modules files it serves without
+// pre-bundling, but no other query (`?raw`, `?url`, `?worker`).
+const TRANSFORMED_MODULE_ID = /\.(?:[cm]?[jt]sx?|mdx)(?:\?v=[\w-]+)?$/;
+
 export function createDynamicPreloadMetadataPlugin(
   getTranspiledPackages: () => readonly string[],
 ): Plugin {
   let root = toSlash(process.cwd());
-  let isBuild = false;
 
   return {
     name: "vinext:dynamic-preload-metadata",
@@ -540,7 +606,6 @@ export function createDynamicPreloadMetadataPlugin(
     // See the parse note in `transformNextDynamicPreloadMetadata`.
     configResolved(config) {
       root = config.root;
-      isBuild = config.command === "build";
     },
     transform: {
       // node_modules can't be excluded here: packages in `transpilePackages`
@@ -548,23 +613,19 @@ export function createDynamicPreloadMetadataPlugin(
       // keeps this cheap — modules that never mention next/dynamic don't reach
       // the JS handler.
       filter: {
-        id: /\.(tsx?|jsx?|mjs)$/,
+        id: TRANSFORMED_MODULE_ID,
         code: "next/dynamic",
       },
       async handler(code, id) {
         if (id.startsWith("\0")) return null;
-        if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
+        if (!TRANSFORMED_MODULE_ID.test(id)) return null;
         // Like Turbopack (Next.js 16's default bundler), only transform
         // dependencies listed in `transpilePackages`; other node_modules code is
-        // foreign and keeps its dynamic() calls untouched. In dev, skip every
-        // dependency (including pre-bundled ones): the preload map only exists
-        // in production builds, so the metadata would be unused.
-        if (
-          id.includes("node_modules") &&
-          (!isBuild || isForeignNodeModule(id, getTranspiledPackages()))
-        ) {
-          return null;
-        }
+        // foreign and keeps its dynamic() calls untouched. Dev needs this too:
+        // Pages Router hydration preloads by `loadableKeys`. A dependency the
+        // browser loads pre-bundled from `.vite/deps` counts as foreign, so its
+        // dynamic() calls are not preloaded before hydration in dev.
+        if (isForeignNodeModule(id, getTranspiledPackages())) return null;
 
         const result = await transformNextDynamicPreloadMetadata(
           code,

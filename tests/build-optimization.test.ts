@@ -184,6 +184,7 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/compat-router.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/loadable-context.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
     expect(
@@ -2512,13 +2513,78 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
   });
 
-  it("preserves existing explicit loadableGenerated metadata", async () => {
+  // Next.js keys react-loadable modules by `importer -> specifier`, so the
+  // server and the browser agree on __NEXT_DATA__.dynamicIds even when they
+  // resolve the import to different files (or the server can't resolve it).
+  it("keys the call site the same way however the import resolves", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Player = dynamic(() => import("player-lib"));`,
+    ].join("\n");
+    const server = await _transformNextDynamicPreloadMetadata(code, importer, root, async () =>
+      path.join(root, "node_modules/player-lib/dist/node.js"),
+    );
+    const browser = await _transformNextDynamicPreloadMetadata(code, importer, root, async () =>
+      path.join(root, "node_modules/player-lib/dist/browser.js"),
+    );
+    const unresolved = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      async () => null,
+    );
+
+    const keys = `loadableKeys: ["app/page.tsx -> player-lib"]`;
+    expect(server?.code).toContain(keys);
+    expect(browser?.code).toContain(keys);
+    expect(unresolved?.code).toContain(`loadableGenerated: { modules: [], ${keys} }`);
+  });
+
+  it("preserves existing explicit loadableGenerated metadata and adds the call-site keys", async () => {
     const code = [
       `import dynamic from "next/dynamic";`,
       `const Widget = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["custom"] } });`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["custom"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
+  });
+
+  // Next.js's own client output carries `webpack` instead of `modules`; the
+  // Pages Router still needs keys to preload the call site before hydrating.
+  it("adds modules and keys to precompiled webpack loadableGenerated metadata", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { webpack: () => [require.resolveWeak("./dynamic-widget")] } });`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(
+      `loadableGenerated: { webpack: () => [require.resolveWeak("./dynamic-widget")], modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
+  });
+
+  it("leaves complete existing loadableGenerated metadata alone", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["custom"], loadableKeys: ["custom-key"] } });`,
     ].join("\n");
     const result = await _transformNextDynamicPreloadMetadata(
       code,
@@ -2541,7 +2607,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/named.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/named.tsx"], loadableKeys: ["app/page.tsx -> ./named"] }`,
+    );
   });
 
   it("does not transform a function parameter that shadows the next/dynamic import", async () => {
@@ -2613,6 +2681,28 @@ describe("next/dynamic preload metadata transform", () => {
     expect(result).toBeNull();
   });
 
+  it("does not validate a static block binding that shadows the next/dynamic import", async () => {
+    for (const kind of ["const", "var"]) {
+      const code = [
+        `import dynamic from "next/dynamic";`,
+        `class C {`,
+        `  static {`,
+        `    ${kind} dynamic = customFactory;`,
+        `    dynamic(() => import("./dynamic-widget"), options);`,
+        `  }`,
+        `}`,
+      ].join("\n");
+      const result = await _transformNextDynamicPreloadMetadata(
+        code,
+        importer,
+        root,
+        resolveDynamicImport,
+      );
+
+      expect(result).toBeNull();
+    }
+  });
+
   it("does not transform inside a named class expression that shadows the next/dynamic import", async () => {
     const code = [
       `import dynamic from "next/dynamic";`,
@@ -2641,7 +2731,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
   });
 
   it("only records the object-form loader import", async () => {
@@ -2658,7 +2750,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
     expect(result?.code).not.toContain("app/ignored.tsx");
   });
 
@@ -2674,7 +2768,9 @@ describe("next/dynamic preload metadata transform", () => {
         specifier === "./dynamic_widget" ? path.join(root, "app/dynamic_widget.tsx") : null,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic_widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic_widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic_widget"] }`,
+    );
   });
 
   it("transforms generic next/dynamic calls in TSX-shaped source after type stripping", async () => {
@@ -2696,10 +2792,12 @@ describe("next/dynamic preload metadata transform", () => {
         specifier === "./dynamic-widget" ? path.join(root, "app/dynamic-widget.tsx") : null,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
   });
 
-  it("preserves existing loadableGenerated metadata in object-form dynamic options", async () => {
+  it("preserves existing loadableGenerated metadata in object-form dynamic options and adds the keys", async () => {
     const code = [
       `import dynamic from "next/dynamic";`,
       `const Widget = dynamic({`,
@@ -2715,7 +2813,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result).toBeNull();
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["custom"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
   });
 
   it("injects metadata into nested dynamic() calls without clobbering each other", async () => {
@@ -2735,8 +2835,12 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/named.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/named.tsx"], loadableKeys: ["app/page.tsx -> ./named"] }`,
+    );
     // The output must still parse (disjoint edits produced valid JS).
     expect(() => parseAst(result!.code)).not.toThrow();
   });
@@ -2750,6 +2854,53 @@ describe("next/dynamic preload metadata transform", () => {
     await expect(
       _transformNextDynamicPreloadMetadata(code, importer, root, resolveDynamicImport),
     ).rejects.toThrow(/only accepts 2 arguments/);
+  });
+
+  it("keys a template literal import without interpolations, like Next.js", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      "const W = dynamic(() => import(`./dynamic-widget`));",
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
+  });
+
+  // crates/next-custom-transforms/tests/errors/next-dynamic/options-as-variable
+  it("throws when dynamic() options are not an object literal (Next.js parity)", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const options = { ssr: false };`,
+      `const W = dynamic(() => import("./dynamic-widget"), options);`,
+    ].join("\n");
+
+    await expect(
+      _transformNextDynamicPreloadMetadata(code, importer, root, resolveDynamicImport),
+    ).rejects.toThrow(/options must be an object literal/);
+  });
+
+  it("adds metadata to options that spread another object", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic(() => import("./dynamic-widget"), { ...base });`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+    expect(result?.code).toContain(
+      `{ ...base, loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] } }`,
+    );
   });
 
   it("preserves a comment containing a comma between the loader and close paren", async () => {
@@ -2767,7 +2918,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
     expect(result?.code).toContain(`/* trailing , comment */`);
     expect(() => parseAst(result!.code)).not.toThrow();
   });
@@ -2789,7 +2942,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
 
     // The dynamic() call must still receive TWO arguments and the first must be
     // the loader (an arrow), not a SequenceExpression.
@@ -2812,7 +2967,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
     expect(firstDynamicCallArgTypes(result!.code)).toEqual([
       "ImportExpression",
       "ObjectExpression",
@@ -2830,7 +2987,9 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] }`,
+    );
     expect(firstDynamicCallArgTypes(result!.code)).toEqual([
       "ImportExpression",
       "ObjectExpression",
@@ -2856,7 +3015,7 @@ describe("next/dynamic preload metadata transform", () => {
     expect(result?.code).toBe(
       [
         `import dynamic from "next/dynamic";`,
-        `const W = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["app/dynamic-widget.tsx"] } });`,
+        `const W = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["app/dynamic-widget.tsx"], loadableKeys: ["app/page.tsx -> ./dynamic-widget"] } });`,
       ].join("\n"),
     );
     expect(firstDynamicCallArgTypes(result!.code)).toEqual([
@@ -2909,7 +3068,9 @@ describe("next/dynamic preload metadata transform", () => {
         async () => path.join(realRoot, "app", "widget.tsx"),
       );
 
-      expect(result?.code).toContain(`loadableGenerated: { modules: ["app/widget.tsx"] }`);
+      expect(result?.code).toContain(
+        `loadableGenerated: { modules: ["app/widget.tsx"], loadableKeys: ["page.tsx -> ./app/widget"] }`,
+      );
     } finally {
       await fsp.rm(realRoot, { recursive: true, force: true });
       await fsp.rm(linkParent, { recursive: true, force: true });
@@ -2935,7 +3096,7 @@ describe("next/dynamic preload metadata transform", () => {
     );
 
     expect(result?.code).toContain(
-      `loadableGenerated: { modules: ["../../packages/ui/src/hero-banner.tsx"] }`,
+      `loadableGenerated: { modules: ["../../packages/ui/src/hero-banner.tsx"], loadableKeys: ["app/page.tsx -> @acme/ui/hero-banner"] }`,
     );
   });
 });
@@ -2980,7 +3141,7 @@ describe("next/dynamic preload metadata plugin: node_modules call sites", () => 
       ),
     );
     expect(result?.code).toContain(
-      `loadableGenerated: { modules: ["node_modules/.pnpm/transpiled-lib@1.0.0/node_modules/transpiled-lib/widget.js"] }`,
+      `loadableGenerated: { modules: ["node_modules/.pnpm/transpiled-lib@1.0.0/node_modules/transpiled-lib/widget.js"], loadableKeys: ["node_modules/.pnpm/transpiled-lib@1.0.0/node_modules/transpiled-lib/host.js -> ./widget.js"] }`,
     );
   });
 
@@ -2989,12 +3150,49 @@ describe("next/dynamic preload metadata plugin: node_modules call sites", () => 
     expect(result).toBeNull();
   });
 
-  it("skips dependencies in dev, where the preload map does not exist", async () => {
+  // Pages Router hydration in dev preloads by loadableKeys too.
+  it("adds metadata to a transpilePackages dependency in dev", async () => {
     const result = await transformAs(
       "serve",
       path.join(root, "node_modules/transpiled-lib/host.js"),
     );
-    expect(result).toBeNull();
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["node_modules/transpiled-lib/widget.js"], loadableKeys: ["node_modules/transpiled-lib/host.js -> ./widget.js"] }`,
+    );
+  });
+
+  // In dev, the browser environment adds `?v=` to node_modules files it
+  // serves without pre-bundling. The key must match the server's (no query).
+  it("adds metadata to a transpilePackages dependency served with a version query", async () => {
+    const result = await transformAs(
+      "serve",
+      path.join(root, "node_modules/transpiled-lib/host.js") + "?v=1a2b3c4d",
+    );
+    expect(result?.code).toContain(
+      `loadableKeys: ["node_modules/transpiled-lib/host.js -> ./widget.js"]`,
+    );
+  });
+
+  it("transforms .mts modules but not other queries", async () => {
+    expect(await transformAs("build", path.join(root, "pages/post.mts"))).not.toBeNull();
+    expect(await transformAs("build", path.join(root, "pages/post.js?raw"))).toBeNull();
+  });
+
+  // MDX compiles to JS in a `pre` plugin, before this transform runs.
+  it("adds metadata to a call site in a compiled .mdx page", async () => {
+    const result = await transformAs("build", path.join(root, "pages/post.mdx"));
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["pages/widget.js"], loadableKeys: ["pages/post.mdx -> ./widget.js"] }`,
+    );
+  });
+
+  it("leaves foreign and pre-bundled dependencies untouched in dev", async () => {
+    expect(
+      await transformAs("serve", path.join(root, "node_modules/foreign-lib/host.js")),
+    ).toBeNull();
+    expect(
+      await transformAs("serve", path.join(root, "node_modules/.vite/deps/transpiled-lib.js")),
+    ).toBeNull();
   });
 });
 

@@ -31,6 +31,22 @@ describe("createPagesDevHydrationScript", () => {
     expect(script).toContain("nextData.__vinext?.hasRewrites === true");
     expect(script).toContain("shallow: !nextData.isFallback && !initialMatchesMiddleware");
     expect(script).not.toContain("window.__VINEXT_PAGE_PATTERNS__ = [nextData.page]");
+
+    // Like Next.js's client/index.tsx, preload the server-rendered dynamic()
+    // modules once the page and _app modules (which register them) have
+    // loaded, and before hydrating.
+    expect(script).toContain('const pageModule = await import("/pages/index.tsx");');
+    expect(script).toContain('const appModule = await import("/pages/_app.tsx");');
+    const preloadReadyIndex = script.indexOf(
+      "await window.__NEXT_PRELOADREADY?.(nextData.dynamicIds);",
+    );
+    expect(preloadReadyIndex).toBeGreaterThan(
+      script.indexOf('const pageModule = await import("/pages/index.tsx");'),
+    );
+    expect(preloadReadyIndex).toBeGreaterThan(
+      script.indexOf('const appModule = await import("/pages/_app.tsx");'),
+    );
+    expect(preloadReadyIndex).toBeLessThan(script.indexOf("hydrateRoot("));
   });
 
   it("generates the forced-ready error hydration entry", () => {

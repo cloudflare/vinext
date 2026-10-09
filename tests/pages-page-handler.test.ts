@@ -489,6 +489,37 @@ describe("createPagesPageHandler — no default export", () => {
 // _next/data JSON envelope
 // ---------------------------------------------------------------------------
 
+// Next.js's render.tsx awaits Loadable.preloadAll() before getInitialProps
+// and getServerSideProps, so an AppTree render during data fetching sees
+// every dynamic() loaded.
+describe("createPagesPageHandler — next/dynamic preloading", () => {
+  it("preloads dynamic() before data fetching", async () => {
+    const calls: string[] = [];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async () => {
+                calls.push("getServerSideProps");
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+        flushPreloads: async () => {
+          calls.push("flushPreloads");
+        },
+      }),
+    );
+    const res = await handler(makeRequest("/"), "/", null, null, null);
+    await res.text();
+    expect(calls[0]).toBe("flushPreloads");
+    expect(calls).toContain("getServerSideProps");
+  });
+});
+
 describe("createPagesPageHandler — _next/data", () => {
   it("detects /_next/data URL and returns JSON envelope", async () => {
     const routes = [makeRoute("/about")];
