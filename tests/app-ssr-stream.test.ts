@@ -1,5 +1,5 @@
 import { createContext, runInContext } from "node:vm";
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import {
@@ -34,6 +34,19 @@ it("serializes browser search-param ownership into the early hydration bootstrap
       true,
     ),
   ).toContain("searchParamsFromBrowser:true");
+});
+
+it("serializes the server's RSC compatibility ID into the hydration bootstrap", () => {
+  const createScript = () =>
+    createNavigationRuntimeRscMetadataScript({}, { pathname: "/", searchParams: [] });
+  vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", "compat-a");
+  try {
+    expect(createScript()).toContain('compatibilityId:"compat-a"');
+    vi.stubEnv("__VINEXT_RSC_COMPATIBILITY_ID", "");
+    expect(createScript()).not.toContain("compatibilityId");
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 describe("App SSR stream helpers", () => {

@@ -11,6 +11,7 @@ import {
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
+import { getVinextRscCompatibilityId } from "./app-rsc-cache-busting.js";
 
 type RscEmbedTransform = {
   flush(): string;
@@ -69,6 +70,10 @@ export function createNavigationRuntimeRscMetadataScript(
   dynamicStaleTimeSeconds?: number,
   searchParamsFromBrowser?: boolean,
 ): string {
+  // The browser compares RSC responses against this page's compatibility ID.
+  // It is sent here rather than inlined into the client bundle, where a
+  // per-build value would rename chunks on every build.
+  const compatibilityId = getVinextRscCompatibilityId();
   return (
     "Object.assign(" +
     navigationRuntimeRscBootstrapExpression() +
@@ -82,6 +87,7 @@ export function createNavigationRuntimeRscMetadataScript(
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +
+    (compatibilityId === null ? "" : ",compatibilityId:" + safeJsonStringify(compatibilityId)) +
     "})"
   );
 }
