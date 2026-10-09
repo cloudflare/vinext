@@ -1545,6 +1545,35 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     });
   });
 
+  it.each(["static-assets", "data-cache", "none"] as const)(
+    "disables a Workers Cache config left by an earlier setup when switching to %s",
+    (cdnCache) => {
+      const options = { dataCache: "none" as const, cdnCache, imageOptimization: "none" as const };
+      const input = `{
+  "main": "vinext/server/fetch-handler",
+  "assets": { "directory": "dist/client", "binding": "ASSETS", "run_worker_first": ["/*"] },
+  "cache": {
+    // keep this comment
+    "enabled": /* before */ true /* after */, // trailing
+    "cross_version_cache": true
+  }
+}\n`;
+      const output = updateWranglerConfigForCloudflare(input, options);
+      expect(output).toBe(input.replace("*/ true /*", "*/ false /*"));
+      expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
+    },
+  );
+
+  it("preserves the Workers Cache config chosen for Response Store", () => {
+    const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": true } }\n`, {
+      dataCache: "none",
+      cdnCache: "response-store",
+      responseStoreMode: "self-contained",
+      imageOptimization: "none",
+    });
+    expect(JSON.parse(output).cache).toEqual({ enabled: true });
+  });
+
   it("preserves a custom Wrangler version metadata binding for the CDN adapter", () => {
     const input = `{ "version_metadata": { "binding": "CUSTOM_VERSION" } }\n`;
     const output = updateWranglerConfigForCloudflare(input, {

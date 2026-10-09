@@ -644,6 +644,22 @@ function stripJsonComments(code: string): string {
   return output.replace(/,\s*([}\]])/g, "$1");
 }
 
+/** Offset of the first JSONC token in `code`, after whitespace and comments. */
+function skipJsonWhitespaceAndComments(code: string): number {
+  let index = 0;
+  while (index < code.length) {
+    if (/\s/.test(code[index])) index++;
+    else if (code.startsWith("//", index)) {
+      const lineEnd = code.indexOf("\n", index);
+      index = lineEnd === -1 ? code.length : lineEnd;
+    } else if (code.startsWith("/*", index)) {
+      const commentEnd = code.indexOf("*/", index + 2);
+      index = commentEnd === -1 ? code.length : commentEnd + 2;
+    } else break;
+  }
+  return index;
+}
+
 function findTopLevelJsonProperty(
   code: string,
   name: string,
@@ -1332,6 +1348,32 @@ export function updateWranglerConfigForCloudflare(
         versionMetadata.binding.length === 0
       ) {
         output = `${output.slice(0, versionMetadataProperty.valueStart)}{ "binding": "${DEFAULT_VERSION_METADATA_BINDING}" }${output.slice(versionMetadataProperty.valueEnd)}`;
+      }
+    }
+  } else if (options.cdnCache !== "response-store") {
+    // Only workersCacheCdnAdapter() emits the uncached default entrypoint that
+    // a top-level Workers Cache needs. Without it, a cache left by an earlier
+    // Workers Cache setup would serve every Worker response, private ones
+    // included, before the Worker runs.
+    const cacheProperty = findTopLevelJsonProperty(output, "cache");
+    if (cacheProperty) {
+      const cacheCode = output.slice(cacheProperty.valueStart, cacheProperty.valueEnd);
+      const cache = JSON.parse(stripJsonComments(cacheCode)) as unknown;
+      const enabledProperty = findTopLevelJsonProperty(cacheCode, "enabled");
+      const enabledToken = enabledProperty
+        ? enabledProperty.valueStart +
+          skipJsonWhitespaceAndComments(
+            cacheCode.slice(enabledProperty.valueStart, enabledProperty.valueEnd),
+          )
+        : -1;
+      if (
+        isUnknownRecord(cache) &&
+        cache.enabled === true &&
+        cacheCode.startsWith("true", enabledToken)
+      ) {
+        // Replace only the flag so the rest of the user's cache block stays verbatim.
+        const enabledStart = cacheProperty.valueStart + enabledToken;
+        output = `${output.slice(0, enabledStart)}false${output.slice(enabledStart + "true".length)}`;
       }
     }
   }
