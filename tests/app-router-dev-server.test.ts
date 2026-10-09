@@ -2248,6 +2248,8 @@ describe("App Router integration", () => {
     expect(inlineVictim.status).toBe(200);
     expect(await inlineVictim.text()).toContain("VICTIM_INLINE_PRIVATE_RECORD");
 
+    // Dev ids are module paths, so the source export names and the hoisted
+    // name plugin-rsc gives an inline helper are all derivable.
     for (const [actionId, secret] of [
       ["/app/use-cache-hidden-reference/records.ts#readRecord", "VICTIM_PRIVATE_RECORD"],
       ["/app/use-cache-hidden-reference/records.ts#default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
@@ -2255,36 +2257,47 @@ describe("App Router integration", () => {
         "/app/use-cache-hidden-reference/inline-records.ts#readInlineRecord",
         "VICTIM_INLINE_PRIVATE_RECORD",
       ],
+      [
+        "/app/use-cache-hidden-reference/inline-records.ts#$$hoist_0_readInlineRecord",
+        "VICTIM_INLINE_PRIVATE_RECORD",
+      ],
     ] as const) {
+      const fetchAction = await fetch(`${baseUrl}/use-cache-hidden-reference`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=UTF-8", "Next-Action": actionId },
+        body: JSON.stringify(["victim"]),
+      });
+      expect(fetchAction.status).toBe(404);
+      expect(fetchAction.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await fetchAction.text()).not.toContain(secret);
+
+      const rscAction = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
+        body: JSON.stringify(["victim"]),
+      });
+      expect(rscAction.status).toBe(404);
+      expect(rscAction.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await rscAction.text()).not.toContain(secret);
+
       const form = new FormData();
       form.append(`$ACTION_ID_${actionId}`, "");
       form.append("id", "victim");
-      for (const [url, init] of [
-        [
-          "/use-cache-hidden-reference",
-          {
-            headers: { "Content-Type": "text/plain;charset=UTF-8", "Next-Action": actionId },
-            body: JSON.stringify(["victim"]),
-          },
-        ],
-        [
-          "/use-cache-hidden-reference.rsc",
-          {
-            headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
-            body: JSON.stringify(["victim"]),
-          },
-        ],
-        [
-          "/use-cache-hidden-reference",
-          { headers: { Origin: baseUrl, Host: new URL(baseUrl).host }, body: form },
-        ],
-      ] as const) {
-        const exploit = await fetch(`${baseUrl}${url}`, { method: "POST", ...init });
-
-        expect(exploit.status).toBe(404);
-        expect(exploit.headers.get("x-nextjs-action-not-found")).toBe("1");
-        expect(await exploit.text()).not.toContain(secret);
+      const formAction = await fetch(`${baseUrl}/use-cache-hidden-reference`, {
+        method: "POST",
+        headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+        body: form,
+      });
+      // The hoisted name is no longer exported, so React's decodeAction fails
+      // to resolve it. Like Next.js for an unknown progressive action, that
+      // surfaces as a 500 rather than running anything.
+      if (actionId.endsWith("#$$hoist_0_readInlineRecord")) {
+        expect(formAction.status).toBe(500);
+      } else {
+        expect(formAction.status).toBe(404);
+        expect(formAction.headers.get("x-nextjs-action-not-found")).toBe("1");
       }
+      expect(await formAction.text()).not.toContain(secret);
     }
   });
 
