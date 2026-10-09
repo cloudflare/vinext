@@ -948,6 +948,26 @@ describe("App Router Production server (startProdServer)", () => {
     expect(dynamicScriptPreloadHrefs).toContain(`/${bannerEntry.file}`);
   });
 
+  it("renders a resolved next/dynamic component with CSS inline and keeps the stylesheet nonce", async () => {
+    // A precedence stylesheet inside a Suspense boundary makes React outline it
+    // (a `<!--$?-->` placeholder, content in a hidden segment after the shell)
+    // even when the content is already resolved, so the dynamic stylesheet must
+    // render outside the boundary. It must also render ahead of the content,
+    // which links the same CSS without the nonce. Render twice so the lazy
+    // import is resolved.
+    await (await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`)).text();
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/<\/h1><!--\$--><p id="rsc-imports-client-widget">/);
+    const dynamicStylesheets = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+      (tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag),
+    );
+    expect(dynamicStylesheets).toHaveLength(1);
+    expect(dynamicStylesheets[0]).toContain('nonce="vinext-test-nonce"');
+  });
+
   it("emits next/dynamic chunk preloads without a nonce when no CSP is set", async () => {
     // No ?csp-nonce → middleware applies no CSP header, so no nonce is threaded.
     // The preload optimization is independent of CSP: the links must still be
