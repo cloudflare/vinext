@@ -732,14 +732,20 @@ describe("App Router optimistic routing", () => {
         rootLayoutTreePath: "/",
         routeId,
       });
-    const createShellTemplate = (pattern: string, href: string, loadingTreePosition: number) => {
+    const createShellTemplate = (
+      pattern: string,
+      href: string,
+      loadingTreePosition: number | null,
+    ) => {
       const template = createOptimisticRouteTemplate({
         allowLoadingShell: true,
         basePath: "",
         elements: {
           ...currentElementsFor(`route:${pattern}`),
           [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
-          [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: loadingTreePosition,
+          ...(loadingTreePosition === null
+            ? {}
+            : { [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: loadingTreePosition }),
           [`page:${pattern}`]: null,
           [`route:${pattern}`]: createElement("p", null, "Loading"),
         },
@@ -774,6 +780,11 @@ describe("App Router optimistic routing", () => {
     expect(canCommit(twoShell, "route:/s/one")).toBe(false);
     expect(canCommit(twoShell, "route:/s/alpha")).toBe(true);
     expect(canCommit(twoShell, "route:/s/other")).toBe(true);
+    // A shell without a children loading position (slot loading only) is
+    // never compared.
+    const slotOnlyShell = createShellTemplate("/s/two", "/s/two", null);
+    expect(slotOnlyShell.loadingTreePosition).toBeNull();
+    expect(canCommit(slotOnlyShell, "route:/s/one")).toBe(true);
     // A route outside the manifest, or an intercepted current page, keeps the
     // shell.
     expect(canCommit(twoShell, "route:/missing")).toBe(true);

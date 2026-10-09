@@ -1303,6 +1303,8 @@ describe("app page route wiring helpers", () => {
 
     expect(elements["page:/dashboard"]).toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    // A leaf loading sits one level below the route's last segment.
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(1);
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
     expect(html).toContain("Route loading");

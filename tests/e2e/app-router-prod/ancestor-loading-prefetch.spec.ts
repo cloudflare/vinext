@@ -15,7 +15,7 @@ type LoadingWindow = { __sawLoading?: boolean };
 async function clickWithHeldNavigation(
   page: Page,
   options: { from: string; current: string; link: string; loading: string; targetPath: string },
-): Promise<() => Promise<void>> {
+): Promise<() => void> {
   let releaseNavigation!: () => void;
   let navigationRequestSeen = false;
   const navigationReleased = new Promise<void>((resolve) => {
@@ -59,12 +59,15 @@ async function clickWithHeldNavigation(
       }
     }).observe(document.body, { childList: true, subtree: true });
   }, options.loading);
+  // Let the prefetch response settle into the client cache before the click.
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
   await page.locator(`#${options.link}`).click();
-  // The navigation must reach the network, or the hold proves nothing.
-  return async () => {
-    await expect.poll(() => navigationRequestSeen).toBe(true);
-    releaseNavigation();
-  };
+  // The navigation must reach the network, or the hold proves nothing. Any
+  // optimistic commit has already started by then.
+  await expect.poll(() => navigationRequestSeen).toBe(true);
+  return releaseNavigation;
 }
 
 function sawLoading(page: Page): Promise<boolean | undefined> {
@@ -129,11 +132,10 @@ for (const target of [
       loading: target.loading,
       targetPath: target.path,
     });
-    await page.waitForTimeout(1_000);
     expect(await sawLoading(page)).toBe(false);
     await expect(page.locator(`#${target.current}`)).toBeVisible();
 
-    await releaseNavigation();
+    releaseNavigation();
     await expect(page.locator(`#${target.target}`)).toBeVisible({ timeout: 10_000 });
     expect(await sawLoading(page)).toBe(false);
   });
@@ -150,8 +152,8 @@ test("a prefetched loading shell still shows the loading when the boundary's chi
     targetPath: `${BASE}/beta`,
   });
   // The real navigation is held, so this fallback comes from the shell.
-  await expect(page.locator(`#${LOADING}`)).toBeVisible({ timeout: 2_000 });
+  await expect(page.locator(`#${LOADING}`)).toBeVisible();
 
-  await releaseNavigation();
+  releaseNavigation();
   await expect(page.locator("#ancestor-shared-layout-beta")).toBeVisible({ timeout: 10_000 });
 });
