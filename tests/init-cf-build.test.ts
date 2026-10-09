@@ -39,7 +39,10 @@ type WorkerCacheConfig = {
 // per-export policy overrides the Worker-wide one, which unlisted exports inherit.
 // https://developers.cloudflare.com/workers/cache/configuration/
 function cachedEntrypoints(config: WorkerCacheConfig): string[] {
-  const exports = { default: { type: "worker" }, ...config.exports };
+  const exports: NonNullable<WorkerCacheConfig["exports"]> = {
+    default: { type: "worker" },
+    ...config.exports,
+  };
   return Object.entries(exports)
     .filter(([, entry]) => entry.type === "worker")
     .filter(([, entry]) => entry.cache?.enabled ?? config.cache?.enabled ?? false)

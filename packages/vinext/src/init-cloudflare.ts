@@ -851,6 +851,9 @@ function readResponseStoreServiceName(root: string, appConfig: Record<string, un
       (Array.isArray(responseStoreConfig.migrations) &&
         responseStoreConfig.migrations.length === 0);
     if (
+      (responseStoreConfig.cache !== undefined &&
+        (!isUnknownRecord(responseStoreConfig.cache) ||
+          typeof responseStoreConfig.cache.enabled !== "boolean")) ||
       !isUnknownRecord(responseStoreExport) ||
       !isUnknownRecord(responseStoreExport.cache) ||
       responseStoreExport.cache.enabled !== true ||
