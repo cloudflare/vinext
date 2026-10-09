@@ -93,7 +93,9 @@ type Binding = {
   declaredNames: string[];
 };
 
-type Edit = { start: number; end: number; replacement: string };
+// Replacements that copy kept source are rendered lazily, once every nested
+// edit inside the copied range is known.
+type Edit = { start: number; end: number; replacement: string | (() => string) };
 
 function isInsideRanges(position: number, ranges: Array<{ start: number; end: number }>): boolean {
   return ranges.some((range) => position >= range.start && position < range.end);
@@ -293,16 +295,15 @@ function renderBindingPattern(
   return code.slice(pattern.start, pattern.end);
 }
 
-function assignmentRootName(node: PositionedNode): string | undefined {
-  if (node.type === "Identifier") return node.name;
-  if (node.type === "MemberExpression") return assignmentRootName(node.object as PositionedNode);
-  return undefined;
-}
-
-function assignmentBindingNames(node: PositionedNode): string[] {
-  if (node.type === "ArrayPattern" || node.type === "ObjectPattern") return bindingNames(node);
-  const rootName = assignmentRootName(node);
-  return rootName ? [rootName] : [];
+function assignmentTargetIdentifiers(node: PositionedNode): PositionedNode[] {
+  if (node.type === "ArrayPattern" || node.type === "ObjectPattern") {
+    return bindingIdentifiers(node);
+  }
+  if (node.type === "Identifier") return [node];
+  if (node.type === "MemberExpression") {
+    return assignmentTargetIdentifiers(node.object as PositionedNode);
+  }
+  return [];
 }
 
 function isAssignmentTargetIdentifier(node: PositionedNode, left: PositionedNode): boolean {
@@ -328,6 +329,7 @@ function findLexicalScope(ancestors: PositionedNode[]): PositionedNode | undefin
         "ForStatement",
         "ForInStatement",
         "ForOfStatement",
+        "StaticBlock",
       ].includes(ancestor.type),
     );
 }
@@ -389,15 +391,42 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   const forcedBindings = new Set<string>();
   const candidateBindings = new Set<string>();
   const bindings = new Map<string, Binding>();
+  const redeclarations: Binding[] = [];
+  const declarationsOf = (name: string): Binding[] => {
+    const binding = bindings.get(name);
+    return [
+      ...(binding ? [binding] : []),
+      ...redeclarations.filter((redeclaration) => redeclaration.name === name),
+    ];
+  };
+  const renderEdit = (edit: Edit): string =>
+    typeof edit.replacement === "function" ? edit.replacement() : edit.replacement;
+  // Copies kept source with the outermost edits nested inside it applied.
+  const renderRange = (start: number, end: number): string => {
+    const nested = edits
+      .filter(
+        (edit) => edit.start >= start && edit.end <= end && edit.end - edit.start < end - start,
+      )
+      .sort((left, right) => left.start - right.start || right.end - left.end);
+    let rendered = "";
+    let cursor = start;
+    for (const edit of nested) {
+      if (edit.start < cursor) continue;
+      rendered += code.slice(cursor, edit.start) + renderEdit(edit);
+      cursor = edit.end;
+    }
+    return rendered + code.slice(cursor, end);
+  };
   const bindingPositions = new Set<number>();
   const references = new Map<string, number[]>();
   const shadowRanges = new Map<string, Array<{ start: number; end: number }>>();
   const exportSpecifierRemovals = new Map<PositionedNode, Set<PositionedNode>>();
   const variableRemovals = new Map<PositionedNode, Set<PositionedNode>>();
   const importRemovals = new Map<PositionedNode, Set<PositionedNode>>();
-  const assignmentStatements: Array<{
-    statement: PositionedNode;
-    left: PositionedNode;
+  const assignments: Array<{
+    expression: PositionedNode;
+    statement: PositionedNode | undefined;
+    topLevel: boolean;
     bindingNames: string[];
   }> = [];
   const removedAssignments = new Set<PositionedNode>();
@@ -456,13 +485,6 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           declaredNames: [name],
         });
       }
-    } else if (statement.type === "ExpressionStatement") {
-      const expression = statement.expression as PositionedNode;
-      if (expression.type === "AssignmentExpression") {
-        const left = expression.left as PositionedNode;
-        const names = assignmentBindingNames(left);
-        if (names.length > 0) assignmentStatements.push({ statement, left, bindingNames: names });
-      }
     }
   }
 
@@ -501,16 +523,72 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           ? [...ancestors]
               .reverse()
               .find((ancestor) =>
-                ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(
-                  ancestor.type,
-                ),
+                [
+                  "FunctionDeclaration",
+                  "FunctionExpression",
+                  "ArrowFunctionExpression",
+                  "StaticBlock",
+                ].includes(ancestor.type),
               )
           : findLexicalScope(ancestors);
       for (const name of bindingNames(node.id as PositionedNode)) addShadowRange(name, scope);
+      // A `var` nested in a block outside any function is hoisted to module
+      // scope, so `export { getServerSideProps }` can name it. Loop-head
+      // declarations are not statements and cannot be dropped on their own.
+      const owner = ancestors.at(-2);
+      if (
+        parent.kind === "var" &&
+        !scope &&
+        owner &&
+        owner.type !== "ExportNamedDeclaration" &&
+        owner.init !== parent &&
+        owner.left !== parent
+      ) {
+        const declaredNames = bindingNames(node.id as PositionedNode);
+        for (const identifier of bindingIdentifiers(node.id as PositionedNode)) {
+          bindingPositions.add(identifier.start);
+        }
+        for (const name of declaredNames) {
+          const binding: Binding = {
+            name,
+            node,
+            parent,
+            kind: "variable",
+            implementation: (node.init as PositionedNode | null) ?? node,
+            declaredNames,
+          };
+          // `var` may redeclare a name, e.g. once per branch of an if/else;
+          // every declarator goes with the binding.
+          if (bindings.has(name)) redeclarations.push(binding);
+          else bindings.set(name, binding);
+        }
+      }
     }
   });
 
   walkAstWithAncestors(ast.body, (node, parent, ancestors = []) => {
+    if (node.type === "AssignmentExpression") {
+      // Assignments are collected at any depth: one inside a conditional
+      // branch must go with the binding it targets, or the assignment and
+      // the server-only code on its right-hand side stay in the browser graph.
+      const names = assignmentTargetIdentifiers(node.left as PositionedNode)
+        .filter(
+          (identifier) =>
+            !isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
+        )
+        .map((identifier) => identifier.name);
+      if (names.length > 0) {
+        const statement =
+          parent?.type === "ExpressionStatement" && parent.expression === node ? parent : undefined;
+        assignments.push({
+          expression: node,
+          statement,
+          topLevel: statement !== undefined && ancestors.length === 1,
+          bindingNames: names,
+        });
+      }
+      return;
+    }
     if (!isReferenceIdentifier(node, parent)) return;
     if (bindingPositions.has(node.start)) return;
     if (isInsideRanges(node.start, shadowRanges.get(node.name) ?? [])) return;
@@ -587,26 +665,55 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   while (changed) {
     changed = false;
 
-    for (const { statement, left, bindingNames: names } of assignmentStatements) {
+    for (const { expression, statement, topLevel, bindingNames: names } of assignments) {
       const removableNames = new Set(
         names.filter((name) => forcedBindings.has(name) || deadBindings.has(name)),
       );
       if (removableNames.size === 0) continue;
-      if (removedAssignments.has(statement)) continue;
-      const expression = statement.expression as PositionedNode;
+      if (removedAssignments.has(expression)) continue;
+      const left = expression.left as PositionedNode;
       const renderedLeft =
         left.type === "ArrayPattern" || left.type === "ObjectPattern"
           ? renderBindingPattern(code, left, removableNames)
           : null;
-      removedAssignments.add(statement);
+      const right = expression.right as PositionedNode;
+      const renderRight = () => renderRange(right.start, right.end);
+      removedAssignments.add(expression);
+      const target = statement ?? expression;
+      if (renderedLeft) {
+        edits.push({
+          start: target.start,
+          end: target.end,
+          replacement: () => {
+            const assignment = `${renderedLeft} ${expression.operator} ${renderRight()}`;
+            if (!statement) return `(${assignment})`;
+            return left.type === "ObjectPattern" ? `(${assignment});` : `${assignment};`;
+          },
+        });
+        continue;
+      }
+      // In expression position a dead helper's assignment still yields its
+      // right-hand side, as in Turbopack. A data export's right-hand side is
+      // the server-only code being removed, so that assignment becomes `void 0`.
+      if (
+        !statement &&
+        ![...removableNames].some((name) => forcedBindings.has(name) || candidateBindings.has(name))
+      ) {
+        edits.push({
+          start: target.start,
+          end: target.end,
+          replacement: () => `(${renderRight()})`,
+        });
+        continue;
+      }
+      // A nested statement may be the only body of an `if` or loop, so it
+      // becomes an empty statement rather than disappearing.
       edits.push({
-        start: statement.start,
-        end: statement.end,
-        replacement: renderedLeft
-          ? `${left.type === "ObjectPattern" ? `(${renderedLeft} ${expression.operator} ${code.slice(expression.right.start, expression.right.end)})` : `${renderedLeft} ${expression.operator} ${code.slice(expression.right.start, expression.right.end)}`};`
-          : "",
+        start: target.start,
+        end: target.end,
+        replacement: statement ? (topLevel ? "" : ";") : "void 0",
       });
-      if (!renderedLeft && addDeadRange(statement)) changed = true;
+      if (addDeadRange(target)) changed = true;
     }
 
     const removableBindings = new Set<string>();
@@ -622,9 +729,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     let closureChanged = true;
     while (closureChanged) {
       closureChanged = false;
-      const implementations = [...removableBindings]
-        .map((name) => bindings.get(name)?.implementation)
-        .filter((implementation): implementation is PositionedNode => Boolean(implementation));
+      const implementations = [...removableBindings].flatMap((name) =>
+        declarationsOf(name).map((binding) => binding.implementation),
+      );
       for (const [name] of bindings) {
         if (removableBindings.has(name)) continue;
         if (
@@ -638,9 +745,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     let pruneChanged = true;
     while (pruneChanged) {
       pruneChanged = false;
-      const implementations = [...removableBindings]
-        .map((name) => bindings.get(name)?.implementation)
-        .filter((implementation): implementation is PositionedNode => Boolean(implementation));
+      const implementations = [...removableBindings].flatMap((name) =>
+        declarationsOf(name).map((binding) => binding.implementation),
+      );
       for (const name of removableBindings) {
         if (forcedBindings.has(name)) continue;
         const hasLiveReference = (references.get(name) ?? []).some(
@@ -664,17 +771,15 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       }
     }
 
-    for (const binding of new Set(bindings.values())) {
+    for (const binding of new Set([...bindings.values(), ...redeclarations])) {
       if (binding.kind !== "variable") continue;
       if (!binding.declaredNames.every((name) => deadBindings.has(name))) continue;
       if (addDeadRange(binding.implementation)) changed = true;
     }
   }
 
-  for (const name of deadBindings) {
-    const binding = bindings.get(name);
-    if (!binding) continue;
-
+  for (const binding of [...deadBindings].flatMap(declarationsOf)) {
+    const name = binding.name;
     if (forcedBindings.has(name)) {
       if (
         (binding.kind === "function" || binding.kind === "class") &&
@@ -718,14 +823,6 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     });
   }
   for (const [declaration, removed] of variableRemovals) {
-    const rendered = (declaration.declarations as PositionedNode[]).flatMap((declarator) => {
-      if (!removed.has(declarator)) return [code.slice(declarator.start, declarator.end)];
-      const pattern = renderBindingPattern(code, declarator.id as PositionedNode, deadBindings);
-      if (!pattern) return [];
-      return [
-        `${pattern}${declarator.init ? ` = ${code.slice(declarator.init.start, declarator.init.end)}` : ""}`,
-      ];
-    });
     const exportStatement = statements.find(
       (statement) =>
         statement.type === "ExportNamedDeclaration" && statement.declaration === declaration,
@@ -733,10 +830,20 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     edits.push({
       start: exportStatement?.start ?? declaration.start,
       end: declaration.end,
-      replacement:
-        rendered.length > 0
-          ? `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")};`
-          : "",
+      replacement: () => {
+        const rendered = (declaration.declarations as PositionedNode[]).flatMap((declarator) => {
+          if (!removed.has(declarator)) return [renderRange(declarator.start, declarator.end)];
+          const pattern = renderBindingPattern(code, declarator.id as PositionedNode, deadBindings);
+          if (!pattern) return [];
+          return [
+            `${pattern}${declarator.init ? ` = ${renderRange(declarator.init.start, declarator.init.end)}` : ""}`,
+          ];
+        });
+        if (rendered.length > 0) {
+          return `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")};`;
+        }
+        return exportStatement || statements.includes(declaration) ? "" : ";";
+      },
     });
   }
   for (const [statement, removed] of importRemovals) {
@@ -752,12 +859,14 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   const string = new MagicString(code);
   const uniqueEdits = [
     ...new Map(edits.map((edit) => [`${edit.start}:${edit.end}`, edit])).values(),
-  ].sort((left, right) => right.start - left.start || right.end - left.end);
-  let lastStart = Number.POSITIVE_INFINITY;
+  ].sort((left, right) => left.start - right.start || right.end - left.end);
+  // Nested assignments can sit inside a range that is already being removed or
+  // re-rendered; the outermost edit wins and renders any nested edits itself.
+  let lastEnd = Number.NEGATIVE_INFINITY;
   for (const edit of uniqueEdits) {
-    if (edit.end > lastStart) continue;
-    string.overwrite(edit.start, edit.end, edit.replacement);
-    lastStart = edit.start;
+    if (edit.start < lastEnd) continue;
+    string.overwrite(edit.start, edit.end, renderEdit(edit));
+    lastEnd = edit.end;
   }
   // The MagicString already tracks every overwrite, so emit its sourcemap
   // instead of dropping it — removing whole statements shifts line numbers for

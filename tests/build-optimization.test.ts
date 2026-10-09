@@ -4279,6 +4279,162 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it.each([
+    [
+      "an if block",
+      `let getServerSideProps;
+if (process.env.FEATURE) {
+  getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export { getServerSideProps };`,
+    ],
+    [
+      "a braceless if",
+      `let getServerSideProps;
+if (process.env.FEATURE) getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+else getServerSideProps = undefined;
+export { getServerSideProps };`,
+    ],
+    [
+      "a try block",
+      `export let getStaticProps;
+try { getStaticProps = async () => ({ props: { key: SIGNING_KEY } }); } catch {}`,
+    ],
+    [
+      "a switch case",
+      `let getServerSideProps;
+switch (process.env.MODE) {
+  case "private":
+    getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export { getServerSideProps };`,
+    ],
+    [
+      "a logical expression",
+      `let getServerSideProps;
+process.env.FEATURE && (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }));
+export { getServerSideProps };`,
+    ],
+    [
+      "a block-scoped var declaration",
+      `if (process.env.FEATURE) {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export { getServerSideProps };`,
+    ],
+    [
+      "both branches of an if/else",
+      `if (process.env.FEATURE) {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+} else {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY.slice(1) } });
+}
+export { getServerSideProps };`,
+    ],
+    [
+      "a block after a top-level var declaration",
+      `export var getServerSideProps;
+if (process.env.FEATURE) {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}`,
+    ],
+    [
+      "a braceless loop body",
+      `for (const mode of ["private"]) var getServerSideProps = async () => ({ props: { key: SIGNING_KEY, mode } });
+export { getServerSideProps };`,
+    ],
+    [
+      "an argument of a kept declaration",
+      `let getServerSideProps;
+const client = connect(SIGNING_KEY), registered = register((getServerSideProps = async () => ({ props: { key: client.key } })));
+export { getServerSideProps };`,
+    ],
+  ])("removes a data export assigned inside %s", (_label, dataExport) => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+${dataExport}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("server-config");
+    expect(result).not.toContain("SIGNING_KEY");
+    expect(result).not.toMatch(/\bget(ServerSideProps|StaticProps)\b/);
+    expect(result).toContain("export default function Page()");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes nested assignments to helpers that become unused", () => {
+    const code = `
+import secret from './secret';
+let cache;
+function Page() { cache = 1; return null; }
+export function getStaticProps() {
+  if (!cache) { cache = secret; }
+  return { props: { cache } };
+}
+export default Page;
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("./secret");
+    expect(result).not.toMatch(/\bcache\b/);
+    expect(result).toContain("function Page()");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the value of a dead helper assigned in expression position", () => {
+    // Matches Turbopack, which keeps the right-hand side of the assignment.
+    const code = `
+import { createStore } from './store';
+let store;
+function useStore() { return store ??= createStore(); }
+export function getServerSideProps() { return { props: { store: store ?? null } }; }
+export default function Page() { return useStore().value; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("import { createStore } from './store';");
+    expect(result).toContain("return (createStore());");
+    expect(result).not.toContain("let store");
+    expect(result).not.toContain("store ??=");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps nested assignments to a var scoped by a class static block", () => {
+    const code = `
+import { secret } from './secret';
+class Store {
+  static {
+    var getServerSideProps;
+    getServerSideProps = createValue();
+    Store.value = getServerSideProps;
+  }
+}
+export async function getServerSideProps() { return { props: { secret } }; }
+export default function Page() { return Store.value; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("getServerSideProps = createValue();");
+    expect(result).not.toContain("./secret");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps nested assignments to shadowing locals", () => {
+    const code = `
+import { visible } from './visible';
+let getServerSideProps;
+function helper(getServerSideProps) {
+  getServerSideProps = visible;
+  return getServerSideProps;
+}
+export { getServerSideProps };
+export default function Page() { return helper(); }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("import { visible } from './visible';");
+    expect(result).toContain("getServerSideProps = visible;");
+    expect(result).not.toContain("let getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("removes Babel-style memoized helpers used only by data exports", () => {
     // Ported from Next.js:
     // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/support-babel-style-memoized-function
