@@ -4743,6 +4743,125 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it.each([
+    [
+      "a catch clause",
+      `try { throw new Error("x"); } catch (label) { void label; }
+  return label(2);`,
+    ],
+    [
+      "a switch",
+      `switch (label(3)) {
+    case "a": const label = 0; return String(label);
+    default: return "b";
+  }`,
+    ],
+    [
+      "a class static block",
+      `class Widget { static { var label = 0; void label; } static value = label(5); }
+  return Widget.value;`,
+    ],
+    [
+      "a nested var",
+      `if (Math.random() > 2) { var label2 = label(6); }
+  function inner() { if (true) { var label = 1; } return label; }
+  return String(inner()) + label2;`,
+    ],
+    [
+      "a loop",
+      `let out = "";
+  for (const label of [1]) out += label;
+  for (let i = 0; i < 1; i++) out += label(i);
+  return out;`,
+    ],
+    [
+      "a parameter default",
+      `const read = (label = 1) => label;
+  return label(read());`,
+    ],
+  ])("keeps a helper shared with the client when the client use is in %s", (_label, body) => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  ${body}
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain('import { format } from "./format";');
+    expect(result).toContain("const label = (value) => format(value);");
+    expect(result).toContain(body);
+    expect(result).not.toContain("getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it.each([
+    [
+      "a try block",
+      `try {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+  cache = label(2);
+} catch {}`,
+      "cache = label(2);",
+    ],
+    [
+      "a switch case",
+      `switch (process.env.MODE) {
+  case "ssr":
+    getServerSideProps = async () => ({ props: { value: label(1) } });
+    cache = label(2);
+    break;
+}`,
+      "cache = label(2);",
+    ],
+    [
+      "a class static block",
+      `class Init {
+  static {
+    getServerSideProps = async () => ({ props: { value: label(1) } });
+    cache = label(2);
+  }
+}`,
+      "cache = label(2);",
+    ],
+    [
+      "a block with nested vars",
+      `if (process.env.ENABLED) {
+  var getServerSideProps = async () => ({ props: { value: label(1) } });
+  var nested = label(2);
+  cache = nested;
+}`,
+      "var nested = label(2);",
+    ],
+    [
+      "a loop body",
+      `for (const mode of ["ssr"]) {
+  if (mode) getServerSideProps = async () => ({ props: { value: label(1) } });
+  cache = label(2);
+}`,
+      "cache = label(2);",
+    ],
+  ])("keeps the client half of %s that also assigns the data export", (_label, block, kept) => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+${block.includes("var getServerSideProps") ? "" : "let getServerSideProps;\n"}${block}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain('import { format } from "./format";');
+    expect(result).toContain("const label = (value) => format(value);");
+    expect(result).toContain(kept);
+    expect(result).not.toContain("getServerSideProps");
+    expect(result).not.toContain("label(1)");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("keeps nested assignments to shadowing locals", () => {
     const code = `
 import { visible } from './visible';
