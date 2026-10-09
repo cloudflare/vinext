@@ -1343,6 +1343,23 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       isStaticExport: true,
     },
     {
+      name: "an output set from .env.production",
+      files: {
+        ".env.production": "STATIC_EXPORT=1\n",
+        "next.config.mjs":
+          'export default process.env.STATIC_EXPORT ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set for production builds",
+      files: {
+        "next.config.mjs":
+          'export default process.env.NODE_ENV === "production" ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
       name: "a commented-out output",
       files: { "next.config.mjs": '// output: "export",\nexport default {};\n' },
       isStaticExport: false,
@@ -1357,6 +1374,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(readFile(tmpDir, "cloudflare.config.ts").includes('runWorkerFirst: ["/*"')).toBe(
       !isStaticExport,
     );
+    expect(process.env.STATIC_EXPORT).toBeUndefined();
   });
 
   it.each(["service-binding", "self-contained", "workers-cache", "none"] as const)(

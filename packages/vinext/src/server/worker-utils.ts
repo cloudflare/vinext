@@ -5,7 +5,7 @@
  * Router worker entry through "vinext/server/worker-utils".
  */
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import { readStaticFileSignal } from "./static-file-signal.js";
+import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -124,7 +124,8 @@ export function mergeHeaders(
 export async function resolveStaticAssetSignal(
   signalResponse: Response,
   options: {
-    fetchAsset(path: string): Promise<Response>;
+    /** `requestHeaders` are the post-middleware request headers, when middleware set any. */
+    fetchAsset(path: string, requestHeaders: Headers | null): Promise<Response>;
   },
 ): Promise<Response | null> {
   const signal = readStaticFileSignal(signalResponse);
@@ -144,8 +145,9 @@ export async function resolveStaticAssetSignal(
     "transfer-encoding",
   ]);
 
+  const requestHeaders = readStaticFileSignalRequestHeaders(signalResponse);
   cancelResponseBody(signalResponse);
-  const assetResponse = await options.fetchAsset(assetPath);
+  const assetResponse = await options.fetchAsset(assetPath, requestHeaders);
   // Only preserve the middleware/status-layer override when we actually got a
   // real asset response back. If the asset lookup misses (404/other non-ok),
   // or returns a partial response, keep that filesystem result instead of
@@ -157,14 +159,24 @@ export async function resolveStaticAssetSignal(
   return mergeHeaders(assetResponse, extraHeaders, statusOverride);
 }
 
-/** Retarget a Worker asset request without dropping its conditional/range fields. */
-export function createStaticAssetRequest(assetPath: string, sourceRequest: Request): Request {
+/**
+ * Retarget a Worker asset request without dropping its conditional/range
+ * fields. `headers` replaces the source request's headers with middleware's
+ * overrides, so a removed `Range` or replaced validator reaches the asset fetch.
+ */
+export function createStaticAssetRequest(
+  assetPath: string,
+  sourceRequest: Request,
+  headers: Headers | null = null,
+): Request {
   const assetUrl = new URL(assetPath, sourceRequest.url);
   if (sourceRequest.method === "GET" || sourceRequest.method === "HEAD") {
-    return new Request(assetUrl, sourceRequest);
+    return headers
+      ? new Request(new Request(assetUrl, sourceRequest), { headers })
+      : new Request(assetUrl, sourceRequest);
   }
   return new Request(assetUrl, {
     method: sourceRequest.method,
-    headers: sourceRequest.headers,
+    headers: headers ?? sourceRequest.headers,
   });
 }

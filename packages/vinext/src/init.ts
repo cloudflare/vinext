@@ -526,17 +526,23 @@ export function updateGitignore(
 
 /**
  * Read `output` from the effective Next.js config, as `vinext build` does: an
- * inline `vinext({ nextConfig })` in the Vite config wins over next.config.
- * A config that cannot load here keeps the Worker-first default. The loader is
- * imported lazily because it needs Vite, which create-vinext-app runs without.
+ * inline `vinext({ nextConfig })` in the Vite config wins over next.config,
+ * and both are evaluated with `.env.production` loaded and NODE_ENV set to
+ * production. A config that cannot load here keeps the Worker-first default.
+ * The loader is imported lazily because it needs Vite, which create-vinext-app
+ * runs without.
  */
 async function resolvesToStaticExport(
   root: string,
   viteConfigPath: string | undefined,
 ): Promise<boolean> {
   let configModule: typeof import("./config/next-config.js");
+  let dotenvModule: typeof import("./config/dotenv.js");
   try {
-    configModule = await import("./config/next-config.js");
+    [configModule, dotenvModule] = await Promise.all([
+      import("./config/next-config.js"),
+      import("./config/dotenv.js"),
+    ]);
   } catch {
     return false;
   }
@@ -546,29 +552,42 @@ async function resolvesToStaticExport(
     PHASE_PRODUCTION_BUILD,
     resolveNextConfigInput,
   } = configModule;
-  let nextConfig: NextConfig | null = null;
-  if (viteConfigPath) {
-    try {
-      const { loadConfigFromFile } = await import("vite");
-      const loaded = await loadConfigFromFile(
-        { command: "build", mode: "production" },
-        viteConfigPath,
-        root,
-        "silent",
-      );
-      const inline = await findVinextNextConfigInPlugins(loaded?.config.plugins);
-      if (inline) nextConfig = await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD);
-    } catch {
-      // A Vite config whose plugins are not installed yet cannot load here;
-      // next.config still decides.
-    }
-  }
+  // Restore the environment afterwards so the build-time values do not leak
+  // into the rest of init, such as the dependency install.
+  const savedEnv = { ...process.env };
+  dotenvModule.loadDotenv({ root, mode: "production" });
+  // Next.js's vendored global declarations mark NODE_ENV readonly.
+  Reflect.set(process.env, "NODE_ENV", "production");
   try {
-    nextConfig ??= await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
-  } catch {
-    return false;
+    let nextConfig: NextConfig | null = null;
+    if (viteConfigPath) {
+      try {
+        const { loadConfigFromFile } = await import("vite");
+        const loaded = await loadConfigFromFile(
+          { command: "build", mode: "production" },
+          viteConfigPath,
+          root,
+          "silent",
+        );
+        const inline = await findVinextNextConfigInPlugins(loaded?.config.plugins);
+        if (inline) nextConfig = await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD);
+      } catch {
+        // A Vite config whose plugins are not installed yet cannot load here;
+        // next.config still decides.
+      }
+    }
+    try {
+      nextConfig ??= await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+    } catch {
+      return false;
+    }
+    return nextConfig?.output === "export";
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!Object.hasOwn(savedEnv, key)) delete process.env[key];
+    }
+    Object.assign(process.env, savedEnv);
   }
-  return nextConfig?.output === "export";
 }
 
 type PlatformSetupContext = {

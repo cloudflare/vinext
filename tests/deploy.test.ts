@@ -2152,6 +2152,31 @@ describe("readPagesRouterEntrySource", () => {
     expect(Object.fromEntries(assetRequest.headers)).toEqual(Object.fromEntries(source.headers));
   });
 
+  it("retargets Worker assets with middleware's request header overrides", () => {
+    const source = new Request("https://example.com/video.mp4", {
+      method: "HEAD",
+      headers: { range: "bytes=0-2", "if-none-match": '"original"' },
+    });
+
+    const assetRequest = createStaticAssetRequest(
+      "/video.mp4",
+      source,
+      new Headers({ "if-none-match": '"replaced"' }),
+    );
+    expect(assetRequest.method).toBe("HEAD");
+    expect(Object.fromEntries(assetRequest.headers)).toEqual({ "if-none-match": '"replaced"' });
+  });
+
+  it("passes a signal's request headers to the asset fetch", async () => {
+    const requestHeaders = new Headers({ accept: "video/*" });
+    const fetchAsset = vi.fn(async () => new Response("asset"));
+    await resolveStaticAssetSignal(
+      createStaticFileSignal("/video.mp4", { headers: null, status: null }, requestHeaders),
+      { fetchAsset },
+    );
+    expect(fetchAsset).toHaveBeenCalledWith("/video.mp4", requestHeaders);
+  });
+
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
     const content = readPagesRouterEntrySource();
     // applyMiddlewareRequestHeaders is now called inside runPagesRequest.

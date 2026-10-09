@@ -203,7 +203,8 @@ async function handleRequest(
   let response = result;
   if (assets) {
     const assetResponse = await resolveStaticAssetSignal(response, {
-      fetchAsset: (path) => Promise.resolve(assets.fetch(createStaticAssetRequest(path, request))),
+      fetchAsset: (path, requestHeaders) =>
+        Promise.resolve(assets.fetch(createStaticAssetRequest(path, request, requestHeaders))),
     });
     if (assetResponse) response = assetResponse;
   }
