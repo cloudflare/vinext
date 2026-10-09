@@ -4,21 +4,21 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { formatPostDate, postPath, posts, SITE_URL } from "./_source";
 
-const title = "vinext blog";
+const title = "Vinext blog";
 const description =
-  "Release notes, deep dives, and engineering updates from the team building vinext, the Next.js API surface reimplemented on Vite.";
+  "Release notes, deep dives, and engineering updates from the team building Vinext, the Next.js API surface reimplemented on Vite.";
 
 export const metadata: Metadata = {
-  title: "Blog | vinext",
+  title: "Blog | Vinext",
   description,
-  keywords: ["vinext blog", "vinext releases", "Next.js on Vite", "Next.js on Cloudflare Workers"],
+  keywords: ["Vinext blog", "Vinext releases", "Next.js on Vite", "Next.js on Cloudflare Workers"],
   alternates: {
     canonical: "/blog",
     types: { "application/rss+xml": "/blog/feed.xml" },
   },
   openGraph: {
     type: "website",
-    siteName: "vinext",
+    siteName: "Vinext",
     locale: "en_US",
     title,
     description,
@@ -91,7 +91,6 @@ export default function BlogIndexPage() {
               <article>
                 <p className="flex flex-wrap items-center gap-2 text-sm text-kumo-subtle">
                   <time dateTime={post.date}>{formatPostDate(post.date)}</time>
-                  {post.version ? <Badge variant="primary">v{post.version}</Badge> : null}
                   {post.draft ? <Badge variant="outline">Draft</Badge> : null}
                 </p>
                 <h2 className="mt-3 text-2xl font-semibold tracking-tight text-kumo-default">

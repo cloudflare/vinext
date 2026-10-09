@@ -22,7 +22,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
   const path = postPath(post);
   return {
-    title: `${post.title} | vinext blog`,
+    title: `${post.title} | Vinext blog`,
     description: post.description,
     keywords: post.tags,
     authors: post.authors,
@@ -32,7 +32,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     },
     openGraph: {
       type: "article",
-      siteName: "vinext",
+      siteName: "Vinext",
       locale: "en_US",
       title: post.title,
       description: post.description,
@@ -84,14 +84,14 @@ export default async function BlogPostPage({ params }: Props) {
         },
         isPartOf: {
           "@type": "Blog",
-          name: "vinext blog",
+          name: "Vinext blog",
           url: `${SITE_URL}/blog`,
         },
       },
       {
         "@type": "BreadcrumbList",
         itemListElement: [
-          { "@type": "ListItem", position: 1, name: "vinext", item: SITE_URL },
+          { "@type": "ListItem", position: 1, name: "Vinext", item: SITE_URL },
           { "@type": "ListItem", position: 2, name: "Blog", item: `${SITE_URL}/blog` },
           { "@type": "ListItem", position: 3, name: post.title, item: url },
         ],
@@ -117,14 +117,14 @@ export default async function BlogPostPage({ params }: Props) {
 
       <article>
         <header className="mb-10 border-b border-kumo-hairline pb-8">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            {post.version ? <Badge variant="primary">v{post.version}</Badge> : null}
-            {post.draft ? <Badge variant="outline">Draft</Badge> : null}
-          </div>
+          {post.draft ? (
+            <div className="mb-4">
+              <Badge variant="outline">Draft</Badge>
+            </div>
+          ) : null}
           <h1 className="text-4xl font-semibold tracking-tight text-kumo-default sm:text-5xl">
             {post.title}
           </h1>
-          <p className="mt-4 text-lg leading-8 text-kumo-subtle">{post.description}</p>
           <p className="mt-6 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-kumo-subtle">
             <span>
               {post.authors.map((author, index) => (

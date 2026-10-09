@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { renderBlogOgImage, OG_IMAGE_SIZE } from "../_og-image";
 import { formatPostDate, posts, postsBySlug } from "../_source";
 
-export const alt = "vinext blog post";
+export const alt = "Vinext blog post";
 export const size = OG_IMAGE_SIZE;
 export const contentType = "image/png";
 
@@ -17,7 +17,6 @@ export default async function Image({ params }: { params: Promise<{ slug: string
   return renderBlogOgImage({
     title: post.title,
     description: post.description,
-    badge: post.version ? `v${post.version}` : undefined,
     footer: `${formatPostDate(post.date)} · ${post.authors.map((author) => author.name).join(", ")}`,
   });
 }

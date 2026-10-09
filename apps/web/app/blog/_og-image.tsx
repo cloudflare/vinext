@@ -5,8 +5,6 @@ export const OG_IMAGE_SIZE = { width: 1200, height: 630 };
 type OgImageProps = {
   title: string;
   description: string;
-  /** Short label for the top-right corner, such as a release version. */
-  badge?: string;
   /** Left-hand footer text, such as the publish date and author. */
   footer: string;
 };
@@ -27,7 +25,7 @@ async function loadFonts() {
 }
 
 /** Render the shared social card used by the blog index and every post. */
-export async function renderBlogOgImage({ title, description, badge, footer }: OgImageProps) {
+export async function renderBlogOgImage({ title, description, footer }: OgImageProps) {
   const titleSize = title.length > 70 ? 54 : title.length > 40 ? 64 : 76;
 
   return new ImageResponse(
@@ -46,27 +44,9 @@ export async function renderBlogOgImage({ title, description, badge, footer }: O
           "radial-gradient(circle at 88% 0%, rgba(59, 130, 246, 0.35), transparent 45%), radial-gradient(circle at 0% 100%, rgba(249, 115, 22, 0.22), transparent 40%)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "baseline", fontSize: 36 }}>
-          <span style={{ fontWeight: 600, letterSpacing: "-0.02em" }}>vinext</span>
-          <span style={{ marginLeft: 14, color: "#71717a" }}>/ blog</span>
-        </div>
-        {badge ? (
-          <div
-            style={{
-              display: "flex",
-              padding: "8px 22px",
-              borderRadius: 999,
-              border: "2px solid rgba(96, 165, 250, 0.6)",
-              backgroundColor: "rgba(59, 130, 246, 0.15)",
-              color: "#bfdbfe",
-              fontSize: 28,
-              fontWeight: 600,
-            }}
-          >
-            {badge}
-          </div>
-        ) : null}
+      <div style={{ display: "flex", alignItems: "baseline", fontSize: 36 }}>
+        <span style={{ fontWeight: 600, letterSpacing: "-0.02em" }}>Vinext</span>
+        <span style={{ marginLeft: 14, color: "#71717a" }}>/ blog</span>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column" }}>

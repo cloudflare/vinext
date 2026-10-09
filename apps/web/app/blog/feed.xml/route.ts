@@ -37,9 +37,9 @@ export function GET() {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
-    <title>vinext blog</title>
+    <title>Vinext blog</title>
     <link>${SITE_URL}/blog</link>
-    <description>Release notes, deep dives, and engineering updates from the vinext team.</description>
+    <description>Release notes, deep dives, and engineering updates from the Vinext team.</description>
     <language>en-us</language>
     <atom:link href="${SITE_URL}/blog/feed.xml" rel="self" type="application/rss+xml" />
 ${published[0] ? `    <lastBuildDate>${rfc822(published[0].updated ?? published[0].date)}</lastBuildDate>\n` : ""}${items}

@@ -3,11 +3,10 @@
  * (`content/blog/vinext-1-0.md` → `/blog/vinext-1-0`), and each file starts with
  * YAML frontmatter:
  *
- *   title: "vinext 1.0: …"        # page title, social card and feed title
+ *   title: "Vinext 1.0: …"        # page title, social card and feed title
  *   description: "…"              # meta description; aim for under 160 characters
  *   date: "2026-09-28"            # publish date
  *   updated: "2026-10-01"         # optional, last meaningful edit
- *   version: "1.0.0"              # optional, release badge on the post and social card
  *   authors:                      # names, or { name, url }
  *     - name: Jane Doe
  *       url: https://github.com/jane
@@ -34,8 +33,6 @@ export type BlogPost = {
   updated?: string;
   authors: BlogAuthor[];
   tags: string[];
-  /** The release a post announces, shown as a badge and on the social image. */
-  version?: string;
   draft: boolean;
   readingMinutes: number;
   content: ComponentType;
@@ -122,7 +119,6 @@ const allPosts = Object.entries(modules)
       updated: date(frontmatter, "updated", file),
       authors: authors(frontmatter, file),
       tags: tags(frontmatter, file),
-      version: optionalString(frontmatter, "version", file),
       draft: frontmatter.draft === true,
       readingMinutes: module.readingMinutes,
       content: module.default,
