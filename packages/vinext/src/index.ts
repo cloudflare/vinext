@@ -329,6 +329,10 @@ import {
   isConditionalRequireScriptModuleId,
 } from "./plugins/require-condition-resolution.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
+import {
+  blankDeadNextRuntimeRequireBranches,
+  definedNextRuntime,
+} from "./plugins/next-runtime-dead-branches.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import {
   consumerEnvironmentConditionFilter,
@@ -2244,7 +2248,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Do not await here: the filter is consulted synchronously while this
         // environment-scoped flag is set. The remaining async transform work
         // does not read it, so concurrent module transforms cannot cross-talk.
-        result = commonJsTransform.call(this, code, id, ...args);
+        // vite-plugin-commonjs hoists every require() to a top-level import,
+        // so drop the ones in branches the NEXT_RUNTIME define makes dead
+        // first, as Next.js does (see next-runtime-dead-branches.ts).
+        const liveCode =
+          blankDeadNextRuntimeRequireBranches(
+            code,
+            id,
+            definedNextRuntime(this.environment.config.define),
+          ) ?? code;
+        result = commonJsTransform.call(this, liveCode, id, ...args);
       } finally {
         transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
