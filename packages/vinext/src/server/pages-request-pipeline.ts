@@ -101,6 +101,12 @@ type PageRouteMatch = {
   route: { isDynamic: boolean; pattern?: string; dataKind?: PagesRouteDataKind };
 };
 
+/**
+ * Serve a filesystem route through an asset fetcher. A direct GET/HEAD is left
+ * to the host's asset layer, which answers those before the worker runs,
+ * unless `servesDirectRetrievals` says the host sent it here first (Nitro does
+ * for a public file its middleware matcher covers).
+ */
 export async function fetchWorkerFilesystemRoute(
   request: Request,
   requestPathname: string,
@@ -109,10 +115,11 @@ export async function fetchWorkerFilesystemRoute(
   publicFiles: ReadonlySet<string>,
   basePath = "",
   assetPathPrefix = "",
+  servesDirectRetrievals = false,
 ): Promise<Response | false> {
   const isRetrievalMethod = request.method === "GET" || request.method === "HEAD";
   if (
-    (phase === "direct" && isRetrievalMethod) ||
+    (phase === "direct" && isRetrievalMethod && !servesDirectRetrievals) ||
     requestPathname === "/api" ||
     requestPathname.startsWith("/api/")
   ) {
