@@ -6,10 +6,11 @@ const INLINE_SOURCEMAP_RE =
   /(\/\/# sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,)([A-Za-z0-9+/=]+)(\s*)$/;
 
 type SourceMap = {
+  sourceRoot?: string;
   sources?: (string | null)[];
   sourcesContent?: (string | null)[];
   // An index map keeps its originals in its sections' maps.
-  sections?: { map?: SourceMap }[];
+  sections?: { map?: SourceMap; url?: string }[];
 };
 
 // A data: URL segment, possibly behind a relative prefix added by Rolldown.
@@ -33,10 +34,20 @@ function dataUrlContent(source: string | null | undefined): string | null | unde
   }
 }
 
+/**
+ * The map's sources with `sourceRoot` prepended when it starts a data: URL,
+ * which can then span the root and each source.
+ */
+function resolvedSources(map: SourceMap): (string | null)[] | undefined {
+  if (!map.sourceRoot || !/(?:^|\/)data:/i.test(map.sourceRoot)) return map.sources;
+  const sources = map.sources?.length ? map.sources : [""];
+  return sources.map((source) => (source == null ? source : map.sourceRoot + source));
+}
+
 /** Every original a map carries, in `sourcesContent` or in a data: URL source. */
 function originalContents(map: SourceMap): string[] {
   const contents = (map.sourcesContent ?? []).filter((content) => content != null);
-  for (const source of map.sources ?? []) {
+  for (const source of resolvedSources(map) ?? []) {
     const content = dataUrlContent(source);
     if (content != null) contents.push(content);
   }
@@ -46,23 +57,44 @@ function originalContents(map: SourceMap): string[] {
   return contents;
 }
 
+/** Whether a data: URL is absent or carries only kept content. */
+function isKeptDataUrl(
+  url: string | null | undefined,
+  keep: (content: string) => boolean,
+): boolean {
+  const content = dataUrlContent(url);
+  return content === undefined || (content !== null && keep(content));
+}
+
 /** Drop every original that is not kept; returns whether anything changed. */
 function scrubSourcesContent(map: SourceMap, keep: (content: string) => boolean): boolean {
   let changed = false;
-  map.sources?.forEach((source, index) => {
-    const content = map.sourcesContent?.[index];
+  const sources = resolvedSources(map);
+  if (sources !== map.sources) {
+    map.sources = sources;
+    delete map.sourceRoot;
+    changed = true;
+  }
+  // Check every sourcesContent entry, including any past the end of `sources`.
+  map.sourcesContent?.forEach((content, index) => {
     if (content != null && !keep(content)) {
       map.sourcesContent![index] = null;
       changed = true;
     }
+  });
+  map.sources?.forEach((source, index) => {
     // A data: URL source carries its own content, independent of sourcesContent.
-    const dataContent = dataUrlContent(source);
-    if (dataContent === undefined || (dataContent !== null && keep(dataContent))) return;
+    if (isKeptDataUrl(source, keep)) return;
     map.sources![index] = "data:,";
     changed = true;
   });
   for (const section of map.sections ?? []) {
     if (section.map && scrubSourcesContent(section.map, keep)) changed = true;
+    // A section can also embed its map as a data: URL.
+    if (!isKeptDataUrl(section.url, keep)) {
+      section.url = "data:,";
+      changed = true;
+    }
   }
   return changed;
 }

@@ -210,6 +210,35 @@ describe("vinext:server-action-client-sourcemap", () => {
     expect(map.sourcesContent).toEqual([CLIENT_SOURCE, CLIENT_SOURCE]);
   });
 
+  it("checks sourcesContent entries past the end of sources", async () => {
+    const bundle = await generate(
+      withAsset({
+        version: 3,
+        sources: ["../app/actions.ts"],
+        sourcesContent: [null, ACTION_SOURCE],
+        mappings: "",
+      }),
+    );
+    expect(assetContent(bundle)).toEqual([null, null]);
+  });
+
+  it("redacts a data: URL that spans sourceRoot and the source", async () => {
+    const bundle = await generate(
+      withAsset({
+        version: 3,
+        sourceRoot: "data:text/javascript,",
+        sources: [encodeURIComponent(ACTION_SOURCE), encodeURIComponent(CLIENT_SOURCE)],
+        mappings: "",
+      }),
+    );
+    const map = JSON.parse(String(bundle["chunks/button.js.map"]!.source));
+    expect(map.sourceRoot).toBeUndefined();
+    expect(map.sources).toEqual([
+      "data:,",
+      `data:text/javascript,${encodeURIComponent(CLIENT_SOURCE)}`,
+    ]);
+  });
+
   it("scrubs the section maps of an index map", async () => {
     const indexMap = {
       version: 3,
@@ -225,6 +254,16 @@ describe("vinext:server-action-client-sourcemap", () => {
     const map = JSON.parse(String(bundle["chunks/button.js.map"]!.source));
     expect(map.sections[0].map.sourcesContent).toEqual([null, CLIENT_SOURCE]);
     expect(map.sections[1].map.sources).toEqual(["data:,"]);
+  });
+
+  it("redacts index map sections that embed their map as a data: URL", async () => {
+    const embedded = `data:application/json;base64,${Buffer.from(JSON.stringify(DEFAULT_MAP)).toString("base64")}`;
+    const bundle = await generate(
+      withAsset({ version: 3, sections: [{ offset: { line: 0, column: 0 }, url: embedded }] }),
+    );
+    expect(JSON.parse(String(bundle["chunks/button.js.map"]!.source)).sections[0].url).toBe(
+      "data:,",
+    );
   });
 
   it("keeps public originals from an index combined map", async () => {
