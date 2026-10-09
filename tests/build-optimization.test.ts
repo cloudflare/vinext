@@ -4642,8 +4642,8 @@ export function getStaticProps() { return { props: { helper, other } }; }
 export default function Page() { return count; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (({}).x of [1, 2]) count++;");
-    expect(result).toContain("for (({}).x in { a: 1 }) count++;");
+    expect(result).toContain("for (({ x: undefined }).x of [1, 2]) count++;");
+    expect(result).toContain("for (({ x: undefined }).x in { a: 1 }) count++;");
     expect(result).not.toMatch(/\b(helper|other)\b/);
     expect(() => parseAst(result!)).not.toThrow();
   });
@@ -4658,8 +4658,25 @@ export function getStaticProps() { return { props: { helper } }; }
 export default function Page() { return values; }
 `;
     const result = _stripServerExports(code);
-    expect(result).toContain("for (({}).x of [1, 2]) values.push(eval(");
+    expect(result).toContain("for (({ x: undefined }).x of [1, 2]) values.push(eval(");
     expect(result).not.toMatch(/\bhelper\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps helpers written through member targets in patterns and loop heads", () => {
+    // A member target can run a setter, so it reads its root.
+    const code = `
+let total = 0;
+const helper = { set value(v) { total += v; } };
+for (helper.value of [1, 2]) {}
+[helper.value] = [3];
+export function getStaticProps() { return { props: { helper } }; }
+export default function Page() { return total; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("const helper = { set value(v) { total += v; } };");
+    expect(result).toContain("for (helper.value of [1, 2]) {}");
+    expect(result).toContain("[helper.value] = [3];");
     expect(() => parseAst(result!)).not.toThrow();
   });
 

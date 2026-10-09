@@ -23,10 +23,10 @@ const SERVER_EXPORTS = new Set([
   "unstable_getStaticPaths",
 ]);
 
-// Loop target for a head that only wrote dead helpers. A member of a fresh
-// object introduces no binding, so nothing in the loop body (including direct
-// `eval`) can observe it.
-const UNUSED_LOOP_TARGET = "({}).x";
+// Loop target for a head that only wrote dead helpers. An own data property of
+// a fresh object introduces no binding and invokes no inherited setter, so
+// nothing in the loop body (including direct `eval`) can observe it.
+const UNUSED_LOOP_TARGET = "({ x: undefined }).x";
 
 // Stands in for a catch-bound target in `declaredNames`; it is never dead.
 const CATCH_BOUND_NAME = "\0catch-bound";
@@ -490,6 +490,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   };
   const bindingPositions = new Set<number>();
   const references = new Map<string, number[]>();
+  const memberTargetReads = new Map<string, number[]>();
   const shadowRanges = new Map<string, Array<{ start: number; end: number }>>();
   const exportSpecifierRemovals = new Map<PositionedNode, Set<PositionedNode>>();
   const variableRemovals = new Map<PositionedNode, Set<PositionedNode>>();
@@ -715,7 +716,22 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
             node.start >= ancestor.left.start &&
             node.end <= ancestor.left.end),
       );
-    if (writer && isAssignmentTargetIdentifier(node, writer.left as PositionedNode)) return;
+    if (writer && isAssignmentTargetIdentifier(node, writer.left as PositionedNode)) {
+      const left = writer.left as PositionedNode;
+      const isMemberRoot =
+        node !== left && !bindingIdentifiers(left).some((target) => target.start === node.start);
+      // A member target inside a pattern or loop head can run a setter, so it
+      // reads its root unless that root is a data export being removed.
+      if (
+        isMemberRoot &&
+        !(writer.type === "AssignmentExpression" && left.type === "MemberExpression")
+      ) {
+        const positions = memberTargetReads.get(node.name) ?? [];
+        positions.push(node.start);
+        memberTargetReads.set(node.name, positions);
+      }
+      return;
+    }
     const positions = references.get(node.name) ?? [];
     positions.push(node.start);
     references.set(node.name, positions);
@@ -925,10 +941,11 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       const implementations = removableImplementations(removableBindings, { shared: false });
       for (const name of removableBindings) {
         if (forcedBindings.has(name)) continue;
-        const hasLiveReference = (references.get(name) ?? []).some(
-          (position) =>
-            !isInsideRanges(position, deadRanges) && !isInsideRanges(position, implementations),
-        );
+        const isLive = (position: number) =>
+          !isInsideRanges(position, deadRanges) && !isInsideRanges(position, implementations);
+        const hasLiveReference =
+          (references.get(name) ?? []).some(isLive) ||
+          (!candidateBindings.has(name) && (memberTargetReads.get(name) ?? []).some(isLive));
         if (hasLiveReference) {
           removableBindings.delete(name);
           pruneChanged = true;
