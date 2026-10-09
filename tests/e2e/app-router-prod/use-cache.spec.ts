@@ -12,15 +12,13 @@ const recordsKey = derivedReferenceKey("app/use-cache-hidden-reference/records.t
 const inlineRecordsKey = derivedReferenceKey("app/use-cache-hidden-reference/inline-records.ts");
 
 const HIDDEN_CACHE_HELPERS = [
-  { source: "named", actionId: `${recordsKey}#readRecord`, secret: "VICTIM_PRIVATE_RECORD" },
-  { source: "default", actionId: `${recordsKey}#default`, secret: "VICTIM_DEFAULT_PRIVATE_RECORD" },
+  { actionId: `${recordsKey}#readRecord`, secret: "VICTIM_PRIVATE_RECORD" },
+  { actionId: `${recordsKey}#default`, secret: "VICTIM_DEFAULT_PRIVATE_RECORD" },
   {
-    source: "inline",
     actionId: `${inlineRecordsKey}#readInlineRecord`,
     secret: "VICTIM_INLINE_PRIVATE_RECORD",
   },
   {
-    source: "inline",
     actionId: `${inlineRecordsKey}#$$hoist_0_readInlineRecord`,
     secret: "VICTIM_INLINE_PRIVATE_RECORD",
   },
@@ -42,7 +40,11 @@ test.describe('production "use cache" server function references', () => {
     expect(anonymousHtml).toContain("FORBIDDEN");
     expect(anonymousHtml).not.toMatch(/VICTIM_\w*PRIVATE_RECORD/);
 
-    for (const { source, secret } of HIDDEN_CACHE_HELPERS) {
+    for (const [source, secret] of [
+      ["named", "VICTIM_PRIVATE_RECORD"],
+      ["default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+      ["inline", "VICTIM_INLINE_PRIVATE_RECORD"],
+    ] as const) {
       const victim = await request.get(
         `/use-cache-hidden-reference?record=victim&source=${source}`,
         {
@@ -89,6 +91,7 @@ test.describe('production "use cache" server function references', () => {
       });
 
       expect(exploit.status()).toBe(404);
+      expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
       expect(await exploit.text()).not.toContain(secret);
     });
   }

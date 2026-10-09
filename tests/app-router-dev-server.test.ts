@@ -2241,6 +2241,13 @@ describe("App Router integration", () => {
     expect(defaultVictim.status).toBe(200);
     expect(await defaultVictim.text()).toContain("VICTIM_DEFAULT_PRIVATE_RECORD");
 
+    const inlineVictim = await fetch(
+      `${baseUrl}/use-cache-hidden-reference?record=victim&source=inline`,
+      { headers: { Authorization: "Bearer fixture-victim-session" } },
+    );
+    expect(inlineVictim.status).toBe(200);
+    expect(await inlineVictim.text()).toContain("VICTIM_INLINE_PRIVATE_RECORD");
+
     for (const [actionId, secret] of [
       ["/app/use-cache-hidden-reference/records.ts#readRecord", "VICTIM_PRIVATE_RECORD"],
       ["/app/use-cache-hidden-reference/records.ts#default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
@@ -2267,7 +2274,10 @@ describe("App Router integration", () => {
             body: JSON.stringify(["victim"]),
           },
         ],
-        ["/use-cache-hidden-reference", { body: form }],
+        [
+          "/use-cache-hidden-reference",
+          { headers: { Origin: baseUrl, Host: new URL(baseUrl).host }, body: form },
+        ],
       ] as const) {
         const exploit = await fetch(`${baseUrl}${url}`, { method: "POST", ...init });
 
