@@ -100,6 +100,7 @@ import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
 import type { RequestContext } from "../config/config-matchers.js";
+import { substituteDestinationParams } from "../config/destination-params.js";
 import type { ClientRewrite } from "../client/client-rewrites.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
@@ -1949,22 +1950,6 @@ function simpleClientConfigSourceCouldMatch(pathname: string, source: string): b
   );
 }
 
-function substituteSimpleClientConfigDestination(
-  destination: string,
-  params: Record<string, string>,
-): string {
-  const keys = Object.keys(params);
-  if (keys.length === 0) return destination;
-  const alternation = keys
-    .sort((a, b) => b.length - a.length)
-    .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-  return destination.replace(
-    new RegExp(`:(${alternation})([+*])?(?![A-Za-z0-9_])`, "g"),
-    (_token, key: string) => params[key] ?? _token,
-  );
-}
-
 function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
@@ -2011,7 +1996,7 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     if (params === undefined) return undefined;
     if (params === null) continue;
 
-    const rewritten = substituteSimpleClientConfigDestination(rewrite.destination, params);
+    const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
     if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };
     currentHref = mergeRewriteQuery(currentHref, rewritten);
     matched = true;

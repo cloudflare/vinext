@@ -30,6 +30,7 @@ import {
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
+import { substituteDestinationParams } from "./destination-params.js";
 
 export {
   normalizeHost,
@@ -80,15 +81,6 @@ const _compiledHeaderSourceCache = new Map<string, RegExp | null>();
  * value string was undefined (no regex needed — use exact string comparison).
  */
 const _compiledConditionCache = new Map<string, RegExp | null>();
-
-/**
- * Cache for destination substitution regexes in substituteDestinationParams.
- *
- * The regex depends only on the set of param keys captured from the matched
- * source pattern. Caching by sorted key list avoids recompiling a new RegExp
- * for repeated redirect/rewrite calls that use the same param shape.
- */
-const _compiledDestinationParamCache = new Map<string, RegExp>();
 
 /**
  * Generic helper for the regex compilation caches above.
@@ -885,10 +877,14 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        const dest = substituteAndSanitizeDestination(redirect.destination, {
-          [entry.paramName]: "",
-          ...conditionParams,
-        });
+        const dest = substituteAndSanitizeDestination(
+          redirect.destination,
+          {
+            [entry.paramName]: "",
+            ...conditionParams,
+          },
+          "redirect",
+        );
         localeMatch = { destination: dest, permanent: redirect.permanent };
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
@@ -916,10 +912,14 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          const dest = substituteAndSanitizeDestination(redirect.destination, {
-            [entry.paramName]: localePart,
-            ...conditionParams,
-          });
+          const dest = substituteAndSanitizeDestination(
+            redirect.destination,
+            {
+              [entry.paramName]: localePart,
+              ...conditionParams,
+            },
+            "redirect",
+          );
           localeMatch = { destination: dest, permanent: redirect.permanent };
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
@@ -948,10 +948,14 @@ export function matchRedirect(
           : _emptyParams();
       if (!conditionParams) continue;
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      const dest = substituteAndSanitizeDestination(redirect.destination, {
-        ...params,
-        ...conditionParams,
-      });
+      const dest = substituteAndSanitizeDestination(
+        redirect.destination,
+        {
+          ...params,
+          ...conditionParams,
+        },
+        "redirect",
+      );
       return { destination: dest, permanent: redirect.permanent };
     }
   }
@@ -1025,58 +1029,6 @@ export function matchesRewriteSource(
 }
 
 /**
- * Substitute all matched route params into a redirect/rewrite destination.
- *
- * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
- * (`:path*`, `:path+`) in a single pass. Unknown params are left intact.
- */
-function substituteDestinationParams(destination: string, params: Record<string, string>): string {
-  const keys = Object.keys(params);
-  if (keys.length === 0) return destination;
-
-  // Match only the concrete param keys captured from the source pattern.
-  // Sorting longest-first ensures hyphenated names like `auth-method`
-  // win over shorter prefixes like `auth`. The negative lookahead keeps
-  // alphanumeric/underscore suffixes attached, while allowing `-` to act
-  // as a literal delimiter in destinations like `:year-:month`.
-  const sortedKeys = [...keys].sort((a, b) => b.length - a.length);
-  const cacheKey = sortedKeys.join("\0");
-  let paramRe = _compiledDestinationParamCache.get(cacheKey);
-  if (!paramRe) {
-    const paramAlternation = sortedKeys
-      .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-      .join("|");
-    paramRe = new RegExp(`:(${paramAlternation})([+*])?(?![A-Za-z0-9_])`, "g");
-    _compiledDestinationParamCache.set(cacheKey, paramRe);
-  }
-
-  const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
-    value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
-
-  const hashIndex = destination.indexOf("#");
-  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
-  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
-  const queryIndex = beforeHash.indexOf("?");
-
-  if (queryIndex !== -1) {
-    const beforeQuery = beforeHash.slice(0, queryIndex);
-    const query = beforeHash.slice(queryIndex + 1);
-    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
-      query,
-      encodeDestinationQueryParamValue,
-    )}${replaceParams(hash, (value) => value)}`;
-  }
-
-  return replaceParams(destination, (value) => value);
-}
-
-function encodeDestinationQueryParamValue(value: string): string {
-  const params = new URLSearchParams();
-  params.set("", value);
-  return params.toString().slice(1);
-}
-
-/**
  * Substitute params into a redirect/rewrite destination and sanitize the
  * result. Used by every redirect/rewrite branch — the substitution can
  * introduce protocol-relative URLs (e.g. `//evil.com` from a decoded `%2F`
@@ -1085,8 +1037,9 @@ function encodeDestinationQueryParamValue(value: string): string {
 function substituteAndSanitizeDestination(
   destination: string,
   params: Record<string, string>,
+  kind: "redirect" | "rewrite",
 ): string {
-  return sanitizeDestination(substituteDestinationParams(destination, params));
+  return sanitizeDestination(substituteDestinationParams(destination, params, kind));
 }
 
 /**
@@ -1100,7 +1053,7 @@ function substituteAndSanitizeRewriteDestination(
   destination: string,
   params: Record<string, string>,
 ): string {
-  const rewritten = substituteAndSanitizeDestination(destination, params);
+  const rewritten = substituteAndSanitizeDestination(destination, params, "rewrite");
   if (!shouldAppendRewriteParamsToQuery(destination, params)) return rewritten;
 
   const existingQueryKeys = getDestinationQueryKeys(destination);

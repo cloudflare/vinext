@@ -30,6 +30,13 @@ const nextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — a source
+      // param substituted into a destination query value must stay one value.
+      {
+        source: "/query-param-redirect/:next",
+        destination: "/about?next=/:next&safe=1",
+        permanent: false,
+      },
     ];
   },
   async rewrites() {
@@ -42,6 +49,20 @@ const nextConfig = {
         {
           source: "/repeat-rewrite/:id",
           destination: "/docs/:id/:id",
+        },
+        // Used by E2E: pages-router-prod/config-query-params.spec.ts — a source
+        // param substituted into a destination query value must stay one value
+        // on the server and in the client router's beforeFiles rewrite resolution.
+        {
+          source: "/query-param-rewrite/:term",
+          destination: "/ssr-query?q=:term&fixed=1",
+        },
+        // The `api` prefix keeps this source outside the fixture middleware
+        // matcher, so a soft navigation takes its query from the client
+        // router's own rewrite resolution instead of a middleware data probe.
+        {
+          source: "/api-query-param-rewrite/:term",
+          destination: "/rewrite-navigation/0/destination?q=:term&fixed=1",
         },
         {
           source: "/rewrite-navigation/:id",

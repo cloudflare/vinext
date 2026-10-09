@@ -14903,6 +14903,53 @@ describe("matchRedirect destination param substitution", () => {
       permanent: false,
     });
   });
+
+  it("keeps percent-encoded source captures as Location text in redirect query values", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Request pipelines match config sources against the raw encoded pathname.
+    // Next.js inserts the capture verbatim into the Location query, so the
+    // client decodes it once instead of seeing a double-encoded value.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
+    const redirects = [
+      { source: "/go/:next", destination: "/login?next=/:next&safe=1", permanent: false },
+    ];
+
+    for (const [pathname, destination] of [
+      ["/go/foo%26next%3Devil.example", "/login?next=/foo%26next%3Devil.example&safe=1"],
+      ["/go/caf%C3%A9", "/login?next=/caf%C3%A9&safe=1"],
+      ["/go/x%25y", "/login?next=/x%25y&safe=1"],
+      ["/go/a+b", "/login?next=/a+b&safe=1"],
+      // Deliberate hardening: Next.js inserts a literal `&` verbatim.
+      ["/go/foo&next=evil.example", "/login?next=/foo%26next%3Devil.example&safe=1"],
+    ]) {
+      expect(matchRedirect(pathname, redirects, emptyCtx)).toEqual({
+        destination,
+        permanent: false,
+      });
+    }
+  });
+
+  it("escapes characters that are not valid in a URL query in redirect query values", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/go",
+        has: [{ type: "header" as const, key: "x-next", value: "(?<next>.*)" }],
+        destination: "/login?next=:next&safe=1",
+        permanent: false,
+      },
+    ];
+    const result = matchRedirect("/go", redirects, {
+      ...emptyCtx,
+      headers: new Headers({ "x-next": "a b#c%zz&d=1" }),
+    });
+
+    expect(result).toEqual({
+      destination: "/login?next=a%20b%23c%25zz%26d%3D1&safe=1",
+      permanent: false,
+    });
+    expect(new URL(result!.destination, "http://n").searchParams.get("next")).toBe("a b#c%zz&d=1");
+  });
 });
 
 // ---------------------------------------------------------------------------

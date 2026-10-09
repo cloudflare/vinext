@@ -95,6 +95,13 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Used by E2E: config-redirect.spec.ts — a source param substituted into
+      // a destination query value must stay one value.
+      {
+        source: "/query-param-redirect/:next",
+        destination: "/about?next=/:next&safe=1",
+        permanent: false,
+      },
       // Ported from Next.js v16.2.6:
       // test/e2e/app-dir/rsc-query-routing/next.config.js
       {
@@ -108,6 +115,12 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        // Used by E2E: config-redirect.spec.ts — a source param substituted
+        // into a destination query value must stay one value.
+        {
+          source: "/query-param-rewrite/:term",
+          destination: "/nextjs-compat/search-params-key?q=:term&fixed=1",
+        },
         {
           source: "/route-cache-choice",
           destination: "/route-cache-identity/about",
