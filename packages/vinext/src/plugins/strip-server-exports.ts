@@ -453,10 +453,20 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     if (!catchBound) return deadBindings;
     return new Set([...deadBindings].filter((name) => !catchBound.has(name)));
   };
-  // A throwaway loop target that cannot collide with any name in the module.
-  let unusedName = "__vinext_unused";
-  while (code.includes(unusedName)) unusedName = `_${unusedName}`;
-  const unusedLoopTarget = `const ${unusedName}`;
+  // A throwaway loop target that cannot collide with any identifier in the
+  // module; parsed names are compared so escaped spellings count too.
+  let unusedLoopTargetName: string | undefined;
+  const unusedLoopTarget = (): string => {
+    if (!unusedLoopTargetName) {
+      const names = new Set<string>();
+      walkAstWithAncestors(ast.body, (node) => {
+        if (node.type === "Identifier") names.add(node.name);
+      });
+      unusedLoopTargetName = "__vinext_unused";
+      while (names.has(unusedLoopTargetName)) unusedLoopTargetName = `_${unusedLoopTargetName}`;
+    }
+    return `const ${unusedLoopTargetName}`;
+  };
   const iterationHeadDeclarations = new Set<PositionedNode>();
   const declarationsOf = (name: string): Binding[] => {
     const binding = bindings.get(name);
@@ -1030,7 +1040,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           const terminator = loopHeadDeclarations.has(declaration) ? "" : ";";
           return `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")}${terminator}`;
         }
-        if (iterationHeadDeclarations.has(declaration)) return unusedLoopTarget;
+        if (iterationHeadDeclarations.has(declaration)) return unusedLoopTarget();
         return exportStatement ||
           statements.includes(declaration) ||
           loopHeadDeclarations.has(declaration)
