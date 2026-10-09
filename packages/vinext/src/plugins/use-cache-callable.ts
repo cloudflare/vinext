@@ -182,11 +182,15 @@ function getCacheWrapperOptions(
 }
 
 /**
- * Ported from Next.js: packages/next/src/server/app-render/encryption-utils-server.ts
- * Next salts server-reference IDs with NEXT_SERVER_ACTIONS_ENCRYPTION_KEY when
- * it is set, so rebuilding identical source emits identical client chunks, and
- * otherwise with a generated key. The key is derived under a label rather than
- * used directly so the reference names reveal nothing about the key.
+ * Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
+ * salts server-reference IDs with the encryption key (`serverReferenceHashSalt`
+ * in packages/next/src/build/webpack-config.ts), which is
+ * NEXT_SERVER_ACTIONS_ENCRYPTION_KEY when set (see
+ * packages/next/src/server/app-render/encryption-utils-server.ts). Pinning it
+ * makes rebuilds of identical source emit identical client chunks. Without it,
+ * Next generates a key and caches it in distDir; vinext keeps build caches
+ * ephemeral, so it stays random per build. The secret is derived under a label
+ * rather than used directly so the reference names reveal nothing about the key.
  */
 function createReferenceSecret(encryptionKey: string | undefined): Buffer {
   if (!encryptionKey) return randomBytes(32);
