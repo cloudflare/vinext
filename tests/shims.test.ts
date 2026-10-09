@@ -9949,6 +9949,7 @@ describe("middleware bypass prevention", () => {
       { source: "/role", destination: "/about?%72ole=user", permanent: false },
       { source: "/s/:id", destination: "/d?:id=v", permanent: false },
       { source: "/v/:id", destination: "/d?q=:id", permanent: false },
+      { source: "/m", destination: "/d?%41%=dest", permanent: false },
     ];
 
     for (const [pathname, requestSearch, location] of [
@@ -9961,6 +9962,8 @@ describe("middleware bypass prevention", () => {
       ["/t", "?u=1", "/about?u=1&a=%41&b=x+y&c"],
       ["/s/foo", "", "/d?foo=v"],
       ["/s/foo", "?x=1", "/d?x=1&foo=v"],
+      // The malformed `%41%` key still overrides the request's `A%` key.
+      ["/m", "?A%25=req", "/d?%41%=dest"],
       ["/r/foo%2Fbar", "?utm=1", "/about?utm=1&next=/foo%2Fbar&safe=1"],
       [
         "/r/foo%26next%3Devil",
@@ -9979,6 +9982,10 @@ describe("middleware bypass prevention", () => {
       ["/v/%E2%9C%93", "?z=1", "/d?z=1&q=%E2%9C%93"],
       ["/v/a+b", "?a+b=1&q=old", "/d?a%20b=1&q=a+b"],
       ["/v/x%26y", "?q=1&2=b&1=a", "/d?1=a&2=b&q=x%26y"],
+      // Destination text equal to a request key or value is encoded too.
+      ["/v/a%20b", "?x=a%2520b", "/d?x=a%2520b&q=a%2520b"],
+      ["/v/a%20b", "?a%2520b=1", "/d?a%2520b=1&q=a%2520b"],
+      ["/v/foo", "?x=foo", "/d?x=foo&q=foo"],
     ]) {
       const redirect = matchRedirect(pathname, redirects, {
         headers: new Headers(),
@@ -14958,7 +14965,7 @@ describe("matchRedirect destination param substitution", () => {
     expect(result).toEqual({
       destination: "/home?authorized=yes",
       permanent: false,
-      destinationQuery: [["authorized", "authorized=yes"]],
+      destinationQuery: [["authorized", "authorized", "yes"]],
     });
   });
 
@@ -14985,8 +14992,8 @@ describe("matchRedirect destination param substitution", () => {
         // The template query is parsed before substitution, so `next` stays
         // one value for the request query merge.
         destinationQuery: [
-          ["next", `next=${next}`],
-          ["safe", "safe=1"],
+          ["next", "next", next],
+          ["safe", "safe", "1"],
         ],
       });
     }

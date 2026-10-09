@@ -33,6 +33,7 @@ import { isExternalUrl } from "../utils/external-url.js";
 import {
   substituteDestinationParams,
   substituteRedirectDestinationQuery,
+  type RedirectDestinationQueryPart,
 } from "./destination-params.js";
 
 export {
@@ -794,13 +795,12 @@ export function matchConfigPattern(
 
 /**
  * A matched config redirect. `destinationQuery` holds the destination query's
- * `[decodedKey, text]` parts, split before params were substituted, for
- * merging the request query.
+ * parts, split before params were substituted, for merging the request query.
  */
 export type RedirectMatch = {
   destination: string;
   permanent: boolean;
-  destinationQuery: [string, string][];
+  destinationQuery: RedirectDestinationQueryPart[];
 };
 
 /**
@@ -1185,7 +1185,9 @@ export function sanitizeDestination(dest: string): string {
  * `stringifyQuery`: request keys keep their order (integer-like keys first, as
  * in a JS object), a destination key overrides the request value in place,
  * and destination-only keys follow. Request keys and values are re-encoded;
- * destination query text is emitted verbatim. Pass the match's
+ * destination query text is emitted verbatim, except that, like Next.js,
+ * destination strings equal to a request key or value are re-encoded too.
+ * Pass the match's
  * `destinationQuery` so substituted params keep their value boundaries;
  * without it the destination's own query is split. External destinations are returned untouched (a config redirect to another
  * origin should not leak the original request's query).
@@ -1195,7 +1197,7 @@ export function sanitizeDestination(dest: string): string {
 export function preserveRedirectDestinationQuery(
   destination: string,
   requestSearch: string,
-  destinationQuery?: [string, string][],
+  destinationQuery?: RedirectDestinationQueryPart[],
 ): string {
   if (requestSearch === "" || requestSearch === "?" || isExternalUrl(destination)) {
     return destination;
@@ -1211,14 +1213,23 @@ export function preserveRedirectDestinationQuery(
   const queryIndex = beforeHash.indexOf("?");
   const pathPart = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
 
+  // Next.js's stringifyQuery re-encodes any string that came from the request
+  // query, including a destination string equal to one.
+  const requestStrings = new Set<string>();
   const requestParts: Record<string, string[]> = Object.create(null);
   for (const [key, value] of requestParams) {
+    requestStrings.add(key);
+    requestStrings.add(value);
     (requestParts[key] ??= []).push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
   }
+  const encode = (text: string) => (requestStrings.has(text) ? encodeURIComponent(text) : text);
+
   const destinationParts: Record<string, string[]> = Object.create(null);
-  for (const [key, text] of destinationQuery ??
+  for (const [key, keyText, valueText] of destinationQuery ??
     substituteRedirectDestinationQuery(destination, {})) {
-    (destinationParts[key] ??= []).push(text);
+    (destinationParts[key] ??= []).push(
+      valueText === null ? encode(keyText) : `${encode(keyText)}=${encode(valueText)}`,
+    );
   }
 
   const mergedQuery = Object.values({ ...requestParts, ...destinationParts })

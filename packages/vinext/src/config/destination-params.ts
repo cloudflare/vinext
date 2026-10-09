@@ -63,17 +63,18 @@ export function substituteDestinationParams(
 /**
  * Split a redirect destination's query into parts before substituting params,
  * as Next.js's prepareDestination parses the template query first. Each part
- * is `[key, text]`: `text` is the part's template text with params substituted
- * verbatim, and `key` is its decoded key, used only to match request params.
- * Keeping these boundaries means a param containing `&` stays one value when
- * the request query is merged in.
+ * is `[key, keyText, valueText]`: the texts are the part's template text with
+ * params substituted verbatim (`valueText` is `null` without an `=`), and
+ * `key` is the decoded key, used only to match request params. Keeping these
+ * boundaries means a param containing `&` stays one value when the request
+ * query is merged in.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  */
 export function substituteRedirectDestinationQuery(
   destination: string,
   params: Record<string, string>,
-): [string, string][] {
+): RedirectDestinationQueryPart[] {
   const hashIndex = destination.indexOf("#");
   const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
   const queryIndex = beforeHash.indexOf("?");
@@ -89,17 +90,19 @@ export function substituteRedirectDestinationQuery(
     .filter(Boolean)
     .map((part) => {
       const equalsIndex = part.indexOf("=");
-      const key = substitute(equalsIndex === -1 ? part : part.slice(0, equalsIndex));
-      return [decodeQueryKey(key), substitute(part)];
+      const keyText = substitute(equalsIndex === -1 ? part : part.slice(0, equalsIndex));
+      const valueText = equalsIndex === -1 ? null : substitute(part.slice(equalsIndex + 1));
+      return [decodeQueryKey(keyText), keyText, valueText];
     });
 }
 
-function decodeQueryKey(key: string): string {
-  try {
-    return decodeURIComponent(key.replace(/\+/g, " "));
-  } catch {
-    return key;
-  }
+export type RedirectDestinationQueryPart = [key: string, keyText: string, valueText: string | null];
+
+// Decode with URLSearchParams semantics (`+` as space, malformed escapes kept)
+// so destination keys match request keys parsed the same way.
+function decodeQueryKey(keyText: string): string {
+  const [entry] = new URLSearchParams(keyText.replace(/[&=]/g, (char) => encodeURIComponent(char)));
+  return entry?.[0] ?? "";
 }
 
 function getDestinationParamRegex(params: Record<string, string>): RegExp | null {
