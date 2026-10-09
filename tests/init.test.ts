@@ -1297,6 +1297,37 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     }
   });
 
+  it.each([false, true])(
+    "keeps asset-first serving for a static export (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(
+        tmpDir,
+        "next.config.mjs",
+        'export default { output: "export", trailingSlash: true };\n',
+      );
+      await runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+        },
+      });
+      if (legacyWrangler) {
+        expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).assets).toEqual({
+          directory: "dist/client",
+          not_found_handling: "none",
+          binding: "ASSETS",
+        });
+      } else {
+        const config = readFile(tmpDir, "cloudflare.config.ts");
+        expect(config).toContain('    assets: {\n      notFoundHandling: "none",\n    },\n');
+      }
+    },
+  );
+
   it.each(["service-binding", "self-contained", "workers-cache", "none"] as const)(
     "formats the generated typed %s config",
     async (mode) => {

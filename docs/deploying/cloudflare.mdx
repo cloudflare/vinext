@@ -103,6 +103,8 @@ Middleware runs before `public/` files, and vinext then serves the file through 
 
 Patterns use `*` for deep matching, and a `!` exclusion takes precedence over every other pattern; see Cloudflare's [`run_worker_first` reference](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first). Keep both exclusions. vinext serves the build output only from Workers Static Assets, so `runWorkerFirst: true`, or a pattern list without these exclusions, makes the app's scripts and stylesheets return 404.
 
+Next.js runs no middleware for a [static export](https://nextjs.org/docs/app/guides/static-exports#unsupported-features), so for an app whose `next.config` sets `output: "export"`, `vinext init` leaves these settings out and Workers Static Assets serves the exported files before the Worker, as it does by default.
+
 Configs created before this default, or written by hand, serve `public/` files without running middleware unless `runWorkerFirst` covers them. Add the patterns above, or list only the paths that need middleware, such as `["/downloads/*"]`; other public files then skip the Worker and middleware.
 
 As the Next.js [authentication guide](https://nextjs.org/docs/app/guides/authentication#optimistic-checks-with-proxy-optional) advises, middleware should not be the only check protecting content. Serve files that need authentication from a Route Handler or page that verifies access.

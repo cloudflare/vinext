@@ -199,6 +199,30 @@ describe("generateWranglerConfig", () => {
     },
   );
 
+  it.each([
+    { cdnCache: "none" as const, expected: undefined },
+    { cdnCache: "static-assets" as const, expected: ["/_vinext/static-cache/*"] },
+  ])(
+    "keeps asset-first serving for a static export (CDN cache: $cdnCache)",
+    ({ cdnCache, expected }) => {
+      const output = generateWranglerConfig(
+        {
+          root: "/tmp/my-app",
+          projectName: "my-app",
+          isAppRouter: true,
+          hasISR: false,
+          hasMDX: false,
+          isStaticExport: true,
+          nativeModulesToStub: [],
+        },
+        { cdnCache, dataCache: "none", imageOptimization: "none" },
+      );
+      const { assets } = JSON.parse(output);
+      expect(assets.html_handling).toBeUndefined();
+      expect(assets.run_worker_first).toEqual(expected);
+    },
+  );
+
   it.each(["service-binding", "self-contained"] as const)(
     "pretty-prints the generated %s Response Store config",
     (responseStoreMode) => {
@@ -1343,6 +1367,19 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       },
     });
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
+  });
+
+  it("adds asset-first assets to an existing static export Wrangler config", () => {
+    const output = updateWranglerConfigForCloudflare(
+      `{ "name": "existing" }\n`,
+      { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+      { isStaticExport: true },
+    );
+    expect(JSON.parse(output).assets).toEqual({
+      directory: "dist/client",
+      not_found_handling: "none",
+      binding: "ASSETS",
+    });
   });
 
   it("preserves an existing Worker entry and assets", () => {
