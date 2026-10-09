@@ -5,17 +5,19 @@ import path, { toSlash } from "pathslash";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import { parseAstAsync, transformWithOxc, type Plugin, type ResolvedConfig } from "vite";
 import { escapeRegExp } from "../utils/regex.js";
-import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type RscPluginModule = typeof import("@vitejs/plugin-rsc");
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
 type RscCoreModule = { default: () => Plugin[] };
 
-const WORKER_SCRIPT_RE = /\.(?:[cm]?[jt]sx?)(?:\?.*)?$/;
+// Globals are read through `globalThis` so Server Function exports named
+// `Promise`, `Error`, or `reportError` cannot shadow them.
 const WORKER_CALL_SERVER = `function $$vinextWorkerCallServer() {
-  return new Promise(() => {
-    reportError(new Error("Server Functions cannot be called from a browser Web Worker."));
+  return new globalThis.Promise(() => {
+    globalThis.reportError(
+      new globalThis.Error("Server Functions cannot be called from a browser Web Worker."),
+    );
   });
 }
 `;
@@ -74,10 +76,9 @@ export async function createWorkerUseServerPlugins(options: {
       manager = (await options.rscPluginModule).getPluginApi(mainConfig ?? config)?.manager;
     },
     transform: {
-      filter: {
-        id: { include: WORKER_SCRIPT_RE, exclude: VIRTUAL_MODULE_ID_RE },
-        code: "use server",
-      },
+      // Like `rsc:use-server`, match every module id (queries, hashes and
+      // virtual modules included); the directive check below narrows it.
+      filter: { code: "use server" },
       async handler(code, id) {
         let ast = await parseAstAsync(code);
         if (!transforms.hasDirective(ast.body, "use server")) return null;

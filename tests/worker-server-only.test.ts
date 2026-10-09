@@ -84,7 +84,10 @@ function readClientJavaScript(dir: string, skipDir?: string): string {
   return output;
 }
 
-async function buildFixture(root: string): Promise<void> {
+async function buildFixture(
+  root: string,
+  workerPlugins: import("vite").Plugin[] = [],
+): Promise<void> {
   const { cloudflare } = (await import(pathToFileURL(CF_PLUGIN_PATH).href)) as {
     cloudflare: CloudflarePluginFactory;
   };
@@ -95,6 +98,7 @@ async function buildFixture(root: string): Promise<void> {
       vinext({ appDir: root }),
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
     ],
+    worker: { plugins: () => workerPlugins },
     // Mirrors the fixture's vite.config.ts.
     resolve: {
       alias: {
@@ -230,8 +234,8 @@ self.postMessage("worker.ts:" + typeof keyLength);
     return [...javaScript.matchAll(/[`"']([^`"'\s]+#keyLength)[`"']/g)].map((match) => match[1]!);
   }
 
-  async function buildAndReadWorkers(root: string) {
-    await buildFixture(root);
+  async function buildAndReadWorkers(root: string, workerPlugins?: import("vite").Plugin[]) {
+    await buildFixture(root, workerPlugins);
     const clientDir = path.join(root, "dist/client");
     const workerDir = path.join(clientDir, "_next/static/workers");
     return {
@@ -301,11 +305,13 @@ export async function keyLength() {
     expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
   }, 120_000);
 
-  it("emits server references for query-qualified Server Functions imports", async () => {
-    const root = copyFixture();
-    writeWorkerActionFixture(
-      root,
-      `"use server";
+  it.each(["?worker-query", "#worker-hash"])(
+    "emits server references for Server Functions imports with a %s postfix",
+    async (postfix) => {
+      const root = copyFixture();
+      writeWorkerActionFixture(
+        root,
+        `"use server";
 
 const BODY = ${JSON.stringify(ACTION_BODY_MARKER)};
 
@@ -313,17 +319,46 @@ export async function keyLength() {
   return BODY.length;
 }
 `,
-    );
+      );
+      writeFile(
+        root,
+        "app/worker.ts",
+        `import { keyLength } from "./worker-actions.ts${postfix}";
+
+self.postMessage("worker.ts:" + typeof keyLength);
+`,
+      );
+
+      const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root);
+      expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
+      expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
+    },
+    120_000,
+  );
+
+  it("emits server references for virtual Server Functions modules", async () => {
+    const root = copyFixture();
     writeFile(
       root,
       "app/worker.ts",
-      `import { keyLength } from "./worker-actions?worker-query";
+      `import { keyLength } from "virtual:worker-actions";
 
 self.postMessage("worker.ts:" + typeof keyLength);
 `,
     );
+    const virtualActions: import("vite").Plugin = {
+      name: "test:virtual-worker-actions",
+      resolveId: (source) =>
+        source === "virtual:worker-actions" ? "\0virtual:worker-actions" : null,
+      load: (id) =>
+        id === "\0virtual:worker-actions"
+          ? `"use server";\nconst BODY = ${JSON.stringify(ACTION_BODY_MARKER)};\nexport async function keyLength() { return BODY.length; }\n`
+          : null,
+    };
 
-    const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root);
+    const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root, [
+      virtualActions,
+    ]);
     expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
     expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
   }, 120_000);
