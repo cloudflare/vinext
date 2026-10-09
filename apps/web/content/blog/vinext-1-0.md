@@ -1,5 +1,5 @@
 ---
-title: "Vinext 1.0"
+title: "Vinext 1.0: Workers Response Store and cache warming"
 description: "The first stable release of Vinext, which builds Next.js apps with Vite and deploys them to Cloudflare Workers."
 date: "2026-09-28"
 authors:

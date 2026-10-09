@@ -1,6 +1,6 @@
 ---
-title: "Vinext 1.1"
-description: "Faster builds and dev server startup, background revalidation on Cloudflare, and less server work per client navigation."
+title: "Vinext 1.1: faster builds and dev startup"
+description: 'Background revalidation for revalidateTag and "use cache" on Cloudflare, compressed RSC responses, and less server work per client navigation.'
 date: "2026-10-08"
 authors:
   - name: James Anderson
