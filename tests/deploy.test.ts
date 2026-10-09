@@ -2423,13 +2423,33 @@ describe("fetchWorkerFilesystemRoute", () => {
     expect(fetchAsset).toHaveBeenCalledOnce();
   });
 
-  it("skips direct and API filesystem probes", async () => {
+  // run_worker_first sends direct public-file requests to the Worker, which
+  // serves them after middleware has run.
+  it.each(["GET", "HEAD"])("serves a direct %s for a public file", async (method) => {
+    const fetchAsset = vi.fn(async (request: Request) => {
+      expect(request.method).toBe(method);
+      return new Response(method === "GET" ? "public" : null);
+    });
+
+    const result = await fetchWorkerFilesystemRoute(
+      new Request("https://example.com/file.txt", { method }),
+      "/file.txt",
+      "direct",
+      fetchAsset,
+      new Set(["/file.txt"]),
+    );
+
+    expect(result).toBeInstanceOf(Response);
+    expect(fetchAsset).toHaveBeenCalledOnce();
+  });
+
+  it("skips direct build-asset reads and API filesystem probes", async () => {
     const fetchAsset = vi.fn(async () => new Response("unexpected"));
 
     expect(
       await fetchWorkerFilesystemRoute(
-        new Request("https://example.com/file.txt"),
-        "/file.txt",
+        new Request("https://example.com/_next/static/chunks/app.js"),
+        "/_next/static/chunks/app.js",
         "direct",
         fetchAsset,
         new Set(["/file.txt"]),

@@ -111,11 +111,7 @@ export async function fetchWorkerFilesystemRoute(
   assetPathPrefix = "",
 ): Promise<Response | false> {
   const isRetrievalMethod = request.method === "GET" || request.method === "HEAD";
-  if (
-    (phase === "direct" && isRetrievalMethod) ||
-    requestPathname === "/api" ||
-    requestPathname.startsWith("/api/")
-  ) {
+  if (requestPathname === "/api" || requestPathname.startsWith("/api/")) {
     return false;
   }
   const assetUrl = new URL(request.url);
@@ -127,14 +123,18 @@ export async function fetchWorkerFilesystemRoute(
   } catch {
     return false;
   }
+  const isPublicFile =
+    publicFiles.has(assetUrl.pathname) || publicFiles.has(decodedAssetUrl.pathname);
+  // A direct GET/HEAD for a public file reaches the Worker when run_worker_first
+  // routes it here, so serve it after middleware. A direct build-asset request
+  // reaches the Worker only after Workers Static Assets found no such file.
+  if (phase === "direct" && isRetrievalMethod && !isPublicFile) {
+    return false;
+  }
   // Every rewrite phase must stay inside the public filesystem boundary. The
   // binding also contains private cache artifacts. Authorize the normalized
   // destination, never the original request's build-asset classification.
-  if (
-    !publicFiles.has(assetUrl.pathname) &&
-    !publicFiles.has(decodedAssetUrl.pathname) &&
-    !isNextStaticPath(decodedAssetUrl.pathname, basePath, assetPathPrefix)
-  ) {
+  if (!isPublicFile && !isNextStaticPath(decodedAssetUrl.pathname, basePath, assetPathPrefix)) {
     return false;
   }
   // Never forward a mutating method or body to the asset binding. A HEAD probe
