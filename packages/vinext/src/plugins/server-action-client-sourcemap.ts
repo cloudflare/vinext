@@ -5,7 +5,12 @@ import type { Plugin, ResolvedConfig, Rolldown } from "vite";
 const INLINE_SOURCEMAP_RE =
   /(\/\/# sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,)([A-Za-z0-9+/=]+)(\s*)$/;
 
-type SourceMap = { sources?: (string | null)[]; sourcesContent?: (string | null)[] };
+type SourceMap = {
+  sources?: (string | null)[];
+  sourcesContent?: (string | null)[];
+  // An index map keeps its originals in its sections' maps.
+  sections?: { map?: SourceMap }[];
+};
 
 // A data: URL segment, possibly behind a relative prefix added by Rolldown.
 const DATA_URL_SOURCE_RE = /(?:^|\/)(data:[^,]*),(.*)$/is;
@@ -35,27 +40,30 @@ function originalContents(map: SourceMap): string[] {
     const content = dataUrlContent(source);
     if (content != null) contents.push(content);
   }
+  for (const section of map.sections ?? []) {
+    if (section.map) contents.push(...originalContents(section.map));
+  }
   return contents;
 }
 
-/** Drop every source whose content is not kept; returns whether anything changed. */
+/** Drop every original that is not kept; returns whether anything changed. */
 function scrubSourcesContent(map: SourceMap, keep: (content: string) => boolean): boolean {
   let changed = false;
   map.sources?.forEach((source, index) => {
     const content = map.sourcesContent?.[index];
-    if (content != null) {
-      if (keep(content)) return;
+    if (content != null && !keep(content)) {
       map.sourcesContent![index] = null;
       changed = true;
     }
-    // A data: URL source carries the content itself, with or without a
-    // sourcesContent entry.
+    // A data: URL source carries its own content, independent of sourcesContent.
     const dataContent = dataUrlContent(source);
-    if (dataContent === undefined) return;
-    if (content == null && dataContent !== null && keep(dataContent)) return;
+    if (dataContent === undefined || (dataContent !== null && keep(dataContent))) return;
     map.sources![index] = "data:,";
     changed = true;
   });
+  for (const section of map.sections ?? []) {
+    if (section.map && scrubSourcesContent(section.map, keep)) changed = true;
+  }
   return changed;
 }
 

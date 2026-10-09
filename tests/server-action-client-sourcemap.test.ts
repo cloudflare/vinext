@@ -199,6 +199,53 @@ describe("vinext:server-action-client-sourcemap", () => {
     expect(map.sources).toEqual(["data:,", toDataUrl(publicOriginal)]);
   });
 
+  it("redacts a private data: URL source even when its sourcesContent is public", async () => {
+    const bundle = await generate(
+      withAsset(
+        sourcemap([toDataUrl(ACTION_SOURCE), "../app/button.tsx"], [CLIENT_SOURCE, CLIENT_SOURCE]),
+      ),
+    );
+    const map = JSON.parse(String(bundle["chunks/button.js.map"]!.source));
+    expect(map.sources).toEqual(["data:,", "../app/button.tsx"]);
+    expect(map.sourcesContent).toEqual([CLIENT_SOURCE, CLIENT_SOURCE]);
+  });
+
+  it("scrubs the section maps of an index map", async () => {
+    const indexMap = {
+      version: 3,
+      sections: [
+        { offset: { line: 0, column: 0 }, map: structuredClone(DEFAULT_MAP) },
+        {
+          offset: { line: 1, column: 0 },
+          map: { version: 3, sources: [toDataUrl(ACTION_SOURCE)], mappings: "" },
+        },
+      ],
+    };
+    const bundle = await generate(withAsset(indexMap));
+    const map = JSON.parse(String(bundle["chunks/button.js.map"]!.source));
+    expect(map.sections[0].map.sourcesContent).toEqual([null, CLIENT_SOURCE]);
+    expect(map.sections[1].map.sources).toEqual(["data:,"]);
+  });
+
+  it("keeps public originals from an index combined map", async () => {
+    const generated = `${CLIENT_SOURCE}export const injected = 1;\n`;
+    const publicOriginal = '"use client";\n// sectioned original\n';
+    const bundle = await generate(
+      withAsset(
+        sourcemap(["../app/actions.ts", "../src/original.ts"], [ACTION_SOURCE, publicOriginal]),
+      ),
+      {
+        modules: { [ACTION_ID]: ACTION_SOURCE, [CLIENT_ID]: generated },
+        combinedMaps: {
+          [CLIENT_ID]: {
+            sections: [{ map: { sources: ["original.ts"], sourcesContent: [publicOriginal] } }],
+          },
+        },
+      },
+    );
+    expect(assetContent(bundle)).toEqual([null, publicOriginal]);
+  });
+
   it("leaves source names that only contain data: alone", async () => {
     const map = {
       version: 3,
