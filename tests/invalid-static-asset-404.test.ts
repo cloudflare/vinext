@@ -521,6 +521,71 @@ export function middleware(request) {
   );
 });
 
+// Ported from Next.js:
+//   - test/e2e/app-dir/asset-prefix-absolute/asset-prefix-absolute.test.ts
+// https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/asset-prefix-absolute
+describe("App Router on Nitro absolute-URL assetPrefix with a path", () => {
+  it("serves bundles under the assetPrefix path from the deployment origin", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-absolute-asset-prefix-nitro-"));
+    try {
+      fs.mkdirSync(path.join(root, "app"));
+      fs.symlinkSync(NITRO_NODE_MODULES, path.join(root, "node_modules"), "junction");
+      fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default { assetPrefix: "https://example.vercel.sh/custom-asset-prefix" };\n`,
+      );
+      fs.writeFileSync(
+        path.join(root, "app/layout.tsx"),
+        "export default function Root({ children }) { return <html><body>{children}</body></html>; }",
+      );
+      fs.writeFileSync(
+        path.join(root, "app/page.tsx"),
+        "export default function Page() { return <p>hello world</p>; }",
+      );
+
+      const nitroModule = (await import(
+        pathToFileURL(path.join(NITRO_NODE_MODULES, "nitro/dist/vite.mjs")).href
+      )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [
+          vinext({ appDir: root }),
+          nitroModule.nitro({ buildDir: path.join(root, ".nitro") }),
+        ],
+      });
+      await builder.buildApp();
+
+      const { baseUrl, server } = await startNitroServer(root);
+      try {
+        const html = await (await fetch(baseUrl)).text();
+        const prefix = "https://example.vercel.sh/custom-asset-prefix/_next/static/";
+        const bundles = [...html.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)]
+          .map((match) => match[1])
+          .filter((src) => src.startsWith(prefix));
+        expect(bundles.length).toBeGreaterThan(0);
+
+        for (const src of bundles) {
+          const res = await fetch(`${baseUrl}${new URL(src).pathname}`);
+          expect(res.status).toBe(200);
+          expect(res.headers.get("content-type")).toMatch(/javascript/);
+          expect(res.headers.get("cache-control")).toContain("immutable");
+        }
+
+        const miss = await fetch(`${baseUrl}/custom-asset-prefix/_next/static/invalid-path`);
+        expect(miss.status).toBe(404);
+        expect(await miss.text()).toBe("Not Found");
+      } finally {
+        server.kill("SIGTERM");
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+});
+
 // Next.js resolves both router trees before its missing-static fallback.
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
 describe("development static misses", () => {

@@ -206,6 +206,7 @@ import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetsDir,
   assetPrefixPathname,
+  isAbsoluteAssetPrefix,
   isNextStaticPath,
 } from "./utils/asset-prefix.js";
 import {
@@ -1607,6 +1608,13 @@ type NitroSetupContext = {
     buildDir?: string;
     dev?: boolean;
     exportConditions?: string[];
+    output?: { publicDir: string };
+    publicAssets?: Array<{
+      dir: string;
+      baseURL?: string;
+      fallthrough?: boolean;
+      maxAge?: number;
+    }>;
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
   };
@@ -7985,6 +7993,36 @@ export const loadServerActionClient = ${
           }
 
           if (nitro.options.dev) return;
+
+          // An absolute-URL `assetPrefix` with a path component
+          // (`https://cdn.example.com/sub`) emits `/sub/_next/static/...` URLs
+          // but writes the files to `_next/static/...` (see resolveAssetsDir).
+          // Next.js and `vinext start` also serve them from the deployment
+          // origin under the prefix's path, for a same-origin proxy or CDN
+          // origin pull. Nitro's static handler only knows the on-disk layout,
+          // so expose the same files under the prefixed path too. Misses still
+          // fall through to vinext, which runs middleware before its
+          // plain-text static 404.
+          const assetPrefix = nextConfig.assetPrefix ?? "";
+          const assetPathPrefix = assetPrefixPathname(assetPrefix);
+          if (isAbsoluteAssetPrefix(assetPrefix) && assetPathPrefix && nitro.options.output) {
+            const baseURL = `${assetPathPrefix}/${ASSET_PREFIX_URL_DIR}`;
+            nitro.options.publicAssets ??= [];
+            nitro.options.publicAssets.push({
+              dir: path.join(nitro.options.output.publicDir, ASSET_PREFIX_URL_DIR),
+              baseURL,
+              fallthrough: true,
+              maxAge: 0,
+            });
+            // Nitro gives the client `assetsDir` an immutable cache rule. Give
+            // the prefixed copy the same one.
+            nitro.options.routeRules ??= {};
+            const rule = (nitro.options.routeRules[`${baseURL}/**`] ??= {});
+            const headers = (rule.headers ?? {}) as Record<string, string>;
+            if (!headers["cache-control"]) {
+              rule.headers = { ...headers, "cache-control": "public, max-age=31536000, immutable" };
+            }
+          }
 
           const { collectNitroRouteRules, mergeNitroRouteRules } =
             await import("./build/nitro-route-rules.js");
