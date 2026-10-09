@@ -4645,6 +4645,57 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("leaves an ancestor loading boundary off a layout below a layout-less segment", () => {
+    function SectionLoading() {
+      return createElement("p", null, "Loading section");
+    }
+
+    // The leaf layout is the only layout, so its entry is not gated on an
+    // earlier layout's render dependency and stays inspectable.
+    const buildElements = (routeSegments: string[], routePath: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [3],
+          layouts: [{ default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: SectionLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    // The browser keys each layout entry's Slot by its layout, so a boundary on
+    // the entry would remount between /section/plain/three and .../four. The
+    // route entry's per-segment boundary, keyed by "plain", carries it.
+    for (const leaf of ["three", "four"]) {
+      const routePath = `/section/plain/${leaf}`;
+      const elements = buildElements(["section", "plain", leaf], routePath);
+      const layoutId = `layout:${routePath}`;
+      expect(elements[layoutId]).toBeDefined();
+      expect(countSuspenseWithFallback(elements[layoutId], "SectionLoading")).toBe(0);
+      const routeBoundary = findSuspenseWithFallback(
+        elements[`route:${routePath}`],
+        "SectionLoading",
+      );
+      expect(routeBoundary?.key).toBe(JSON.stringify(["section", "plain"]));
+      expect(findSlotById(routeBoundary?.props.children, layoutId)).not.toBeNull();
+    }
+  });
+
   it("leaves an ancestor loading boundary above a template to the route entry", () => {
     function DashboardLoading() {
       return createElement("p", null, "Loading dashboard");

@@ -231,6 +231,16 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       heading: "Plain two page",
       shell: null,
     },
+    // The pages' own layouts sit below a layout-less segment, so the browser
+    // swaps their Slots; the boundary must not live on those layout entries.
+    {
+      name: "a sibling page with its own layout below a layout-less segment",
+      from: "/plain/three",
+      current: "three",
+      link: "four",
+      heading: "Plain four page",
+      shell: null,
+    },
   ]) {
     test(`ancestor loading above a shared layout keeps the current page when navigating to ${target.name}`, async ({
       page,

@@ -528,9 +528,8 @@ export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModu
  * inside it. A segment's loading convention wraps the layouts and templates of
  * the segments below it, like Next.js's LoadingBoundary around each child
  * segment, so the outermost such layout entry, or the route entry's
- * per-segment boundary, carries it. A flat entry rendered inside them (a nested
- * layout or a slot) must not repeat that boundary, or the fallback would mount
- * inside the layout. Within one segment the layout wraps the template, which
+ * per-segment boundary, carries it. A slot entry rendered inside them must not
+ * repeat that boundary, or the fallback would mount inside the layout. Within one segment the layout wraps the template, which
  * wraps the loading, so the bounds are inclusive tree positions per kind.
  */
 function hasAppPageSegmentBelowLoading<TModule extends AppPageModule>(
@@ -1322,18 +1321,16 @@ export function buildAppPageElements<
         <Children />
       </LayoutComponent>
     );
+    // The browser keys this entry's Slot by the layout, so an ancestor loading
+    // boundary here only stays mounted like Next.js's (keyed by the loading
+    // segment's child) when the layout belongs to that child segment. Deeper
+    // layouts leave it to the route entry's per-segment boundary, except in a
+    // loading-shell prefetch, which renders no per-segment boundaries.
     const nearestAncestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
     const ancestorLoadingEntry =
       nearestAncestorLoadingEntry &&
-      !hasAppPageSegmentBelowLoading(
-        nearestAncestorLoadingEntry.treePosition,
-        {
-          layoutsThrough: layoutEntry.treePosition - 1,
-          templatesThrough: layoutEntry.treePosition - 1,
-        },
-        layoutEntries,
-        templateEntries,
-      )
+      (isPrefetchLoadingShell ||
+        nearestAncestorLoadingEntry.treePosition === layoutEntry.treePosition - 1)
         ? nearestAncestorLoadingEntry
         : undefined;
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
