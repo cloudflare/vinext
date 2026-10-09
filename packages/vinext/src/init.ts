@@ -37,13 +37,7 @@ import {
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
-import {
-  findVinextNextConfigInPlugins,
-  loadNextConfig,
-  PHASE_PRODUCTION_BUILD,
-  resolveNextConfigInput,
-  type NextConfig,
-} from "./config/next-config.js";
+import type { NextConfig } from "./config/next-config.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -533,12 +527,25 @@ export function updateGitignore(
 /**
  * Read `output` from the effective Next.js config, as `vinext build` does: an
  * inline `vinext({ nextConfig })` in the Vite config wins over next.config.
- * A config that cannot load here keeps the Worker-first default.
+ * A config that cannot load here keeps the Worker-first default. The loader is
+ * imported lazily because it needs Vite, which create-vinext-app runs without.
  */
 async function resolvesToStaticExport(
   root: string,
   viteConfigPath: string | undefined,
 ): Promise<boolean> {
+  let configModule: typeof import("./config/next-config.js");
+  try {
+    configModule = await import("./config/next-config.js");
+  } catch {
+    return false;
+  }
+  const {
+    findVinextNextConfigInPlugins,
+    loadNextConfig,
+    PHASE_PRODUCTION_BUILD,
+    resolveNextConfigInput,
+  } = configModule;
   let nextConfig: NextConfig | null = null;
   if (viteConfigPath) {
     try {
