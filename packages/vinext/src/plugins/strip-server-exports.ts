@@ -255,68 +255,83 @@ function renderExportDeclaration(
   }`;
 }
 
+/**
+ * Render a binding or assignment pattern without the removed names. `slice`
+ * copies kept subexpressions (defaults, computed keys) so callers can apply
+ * edits nested inside them.
+ */
 function renderBindingPattern(
-  code: string,
+  slice: (start: number, end: number) => string,
   pattern: PositionedNode,
   removedNames: ReadonlySet<string>,
 ): string | null {
   if (pattern.type === "Identifier") {
     return removedNames.has(pattern.name) ? null : pattern.name;
   }
+  if (pattern.type === "MemberExpression") {
+    const root = assignmentTargetIdentifiers(pattern)[0];
+    return root && removedNames.has(root.name) ? null : slice(pattern.start, pattern.end);
+  }
   if (pattern.type === "RestElement") {
-    const argument = renderBindingPattern(code, pattern.argument as PositionedNode, removedNames);
+    const argument = renderBindingPattern(slice, pattern.argument as PositionedNode, removedNames);
     return argument ? `...${argument}` : null;
   }
   if (pattern.type === "AssignmentPattern") {
-    const left = renderBindingPattern(code, pattern.left as PositionedNode, removedNames);
-    return left ? `${left} = ${code.slice(pattern.right.start, pattern.right.end)}` : null;
+    const left = renderBindingPattern(slice, pattern.left as PositionedNode, removedNames);
+    return left ? `${left} = ${slice(pattern.right.start, pattern.right.end)}` : null;
   }
   if (pattern.type === "ObjectPattern") {
     const properties = (pattern.properties as PositionedNode[]).flatMap((property) => {
       if (property.type === "RestElement") {
-        const rendered = renderBindingPattern(code, property, removedNames);
+        const rendered = renderBindingPattern(slice, property, removedNames);
         return rendered ? [rendered] : [];
       }
-      const value = renderBindingPattern(code, property.value as PositionedNode, removedNames);
+      const value = renderBindingPattern(slice, property.value as PositionedNode, removedNames);
       if (!value) return [];
       if (property.shorthand && property.value.type === "Identifier") return [value];
-      const key = code.slice(property.key.start, property.key.end);
+      const key = slice(property.key.start, property.key.end);
       return [`${property.computed ? `[${key}]` : key}: ${value}`];
     });
     return properties.length > 0 ? `{ ${properties.join(", ")} }` : null;
   }
   if (pattern.type === "ArrayPattern") {
     const elements = (pattern.elements as Array<PositionedNode | null>).map((element) =>
-      element ? renderBindingPattern(code, element, removedNames) : null,
+      element ? renderBindingPattern(slice, element, removedNames) : null,
     );
     while (elements.length > 0 && elements.at(-1) === null) elements.pop();
     return elements.length > 0 ? `[${elements.map((element) => element ?? "").join(", ")}]` : null;
   }
-  return code.slice(pattern.start, pattern.end);
+  return slice(pattern.start, pattern.end);
 }
 
-function assignmentTargetIdentifiers(node: PositionedNode): PositionedNode[] {
-  if (node.type === "ArrayPattern" || node.type === "ObjectPattern") {
-    return bindingIdentifiers(node);
-  }
+/** Identifiers an assignment target writes: pattern bindings and member roots. */
+function assignmentTargetIdentifiers(node: PositionedNode | null | undefined): PositionedNode[] {
+  if (!node) return [];
   if (node.type === "Identifier") return [node];
   if (node.type === "MemberExpression") {
     return assignmentTargetIdentifiers(node.object as PositionedNode);
+  }
+  if (node.type === "RestElement")
+    return assignmentTargetIdentifiers(node.argument as PositionedNode);
+  if (node.type === "AssignmentPattern")
+    return assignmentTargetIdentifiers(node.left as PositionedNode);
+  if (node.type === "ArrayPattern") {
+    return node.elements.flatMap((element: PositionedNode | null) =>
+      assignmentTargetIdentifiers(element),
+    );
+  }
+  if (node.type === "ObjectPattern") {
+    return node.properties.flatMap((property: PositionedNode) =>
+      assignmentTargetIdentifiers(
+        (property.type === "RestElement" ? property.argument : property.value) as PositionedNode,
+      ),
+    );
   }
   return [];
 }
 
 function isAssignmentTargetIdentifier(node: PositionedNode, left: PositionedNode): boolean {
-  if (left.type === "Identifier") return node.start === left.start;
-  if (left.type === "ArrayPattern" || left.type === "ObjectPattern") {
-    return bindingIdentifiers(left).some((identifier) => identifier.start === node.start);
-  }
-  if (left.type === "MemberExpression") {
-    let object = left.object as PositionedNode;
-    while (object.type === "MemberExpression") object = object.object as PositionedNode;
-    return object.type === "Identifier" && object.start === node.start;
-  }
-  return false;
+  return assignmentTargetIdentifiers(left).some((identifier) => identifier.start === node.start);
 }
 
 function findLexicalScope(ancestors: PositionedNode[]): PositionedNode | undefined {
@@ -392,6 +407,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   const candidateBindings = new Set<string>();
   const bindings = new Map<string, Binding>();
   const redeclarations: Binding[] = [];
+  const loopHeadDeclarations = new Set<PositionedNode>();
   const declarationsOf = (name: string): Binding[] => {
     const binding = bindings.get(name);
     return [
@@ -401,12 +417,12 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   };
   const renderEdit = (edit: Edit): string =>
     typeof edit.replacement === "function" ? edit.replacement() : edit.replacement;
-  // Copies kept source with the outermost edits nested inside it applied.
+  // Copies kept source with the outermost edits inside it applied. Callers
+  // only pass ranges strictly inside their own edit, so this cannot recurse
+  // into the edit being rendered.
   const renderRange = (start: number, end: number): string => {
     const nested = edits
-      .filter(
-        (edit) => edit.start >= start && edit.end <= end && edit.end - edit.start < end - start,
-      )
+      .filter((edit) => edit.start >= start && edit.end <= end)
       .sort((left, right) => left.start - right.start || right.end - left.end);
     let rendered = "";
     let cursor = start;
@@ -518,7 +534,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
         addShadowRange(name, node.body as PositionedNode);
       }
     } else if (node.type === "VariableDeclarator" && parent?.type === "VariableDeclaration") {
-      const scope =
+      const varScope =
         parent.kind === "var"
           ? [...ancestors]
               .reverse()
@@ -530,20 +546,31 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
                   "StaticBlock",
                 ].includes(ancestor.type),
               )
+          : undefined;
+      // A function's `var` is not visible from its parameter defaults, which
+      // have their own scope, so the shadow starts at the body.
+      const scope =
+        parent.kind === "var"
+          ? varScope?.type === "StaticBlock"
+            ? varScope
+            : (varScope?.body as PositionedNode | undefined)
           : findLexicalScope(ancestors);
       for (const name of bindingNames(node.id as PositionedNode)) addShadowRange(name, scope);
       // A `var` nested in a block outside any function is hoisted to module
-      // scope, so `export { getServerSideProps }` can name it. Loop-head
-      // declarations are not statements and cannot be dropped on their own.
+      // scope, so `export { getServerSideProps }` can name it. A `for…in/of`
+      // head declaration cannot be dropped without changing the loop, but
+      // its values come from the live iterable, not from a declarator init.
       const owner = ancestors.at(-2);
       if (
         parent.kind === "var" &&
-        !scope &&
+        !varScope &&
         owner &&
         owner.type !== "ExportNamedDeclaration" &&
-        owner.init !== parent &&
         owner.left !== parent
       ) {
+        if (owner.type === "ForStatement" && owner.init === parent) {
+          loopHeadDeclarations.add(parent);
+        }
         const declaredNames = bindingNames(node.id as PositionedNode);
         for (const identifier of bindingIdentifiers(node.id as PositionedNode)) {
           bindingPositions.add(identifier.start);
@@ -674,7 +701,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       const left = expression.left as PositionedNode;
       const renderedLeft =
         left.type === "ArrayPattern" || left.type === "ObjectPattern"
-          ? renderBindingPattern(code, left, removableNames)
+          ? renderBindingPattern((start, end) => code.slice(start, end), left, removableNames)
           : null;
       const right = expression.right as PositionedNode;
       const renderRight = () => renderRange(right.start, right.end);
@@ -685,7 +712,8 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           start: target.start,
           end: target.end,
           replacement: () => {
-            const assignment = `${renderedLeft} ${expression.operator} ${renderRight()}`;
+            const pattern = renderBindingPattern(renderRange, left, removableNames);
+            const assignment = `${pattern} ${expression.operator} ${renderRight()}`;
             if (!statement) return `(${assignment})`;
             return left.type === "ObjectPattern" ? `(${assignment});` : `${assignment};`;
           },
@@ -833,16 +861,25 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       replacement: () => {
         const rendered = (declaration.declarations as PositionedNode[]).flatMap((declarator) => {
           if (!removed.has(declarator)) return [renderRange(declarator.start, declarator.end)];
-          const pattern = renderBindingPattern(code, declarator.id as PositionedNode, deadBindings);
+          const pattern = renderBindingPattern(
+            renderRange,
+            declarator.id as PositionedNode,
+            deadBindings,
+          );
           if (!pattern) return [];
           return [
             `${pattern}${declarator.init ? ` = ${renderRange(declarator.init.start, declarator.init.end)}` : ""}`,
           ];
         });
         if (rendered.length > 0) {
-          return `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")};`;
+          const terminator = loopHeadDeclarations.has(declaration) ? "" : ";";
+          return `${exportStatement ? "export " : ""}${declaration.kind} ${rendered.join(", ")}${terminator}`;
         }
-        return exportStatement || statements.includes(declaration) ? "" : ";";
+        return exportStatement ||
+          statements.includes(declaration) ||
+          loopHeadDeclarations.has(declaration)
+          ? ""
+          : ";";
       },
     });
   }

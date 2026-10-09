@@ -4349,6 +4349,23 @@ export { getServerSideProps };`,
 const client = connect(SIGNING_KEY), registered = register((getServerSideProps = async () => ({ props: { key: client.key } })));
 export { getServerSideProps };`,
     ],
+    [
+      "a for-loop head",
+      `for (var attempt = 0, getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }); attempt < 1; attempt++) {}
+export { getServerSideProps };`,
+    ],
+    [
+      "a member target of a destructuring assignment",
+      `let getServerSideProps = async () => ({ props: {} });
+[getServerSideProps.config] = [SIGNING_KEY];
+export { getServerSideProps };`,
+    ],
+    [
+      "a destructuring default",
+      `let getServerSideProps, visible;
+[getServerSideProps, visible = (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }))] = [];
+export { getServerSideProps };`,
+    ],
   ])("removes a data export assigned inside %s", (_label, dataExport) => {
     const code = `import { SIGNING_KEY } from '../lib/server-config';
 ${dataExport}
@@ -4414,6 +4431,26 @@ export default function Page() { return Store.value; }
     const result = _stripServerExports(code);
     expect(result).toContain("getServerSideProps = createValue();");
     expect(result).not.toContain("./secret");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned in a parameter default next to a body var", () => {
+    // A function body's `var` is not visible from its parameter defaults.
+    const code = `
+import { secret } from './secret';
+let getServerSideProps;
+function init(value = (getServerSideProps = async () => ({ props: { secret } }))) {
+  var getServerSideProps;
+  return value;
+}
+init();
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("./secret");
+    expect(result).toContain("function init(value = (void 0))");
+    expect(result).not.toContain("let getServerSideProps");
     expect(() => parseAst(result!)).not.toThrow();
   });
 
