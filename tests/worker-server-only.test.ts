@@ -300,4 +300,48 @@ export async function keyLength() {
     expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
     expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
   }, 120_000);
+
+  it("emits server references for query-qualified Server Functions imports", async () => {
+    const root = copyFixture();
+    writeWorkerActionFixture(
+      root,
+      `"use server";
+
+const BODY = ${JSON.stringify(ACTION_BODY_MARKER)};
+
+export async function keyLength() {
+  return BODY.length;
+}
+`,
+    );
+    writeFile(
+      root,
+      "app/worker.ts",
+      `import { keyLength } from "./worker-actions?worker-query";
+
+self.postMessage("worker.ts:" + typeof keyLength);
+`,
+    );
+
+    const { clientJavaScript, workerJavaScript } = await buildAndReadWorkers(root);
+    expect(serverReferenceIds(workerJavaScript)).toHaveLength(1);
+    expect(clientJavaScript).not.toContain(ACTION_BODY_MARKER);
+  }, 120_000);
+
+  it("leaves webpack runtime tokens in other worker modules untouched", async () => {
+    const root = copyFixture();
+    writeFile(
+      root,
+      "app/worker.ts",
+      `self.postMessage(["__webpack_require__", "u"].join(".") + ":" + String("__webpack_require__.u"));
+`,
+    );
+
+    await buildFixture(root);
+    const workerDir = path.join(root, "dist/client/_next/static/workers");
+    const workerFile = fs.readdirSync(workerDir).find((file) => /^worker-[^.]+\.js$/.test(file));
+    const workerJavaScript = fs.readFileSync(path.join(workerDir, workerFile!), "utf8");
+    expect(workerJavaScript).toContain("__webpack_require__.u");
+    expect(workerJavaScript).not.toContain("({}).u");
+  }, 120_000);
 });

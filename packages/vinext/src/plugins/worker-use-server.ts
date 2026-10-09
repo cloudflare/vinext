@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import path, { toSlash } from "pathslash";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import { parseAstAsync, transformWithOxc, type Plugin, type ResolvedConfig } from "vite";
+import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
@@ -10,7 +12,7 @@ type RscPluginModule = typeof import("@vitejs/plugin-rsc");
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
 type RscCoreModule = { default: () => Plugin[] };
 
-const WORKER_SCRIPT_RE = /\.(?:[cm]?[jt]sx?)$/;
+const WORKER_SCRIPT_RE = /\.(?:[cm]?[jt]sx?)(?:\?.*)?$/;
 const WORKER_CALL_SERVER = `function $$vinextWorkerCallServer() {
   return new Promise(() => {
     reportError(new Error("Server Functions cannot be called from a browser Web Worker."));
@@ -125,13 +127,27 @@ export async function createWorkerUseServerPlugins(options: {
     },
   };
 
-  // The proxies import React's Flight client, which needs the same
-  // `__webpack_require__` patch plugin-rsc applies to the main graphs.
-  const patchPlugins = rscCore
+  // The proxies import React's Flight client, which needs the
+  // `__webpack_require__` patch plugin-rsc applies to the main graphs. Scope
+  // it to the vendored client so other worker modules stay untouched.
+  const patchHook = rscCore
     .default()
-    .filter((plugin) => plugin.name === "rsc:patch-react-server-dom-webpack");
-  if (patchPlugins.length === 0) {
+    .find((plugin) => plugin.name === "rsc:patch-react-server-dom-webpack")?.transform;
+  if (!patchHook || typeof patchHook !== "object") {
     throw new Error("vinext: @vitejs/plugin-rsc no longer exposes its Flight client patch plugin.");
   }
-  return [...patchPlugins, useServerPlugin];
+  const flightClientDir = path.dirname(
+    rscRequire.resolve("@vitejs/plugin-rsc/vendor/react-server-dom/client.browser"),
+  );
+  const patchPlugin: Plugin = {
+    name: "vinext:worker-patch-react-server-dom",
+    transform: {
+      filter: {
+        id: new RegExp(`^${escapeRegExp(`${toSlash(flightClientDir)}/`)}`),
+        code: "__webpack_require__",
+      },
+      handler: patchHook.handler,
+    },
+  };
+  return [patchPlugin, useServerPlugin];
 }
