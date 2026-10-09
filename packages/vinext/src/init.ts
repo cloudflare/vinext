@@ -37,6 +37,13 @@ import {
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
+import {
+  findVinextNextConfigInPlugins,
+  loadNextConfig,
+  PHASE_PRODUCTION_BUILD,
+  resolveNextConfigInput,
+  type NextConfig,
+} from "./config/next-config.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -523,6 +530,40 @@ export function updateGitignore(
   return true;
 }
 
+/**
+ * Read `output` from the effective Next.js config, as `vinext build` does: an
+ * inline `vinext({ nextConfig })` in the Vite config wins over next.config.
+ * A config that cannot load here keeps the Worker-first default.
+ */
+async function resolvesToStaticExport(
+  root: string,
+  viteConfigPath: string | undefined,
+): Promise<boolean> {
+  let nextConfig: NextConfig | null = null;
+  if (viteConfigPath) {
+    try {
+      const { loadConfigFromFile } = await import("vite");
+      const loaded = await loadConfigFromFile(
+        { command: "build", mode: "production" },
+        viteConfigPath,
+        root,
+        "silent",
+      );
+      const inline = await findVinextNextConfigInPlugins(loaded?.config.plugins);
+      if (inline) nextConfig = await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD);
+    } catch {
+      // A Vite config whose plugins are not installed yet cannot load here;
+      // next.config still decides.
+    }
+  }
+  try {
+    nextConfig ??= await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+  } catch {
+    return false;
+  }
+  return nextConfig?.output === "export";
+}
+
 type PlatformSetupContext = {
   root: string;
   isAppRouter: boolean;
@@ -532,6 +573,7 @@ type PlatformSetupContext = {
   force: boolean;
   prerender?: boolean;
   hasCssModules: boolean;
+  isStaticExport?: boolean;
   today?: string;
 };
 
@@ -657,6 +699,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
+  const isStaticExport =
+    platform === "cloudflare" && (await resolvesToStaticExport(root, existingViteConfigPath));
+
   if (platform === "cloudflare") {
     validateCloudflarePlatformSetup(
       {
@@ -664,6 +709,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
         isAppRouter: isApp,
         existingViteConfigPath,
         hasCssModules,
+        isStaticExport,
         today: options._today,
       },
       cloudflareOptions!,
@@ -726,6 +772,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     force: options.force ?? false,
     prerender: options.prerender,
     hasCssModules,
+    isStaticExport,
     today: options._today,
   };
   const platformSetup =

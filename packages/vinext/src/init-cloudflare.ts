@@ -16,6 +16,7 @@ export type CloudflareProjectInfo = {
   isAppRouter: boolean;
   hasISR: boolean;
   hasMDX: boolean;
+  /** The effective Next.js config sets `output: "export"`. */
   isStaticExport?: boolean;
   nativeModulesToStub: string[];
 };
@@ -54,6 +55,7 @@ export type CloudflarePlatformSetupContext = {
   isAppRouter: boolean;
   existingViteConfigPath?: string;
   hasCssModules?: boolean;
+  isStaticExport?: boolean;
   packageManager?: string;
   today?: string;
 };
@@ -153,7 +155,7 @@ export function validateCloudflarePlatformSetup(
   const updatedWranglerCode = wranglerCode
     ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
         root: context.root,
-        isStaticExport: projectInfo.isStaticExport,
+        isStaticExport: context.isStaticExport,
       })
     : undefined;
   const imagesBinding = updatedWranglerCode
@@ -202,7 +204,7 @@ export function setupCloudflarePlatform(
   const updatedWranglerCode = wranglerCode
     ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
         root: context.root,
-        isStaticExport: projectInfo.isStaticExport,
+        isStaticExport: context.isStaticExport,
       })
     : undefined;
   const imagesBinding = updatedWranglerCode
@@ -280,7 +282,11 @@ export function setupCloudflarePlatform(
   if (!wranglerPath) {
     fs.writeFileSync(
       path.join(context.root, "wrangler.jsonc"),
-      generateWranglerConfig(projectInfo, cloudflare, context.today),
+      generateWranglerConfig(
+        { ...projectInfo, isStaticExport: context.isStaticExport },
+        cloudflare,
+        context.today,
+      ),
       "utf-8",
     );
     generatedPlatformFiles.push("wrangler.jsonc");
@@ -395,7 +401,11 @@ function setupCfPlatform(
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
-      generateTypedCloudflareConfig(projectInfo, cloudflare, context.today),
+      generateTypedCloudflareConfig(
+        { ...projectInfo, isStaticExport: context.isStaticExport },
+        cloudflare,
+        context.today,
+      ),
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
   }

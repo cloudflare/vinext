@@ -1328,6 +1328,37 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     },
   );
 
+  it.each([
+    {
+      name: "a shorthand output property",
+      files: { "next.config.mjs": 'const output = "export";\nexport default { output };\n' },
+      isStaticExport: true,
+    },
+    {
+      name: "an inline Vite nextConfig",
+      files: {
+        "vite.config.ts":
+          'export default { plugins: [{ name: "vinext", __vinextNextConfig: { output: "export" } }] };\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "a commented-out output",
+      files: { "next.config.mjs": '// output: "export",\nexport default {};\n' },
+      isStaticExport: false,
+    },
+  ])("reads the effective config for $name", async ({ files, isStaticExport }) => {
+    setupProject(tmpDir, { router: "app", typeModule: true });
+    for (const [file, content] of Object.entries(files)) writeFile(tmpDir, file, content);
+    await runInit(tmpDir, {
+      install: false,
+      cloudflare: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+    });
+    expect(readFile(tmpDir, "cloudflare.config.ts").includes('runWorkerFirst: ["/*"')).toBe(
+      !isStaticExport,
+    );
+  });
+
   it.each(["service-binding", "self-contained", "workers-cache", "none"] as const)(
     "formats the generated typed %s config",
     async (mode) => {

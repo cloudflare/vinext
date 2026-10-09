@@ -305,8 +305,6 @@ export type ProjectInfo = {
   hasMDX: boolean;
   /** CodeHike is a dependency */
   hasCodeHike: boolean;
-  /** next.config sets `output: "export"` */
-  isStaticExport: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
 };
@@ -416,7 +414,6 @@ export function detectProject(root: string): ProjectInfo {
     hasTypeModule,
     hasMDX,
     hasCodeHike,
-    isStaticExport: detectStaticExport(root),
     nativeModulesToStub,
   };
 }
@@ -518,28 +515,6 @@ function detectCacheComponents(root: string): boolean {
     if (!fs.existsSync(configPath)) continue;
     try {
       if (/\bcacheComponents\s*:\s*true\b/.test(fs.readFileSync(configPath, "utf-8"))) {
-        return true;
-      }
-    } catch {
-      // ignore unreadable config files
-    }
-  }
-  return false;
-}
-
-function detectStaticExport(root: string): boolean {
-  const configFiles = [
-    "next.config.ts",
-    "next.config.mts",
-    "next.config.mjs",
-    "next.config.js",
-    "next.config.cjs",
-  ];
-  for (const fileName of configFiles) {
-    const configPath = path.join(root, fileName);
-    if (!fs.existsSync(configPath)) continue;
-    try {
-      if (/\boutput\s*:\s*["'`]export["'`]/.test(fs.readFileSync(configPath, "utf-8"))) {
         return true;
       }
     } catch {
