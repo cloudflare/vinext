@@ -6,124 +6,130 @@ type Bundle = Record<string, Record<string, unknown>>;
 
 const OUT_DIR = "/app/dist/client";
 const ACTION_ID = "/app/app/actions.ts";
+const CLIENT_ID = "/app/app/button.tsx";
 const ACTION_SOURCE = '"use server";\nexport async function save() { return "PRIVATE"; }\n';
 const CLIENT_SOURCE = '"use client";\nexport function Button() {}\n';
+const MAP_PREFIX = "../../../../..";
 
 function sourcemap(sources: string[], sourcesContent: string[]) {
   return JSON.stringify({ version: 3, sources, sourcesContent, mappings: "" });
 }
 
-function inlineSourcemap(json: string) {
-  return `//# sourceMappingURL=data:application/json;base64,${Buffer.from(json).toString("base64")}\n`;
+function chunk(code = "export{};") {
+  return {
+    type: "chunk",
+    fileName: "_next/static/chunks/button.js",
+    sourcemapFileName: "_next/static/chunks/button.js.map",
+    moduleIds: [ACTION_ID, CLIENT_ID],
+    code,
+  };
 }
 
-async function build(
-  modules: Record<string, string>,
+async function generate(
   bundle: Bundle,
-  options: Record<string, unknown> = {},
-  consumer: "client" | "server" = "client",
+  {
+    serverReferences = [ACTION_ID],
+    consumer = "client",
+    outputOptions = {},
+  }: {
+    serverReferences?: string[];
+    consumer?: "client" | "server";
+    outputOptions?: Record<string, unknown>;
+  } = {},
 ) {
-  const plugin = createServerActionClientSourcemapPlugin();
-  const context = { environment: { name: consumer, config: { consumer } } };
-  (plugin.buildStart as (this: unknown) => void).call(context);
-  for (const [id, code] of Object.entries(modules)) {
-    await (plugin.transform as Hook).handler.call(context, code as never, id as never);
-  }
-  (plugin.generateBundle as Hook).handler.call(
-    context,
-    { dir: OUT_DIR, ...options } as never,
+  const metaMap = new Map(serverReferences.map((id) => [id, {}]));
+  const plugin = createServerActionClientSourcemapPlugin({
+    getManager: async () => ({ serverReferences: { metaMap } }) as never,
+  });
+  (plugin.configResolved as (config: unknown) => void)({});
+  await (plugin.generateBundle as Hook).handler.call(
+    { environment: { config: { consumer } } },
+    { dir: OUT_DIR, ...outputOptions } as never,
     bundle as never,
   );
   return bundle;
 }
 
-function chunkWithMap(modules: Record<string, string>, code = "export{};") {
-  const ids = Object.keys(modules);
-  const sources = ids.map((id) => `../../../../..${id.slice("/app".length)}`);
-  return {
-    chunk: {
-      type: "chunk",
-      fileName: "_next/static/chunks/button.js",
-      sourcemapFileName: "_next/static/chunks/button.js.map",
-      moduleIds: ids,
-      code,
-    },
-    map: sourcemap(sources, Object.values(modules)),
-  };
+const defaultMap = sourcemap(
+  [`${MAP_PREFIX}/app/actions.ts`, `${MAP_PREFIX}/app/button.tsx`],
+  [ACTION_SOURCE, CLIENT_SOURCE],
+);
+
+function mapAsset(bundle: Bundle) {
+  return JSON.parse(String(bundle["_next/static/chunks/button.js.map"]!.source));
 }
 
 describe("vinext:server-action-client-sourcemap", () => {
-  const modules = { [ACTION_ID]: ACTION_SOURCE, "/app/app/button.tsx": CLIENT_SOURCE };
-
   it("only runs in builds", () => {
-    expect(createServerActionClientSourcemapPlugin().apply).toBe("build");
+    const plugin = createServerActionClientSourcemapPlugin({ getManager: async () => undefined });
+    expect(plugin.apply).toBe("build");
   });
 
-  it('nulls "use server" module content in emitted .map assets', async () => {
-    const { chunk, map } = chunkWithMap(modules);
-    const bundle = await build(modules, {
-      [chunk.fileName]: chunk,
-      [chunk.sourcemapFileName]: { type: "asset", source: map },
+  it("nulls server action content in emitted .map assets", async () => {
+    const bundle = await generate({
+      "_next/static/chunks/button.js": chunk(),
+      "_next/static/chunks/button.js.map": { type: "asset", source: defaultMap },
     });
-    const scrubbed = JSON.parse(String(bundle[chunk.sourcemapFileName]!.source));
-    expect(scrubbed.sources).toEqual([
-      "../../../../../app/actions.ts",
-      "../../../../../app/button.tsx",
+    expect(mapAsset(bundle).sources).toEqual([
+      `${MAP_PREFIX}/app/actions.ts`,
+      `${MAP_PREFIX}/app/button.tsx`,
     ]);
-    expect(scrubbed.sourcesContent).toEqual([null, CLIENT_SOURCE]);
+    expect(mapAsset(bundle).sourcesContent).toEqual([null, CLIENT_SOURCE]);
   });
 
   it("nulls it in inline maps", async () => {
-    const { chunk, map } = chunkWithMap(modules);
-    chunk.code += inlineSourcemap(map);
-    const bundle = await build(modules, { [chunk.fileName]: chunk });
-    const encoded = /base64,([A-Za-z0-9+/=]+)\n$/.exec(String(bundle[chunk.fileName]!.code))![1]!;
-    const scrubbed = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
-    expect(scrubbed.sourcesContent).toEqual([null, CLIENT_SOURCE]);
-  });
-
-  it("matches sources rewritten by sourcemapPathTransform", async () => {
-    const { chunk } = chunkWithMap(modules);
-    const map = sourcemap(
-      ["src://../../../../../app/actions.ts", "src://../../../../../app/button.tsx"],
-      Object.values(modules),
-    );
-    const bundle = await build(
-      modules,
-      { [chunk.fileName]: chunk, [chunk.sourcemapFileName]: { type: "asset", source: map } },
-      { sourcemapPathTransform: (source: string) => `src://${source}` },
-    );
-    const scrubbed = JSON.parse(String(bundle[chunk.sourcemapFileName]!.source));
-    expect(scrubbed.sourcesContent).toEqual([null, CLIENT_SOURCE]);
-  });
-
-  it.each([
-    ["a directive after other directives and comments", '"use strict" /* c */; "use server";\r\n'],
-    ["a module that does not parse yet", '"use server";\nexport async function save( {\n'],
-  ])("treats %s as a server action module", async (_name, source) => {
-    const actionModules = { [ACTION_ID]: source, "/app/app/button.tsx": CLIENT_SOURCE };
-    const { chunk, map } = chunkWithMap(actionModules);
-    const bundle = await build(actionModules, {
-      [chunk.fileName]: chunk,
-      [chunk.sourcemapFileName]: { type: "asset", source: map },
+    const encoded = Buffer.from(defaultMap).toString("base64");
+    const bundle = await generate({
+      "_next/static/chunks/button.js": chunk(
+        `export{};\n//# sourceMappingURL=data:application/json;base64,${encoded}\n`,
+      ),
     });
-    const scrubbed = JSON.parse(String(bundle[chunk.sourcemapFileName]!.source));
-    expect(scrubbed.sourcesContent).toEqual([null, CLIENT_SOURCE]);
+    const code = String(bundle["_next/static/chunks/button.js"]!.code);
+    const inline = /base64,([A-Za-z0-9+/=]+)\n$/.exec(code)![1]!;
+    expect(JSON.parse(Buffer.from(inline, "base64").toString("utf8")).sourcesContent).toEqual([
+      null,
+      CLIENT_SOURCE,
+    ]);
+  });
+
+  it("nulls sources a loader-supplied map names differently", async () => {
+    const map = sourcemap(
+      [`${MAP_PREFIX}/app/original/actions.ts`, `${MAP_PREFIX}/app/button.tsx`],
+      [ACTION_SOURCE, CLIENT_SOURCE],
+    );
+    const bundle = await generate({
+      "_next/static/chunks/button.js": chunk(),
+      "_next/static/chunks/button.js.map": { type: "asset", source: map },
+    });
+    expect(mapAsset(bundle).sourcesContent).toEqual([null, CLIENT_SOURCE]);
+  });
+
+  it("keeps sources rewritten by sourcemapPathTransform", async () => {
+    const map = sourcemap(
+      [`src://${MAP_PREFIX}/app/actions.ts`, `src://${MAP_PREFIX}/app/button.tsx`],
+      [ACTION_SOURCE, CLIENT_SOURCE],
+    );
+    const bundle = await generate(
+      {
+        "_next/static/chunks/button.js": chunk(),
+        "_next/static/chunks/button.js.map": { type: "asset", source: map },
+      },
+      { outputOptions: { sourcemapPathTransform: (source: string) => `src://${source}` } },
+    );
+    expect(mapAsset(bundle).sourcesContent).toEqual([null, CLIENT_SOURCE]);
   });
 
   it.each([
-    ["a non-prologue string", 'export const x = 1;\n"use server";\n', "client"],
-    ["a string mention", 'export const label = "use server";\n', "client"],
-    ["a server build", ACTION_SOURCE, "server"],
-  ] as const)("leaves maps unchanged for %s", async (_name, source, consumer) => {
-    const sourceModules = { [ACTION_ID]: source, "/app/app/button.tsx": CLIENT_SOURCE };
-    const { chunk, map } = chunkWithMap(sourceModules);
-    const bundle = await build(
-      sourceModules,
-      { [chunk.fileName]: chunk, [chunk.sourcemapFileName]: { type: "asset", source: map } },
-      {},
-      consumer,
+    ["chunks without server references", { serverReferences: [] as string[] }],
+    ["server builds", { consumer: "server" as const }],
+  ])("leaves maps unchanged for %s", async (_name, options) => {
+    const bundle = await generate(
+      {
+        "_next/static/chunks/button.js": chunk(),
+        "_next/static/chunks/button.js.map": { type: "asset", source: defaultMap },
+      },
+      options,
     );
-    expect(bundle[chunk.sourcemapFileName]!.source).toBe(map);
+    expect(bundle["_next/static/chunks/button.js.map"]!.source).toBe(defaultMap);
   });
 });

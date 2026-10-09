@@ -8503,7 +8503,14 @@ export const loadServerActionClient = ${
       }),
     );
     plugins.push(createScanBuildCssPlugin());
-    plugins.push(createServerActionClientSourcemapPlugin());
+    plugins.push(
+      createServerActionClientSourcemapPlugin({
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
+      }),
+    );
   }
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
