@@ -545,6 +545,31 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
  * screen keeps the shell, so when that fallback's owner sits below the loading,
  * the loading shows where Next.js would keep the fallback.
  */
+/**
+ * A not-found or error boundary payload renders its fallback in place of the
+ * route's tree, so none of the route's loading boundaries is mounted. A page
+ * rendered through an active implicit children slot is a page tree too, while
+ * a synthetic route's default or unmatched children slot keeps the shell.
+ */
+function hasCurrentPageTree(
+  elements: AppElements,
+  route: RouteManifestRoute,
+  routeManifest: RouteManifest,
+): boolean {
+  if (Object.keys(elements).some((key) => AppElementsWire.parseElementKey(key)?.kind === "page")) {
+    return true;
+  }
+  return route.slotIds.some((slotId) => {
+    const parsed = AppElementsWire.parseElementKey(slotId);
+    return (
+      parsed?.kind === "slot" &&
+      parsed.name === "children" &&
+      Object.hasOwn(elements, slotId) &&
+      routeManifest.segmentGraph.slotBindings.get(`${route.id}::${slotId}`)?.state === "active"
+    );
+  });
+}
+
 function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
   currentParams: Readonly<Record<string, string | string[]>>;
@@ -567,17 +592,6 @@ function isShellLoadingBoundaryMounted(options: {
   if (targetRoute === undefined || loadingTreePosition > targetRoute.treeSegments.length) {
     return false;
   }
-  // A not-found or error boundary payload renders its fallback in place of the
-  // route's tree, so none of the route's loading boundaries is mounted.
-  // Synthetic children-slot routes have no page entry either and keep the
-  // shell.
-  if (
-    !Object.keys(options.currentElements).some(
-      (key) => AppElementsWire.parseElementKey(key)?.kind === "page",
-    )
-  ) {
-    return false;
-  }
   const currentMetadata = AppElementsWire.readMetadata(options.currentElements);
   // An intercepted tree's params may belong to the intercepted route rather
   // than the one its route id names, so it keeps the shell.
@@ -596,6 +610,9 @@ function isShellLoadingBoundaryMounted(options: {
         })?.route
       : undefined);
   if (currentRoute === undefined || loadingTreePosition > currentRoute.treeSegments.length) {
+    return false;
+  }
+  if (!hasCurrentPageTree(options.currentElements, currentRoute, options.routeManifest)) {
     return false;
   }
   return (

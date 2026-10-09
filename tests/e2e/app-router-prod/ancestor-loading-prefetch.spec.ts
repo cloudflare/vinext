@@ -163,6 +163,17 @@ for (const target of [
     path: `${BASE}/plain/four`,
   },
   {
+    // The panel slot matches only the target, so the shell's omitted panel
+    // segment changes and only the children loading boundary is shared.
+    name: "a sibling page rendered through an implicit children slot",
+    from: "/children-slot-loading/sub/x/a",
+    current: "#children-slot-loading-a",
+    link: "children-slot-loading-b-link",
+    loading: "children-slot-loading-loading",
+    target: "children-slot-loading-b",
+    path: "/children-slot-loading/sub/x/b",
+  },
+  {
     // A leaf loading's page key ignores search params.
     name: "the same page with different search params",
     from: "/leaf-loading-search-only?q=first",

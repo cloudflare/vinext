@@ -891,6 +891,83 @@ describe("App Router optimistic routing", () => {
     expect(canCommit(dynamicShell, "route:/p/2/b", { id: "2" }, { id: "1" })).toBe(true);
   });
 
+  it("treats a page in an active implicit children slot as a mounted page tree", () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/f");
+    const childrenBinding = (
+      routeId: string,
+      state: RouteManifestSlotBinding["state"],
+    ): RouteManifestSlotBinding => ({
+      defaultId: null,
+      id: `${routeId}::${childrenSlotId}`,
+      ownerLayoutId: null,
+      routeId,
+      routeSegments: null,
+      slotId: childrenSlotId,
+      state,
+    });
+    const routeManifest = manifest(
+      ["one", "two", "fallback"].map((name) =>
+        route({
+          id: `route:/f/${name}`,
+          isDynamic: false,
+          pattern: `/f/${name}`,
+          patternParts: ["f", name],
+          slotIds: [childrenSlotId],
+        }),
+      ),
+      [
+        childrenBinding("route:/f/one", "active"),
+        childrenBinding("route:/f/two", "active"),
+        childrenBinding("route:/f/fallback", "default"),
+      ],
+    );
+    const metadataFor = (routeId: string): AppElements =>
+      AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [],
+        rootLayoutTreePath: "/",
+        routeId,
+      });
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: {
+        ...metadataFor("route:/f/two"),
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: 0,
+        [childrenSlotId]: null,
+        "route:/f/two": createElement("p", null, "Loading"),
+      },
+      href: "/f/two",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+    const canCommit = (currentElements: AppElements) =>
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        segmentFallbackShown: false,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template,
+      });
+
+    // A loading at app/ wraps the shared `f` child segment.
+    expect(
+      canCommit({ ...metadataFor("route:/f/one"), [childrenSlotId]: createElement("p") }),
+    ).toBe(false);
+    // A synthetic route's default children slot keeps the shell, as does a
+    // payload without the children slot entry.
+    expect(
+      canCommit({ ...metadataFor("route:/f/fallback"), [childrenSlotId]: createElement("p") }),
+    ).toBe(true);
+    expect(canCommit(metadataFor("route:/f/one"))).toBe(true);
+  });
+
   it("preserves raw encoded catch-all params in optimistic payloads", () => {
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
     const routeManifest = manifest([
