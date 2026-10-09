@@ -510,6 +510,31 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(body).toHaveProperty("pageProps");
   });
 
+  it.each([
+    ["renders the document for an origin-managed cache", false, 1],
+    ["skips the discarded document render for an edge CDN adapter", true, 0],
+  ])("%s on a getStaticProps data miss", async (_name, edge, renders) => {
+    if (edge) setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const renderToReadableStream = vi.fn(async () => new Response("<p>page</p>").body!);
+    const pathname = `/data-miss-${edge ? "edge" : "origin"}`;
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            pathname,
+            makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+          ),
+        ],
+        renderToReadableStream,
+      }),
+    );
+    const dataUrl = `/_next/data/test-build-id${pathname}.json`;
+    const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+
+    expect(res.status).toBe(200);
+    expect(renderToReadableStream).toHaveBeenCalledTimes(renders);
+  });
+
   it("preserves staged Set-Cookie values separately on Pages data responses", async () => {
     const stagedHeaders = new Headers();
     stagedHeaders.append("Set-Cookie", "middleware=one; Path=/");

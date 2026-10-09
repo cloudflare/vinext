@@ -1280,7 +1280,10 @@ export function createPagesPageHandler(
           // and caches it with the page data before replying, so the next
           // HTML request is a hit.
           // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+          // Edge CDN adapters keep no origin page store, so the render would be
+          // discarded there.
           if (
+            getCdnCacheAdapter().ownsBackgroundRevalidation &&
             isStaticPropsRender &&
             previewData === false &&
             !scriptNonce &&
