@@ -524,24 +524,34 @@ export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModu
 }
 
 /**
- * Whether a layout or template renders in `(loadingTreePosition, treePosition]`.
- * A segment's loading convention wraps the layouts and templates of the
- * segments below it, like Next.js's LoadingBoundary around each child segment,
- * so such a layout or template carries the boundary on its own entry. A flat
- * entry rendered inside it (the page, or a slot it owns) must not repeat that
- * boundary, or the fallback would render inside the layout.
+ * Whether a layout or template renders between a loading boundary and an entry
+ * inside it. A segment's loading convention wraps the layouts and templates of
+ * the segments below it, like Next.js's LoadingBoundary around each child
+ * segment, so the outermost such layout or template carries the boundary on its
+ * own entry. A flat entry rendered inside it (a nested layout or template, the
+ * page, or a slot) must not repeat that boundary, or the fallback would mount
+ * inside the layout. Within one segment the layout wraps the template, which
+ * wraps the loading, so the bounds are inclusive tree positions per kind.
  */
 function hasAppPageSegmentBelowLoading<TModule extends AppPageModule>(
   loadingTreePosition: number,
-  treePosition: number,
+  bounds: { layoutsThrough: number; templatesThrough: number },
   layoutEntries: readonly { layoutModule?: TModule | null; treePosition: number }[],
   templateEntries: readonly AppPageTemplateEntry<TModule>[],
 ): boolean {
-  const rendersBelowLoading = (position: number, module: TModule | null | undefined): boolean =>
-    position > loadingTreePosition && position <= treePosition && getDefaultExport(module) !== null;
+  const rendersBelowLoading = (
+    position: number,
+    through: number,
+    module: TModule | null | undefined,
+  ): boolean =>
+    position > loadingTreePosition && position <= through && getDefaultExport(module) !== null;
   return (
-    layoutEntries.some((entry) => rendersBelowLoading(entry.treePosition, entry.layoutModule)) ||
-    templateEntries.some((entry) => rendersBelowLoading(entry.treePosition, entry.templateModule))
+    layoutEntries.some((entry) =>
+      rendersBelowLoading(entry.treePosition, bounds.layoutsThrough, entry.layoutModule),
+    ) ||
+    templateEntries.some((entry) =>
+      rendersBelowLoading(entry.treePosition, bounds.templatesThrough, entry.templateModule),
+    )
   );
 }
 
@@ -1203,7 +1213,7 @@ export function buildAppPageElements<
     nearestPageLoadingEntry &&
     !hasAppPageSegmentBelowLoading(
       nearestPageLoadingEntry.treePosition,
-      routeSegments.length,
+      { layoutsThrough: routeSegments.length, templatesThrough: routeSegments.length },
       layoutEntries,
       templateEntries,
     )
@@ -1257,7 +1267,20 @@ export function buildAppPageElements<
         <Children />
       </TemplateComponent>
     );
-    const ancestorLoadingEntry = findNearestAncestorLoadingEntry(templateEntry.treePosition);
+    const nearestAncestorLoadingEntry = findNearestAncestorLoadingEntry(templateEntry.treePosition);
+    const ancestorLoadingEntry =
+      nearestAncestorLoadingEntry &&
+      !hasAppPageSegmentBelowLoading(
+        nearestAncestorLoadingEntry.treePosition,
+        {
+          layoutsThrough: templateEntry.treePosition,
+          templatesThrough: templateEntry.treePosition - 1,
+        },
+        layoutEntries,
+        templateEntries,
+      )
+        ? nearestAncestorLoadingEntry
+        : undefined;
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
@@ -1327,7 +1350,20 @@ export function buildAppPageElements<
         <Children />
       </LayoutComponent>
     );
-    const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
+    const nearestAncestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
+    const ancestorLoadingEntry =
+      nearestAncestorLoadingEntry &&
+      !hasAppPageSegmentBelowLoading(
+        nearestAncestorLoadingEntry.treePosition,
+        {
+          layoutsThrough: layoutEntry.treePosition - 1,
+          templatesThrough: layoutEntry.treePosition - 1,
+        },
+        layoutEntries,
+        templateEntries,
+      )
+        ? nearestAncestorLoadingEntry
+        : undefined;
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
@@ -1610,7 +1646,7 @@ export function buildAppPageElements<
       nearestOwnerLoadingEntry &&
       !hasAppPageSegmentBelowLoading(
         nearestOwnerLoadingEntry.treePosition,
-        ownerTreePosition,
+        { layoutsThrough: ownerTreePosition, templatesThrough: ownerTreePosition },
         layoutEntries,
         templateEntries,
       )

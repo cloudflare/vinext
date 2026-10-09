@@ -19,6 +19,9 @@ export default async function ProtectedLayout({ children }: { children: React.Re
         >
           Settings
         </Link>
+        <Link href="/ancestor-loading-shared-layout/nested" id="ancestor-shared-layout-nested-link">
+          Nested
+        </Link>
       </nav>
       {children}
     </section>

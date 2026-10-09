@@ -4597,6 +4597,102 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("keys a shared group layout entry's ancestor loading boundary by the group", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    // The group layout is the only layout, so its entry is not gated on an
+    // earlier layout's render dependency and stays inspectable.
+    const buildElements = (routeSegments: string[], routePath: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [2],
+          layouts: [{ default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    const layoutId = "layout:/dashboard/(protected)";
+    for (const [routeSegments, routePath] of [
+      [["dashboard", "(protected)"], "/dashboard"],
+      [["dashboard", "(protected)", "settings"], "/dashboard/settings"],
+    ] as const) {
+      const elements = buildElements([...routeSegments], routePath);
+      expect(findSuspenseWithFallback(elements[layoutId], "DashboardLoading")?.key).toBe(
+        JSON.stringify(["dashboard", "(protected)"]),
+      );
+    }
+  });
+
+  it("keeps an ancestor loading boundary on a template between it and the page", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    function GroupTemplate(props: Record<string, unknown>) {
+      return createElement("div", null, props.children as ReactNode);
+    }
+
+    const buildElements = (withPageRenderDependency: boolean) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        // With a page render dependency the page entry may carry its own
+        // boundary; without one the template entry stays inspectable.
+        pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [],
+          routeSegments: ["dashboard", "(protected)", "settings"],
+          slots: {},
+          templateTreePositions: [2],
+          templates: [{ default: GroupTemplate }],
+        },
+        routePath: "/dashboard/settings",
+        rootNotFoundModule: null,
+      });
+
+    const withDependency = buildElements(true);
+    expect(withDependency["page:/dashboard/settings"]).toBeDefined();
+    expect(
+      countSuspenseWithFallback(withDependency["page:/dashboard/settings"], "DashboardLoading"),
+    ).toBe(0);
+    expect(
+      findSuspenseWithFallback(
+        buildElements(false)["template:/dashboard/(protected)"],
+        "DashboardLoading",
+      )?.key,
+    ).toBe(JSON.stringify(["dashboard", "(protected)"]));
+  });
+
   it("keeps the route-derived key for a loading at the slot owner's own segment", () => {
     function DashboardLoading() {
       return createElement("p", null, "Loading dashboard");

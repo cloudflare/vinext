@@ -194,39 +194,45 @@ test.describe("Loading boundaries (loading.tsx)", () => {
   // it never renders inside that layout. Regression for cloudflare/vinext#3725.
   // Related Next.js test: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
-  test("ancestor loading above a shared layout keeps the current page during navigation", async ({
-    page,
-  }) => {
-    await page.goto(`${BASE}/ancestor-loading-shared-layout`);
-    await waitForAppRouterHydration(page);
-    await expect(page.locator("#ancestor-shared-layout-overview")).toBeVisible();
+  for (const target of [
+    { name: "a sibling page", link: "settings", heading: "Settings page" },
+    { name: "a page with its own layout", link: "nested", heading: "Nested page" },
+  ]) {
+    test(`ancestor loading above a shared layout keeps the current page when navigating to ${target.name}`, async ({
+      page,
+    }) => {
+      await page.goto(`${BASE}/ancestor-loading-shared-layout`);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator("#ancestor-shared-layout-overview")).toBeVisible();
 
-    await page.evaluate(() => {
-      const state = window as unknown as { __sawAncestorSharedLayoutLoading?: boolean };
-      state.__sawAncestorSharedLayoutLoading = false;
-      new MutationObserver(() => {
-        if (document.getElementById("ancestor-shared-layout-loading")) {
-          state.__sawAncestorSharedLayoutLoading = true;
-        }
-      }).observe(document.body, { childList: true, subtree: true });
+      await page.evaluate(() => {
+        const state = window as unknown as { __sawAncestorSharedLayoutLoading?: boolean };
+        state.__sawAncestorSharedLayoutLoading = false;
+        new MutationObserver(() => {
+          if (document.getElementById("ancestor-shared-layout-loading")) {
+            state.__sawAncestorSharedLayoutLoading = true;
+          }
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+
+      await page.locator(`#ancestor-shared-layout-${target.link}-link`).click();
+      // The target page takes 3s; the overview and tabs stay on screen meanwhile.
+      await page.waitForTimeout(500);
+      await expect(page.locator("#ancestor-shared-layout-overview")).toBeVisible();
+      await expect(page.locator("#ancestor-shared-layout-tabs")).toBeVisible();
+      await expect(page.locator(`#ancestor-shared-layout-${target.link}`)).toHaveText(
+        target.heading,
+        { timeout: 10_000 },
+      );
+
+      const sawLoading = await page.evaluate(
+        () =>
+          (window as unknown as { __sawAncestorSharedLayoutLoading?: boolean })
+            .__sawAncestorSharedLayoutLoading,
+      );
+      expect(sawLoading).toBe(false);
     });
-
-    await page.locator("#ancestor-shared-layout-settings-link").click();
-    // The settings page takes 3s; the overview and tabs stay on screen meanwhile.
-    await page.waitForTimeout(500);
-    await expect(page.locator("#ancestor-shared-layout-overview")).toBeVisible();
-    await expect(page.locator("#ancestor-shared-layout-tabs")).toBeVisible();
-    await expect(page.locator("#ancestor-shared-layout-settings")).toHaveText("Settings page", {
-      timeout: 10_000,
-    });
-
-    const sawLoading = await page.evaluate(
-      () =>
-        (window as unknown as { __sawAncestorSharedLayoutLoading?: boolean })
-          .__sawAncestorSharedLayoutLoading,
-    );
-    expect(sawLoading).toBe(false);
-  });
+  }
 
   test("ancestor loading above a shared layout wraps that layout on first entry", async ({
     page,
