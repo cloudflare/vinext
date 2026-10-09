@@ -8,7 +8,10 @@ import type {
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
 import { parseAstAsync, type Plugin } from "vite";
-import { loadOrGenerateServerActionsEncryptionKey } from "../build/server-actions-encryption-key.js";
+import {
+  getServerActionsKeyCacheFsDeny,
+  loadOrGenerateServerActionsEncryptionKey,
+} from "../build/server-actions-encryption-key.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
@@ -216,6 +219,10 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
 
   return {
     name: PLUGIN_NAME,
+    config(config) {
+      // mergeConfig appends this to a configured deny list.
+      return { server: { fs: { deny: getServerActionsKeyCacheFsDeny(config.server?.fs?.deny) } } };
+    },
     configResolved(config) {
       const pluginApi = rscModule.getPluginApi(config);
       const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
