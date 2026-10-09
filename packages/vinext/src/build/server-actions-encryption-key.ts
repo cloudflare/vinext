@@ -10,7 +10,7 @@
  */
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import path, { toSlash } from "pathslash";
+import path from "pathslash";
 
 const CONFIG_FILE = ".rscinfo";
 const ENCRYPTION_KEY = "encryption.key";
@@ -134,32 +134,9 @@ function restrictKeyCacheMode(configPath: string): void {
 /**
  * The cached key lives inside the project root, which the dev server serves.
  * Return the `server.fs.deny` entries that keep it private, preserving Vite's
- * defaults and any configured entries.
+ * defaults and any configured entries. Like `.env` files, it is only exposed
+ * when `server.fs.strict` is false, which turns off Vite's file restrictions.
  */
 export function getServerActionsKeyCacheFsDeny(configuredDeny: string[] | undefined): string[] {
   return configuredDeny ? [KEY_CACHE_FS_DENY] : [...VITE_DEFAULT_FS_DENY, KEY_CACHE_FS_DENY];
-}
-
-// `<anything>/.vinext/cache/.rscinfo` or `<anything>/.vinext/dev/cache/.rscinfo`,
-// including the `/@fs/<absolute path>` form.
-const KEY_CACHE_REQUEST_PATH_RE = /(?:^|\/)\.vinext\/(?:dev\/)?cache\/\.rscinfo\/?$/i;
-
-/**
- * Whether a dev-server request URL names a key cache file. Vite skips
- * `server.fs.deny` when `server.fs.strict` is false, so a middleware rejects
- * these requests too. The path is decoded once and normalized as Vite does, and
- * matched case-insensitively for case-insensitive file systems.
- */
-export function isServerActionsKeyCacheRequest(url: string | undefined): boolean {
-  if (!url) return false;
-  const pathname = url.split("?", 1)[0]!;
-  let decoded = pathname;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    // Vite rejects malformed paths itself; still check the raw path.
-  }
-  return [pathname, decoded].some((candidate) =>
-    KEY_CACHE_REQUEST_PATH_RE.test(path.normalize(toSlash(candidate))),
-  );
 }
