@@ -64,8 +64,14 @@ export default defineConfig({
   "main": "vinext/server/fetch-handler",
   "assets": {
     "directory": "dist/client",
+    "html_handling": "none",
     "not_found_handling": "none",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/*",
+      "!/_next/static/*",
+      "!/*/_next/static/*"
+    ]
   },
   "cache": {
     "enabled": true
@@ -185,8 +191,14 @@ export default defineConfig({
   "main": "vinext/server/fetch-handler",
   "assets": {
     "directory": "dist/client",
+    "html_handling": "none",
     "not_found_handling": "none",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/*",
+      "!/_next/static/*",
+      "!/*/_next/static/*"
+    ]
   },
   "cache": {
     "enabled": true

@@ -140,6 +140,7 @@ describe("App Worker response stage", () => {
         resolvedRoutePathname: "/__vinext/prerender/readiness",
       },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: true,
@@ -360,6 +361,7 @@ describe("App Worker response stage", () => {
       buildId: null,
       cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/" },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: false,
@@ -370,9 +372,11 @@ describe("App Worker response stage", () => {
       trustedPrerenderState: null,
     } satisfies AppWorkerResponseStageProps;
     const { staticFileSignalToken: _token, ...withoutToken } = fullStage;
+    const { headRequest: _headRequest, ...withoutHeadRequest } = fullStage;
 
     expect(isAppWorkerResponseStageProps(fullStage)).toBe(true);
     expect(isAppWorkerResponseStageProps(withoutToken)).toBe(false);
+    expect(isAppWorkerResponseStageProps(withoutHeadRequest)).toBe(false);
   });
 
   it("passes only authenticated prerender state into the full response graph", async () => {
@@ -388,6 +392,7 @@ describe("App Worker response stage", () => {
       buildId: null,
       cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/post/hello" },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: false,
@@ -421,6 +426,43 @@ describe("App Worker response stage", () => {
     );
   });
 
+  it("restores a full HEAD request dispatched as GET", async () => {
+    stages.renderFullRequest.mockImplementation(async () => new Response(null));
+    const props = {
+      buildId: null,
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/logo.svg" },
+      draftModeCookie: null,
+      headRequest: true,
+      kind: "app-full-request" as const,
+      middlewareCookieOverlay: null,
+      prerenderDiscovery: false,
+      protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestOrigin: "https://example.com",
+      scriptNonce: null,
+      staticFileSignalToken: "00000000-0000-4000-8000-000000000000",
+      trustedPrerenderState: null,
+    } satisfies AppWorkerResponseStageProps;
+
+    const request = new Request("https://example.com/logo.svg", {
+      headers: { "if-none-match": '"v1"' },
+    });
+    const cf = { country: "NZ" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
+    await handleResponseStage(
+      request,
+      undefined,
+      undefined,
+      props,
+      async () => new Response("request-stage"),
+      { cache: "bypass" },
+    );
+
+    const [renderedRequest] = stages.renderFullRequest.mock.calls[0];
+    expect(renderedRequest.method).toBe("HEAD");
+    expect(renderedRequest.headers.get("if-none-match")).toBe('"v1"');
+    expect(Reflect.get(renderedRequest, "cf")).toBe(cf);
+  });
+
   it("returns a captured route when the full response graph rejects", async () => {
     stages.renderFullRequest.mockImplementation(async () => {
       setFrameworkRequestRoute("/broken/[slug]");
@@ -431,6 +473,7 @@ describe("App Worker response stage", () => {
       buildId: null,
       cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/broken/test" },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: false,

@@ -34,6 +34,11 @@ type AppWorkerResponseStageEnvelope = {
 
 type AppFullRequestWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "app-full-request";
+  /**
+   * The public request is HEAD. It is dispatched as GET so a transport that
+   * applies HEAD semantics cannot drop the static-file signal's body.
+   */
+  headRequest: boolean;
   prerenderDiscovery: boolean;
   staticFileSignalToken: string;
   trustedPrerenderState: TrustedPrerenderState | null;
@@ -231,6 +236,7 @@ export function isAppWorkerResponseStageProps(
   }
   if (props.kind === "app-full-request") {
     return (
+      typeof props.headRequest === "boolean" &&
       typeof props.prerenderDiscovery === "boolean" &&
       typeof props.staticFileSignalToken === "string" &&
       STATIC_FILE_SIGNAL_TOKEN_RE.test(props.staticFileSignalToken) &&

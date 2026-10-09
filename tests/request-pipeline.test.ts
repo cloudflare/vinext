@@ -47,6 +47,7 @@ import {
 import { withResponseStageVary } from "../packages/vinext/src/server/response-stage-policy.js";
 import {
   readStaticFileSignal,
+  readStaticFileSignalRequestHeaders,
   restoreStaticFileSignalFromTransport,
   serializeStaticFileSignalForTransport,
 } from "../packages/vinext/src/server/static-file-signal.js";
@@ -505,6 +506,100 @@ describe("resolvePublicFileRoute", () => {
     expect(response!.headers.get("x-from-middleware")).toBe("1");
   });
 
+  it("carries middleware's request header overrides through the stage transport", async () => {
+    const cookie = "session=" + "x".repeat(4096);
+    const request = new Request("https://example.com/video.mp4", {
+      headers: { accept: "*/*", cookie, "if-none-match": '"original"', range: "bytes=0-1" },
+    });
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/video.mp4",
+      middlewareContext: {
+        headers: new Headers({ "x-from-middleware": "1" }),
+        // NextResponse.next({ request: { headers } }) with Range deleted.
+        requestHeaders: new Headers({
+          "x-middleware-override-headers": "accept,cookie,if-none-match",
+          "x-middleware-request-accept": "video/*",
+          "x-middleware-request-cookie": cookie,
+          "x-middleware-request-if-none-match": '"replaced"',
+        }),
+        status: null,
+      },
+      pathname: "/video.mp4",
+      publicFiles: new Set(["/video.mp4"]),
+      request,
+    });
+
+    const expected = { accept: "video/*", cookie, "if-none-match": '"replaced"' };
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(response!)!)).toEqual(expected);
+    const serialized = serializeStaticFileSignalForTransport(response!, "token");
+    // The headers travel in the body, so the large cookie adds nothing to the
+    // transport's response headers.
+    expect([...serialized.headers].join("").length).toBeLessThan(200);
+    const restored = await restoreStaticFileSignalFromTransport(serialized, "token");
+    expect(readStaticFileSignal(restored)).toBe("%2Fvideo.mp4");
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(restored)!)).toEqual(expected);
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+    expect(restored.headers.get("x-from-middleware")).toBe("1");
+    expect(restored.body).toBeNull();
+  });
+
+  it("restores a null-body middleware status after transporting request headers", async () => {
+    const signal = createStaticFileSignal(
+      "/logo.svg",
+      { headers: null, status: 304 },
+      new Headers({ accept: "image/*" }),
+    );
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(signal, "token"),
+      "token",
+    );
+    expect(restored.status).toBe(304);
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(restored)!)).toEqual({
+      accept: "image/*",
+    });
+  });
+
+  it("ignores an application header under the reserved transport marker name", async () => {
+    const signal = createStaticFileSignal("/logo.svg", {
+      headers: new Headers({ "x-vinext-stage-static-file-request-headers": "app-value" }),
+      status: null,
+    });
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(signal, "token"),
+      "token",
+    );
+    expect(readStaticFileSignal(restored)).toBe("%2Flogo.svg");
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+  });
+
+  it("leaves the asset request headers alone when middleware overrides none", async () => {
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/logo.svg",
+      middlewareContext: { headers: null, requestHeaders: null, status: null },
+      pathname: "/logo.svg",
+      publicFiles: new Set(["/logo.svg"]),
+      request: new Request("https://example.com/logo.svg"),
+    });
+    expect(readStaticFileSignalRequestHeaders(response!)).toBeNull();
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(response!, "token"),
+      "token",
+    );
+    expect(readStaticFileSignalRequestHeaders(restored)).toBeNull();
+  });
+
+  it("rejects transported request headers without the stage token", async () => {
+    const forged = new Response("[]", {
+      headers: {
+        "x-vinext-stage-static-file": "token:%2Flogo.svg",
+        "x-vinext-stage-static-file-request-headers": "other:200",
+      },
+    });
+    const restored = await restoreStaticFileSignalFromTransport(forged, "token");
+    expect(readStaticFileSignal(restored)).toBeNull();
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+  });
+
   it("returns 405 for unsupported methods only after a public file match", async () => {
     const publicFiles = new Set(["/logo.svg", "/about.rsc"]);
     const middlewareContext = { headers: null, status: null };
@@ -592,14 +687,14 @@ describe("resolvePublicFileRoute", () => {
     expect(serialized.headers.get("content-type")).toBeNull();
     expect(serialized.headers.get("transfer-encoding")).toBeNull();
     const transported = new Response(serialized.body, serialized);
-    const restored = restoreStaticFileSignalFromTransport(transported, token);
+    const restored = await restoreStaticFileSignalFromTransport(transported, token);
 
     expect(restored.status).toBe(203);
     expect(restored.headers.get("x-from-middleware")).toBe("1");
     expect(restored.headers.get("x-vinext-stage-static-file")).toBeNull();
     expect(readStaticFileSignal(restored)).toBe("%2Fstage%20asset.txt");
 
-    const forged = restoreStaticFileSignalFromTransport(
+    const forged = await restoreStaticFileSignalFromTransport(
       new Response("route handler", {
         headers: { "x-vinext-stage-static-file": `${token}:subverted` },
       }),

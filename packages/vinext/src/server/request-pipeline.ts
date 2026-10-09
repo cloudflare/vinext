@@ -1,7 +1,10 @@
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import { INTERNAL_HEADERS, MIDDLEWARE_HEADER_PREFIX, VINEXT_INTERNAL_HEADERS } from "./headers.js";
 import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
-import { getUnconsumedMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
+import {
+  buildRequestHeadersFromMiddlewareResponse,
+  getUnconsumedMiddlewareRequestHeaders,
+} from "../utils/middleware-request-headers.js";
 import {
   forbiddenResponse,
   methodNotAllowedResponse,
@@ -119,7 +122,8 @@ export type HeaderRecord = Record<string, string | string[]>;
 
 type ResolvePublicFileRouteOptions = {
   cleanPathname: string;
-  middlewareContext: StaticFileSignalContext;
+  /** `requestHeaders` holds middleware's request-header override instructions. */
+  middlewareContext: StaticFileSignalContext & { requestHeaders?: Headers | null };
   pathname: string;
   publicFiles: ReadonlySet<string>;
   request: Request;
@@ -147,7 +151,14 @@ export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): 
       headers: options.middlewareContext.headers ?? undefined,
     });
   }
-  return createStaticFileSignal(options.cleanPathname, options.middlewareContext);
+  const { requestHeaders } = options.middlewareContext;
+  return createStaticFileSignal(
+    options.cleanPathname,
+    options.middlewareContext,
+    requestHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(options.request.headers, requestHeaders)
+      : null,
+  );
 }
 
 export function normalizeTrailingSlashPathname(

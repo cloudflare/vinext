@@ -951,7 +951,13 @@ describe("init — basic functionality", () => {
     expect(vite).not.toContain("clientOutDir:");
     const config = readFile(tmpDir, "cloudflare.config.ts");
     expect(config).toContain(
-      'assets: { notFoundHandling: "none", runWorkerFirst: ["/_vinext/static-cache/*"] }',
+      [
+        "    assets: {",
+        '      htmlHandling: "none",',
+        '      notFoundHandling: "none",',
+        '      runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],',
+        "    },",
+      ].join("\n"),
     );
     expect(config).toContain("ASSETS: bindings.assets()");
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
@@ -1079,13 +1085,15 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           assets: {
             directory: "dist/client",
             binding: "ASSETS",
-            run_worker_first: ["/_vinext/static-cache/*"],
+            run_worker_first: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
           },
         });
       } else {
         const config = readFile(tmpDir, "cloudflare.config.ts");
         expect(config).toContain("ASSETS: bindings.assets()");
-        expect(config).toContain('runWorkerFirst: ["/_vinext/static-cache/*"]');
+        expect(config).toContain(
+          'runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"]',
+        );
       }
     },
   );
@@ -1287,6 +1295,153 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       expect(pkg.scripts["build:vinext"]).toBe("vite build");
       expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
     }
+  });
+
+  it.each([false, true])(
+    "keeps asset-first serving for a static export (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(
+        tmpDir,
+        "next.config.mjs",
+        'export default { output: "export", trailingSlash: true };\n',
+      );
+      await runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+        },
+      });
+      if (legacyWrangler) {
+        expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).assets).toEqual({
+          directory: "dist/client",
+          not_found_handling: "none",
+          binding: "ASSETS",
+        });
+      } else {
+        const config = readFile(tmpDir, "cloudflare.config.ts");
+        expect(config).toContain('    assets: {\n      notFoundHandling: "none",\n    },\n');
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: "a shorthand output property",
+      files: { "next.config.mjs": 'const output = "export";\nexport default { output };\n' },
+      isStaticExport: true,
+    },
+    {
+      name: "an inline Vite nextConfig",
+      files: {
+        "vite.config.ts":
+          'export default { plugins: [{ name: "vinext", __vinextNextConfig: { output: "export" } }] };\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set from .env.production",
+      files: {
+        ".env.production": "STATIC_EXPORT=1\n",
+        "next.config.mjs":
+          'export default process.env.STATIC_EXPORT ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set for production builds",
+      files: {
+        "next.config.mjs":
+          'export default process.env.NODE_ENV === "production" ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an inline Vite nextConfig reading the root .env.production",
+      files: {
+        ".env.production": "STATIC_EXPORT=1\n",
+        "vite.config.ts":
+          'export default { plugins: [{ name: "vinext", __vinextNextConfig: { output: process.env.STATIC_EXPORT ? "export" : undefined } }] };\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set from the dotenv of the Vite config's mode",
+      files: {
+        ".env.staging": "STATIC_EXPORT=1\n",
+        "vite.config.ts": 'export default { mode: "staging" };\n',
+        "next.config.mjs":
+          'export default process.env.STATIC_EXPORT ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set from .env.production in the Vite envDir",
+      files: {
+        "config/.env.production": "STATIC_EXPORT=1\n",
+        "vite.config.ts": 'export default { envDir: "config" };\n',
+        "next.config.mjs":
+          'export default process.env.STATIC_EXPORT ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "a next.config under the Vite config's root",
+      files: {
+        "vite.config.ts": 'export default { root: "web" };\n',
+        "web/next.config.mjs": 'export default { output: "export" };\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set from .env.production under the Vite config's root",
+      files: {
+        "web/.env.production": "STATIC_EXPORT=1\n",
+        "vite.config.ts": 'export default { root: "web" };\n',
+        "web/next.config.mjs":
+          'export default process.env.STATIC_EXPORT ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set for production builds by a Vite config changing NODE_ENV",
+      files: {
+        "vite.config.ts": 'process.env.NODE_ENV = "development";\nexport default {};\n',
+        "next.config.mjs":
+          'export default process.env.NODE_ENV === "production" ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "a Vite envDir dotenv expanding the NODE_ENV a Vite config set",
+      files: {
+        "config/.env.production": "STATIC_EXPORT=$NODE_ENV\n",
+        "vite.config.ts":
+          'process.env.NODE_ENV = "development";\nexport default { envDir: "config" };\n',
+        "next.config.mjs":
+          'export default process.env.STATIC_EXPORT === "development" ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "a commented-out output",
+      files: { "next.config.mjs": '// output: "export",\nexport default {};\n' },
+      isStaticExport: false,
+    },
+  ])("reads the effective config for $name", async ({ files, isStaticExport }) => {
+    setupProject(tmpDir, { router: "app", typeModule: true });
+    for (const [file, content] of Object.entries(files)) writeFile(tmpDir, file, content);
+    await runInit(tmpDir, {
+      install: false,
+      cloudflare: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+    });
+    expect(readFile(tmpDir, "cloudflare.config.ts").includes('runWorkerFirst: ["/*"')).toBe(
+      !isStaticExport,
+    );
+    expect(process.env.STATIC_EXPORT).toBeUndefined();
   });
 
   it.each(["service-binding", "self-contained", "workers-cache", "none"] as const)(

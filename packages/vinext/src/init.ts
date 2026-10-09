@@ -523,6 +523,93 @@ export function updateGitignore(
   return true;
 }
 
+/**
+ * Read `output` from the Next.js config as `vinext build` does: an inline
+ * `vinext({ nextConfig })` in the Vite config wins over next.config, and both
+ * are evaluated with NODE_ENV set to production and `.env.production` loaded as
+ * the build loads it. The Vite config is read as written, without running
+ * plugin `config` hooks, so a plugin that changes `root`, `envDir` or `mode` is
+ * not seen. A config that cannot load here keeps the Worker-first default.
+ * The loader is imported lazily because it needs Vite, which create-vinext-app
+ * runs without.
+ */
+async function resolvesToStaticExport(
+  root: string,
+  viteConfigPath: string | undefined,
+): Promise<boolean> {
+  let configModule: typeof import("./config/next-config.js");
+  let dotenvModule: typeof import("./config/dotenv.js");
+  try {
+    [configModule, dotenvModule] = await Promise.all([
+      import("./config/next-config.js"),
+      import("./config/dotenv.js"),
+    ]);
+  } catch {
+    return false;
+  }
+  const {
+    findVinextNextConfigInPlugins,
+    loadNextConfig,
+    PHASE_PRODUCTION_BUILD,
+    resolveNextConfigInput,
+  } = configModule;
+  // Restore the environment afterwards so the build-time values do not leak
+  // into the rest of init, such as the dependency install.
+  const savedEnv = { ...process.env };
+  // Next.js's vendored global declarations mark NODE_ENV readonly.
+  Reflect.set(process.env, "NODE_ENV", "production");
+  try {
+    // As in a Vite CLI build, the root production dotenv loads before the Vite
+    // config evaluates, then the plugin loads the Vite envDir for the config's
+    // mode before either config source resolves.
+    dotenvModule.loadDotenv({ root, mode: "production" });
+    let mode = "production";
+    let inline: Awaited<ReturnType<typeof findVinextNextConfigInPlugins>> = null;
+    // Like the plugin, the Vite config's root decides where next.config and
+    // the default envDir live, while an explicit envDir resolves from the CLI root.
+    let configRoot = root;
+    let envDir: string | false | undefined;
+    if (viteConfigPath) {
+      try {
+        const { loadConfigFromFile } = await import("vite");
+        const loaded = await loadConfigFromFile(
+          { command: "build", mode: "production", isSsrBuild: false, isPreview: false },
+          viteConfigPath,
+          root,
+          "silent",
+        );
+        if (typeof loaded?.config.mode === "string") mode = loaded.config.mode;
+        if (typeof loaded?.config.root === "string") {
+          configRoot = path.resolve(root, loaded.config.root);
+        }
+        const configuredEnvDir = loaded?.config.envDir;
+        if (configuredEnvDir === false) envDir = false;
+        else if (typeof configuredEnvDir === "string")
+          envDir = path.resolve(root, configuredEnvDir);
+        inline = await findVinextNextConfigInPlugins(loaded?.config.plugins);
+      } catch {
+        // A Vite config whose plugins are not installed yet cannot load here;
+        // next.config still decides.
+      }
+    }
+    if (envDir !== false) dotenvModule.loadDotenv({ root: envDir ?? configRoot, mode });
+    // After loading that dotenv, the plugin's config hook sets NODE_ENV again
+    // before loading next.config, whatever the Vite config assigned.
+    Reflect.set(process.env, "NODE_ENV", "production");
+    const nextConfig = inline
+      ? await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD)
+      : await loadNextConfig(configRoot, PHASE_PRODUCTION_BUILD);
+    return nextConfig?.output === "export";
+  } catch {
+    return false;
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!Object.hasOwn(savedEnv, key)) delete process.env[key];
+    }
+    Object.assign(process.env, savedEnv);
+  }
+}
+
 type PlatformSetupContext = {
   root: string;
   isAppRouter: boolean;
@@ -532,6 +619,7 @@ type PlatformSetupContext = {
   force: boolean;
   prerender?: boolean;
   hasCssModules: boolean;
+  isStaticExport?: boolean;
   today?: string;
 };
 
@@ -657,6 +745,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
+  const isStaticExport =
+    platform === "cloudflare" && (await resolvesToStaticExport(root, existingViteConfigPath));
+
   if (platform === "cloudflare") {
     validateCloudflarePlatformSetup(
       {
@@ -664,6 +755,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
         isAppRouter: isApp,
         existingViteConfigPath,
         hasCssModules,
+        isStaticExport,
         today: options._today,
       },
       cloudflareOptions!,
@@ -726,6 +818,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     force: options.force ?? false,
     prerender: options.prerender,
     hasCssModules,
+    isStaticExport,
     today: options._today,
   };
   const platformSetup =

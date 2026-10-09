@@ -591,7 +591,13 @@ async function handleRequestImpl(
             })
           : dispatched;
       },
-      serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
+      serveFilesystemRoute: async (
+        requestPathname,
+        _stagedHeaders,
+        phase,
+        resolvedUrl,
+        filesystemRequest,
+      ) => {
         if (!assets) return false;
         if (isImageOptimizationPath(requestPathname)) {
           const imageUrl = new URL(resolvedUrl, request.url);
@@ -609,13 +615,14 @@ async function handleRequestImpl(
           );
         }
         return fetchWorkerFilesystemRoute(
-          request,
+          filesystemRequest,
           requestPathname,
           phase,
           (assetRequest) => Promise.resolve(assets.fetch(assetRequest)),
           publicFiles,
           basePath,
           assetPathPrefix,
+          hadBasePath,
         );
       },
     };

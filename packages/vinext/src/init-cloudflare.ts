@@ -16,6 +16,8 @@ export type CloudflareProjectInfo = {
   isAppRouter: boolean;
   hasISR: boolean;
   hasMDX: boolean;
+  /** The effective Next.js config sets `output: "export"`. */
+  isStaticExport?: boolean;
   nativeModulesToStub: string[];
 };
 
@@ -25,6 +27,18 @@ const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+// Run the Worker, and so middleware, before public/ files as Next.js does,
+// while Workers Static Assets keeps serving the hashed build output directly.
+// The second exclusion covers build output under a basePath or path-style
+// assetPrefix, so adding one later does not route chunks to the Worker, which
+// does not serve them.
+const BUILD_OUTPUT_EXCLUSIONS = ["!/_next/static/*", "!/*/_next/static/*"];
+const DEFAULT_RUN_WORKER_FIRST = ["/*", ...BUILD_OUTPUT_EXCLUSIONS];
+// Serve public .html files only at their exact paths, as Next.js does. The
+// default auto-trailing-slash handling redirects /file.html to /file, which then
+// reaches the Worker and is not a public file.
+const HTML_HANDLING = "none";
+const STATIC_ASSETS_CACHE_ROUTE = "/_vinext/static-cache/*";
 const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
@@ -41,6 +55,7 @@ export type CloudflarePlatformSetupContext = {
   isAppRouter: boolean;
   existingViteConfigPath?: string;
   hasCssModules?: boolean;
+  isStaticExport?: boolean;
   packageManager?: string;
   today?: string;
 };
@@ -138,7 +153,10 @@ export function validateCloudflarePlatformSetup(
     readResponseStoreServiceName(context.root, {});
   }
   const updatedWranglerCode = wranglerCode
-    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
+        root: context.root,
+        isStaticExport: context.isStaticExport,
+      })
     : undefined;
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
@@ -184,7 +202,10 @@ export function setupCloudflarePlatform(
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const updatedWranglerCode = wranglerCode
-    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
+        root: context.root,
+        isStaticExport: context.isStaticExport,
+      })
     : undefined;
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
@@ -261,7 +282,11 @@ export function setupCloudflarePlatform(
   if (!wranglerPath) {
     fs.writeFileSync(
       path.join(context.root, "wrangler.jsonc"),
-      generateWranglerConfig(projectInfo, cloudflare, context.today),
+      generateWranglerConfig(
+        { ...projectInfo, isStaticExport: context.isStaticExport },
+        cloudflare,
+        context.today,
+      ),
       "utf-8",
     );
     generatedPlatformFiles.push("wrangler.jsonc");
@@ -376,7 +401,11 @@ function setupCfPlatform(
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
-      generateTypedCloudflareConfig(projectInfo, cloudflare, context.today),
+      generateTypedCloudflareConfig(
+        { ...projectInfo, isStaticExport: context.isStaticExport },
+        cloudflare,
+        context.today,
+      ),
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
   }
@@ -466,6 +495,16 @@ export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
     ...(options.imageOptimization === "cloudflare-images" ? ["IMAGES: bindings.images()"] : []),
     ...(options.dataCache === "kv" ? ["VINEXT_KV_CACHE: bindings.kv()"] : []),
   ];
+  const routing = defaultAssetRouting(info, options);
+  const assetLines = [
+    ...(routing.htmlHandling ? [`htmlHandling: ${JSON.stringify(routing.htmlHandling)}`] : []),
+    'notFoundHandling: "none"',
+    ...(routing.runWorkerFirst
+      ? [
+          `runWorkerFirst: [${routing.runWorkerFirst.map((pattern) => JSON.stringify(pattern)).join(", ")}]`,
+        ]
+      : []),
+  ];
   return `${imports.join("\n")}
 
 ${shared}export default defineConfig({
@@ -474,7 +513,9 @@ ${shared}export default defineConfig({
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
     compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none"${options.cdnCache === "static-assets" ? ', runWorkerFirst: ["/_vinext/static-cache/*"]' : ""} },
+    assets: {
+      ${assetLines.join(",\n      ")},
+    },
     env: {
       ${envBindings.join(",\n      ")},
     },
@@ -495,6 +536,23 @@ function resolveWorkerEntry(root: string): string {
   return "vinext/server/fetch-handler";
 }
 
+/**
+ * Next.js runs no middleware for a static export, and an export with
+ * `trailingSlash` relies on the default html_handling to serve `/about/` from
+ * `about/index.html`, so export apps keep asset-first serving.
+ */
+function defaultAssetRouting(
+  info: Pick<CloudflareProjectInfo, "isStaticExport">,
+  options: Partial<Pick<CloudflareInitOptions, "cdnCache">>,
+): { htmlHandling?: typeof HTML_HANDLING; runWorkerFirst?: string[] } {
+  if (!info.isStaticExport) {
+    return { htmlHandling: HTML_HANDLING, runWorkerFirst: DEFAULT_RUN_WORKER_FIRST };
+  }
+  return options.cdnCache === "static-assets"
+    ? { runWorkerFirst: [STATIC_ASSETS_CACHE_ROUTE] }
+    : {};
+}
+
 // Cloudflare deployment scaffolding belongs to `vinext init`.
 export function generateWranglerConfig(
   info: CloudflareProjectInfo,
@@ -502,6 +560,7 @@ export function generateWranglerConfig(
   today = new Date().toISOString().split("T")[0],
 ): string {
   const workerEntry = resolveWorkerEntry(info.root);
+  const routing = defaultAssetRouting(info, options);
 
   const config: Record<string, unknown> = {
     $schema: "node_modules/wrangler/config-schema.json",
@@ -511,11 +570,10 @@ export function generateWranglerConfig(
     main: workerEntry,
     assets: {
       directory: "dist/client",
+      ...(routing.htmlHandling ? { html_handling: routing.htmlHandling } : {}),
       not_found_handling: "none",
       binding: "ASSETS",
-      ...(options.cdnCache === "static-assets"
-        ? { run_worker_first: ["/_vinext/static-cache/*"] }
-        : {}),
+      ...(routing.runWorkerFirst ? { run_worker_first: routing.runWorkerFirst } : {}),
     },
   };
 
@@ -1143,7 +1201,7 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
 export function updateWranglerConfigForCloudflare(
   code: string,
   options: CloudflareInitOptions,
-  context: { root?: string } = {},
+  context: { root?: string; isStaticExport?: boolean } = {},
 ): string {
   let config: Record<string, unknown>;
   try {
@@ -1166,10 +1224,20 @@ export function updateWranglerConfigForCloudflare(
     output = appendTopLevelJsonProperty(output, `  "main": ${JSON.stringify(workerEntry)}`);
   }
   if (!findTopLevelJsonProperty(output, "assets")) {
-    output = appendTopLevelJsonProperty(
-      output,
-      '  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS" }',
-    );
+    // The Static Assets cache block below adds its own route to an export app.
+    const routing = defaultAssetRouting(context, {});
+    const assets = JSON.stringify(
+      {
+        directory: "dist/client",
+        ...(routing.htmlHandling ? { html_handling: routing.htmlHandling } : {}),
+        not_found_handling: "none",
+        binding: "ASSETS",
+        ...(routing.runWorkerFirst ? { run_worker_first: routing.runWorkerFirst } : {}),
+      },
+      null,
+      2,
+    ).replaceAll("\n", "\n  ");
+    output = appendTopLevelJsonProperty(output, `  "assets": ${assets}`);
   }
   if (options.cdnCache === "static-assets") {
     const assetsProperty = findTopLevelJsonProperty(output, "assets")!;
@@ -1189,23 +1257,30 @@ export function updateWranglerConfigForCloudflare(
     }
     // Exclusions override positive routes, so merely appending our private path
     // cannot guarantee that the Worker protects it when exclusions are present.
+    // The default build-output exclusions cannot match the flat cache entries.
     if (
       Array.isArray(workerFirst) &&
-      workerFirst.some((pattern) => typeof pattern !== "string" || pattern.startsWith("!"))
+      workerFirst.some(
+        (pattern) =>
+          typeof pattern !== "string" ||
+          (pattern.startsWith("!") && !BUILD_OUTPUT_EXCLUSIONS.includes(pattern)),
+      )
     ) {
       throw new Error(
-        "Static Assets cache requires run_worker_first without exclusion patterns. Use true or an array of positive path patterns.",
+        `Static Assets cache requires run_worker_first without exclusion patterns other than ${BUILD_OUTPUT_EXCLUSIONS.join(" and ")}. Use an array of positive path patterns, optionally with those exclusions.`,
       );
     }
     const protectedRouting =
       workerFirst === true
         ? true
-        : [
-            ...new Set([
-              ...(Array.isArray(workerFirst) ? workerFirst : []),
-              "/_vinext/static-cache/*",
-            ]),
-          ];
+        : Array.isArray(workerFirst) && workerFirst.includes("/*")
+          ? workerFirst
+          : [
+              ...new Set([
+                ...(Array.isArray(workerFirst) ? workerFirst : []),
+                STATIC_ASSETS_CACHE_ROUTE,
+              ]),
+            ];
     if (
       typeof assets.directory !== "string" ||
       assets.directory.length === 0 ||

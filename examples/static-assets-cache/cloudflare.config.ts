@@ -9,9 +9,11 @@ export default defineConfig({
     compatibilityFlags: ["nodejs_compat"],
     previewUrls: true,
     assets: {
+      htmlHandling: "none",
       notFoundHandling: "none",
-      // Never serve the packaged cache entries directly, bypassing the Worker.
-      runWorkerFirst: ["/_vinext/static-cache/*"],
+      // Run middleware before public/ files, and never serve the packaged cache
+      // entries directly, bypassing the Worker.
+      runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
     },
     env: { ASSETS: bindings.assets() },
     observability: { enabled: true },
