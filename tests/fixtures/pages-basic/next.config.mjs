@@ -30,8 +30,8 @@ const nextConfig = {
         destination: "/about",
         permanent: false,
       },
-      // Used by E2E: pages-router-prod/config-query-params.spec.ts — a source
-      // param substituted into a destination query value must stay one value.
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — source
+      // params substituted into a redirect destination query.
       {
         source: "/query-param-redirect/:next",
         destination: "/about?next=/:next&safe=1",

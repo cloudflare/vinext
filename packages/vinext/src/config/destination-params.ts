@@ -20,18 +20,14 @@ const _compiledDestinationParamCache = new Map<string, RegExp>();
  * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
  * (`:path*`, `:path+`) in a single pass. Unknown params are left intact.
  *
- * Params substituted into the query are escaped so an `&` or `=` in a param
- * stays inside one query value instead of introducing extra query params.
- * The escaping follows how Next.js consumes each destination kind:
+ * Query substitution follows how Next.js consumes each destination kind:
  *
  * - A rewrite's query is parsed into an object before substitution, so the
  *   target sees each param verbatim as one value. vinext encodes the whole
  *   value so it round-trips back to that verbatim string.
  * - A redirect's query is emitted as Location text with params inserted
  *   verbatim, so an already percent-encoded capture is decoded once by the
- *   client. vinext keeps that text and only escapes characters that would end
- *   the value or are not valid in a URL query. Next.js inserts a literal `&`
- *   verbatim here; escaping it is deliberate hardening.
+ *   client. vinext inserts redirect params verbatim too.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
@@ -68,12 +64,12 @@ export function substituteDestinationParams(
   const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
   const queryIndex = beforeHash.indexOf("?");
 
-  if (queryIndex !== -1) {
+  if (kind === "rewrite" && queryIndex !== -1) {
     const beforeQuery = beforeHash.slice(0, queryIndex);
     const query = beforeHash.slice(queryIndex + 1);
     return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
       query,
-      kind === "rewrite" ? encodeRewriteQueryParamValue : encodeRedirectQueryParamValue,
+      encodeRewriteQueryParamValue,
     )}${replaceParams(hash, (value) => value)}`;
   }
 
@@ -84,12 +80,4 @@ function encodeRewriteQueryParamValue(value: string): string {
   const params = new URLSearchParams();
   params.set("", value);
   return params.toString().slice(1);
-}
-
-// Matches anything that is not an RFC 3986 query character, the `&`, `=` and
-// `#` value delimiters, and any `%` that does not start a percent-encoded triplet.
-const REDIRECT_QUERY_VALUE_UNSAFE_REGEX = /%(?![0-9A-Fa-f]{2})|[^A-Za-z0-9\-._~!$'()*+,;:@/?%]/gu;
-
-function encodeRedirectQueryParamValue(value: string): string {
-  return value.replace(REDIRECT_QUERY_VALUE_UNSAFE_REGEX, (char) => encodeURIComponent(char));
 }

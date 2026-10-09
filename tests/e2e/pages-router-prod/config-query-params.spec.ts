@@ -2,25 +2,19 @@ import { test, expect } from "@playwright/test";
 import { waitForHydration } from "../helpers";
 
 /**
- * Config destination params substituted into a query must stay one query
- * value. Expected values match Next.js 16.2.7 for the same rules, except the
- * literal `&` redirect, which Next.js inserts verbatim and vinext escapes.
+ * Config destination params substituted into a destination query. Expected
+ * values match Next.js 16.2.7 for the same rules.
  */
 const BASE = "http://localhost:4175";
 
 test.describe("Config destination query params (Pages Router production)", () => {
-  test("redirect keeps an encoded source capture as one Location query value", async ({
-    request,
-  }) => {
+  test("redirect inserts source captures verbatim into the Location query", async ({ request }) => {
     for (const [pathname, location] of [
       [
         "/query-param-redirect/foo%26next%3Dhttps%3A%2F%2Fevil.example",
         "/about?next=/foo%26next%3Dhttps%3A%2F%2Fevil.example&safe=1",
       ],
-      [
-        "/query-param-redirect/foo&next=evil.example",
-        "/about?next=/foo%26next%3Devil.example&safe=1",
-      ],
+      ["/query-param-redirect/foo&next=evil.example", "/about?next=/foo&next=evil.example&safe=1"],
       ["/query-param-redirect/caf%C3%A9", "/about?next=/caf%C3%A9&safe=1"],
     ]) {
       const res = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
