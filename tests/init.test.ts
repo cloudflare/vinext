@@ -951,7 +951,7 @@ describe("init — basic functionality", () => {
     expect(vite).not.toContain("clientOutDir:");
     const config = readFile(tmpDir, "cloudflare.config.ts");
     expect(config).toContain(
-      'assets: { notFoundHandling: "none", runWorkerFirst: ["/_vinext/static-cache/*"] }',
+      'assets: { notFoundHandling: "none", runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"] }',
     );
     expect(config).toContain("ASSETS: bindings.assets()");
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
@@ -1079,13 +1079,15 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
           assets: {
             directory: "dist/client",
             binding: "ASSETS",
-            run_worker_first: ["/_vinext/static-cache/*"],
+            run_worker_first: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
           },
         });
       } else {
         const config = readFile(tmpDir, "cloudflare.config.ts");
         expect(config).toContain("ASSETS: bindings.assets()");
-        expect(config).toContain('runWorkerFirst: ["/_vinext/static-cache/*"]');
+        expect(config).toContain(
+          'runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"]',
+        );
       }
     },
   );

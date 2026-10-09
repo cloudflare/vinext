@@ -89,24 +89,21 @@ See Cloudflare's [bindings documentation](https://developers.cloudflare.com/work
 
 ## Middleware and static files
 
-Workers Static Assets serves files from `public/` and the `/_next/static` build output before the Worker runs, so middleware does not run for them. In Next.js, middleware runs for every path its `matcher` matches, including public files. Serving them without the Worker skips an invocation and its latency for every script, stylesheet, font, and image.
-
-Every file in `public/` can be fetched by anyone who knows its URL. Serve content that needs authentication from a Route Handler or page instead. To run middleware before specific public files, route their paths through the Worker with `runWorkerFirst` in `cloudflare.config.ts`:
+In Next.js, middleware runs for every path its `matcher` matches, including files in `public/`. Workers Static Assets can serve a file before the Worker runs, and then middleware does not run for it. The config that `vinext init` generates routes every request except the build output through the Worker:
 
 ```ts
-defineWorker({
-  // ...existing Worker settings
-  assets: {
-    // ...existing asset settings
-    runWorkerFirst: ["/downloads/*"],
-  },
-});
+assets: {
+  notFoundHandling: "none",
+  runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
+},
 ```
 
-Requests matching these patterns run middleware first, then vinext serves the file through the `ASSETS` binding. To run middleware before every public file, as Next.js does, route everything except the build output:
+Middleware runs before `public/` files, and vinext then serves the file through the `ASSETS` binding. The hashed scripts and stylesheets under `/_next/static` still skip the Worker; they make up most static requests, so this avoids an invocation for each. The second exclusion covers that output under a `basePath` or a path `assetPrefix`. Unlike in Next.js, middleware does not run for the build output, which the recommended Next.js matchers exclude anyway.
 
-```ts
-runWorkerFirst: ["/*", "!/_next/static/*"],
-```
+Keep both exclusions. vinext serves the build output only from Workers Static Assets, so `runWorkerFirst: true`, or a pattern list without these exclusions, makes the app's scripts and stylesheets return 404.
 
-Keep the `/_next/static/*` exclusion, prefixed with `basePath` if one is set. vinext serves the build output only from Workers Static Assets, so `runWorkerFirst: true` makes the app's scripts and stylesheets return 404. When the [Static Assets response cache](/docs/guides/caching#static-assets-response-cache) is configured, list only positive patterns and include `/_vinext/static-cache/*`.
+Configs created before this default, or written by hand, serve `public/` files without running middleware unless `runWorkerFirst` covers them. Add the patterns above, or list only the paths that need middleware, such as `["/downloads/*"]`; other public files then skip the Worker and middleware.
+
+As the Next.js [authentication guide](https://nextjs.org/docs/app/guides/authentication#optimistic-checks-with-proxy-optional) advises, middleware should not be the only check protecting content. Serve files that need authentication from a Route Handler or page that verifies access.
+
+With the [Static Assets response cache](/docs/guides/caching#static-assets-response-cache), `/*` also routes its private `/_vinext/static-cache/*` directory through the Worker. A list of specific paths must include `/_vinext/static-cache/*`. `vinext init` rejects other exclusion patterns on a config that uses this cache.

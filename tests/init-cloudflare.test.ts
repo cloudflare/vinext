@@ -13,6 +13,8 @@ import {
 } from "../packages/vinext/src/init-cloudflare.js";
 import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 
+const DEFAULT_RUN_WORKER_FIRST = ["/*", "!/_next/static/*", "!/*/_next/static/*"];
+
 function expectValidConfig(output: string): void {
   const parsed = parseSync("vite.config.ts", output, {
     astType: "ts",
@@ -178,20 +180,24 @@ export default defineConfig({ plugins: [vinext(), cloudflare()], server: { port:
 });
 
 describe("generateWranglerConfig", () => {
-  it("routes private Static Assets cache files through the Worker", () => {
-    const output = generateWranglerConfig(
-      {
-        root: "/tmp/my-app",
-        projectName: "my-app",
-        isAppRouter: true,
-        hasISR: false,
-        hasMDX: false,
-        nativeModulesToStub: [],
-      },
-      { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
-    );
-    expect(JSON.parse(output).assets.run_worker_first).toEqual(["/_vinext/static-cache/*"]);
-  });
+  it.each(["none", "static-assets"] as const)(
+    "routes public files, but not the build output, through the Worker (CDN cache: %s)",
+    (cdnCache) => {
+      const output = generateWranglerConfig(
+        {
+          root: "/tmp/my-app",
+          projectName: "my-app",
+          isAppRouter: true,
+          hasISR: false,
+          hasMDX: false,
+          nativeModulesToStub: [],
+        },
+        { cdnCache, dataCache: "none", imageOptimization: "none" },
+      );
+      // `/*` also covers the private Static Assets cache directory.
+      expect(JSON.parse(output).assets.run_worker_first).toEqual(DEFAULT_RUN_WORKER_FIRST);
+    },
+  );
 
   it.each(["service-binding", "self-contained"] as const)(
     "pretty-prints the generated %s Response Store config",
@@ -1328,7 +1334,12 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(JSON.parse(output)).toEqual({
       name: "existing",
       main: "vinext/server/fetch-handler",
-      assets: { directory: "dist/client", not_found_handling: "none", binding: "ASSETS" },
+      assets: {
+        directory: "dist/client",
+        not_found_handling: "none",
+        binding: "ASSETS",
+        run_worker_first: DEFAULT_RUN_WORKER_FIRST,
+      },
     });
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
   });
@@ -1384,7 +1395,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
   });
 
   it.each([
-    { assets: undefined, expected: ["/_vinext/static-cache/*"] },
+    { assets: undefined, expected: DEFAULT_RUN_WORKER_FIRST },
     {
       assets: { directory: "build/client", binding: "STATIC" },
       expected: ["/_vinext/static-cache/*"],
@@ -1395,6 +1406,14 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     {
       assets: { run_worker_first: ["/_vinext/static-cache/*"] },
       expected: ["/_vinext/static-cache/*"],
+    },
+    {
+      assets: { run_worker_first: DEFAULT_RUN_WORKER_FIRST },
+      expected: DEFAULT_RUN_WORKER_FIRST,
+    },
+    {
+      assets: { run_worker_first: ["/api/*", "!/_next/static/*"] },
+      expected: ["/api/*", "!/_next/static/*", "/_vinext/static-cache/*"],
     },
   ])("protects Static Assets when updating $assets", ({ assets, expected }) => {
     const options = {
@@ -1456,7 +1475,12 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(output).toContain("// keep this comment");
     expect(JSON.parse(output.replace("  // keep this comment\n", ""))).toEqual({
       main: "vinext/server/fetch-handler",
-      assets: { directory: "dist/client", not_found_handling: "none", binding: "ASSETS" },
+      assets: {
+        directory: "dist/client",
+        not_found_handling: "none",
+        binding: "ASSETS",
+        run_worker_first: DEFAULT_RUN_WORKER_FIRST,
+      },
       images: { binding: "IMAGES" },
     });
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
@@ -1470,7 +1494,12 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     });
     expect(JSON.parse(output)).toEqual({
       main: "vinext/server/fetch-handler",
-      assets: { directory: "dist/client", not_found_handling: "none", binding: "ASSETS" },
+      assets: {
+        directory: "dist/client",
+        not_found_handling: "none",
+        binding: "ASSETS",
+        run_worker_first: DEFAULT_RUN_WORKER_FIRST,
+      },
       cache: { enabled: true },
       version_metadata: { binding: "CF_VERSION_METADATA" },
     });

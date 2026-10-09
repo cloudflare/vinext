@@ -25,6 +25,13 @@ const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+// Run the Worker, and so middleware, before public/ files as Next.js does,
+// while Workers Static Assets keeps serving the hashed build output directly.
+// The second exclusion covers build output under a basePath or path-style
+// assetPrefix, so adding one later does not route chunks to the Worker, which
+// does not serve them.
+const BUILD_OUTPUT_EXCLUSIONS = ["!/_next/static/*", "!/*/_next/static/*"];
+const DEFAULT_RUN_WORKER_FIRST = ["/*", ...BUILD_OUTPUT_EXCLUSIONS];
 const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
@@ -474,7 +481,7 @@ ${shared}export default defineConfig({
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
     compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none"${options.cdnCache === "static-assets" ? ', runWorkerFirst: ["/_vinext/static-cache/*"]' : ""} },
+    assets: { notFoundHandling: "none", runWorkerFirst: [${DEFAULT_RUN_WORKER_FIRST.map((pattern) => JSON.stringify(pattern)).join(", ")}] },
     env: {
       ${envBindings.join(",\n      ")},
     },
@@ -513,9 +520,7 @@ export function generateWranglerConfig(
       directory: "dist/client",
       not_found_handling: "none",
       binding: "ASSETS",
-      ...(options.cdnCache === "static-assets"
-        ? { run_worker_first: ["/_vinext/static-cache/*"] }
-        : {}),
+      run_worker_first: DEFAULT_RUN_WORKER_FIRST,
     },
   };
 
@@ -1168,7 +1173,7 @@ export function updateWranglerConfigForCloudflare(
   if (!findTopLevelJsonProperty(output, "assets")) {
     output = appendTopLevelJsonProperty(
       output,
-      '  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS" }',
+      `  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS", "run_worker_first": ${JSON.stringify(DEFAULT_RUN_WORKER_FIRST)} }`,
     );
   }
   if (options.cdnCache === "static-assets") {
@@ -1189,23 +1194,30 @@ export function updateWranglerConfigForCloudflare(
     }
     // Exclusions override positive routes, so merely appending our private path
     // cannot guarantee that the Worker protects it when exclusions are present.
+    // The default build-output exclusions cannot match the flat cache entries.
     if (
       Array.isArray(workerFirst) &&
-      workerFirst.some((pattern) => typeof pattern !== "string" || pattern.startsWith("!"))
+      workerFirst.some(
+        (pattern) =>
+          typeof pattern !== "string" ||
+          (pattern.startsWith("!") && !BUILD_OUTPUT_EXCLUSIONS.includes(pattern)),
+      )
     ) {
       throw new Error(
-        "Static Assets cache requires run_worker_first without exclusion patterns. Use true or an array of positive path patterns.",
+        `Static Assets cache requires run_worker_first without exclusion patterns other than ${BUILD_OUTPUT_EXCLUSIONS.join(" and ")}. Use an array of positive path patterns, optionally with those exclusions.`,
       );
     }
     const protectedRouting =
       workerFirst === true
         ? true
-        : [
-            ...new Set([
-              ...(Array.isArray(workerFirst) ? workerFirst : []),
-              "/_vinext/static-cache/*",
-            ]),
-          ];
+        : Array.isArray(workerFirst) && workerFirst.includes("/*")
+          ? workerFirst
+          : [
+              ...new Set([
+                ...(Array.isArray(workerFirst) ? workerFirst : []),
+                "/_vinext/static-cache/*",
+              ]),
+            ];
     if (
       typeof assets.directory !== "string" ||
       assets.directory.length === 0 ||
