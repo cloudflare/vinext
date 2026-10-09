@@ -32,6 +32,10 @@ const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
 // does not serve them.
 const BUILD_OUTPUT_EXCLUSIONS = ["!/_next/static/*", "!/*/_next/static/*"];
 const DEFAULT_RUN_WORKER_FIRST = ["/*", ...BUILD_OUTPUT_EXCLUSIONS];
+// Serve public .html files only at their exact paths, as Next.js does. The
+// default auto-trailing-slash handling redirects /file.html to /file, which then
+// reaches the Worker and is not a public file.
+const HTML_HANDLING = "none";
 const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
@@ -482,6 +486,7 @@ ${shared}export default defineConfig({
     compatibilityDate: ${JSON.stringify(today)},
     compatibilityFlags: ["nodejs_compat"],
     assets: {
+      htmlHandling: ${JSON.stringify(HTML_HANDLING)},
       notFoundHandling: "none",
       runWorkerFirst: [${DEFAULT_RUN_WORKER_FIRST.map((pattern) => JSON.stringify(pattern)).join(", ")}],
     },
@@ -521,6 +526,7 @@ export function generateWranglerConfig(
     main: workerEntry,
     assets: {
       directory: "dist/client",
+      html_handling: HTML_HANDLING,
       not_found_handling: "none",
       binding: "ASSETS",
       run_worker_first: DEFAULT_RUN_WORKER_FIRST,
@@ -1177,6 +1183,7 @@ export function updateWranglerConfigForCloudflare(
     const assets = JSON.stringify(
       {
         directory: "dist/client",
+        html_handling: HTML_HANDLING,
         not_found_handling: "none",
         binding: "ASSETS",
         run_worker_first: DEFAULT_RUN_WORKER_FIRST,

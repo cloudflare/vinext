@@ -1336,6 +1336,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       main: "vinext/server/fetch-handler",
       assets: {
         directory: "dist/client",
+        html_handling: "none",
         not_found_handling: "none",
         binding: "ASSETS",
         run_worker_first: DEFAULT_RUN_WORKER_FIRST,
@@ -1477,6 +1478,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       main: "vinext/server/fetch-handler",
       assets: {
         directory: "dist/client",
+        html_handling: "none",
         not_found_handling: "none",
         binding: "ASSETS",
         run_worker_first: DEFAULT_RUN_WORKER_FIRST,
@@ -1496,6 +1498,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       main: "vinext/server/fetch-handler",
       assets: {
         directory: "dist/client",
+        html_handling: "none",
         not_found_handling: "none",
         binding: "ASSETS",
         run_worker_first: DEFAULT_RUN_WORKER_FIRST,

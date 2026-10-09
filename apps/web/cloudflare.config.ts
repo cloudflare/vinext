@@ -25,6 +25,7 @@ export default defineConfig({
     compatibilityFlags: ["nodejs_compat"],
     previewUrls: true,
     assets: {
+      htmlHandling: "none",
       notFoundHandling: "none",
       runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
     },

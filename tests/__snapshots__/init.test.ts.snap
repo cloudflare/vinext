@@ -64,6 +64,7 @@ export default defineConfig({
   "main": "vinext/server/fetch-handler",
   "assets": {
     "directory": "dist/client",
+    "html_handling": "none",
     "not_found_handling": "none",
     "binding": "ASSETS",
     "run_worker_first": [
@@ -190,6 +191,7 @@ export default defineConfig({
   "main": "vinext/server/fetch-handler",
   "assets": {
     "directory": "dist/client",
+    "html_handling": "none",
     "not_found_handling": "none",
     "binding": "ASSETS",
     "run_worker_first": [

@@ -1657,7 +1657,25 @@ describe("serveFilesystemRoute", () => {
       { "set-cookie": ["a=1"] },
       "direct",
       "/robots.txt",
+      expect.any(Request),
     );
+  });
+
+  it("passes the request with middleware's header overrides", async () => {
+    const serveFilesystemRoute = vi.fn(async () => true);
+    const middleware = makeMiddleware({
+      responseHeaders: [
+        ["x-middleware-override-headers", "if-none-match"],
+        ["x-middleware-request-if-none-match", '"override"'],
+      ],
+    });
+    await runPagesRequest(
+      makeRequest("/file.txt", { Range: "bytes=0-1", "If-None-Match": '"original"' }),
+      baseDeps({ serveFilesystemRoute, runMiddleware: middleware }),
+    );
+    const filesystemRequest = serveFilesystemRoute.mock.calls[0][4] as Request;
+    expect(filesystemRequest.headers.get("if-none-match")).toBe('"override"');
+    expect(filesystemRequest.headers.get("range")).toBeNull();
   });
 
   it.each([
@@ -1689,6 +1707,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       destination,
+      expect.any(Request),
     );
   });
 
@@ -1736,7 +1755,13 @@ describe("serveFilesystemRoute", () => {
 
     expect(result.type).toBe("handled");
     expect(serveFilesystemRoute).toHaveBeenCalledOnce();
-    expect(serveFilesystemRoute).toHaveBeenCalledWith("/file.txt", {}, "beforeFiles", "/file.txt");
+    expect(serveFilesystemRoute).toHaveBeenCalledWith(
+      "/file.txt",
+      {},
+      "beforeFiles",
+      "/file.txt",
+      expect.any(Request),
+    );
   });
 
   // Next.js runs beforeFiles rewrites before check_fs:
@@ -1775,6 +1800,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       "/api/rewritten",
+      expect.any(Request),
     );
     expect(handleApi).toHaveBeenCalledWith(
       expect.any(Request),
@@ -1814,6 +1840,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       "/api/from-middleware",
+      expect.any(Request),
     );
     expect(handleApi).toHaveBeenCalledWith(
       expect.any(Request),
@@ -1847,6 +1874,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       "/asset.txt",
+      expect.any(Request),
     );
   });
 
@@ -1957,6 +1985,7 @@ describe("afterFiles rewrites", () => {
       {},
       "afterFiles",
       "/file.txt",
+      expect.any(Request),
     );
   });
 
@@ -1984,6 +2013,7 @@ describe("afterFiles rewrites", () => {
       {},
       "direct",
       "/after-control",
+      expect.any(Request),
     );
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
@@ -2276,7 +2306,13 @@ describe("fallback rewrites on 404", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     await expect(result.response.text()).resolves.toBe("worker fallback asset");
-    expect(serveFilesystemRoute).toHaveBeenLastCalledWith("/file.txt", {}, "fallback", "/file.txt");
+    expect(serveFilesystemRoute).toHaveBeenLastCalledWith(
+      "/file.txt",
+      {},
+      "fallback",
+      "/file.txt",
+      expect.any(Request),
+    );
   });
 
   it("dispatches rewritten API routes after fallback filesystem misses", async () => {

@@ -93,12 +93,13 @@ In Next.js, middleware runs for every path its `matcher` matches, including file
 
 ```ts
 assets: {
+  htmlHandling: "none",
   notFoundHandling: "none",
   runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
 },
 ```
 
-Middleware runs before `public/` files, and vinext then serves the file through the `ASSETS` binding. The hashed scripts and stylesheets under `/_next/static` still skip the Worker; they make up most static requests, so this avoids an invocation for each. The second exclusion covers that output under a `basePath` or a path `assetPrefix`. Unlike in Next.js, middleware does not run for the build output, which the recommended Next.js matchers exclude anyway.
+Middleware runs before `public/` files, and vinext then serves the file through the `ASSETS` binding. The hashed scripts and stylesheets under `/_next/static` still skip the Worker; they make up most static requests, so this avoids an invocation for each. The second exclusion covers that output under a `basePath` or a path `assetPrefix`. Unlike in Next.js, middleware does not run for the build output, which the recommended Next.js matchers exclude anyway, or for public files inside a nested `_next/static/` directory, such as `public/docs/_next/static/guide.pdf`, which also match that exclusion. `htmlHandling: "none"` serves a public `.html` file only at its exact path, as Next.js does; the default `auto-trailing-slash` handling would redirect `/page.html` to `/page`, which is not a public file.
 
 Patterns use `*` for deep matching, and a `!` exclusion takes precedence over every other pattern; see Cloudflare's [`run_worker_first` reference](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first). Keep both exclusions. vinext serves the build output only from Workers Static Assets, so `runWorkerFirst: true`, or a pattern list without these exclusions, makes the app's scripts and stylesheets return 404.
 

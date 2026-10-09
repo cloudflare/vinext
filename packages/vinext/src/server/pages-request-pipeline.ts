@@ -111,9 +111,6 @@ export async function fetchWorkerFilesystemRoute(
   assetPathPrefix = "",
 ): Promise<Response | false> {
   const isRetrievalMethod = request.method === "GET" || request.method === "HEAD";
-  if (requestPathname === "/api" || requestPathname.startsWith("/api/")) {
-    return false;
-  }
   const assetUrl = new URL(request.url);
   assetUrl.pathname = requestPathname;
   assetUrl.search = "";
@@ -125,6 +122,11 @@ export async function fetchWorkerFilesystemRoute(
   }
   const isPublicFile =
     publicFiles.has(assetUrl.pathname) || publicFiles.has(decodedAssetUrl.pathname);
+  // Public files precede API routes in the filesystem order, so a file such as
+  // public/api/schema.json is served rather than handed to API routing.
+  if (!isPublicFile && (requestPathname === "/api" || requestPathname.startsWith("/api/"))) {
+    return false;
+  }
   // A direct GET/HEAD for a public file reaches the Worker when run_worker_first
   // routes it here, so serve it after middleware. A direct build-asset request
   // reaches the Worker only after Workers Static Assets found no such file.
@@ -261,6 +263,7 @@ export type PagesPipelineDeps = {
    * Optional filesystem/static-asset probe supplied by each runtime adapter.
    * Called post-middleware (so middleware can intercept/redirect public files) with the
    * resolved basePath-stripped pathname and URL plus the staged middleware response headers.
+   * `request` carries the request headers middleware overrode.
    * Node may write directly to `res` and return true; dev/Workers return a Response.
    * Resolves false to continue through rewrites, API routes, and page rendering.
    */
@@ -270,6 +273,7 @@ export type PagesPipelineDeps = {
         stagedHeaders: HeaderRecord,
         phase: FilesystemRoutePhase,
         resolvedUrl: string,
+        request: Request,
       ) => Promise<boolean | Response>)
     | null;
 };
@@ -471,6 +475,7 @@ export async function runPagesRequest(
       middlewareHeaders,
       phase,
       resolvedUrl,
+      request,
     );
     if (served instanceof Response) {
       const isStaticMethodNotAllowed =

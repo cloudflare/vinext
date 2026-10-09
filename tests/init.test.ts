@@ -953,6 +953,7 @@ describe("init — basic functionality", () => {
     expect(config).toContain(
       [
         "    assets: {",
+        '      htmlHandling: "none",',
         '      notFoundHandling: "none",',
         '      runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],',
         "    },",
