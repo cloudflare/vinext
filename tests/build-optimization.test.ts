@@ -4662,6 +4662,18 @@ export default function Page() { return values; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it("treats names in source strings as taken loop target names", () => {
+    const code = `
+let helper, values = [];
+for (helper of [1, 2]) values.push(eval("__vinext_unused"));
+export function getStaticProps() { return { props: { helper } }; }
+export default function Page() { return values; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("for (const ___vinext_unused of [1, 2])");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("treats escaped identifier spellings as taken loop target names", () => {
     const code = String.raw`
 let helper, __vinext_\u0075nused = 10, values = [];

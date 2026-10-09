@@ -454,7 +454,8 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     return new Set([...deadBindings].filter((name) => !catchBound.has(name)));
   };
   // A throwaway loop target that cannot collide with any identifier in the
-  // module; parsed names are compared so escaped spellings count too.
+  // module: parsed names catch escaped spellings, and the source text catches
+  // names only reachable through strings such as direct `eval`.
   let unusedLoopTargetName: string | undefined;
   const unusedLoopTarget = (): string => {
     if (!unusedLoopTargetName) {
@@ -463,7 +464,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
         if (node.type === "Identifier") names.add(node.name);
       });
       unusedLoopTargetName = "__vinext_unused";
-      while (names.has(unusedLoopTargetName)) unusedLoopTargetName = `_${unusedLoopTargetName}`;
+      while (names.has(unusedLoopTargetName) || code.includes(unusedLoopTargetName)) {
+        unusedLoopTargetName = `_${unusedLoopTargetName}`;
+      }
     }
     return `const ${unusedLoopTargetName}`;
   };
