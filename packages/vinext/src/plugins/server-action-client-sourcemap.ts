@@ -121,17 +121,16 @@ function scrubSourcemapJson(
  * Rolldown takes a module's original source from whichever loader returned it
  * (including any map that loader supplied), and later transforms cannot
  * replace it. So this scrubs the emitted maps instead: the chunk's `map`, its
- * `.map` asset and any inline map, both before and after other
- * `generateBundle` hooks. That holds for any loader and for sourcemaps enabled
- * late through `outputOptions`. Action modules are the ones
- * plugin-rsc itself registered as server references; its client transform
- * drops the claim for every module it does not proxy. In a chunk containing
- * one, a source keeps its content only when that content belongs to one of
- * the chunk's other modules: their code when this plugin's transform first
- * sees them, or an original their combined map points to after every
- * transform. Matching content rather than source names holds for colliding
- * names, loader-supplied maps and custom map locations. The proxy's mappings still
- * name the action module, without its content.
+ * `.map` asset and any inline map, both before and after every other
+ * `generateBundle` hook. That holds for any loader and for sourcemaps enabled
+ * late through `outputOptions`. Action modules are the ones plugin-rsc itself
+ * registered as server references; its client transform drops the claim for
+ * every module it does not proxy. In a chunk containing one, a source keeps
+ * its content only when that content belongs to one of the chunk's other
+ * modules: their loaded code, or an original their combined map points to
+ * after every transform. Matching content rather than source names holds for
+ * colliding names, loader-supplied maps and custom map locations. The proxy's
+ * mappings still name the action module, without its content.
  */
 export function createServerActionClientSourcemapPlugin(options: {
   getManager: (config: ResolvedConfig) => Promise<RscPluginManager | undefined>;
@@ -189,8 +188,28 @@ export function createServerActionClientSourcemapPlugin(options: {
   const scrub: Plugin = {
     name: "vinext:server-action-client-sourcemap",
     apply: "build",
-    configResolved(resolvedConfig) {
-      config = resolvedConfig;
+    enforce: "pre",
+    configResolved: {
+      order: "post",
+      handler(resolvedConfig) {
+        config = resolvedConfig;
+        // Hooks with the same `order` run in plugin order, so put the scrub
+        // first and the tracker last: no other `generateBundle` hook sees an
+        // unscrubbed map, and no transform runs after the tracker. Every
+        // environment's plugins come from this list.
+        const plugins = resolvedConfig.plugins as Plugin[] | undefined;
+        if (!plugins) return;
+        for (const [plugin, first] of [
+          [scrub, true],
+          [track, false],
+        ] as const) {
+          const index = plugins.indexOf(plugin);
+          if (index === -1) continue;
+          plugins.splice(index, 1);
+          if (first) plugins.unshift(plugin);
+          else plugins.push(plugin);
+        }
+      },
     },
     buildStart() {
       if (this.environment?.config.consumer === "client") {
@@ -205,7 +224,7 @@ export function createServerActionClientSourcemapPlugin(options: {
         hashes.set(id, [contentHash(code)]);
       },
     },
-    // Scrub before other `generateBundle` hooks can copy the maps.
+    // Scrub before any other `generateBundle` hook can copy the maps.
     generateBundle: {
       order: "pre",
       handler(_outputOptions, bundle) {
@@ -233,7 +252,7 @@ export function createServerActionClientSourcemapPlugin(options: {
         } catch {}
       },
     },
-    // Scrub again after the other `generateBundle` hooks have run.
+    // Scrub again after every other `generateBundle` hook has run.
     generateBundle: {
       order: "post",
       handler(_outputOptions, bundle) {

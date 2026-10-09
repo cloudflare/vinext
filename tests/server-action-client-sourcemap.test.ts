@@ -61,7 +61,7 @@ async function generate(
   });
   // No configured sourcemap: `outputOptions` can still enable one after transforms.
   const environment = { name: consumer, config: { consumer, build: {} } };
-  (scrub!.configResolved as (config: unknown) => void)({});
+  (scrub!.configResolved as Hook).handler.call(undefined, {} as never);
   (scrub!.buildStart as (this: unknown) => void).call({ environment });
   for (const [id, code] of Object.entries(modules)) {
     const original = originals[id];
@@ -95,6 +95,26 @@ describe("vinext:server-action-client-sourcemap", () => {
   it("only runs in builds", () => {
     const plugins = createServerActionClientSourcemapPlugin({ getManager: async () => undefined });
     expect(plugins.map((plugin) => plugin.apply)).toEqual(["build", "build"]);
+  });
+
+  it("moves the scrub before every other plugin and the tracker after them", () => {
+    const [scrub, track] = createServerActionClientSourcemapPlugin({
+      getManager: async () => undefined,
+    });
+    const user = { name: "user" };
+    const other = { name: "other" };
+    const plugins = [user, scrub!, other, track!, { name: "last" }];
+    (scrub!.configResolved as Hook & { order: string }).handler.call(undefined, {
+      plugins,
+    } as never);
+    expect((scrub!.configResolved as { order: string }).order).toBe("post");
+    expect(plugins.map((plugin) => plugin.name)).toEqual([
+      scrub!.name,
+      "user",
+      "other",
+      "last",
+      track!.name,
+    ]);
   });
 
   it("scrubs before and after other generateBundle hooks", async () => {
