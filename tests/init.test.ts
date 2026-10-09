@@ -951,7 +951,12 @@ describe("init — basic functionality", () => {
     expect(vite).not.toContain("clientOutDir:");
     const config = readFile(tmpDir, "cloudflare.config.ts");
     expect(config).toContain(
-      'assets: { notFoundHandling: "none", runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"] }',
+      [
+        "    assets: {",
+        '      notFoundHandling: "none",',
+        '      runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],',
+        "    },",
+      ].join("\n"),
     );
     expect(config).toContain("ASSETS: bindings.assets()");
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);

@@ -481,7 +481,10 @@ ${shared}export default defineConfig({
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
     compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none", runWorkerFirst: [${DEFAULT_RUN_WORKER_FIRST.map((pattern) => JSON.stringify(pattern)).join(", ")}] },
+    assets: {
+      notFoundHandling: "none",
+      runWorkerFirst: [${DEFAULT_RUN_WORKER_FIRST.map((pattern) => JSON.stringify(pattern)).join(", ")}],
+    },
     env: {
       ${envBindings.join(",\n      ")},
     },
@@ -1171,10 +1174,17 @@ export function updateWranglerConfigForCloudflare(
     output = appendTopLevelJsonProperty(output, `  "main": ${JSON.stringify(workerEntry)}`);
   }
   if (!findTopLevelJsonProperty(output, "assets")) {
-    output = appendTopLevelJsonProperty(
-      output,
-      `  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS", "run_worker_first": ${JSON.stringify(DEFAULT_RUN_WORKER_FIRST)} }`,
-    );
+    const assets = JSON.stringify(
+      {
+        directory: "dist/client",
+        not_found_handling: "none",
+        binding: "ASSETS",
+        run_worker_first: DEFAULT_RUN_WORKER_FIRST,
+      },
+      null,
+      2,
+    ).replaceAll("\n", "\n  ");
+    output = appendTopLevelJsonProperty(output, `  "assets": ${assets}`);
   }
   if (options.cdnCache === "static-assets") {
     const assetsProperty = findTopLevelJsonProperty(output, "assets")!;
