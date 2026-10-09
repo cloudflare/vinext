@@ -1,29 +1,40 @@
-import fs from "node:fs/promises";
+import path from "pathslash";
 import { parseAstAsync, type Plugin } from "vite";
 import { stripViteModuleQuery } from "../utils/path.js";
 
-const SCRIPT_MODULE_RE = /\.([cm]?[jt]sx?)(?:[?#]|$)/;
+const SCRIPT_EXTENSION_RE = /\.[cm]?([jt]sx?)$/;
+const INLINE_SOURCEMAP_RE =
+  /(\/\/# sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,)([A-Za-z0-9+/=]+)(\s*)$/;
 
-function parserLang(extension: string): "jsx" | "ts" | "tsx" {
-  if (extension.endsWith("tsx")) return "tsx";
-  return extension.endsWith("ts") ? "ts" : "jsx";
-}
+type SourceMap = { sources?: string[]; sourcesContent?: (string | null)[] };
 
-async function isUseServerModule(code: string, extension: string): Promise<boolean> {
-  if (!code.includes("use server")) return false;
+async function isUseServerModule(code: string, id: string): Promise<boolean> {
+  const extension = SCRIPT_EXTENSION_RE.exec(stripViteModuleQuery(id))?.[1];
+  const lang = extension === "ts" || extension === "tsx" ? extension : "jsx";
   try {
-    const program = await parseAstAsync(code, { lang: parserLang(extension) });
+    const program = await parseAstAsync(code, { lang });
+    // Same check as @vitejs/plugin-rsc: a "use server" directive prologue entry.
     return program.body.some(
-      (statement) =>
-        statement.type === "ExpressionStatement" &&
-        statement.expression.type === "Literal" &&
-        statement.expression.value === "use server",
+      (statement) => "directive" in statement && statement.directive === "use server",
     );
   } catch {
-    // A later plugin may still compile this syntax into a "use server"
-    // module, so drop the mappings rather than risk publishing its source.
-    return true;
+    // A later plugin may still compile this script into a "use server"
+    // module, so scrub it rather than risk publishing its source.
+    return extension !== undefined;
   }
+}
+
+/** Null the content of private sources; returns the new JSON when it changed. */
+function scrubSourcemap(json: string, isPrivate: (source: string) => boolean): string | null {
+  const map = JSON.parse(json) as SourceMap;
+  let changed = false;
+  map.sources?.forEach((source, index) => {
+    if (map.sourcesContent?.[index] != null && isPrivate(source)) {
+      map.sourcesContent[index] = null;
+      changed = true;
+    }
+  });
+  return changed ? JSON.stringify(map) : null;
 }
 
 /**
@@ -31,49 +42,84 @@ async function isUseServerModule(code: string, extension: string): Promise<boole
  *
  * In client environments `@vitejs/plugin-rsc` replaces a `"use server"`
  * module with `createServerReference()` proxies, so its implementation never
- * reaches browser JavaScript. Rolldown still seeds the module's sourcemap
- * chain with the loaded file, so an enabled client sourcemap would publish
- * the full server-only source in `sourcesContent`. A later transform cannot
- * remove it: Rolldown keeps the first map's sources even when the final
- * mappings no longer point at them.
+ * reaches browser JavaScript. Rolldown still records the module's loaded
+ * source as the original in the chunk's sourcemap, so an enabled client
+ * sourcemap would publish the full server-only module in `sourcesContent`.
  *
- * Loading the module with an empty map starts the chain with no original
- * source, so the generated proxy maps to nothing and the module disappears
- * from the emitted map. This matches Next.js, which drops the original
- * mappings when compiling server actions for the client in production builds
- * and keeps them in development and server builds:
+ * Next.js drops the original mappings when compiling server actions for the
+ * client in production builds, and keeps them in development and server builds:
  * crates/next-custom-transforms/src/transforms/server_actions.rs (#76157),
  * test/e2e/app-dir/actions/app-action.test.ts
  * ("should not expose action content in sourcemaps").
  *
- * The hook runs with the post plugins, standing in for Vite's filesystem load
- * fallback, so earlier loaders that own a module (`?raw`, `?url`, workers,
- * user plugins) keep it, along with their own map. It must not use
- * `order: "post"`: that would run it after `builtin:vite-load-fallback`,
- * which loads query-suffixed ids. It runs whether or not sourcemaps are
- * configured, because a plugin can still enable them through `outputOptions`
- * after modules are loaded.
+ * Rolldown takes a module's original source from whichever loader returned
+ * it, and later transforms cannot replace it. So this records the client
+ * modules whose loaded code is a `"use server"` module, then nulls their
+ * `sourcesContent` in every emitted map (`.map` assets and inline maps). That
+ * holds for any loader, and for sourcemaps enabled late through
+ * `outputOptions`. The proxy's mappings still name the module, without its
+ * content.
  */
 export function createServerActionClientSourcemapPlugin(): Plugin {
+  const actionModules = new Map<string, Set<string>>();
+
   return {
     name: "vinext:server-action-client-sourcemap",
     apply: "build",
-    enforce: "post",
-    load: {
-      filter: { id: { include: SCRIPT_MODULE_RE, exclude: /\0/ } },
-      async handler(id) {
-        if (this.environment?.config.consumer !== "client") return null;
-        const extension = SCRIPT_MODULE_RE.exec(id)?.[1];
-        if (!extension) return null;
+    buildStart() {
+      if (this.environment?.config.consumer === "client") {
+        actionModules.set(this.environment.name, new Set());
+      }
+    },
+    transform: {
+      order: "pre",
+      filter: { code: "use server" },
+      async handler(code, id) {
+        const ids = this.environment && actionModules.get(this.environment.name);
+        if (ids && (await isUseServerModule(code, id))) ids.add(id);
+      },
+    },
+    generateBundle: {
+      order: "post",
+      handler(options, bundle) {
+        const ids = this.environment && actionModules.get(this.environment.name);
+        if (!ids?.size) return;
+        const outDir = options.dir ?? path.dirname(options.file ?? "");
 
-        let code: string;
-        try {
-          code = await fs.readFile(stripViteModuleQuery(id), "utf8");
-        } catch {
-          return null;
+        for (const chunk of Object.values(bundle)) {
+          if (chunk.type !== "chunk") continue;
+          const privateModules = chunk.moduleIds.filter((id) => ids.has(id));
+          if (privateModules.length === 0) continue;
+
+          const sourcemapFileName = chunk.sourcemapFileName ?? `${chunk.fileName}.map`;
+          const sourcemapPath = path.resolve(outDir, sourcemapFileName);
+          const privateSources = new Set(
+            privateModules.map((id) => {
+              const source = path.relative(path.dirname(sourcemapPath), id);
+              return options.sourcemapPathTransform?.(source, sourcemapPath) ?? source;
+            }),
+          );
+          const isPrivate = (source: string) => privateSources.has(source);
+
+          const asset = bundle[sourcemapFileName];
+          if (asset?.type === "asset") {
+            const scrubbed = scrubSourcemap(String(asset.source), isPrivate);
+            if (scrubbed !== null) asset.source = scrubbed;
+          }
+
+          const inline = INLINE_SOURCEMAP_RE.exec(chunk.code);
+          if (inline) {
+            const json = Buffer.from(inline[2]!, "base64").toString("utf8");
+            const scrubbed = scrubSourcemap(json, isPrivate);
+            if (scrubbed !== null) {
+              chunk.code =
+                chunk.code.slice(0, inline.index) +
+                inline[1] +
+                Buffer.from(scrubbed).toString("base64") +
+                inline[3];
+            }
+          }
         }
-        if (!(await isUseServerModule(code, extension))) return null;
-        return { code, map: { mappings: "" } };
       },
     },
   };

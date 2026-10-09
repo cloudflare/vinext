@@ -330,29 +330,32 @@ test.describe("production server action ownership", () => {
     }
 
     // Follow each served script's sourceMappingURL anonymously, as any visitor can.
-    const servedSources: string[] = [];
+    const servedSources = new Map<string, string | null>();
     for (const scriptUrl of scriptUrls) {
       const script = await (await request.get(scriptUrl)).text();
       const mapUrl = script.match(/\/\/# sourceMappingURL=(\S+)\s*$/)?.[1];
       if (!mapUrl) continue;
       const response = await request.get(new URL(mapUrl, scriptUrl).href);
       expect(response.status()).toBe(200);
-      const map = (await response.json()) as { sources: string[]; sourcesContent?: string[] };
-      servedSources.push(...map.sources);
-      for (const content of map.sourcesContent ?? []) {
-        for (const marker of actionOnlySource) expect(content).not.toContain(marker);
-      }
+      const map = (await response.json()) as {
+        sources: string[];
+        sourcesContent?: (string | null)[];
+      };
+      map.sources.forEach((source, index) => {
+        const content = map.sourcesContent?.[index] ?? null;
+        servedSources.set(source, content);
+        for (const marker of actionOnlySource) expect(content ?? "").not.toContain(marker);
+      });
     }
-    // The maps still describe the client components that call the actions.
-    expect(servedSources).toContainEqual(
-      expect.stringMatching(/ownership\/client\/client-button\.tsx$/),
-    );
-    expect(servedSources).not.toContainEqual(
-      expect.stringMatching(/ownership\/actions\/client\.ts$/),
-    );
-    expect(servedSources).not.toContainEqual(
-      expect.stringMatching(/action-client-package\/actions\.ts$/),
-    );
+    const contentOf = (pattern: RegExp) =>
+      [...servedSources].filter(([source]) => pattern.test(source)).map(([, content]) => content);
+    // The maps still carry the client components that call the actions...
+    expect(contentOf(/ownership\/client\/client-button\.tsx$/)).toEqual([
+      expect.stringContaining("clientImportedAction"),
+    ]);
+    // ...and name the action modules behind the proxies, without their source.
+    expect(contentOf(/ownership\/actions\/client\.ts$/)).toEqual([null]);
+    expect(contentOf(/action-client-package\/actions\.ts$/)).toEqual([null]);
 
     // Like Next.js, check every emitted map so chunking cannot hide a leak.
     const sourcemaps = await readBuiltSourcemaps(path.join(app.fixtureRoot, "dist", "client"));
