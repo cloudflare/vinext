@@ -333,20 +333,25 @@ describe("plugin-rsc inline use-cache references", () => {
       expect(await buildSecureExportName()).not.toBe(await buildSecureExportName());
 
       // Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
-      // (hash_salt is NEXT_SERVER_ACTIONS_ENCRYPTION_KEY). A pinned key makes rebuilds of identical source emit identical names,
-      // derived under a label rather than from the raw key.
+      // (hash_salt is NEXT_SERVER_ACTIONS_ENCRYPTION_KEY). A pinned key makes
+      // rebuilds of identical source emit identical names, derived under a
+      // label rather than from the raw key.
       vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", key);
       const keyed = await buildSecureExportName();
       expect(await buildSecureExportName()).toBe(keyed);
       const relativeImportId = (await configurePluginRsc(await getPlugins())).toRelativeId(
         moduleId,
       );
-      const rawKeyName = `$$vinext_cache_${createHmac("sha256", key)
-        .update(relativeImportId)
-        .update("\0")
-        .update("$$hoist_0_getData")
-        .digest("hex")}`;
-      expect(keyed).not.toBe(rawKeyName);
+      const referenceSecret = createHmac("sha256", key)
+        .update("vinext use cache reference")
+        .digest();
+      expect(keyed).toBe(
+        `$$vinext_cache_${createHmac("sha256", referenceSecret)
+          .update(relativeImportId)
+          .update("\0")
+          .update("$$hoist_0_getData")
+          .digest("hex")}`,
+      );
 
       vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", Buffer.alloc(32, 8).toString("base64"));
       expect(await buildSecureExportName()).not.toBe(keyed);
