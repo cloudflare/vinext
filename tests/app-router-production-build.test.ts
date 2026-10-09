@@ -440,6 +440,29 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  it("keeps the build ID out of static export client JS", async () => {
+    // Static export compares each payload's deployment version against the
+    // initial page's, like Next.js' navigation build ID from the initial RSC
+    // payload. Inlining it would rename client chunks on every export build.
+    const buildId = "static-export-build-marker";
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [
+        vinext({
+          appDir: fixtureDir,
+          nextConfig: { output: "export", generateBuildId: () => buildId },
+        }),
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(readAllJs(path.join(outDir, "server"))).toContain(buildId);
+    expect(readAllJs(path.join(outDir, "client"))).not.toContain(buildId);
+  }, 30000);
+
   it("adopts __VINEXT_SHARED_RSC_COMPATIBILITY_ID across the App Router build", async () => {
     // Companion to the build-ID coordination: createRscCompatibilityId() mints a
     // random UUID per plugin instance when no deploymentId is pinned, so a hybrid

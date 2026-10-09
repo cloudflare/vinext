@@ -269,7 +269,11 @@ function toOperationLane(kind: NavigationKind): OperationLane {
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const IS_STATIC_EXPORT =
   process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export";
-const CLIENT_DEPLOYMENT_VERSION = process.env.__VINEXT_BUILD_ID ?? null;
+// Static export: the deployment version of the initial page's Flight payload,
+// set once during hydration. Like Next.js' setNavigationBuildId(
+// initialRSCPayload.b) (client/app-index.tsx), it comes from the page rather
+// than the bundle, so the per-build ID doesn't rename client chunks.
+let clientDeploymentVersion: string | null = null;
 // No server sends this (deployment IDs and UUIDs never contain ":"), so until
 // the page supplies its ID every RSC response is treated as another
 // deployment's, like Next.js' navigation build ID, which starts as "".
@@ -326,7 +330,7 @@ function isStaticExportPayloadDeploymentCompatible(elements: AppElements): boole
   if (!IS_STATIC_EXPORT) return true;
   const deploymentVersion =
     AppElementsWire.readMetadata(elements).artifactCompatibility.deploymentVersion;
-  return CLIENT_DEPLOYMENT_VERSION !== null && deploymentVersion === CLIENT_DEPLOYMENT_VERSION;
+  return clientDeploymentVersion !== null && deploymentVersion === clientDeploymentVersion;
 }
 
 const MAX_HISTORY_STATE_SNAPSHOTS = 50;
@@ -1901,6 +1905,10 @@ function bootstrapHydration(
   const root = decodeAppElementsPromise(
     createFromReadableStream<AppWireElements>(reactBranch),
   ).then((elements) => {
+    if (IS_STATIC_EXPORT) {
+      clientDeploymentVersion =
+        AppElementsWire.readMetadata(elements).artifactCompatibility.deploymentVersion;
+    }
     bindAppElementsRenderedSearch(elements, initialNavigationSnapshot);
     return elements;
   });
