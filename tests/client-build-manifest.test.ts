@@ -189,6 +189,7 @@ describe("client build manifest helpers", () => {
       clientDir,
       assetsSubdir: "base/_next/static",
       buildId: "build-123",
+      pages: ["/hello"],
       rewrites: {
         beforeFiles: [
           {
@@ -212,6 +213,7 @@ describe("client build manifest helpers", () => {
       "utf-8",
     );
     expect(buildManifest).toContain("self.__BUILD_MANIFEST = ");
+    expect(buildManifest).toContain('"sortedPages":["/_app","/_error","/hello"]');
     expect(buildManifest).toContain("__BUILD_MANIFEST_CB");
     expect(buildManifest).toContain('"requiresServerEvaluation":true');
     expect(buildManifest).not.toContain("emitted-header-target-canary");
@@ -225,55 +227,85 @@ describe("client build manifest helpers", () => {
     expect(ssgManifest).toBe(buildNextClientSsgManifestContent());
   });
 
+  it("lists the Pages routes in sortedPages in Next.js order, with /_app and /_error", () => {
+    // Next.js writes sortedPages as getSortedRoutes() over every pages/ entry
+    // (pages/api included, as Turbopack does) plus /_app and /_error. Its
+    // client reads the list through pageLoader.getPageList().
+    // Ported from Next.js: test/e2e/custom-routes-catchall
+    const content = buildNextClientBuildManifestContent(
+      { beforeFiles: [], afterFiles: [], fallback: [] },
+      ["/posts/[id]", "/hello", "/[...slug]", "/api/hi", "/"],
+    );
+    const manifest = JSON.parse(
+      content.slice(
+        "self.__BUILD_MANIFEST = ".length,
+        content.indexOf(";self.__BUILD_MANIFEST_CB"),
+      ),
+    ) as { sortedPages: string[] };
+
+    expect(manifest.sortedPages).toEqual([
+      "/",
+      "/_app",
+      "/_error",
+      "/api/hi",
+      "/hello",
+      "/posts/[id]",
+      "/[...slug]",
+    ]);
+  });
+
   it("publishes only client-safe rewrites in the Next.js runtime build manifest", () => {
-    const content = buildNextClientBuildManifestContent({
-      beforeFiles: [
-        {
-          source: "/query/:path*",
-          destination: "/rewritten/:path*",
-          has: [{ type: "query", key: "preview", value: "1" }],
-        },
-        {
-          source: "/header",
-          destination: "/header-target-canary",
-          has: [{ type: "header", key: "x-origin-auth", value: "header-secret-canary" }],
-        },
-        {
-          source: "/host",
-          destination: "/host-target",
-          has: [{ type: "host", key: "host", value: "example.com" }],
-        },
-      ],
-      afterFiles: [
-        {
-          source: "/cookie",
-          destination: "/cookie-target-canary",
-          has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
-        },
-        {
-          source: "/external",
-          destination: "//example.com/protocol-relative-destination-canary",
-        },
-        {
-          source: "/future-condition",
-          destination: "/future-target-canary",
-          has: [
-            {
-              type: "future-condition",
-              key: "future-key",
-              value: "future-secret-canary",
-            } as unknown as HasCondition,
-          ],
-        },
-      ],
-      fallback: [
-        {
-          source: "/only-without-cookie",
-          destination: "/target",
-          missing: [{ type: "cookie", key: "seen" }],
-        },
-      ],
-    });
+    const content = buildNextClientBuildManifestContent(
+      {
+        beforeFiles: [
+          {
+            source: "/query/:path*",
+            destination: "/rewritten/:path*",
+            has: [{ type: "query", key: "preview", value: "1" }],
+          },
+          {
+            source: "/header",
+            destination: "/header-target-canary",
+            has: [{ type: "header", key: "x-origin-auth", value: "header-secret-canary" }],
+          },
+          {
+            source: "/host",
+            destination: "/host-target",
+            has: [{ type: "host", key: "host", value: "example.com" }],
+          },
+        ],
+        afterFiles: [
+          {
+            source: "/cookie",
+            destination: "/cookie-target-canary",
+            has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
+          },
+          {
+            source: "/external",
+            destination: "//example.com/protocol-relative-destination-canary",
+          },
+          {
+            source: "/future-condition",
+            destination: "/future-target-canary",
+            has: [
+              {
+                type: "future-condition",
+                key: "future-key",
+                value: "future-secret-canary",
+              } as unknown as HasCondition,
+            ],
+          },
+        ],
+        fallback: [
+          {
+            source: "/only-without-cookie",
+            destination: "/target",
+            missing: [{ type: "cookie", key: "seen" }],
+          },
+        ],
+      },
+      [],
+    );
 
     const serializedManifest = content.slice(
       "self.__BUILD_MANIFEST = ".length,
@@ -306,7 +338,7 @@ describe("client build manifest helpers", () => {
         ],
         fallback: [{ source: "/only-without-cookie", requiresServerEvaluation: true }],
       },
-      sortedPages: [],
+      sortedPages: ["/_app", "/_error"],
     });
     expect(content).not.toContain("header-target-canary");
     expect(content).not.toContain("header-secret-canary");

@@ -24,6 +24,7 @@ import {
   apiRouter,
   invalidateRouteCache,
   matchRoute,
+  patternToNextFormat,
 } from "./routing/pages-router.js";
 import {
   generatePagesRequestEntry as _generatePagesRequestEntry,
@@ -8060,18 +8061,28 @@ export const loadServerActionClient = ${
       writeBundle: {
         sequential: true,
         order: "post",
-        handler(outputOptions: { dir?: string }) {
+        async handler(outputOptions: { dir?: string }) {
           const clientDir = outputOptions.dir;
           if (!clientDir) return;
 
           const isClientBuild = this.environment?.name === "client";
           if (!isClientBuild) return;
 
+          // Next.js lists every pages/ entry, pages/api included, in the
+          // client build manifest's sortedPages.
+          const pageRoutes = hasPagesDir
+            ? [
+                ...(await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)),
+                ...(await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)),
+              ]
+            : [];
+
           emitNextClientRuntimeManifests({
             clientDir,
             assetsSubdir: resolveAssetsDir(nextConfig.assetPrefix),
             buildId: nextConfig.buildId,
             rewrites: nextConfig.rewrites,
+            pages: pageRoutes.map((route) => patternToNextFormat(route.pattern)),
           });
         },
       },

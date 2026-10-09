@@ -145,6 +145,45 @@ class UrlNode {
       child.assertOptionalCatchAllSpecificity(`${prefix}${nextPrefixSegment}/`);
     }
   }
+
+  smoosh(prefix = "/"): string[] {
+    const childrenPaths = [...this.children.keys()].sort();
+    if (this.slugName !== null) childrenPaths.splice(childrenPaths.indexOf("[]"), 1);
+    if (this.restSlugName !== null) childrenPaths.splice(childrenPaths.indexOf("[...]"), 1);
+    if (this.optionalRestSlugName !== null) {
+      childrenPaths.splice(childrenPaths.indexOf("[[...]]"), 1);
+    }
+
+    const routes = childrenPaths.flatMap((segment) =>
+      this.children.get(segment)!.smoosh(`${prefix}${segment}/`),
+    );
+
+    if (this.slugName !== null) {
+      routes.push(...this.children.get("[]")!.smoosh(`${prefix}[${this.slugName}]/`));
+    }
+
+    if (!this.placeholder) {
+      const route = prefix === "/" ? "/" : prefix.slice(0, -1);
+      if (this.optionalRestSlugName !== null) {
+        throw new Error(
+          `You cannot define a route with the same specificity as a optional catch-all route ("${route}" and "${route}[[...${this.optionalRestSlugName}]]").`,
+        );
+      }
+      routes.unshift(route);
+    }
+
+    if (this.restSlugName !== null) {
+      routes.push(...this.children.get("[...]")!.smoosh(`${prefix}[...${this.restSlugName}]/`));
+    }
+
+    if (this.optionalRestSlugName !== null) {
+      routes.push(
+        ...this.children.get("[[...]]")!.smoosh(`${prefix}[[...${this.optionalRestSlugName}]]/`),
+      );
+    }
+
+    return routes;
+  }
 }
 
 export function patternToNextFormat(pattern: string): string {
@@ -180,4 +219,18 @@ export function validateRoutePatterns(patterns: readonly string[]): void {
     root.insert(patternToNextFormat(normalizedPattern));
   }
   root.assertOptionalCatchAllSpecificity();
+}
+
+/**
+ * Sort Next.js-format page paths (`/posts/[id]`) into route priority order:
+ * static segments first, then a dynamic segment, then catch-all, then
+ * optional catch-all. This is the order Next.js writes `sortedPages` in.
+ *
+ * Ported from Next.js: getSortedRoutes in
+ * packages/next/src/shared/lib/router/utils/sorted-routes.ts
+ */
+export function getSortedRoutes(normalizedPages: readonly string[]): string[] {
+  const root = new UrlNode();
+  for (const page of normalizedPages) root.insert(page);
+  return root.smoosh();
 }
