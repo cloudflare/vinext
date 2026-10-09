@@ -1341,12 +1341,14 @@ export function updateWranglerConfigForCloudflare(
     // included, before the Worker runs.
     const cacheProperty = findTopLevelJsonProperty(output, "cache");
     if (cacheProperty) {
-      const cache = JSON.parse(
-        stripJsonComments(output.slice(cacheProperty.valueStart, cacheProperty.valueEnd)),
-      ) as unknown;
-      if (isUnknownRecord(cache) && cache.enabled === true) {
-        const updatedCache = JSON.stringify({ ...cache, enabled: false });
-        output = `${output.slice(0, cacheProperty.valueStart)}${updatedCache}${output.slice(cacheProperty.valueEnd)}`;
+      const cacheCode = output.slice(cacheProperty.valueStart, cacheProperty.valueEnd);
+      const cache = JSON.parse(stripJsonComments(cacheCode)) as unknown;
+      const enabledProperty = findTopLevelJsonProperty(cacheCode, "enabled");
+      if (isUnknownRecord(cache) && cache.enabled === true && enabledProperty) {
+        // Replace only the flag so the rest of the user's cache block stays verbatim.
+        const enabledStart = cacheProperty.valueStart + enabledProperty.valueStart;
+        const enabledEnd = cacheProperty.valueStart + enabledProperty.valueEnd;
+        output = `${output.slice(0, enabledStart)}false${output.slice(enabledEnd)}`;
       }
     }
   }

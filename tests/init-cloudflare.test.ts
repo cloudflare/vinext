@@ -1549,18 +1549,17 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     "disables a Workers Cache config left by an earlier setup when switching to %s",
     (cdnCache) => {
       const options = { dataCache: "none" as const, cdnCache, imageOptimization: "none" as const };
-      const output = updateWranglerConfigForCloudflare(
-        `{
-  // keep this comment
-  "cache": { "enabled": true, "cross_version_cache": true },
-  "version_metadata": { "binding": "CF_VERSION_METADATA" }
-}\n`,
-        options,
-      );
-      expect(output).toContain("// keep this comment");
-      expect(JSON.parse(output.replace("  // keep this comment\n", ""))).toMatchObject({
-        cache: { enabled: false, cross_version_cache: true },
-      });
+      const input = `{
+  "main": "vinext/server/fetch-handler",
+  "assets": { "directory": "dist/client", "binding": "ASSETS", "run_worker_first": ["/*"] },
+  "cache": {
+    // keep this comment
+    "enabled": true, // and this one
+    "cross_version_cache": true
+  }
+}\n`;
+      const output = updateWranglerConfigForCloudflare(input, options);
+      expect(output).toBe(input.replace('"enabled": true,', '"enabled": false,'));
       expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
     },
   );

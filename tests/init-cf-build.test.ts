@@ -343,9 +343,7 @@ describe("legacy Wrangler cache migration", () => {
     });
     fs.symlinkSync(path.join(fixture, "node_modules"), path.join(root, "node_modules"), "junction");
 
-    async function initAndBuild(cdnCache: "workers-cache" | "static-assets") {
-      // Removing the Vite config lets init regenerate it for the new adapter.
-      fs.rmSync(path.join(root, "vite.config.ts"));
+    async function runInit(cdnCache: "workers-cache" | "static-assets") {
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       try {
         await init({
@@ -364,6 +362,12 @@ describe("legacy Wrangler cache migration", () => {
       } finally {
         log.mockRestore();
       }
+    }
+
+    async function initAndBuild(cdnCache: "workers-cache" | "static-assets") {
+      // Removing the Vite config lets init regenerate it for the new adapter.
+      fs.rmSync(path.join(root, "vite.config.ts"));
+      await runInit(cdnCache);
       const build = spawnSync(path.join(webRoot, "node_modules/.bin/vinext"), ["build"], {
         cwd: root,
         encoding: "utf-8",
@@ -387,6 +391,15 @@ describe("legacy Wrangler cache migration", () => {
     const workersCache = await initAndBuild("workers-cache");
     expect(workersCache.config.cache).toEqual({ enabled: true });
     expect(workersCache.defaultEntrypointCached).toBe(false);
+
+    // Init leaves the user's Vite config alone: a kept Workers Cache adapter
+    // is rejected before any file is written, so no half-migrated config remains.
+    const wranglerPath = path.join(root, "wrangler.jsonc");
+    const workersCacheWrangler = fs.readFileSync(wranglerPath, "utf8");
+    await expect(runInit("static-assets")).rejects.toThrow(
+      "does not match the selected Static Assets cache",
+    );
+    expect(fs.readFileSync(wranglerPath, "utf8")).toBe(workersCacheWrangler);
 
     const staticAssets = await initAndBuild("static-assets");
     expect(fs.readFileSync(path.join(root, "vite.config.ts"), "utf8")).toContain(
