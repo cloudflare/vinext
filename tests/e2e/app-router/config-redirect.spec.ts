@@ -4,7 +4,6 @@
  * Ported from:
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/config.redirect.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
- * Tests: ON-12, ON-15 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
@@ -183,7 +182,6 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
 
   // Ref: opennextjs-cloudflare headers.test.ts — "x-powered-by should be absent"
   // vinext never sends X-Powered-By (matching Next.js poweredByHeader: false behavior).
-  // Tests: ON-6 #7, ON-8 #3 in TRACKING.md
   test("x-powered-by header is absent from responses", async ({ request }) => {
     const pageRes = await request.get(`${BASE}/about`);
     expect(pageRes.headers()["x-powered-by"]).toBeUndefined();
@@ -197,7 +195,6 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
   // the same key, matching Next.js behavior.
   // Fixture: middleware sets e2e-headers=middleware for /headers/override-from-middleware;
   //          next.config.ts sets e2e-headers=next.config.js on /(.*)
-  // Tests: ON-8 #2 in TRACKING.md
   // Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
   test("middleware headers override config headers for same key", async ({ request }) => {
     const res = await request.get(`${BASE}/headers/override-from-middleware`);

@@ -2,7 +2,6 @@
  * Tests unstable_cache data cache alongside ISR page cache.
  *
  * Ported from: OpenNext ISR data cache separation pattern
- * Tests: ON-1 #8 in TRACKING.md
  *
  * Demonstrates that unstable_cache (data cache) and page ISR (page cache)
  * operate independently — you can invalidate the data cache via revalidateTag

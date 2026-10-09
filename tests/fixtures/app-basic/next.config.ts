@@ -2,7 +2,7 @@
  * Next.js config for the app-basic test fixture.
  *
  * This config serves both Vitest integration tests (app-router.test.ts)
- * and Playwright E2E tests (ON-12, ON-13, ON-15).
+ * and Playwright E2E tests (config-redirect.spec.ts, routing-misc.spec.ts).
  *
  * IMPORTANT: The Vitest test previously wrote a temporary next.config.mjs.
  * Since next.config.ts takes priority over .mjs, this file must include
@@ -313,7 +313,7 @@ const nextConfig: NextConfig = {
         source: "/(.*)",
         headers: [{ key: "X-E2E-Header", value: "vinext-e2e" }],
       },
-      // Used by E2E: config-redirect.spec.ts — middleware header override test (ON-8 #2)
+      // Used by E2E: config-redirect.spec.ts — middleware header override test
       // Middleware sets e2e-headers=middleware; this config rule sets e2e-headers=next.config.js.
       // Middleware always wins (matching Next.js behavior), so middleware's value takes precedence.
       {

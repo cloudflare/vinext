@@ -2,7 +2,6 @@
  * API route that uses next/after for deferred work.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/open-next/app/api/after/
- * Tests: ON-7 in TRACKING.md
  *
  * GET: Returns the current value of a shared counter (simulating a cached value).
  * POST: Responds immediately, then uses after() to update the counter after a delay.

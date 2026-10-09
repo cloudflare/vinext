@@ -7,7 +7,7 @@ import { REQUEST_SIGNAL_OVERRIDE_HEADER } from "./lib/request-signal-probe";
  * App Router middleware that uses NextRequest-specific APIs.
  * This tests that the middleware receives a NextRequest (not a plain Request).
  *
- * Also covers OpenNext compat tests (ON-11):
+ * Also covers OpenNext compat tests:
  * - Redirect with cookie setting
  * - Rewrite (URL stays, content from another page)
  * - Rewrite with custom status code
