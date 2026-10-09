@@ -5534,6 +5534,49 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  it("does not pass an unauthorized interception source to a non-RSC Server Action", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const middlewarePaths: string[] = [];
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        default(request: NextRequest) {
+          middlewarePaths.push(request.nextUrl.pathname);
+          if (request.nextUrl.pathname.startsWith("/feed")) {
+            return new Response("denied", { status: 401 });
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/photos/1", {
+        body: "[]",
+        headers: {
+          "content-type": "text/plain",
+          "next-action": "interception-action",
+          "x-vinext-interception-context": "/feed/secret",
+        },
+        method: "POST",
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(middlewarePaths).toEqual(["/photos/1"]);
+    expect(handleServerActionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: null, isRscRequest: false }),
+    );
+  });
+
   it("does not replay a forwarded target middleware result for the interception source", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/feed/secret" });

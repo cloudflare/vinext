@@ -21,6 +21,32 @@ function interceptionHeaders(source: string): Record<string, string> {
   };
 }
 
+function forgedActionRequest(
+  baseUrl: string,
+  actionId: string,
+  source: string,
+  extraHeaders: Record<string, string> = {},
+): RequestInit {
+  return {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain;charset=UTF-8",
+      "Next-Action": actionId,
+      Origin: baseUrl,
+      "X-Vinext-Interception-Context": source,
+      ...extraHeaders,
+    },
+    body: "[]",
+  };
+}
+
+async function readPhotoActionId(baseUrl: string): Promise<string> {
+  const html = await (await fetch(`${baseUrl}/photos/1`)).text();
+  const actionId = html.match(/name="\$ACTION_ID_([^"]+)"/)?.[1];
+  if (!actionId) throw new Error("Photo page did not render its server action form");
+  return actionId;
+}
+
 async function startDevServer(root: string): Promise<StartedServer> {
   const { server, baseUrl } = await startFixtureServer(root, { appRouter: true });
   return {
@@ -99,6 +125,36 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
     exposedGuardedContent: encodedAliasBody.includes(GUARDED_MARKER),
   }).toEqual({
     status: 200,
+    exposedGuardedContent: false,
+  });
+
+  // A server action rerenders the page it was posted to, intercepted tree
+  // included, so a forged source context reaches the same render. The vinext
+  // client always sends `RSC: 1` with action POSTs; that request must still
+  // authorize the source, and one without it must not render the source at all.
+  const actionId = await readPhotoActionId(baseUrl);
+  const rscAction = await fetch(
+    `${baseUrl}/photos/1`,
+    forgedActionRequest(baseUrl, actionId, "/feed/secret", interceptionHeaders("/feed/secret")),
+  );
+  expect(rscAction.status).toBe(403);
+  expect(rscAction.headers.get("x-auth-guard")).toBe("blocked");
+  expect(await rscAction.text()).not.toContain(GUARDED_MARKER);
+
+  const nonRscAction = await fetch(
+    `${baseUrl}/photos/1`,
+    forgedActionRequest(baseUrl, actionId, "/feed/secret"),
+  );
+  const nonRscActionBody = await nonRscAction.text();
+  expect({
+    status: nonRscAction.status,
+    authGuard: nonRscAction.headers.get("x-auth-guard"),
+    rendersTarget: nonRscActionBody.includes("Refresh"),
+    exposedGuardedContent: nonRscActionBody.includes(GUARDED_MARKER),
+  }).toEqual({
+    status: 200,
+    authGuard: null,
+    rendersTarget: true,
     exposedGuardedContent: false,
   });
 }

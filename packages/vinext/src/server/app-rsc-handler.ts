@@ -1690,7 +1690,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // case where interception does not fire.
   // The context the selected source was resolved from. A source middleware
   // rewrite below can replace both with the rewritten source it authorized.
-  let interceptionSourceContext = interceptionContextHeader;
+  // Only RSC requests authorize a source, so every other request, including a
+  // server action POST without `RSC: 1`, renders without one.
+  let interceptionSourceContext =
+    interceptionSourcePathname !== null ? interceptionContextHeader : null;
   let interceptionSourceMatch =
     filesystemRouteEligible &&
     interceptionSourcePathname !== null &&
@@ -2702,7 +2705,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname,
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
-        interceptionContext: isRscRequest ? interceptionSourceContext : null,
+        interceptionContext: interceptionSourceContext,
         interceptionId: interceptionIdHeader,
         isRscRequest,
         matchKind: responseStageMatchKind,
@@ -2727,7 +2730,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         actionError: normalizedProgressiveActionError,
         actionFailed,
         handlerStart,
-        interceptionContext: isRscRequest ? interceptionSourceContext : null,
+        interceptionContext: interceptionSourceContext,
         interceptionId: interceptionIdHeader,
         interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         isProgressiveActionRender,
