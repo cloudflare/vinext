@@ -10,18 +10,29 @@ const LOADING = "ancestor-shared-layout-loading";
 
 type LoadingWindow = { __sawLoading?: boolean };
 
+function shownFallbacks(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      (
+        Reflect.get(globalThis, Symbol.for("vinext.shownSegmentFallbacks")) as
+          | Set<object>
+          | undefined
+      )?.size ?? 0,
+  );
+}
+
 // Holds the real navigation request so that, until it is released, only the
 // optimistic loading shell can put the loading UI on screen.
 async function clickWithHeldNavigation(
   page: Page,
-  // `current` is a selector for what the starting page shows. Without a `link`,
-  // the router prefetches and pushes the target instead.
   options: {
     beforeClick?: () => Promise<void>;
     // Reaches `from` by a client navigation from this page instead of a load.
     enterFrom?: string;
     from: string;
+    // A selector for what the starting page shows.
     current: string;
+    // Without a link, the router prefetches and pushes the target instead.
     link?: string;
     loading: string;
     targetPath: string;
@@ -225,19 +236,9 @@ test("a prefetched loading shell shows the loading when leaving a not-found page
 }) => {
   // The root not-found.tsx owns the fallback, so Next.js has unmounted the
   // ancestor loading boundary and mounts it fresh on navigation.
-  const shownFallbacks = () =>
-    page.evaluate(
-      () =>
-        (
-          Reflect.get(globalThis, Symbol.for("vinext.shownSegmentFallbacks")) as
-            | Set<object>
-            | undefined
-        )?.size ?? 0,
-    );
   const releaseNavigation = await clickWithHeldNavigation(page, {
-    // The guard keeps the shell because of the shown fallback, not because the
-    // payload lacks a page entry.
-    beforeClick: async () => expect(await shownFallbacks()).toBeGreaterThan(0),
+    // The shown fallback is tracked, so the guard keeps the shell.
+    beforeClick: async () => expect(await shownFallbacks(page)).toBeGreaterThan(0),
     current: "text=404 - Page Not Found",
     from: `${BASE}/plain/missing`,
     loading: LOADING,
@@ -248,13 +249,14 @@ test("a prefetched loading shell shows the loading when leaving a not-found page
   releaseNavigation();
   await expect(page.locator("#ancestor-shared-layout-two")).toBeVisible({ timeout: 10_000 });
   // The not-found boundary unmounted, so the guard applies again.
-  expect(await shownFallbacks()).toBe(0);
+  expect(await shownFallbacks(page)).toBe(0);
 });
 
 test("a prefetched loading shell shows the loading when leaving a not-found page reached by client navigation", async ({
   page,
 }) => {
   const releaseNavigation = await clickWithHeldNavigation(page, {
+    beforeClick: async () => expect(await shownFallbacks(page)).toBeGreaterThan(0),
     current: "text=404 - Page Not Found",
     enterFrom: `${BASE}/plain/one`,
     from: `${BASE}/plain/missing`,

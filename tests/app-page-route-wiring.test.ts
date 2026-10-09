@@ -1344,7 +1344,7 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Page");
   });
 
-  it("marks a leaf loading-shell boundary at the route's segment count", async () => {
+  it("marks a leaf loading-shell boundary at its loading entry's tree position", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -1978,6 +1978,7 @@ describe("app page route wiring helpers", () => {
     const html = await renderRouteEntry(elements, "route:/dashboard");
     expect(html).toContain("Slot loading");
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBeUndefined();
     expect(Object.hasOwn(elements, "__vinext_streaming_metadata_body:route:/dashboard")).toBe(true);
   });
 

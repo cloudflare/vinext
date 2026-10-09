@@ -708,6 +708,13 @@ describe("App Router optimistic routing", () => {
         treeSegments: ["s", "(g)", "alpha"],
       }),
       route({
+        id: "route:/s/beta",
+        isDynamic: false,
+        pattern: "/s/beta",
+        patternParts: ["s", "beta"],
+        treeSegments: ["s", "(g)", "beta"],
+      }),
+      route({
         id: "route:/s/other",
         isDynamic: false,
         pattern: "/s/other",
@@ -748,10 +755,7 @@ describe("App Router optimistic routing", () => {
       const treeSegments = routeManifest.segmentGraph.routes.get(routeId)?.treeSegments;
       return treeSegments ? createAppPageSourcePage(treeSegments) : null;
     };
-    const currentMetadataFor = (
-      routeId: string,
-      sourcePage = sourcePageFor(routeId),
-    ): AppElements =>
+    const metadataFor = (routeId: string, sourcePage = sourcePageFor(routeId)): AppElements =>
       AppElementsWire.createMetadataEntries({
         interceptionContext: null,
         layoutIds: [],
@@ -763,19 +767,15 @@ describe("App Router optimistic routing", () => {
       routeId: string,
       sourcePage = sourcePageFor(routeId),
     ): AppElements => ({
-      ...currentMetadataFor(routeId, sourcePage),
+      ...metadataFor(routeId, sourcePage),
       [`page:${routeId.slice("route:".length)}`]: null,
     });
-    const createShellTemplate = (
-      pattern: string,
-      href: string,
-      loadingTreePosition: number | null,
-    ) => {
+    const createShellTemplate = (href: string, loadingTreePosition: number | null) => {
       const template = createOptimisticRouteTemplate({
         allowLoadingShell: true,
         basePath: "",
         elements: {
-          ...currentMetadataFor(`route:${href}`),
+          ...metadataFor(`route:${href}`),
           [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
           ...(loadingTreePosition === null
             ? {}
@@ -811,14 +811,19 @@ describe("App Router optimistic routing", () => {
 
     // A loading at app/s wraps its child segment: `plain` is shared, while the
     // `(g)` group and `other` are different children.
-    const twoShell = createShellTemplate("/s/two", "/s/two", 1);
+    const twoShell = createShellTemplate("/s/two", 1);
     expect(twoShell.loadingTreePosition).toBe(1);
     expect(canCommit(twoShell, "route:/s/one")).toBe(false);
     expect(canCommit(twoShell, "route:/s/alpha")).toBe(true);
     expect(canCommit(twoShell, "route:/s/other")).toBe(true);
+    // Route groups are part of the key, so pages under the same group share
+    // the child segment.
+    const betaShell = createShellTemplate("/s/beta", 1);
+    expect(canCommit(betaShell, "route:/s/alpha")).toBe(false);
+    expect(canCommit(betaShell, "route:/s/one")).toBe(true);
     // A shell without a children loading position (slot loading only) is
     // never compared.
-    const slotOnlyShell = createShellTemplate("/s/two", "/s/two", null);
+    const slotOnlyShell = createShellTemplate("/s/two", null);
     expect(slotOnlyShell.loadingTreePosition).toBeNull();
     expect(canCommit(slotOnlyShell, "route:/s/one")).toBe(true);
     // A route outside the manifest keeps the shell.
@@ -841,7 +846,7 @@ describe("App Router optimistic routing", () => {
     expect(
       canCommitOptimisticRouteTemplate({
         currentElements: {
-          ...currentMetadataFor("route:/s/one"),
+          ...metadataFor("route:/s/one"),
           "route:/s/one": createElement("p", null, "Not found"),
         },
         currentLayoutIds: [],
@@ -903,14 +908,14 @@ describe("App Router optimistic routing", () => {
       }),
     ).toBe(true);
 
-    // A leaf loading wraps the page, whose key ignores search params, so a
-    // search-only navigation on the same route keeps it mounted.
-    const leafShell = createShellTemplate("/s/two", "/s/two", 3);
+    // A leaf loading wraps the page, so the same route keeps it mounted. The
+    // page's key ignores search params, which the guard never sees.
+    const leafShell = createShellTemplate("/s/two", 3);
     expect(canCommit(leafShell, "route:/s/one")).toBe(true);
     expect(canCommit(leafShell, "route:/s/two")).toBe(false);
     // Payload route ids carry the concrete matched pathname, so a dynamic
     // current route is found by its source page.
-    const dynamicLeafShell = createShellTemplate("/p/:id/a", "/p/1/a", 3);
+    const dynamicLeafShell = createShellTemplate("/p/1/a", 3);
     const pageA = "/p/[id]/a/page";
     expect(canCommit(dynamicLeafShell, "route:/p/1/a", { id: "1" }, { id: "1" }, pageA)).toBe(
       false,
@@ -918,14 +923,14 @@ describe("App Router optimistic routing", () => {
     expect(canCommit(dynamicLeafShell, "route:/p/2/a", { id: "2" }, { id: "1" }, pageA)).toBe(true);
 
     // The child segment's params are part of its key.
-    const dynamicShell = createShellTemplate("/p/:id/a", "/p/1/a", 1);
+    const dynamicShell = createShellTemplate("/p/1/a", 1);
     const pageB = "/p/[id]/b/page";
     expect(canCommit(dynamicShell, "route:/p/1/b", { id: "1" }, { id: "1" }, pageB)).toBe(false);
     expect(canCommit(dynamicShell, "route:/p/2/b", { id: "2" }, { id: "1" }, pageB)).toBe(true);
 
     // A dynamic route sharing a prefix with a static one is still found, even
     // though the optimistic matcher does not backtrack out of `users`.
-    const rootShell = createShellTemplate("/api/:resource/:id", "/api/posts/5", 0);
+    const rootShell = createShellTemplate("/api/posts/5", 0);
     expect(
       canCommit(
         rootShell,
@@ -936,7 +941,7 @@ describe("App Router optimistic routing", () => {
       ),
     ).toBe(false);
     // The dynamic `[resource]` segment keys differently from a static `users`.
-    const staticShell = createShellTemplate("/api/users/me", "/api/users/me", 1);
+    const staticShell = createShellTemplate("/api/users/me", 1);
     expect(
       canCommit(
         staticShell,
