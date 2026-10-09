@@ -195,15 +195,39 @@ test.describe("Loading boundaries (loading.tsx)", () => {
   // Related Next.js test: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
   for (const target of [
-    { name: "a sibling page", link: "settings", heading: "Settings page" },
-    { name: "a page with its own layout", link: "nested", heading: "Nested page" },
+    {
+      name: "a sibling page",
+      from: "",
+      current: "overview",
+      link: "settings",
+      heading: "Settings page",
+      shell: "tabs",
+    },
+    {
+      name: "a page with its own layout",
+      from: "",
+      current: "overview",
+      link: "nested",
+      heading: "Nested page",
+      shell: "tabs",
+    },
+    // A template's Slot is keyed by its child segment, so it remounts here; the
+    // ancestor loading must stay outside it, as in Next.js.
+    {
+      name: "a sibling page under a group template",
+      from: "/alpha",
+      current: "alpha",
+      link: "beta",
+      heading: "Beta page",
+      shell: "grouped-template",
+    },
   ]) {
     test(`ancestor loading above a shared layout keeps the current page when navigating to ${target.name}`, async ({
       page,
     }) => {
-      await page.goto(`${BASE}/ancestor-loading-shared-layout`);
+      await page.goto(`${BASE}/ancestor-loading-shared-layout${target.from}`);
       await waitForAppRouterHydration(page);
-      await expect(page.locator("#ancestor-shared-layout-overview")).toBeVisible();
+      await expect(page.locator(`#ancestor-shared-layout-${target.current}`)).toBeVisible();
 
       await page.evaluate(() => {
         const state = window as unknown as { __sawAncestorSharedLayoutLoading?: boolean };
@@ -216,10 +240,10 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       });
 
       await page.locator(`#ancestor-shared-layout-${target.link}-link`).click();
-      // The target page takes 3s; the overview and tabs stay on screen meanwhile.
+      // The target page takes 3s; the current page and its shell stay on screen meanwhile.
       await page.waitForTimeout(500);
-      await expect(page.locator("#ancestor-shared-layout-overview")).toBeVisible();
-      await expect(page.locator("#ancestor-shared-layout-tabs")).toBeVisible();
+      await expect(page.locator(`#ancestor-shared-layout-${target.current}`)).toBeVisible();
+      await expect(page.locator(`#ancestor-shared-layout-${target.shell}`)).toBeVisible();
       await expect(page.locator(`#ancestor-shared-layout-${target.link}`)).toHaveText(
         target.heading,
         { timeout: 10_000 },
@@ -234,22 +258,30 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     });
   }
 
-  test("ancestor loading above a shared layout wraps that layout on first entry", async ({
-    page,
-  }) => {
-    void page.goto(`${BASE}/ancestor-loading-shared-layout/settings`);
+  for (const target of [
+    { name: "a page", path: "settings", heading: "Settings page" },
+    { name: "a templated page", path: "templated", heading: "Templated page" },
+  ]) {
+    test(`ancestor loading above a shared layout wraps that layout on first entry to ${target.name}`, async ({
+      page,
+    }) => {
+      void page.goto(`${BASE}/ancestor-loading-shared-layout/${target.path}`);
 
-    await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({ timeout: 5_000 });
-    // The layout resolves after 100ms but the page takes 3s, so the loading
-    // UI must still replace the layout rather than render inside its tabs.
-    await page.waitForTimeout(600);
-    await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
-    await expect(page.locator("#ancestor-shared-layout-tabs")).toBeHidden();
-    await expect(page.locator("#ancestor-shared-layout-settings")).toHaveText("Settings page", {
-      timeout: 10_000,
+      await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({
+        timeout: 5_000,
+      });
+      // The layout resolves after 100ms but the page takes 3s, so the loading
+      // UI must still replace the layout rather than render inside its tabs.
+      await page.waitForTimeout(600);
+      await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
+      await expect(page.locator("#ancestor-shared-layout-tabs")).toBeHidden();
+      await expect(page.locator(`#ancestor-shared-layout-${target.path}`)).toHaveText(
+        target.heading,
+        { timeout: 10_000 },
+      );
+      await expect(page.locator("#ancestor-shared-layout-loading")).toHaveCount(0);
     });
-    await expect(page.locator("#ancestor-shared-layout-loading")).toHaveCount(0);
-  });
+  }
 
   test("ancestor loading above a slot's owner layout wraps that layout on first entry", async ({
     page,

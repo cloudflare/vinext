@@ -1256,7 +1256,7 @@ export function buildAppPageElements<
     }
     const TemplateComponent = templateComponent;
     const templateDependency = templateDependenciesById.get(templateEntry.id);
-    let templateElement: ReactNode = templateDependency ? (
+    const templateElement: ReactNode = templateDependency ? (
       renderAppComponentWithDependencyBarrier(
         TemplateComponent,
         { children: <Children /> },
@@ -1267,30 +1267,10 @@ export function buildAppPageElements<
         <Children />
       </TemplateComponent>
     );
-    const nearestAncestorLoadingEntry = findNearestAncestorLoadingEntry(templateEntry.treePosition);
-    const ancestorLoadingEntry =
-      nearestAncestorLoadingEntry &&
-      !hasAppPageSegmentBelowLoading(
-        nearestAncestorLoadingEntry.treePosition,
-        {
-          layoutsThrough: templateEntry.treePosition,
-          templatesThrough: templateEntry.treePosition - 1,
-        },
-        layoutEntries,
-        templateEntries,
-      )
-        ? nearestAncestorLoadingEntry
-        : undefined;
-    const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
-    if (ancestorLoadingComponent && ancestorLoadingEntry) {
-      const AncestorLoadingComponent = ancestorLoadingComponent;
-      const loadingResetKey = resolveLoadingResetKey(ancestorLoadingEntry.treePosition);
-      templateElement = (
-        <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
-          {templateElement}
-        </Suspense>
-      );
-    }
+    // An ancestor loading never wraps a template entry: the route entry renders
+    // the template in a Slot keyed by its child segment, so a boundary here
+    // would remount with it. Next.js renders that template inside the parent's
+    // LoadingBoundary, which the route entry's per-segment boundary mirrors.
     elements[templateEntry.id] = renderAfterAppDependencies(templateElement, [
       ...(pageRenderDependency ? [pageRenderDependency] : []),
       ...(templateDependenciesBeforeById.get(templateEntry.id) ?? []),
@@ -1639,6 +1619,7 @@ export function buildAppPageElements<
     // serialized as a separate element entry, so the boundary must wrap this
     // entry directly rather than only the <Slot> placeholder in routeChildren.
     // An ancestor loading above the owner layout wraps that layout instead.
+    const targetLayoutTreePosition = layoutEntries[targetIndex]?.treePosition ?? -1;
     const nearestOwnerLoadingEntry = isPrefetchLoadingShell
       ? undefined
       : findNearestLoadingEntryAtOrAbove(ownerTreePosition);
@@ -1646,7 +1627,12 @@ export function buildAppPageElements<
       nearestOwnerLoadingEntry &&
       !hasAppPageSegmentBelowLoading(
         nearestOwnerLoadingEntry.treePosition,
-        { layoutsThrough: ownerTreePosition, templatesThrough: ownerTreePosition },
+        // The slot renders as a prop of its target layout, outside the
+        // templates at that layout's own position.
+        {
+          layoutsThrough: targetLayoutTreePosition,
+          templatesThrough: targetLayoutTreePosition - 1,
+        },
         layoutEntries,
         templateEntries,
       )

@@ -4473,7 +4473,7 @@ describe("app page route wiring helpers", () => {
         },
         matchedParams: {},
         // The page render dependency gives the page entry its own boundary;
-        // without it, entries stay unwrapped and inspectable.
+        // without it, the route entry is not gated and stays inspectable.
         pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
         route: {
           error: null,
@@ -4518,7 +4518,7 @@ describe("app page route wiring helpers", () => {
     }
   });
 
-  it("keys template and slot-owner ancestor loading boundaries by the group they sit in", () => {
+  it("keys slot-owner ancestor loading boundaries by the group and keeps them off templates", () => {
     function DashboardLoading() {
       return createElement("p", null, "Loading dashboard");
     }
@@ -4583,17 +4583,20 @@ describe("app page route wiring helpers", () => {
         stableKey,
       );
 
+      // The route entry renders the template in a Slot keyed by its child
+      // segment, so the template entry must not carry the boundary; the route
+      // entry's per-segment boundary outside that Slot does, with a stable key.
       const withTemplate = buildElements([...routeSegments], routePath, [
         { default: GroupTemplate },
       ]);
       expect(withTemplate[templateId]).toBeDefined();
-      expect(findSuspenseWithFallback(withTemplate[templateId], "DashboardLoading")?.key).toBe(
-        stableKey,
+      expect(countSuspenseWithFallback(withTemplate[templateId], "DashboardLoading")).toBe(0);
+      const routeBoundary = findSuspenseWithFallback(
+        withTemplate[`route:${routePath}`],
+        "DashboardLoading",
       );
-      // The template between the loading and the slot owner carries the
-      // boundary, so the slot entry must not repeat it inside the template.
-      expect(withTemplate[slotId]).toBeDefined();
-      expect(countSuspenseWithFallback(withTemplate[slotId], "DashboardLoading")).toBe(0);
+      expect(routeBoundary?.key).toBe(stableKey);
+      expect(findSlotById(routeBoundary?.props.children, templateId)).not.toBeNull();
     }
   });
 
@@ -4642,7 +4645,7 @@ describe("app page route wiring helpers", () => {
     }
   });
 
-  it("keeps an ancestor loading boundary on a template between it and the page", () => {
+  it("leaves an ancestor loading boundary above a template to the route entry", () => {
     function DashboardLoading() {
       return createElement("p", null, "Loading dashboard");
     }
@@ -4659,7 +4662,7 @@ describe("app page route wiring helpers", () => {
         },
         matchedParams: {},
         // With a page render dependency the page entry may carry its own
-        // boundary; without one the template entry stays inspectable.
+        // boundary; without one the template and route entries are not gated.
         pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
         route: {
           error: null,
@@ -4685,12 +4688,16 @@ describe("app page route wiring helpers", () => {
     expect(
       countSuspenseWithFallback(withDependency["page:/dashboard/settings"], "DashboardLoading"),
     ).toBe(0);
-    expect(
-      findSuspenseWithFallback(
-        buildElements(false)["template:/dashboard/(protected)"],
-        "DashboardLoading",
-      )?.key,
-    ).toBe(JSON.stringify(["dashboard", "(protected)"]));
+    const withoutDependency = buildElements(false);
+    const templateId = "template:/dashboard/(protected)";
+    expect(withoutDependency[templateId]).toBeDefined();
+    expect(countSuspenseWithFallback(withoutDependency[templateId], "DashboardLoading")).toBe(0);
+    const routeBoundary = findSuspenseWithFallback(
+      withoutDependency["route:/dashboard/settings"],
+      "DashboardLoading",
+    );
+    expect(routeBoundary?.key).toBe(JSON.stringify(["dashboard", "(protected)"]));
+    expect(findSlotById(routeBoundary?.props.children, templateId)).not.toBeNull();
   });
 
   it("keeps the route-derived key for a loading at the slot owner's own segment", () => {
@@ -4736,8 +4743,8 @@ describe("app page route wiring helpers", () => {
         rootNotFoundModule: null,
       });
 
-    // The boundary wraps the slot's own child segment here, so a children
-    // group that stays put must not pin it across slot navigations.
+    // The boundary wraps the slot's own child segment here, so the children
+    // route's group key must not pin it across slot navigations.
     const slotId = AppElementsWire.encodeSlotId("panel", "/");
     const overviewKey = findSuspenseWithFallback(
       buildElements(["dashboard", "(overview)"], "/dashboard")[slotId],
@@ -4747,9 +4754,11 @@ describe("app page route wiring helpers", () => {
       buildElements(["dashboard", "(overview)", "settings"], "/dashboard/settings")[slotId],
       "DashboardLoading",
     )?.key;
+    const childrenGroupKey = JSON.stringify(["dashboard", "(overview)"]);
     expect(overviewKey).toBeDefined();
     expect(settingsKey).toBeDefined();
-    expect(settingsKey).not.toBe(overviewKey);
+    expect(overviewKey).not.toBe(childrenGroupKey);
+    expect(settingsKey).not.toBe(childrenGroupKey);
   });
 
   it("keys a page entry's ancestor loading boundary by the loading segment's child", () => {
