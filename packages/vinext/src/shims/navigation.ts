@@ -2476,17 +2476,6 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
     return;
   }
 
-  // Next's legacy App Router scroll handler can fail to scroll when the
-  // target route's first DOM child is a React-hoisted stylesheet in <head>.
-  // The committed AppRouterScrollTarget detects that case for this navigation
-  // and marks the intent, so we must not mask the observable old-handler
-  // behavior by synthesizing a document-top scroll. The flag is per-intent: a
-  // hoisted stylesheet merely present in <head> for an unrelated navigation
-  // does not suppress this fallback.
-  if (intent.targetHoistedInHead) {
-    return;
-  }
-
   document.documentElement.scrollTop = 0;
 }
 

@@ -5,13 +5,11 @@ import * as ReactDOM from "react-dom";
 import {
   consumeAppRouterScrollIntent,
   getPendingAppRouterScrollIntent,
-  markAppRouterScrollIntentHeadHoisted,
 } from "./app-router-scroll-state.js";
 import { decodeHashFragment } from "./hash-scroll.js";
 
 const AppRouterScrollCommitContext = React.createContext<number | null>(null);
 const reactDomInternalsKey = "__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE";
-const rectProperties = ["bottom", "height", "left", "right", "top", "width", "x", "y"] as const;
 
 function readFindDOMNode(): ((instance: React.ReactInstance | null | undefined) => unknown) | null {
   const internals = Reflect.get(ReactDOM, reactDomInternalsKey);
@@ -33,30 +31,33 @@ function findDOMNode(instance: React.ReactInstance | null | undefined): Element 
   return node instanceof Element || node instanceof Text ? node : null;
 }
 
-function shouldSkipElement(element: HTMLElement): boolean {
-  const position = getComputedStyle(element).position;
-  if (position === "fixed" || position === "sticky") {
-    return true;
-  }
-
-  const rect = element.getBoundingClientRect();
-  return rectProperties.every((property) => rect[property] === 0);
+function getScrollPaddingTopPx(element: HTMLElement, viewportHeight: number): number {
+  const scrollPaddingTop = getComputedStyle(element).scrollPaddingTop;
+  const value = Number.parseFloat(scrollPaddingTop);
+  if (!Number.isFinite(value) || value < 0) return 0;
+  if (scrollPaddingTop.endsWith("px")) return value;
+  if (scrollPaddingTop.endsWith("%")) return (value / 100) * viewportHeight;
+  return 0;
 }
 
-function topOfElementInViewport(element: HTMLElement, viewportHeight: number): boolean {
-  const rects = element.getClientRects();
-  if (rects.length === 0) {
-    return false;
-  }
-
+// The highest client rect of the route content decides whether it is already
+// in the usable viewport, which starts below the root `scroll-padding-top`.
+// The padding is resolved lazily so empty content never reads computed style.
+function isTopInViewport(
+  elements: readonly HTMLElement[],
+  viewportHeight: number,
+  getCurrentScrollPaddingTop: () => number,
+): boolean {
   let elementTop = Number.POSITIVE_INFINITY;
-  for (const rect of rects) {
-    if (rect.top < elementTop) {
-      elementTop = rect.top;
+  for (const element of elements) {
+    for (const rect of element.getClientRects()) {
+      if (rect.top < elementTop) {
+        elementTop = rect.top;
+      }
     }
   }
 
-  return elementTop >= 0 && elementTop <= viewportHeight;
+  return elementTop >= getCurrentScrollPaddingTop() && elementTop <= viewportHeight;
 }
 
 function getHashFragmentDomNode(hash: string): Element | null {
@@ -73,45 +74,53 @@ function isInDocumentHead(node: Element | Text): boolean {
   return head != null && head.contains(node);
 }
 
-type NextScrollTarget = { kind: "element"; element: HTMLElement } | null;
-
-function findNextScrollTarget(node: Element | Text | null): NextScrollTarget {
-  if (!(node instanceof Element)) {
-    return null;
+// React 19 stable has no Fragment refs, so the route content is located with
+// findDOMNode() and its following siblings stand in for the Fragment's host
+// children. Resources React hoists into <head> are never route content.
+function collectRouteContentElements(node: Element | Text | null): HTMLElement[] {
+  if (!(node instanceof Element) || isInDocumentHead(node)) {
+    return [];
   }
 
-  if (isInDocumentHead(node)) {
-    return null;
-  }
-
-  let target: Element = node;
-  while (!(target instanceof HTMLElement) || shouldSkipElement(target)) {
-    if (target.nextElementSibling === null) {
-      return null;
+  const elements: HTMLElement[] = [];
+  for (let sibling: Element | null = node; sibling !== null; sibling = sibling.nextElementSibling) {
+    if (sibling instanceof HTMLElement) {
+      elements.push(sibling);
     }
-    target = target.nextElementSibling;
   }
-
-  return { kind: "element", element: target };
+  return elements;
 }
 
-function scrollToElement(target: HTMLElement, hash: string | null): void {
-  if (hash !== null) {
-    target.scrollIntoView({ behavior: "auto" });
-    return;
-  }
+function hasBox(elements: readonly HTMLElement[]): boolean {
+  return elements.some((element) => element.getClientRects().length > 0);
+}
 
+function scrollFirstBoxIntoView(elements: readonly HTMLElement[]): void {
+  elements
+    .find((element) => element.getClientRects().length > 0)
+    ?.scrollIntoView({ behavior: "auto", block: "start", inline: "nearest" });
+}
+
+// Matches Next.js's default (new) App Router scroll handler: it scrolls only,
+// never focuses, and treats `scroll-padding-top` as the viewport boundary.
+function scrollToRouteContent(elements: readonly HTMLElement[]): void {
   const htmlElement = document.documentElement;
   const viewportHeight = htmlElement.clientHeight;
+  let scrollPaddingTop: number | null = null;
 
-  if (topOfElementInViewport(target, viewportHeight)) {
+  const getCurrentScrollPaddingTop = () => {
+    scrollPaddingTop ??= getScrollPaddingTopPx(htmlElement, viewportHeight);
+    return scrollPaddingTop;
+  };
+
+  if (isTopInViewport(elements, viewportHeight, getCurrentScrollPaddingTop)) {
     return;
   }
 
   htmlElement.scrollTop = 0;
 
-  if (!topOfElementInViewport(target, viewportHeight)) {
-    target.scrollIntoView({ behavior: "auto", block: "start", inline: "nearest" });
+  if (!isTopInViewport(elements, viewportHeight, getCurrentScrollPaddingTop)) {
+    scrollFirstBoxIntoView(elements);
   }
 }
 
@@ -140,44 +149,40 @@ export class AppRouterScrollTargetInner extends React.Component<{
     if (intent === null) return;
     if (this.props.commitId === null || intent.commitId !== this.props.commitId) return;
 
-    let node: Element | Text | null;
     if (intent.hash !== null) {
-      node = getHashFragmentDomNode(intent.hash);
-    } else {
-      node = null;
-    }
-    if (node === null) {
-      // oxlint-disable-next-line react/no-find-dom-node -- Next's default App Router scroll handler targets wrapperless route content after commit.
-      node = findDOMNode(this);
-
-      const headElement = node instanceof Element ? node : node?.parentElement;
-      if (
-        node !== null &&
-        headElement != null &&
-        isInDocumentHead(node) &&
-        !intent.headElements?.has(headElement)
-      ) {
-        // React hoisted this navigation's first route DOM node into <head>
-        // (e.g. a newly introduced precedence-ordered stylesheet rendered as
-        // the page's first child). Next's old App Router scroll handler walks
-        // the head siblings, finds nothing scrollable, and gives up without
-        // scrolling. A stylesheet that was already present before navigation
-        // is not the target route's newly hoisted child, so let the document-top
-        // fallback handle that case.
-        markAppRouterScrollIntentHeadHoisted(intent, this.props.commitId);
+      // A hash target lives in the document, not in this segment, so any
+      // committed segment may scroll it.
+      const hashTarget = getHashFragmentDomNode(intent.hash);
+      if (hashTarget !== null) {
+        if (consumeAppRouterScrollIntent(intent, this.props.commitId) === null) return;
+        hashTarget.scrollIntoView({ behavior: "auto" });
         return;
       }
     }
 
-    const next = findNextScrollTarget(node);
-    if (next === null) return;
-    const target = next.element;
+    if (intent.parallelSlotOwned) {
+      // An intercepted route changed a parallel slot and left this segment as
+      // it was. The slot owns the navigation's scroll signal, so consuming it
+      // here keeps this retained page from scrolling or blurring and stops the
+      // document-top fallback from doing so on the slot's behalf.
+      consumeAppRouterScrollIntent(intent, this.props.commitId);
+      return;
+    }
 
-    const consumed = consumeAppRouterScrollIntent(intent, this.props.commitId);
-    if (consumed === null) return;
+    // oxlint-disable-next-line react/no-find-dom-node -- Next's default App Router scroll handler targets wrapperless route content after commit.
+    const elements = collectRouteContentElements(findDOMNode(this));
+    // Content without a box (display: none, empty, hoisted) is not a scroll
+    // target: leave the intent for the document-top fallback.
+    if (!hasBox(elements)) return;
 
-    scrollToElement(target, consumed.hash);
-    target.focus();
+    if (consumeAppRouterScrollIntent(intent, this.props.commitId) === null) return;
+
+    if (intent.hash !== null) {
+      // The hash is missing from the navigated page: scroll the segment itself.
+      scrollFirstBoxIntoView(elements);
+    } else {
+      scrollToRouteContent(elements);
+    }
   };
 
   componentDidMount() {
