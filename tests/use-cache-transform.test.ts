@@ -371,7 +371,7 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(boundRegistration).toBeDefined();
     expect(boundRegistration).toContain('"argumentCount":0');
     // The wrapper must require the encrypted captures, bound to this reference.
-    expect(boundRegistration).toContain('"hasCaptures":true');
+    expect(boundRegistration).toContain('"captureCount":1');
     const referenceId = boundRegistration!.match(/"serverReferenceId":("[^"]+")/)?.[1];
     expect(referenceId).toBeDefined();
     expect(result!.code).toContain(
@@ -384,10 +384,10 @@ describe("plugin-rsc inline use-cache references", () => {
       /registerCachedFunction\(\$\$hoist_[^,]+_CachedSection\$\$impl,[^)]*\)/,
     )?.[0];
     expect(outerRegistration).toBeDefined();
-    expect(outerRegistration).not.toContain("hasCaptures");
+    expect(outerRegistration).not.toContain("captureCount");
   });
 
-  it("binds each inline function's captures to its own reference", async () => {
+  it("binds each inline function's exact captures to its own reference", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
     const plugin = plugins.find(
@@ -398,7 +398,7 @@ describe("plugin-rsc inline use-cache references", () => {
       `export async function Page({ tenant, label }) {`,
       `  async function getOrders() {`,
       `    "use cache";`,
-      `    return tenant;`,
+      `    return [tenant.id, tenant.region, label];`,
       `  }`,
       `  async function getStatic() {`,
       `    "use cache";`,
@@ -428,9 +428,16 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(orders).toBeDefined();
     expect(label).toBeDefined();
     expect(orders).not.toBe(label);
-    expect(result!.code).toContain(`encryptCacheCaptures(${orders}, [tenant])`);
+    // A partially captured object is one capture.
+    const ordersCall = result!.code.slice(
+      result!.code.indexOf(`encryptCacheCaptures(${orders}, [`),
+    );
+    expect(ordersCall).toMatch(/^encryptCacheCaptures\("[^"]+", \[\{[^\]]*\}, label\]\)/);
     expect(result!.code).toContain(`encryptCacheCaptures(${label}, [label])`);
-    expect(result!.code.match(/"hasCaptures":true/g)).toHaveLength(2);
+    const captureCounts = [...result!.code.matchAll(/"captureCount":(\d+)/g)].map(
+      (match) => match[1],
+    );
+    expect(captureCounts).toEqual(["2", "1"]);
   });
 
   it.each(["ssr", "client"])(

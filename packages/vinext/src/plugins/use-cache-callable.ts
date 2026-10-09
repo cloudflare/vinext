@@ -7,7 +7,7 @@ import type {
   ModuleExportMeta,
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
-import { parseAstAsync, type Plugin } from "vite";
+import { parseAst, parseAstAsync, type Plugin } from "vite";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
@@ -23,7 +23,7 @@ type Options = {
 type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
   argumentCount?: number;
-  hasCaptures?: boolean;
+  captureCount?: number;
   serverReferenceId?: string;
 };
 
@@ -182,6 +182,39 @@ function getCacheWrapperOptions(
   };
 }
 
+// plugin-rsc passes an inline function's captures to `encode` only after its
+// `runtime` code is generated. Collect each function's capture count first.
+function getInlineCaptureCounts(
+  transforms: RscTransforms,
+  code: string,
+  ast: Program,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  let hoistedName: string | undefined;
+  transforms.transformHoistInlineDirective(code, ast, {
+    directive: USE_CACHE_DIRECTIVE_CANDIDATE,
+    hoistRuntime: true,
+    noExport: true,
+    runtime: (_value, name) => {
+      hoistedName = name;
+      return "";
+    },
+    encode: (value) => {
+      const statement = parseAst(`(${value});`).body[0];
+      if (
+        hoistedName === undefined ||
+        statement?.type !== "ExpressionStatement" ||
+        statement.expression.type !== "ArrayExpression"
+      ) {
+        throw new Error(`vinext: could not read inline "use cache" captures (${value}).`);
+      }
+      counts.set(hoistedName, statement.expression.elements.length);
+      return value;
+    },
+  });
+  return counts;
+}
+
 export async function createUseCacheCallablePlugin(options: Options): Promise<Plugin> {
   const rscModulePath = resolvePluginRscModule(options.projectRoot, "@vitejs/plugin-rsc");
   const transformsPath = resolvePluginRscModule(
@@ -319,14 +352,14 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          hasCaptures: boolean,
+          captureCount: number | undefined,
         ) => {
           const variant = directiveMatch[1] ?? "";
           const secureName = secureExportName(name);
           secureExports.add(secureName);
           const wrapperOptions = {
             ...getCacheWrapperOptions(meta),
-            ...(hasCaptures ? { hasCaptures } : {}),
+            ...(captureCount === undefined ? {} : { captureCount }),
             serverReferenceId: `${reference.referenceKey}#${secureName}`,
           };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
@@ -337,21 +370,23 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          hasCaptures = false,
+          captureCount?: number,
         ) => {
-          const cached = wrap(value, name, directiveMatch, meta, hasCaptures);
+          const cached = wrap(value, name, directiveMatch, meta, captureCount);
           const secureName = secureExportName(name);
           needsReactServer = true;
           return `(${secureName} = $$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(secureName)}))`;
         };
 
-        // Like Next.js, a function that closes over values must receive its
-        // encrypted captures, bound to its own reference, as the first argument
-        // (use-cache-wrapper.ts `boundArgsLength`, encryption.ts `actionId`).
-        // For each inline function, plugin-rsc calls `decode` only when it has
-        // captures, then `runtime`, then `encode` with the same captures.
-        let capturesDecoded = false;
-        let captureReferenceId: string | undefined;
+        // Like Next.js, a function that closes over values must receive exactly
+        // its encrypted captures, bound to its own reference, as the first
+        // argument (use-cache-wrapper.ts `boundArgsLength`, encryption.ts
+        // `actionId`). plugin-rsc calls `encode` right after the same
+        // function's `runtime`.
+        const captureCounts = moduleDirective
+          ? new Map<string, number>()
+          : getInlineCaptureCounts(transforms, code, ast);
+        let encodingName: string | undefined;
         const result = moduleDirective
           ? transforms.transformWrapExport(code, ast, {
               filter: (name, meta) => {
@@ -373,33 +408,27 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
               hoistRuntime: true,
               noExport: true,
               runtime: (value, name, meta) => {
-                const hasCaptures = capturesDecoded;
-                capturesDecoded = false;
-                captureReferenceId = hasCaptures
-                  ? `${reference.referenceKey}#${secureExportName(name)}`
-                  : undefined;
+                encodingName = name;
                 return runtime(
                   value,
                   name,
                   matchUseCacheDirective(meta.directiveMatch[0]),
                   meta,
-                  hasCaptures,
+                  captureCounts.get(name),
                 );
               },
               encode: (value) => {
-                if (!captureReferenceId) {
+                const name = encodingName;
+                encodingName = undefined;
+                if (name === undefined || !captureCounts.has(name)) {
                   throw new Error(
                     `vinext: inline "use cache" captures were encoded before their function was registered (${id}).`,
                   );
                 }
-                const referenceId = captureReferenceId;
-                captureReferenceId = undefined;
+                const referenceId = `${reference.referenceKey}#${secureExportName(name)}`;
                 return `$$cacheRuntime.encryptCacheCaptures(${JSON.stringify(referenceId)}, ${value})`;
               },
-              decode: (value) => {
-                capturesDecoded = true;
-                return value;
-              },
+              decode: (value) => value,
             });
         if (!result.output.hasChanged()) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);

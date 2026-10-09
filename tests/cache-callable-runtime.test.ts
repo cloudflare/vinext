@@ -53,7 +53,7 @@ describe("cache callable Flight transport", () => {
       async (captures: unknown) => ({ child: await (captures as unknown[])[0] }),
       `test:lazy-capture:${kind}`,
       "",
-      { hasCaptures: true, serverReferenceId: `test#lazy-capture:${kind}` },
+      { captureCount: 1, serverReferenceId: `test#lazy-capture:${kind}` },
     );
 
     expect(await cached(encryptCacheCaptures(`test#lazy-capture:${kind}`, [child]))).toMatchObject({
@@ -79,7 +79,7 @@ describe("cache callable Flight transport", () => {
       },
       "test:rich-captures",
       "",
-      { hasCaptures: true, serverReferenceId: "test#rich-captures" },
+      { captureCount: 3, serverReferenceId: "test#rich-captures" },
     );
     const result = await cached(
       encryptCacheCaptures("test#rich-captures", [
@@ -214,7 +214,7 @@ describe("cache callable Flight transport", () => {
       },
       "test:captures",
       "",
-      { hasCaptures: true, serverReferenceId: "test#captures" },
+      { captureCount: 1, serverReferenceId: "test#captures" },
     );
     const result = await cached(
       encryptCacheCaptures("test#captures", [
@@ -240,7 +240,7 @@ describe("cache callable Flight transport", () => {
   ])("rejects %s for a capturing function", async (_kind, args) => {
     const fn = vi.fn(async (captures: unknown) => (captures as unknown[])[0]);
     const cached = registerCachedFunction(fn, "test:forged-captures", "", {
-      hasCaptures: true,
+      captureCount: 1,
       serverReferenceId: "test#forged-captures",
     }) as (...args: unknown[]) => Promise<unknown>;
 
@@ -253,7 +253,7 @@ describe("cache callable Flight transport", () => {
   it("rejects captures encrypted for another function", async () => {
     const fn = vi.fn(async (captures: unknown) => (captures as unknown[])[0]);
     const cached = registerCachedFunction(fn, "test:tenant", "", {
-      hasCaptures: true,
+      captureCount: 1,
       serverReferenceId: "test#tenant",
     });
     const other = encryptCacheCaptures("test#public-label", ["victim"]);
@@ -263,6 +263,27 @@ describe("cache callable Flight transport", () => {
     await expect(cached(replayed)).rejects.toThrow(/Invalid cache capture arguments/);
     expect(fn).not.toHaveBeenCalled();
     await expect(cached(encryptCacheCaptures("test#tenant", ["acme"]))).resolves.toBe("acme");
+  });
+
+  // During dev, an edited closure keeps its reference: an envelope minted
+  // before the edit must not run it with missing or extra captures.
+  it.each([
+    ["too few", ["acme"]],
+    ["too many", ["acme", "eu", "extra"]],
+  ])("rejects %s captures for the same reference", async (_kind, captures) => {
+    const fn = vi.fn(async (value: unknown) => value);
+    const cached = registerCachedFunction(fn, "test:capture-count", "", {
+      captureCount: 2,
+      serverReferenceId: "test#capture-count",
+    });
+
+    await expect(cached(encryptCacheCaptures("test#capture-count", captures))).rejects.toThrow(
+      /Invalid cache capture arguments/,
+    );
+    expect(fn).not.toHaveBeenCalled();
+    await expect(
+      cached(encryptCacheCaptures("test#capture-count", ["acme", "eu"])),
+    ).resolves.toEqual(["acme", "eu"]);
   });
 
   it("never decrypts the first argument of a function without captures", async () => {

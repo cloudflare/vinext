@@ -85,11 +85,16 @@ async function encryptCaptures(referenceId: string, captures: unknown[]): Promis
 }
 
 // Like Next.js (use-cache-wrapper.ts, `boundArgsLength`), a function that
-// closes over values always decrypts its first argument. Anything else is
-// rejected, never passed through as plaintext captures: the client must not
-// choose the closure's server values. Like encryption.ts binding bound args to
-// their action id, an envelope only decrypts for the reference it was made for.
-async function decryptCacheCaptures(value: unknown, referenceId: string): Promise<unknown[]> {
+// closes over values always decrypts its first argument into exactly that many
+// captures. Anything else is rejected, never passed through as plaintext
+// captures: the client must not choose the closure's server values. Like
+// encryption.ts binding bound args to their action id, an envelope only
+// decrypts for the reference it was made for.
+async function decryptCacheCaptures(
+  value: unknown,
+  referenceId: string,
+  captureCount: number,
+): Promise<unknown[]> {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -131,7 +136,9 @@ async function decryptCacheCaptures(value: unknown, referenceId: string): Promis
     { temporaryReferences: new Map([...files].map(([id, file]) => [`$${id}`, file])) },
     { preserveServerReferences: true },
   );
-  if (!Array.isArray(captures)) throw new Error("Invalid cache capture arguments");
+  if (!Array.isArray(captures) || captures.length !== captureCount) {
+    throw new Error("Invalid cache capture arguments");
+  }
   return captures;
 }
 
@@ -139,15 +146,15 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   fn: (...args: TArgs) => Promise<TResult>,
   id: string,
   variant: string,
-  { hasCaptures, ...options }: RegisterCachedFunctionOptions & { hasCaptures?: boolean },
+  { captureCount, ...options }: RegisterCachedFunctionOptions & { captureCount?: number },
 ): (...args: TArgs) => Promise<TResult> {
   let decryptCaptures: RegisterCachedFunctionOptions["decryptCaptures"];
-  if (hasCaptures) {
+  if (captureCount !== undefined) {
     const referenceId = options.serverReferenceId;
     if (referenceId === undefined) {
       throw new Error(`Cache function ${id} has captures but no server reference`);
     }
-    decryptCaptures = (value) => decryptCacheCaptures(value, referenceId);
+    decryptCaptures = (value) => decryptCacheCaptures(value, referenceId, captureCount);
   }
   return registerCachedFunctionBase(fn, id, variant, {
     ...options,

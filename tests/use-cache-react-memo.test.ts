@@ -223,7 +223,7 @@ describe.each(["", "private"])("use cache React render memoization (%s)", (varia
         async (captures: unknown) => ({ value: (captures as unknown[])[0] }),
         `test:react-memo:captures:${kind}:${variant}`,
         variant,
-        { hasCaptures: true, serverReferenceId: "test#react-memo:captures" },
+        { captureCount: 1, serverReferenceId: "test#react-memo:captures" },
       );
       const value = kind === "primitive" ? 1 : { label: "same" };
 
