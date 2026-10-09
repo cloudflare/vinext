@@ -19,6 +19,7 @@ import {
 } from "./app-elements.js";
 import {
   canonicalizeAppPageParams,
+  createAppPageSourcePage,
   resolveAppPagePatternStateKey,
   resolveAppPageSemanticSegmentStateKey,
   resolveAppPageTemplateStateKey,
@@ -531,21 +532,6 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
 }
 
 /**
- * Next.js keys a segment's loading boundary by its immediate child segment
- * (layout-router.tsx's TemplateContext.Provider), so the boundary stays mounted,
- * and its fallback stays hidden, while the current and target routes share the
- * path through that child, route groups and params included. The shell would
- * commit the fallback instead. A leaf loading is keyed by the page segment
- * without search params, so a search-only navigation keeps it mounted too.
- *
- * Known limitation: the shell always stops at the shallowest nested loading.
- * When that boundary is mounted, a deeper loading the navigation newly mounts
- * waits for the real response, while Next.js prefetches from where the trees
- * diverge and shows it at once. Also, any error or HTTP access fallback on
- * screen keeps the shell, so when that fallback's owner sits below the loading,
- * the loading shows where Next.js would keep the fallback.
- */
-/**
  * Payload route ids carry the concrete matched pathname, so a dynamic route is
  * found by the source page the payload names, which is built from the route's
  * tree segments. Matching the pathname instead would miss a dynamic route that
@@ -559,7 +545,7 @@ function resolveCurrentRoute(
   const route = routes.get(metadata.routeId);
   if (route !== undefined || metadata.sourcePage === null) return route;
   for (const candidate of routes.values()) {
-    if (`/${[...candidate.treeSegments, "page"].join("/")}` === metadata.sourcePage) {
+    if (createAppPageSourcePage(candidate.treeSegments) === metadata.sourcePage) {
       return candidate;
     }
   }
@@ -570,7 +556,8 @@ function resolveCurrentRoute(
  * A not-found or error boundary payload renders its fallback in place of the
  * route's tree, so none of the route's loading boundaries is mounted. A page
  * rendered through an active implicit children slot is a page tree too, while
- * a synthetic route's default or unmatched children slot keeps the shell.
+ * a synthetic route's default or unmatched children slot keeps the shell, even
+ * where Next.js would keep a loading above the slot's owner mounted.
  */
 function hasCurrentPageTree(
   elements: AppElements,
@@ -591,6 +578,21 @@ function hasCurrentPageTree(
   });
 }
 
+/**
+ * Next.js keys a segment's loading boundary by its immediate child segment
+ * (layout-router.tsx's TemplateContext.Provider), so the boundary stays mounted,
+ * and its fallback stays hidden, while the current and target routes share the
+ * path through that child, route groups and params included. The shell would
+ * commit the fallback instead. A leaf loading is keyed by the page segment
+ * without search params, so a search-only navigation keeps it mounted too.
+ *
+ * Known limitation: the shell always stops at the shallowest nested loading.
+ * When that boundary is mounted, a deeper loading the navigation newly mounts
+ * waits for the real response, while Next.js prefetches from where the trees
+ * diverge and shows it at once. Also, any error or HTTP access fallback on
+ * screen keeps the shell, so when that fallback's owner sits below the loading,
+ * the loading shows where Next.js would keep the fallback.
+ */
 function isShellLoadingBoundaryMounted(options: {
   currentElements: AppElements;
   currentParams: Readonly<Record<string, string | string[]>>;

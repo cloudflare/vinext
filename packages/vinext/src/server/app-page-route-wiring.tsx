@@ -61,6 +61,7 @@ import {
 } from "./app-rsc-render-mode.js";
 import {
   APP_PAGE_SEGMENT_KEY,
+  createAppPageSourcePage,
   resolveAppPageChildSegments,
   resolveAppPageSegmentStateKey,
   resolveAppPageTemplateStateKey,
@@ -73,7 +74,7 @@ import {
   traceGetLayoutOrPageModule,
 } from "./app-page-tracing.js";
 
-export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
+export { createAppPageSourcePage, resolveAppPageChildSegments } from "./app-page-segment-state.js";
 
 type AppPageComponentProps = {
   children?: ReactNode;
@@ -451,12 +452,6 @@ function createAppPageTemplateEntries<TModule extends AppPageModule>(
       treePosition,
     };
   });
-}
-
-export function createAppPageSourcePage(
-  routeSegments: readonly string[] | null | undefined,
-): string {
-  return `/${[...(routeSegments ?? []), "page"].join("/")}`;
 }
 
 function resolveAppPageLayoutSegmentProviderSegments(

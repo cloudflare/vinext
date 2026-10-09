@@ -23,6 +23,7 @@ import type {
   RouteManifestRoute,
   RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+import { createAppPageSourcePage } from "../packages/vinext/src/server/app-page-segment-state.js";
 import {
   createNestedBfcacheSlotSegmentId,
   deriveBfcacheSegmentIdentity,
@@ -745,7 +746,7 @@ describe("App Router optimistic routing", () => {
     // segments.
     const sourcePageFor = (routeId: string): string | null => {
       const treeSegments = routeManifest.segmentGraph.routes.get(routeId)?.treeSegments;
-      return treeSegments ? `/${[...treeSegments, "page"].join("/")}` : null;
+      return treeSegments ? createAppPageSourcePage(treeSegments) : null;
     };
     const currentMetadataFor = (
       routeId: string,
@@ -934,6 +935,17 @@ describe("App Router optimistic routing", () => {
         "/api/[resource]/[id]/page",
       ),
     ).toBe(false);
+    // The dynamic `[resource]` segment keys differently from a static `users`.
+    const staticShell = createShellTemplate("/api/users/me", "/api/users/me", 1);
+    expect(
+      canCommit(
+        staticShell,
+        "route:/api/users/123",
+        { id: "123", resource: "users" },
+        {},
+        "/api/[resource]/[id]/page",
+      ),
+    ).toBe(true);
   });
 
   it("treats a page in an active implicit children slot as a mounted page tree", () => {
