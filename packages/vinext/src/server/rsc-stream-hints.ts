@@ -145,6 +145,11 @@ export function normalizeReactFlightPreloadHints(
   let carry: Uint8Array | null = null;
   let rawBytesRemaining = 0;
   let passThrough = false;
+  // Inside a newline-framed row that cannot be a stylesheet hint, whose bytes
+  // so far are already forwarded. Carrying such a row instead would copy and
+  // rescan it on every chunk until its newline: quadratic in the row's length,
+  // and a page's client props are one row.
+  let inPlainRow = false;
 
   return stream.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
@@ -154,11 +159,24 @@ export function normalizeReactFlightPreloadHints(
           return;
         }
 
+        // Where this chunk's first unfinished row starts. Nothing is carried
+        // while inside a plain row, so `bytes` below is this chunk itself.
+        let start = 0;
+        if (inPlainRow) {
+          const end = indexOfByte(chunk, NEWLINE_BYTE, 0);
+          if (end === -1) {
+            controller.enqueue(chunk);
+            return;
+          }
+          inPlainRow = false;
+          start = end + 1;
+        }
+
         const bytes = carry === null ? chunk : concatBytes(carry, chunk);
         carry = null;
         const byteLength = bytes.byteLength;
         // Offset of the first byte not yet known to belong to a complete row.
-        let offset = 0;
+        let offset = start;
         let emittedThrough = 0;
         // Copy-on-write output: only allocate when a hint row is rewritten.
         let output = bytes;
@@ -212,7 +230,18 @@ export function normalizeReactFlightPreloadHints(
           }
 
           const newline = indexOfByte(bytes, NEWLINE_BYTE, offset);
-          if (newline === -1) break;
+          if (newline === -1) {
+            // Only an `HL` row is ever rewritten, so only a row that may still
+            // be one is carried. Any other row's bytes are forwarded now.
+            const mayBeHint =
+              tagByte === HINT_TAG_BYTE &&
+              (colon + 2 === byteLength || bytes[colon + 2] === LINK_HINT_CODE_BYTE);
+            if (!mayBeHint) {
+              inPlainRow = true;
+              offset = byteLength;
+            }
+            break;
+          }
 
           if (tagByte === HINT_TAG_BYTE && bytes[colon + 2] === LINK_HINT_CODE_BYTE) {
             const line = bytes.subarray(offset, newline + 1);

@@ -216,6 +216,44 @@ describe("RSC stream hint helpers", () => {
     ]);
   });
 
+  it("forwards a long non-hint row chunk by chunk instead of carrying it to its newline", async () => {
+    // Carrying the row would concatenate and rescan it on every chunk:
+    // quadratic in its length. A page's client props arrive as one such row.
+    const encoder = new TextEncoder();
+    const inputs = [
+      encoder.encode('0:D{"name":"page"}\n1:{"items":["'),
+      ...Array.from({ length: 2000 }, () => encoder.encode("x".repeat(1024))),
+      encoder.encode('"]}\n2:"after"\n'),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+    }
+
+    expect(chunks).toHaveLength(inputs.length);
+    for (const [index, input] of inputs.entries()) expect(chunks[index]).toBe(input);
+  });
+
+  it("still carries a row that may be a stylesheet hint when a chunk ends at its tag", async () => {
+    const stream = normalizeReactFlightPreloadHints(
+      streamFromChunks(['0:D{"name":"page"}\n:H', 'L["/assets/app.css","stylesheet"]\n']),
+    );
+
+    await expect(readStream(stream)).resolves.toBe(
+      '0:D{"name":"page"}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n'),
+    );
+  });
+
   it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
     const encoder = new TextEncoder();
     const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);
