@@ -108,7 +108,7 @@ async function clickWithHeldNavigation(
         >;
         return Array.from(cache.entries()).some(
           ([key, entry]) =>
-            new URL(key, location.origin).pathname.replace(/\.rsc$/, "") === targetPath &&
+            new URL(key, location.origin).pathname === targetPath &&
             entry.optimisticRouteShell === true &&
             entry.outcome === "cache-seeded" &&
             entry.pending === undefined,
@@ -233,6 +233,27 @@ test("a prefetched loading shell still shows the loading when the boundary's chi
   await expect(page.locator("#ancestor-shared-layout-beta")).toBeVisible({ timeout: 10_000 });
 });
 
+test("a prefetched loading shell shows the loading when the target renders the children slot's default", async ({
+  page,
+}) => {
+  // Next.js keys the default children slot as its own segment, so the boundary
+  // remounts.
+  const releaseNavigation = await clickWithHeldNavigation(page, {
+    current: "#children-slot-default-loading-a",
+    from: "/children-slot-default-loading/sub/a",
+    link: "children-slot-default-loading-b-link",
+    loading: "children-slot-default-loading-loading",
+    targetPath: "/children-slot-default-loading/sub/b",
+  });
+  // The loading wraps both the children and panel slots.
+  await expect(page.locator("#children-slot-default-loading-loading").first()).toBeVisible();
+
+  releaseNavigation();
+  await expect(page.locator("#children-slot-default-loading-panel-b")).toBeVisible({
+    timeout: 10_000,
+  });
+});
+
 test("a prefetched loading shell shows the loading when leaving a not-found page", async ({
   page,
 }) => {
@@ -269,4 +290,5 @@ test("a prefetched loading shell shows the loading when leaving a not-found page
 
   releaseNavigation();
   await expect(page.locator("#ancestor-shared-layout-two")).toBeVisible({ timeout: 10_000 });
+  expect(await shownFallbacks(page)).toBe(0);
 });

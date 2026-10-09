@@ -2,7 +2,11 @@ import { createElement, isValidElement, Suspense } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
-import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
+import type {
+  RouteManifest,
+  RouteManifestRoute,
+  RouteManifestSlotBinding,
+} from "../routing/app-route-graph.js";
 import { extractRawRoutePatternParams, matchRoutePattern } from "../routing/route-pattern.js";
 import {
   createNestedBfcacheSlotSegmentId,
@@ -42,7 +46,8 @@ export type OptimisticRouteTemplate = {
   elements: AppElements;
   /**
    * Tree position of the children loading boundary a loading shell stops at,
-   * or null when the shell stops only at a slot's loading.
+   * or null when the template is not a loading shell or the shell stops only
+   * at a slot's loading.
    */
   loadingTreePosition: number | null;
   mountedSlotsHeader: string | null;
@@ -550,12 +555,23 @@ function resolveCurrentRoute(
   return undefined;
 }
 
+function isChildrenSlotId(slotId: string): boolean {
+  const parsed = AppElementsWire.parseElementKey(slotId);
+  return parsed?.kind === "slot" && parsed.name === "children";
+}
+
+function readChildrenSlotState(
+  route: RouteManifestRoute,
+  slotId: string,
+  routeManifest: RouteManifest,
+): RouteManifestSlotBinding["state"] | undefined {
+  return routeManifest.segmentGraph.slotBindings.get(`${route.id}::${slotId}`)?.state;
+}
+
 /**
  * A not-found or error boundary payload renders its fallback in place of the
  * route's tree, so none of the route's loading boundaries is mounted. A page
- * rendered through an active implicit children slot is a page tree too, while
- * a synthetic route's default or unmatched children slot keeps the shell, even
- * where Next.js would keep a loading above the slot's owner mounted.
+ * rendered through an active implicit children slot is a page tree too.
  */
 function hasCurrentPageTree(
   elements: AppElements,
@@ -565,14 +581,26 @@ function hasCurrentPageTree(
   if (Object.keys(elements).some((key) => AppElementsWire.parseElementKey(key)?.kind === "page")) {
     return true;
   }
-  return route.slotIds.some((slotId) => {
-    const parsed = AppElementsWire.parseElementKey(slotId);
-    return (
-      parsed?.kind === "slot" &&
-      parsed.name === "children" &&
+  return route.slotIds.some(
+    (slotId) =>
+      isChildrenSlotId(slotId) &&
       Object.hasOwn(elements, slotId) &&
-      routeManifest.segmentGraph.slotBindings.get(`${route.id}::${slotId}`)?.state === "active"
-    );
+      readChildrenSlotState(route, slotId, routeManifest) === "active",
+  );
+}
+
+/**
+ * A synthetic route's default or unmatched children slot takes the place of the
+ * children segment Next.js keys the boundary by, while the route's tree
+ * segments name the slot's sub-path. So either route having one keeps the
+ * shell, even where Next.js would keep a loading above the slot's owner
+ * mounted.
+ */
+function hasInactiveChildrenSlot(route: RouteManifestRoute, routeManifest: RouteManifest): boolean {
+  return route.slotIds.some((slotId) => {
+    if (!isChildrenSlotId(slotId)) return false;
+    const state = readChildrenSlotState(route, slotId, routeManifest);
+    return state === "default" || state === "unmatched";
   });
 }
 
@@ -610,7 +638,11 @@ function isShellLoadingBoundaryMounted(options: {
   if (options.segmentFallbackShown) return false;
   const routes = options.routeManifest.segmentGraph.routes;
   const targetRoute = routes.get(options.template.routeId);
-  if (targetRoute === undefined || loadingTreePosition > targetRoute.treeSegments.length) {
+  if (
+    targetRoute === undefined ||
+    loadingTreePosition > targetRoute.treeSegments.length ||
+    hasInactiveChildrenSlot(targetRoute, options.routeManifest)
+  ) {
     return false;
   }
   const currentMetadata = AppElementsWire.readMetadata(options.currentElements);
@@ -620,7 +652,11 @@ function isShellLoadingBoundaryMounted(options: {
     return false;
   }
   const currentRoute = resolveCurrentRoute(currentMetadata, routes);
-  if (currentRoute === undefined || loadingTreePosition > currentRoute.treeSegments.length) {
+  if (
+    currentRoute === undefined ||
+    loadingTreePosition > currentRoute.treeSegments.length ||
+    hasInactiveChildrenSlot(currentRoute, options.routeManifest)
+  ) {
     return false;
   }
   if (!hasCurrentPageTree(options.currentElements, currentRoute, options.routeManifest)) {

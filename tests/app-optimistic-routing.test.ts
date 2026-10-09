@@ -968,7 +968,7 @@ describe("App Router optimistic routing", () => {
       state,
     });
     const routeManifest = manifest(
-      ["one", "two", "fallback"].map((name) =>
+      ["one", "two", "fallback", "empty"].map((name) =>
         route({
           id: `route:/f/${name}`,
           isDynamic: false,
@@ -981,6 +981,7 @@ describe("App Router optimistic routing", () => {
         childrenBinding("route:/f/one", "active"),
         childrenBinding("route:/f/two", "active"),
         childrenBinding("route:/f/fallback", "default"),
+        childrenBinding("route:/f/empty", "unmatched"),
       ],
     );
     const metadataFor = (routeId: string): AppElements =>
@@ -990,23 +991,26 @@ describe("App Router optimistic routing", () => {
         rootLayoutTreePath: "/",
         routeId,
       });
-    const template = createOptimisticRouteTemplate({
-      allowLoadingShell: true,
-      basePath: "",
-      elements: {
-        ...metadataFor("route:/f/two"),
-        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
-        [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: 0,
-        [childrenSlotId]: null,
-        "route:/f/two": createElement("p", null, "Loading"),
-      },
-      href: "/f/two",
-      interceptionContext: null,
-      mountedSlotsHeader: null,
-      routeManifest,
-    });
-    if (template === null) throw new Error("Expected optimistic route template");
-    const canCommit = (currentElements: AppElements) =>
+    const createShellTemplate = (href: string) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: {
+          ...metadataFor(`route:${href}`),
+          [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+          [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: 0,
+          [childrenSlotId]: null,
+          [`route:${href}`]: createElement("p", null, "Loading"),
+        },
+        href,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const canCommit = (currentElements: AppElements, template = createShellTemplate("/f/two")) =>
       canCommitOptimisticRouteTemplate({
         currentElements,
         currentLayoutIds: [],
@@ -1019,15 +1023,20 @@ describe("App Router optimistic routing", () => {
       });
 
     // A loading at app/ wraps the shared `f` child segment.
-    expect(
-      canCommit({ ...metadataFor("route:/f/one"), [childrenSlotId]: createElement("p") }),
-    ).toBe(false);
-    // A synthetic route's default children slot keeps the shell, as does a
-    // payload without the children slot entry.
+    const activeCurrent = { ...metadataFor("route:/f/one"), [childrenSlotId]: createElement("p") };
+    expect(canCommit(activeCurrent)).toBe(false);
+    // A synthetic route's default or unmatched children slot keeps the shell,
+    // as does a payload without the children slot entry.
     expect(
       canCommit({ ...metadataFor("route:/f/fallback"), [childrenSlotId]: createElement("p") }),
     ).toBe(true);
+    expect(
+      canCommit({ ...metadataFor("route:/f/empty"), [childrenSlotId]: createElement("p") }),
+    ).toBe(true);
     expect(canCommit(metadataFor("route:/f/one"))).toBe(true);
+    // So does a target whose children slot renders its default or nothing.
+    expect(canCommit(activeCurrent, createShellTemplate("/f/fallback"))).toBe(true);
+    expect(canCommit(activeCurrent, createShellTemplate("/f/empty"))).toBe(true);
   });
 
   it("preserves raw encoded catch-all params in optimistic payloads", () => {
