@@ -546,6 +546,27 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
  * the loading shows where Next.js would keep the fallback.
  */
 /**
+ * Payload route ids carry the concrete matched pathname, so a dynamic route is
+ * found by the source page the payload names, which is built from the route's
+ * tree segments. Matching the pathname instead would miss a dynamic route that
+ * shares a prefix with a static one, since the optimistic matcher does not
+ * backtrack.
+ */
+function resolveCurrentRoute(
+  metadata: { routeId: string; sourcePage: string | null },
+  routes: ReadonlyMap<string, RouteManifestRoute>,
+): RouteManifestRoute | undefined {
+  const route = routes.get(metadata.routeId);
+  if (route !== undefined || metadata.sourcePage === null) return route;
+  for (const candidate of routes.values()) {
+    if (`/${[...candidate.treeSegments, "page"].join("/")}` === metadata.sourcePage) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/**
  * A not-found or error boundary payload renders its fallback in place of the
  * route's tree, so none of the route's loading boundaries is mounted. A page
  * rendered through an active implicit children slot is a page tree too, while
@@ -598,17 +619,7 @@ function isShellLoadingBoundaryMounted(options: {
   if (currentMetadata.interception !== null || currentMetadata.interceptionContext !== null) {
     return false;
   }
-  // Payload route ids carry the concrete matched pathname, so a dynamic route
-  // is found by matching that path against the manifest.
-  const currentRoute =
-    routes.get(currentMetadata.routeId) ??
-    (currentMetadata.routeId.startsWith("route:/")
-      ? matchOptimisticRouteManifestRoute({
-          basePath: "",
-          href: currentMetadata.routeId.slice("route:".length),
-          routeManifest: options.routeManifest,
-        })?.route
-      : undefined);
+  const currentRoute = resolveCurrentRoute(currentMetadata, routes);
   if (currentRoute === undefined || loadingTreePosition > currentRoute.treeSegments.length) {
     return false;
   }

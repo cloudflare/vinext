@@ -727,16 +727,42 @@ describe("App Router optimistic routing", () => {
         pattern: "/p/:id/b",
         patternParts: ["p", ":id", "b"],
       }),
+      route({
+        id: "route:/api/users/me",
+        isDynamic: false,
+        pattern: "/api/users/me",
+        patternParts: ["api", "users", "me"],
+      }),
+      route({
+        id: "route:/api/:resource/:id",
+        isDynamic: true,
+        paramNames: ["resource", "id"],
+        pattern: "/api/:resource/:id",
+        patternParts: ["api", ":resource", ":id"],
+      }),
     ]);
-    const currentMetadataFor = (routeId: string): AppElements =>
+    // Real payloads name their source page, built from the route's tree
+    // segments.
+    const sourcePageFor = (routeId: string): string | null => {
+      const treeSegments = routeManifest.segmentGraph.routes.get(routeId)?.treeSegments;
+      return treeSegments ? `/${[...treeSegments, "page"].join("/")}` : null;
+    };
+    const currentMetadataFor = (
+      routeId: string,
+      sourcePage = sourcePageFor(routeId),
+    ): AppElements =>
       AppElementsWire.createMetadataEntries({
         interceptionContext: null,
         layoutIds: [],
         rootLayoutTreePath: "/",
         routeId,
+        sourcePage,
       });
-    const currentElementsFor = (routeId: string): AppElements => ({
-      ...currentMetadataFor(routeId),
+    const currentElementsFor = (
+      routeId: string,
+      sourcePage = sourcePageFor(routeId),
+    ): AppElements => ({
+      ...currentMetadataFor(routeId, sourcePage),
       [`page:${routeId.slice("route:".length)}`]: null,
     });
     const createShellTemplate = (
@@ -769,9 +795,10 @@ describe("App Router optimistic routing", () => {
       currentRouteId: string,
       currentParams: Record<string, string> = {},
       targetRouteParams: Record<string, string> = {},
+      currentSourcePage = sourcePageFor(currentRouteId),
     ) =>
       canCommitOptimisticRouteTemplate({
-        currentElements: currentElementsFor(currentRouteId),
+        currentElements: currentElementsFor(currentRouteId, currentSourcePage),
         currentLayoutIds: [],
         currentParams,
         routeManifest,
@@ -880,15 +907,33 @@ describe("App Router optimistic routing", () => {
     const leafShell = createShellTemplate("/s/two", "/s/two", 3);
     expect(canCommit(leafShell, "route:/s/one")).toBe(true);
     expect(canCommit(leafShell, "route:/s/two")).toBe(false);
+    // Payload route ids carry the concrete matched pathname, so a dynamic
+    // current route is found by its source page.
     const dynamicLeafShell = createShellTemplate("/p/:id/a", "/p/1/a", 3);
-    expect(canCommit(dynamicLeafShell, "route:/p/1/a", { id: "1" }, { id: "1" })).toBe(false);
-    expect(canCommit(dynamicLeafShell, "route:/p/2/a", { id: "2" }, { id: "1" })).toBe(true);
+    const pageA = "/p/[id]/a/page";
+    expect(canCommit(dynamicLeafShell, "route:/p/1/a", { id: "1" }, { id: "1" }, pageA)).toBe(
+      false,
+    );
+    expect(canCommit(dynamicLeafShell, "route:/p/2/a", { id: "2" }, { id: "1" }, pageA)).toBe(true);
 
     // The child segment's params are part of its key.
     const dynamicShell = createShellTemplate("/p/:id/a", "/p/1/a", 1);
-    // Payload route ids carry the concrete matched pathname.
-    expect(canCommit(dynamicShell, "route:/p/1/b", { id: "1" }, { id: "1" })).toBe(false);
-    expect(canCommit(dynamicShell, "route:/p/2/b", { id: "2" }, { id: "1" })).toBe(true);
+    const pageB = "/p/[id]/b/page";
+    expect(canCommit(dynamicShell, "route:/p/1/b", { id: "1" }, { id: "1" }, pageB)).toBe(false);
+    expect(canCommit(dynamicShell, "route:/p/2/b", { id: "2" }, { id: "1" }, pageB)).toBe(true);
+
+    // A dynamic route sharing a prefix with a static one is still found, even
+    // though the optimistic matcher does not backtrack out of `users`.
+    const rootShell = createShellTemplate("/api/:resource/:id", "/api/posts/5", 0);
+    expect(
+      canCommit(
+        rootShell,
+        "route:/api/users/123",
+        { id: "123", resource: "users" },
+        { id: "5", resource: "posts" },
+        "/api/[resource]/[id]/page",
+      ),
+    ).toBe(false);
   });
 
   it("treats a page in an active implicit children slot as a mounted page tree", () => {
