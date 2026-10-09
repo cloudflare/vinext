@@ -4551,6 +4551,46 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it.each([
+    [
+      "an assignment",
+      "[getServerSideProps = helper, helper = secret, live] = [];",
+      "[, , live] = [];",
+    ],
+    [
+      "a loop head",
+      "for ([getServerSideProps = helper, helper = secret, live] of [[]]);",
+      "for ([, , live] of [[]]);",
+    ],
+  ])("prunes pattern targets in %s that die in a later pass", (_label, write, kept) => {
+    const code = `import secret from './secret';
+let getServerSideProps, helper, live;
+${write}
+export { getServerSideProps };
+export default function Page() { return live; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain(kept);
+    expect(result).not.toContain("./secret");
+    expect(result).not.toMatch(/\bhelper\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a binding read by a switch discriminant next to a case-scoped shadow", () => {
+    const code = `
+import secret from './secret';
+if (flag) var loader = secret;
+switch (consume(loader)) { case 0: let loader; }
+export { loader as getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("import secret from './secret';");
+    expect(result).toContain("if (flag) var loader = secret;");
+    expect(result).toContain("switch (consume(loader))");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("keeps nested assignments to shadowing locals", () => {
     const code = `
 import { visible } from './visible';

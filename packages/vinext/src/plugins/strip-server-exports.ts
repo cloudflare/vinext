@@ -365,7 +365,7 @@ function isAssignmentTargetIdentifier(node: PositionedNode, left: PositionedNode
 }
 
 function findLexicalScope(ancestors: PositionedNode[]): PositionedNode | undefined {
-  return [...ancestors]
+  const scope = [...ancestors]
     .reverse()
     .find((ancestor) =>
       [
@@ -377,6 +377,11 @@ function findLexicalScope(ancestors: PositionedNode[]): PositionedNode | undefin
         "StaticBlock",
       ].includes(ancestor.type),
     );
+  // A switch's lexical scope covers its cases, not its discriminant.
+  if (scope?.type === "SwitchStatement") {
+    return { ...scope, start: scope.discriminant.end as number } as PositionedNode;
+  }
+  return scope;
 }
 
 export function validatePageExports(code: string): void {
@@ -451,9 +456,13 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   // only pass ranges strictly inside their own edit, so this cannot recurse
   // into the edit being rendered.
   const renderRange = (start: number, end: number): string => {
-    const nested = edits
-      .filter((edit) => edit.start >= start && edit.end <= end)
-      .sort((left, right) => left.start - right.start || right.end - left.end);
+    const nested = [
+      ...new Map(
+        edits
+          .filter((edit) => edit.start >= start && edit.end <= end)
+          .map((edit) => [`${edit.start}:${edit.end}`, edit]),
+      ).values(),
+    ].sort((left, right) => left.start - right.start || right.end - left.end);
     let rendered = "";
     let cursor = start;
     for (const edit of nested) {
@@ -477,7 +486,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     /** A `for…in/of` loop whose head writes the bindings. */
     loop?: boolean;
   }> = [];
-  const removedAssignments = new Set<PositionedNode>();
+  // How many target names each assignment was last rewritten for: a pattern
+  // is rewritten again as more of its targets die in later passes.
+  const rewrittenAssignments = new Map<PositionedNode, number>();
 
   for (const statement of statements) {
     const declaration =
@@ -752,9 +763,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
         names.filter((name) => forcedBindings.has(name) || deadBindings.has(name)),
       );
       if (removableNames.size === 0) continue;
-      if (removedAssignments.has(expression)) continue;
+      if ((rewrittenAssignments.get(expression) ?? 0) >= removableNames.size) continue;
+      rewrittenAssignments.set(expression, removableNames.size);
       if (loop) {
-        removedAssignments.add(expression);
         const head = expression.left as PositionedNode;
         const pattern =
           head.type === "VariableDeclaration" ? (head.declarations[0].id as PositionedNode) : head;
@@ -788,7 +799,6 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           : null;
       const right = expression.right as PositionedNode;
       const renderRight = () => renderRange(right.start, right.end);
-      removedAssignments.add(expression);
       const target = statement ?? expression;
       if (renderedLeft) {
         for (const part of prunedPatternParts(left, removableNames)) {
