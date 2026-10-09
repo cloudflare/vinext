@@ -4,6 +4,7 @@ import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeToRoot, relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
+import { isForeignNodeModule } from "../utils/package-name.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { collectBindingNames, forEachAstChild, stringLiteralValue, walkAst } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
@@ -526,7 +527,9 @@ export async function transformNextDynamicPreloadMetadata(
   return magicStringTransformResult(output);
 }
 
-export function createDynamicPreloadMetadataPlugin(): Plugin {
+export function createDynamicPreloadMetadataPlugin(
+  getTranspiledPackages: () => readonly string[],
+): Plugin {
   let root = toSlash(process.cwd());
   let isBuild = false;
 
@@ -540,11 +543,10 @@ export function createDynamicPreloadMetadataPlugin(): Plugin {
       isBuild = config.command === "build";
     },
     transform: {
-      // node_modules is NOT excluded: Next.js runs its next/dynamic transform
-      // over third-party code in every App Router layer, so a library's
-      // dynamic() boundaries get their CSS linked server-side too. The native
-      // `code` filter keeps this cheap — modules that never mention
-      // next/dynamic don't reach the JS handler.
+      // node_modules can't be excluded here: packages in `transpilePackages`
+      // are app code to Next.js (see the handler). The native `code` filter
+      // keeps this cheap — modules that never mention next/dynamic don't reach
+      // the JS handler.
       filter: {
         id: /\.(tsx?|jsx?|mjs)$/,
         code: "next/dynamic",
@@ -552,9 +554,17 @@ export function createDynamicPreloadMetadataPlugin(): Plugin {
       async handler(code, id) {
         if (id.startsWith("\0")) return null;
         if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
-        // The preload map only exists in production builds, so dev metadata is
-        // unused; skip dependencies (including pre-bundled ones) there.
-        if (!isBuild && id.includes("node_modules")) return null;
+        // Like Turbopack (Next.js 16's default bundler), only transform
+        // dependencies listed in `transpilePackages`; other node_modules code is
+        // foreign and keeps its dynamic() calls untouched. In dev, skip every
+        // dependency (including pre-bundled ones): the preload map only exists
+        // in production builds, so the metadata would be unused.
+        if (
+          id.includes("node_modules") &&
+          (!isBuild || isForeignNodeModule(id, getTranspiledPackages()))
+        ) {
+          return null;
+        }
 
         const result = await transformNextDynamicPreloadMetadata(
           code,

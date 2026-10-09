@@ -33,7 +33,10 @@ import {
   computeDynamicImportPreloads,
   computeLazyChunks,
 } from "../packages/vinext/src/utils/lazy-chunks.js";
-import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
+import {
+  createDynamicPreloadMetadataPlugin,
+  transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata,
+} from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
 import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
 import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
@@ -2933,6 +2936,64 @@ describe("next/dynamic preload metadata transform", () => {
     expect(result?.code).toContain(
       `loadableGenerated: { modules: ["../../packages/ui/src/hero-banner.tsx"] }`,
     );
+  });
+});
+
+describe("next/dynamic preload metadata plugin: node_modules call sites", () => {
+  const root = path.resolve("/repo");
+  const code = [
+    `import dynamic from "next/dynamic";`,
+    `const Widget = dynamic(() => import("./widget.js"));`,
+  ].join("\n");
+
+  async function transformAs(command: "build" | "serve", id: string) {
+    const plugin = createDynamicPreloadMetadataPlugin(() => ["transpiled-lib"]);
+    (plugin.configResolved as (config: { root: string; command: string }) => void)({
+      root,
+      command,
+    });
+    const { handler } = plugin.transform as {
+      handler: (this: unknown, code: string, id: string) => Promise<{ code: string } | null>;
+    };
+    return handler.call(
+      {
+        resolve: async (_specifier: string, importer: string) => ({
+          id: path.join(path.dirname(importer), "widget.js"),
+        }),
+      },
+      code,
+      id,
+    );
+  }
+
+  // Turbopack (Next.js 16's default bundler) treats node_modules as foreign code
+  // unless the package is in transpilePackages, and only runs its next/dynamic
+  // transform on non-foreign code: crates/next-core/src/util.rs
+  // (foreign_code_context_condition) and next_{client,server}/transforms.rs.
+  it("adds metadata to a call site in a transpilePackages dependency", async () => {
+    const result = await transformAs(
+      "build",
+      path.join(
+        root,
+        "node_modules/.pnpm/transpiled-lib@1.0.0/node_modules/transpiled-lib/host.js",
+      ),
+    );
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["node_modules/.pnpm/transpiled-lib@1.0.0/node_modules/transpiled-lib/widget.js"] }`,
+    );
+  });
+
+  it("leaves a call site in a foreign dependency untouched", async () => {
+    const result = await transformAs("build", path.join(root, "node_modules/foreign-lib/host.js"));
+    expect(result).toBeNull();
+  });
+
+  it("skips dependencies in dev, where the preload map does not exist", async () => {
+    const result = await transformAs(
+      "serve",
+      path.join(root, "node_modules/transpiled-lib/host.js"),
+    );
+    expect(result).toBeNull();
   });
 });
 

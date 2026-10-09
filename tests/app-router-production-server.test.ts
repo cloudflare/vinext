@@ -924,8 +924,8 @@ describe("App Router Production server (startProdServer)", () => {
       markerId: "out-of-root-dynamic-banner",
     },
     {
-      // Next.js runs its next/dynamic transform over node_modules in App Router
-      // layers, so a library's own dynamic() boundary gets its CSS linked too.
+      // A dynamic() call site in a `transpilePackages` dependency is app code to
+      // Next.js, so the library's own boundary gets its CSS linked too.
       label: "a dynamic() call site inside node_modules",
       route: "/nextjs-compat/dynamic/node-modules-call-site",
       moduleSuffix: "/fake-css-module-lib/hosted-banner.js",
