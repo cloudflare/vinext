@@ -1,4 +1,4 @@
-import { postPath, posts, SITE_URL } from "../_source";
+import { blogLastModified, postPath, posts, SITE_URL } from "../_source";
 
 export const dynamic = "force-static";
 
@@ -42,7 +42,7 @@ export function GET() {
     <description>Release notes, deep dives, and engineering updates from the Vinext team.</description>
     <language>en-us</language>
     <atom:link href="${SITE_URL}/blog/feed.xml" rel="self" type="application/rss+xml" />
-${published[0] ? `    <lastBuildDate>${rfc822(published[0].updated ?? published[0].date)}</lastBuildDate>\n` : ""}${items}
+${blogLastModified ? `    <lastBuildDate>${rfc822(blogLastModified)}</lastBuildDate>\n` : ""}${items}
   </channel>
 </rss>
 `;

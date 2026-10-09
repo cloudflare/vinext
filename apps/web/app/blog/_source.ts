@@ -47,6 +47,15 @@ type PostModule = {
 const modules = import.meta.glob<PostModule>("../../content/blog/*.md", { eager: true });
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const FRONTMATTER_KEYS = new Set([
+  "title",
+  "description",
+  "date",
+  "updated",
+  "authors",
+  "tags",
+  "draft",
+]);
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function fail(file: string, message: string): never {
@@ -69,8 +78,14 @@ function optionalString(
 
 function date(frontmatter: Record<string, unknown>, key: string, file: string): string | undefined {
   const value = optionalString(frontmatter, key, file);
-  if (value !== undefined && !DATE_PATTERN.test(value)) {
-    fail(file, `requires ${key} to be a YYYY-MM-DD date string`);
+  // Round-trip through Date so impossible dates such as 2026-02-30 are rejected too.
+  if (
+    value !== undefined &&
+    (!DATE_PATTERN.test(value) ||
+      Number.isNaN(Date.parse(`${value}T00:00:00Z`)) ||
+      new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value)
+  ) {
+    fail(file, `requires ${key} to be a real YYYY-MM-DD date`);
   }
   return value;
 }
@@ -108,6 +123,9 @@ const allPosts = Object.entries(modules)
     if (!SLUG_PATTERN.test(slug)) {
       throw new Error(`${file} must be named with lowercase words separated by hyphens`);
     }
+    // Reject unknown keys so a typo such as `darft: true` can't publish a draft.
+    const unknown = Object.keys(frontmatter).filter((key) => !FRONTMATTER_KEYS.has(key));
+    if (unknown.length > 0) fail(file, `has unsupported keys: ${unknown.join(", ")}`);
     if (frontmatter.draft !== undefined && typeof frontmatter.draft !== "boolean") {
       fail(file, "requires draft to be a boolean");
     }
@@ -130,6 +148,15 @@ const allPosts = Object.entries(modules)
 export const posts = allPosts.filter(
   (post) => !post.draft || process.env.NODE_ENV === "development",
 );
+
+/** Most recent publish or edit date across published posts, for the feed and sitemap. */
+export const blogLastModified = posts
+  .filter((post) => !post.draft)
+  .map((post) => post.updated ?? post.date)
+  .reduce<string | undefined>(
+    (latest, value) => (latest && latest > value ? latest : value),
+    undefined,
+  );
 
 export const postsBySlug = Object.fromEntries(posts.map((post) => [post.slug, post]));
 

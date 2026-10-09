@@ -8,8 +8,10 @@ vi.mock("../apps/web/app/blog/_source", () => ({
   posts: [
     { slug: "draft-post", date: "2026-10-10", draft: true },
     { slug: "vinext-1-1", date: "2026-10-08", draft: false },
-    { slug: "vinext-1-0", date: "2026-09-28", updated: "2026-09-30", draft: false },
+    { slug: "vinext-1-0", date: "2026-09-28", updated: "2026-10-12", draft: false },
   ],
+  // vinext-1-0 was edited after vinext-1-1 was published.
+  blogLastModified: "2026-10-12",
   postPath: (post: { slug: string }) => `/blog/${post.slug}`,
 }));
 
@@ -70,6 +72,12 @@ describe("vinext.dev SEO metadata", () => {
       "https://vinext.dev/docs/guides/caching",
       "https://vinext.dev/docs/reference/differences",
     ]);
+  });
+
+  it("dates the blog by its latest publish or edit, not its newest post", () => {
+    expect(sitemap().find(({ url }) => url === "https://vinext.dev/blog")?.lastModified).toBe(
+      "2026-10-12",
+    );
   });
 });
 

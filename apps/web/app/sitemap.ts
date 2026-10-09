@@ -1,5 +1,5 @@
 import type { MetadataRoute } from "next";
-import { postPath, posts } from "./blog/_source";
+import { blogLastModified, postPath, posts } from "./blog/_source";
 import { docs } from "./docs/_source";
 
 export default function sitemap(): MetadataRoute.Sitemap {
@@ -21,7 +21,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: "https://vinext.dev/blog",
-      lastModified: posts[0] ? (posts[0].updated ?? posts[0].date) : undefined,
+      lastModified: blogLastModified,
       changeFrequency: "weekly",
       priority: 0.8,
     },
