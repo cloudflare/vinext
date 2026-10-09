@@ -563,7 +563,10 @@ async function resolvesToStaticExport(
     dotenvModule.loadDotenv({ root, mode: "production" });
     let mode = "production";
     let inline: Awaited<ReturnType<typeof findVinextNextConfigInPlugins>> = null;
-    let envDir: string | false = root;
+    // Like the plugin, the Vite config's root decides where next.config and
+    // the default envDir live, while an explicit envDir resolves from the CLI root.
+    let configRoot = root;
+    let envDir: string | false | undefined;
     if (viteConfigPath) {
       try {
         const { loadConfigFromFile } = await import("vite");
@@ -574,6 +577,9 @@ async function resolvesToStaticExport(
           "silent",
         );
         if (typeof loaded?.config.mode === "string") mode = loaded.config.mode;
+        if (typeof loaded?.config.root === "string") {
+          configRoot = path.resolve(root, loaded.config.root);
+        }
         const configuredEnvDir = loaded?.config.envDir;
         if (configuredEnvDir === false) envDir = false;
         else if (typeof configuredEnvDir === "string")
@@ -584,10 +590,10 @@ async function resolvesToStaticExport(
         // next.config still decides.
       }
     }
-    if (envDir !== false) dotenvModule.loadDotenv({ root: envDir, mode });
+    if (envDir !== false) dotenvModule.loadDotenv({ root: envDir ?? configRoot, mode });
     const nextConfig = inline
       ? await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD)
-      : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+      : await loadNextConfig(configRoot, PHASE_PRODUCTION_BUILD);
     return nextConfig?.output === "export";
   } catch {
     return false;

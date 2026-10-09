@@ -1389,6 +1389,24 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       isStaticExport: true,
     },
     {
+      name: "a next.config under the Vite config's root",
+      files: {
+        "vite.config.ts": 'export default { root: "web" };\n',
+        "web/next.config.mjs": 'export default { output: "export" };\n',
+      },
+      isStaticExport: true,
+    },
+    {
+      name: "an output set from .env.production under the Vite config's root",
+      files: {
+        "web/.env.production": "STATIC_EXPORT=1\n",
+        "vite.config.ts": 'export default { root: "web" };\n',
+        "web/next.config.mjs":
+          'export default process.env.STATIC_EXPORT ? { output: "export" } : {};\n',
+      },
+      isStaticExport: true,
+    },
+    {
       name: "a commented-out output",
       files: { "next.config.mjs": '// output: "export",\nexport default {};\n' },
       isStaticExport: false,
