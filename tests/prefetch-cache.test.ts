@@ -2761,6 +2761,24 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse("/download?doc=note", null, null)).toBeNull();
   });
 
+  it("accepts a Flight content-type regardless of case", async () => {
+    const rscUrl = "/mixed-case?_rsc=mixed";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "Text/X-Component" } })),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+    expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+  });
+
   it.each([["text/plain; charset=utf-8"], ["application/octet-stream"], [null]])(
     "accepts any successful static export prefetch response (content-type %s)",
     async (contentType) => {

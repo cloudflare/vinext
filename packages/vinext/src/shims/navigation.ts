@@ -1496,7 +1496,10 @@ function isFlightPrefetchResponse(response: Response): boolean {
   if (process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export") {
     return true;
   }
-  return response.headers.get("content-type")?.startsWith(VINEXT_RSC_CONTENT_TYPE) === true;
+  // MIME types are case-insensitive (RFC 9110 §8.3.1).
+  return (
+    response.headers.get("content-type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE) === true
+  );
 }
 
 /**
