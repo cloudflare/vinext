@@ -175,6 +175,18 @@ const imageConfig: ImageConfig | undefined = vinextConfig?.images
     }
   : undefined;
 
+/**
+ * Whether the request stage serves this request as a client build file
+ * outside `_next/static`. Such responses resolve no route, so the Worker
+ * keeps their ASSETS cache policy out of route cacheability admission.
+ */
+export function isPagesClientBuildFileRequest(request: Request): boolean {
+  return (
+    (request.method === "GET" || request.method === "HEAD") &&
+    resolveClientBuildFile(new URL(request.url).pathname, basePath, clientBuildFiles) !== null
+  );
+}
+
 /** Run the request-time stage with a host-owned response dispatcher. */
 export function handleRequestStage(
   request: Request,

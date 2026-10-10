@@ -241,6 +241,8 @@ async function handleRequest(
 
   // Client build files outside `_next/static` are build output like the
   // hashed assets, so serve them before middleware when the Worker runs first.
+  // They resolve no application route, so they keep the ASSETS cache policy
+  // instead of passing through route cacheability admission.
   if (assets && (request.method === "GET" || request.method === "HEAD")) {
     const clientBuildFile = resolveClientBuildFile(
       url.pathname,
@@ -248,8 +250,7 @@ async function handleRequest(
       __workerClientBuildFiles,
     );
     if (clientBuildFile) {
-      const response = await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
-      return finalizeCacheabilityResponse ? finalizeCacheabilityResponse(response, ctx) : response;
+      return await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
     }
   }
 

@@ -96,7 +96,7 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   __ensureInstrumentation: mocks.ensureInstrumentation,
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
-  clientBuildFiles: new Set(["/remoteEntry.js"]),
+  clientBuildFiles: new Set(["/remoteEntry.js", "/plugin file.js"]),
   hasMiddleware: false,
   hasRequestAwareDocument: false,
   matchApiRoute: mocks.matchApiRoute,
@@ -976,5 +976,46 @@ describe("Pages Worker request stage", () => {
     expect(fetchAsset).toHaveBeenCalledOnce();
     expect(mocks.runMiddleware).not.toHaveBeenCalled();
     expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  it("matches percent-encoded client build file names", async () => {
+    const fetchAsset = vi.fn(
+      async (request: Request) => new Response(new URL(request.url).pathname),
+    );
+
+    const response = await worker.fetch(new Request("https://example.com/plugin%20file.js"), {
+      ASSETS: { fetch: fetchAsset },
+    });
+
+    await expect(response.text()).resolves.toBe("/plugin%20file.js");
+    expect(mocks.runMiddleware).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ASSETS cache policy of client build files under completed admission", async () => {
+    setCdnCacheAdapter({
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    });
+    const fetchAsset = vi.fn(
+      async () =>
+        new Response("export {};", {
+          headers: { "Cache-Control": "public, max-age=0, must-revalidate" },
+        }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/remoteEntry.js"),
+      { ASSETS: { fetch: fetchAsset } },
+      { waitUntil() {} },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    await expect(response.text()).resolves.toBe("export {};");
   });
 });
