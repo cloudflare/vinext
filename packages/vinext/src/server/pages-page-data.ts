@@ -992,7 +992,14 @@ export function matchesPagesStaticPath(
       if (optional && value.length === 0 && actual === undefined) {
         return true;
       }
-      return Array.isArray(actual) && value.join("/") === actual.join("/");
+      // Compare element-wise: Next.js escapes each element's `/` when building
+      // the prerendered pathname, so `["a", "b"]` (`/a/b`) and `["a/b"]`
+      // (`/a%2Fb`) are distinct paths and must not admit each other.
+      return (
+        Array.isArray(actual) &&
+        value.length === actual.length &&
+        value.every((part, index) => String(part) === String(actual[index]))
+      );
     }
     return String(value) === String(actual);
   });

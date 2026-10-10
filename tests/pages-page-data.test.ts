@@ -719,6 +719,40 @@ describe("pages page data", () => {
     ).toBe(false);
   });
 
+  it("keeps catch-all elements distinct from slash-containing elements", () => {
+    // Next.js prerenders `["public", "item"]` as `/public/item` and
+    // `["public/item"]` as `/public%2Fitem`; neither admits the other.
+    const routeParams = getPagesRouteParams("/[...slug]");
+    const listed = { params: { slug: ["public", "item"] } };
+    const listedSlash = { params: { slug: ["public/item"] } };
+
+    expect(
+      matchesPagesStaticPath(listed, { slug: ["public", "item"] }, routeParams, "/public/item"),
+    ).toBe(true);
+    expect(
+      matchesPagesStaticPath(listed, { slug: ["public/item"] }, routeParams, "/public%2Fitem"),
+    ).toBe(false);
+    expect(
+      matchesPagesStaticPath(listedSlash, { slug: ["public/item"] }, routeParams, "/public%2Fitem"),
+    ).toBe(true);
+    expect(
+      matchesPagesStaticPath(
+        listedSlash,
+        { slug: ["public", "item"] },
+        routeParams,
+        "/public/item",
+      ),
+    ).toBe(false);
+    expect(
+      matchesPagesStaticPath(
+        listed,
+        { slug: ["public/item"] },
+        getPagesRouteParams("/[[...slug]]"),
+        "/public%2Fitem",
+      ),
+    ).toBe(false);
+  });
+
   it("renders unlisted fallback false paths in preview mode without caching them", async () => {
     const isrSet = vi.fn(async () => {});
     const result = await resolvePagesPageData(
