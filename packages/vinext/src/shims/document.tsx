@@ -99,7 +99,10 @@ export class Head extends React.Component<HeadProps> {
 }
 
 export function Main(): React.ReactElement {
-  return <div id="__next" dangerouslySetInnerHTML={{ __html: "__NEXT_MAIN__" }} />;
+  // Like Next.js's body render target, the placeholder is markup that React
+  // escapes out of text and attribute values, so request data rendered by a
+  // custom Document can never be mistaken for the <Main /> position.
+  return <div id="__next" dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_MAIN__ -->" }} />;
 }
 
 // oxlint-disable-next-line no-redeclare, typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field

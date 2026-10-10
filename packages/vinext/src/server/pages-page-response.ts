@@ -34,6 +34,7 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
+  injectDocumentNextScripts,
 } from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
@@ -359,7 +360,7 @@ async function buildPagesShellHtml(
       renderedDocument.props,
       { configuredCrossOrigin: options.crossOrigin },
     );
-    html = html.replace("__NEXT_MAIN__", bodyMarker);
+    html = html.replace("<!-- __NEXT_MAIN__ -->", bodyMarker);
     // Next.js renders the collected `next/head` array before children declared
     // inside a custom Document's <Head>. Insert it after the opening tag so the
     // default charset remains the first element even when <Head> has props.
@@ -375,11 +376,7 @@ async function buildPagesShellHtml(
         `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n</head>`,
       );
     }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
-    if (!html.includes("__NEXT_DATA__")) {
-      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
-    }
-    return html;
+    return injectDocumentNextScripts(html, generatedNextDataScript);
   }
 
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's

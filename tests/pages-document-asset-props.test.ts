@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
+  injectDocumentNextScripts,
   markDocumentAssetPropsProtectedTags,
   stripDocumentAssetPropsProtectionMarkers,
 } from "../packages/vinext/src/server/pages-document-asset-props.js";
@@ -75,5 +76,33 @@ describe("Pages Document asset props", () => {
     expect(applied).toContain('nonce="head-nonce"');
     expect(applied).toContain('crossorigin="use-credentials"');
     expect(applied).not.toContain("next-script-nonce");
+  });
+
+  describe("injectDocumentNextScripts", () => {
+    const scripts = '<script id="__NEXT_DATA__" type="application/json">{}</script>';
+
+    it("replaces the NextScript placeholder", () => {
+      expect(
+        injectDocumentNextScripts(
+          "<html><body><span><!-- __NEXT_SCRIPTS__ --></span></body></html>",
+          scripts,
+        ),
+      ).toBe(`<html><body><span>${scripts}</span></body></html>`);
+    });
+
+    it("appends before </body> when request data merely contains __NEXT_DATA__", () => {
+      const html =
+        '<html><body data-route="/?probe=__NEXT_DATA__&amp;x= id=&quot;__NEXT_DATA__&quot;">' +
+        "__NEXT_DATA__</body></html>";
+      expect(injectDocumentNextScripts(html, scripts)).toBe(
+        html.replace("</body>", `  ${scripts}\n</body>`),
+      );
+    });
+
+    it("leaves a Document that renders its own __NEXT_DATA__ script unchanged", () => {
+      const html =
+        '<html><body><script id="__NEXT_DATA__" type="application/json">{"page":"/"}</script></body></html>';
+      expect(injectDocumentNextScripts(html, scripts)).toBe(html);
+    });
   });
 });

@@ -27,6 +27,7 @@ import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
+  injectDocumentNextScripts,
   markDocumentAssetPropsProtectedTags,
   stripDocumentAssetPropsProtectionMarkers,
   type DocumentAssetProps,
@@ -463,8 +464,8 @@ async function streamPageToResponseImpl(
       renderedDocument.props,
       "next-script",
     );
-    // Replace __NEXT_MAIN__ with our stream marker
-    docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
+    // Replace the <Main /> placeholder with our stream marker
+    docHtml = docHtml.replace("<!-- __NEXT_MAIN__ -->", STREAM_BODY_MARKER);
     if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
@@ -474,11 +475,7 @@ async function streamPageToResponseImpl(
       );
     }
     // Inject scripts: replace placeholder or append before </body>
-    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", generatedScripts);
-    if (!docHtml.includes("__NEXT_DATA__")) {
-      docHtml = docHtml.replace("</body>", `  ${generatedScripts}\n</body>`);
-    }
-    shellTemplate = docHtml;
+    shellTemplate = injectDocumentNextScripts(docHtml, generatedScripts);
   } else {
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
