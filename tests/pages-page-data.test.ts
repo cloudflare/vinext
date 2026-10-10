@@ -629,6 +629,39 @@ describe("pages page data", () => {
     expect(html).not.toContain("<img");
   });
 
+  it("reads a script tag inside a document comment as comment text", async () => {
+    // A custom Document can emit comments through `dangerouslySetInnerHTML`.
+    // Masking from the `<script>` inside one would run to the data script's
+    // `</script>` and blank both splice anchors.
+    const head = '<head><!-- <script> --><link rel="preload" href="/doc.css" /></head>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html lang="en">${head}<body class="doc"><div id="__next"><p>stale-body</p></div>` +
+        '<script id="__NEXT_DATA__" type="application/json">{"old":1}</script>' +
+        '<script src="/tail.js"></script></body></html>',
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async () => "<p>fresh-body</p>"),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(
+      html.startsWith(
+        `<!DOCTYPE html><html lang="en">${head}<body class="doc"><div id="__next"><p>fresh-body</p></div>` +
+          '<script id="__NEXT_DATA__" type="application/json">',
+      ),
+    ).toBe(true);
+    expect(html.endsWith('</script><script src="/tail.js"></script></body></html>')).toBe(true);
+  });
+
   it("keeps a next/head-shaped tag in document style text out of the head splice", async () => {
     // A `_document`-owned style after the collector's run is never
     // regenerated; if its text could end the run, everything after that

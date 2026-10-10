@@ -1127,26 +1127,31 @@ const SSR_HEAD_TAG_PATTERN =
 const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
 
 /**
- * Matches a `<script>` or `<style>` element. Both are raw text: React escapes
- * only the element's own closing sequence in their children, so page data
- * rendered into one can spell out markup such as `</div>` or a
- * `__NEXT_DATA__`-shaped script tag without it being markup. Tag names end at
- * whitespace, `/` or `>` as in the HTML tokenizer, so a `<script-x>` custom
- * element (whose text React escapes) is not taken for a raw-text open.
+ * Matches an HTML comment or a `<script>`/`<style>` element, whichever the
+ * tokenizer reaches first. Script and style are raw text: React escapes only
+ * the element's own closing sequence in their children, so page data rendered
+ * into one can spell out markup such as `</div>` or a `__NEXT_DATA__`-shaped
+ * script tag without it being markup. A comment (only reachable through
+ * `dangerouslySetInnerHTML`) likewise turns any tag inside it into text.
+ * Tag names end at whitespace, `/` or `>` as in the HTML tokenizer, so a
+ * `<script-x>` custom element (whose text React escapes) is not taken for a
+ * raw-text open.
  */
-const RAW_TEXT_ELEMENT_PATTERN =
-  /(<(script|style)(?=[\s/>])[^>]*>)([\s\S]*?)(<\/\2(?=[\s/>])[^>]*>)/gi;
+const RAW_TEXT_REGION_PATTERN =
+  /<!--(?:-?>|[\s\S]*?--!?>)|(<(script|style)(?=[\s/>])[^>]*>)([\s\S]*?)(<\/\2(?=[\s/>])[^>]*>)/gi;
 
 /**
- * Blank the body of every raw-text element, keeping its tags, so string
- * searches only see real markup. Length-preserving, so indexes still map onto
- * `html`.
+ * Blank every comment and the body of every raw-text element (keeping its
+ * tags), so string searches only see real markup. Length-preserving, so
+ * indexes still map onto `html`.
  */
 function maskRawTextContent(html: string): string {
   return html.replace(
-    RAW_TEXT_ELEMENT_PATTERN,
-    (_element, open: string, _tag, content: string, close: string) =>
-      open + " ".repeat(content.length) + close,
+    RAW_TEXT_REGION_PATTERN,
+    (region: string, open?: string, _tag?: string, content?: string, close?: string) =>
+      open === undefined || content === undefined || close === undefined
+        ? " ".repeat(region.length)
+        : open + " ".repeat(content.length) + close,
   );
 }
 
