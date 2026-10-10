@@ -346,7 +346,7 @@ describe("prefetch cache eviction", () => {
 
     prefetchRscResponse(
       fullUrl,
-      Promise.resolve(new Response("full")),
+      Promise.resolve(new Response("full", { headers: { "content-type": "text/x-component" } })),
       null,
       null,
       { onInvalidate: fullInvalidate },
@@ -354,7 +354,7 @@ describe("prefetch cache eviction", () => {
     );
     prefetchRscResponse(
       loadingUrl,
-      Promise.resolve(new Response("loading")),
+      Promise.resolve(new Response("loading", { headers: { "content-type": "text/x-component" } })),
       null,
       null,
       { onInvalidate: loadingInvalidate },
@@ -2732,6 +2732,73 @@ describe("prefetch cache eviction", () => {
     expect(consumed?.redirectHeader).toBe("/about");
     expect(consumed?.preparedElements).toBeUndefined();
   });
+
+  // Ported from Next.js: fetchPrefetchResponse in
+  // packages/next/src/client/components/segment-cache/cache.ts treats a
+  // successful non-Flight response as a miss outside `output: "export"`.
+  it("never decodes or caches a successful non-Flight prefetch response", async () => {
+    const rscUrl = "/download?doc=note&_rsc=download";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+    const response = new Response(':HX"data:text/javascript,0"\n0:null\n', {
+      headers: {
+        "content-disposition": "attachment",
+        "content-type": "text/plain; charset=utf-8",
+      },
+    });
+    const cancelBody = vi.spyOn(response.body!, "cancel");
+    getPrefetchedUrls().add(rscUrl);
+
+    prefetchRscResponse(rscUrl, Promise.resolve(response), null, null, undefined, {
+      prepareSnapshot,
+    });
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).not.toHaveBeenCalled();
+    // The unread body would otherwise keep the request open.
+    expect(cancelBody).toHaveBeenCalledOnce();
+    expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
+    expect(consumePrefetchResponse("/download?doc=note", null, null)).toBeNull();
+  });
+
+  it("accepts a Flight content-type regardless of case", async () => {
+    const rscUrl = "/mixed-case?_rsc=mixed";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "Text/X-Component" } })),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+    expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+  });
+
+  it.each([["text/plain; charset=utf-8"], ["application/octet-stream"], [null]])(
+    "accepts any successful static export prefetch response (content-type %s)",
+    async (contentType) => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+      const rscUrl = "/exported.txt";
+      const prepareSnapshot = vi.fn(async () => ({}) as never);
+      const response = new Response(new TextEncoder().encode("flight"));
+      if (contentType === null) response.headers.delete("content-type");
+      else response.headers.set("content-type", contentType);
+
+      prefetchRscResponse(rscUrl, Promise.resolve(response), null, null, undefined, {
+        prepareSnapshot,
+      });
+      await getPrefetchCache().get(rscUrl)?.pending;
+
+      expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+      expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+    },
+  );
 
   it("preserves the original expiry when consuming a prefetched response", () => {
     const cache = getPrefetchCache();
