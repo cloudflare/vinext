@@ -1122,6 +1122,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             destination,
             url.search,
             redirect.destinationQuery,
+            options.i18nConfig?.domains,
           );
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,

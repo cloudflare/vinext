@@ -115,11 +115,11 @@ test.describe("Pages i18n locale: false rewrites (production)", () => {
   }
 });
 
-// Next.js's server applies this root rewrite (resolve-routes.ts re-adds the
+// Next.js's server applies the root rewrite (resolve-routes.ts re-adds the
 // root slash). This fixture maps `en` to the example.com domain, so a
 // default-locale client navigation from 127.0.0.1 is a cross-domain document
 // load; the default-locale client match is covered by the router unit tests.
-test.describe("Pages i18n trailingSlash root rewrite (production)", () => {
+test.describe("Pages i18n domain locales with basePath and trailingSlash (production)", () => {
   let app: ProductionApp;
 
   test.beforeAll(async () => {
@@ -154,5 +154,21 @@ test.describe("Pages i18n trailingSlash root rewrite (production)", () => {
     await expect(page.locator("#locale")).toHaveText("fr");
     await expect(page.locator("h1")).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).__LOCALE_NAV_MARKER__)).toBe(true);
+  });
+
+  test("client navigation follows a domain default-locale redirect to that domain", async ({
+    page,
+  }) => {
+    // Real Next.js 16.2.7 redirects `/fr/...` to the fr domain (absolute, with
+    // basePath and the query) from any host.
+    await page.route("http://example.fr/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<h1>example.fr</h1>" }),
+    );
+    await page.goto(`${app.baseUrl}/app/about/`);
+    await waitForHydration(page);
+
+    await page.evaluate(() => (window as any).next.router.push("/fr/old-domain-redirect/?x=1"));
+    await expect(page).toHaveURL("http://example.fr/app/about/?x=1");
+    await expect(page.locator("h1")).toHaveText("example.fr");
   });
 });

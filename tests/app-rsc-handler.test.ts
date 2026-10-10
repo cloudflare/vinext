@@ -315,6 +315,28 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it("keeps the request query on a domain default-locale redirect", async () => {
+    const i18nConfig = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.fr", defaultLocale: "fr", http: true as const }],
+    };
+    const handler = createHandler({
+      configRedirects: applyLocaleToRoutes(
+        [{ source: "/old", destination: "/new", permanent: false }],
+        i18nConfig,
+        "redirect",
+        { basePath: "/docs" },
+      ),
+      i18nConfig,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/fr/old?x=1"), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("http://example.fr/docs/new?x=1");
+  });
+
   it("applies i18n trailingSlash root headers to a staged root response", async () => {
     const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
     const handler = createHandler({

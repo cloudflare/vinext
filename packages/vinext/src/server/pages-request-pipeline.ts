@@ -455,6 +455,7 @@ export async function runPagesRequest(
         dest,
         deps.rawSearch ?? search,
         redirect.destinationQuery,
+        i18nConfig?.domains,
       );
       return {
         type: "response",

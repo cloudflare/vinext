@@ -32,6 +32,25 @@ describe("Pages i18n domain helpers", () => {
     expect(detectDomainLocale(i18n.domains, "EXAMPLE.FR:3000")).toEqual(i18n.domains[1]);
   });
 
+  it("recognizes only exact locale-domain origins as app URLs", async () => {
+    const { isDomainLocaleUrl } = await import("../packages/vinext/src/utils/domain-locale.js");
+    expect(isDomainLocaleUrl("https://example.com", i18n.domains)).toBe(true);
+    expect(isDomainLocaleUrl("https://example.com/app/new?x=1", i18n.domains)).toBe(true);
+    expect(isDomainLocaleUrl("http://example.fr#top", i18n.domains)).toBe(true);
+    for (const url of [
+      "https://example.com.evil.test/new",
+      "https://example.com@evil.test/new",
+      "https://example.com:8443/new",
+      "http://example.com/new",
+      "https://example.fr/new",
+      "https://ext.test/new",
+      "/new",
+    ]) {
+      expect(isDomainLocaleUrl(url, i18n.domains), url).toBe(false);
+    }
+    expect(isDomainLocaleUrl("https://example.com/new", undefined)).toBe(false);
+  });
+
   it("does not select an Accept-Language entry with zero quality", () => {
     // Ported from Next.js's Accept-Language parser, which skips q=0 entries:
     // packages/next/src/server/accept-header.ts
