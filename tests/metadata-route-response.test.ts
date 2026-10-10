@@ -1309,6 +1309,73 @@ describe("handleMetadataRouteRequest", () => {
     expect(missing.draftCookie).toBeNull();
   });
 
+  // Next.js runs metadata routes as Route Handlers, which send cookies set by
+  // the route alongside any Set-Cookie it returns (app-route/module.ts).
+  it("sends cookies set by an image route and does not cache the response", async () => {
+    const write = vi.fn(async () => {});
+    const response = await runWithRequestContext(
+      createRequestContext({ headersContext: { headers: new Headers(), cookies: new Map() } }),
+      () =>
+        handleMetadataRouteRequest({
+          metadataRoutes: [
+            makeSlugImageRoute(async (slug) => {
+              (await cookies()).set("og", slug);
+              return new Response("image", {
+                headers: { "Content-Type": "image/png", "Set-Cookie": "returned=1" },
+              });
+            }),
+          ],
+          cleanPathname: "/blog/post/opengraph-image",
+          makeThenableParams,
+          isrRouteKey: (pathname) => pathname,
+          isrSet: write,
+        }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toBe("image");
+    // Next.js sends these same two values.
+    expect(response?.headers.getSetCookie().sort()).toEqual([
+      "og=post; Path=/",
+      "returned=1; Path=/",
+    ]);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("sends cookies set by a serialized metadata route", async () => {
+    const response = await runWithRequestContext(
+      createRequestContext({ headersContext: { headers: new Headers(), cookies: new Map() } }),
+      () =>
+        handleMetadataRouteRequest({
+          metadataRoutes: [
+            {
+              type: "robots",
+              isDynamic: true,
+              filePath: "/tmp/app/robots.ts",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/robots.txt",
+              contentType: "text/plain",
+              module: {
+                default: async () => {
+                  (await cookies()).set("robots", "1", { httpOnly: true });
+                  return { rules: { userAgent: "*", allow: "/" } };
+                },
+              },
+            },
+          ],
+          cleanPathname: "/robots.txt",
+          makeThenableParams,
+        }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toContain("User-Agent: *");
+    expect(response?.headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^robots=1;.*HttpOnly/i),
+    ]);
+  });
+
   it("returns 404 when generateImageMetadata calls notFound()", async () => {
     const route = makeSlugImageRoute(() => new Response("image"));
     const response = await handleMetadataRouteRequest({

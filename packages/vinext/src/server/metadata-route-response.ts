@@ -11,6 +11,10 @@ import {
   type SitemapEntry,
 } from "./metadata-routes.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import {
+  preserveFullyBufferedBodyMetadata,
+  isFullyBufferedBody,
+} from "./fully-buffered-response.js";
 import { parseNextRedirectDigest } from "./next-error-digest.js";
 import {
   closeAfterResponse,
@@ -67,7 +71,6 @@ import {
   completeAppRouteHandlerResponse,
   deferAppRouteHandlerCleanup,
 } from "./app-route-handler-execution.js";
-import { isFullyBufferedBody } from "./fully-buffered-response.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import { decodeMatchedParams } from "../routing/utils.js";
@@ -746,17 +749,30 @@ function parseMetadataRouteAccessFallback(digest: string): 401 | 403 | 404 | nul
   return code === 401 || code === 403 || code === 404 ? code : null;
 }
 
+/** Put cookies set during a metadata route on its response, as Route Handlers do. */
+function attachPendingCookies(response: Response): Response {
+  const pendingCookies = getAndClearPendingCookies();
+  if (pendingCookies.length === 0) return response;
+  const finalized = preserveFullyBufferedBodyMetadata(
+    response,
+    finalizeRouteHandlerResponse(response, { pendingCookies, draftCookie: null, isHead: false }),
+  );
+  if (userMetadataResponses.has(response)) userMetadataResponses.add(finalized);
+  return finalized;
+}
+
 /**
  * Next.js compiles metadata files into Route Handlers, so in a dynamic metadata
- * route `notFound()`, `forbidden()`, `unauthorized()` and `redirect()` become
- * empty status or redirect responses (with the redirect URL used verbatim)
- * instead of errors.
+ * route cookies it sets go on its response, and `notFound()`, `forbidden()`,
+ * `unauthorized()` and `redirect()` become empty status or redirect responses
+ * (with the redirect URL used verbatim) instead of errors.
  */
 async function runDynamicMetadataRoute<T extends Response | null>(
   render: () => Promise<T>,
 ): Promise<T | Response> {
   try {
-    return await render();
+    const response = await render();
+    return response ? attachPendingCookies(response) : response;
   } catch (error) {
     if (!(error && typeof error === "object" && "digest" in error)) throw error;
     const digest = String(error.digest);
@@ -764,9 +780,8 @@ async function runDynamicMetadataRoute<T extends Response | null>(
     if (redirect) {
       // As in Route Handlers, cookies set before redirect() go on the redirect.
       return markFullyBufferedBody(
-        finalizeRouteHandlerResponse(
+        attachPendingCookies(
           new Response(null, { status: redirect.status, headers: { Location: redirect.url } }),
-          { pendingCookies: getAndClearPendingCookies(), draftCookie: null, isHead: false },
         ),
       );
     }
