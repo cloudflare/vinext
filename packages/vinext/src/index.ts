@@ -22,6 +22,7 @@ import {
 import {
   pagesRouter,
   apiRouter,
+  hasPagesRouterFiles,
   invalidateRouteCache,
   matchRoute,
 } from "./routing/pages-router.js";
@@ -2792,13 +2793,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
         // Let shared client shims compile out Pages-only behavior in pure App
         // Router builds while retaining it for Pages and hybrid applications.
-        defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesDir));
+        // An App Router build whose pages/ has no page-extension files (e.g.
+        // only Markdown content) serves no Pages routes, so it counts as pure
+        // App Router. Dev keeps the directory check because page files can be
+        // added without a restart. Client rewrites also keep it: the hybrid
+        // owner check sends external and server-evaluated rewrites to a
+        // document load instead of an RSC fetch or prefetch.
+        const hasClientRewrites =
+          nextConfig.rewrites.beforeFiles.length > 0 ||
+          nextConfig.rewrites.afterFiles.length > 0 ||
+          nextConfig.rewrites.fallback.length > 0;
+        const hasPagesRouter =
+          hasPagesDir &&
+          (env?.command !== "build" ||
+            !hasAppDir ||
+            hasClientRewrites ||
+            (await hasPagesRouterFiles(pagesDir, fileMatcher)));
+        defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesRouter));
         defines["process.env.__VINEXT_HAS_CLIENT_REWRITES"] = JSON.stringify(
-          String(
-            nextConfig.rewrites.beforeFiles.length > 0 ||
-              nextConfig.rewrites.afterFiles.length > 0 ||
-              nextConfig.rewrites.fallback.length > 0,
-          ),
+          String(hasClientRewrites),
         );
         defines["process.env.__VINEXT_HAS_CONFIG_HEADERS"] = JSON.stringify(
           String(nextConfig.headers.length > 0),
