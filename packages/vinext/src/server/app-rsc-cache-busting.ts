@@ -36,6 +36,21 @@ export const VINEXT_RSC_BUILD_ID_HEADER = "X-Vinext-RSC-Build-Id";
 export const VINEXT_RSC_COMPATIBILITY_ID_HEADER = "X-Vinext-RSC-Compatibility-Id";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 
+/**
+ * Whether a fetched App Router response is a Flight payload the client may
+ * decode. Static hosts serve exported payloads as `.txt`, so `output: "export"`
+ * also accepts `text/plain`; any other response is not vinext's to decode.
+ */
+export function isRscResponseContentType(contentType: string | null): boolean {
+  if (contentType === null) return false;
+  if (contentType.startsWith(VINEXT_RSC_CONTENT_TYPE)) return true;
+  return (
+    process.env.NODE_ENV === "production" &&
+    process.env.__NEXT_CONFIG_OUTPUT === "export" &&
+    contentType.startsWith("text/plain")
+  );
+}
+
 // Re-export so existing consumers that import from this module keep working.
 export { VINEXT_RSC_RENDER_MODE_HEADER, VINEXT_RSC_VARY_HEADER } from "./headers.js";
 

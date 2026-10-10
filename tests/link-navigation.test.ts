@@ -81,6 +81,11 @@ const linkPrefetchRoutes = [
   },
 ] satisfies VinextLinkPrefetchRoute[];
 
+/** A successful App Router prefetch response; prefetches drop non-Flight responses. */
+function createFlightResponse(body: BodyInit, headers: Record<string, string> = {}): Response {
+  return new Response(body, { headers: { "content-type": "text/x-component", ...headers } });
+}
+
 function createTestNavigationRuntime(
   navigate: unknown,
   routeManifest: RouteManifest | null = null,
@@ -1482,7 +1487,7 @@ async function renderIsolatedLink(options: {
   });
 
   const fetch = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-    Promise.resolve(new Response("")),
+    Promise.resolve(createFlightResponse("")),
   );
   const navigate = vi.fn();
   const pagePrefetchLinks: CapturedPrefetchLinkElement[] = [];
@@ -2161,7 +2166,7 @@ describe("Link prefetch scheduling", () => {
         await import("../packages/vinext/src/shims/navigation.js");
       prefetchRscResponse(
         "/viewport-prefetch-target?searchParam=a_PPR&_rsc=first",
-        Promise.resolve(new Response("target-page-with-search-param")),
+        Promise.resolve(createFlightResponse("target-page-with-search-param")),
         null,
         null,
         undefined,
@@ -2365,7 +2370,7 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
     });
     result.fetch.mockResolvedValueOnce(
-      new Response("", { headers: { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" } }),
+      createFlightResponse("", { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" }),
     );
 
     try {
@@ -2749,7 +2754,7 @@ describe("Link prefetch scheduling", () => {
 
     result.fetch
       .mockImplementationOnce(() => shellPromise)
-      .mockImplementationOnce(() => Promise.resolve(new Response("full")));
+      .mockImplementationOnce(() => Promise.resolve(createFlightResponse("full")));
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -2771,7 +2776,7 @@ describe("Link prefetch scheduling", () => {
       if (resolveShell === undefined) {
         throw new Error("Expected shell prefetch resolver");
       }
-      resolveShell(new Response(shellBody));
+      resolveShell(createFlightResponse(shellBody));
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
@@ -2921,7 +2926,7 @@ describe("Link prefetch scheduling", () => {
       });
       result.fetch
         .mockImplementationOnce(() => routeTreeResponse)
-        .mockImplementation(() => Promise.resolve(new Response("")));
+        .mockImplementation(() => Promise.resolve(createFlightResponse("")));
 
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
@@ -2942,7 +2947,7 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
-      releaseRouteTree?.(new Response(""));
+      releaseRouteTree?.(createFlightResponse(""));
       await waitForFetchCalls(result.fetch, 2);
 
       expect(result.fetch).toHaveBeenCalledTimes(2);
@@ -2985,7 +2990,9 @@ describe("Link prefetch scheduling", () => {
       });
       result.fetch
         .mockImplementationOnce(() => routeTreeResponse)
-        .mockImplementation(() => Promise.resolve(new Response("concrete root-param page")));
+        .mockImplementation(() =>
+          Promise.resolve(createFlightResponse("concrete root-param page")),
+        );
 
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
@@ -2995,7 +3002,7 @@ describe("Link prefetch scheduling", () => {
       expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
 
-      releaseRouteTree?.(new Response(""));
+      releaseRouteTree?.(createFlightResponse(""));
       await waitForFetchCalls(result.fetch, 2);
 
       expectCanonicalRscFetchCall(

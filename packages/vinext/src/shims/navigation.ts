@@ -33,6 +33,7 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  isRscResponseContentType,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -1530,7 +1531,11 @@ export function prefetchRscResponse(
 
   entry.pending = fetchPromise
     .then(async (response) => {
-      if (response.ok) {
+      // Like Next.js' fetchPrefetchResponse, a successful response that is not
+      // Flight (e.g. a Route Handler's text download) is a miss: decoding its
+      // bytes as Flight would let attacker-influenced text inject resource
+      // hints. Navigation then fetches it and falls back to a hard navigation.
+      if (response.ok && isRscResponseContentType(response.headers.get("content-type"))) {
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
         const previousSize = getPrefetchCacheEntrySize(entry);
@@ -1566,6 +1571,8 @@ export function prefetchRscResponse(
         evictPrefetchCacheIfNeeded();
       } else {
         releaseAppPrefetchFetchSlot(response);
+        // An unread body keeps the request, and its connection, open.
+        void response.body?.cancel().catch(() => {});
         deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
       }
     })
