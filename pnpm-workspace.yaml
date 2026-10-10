@@ -124,6 +124,7 @@ overrides:
   vitest: "catalog:"
   picomatch: ">=2.3.2"
   srvx: ">=0.11.13"
+  "fflate@<0.7.5": "^0.7.5"
 
 peerDependencyRules:
   allowAny:
