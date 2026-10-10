@@ -795,6 +795,19 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     });
   }
 
+  // Next.js lets Client Components import unstable_cache, where its browser
+  // build of next/cache only calls the callback.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/cache.js
+  test("Client Components can import and call unstable_cache", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${baseUrl()}/nextjs-compat/unstable-cache-client`);
+
+    await expect(page.getByTestId("client-greeting")).toHaveText("hello client");
+    expect(pageErrors).toEqual([]);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
   test("unstable_cache bypasses cache in draft mode", async ({ request }) => {

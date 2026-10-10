@@ -23,6 +23,7 @@ import { Buffer } from "node:buffer";
 
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
+import { sha256Hex } from "../utils/hash.js";
 import { traceAppFetch } from "../server/app-fetch-tracing.js";
 import type { FrameworkSpan } from "../server/framework-tracer.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -482,12 +483,7 @@ async function buildFetchCacheKey(
     bodyMetadata,
   ]);
 
-  const encoder = new TextEncoder();
-  const buffer = encoder.encode(cacheString);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.prototype.map
-    .call(new Uint8Array(hashBuffer), (b: number) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return sha256Hex(cacheString);
 }
 
 // ---------------------------------------------------------------------------

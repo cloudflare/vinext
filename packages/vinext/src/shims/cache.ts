@@ -18,14 +18,13 @@
  * deprecated for consumers and retained for backwards compatibility.
  */
 
-import { createHash } from "node:crypto";
 import {
   getHeadersAccessPhase,
   isDraftModeEnabled,
   markDynamicUsage as _markDynamic,
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { fnv1a64 } from "../utils/hash.js";
+import { fnv1a64, sha256Hex } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
@@ -625,24 +624,34 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   keyParts?: string[],
   options?: UnstableCacheOptions,
 ): T {
+  // Like Next.js's browser build of next/cache, Client Components get a
+  // pass-through that only calls the callback, without server internals.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/cache.js
+  if (typeof window !== "undefined") {
+    return function cached(this: unknown, ...args: Parameters<T>) {
+      return fn.apply(this, args);
+    } as T;
+  }
+
   // Like Next.js, the key covers the callback source as well as keyParts and
   // arguments, and is a SHA-256 digest so its size stays fixed. Next.js joins
   // keyParts with "," (a known TODO), so ["a,b", "c"] and ["a", "b,c"] share
-  // an entry there; encoding the tuple as JSON keeps them apart. The source is
-  // minification-sensitive, so the same callback may key differently across
-  // builds.
+  // an entry there; encoding the tuple as JSON keeps them apart. The fixed
+  // part is a complete JSON array, so appending the arguments stays
+  // unambiguous. As in Next.js, it is captured here, so later changes to the
+  // keyParts array don't move the entry. The source is minification-sensitive,
+  // so the same callback may key differently across builds.
   // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
-  const fnSource = fn.toString();
+  const fixedKey = JSON.stringify([fn.toString(), keyParts ?? null]);
   const tags = encodeCacheTags(options?.tags ?? []);
   const revalidateSeconds = options?.revalidate;
 
   const cachedFn = async (...args: Parameters<T>) => {
-    const invocationKey = JSON.stringify([fnSource, keyParts ?? null, args]);
-    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${createHash("sha256").update(invocationKey).digest("hex")}`;
+    const invocationKey = `${fixedKey}${JSON.stringify(args)}`;
     addCollectedRequestTags(tags);
     recordUnstableCacheObservation({
       kind: "unstable_cache",
-      keyHash: fnv1a64(cacheKey),
+      keyHash: fnv1a64(invocationKey),
       revalidate:
         typeof revalidateSeconds === "number"
           ? revalidateSeconds
@@ -652,6 +661,9 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       tagCount: tags.length,
       tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
     });
+    // Web Crypto, as Next.js uses on its edge runtime, so the shim pulls no
+    // Node.js builtin into the client graphs that import next/cache.
+    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${await sha256Hex(invocationKey)}`;
 
     const isDraftMode = isDraftModeEnabled();
     if (!isDraftMode) {
