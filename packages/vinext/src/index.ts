@@ -1670,6 +1670,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // plugin. `config` runs before `configEnvironment`/build, and the `= 0`
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
+  // Final top-level `server.preTransformRequests`, captured by the post
+  // `config` hook of `vinext:server-pretransform-defaults`.
+  let serverPreTransformRequests: boolean | undefined;
   let hasCloudflarePlugin = false;
   let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
@@ -5380,6 +5383,40 @@ export const loadServerActionClient = ${
         // Respect any explicit user/plugin minify choice (including `false`).
         if (config.build?.minify !== undefined) return null;
         return { build: { minify: true } };
+      },
+    },
+    {
+      // Vite pre-transforms static imports only in the client environment by
+      // default. Without it, the rsc/ssr module runners transform each import
+      // only when they request it, serialising transform/evaluate round-trips
+      // on the first request. The runners evaluate every static import anyway,
+      // so this only moves transforms earlier.
+      //
+      // This is a default that yields to user and plugin configuration. It
+      // runs as a post `configEnvironment` hook so settings returned by later
+      // `config` hooks are visible: Vite seeds each environment's `dev` from
+      // the top-level `dev` before this hook, so `config.dev` already reflects
+      // `environments.<name>.dev` and top-level `dev`. `server.preTransformRequests`
+      // is only applied as Vite's fallback, so read it from the final config.
+      name: "vinext:server-pretransform-defaults",
+      apply: "serve",
+      enforce: "post",
+
+      config: {
+        order: "post",
+        handler(config) {
+          serverPreTransformRequests = config.server?.preTransformRequests;
+        },
+      },
+
+      configEnvironment: {
+        order: "post",
+        handler(name, config) {
+          if (!hasAppDir || (name !== "rsc" && name !== "ssr")) return null;
+          if (config.dev?.preTransformRequests !== undefined) return null;
+          if (serverPreTransformRequests !== undefined) return null;
+          return { dev: { preTransformRequests: true } };
+        },
       },
     },
     {

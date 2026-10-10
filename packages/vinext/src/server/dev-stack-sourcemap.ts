@@ -596,9 +596,19 @@ async function loadServerSourceMapForLocalPath(
   server: ViteDevServer,
   localPath: string,
 ): Promise<SourceMapPayload | null> {
-  for (const environmentName of ["rsc", "ssr"]) {
-    const environment = server.environments[environmentName];
-    if (!environment) continue;
+  const environments = ["rsc", "ssr"].flatMap((name) => server.environments[name] ?? []);
+  // Try environments that already transformed the file first. Transforming
+  // it in an environment it never ran in also pre-transforms its static
+  // imports there, which can log spurious "Pre-transform error"s (e.g.
+  // `client-only` imported by an SSR-only module, transformed in the RSC
+  // environment). A module graph entry alone is not enough: Vite adds one as
+  // soon as an import resolves, before transforming it.
+  const file = toSlash(localPath);
+  const loaded = environments.filter((environment) => {
+    const modules = environment.moduleGraph.getModulesByFile(file);
+    return modules !== undefined && [...modules].some((mod) => mod.transformResult);
+  });
+  for (const environment of new Set([...loaded, ...environments])) {
     try {
       const result = await environment.transformRequest(localPath);
       const sourceMap = normalizeSourceMapPayload(result?.map);
