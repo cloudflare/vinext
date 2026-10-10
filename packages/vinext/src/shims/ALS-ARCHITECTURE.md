@@ -27,7 +27,7 @@ that existed before.
 - `requestScopedCacheLife` - per-request cache life override (`cache.ts`)
 - `cacheLifeSink` - collects a layout probe's cache life across nested scopes that reset `requestScopedCacheLife` (`cache-request-state.ts`)
 - `_privateCache` - per-request private cache map (`cache-runtime.ts`)
-- `currentRequestTags` - revalidation tags (`fetch-cache.ts`)
+- `currentRequestTags` - revalidation tags (`fetch-cache-state.ts`)
 - `executionContext` - cloudflare workers execution context (`request-context.ts`)
 - `ssrContext` - pages router ssr context for `useRouter()` (`router-state.ts`)
 - `ssrHeadChildren` - collected `<Head>` children during ssr (`head-state.ts`)
