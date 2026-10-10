@@ -214,6 +214,17 @@ function renderSsrErrorDocumentShell(
   );
 }
 
+/**
+ * Server stand-in for the browser root's `AppClientStylesheets`, which renders
+ * after the app tree (see app-browser-entry.ts). Rendering a sibling in the
+ * same slot puts the app tree at the same React tree position on both sides,
+ * so `useId()` values inside it match on hydration. It renders nothing: client
+ * chunk stylesheets are only requested in the browser.
+ */
+function AppClientStylesheetsSlot(): null {
+  return null;
+}
+
 const clientReferencePreloader = createClientReferencePreloader({
   getReferences() {
     return clientReferences;
@@ -588,9 +599,11 @@ export async function handleSsr(
           { value: registerBeforeInteractiveInlineScript },
           ssrTree,
         );
-        const ssrRoot = withScriptNonce(
-          withAppRouterTree(treeWithBeforeInteractive),
-          options?.scriptNonce,
+        const ssrRoot = createReactElement(
+          Fragment,
+          null,
+          withScriptNonce(withAppRouterTree(treeWithBeforeInteractive), options?.scriptNonce),
+          createReactElement(AppClientStylesheetsSlot),
         );
 
         // plugin-rsc returns the bootstrap as `import("<url>")` so callers can
