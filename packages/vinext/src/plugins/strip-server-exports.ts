@@ -1,5 +1,6 @@
-import { parseAst } from "vite";
+import { parseAst, type ESTree } from "vite";
 import MagicString from "magic-string";
+import { findAstBindingScope, walkAstScopes } from "./ast-scope.js";
 import { getAstName } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
@@ -407,26 +408,6 @@ function isAssignmentTargetIdentifier(node: PositionedNode, left: PositionedNode
   return assignmentTargetIdentifiers(left).some((identifier) => identifier.start === node.start);
 }
 
-function findLexicalScope(ancestors: PositionedNode[]): PositionedNode | undefined {
-  const scope = [...ancestors]
-    .reverse()
-    .find((ancestor) =>
-      [
-        "BlockStatement",
-        "SwitchStatement",
-        "ForStatement",
-        "ForInStatement",
-        "ForOfStatement",
-        "StaticBlock",
-      ].includes(ancestor.type),
-    );
-  // A switch's lexical scope covers its cases, not its discriminant.
-  if (scope?.type === "SwitchStatement") {
-    return { ...scope, start: scope.discriminant.end as number } as PositionedNode;
-  }
-  return scope;
-}
-
 export function validatePageExports(code: string): void {
   if (!hasExportAllCandidate(code)) return;
   let ast: ParsedAst;
@@ -535,7 +516,6 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   const bindingPositions = new Set<number>();
   const references = new Map<string, number[]>();
   const memberTargetReads = new Map<string, number[]>();
-  const shadowRanges = new Map<string, Array<{ start: number; end: number }>>();
   const exportSpecifierRemovals = new Map<PositionedNode, Set<PositionedNode>>();
   const variableRemovals = new Map<PositionedNode, Set<PositionedNode>>();
   const importRemovals = new Map<PositionedNode, Set<PositionedNode>>();
@@ -608,35 +588,17 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     }
   }
 
-  const addShadowRange = (name: string, range: PositionedNode | undefined): void => {
-    if (!range || range.type === "Program") return;
-    const ranges = shadowRanges.get(name) ?? [];
-    ranges.push(range);
-    shadowRanges.set(name, ranges);
-  };
+  // Identifiers that resolve to a binding below module scope: a parameter,
+  // a catch binding, or a block, loop, switch or function local.
+  const localIdentifiers = new Set<number>();
+  walkAstScopes(ast as ESTree.Program, (node, scope) => {
+    if (node.type !== "Identifier") return;
+    if (findAstBindingScope(scope, node.name)?.parent) localIdentifiers.add(node.start);
+  });
+  const isLocal = (identifier: PositionedNode): boolean => localIdentifiers.has(identifier.start);
 
   walkAstWithAncestors(ast.body, (node, parent, ancestors = []) => {
-    if (
-      node.type === "FunctionDeclaration" ||
-      node.type === "FunctionExpression" ||
-      node.type === "ArrowFunctionExpression"
-    ) {
-      for (const parameter of node.params as PositionedNode[]) {
-        for (const name of bindingNames(parameter)) addShadowRange(name, node);
-      }
-      if (node.type === "FunctionDeclaration" && node.id) {
-        addShadowRange(node.id.name, findLexicalScope(ancestors));
-      } else if (node.type === "FunctionExpression" && node.id) {
-        addShadowRange(node.id.name, node);
-      }
-    } else if (node.type === "ClassDeclaration" && node.id) {
-      addShadowRange(node.id.name, findLexicalScope(ancestors));
-    } else if (node.type === "ClassExpression" && node.id) {
-      addShadowRange(node.id.name, node);
-    } else if (node.type === "CatchClause" && node.param) {
-      // The catch scope covers the parameter's own defaults as well.
-      for (const name of bindingNames(node.param as PositionedNode)) addShadowRange(name, node);
-    } else if (node.type === "VariableDeclarator" && parent?.type === "VariableDeclaration") {
+    if (node.type === "VariableDeclarator" && parent?.type === "VariableDeclaration") {
       const varScope =
         parent.kind === "var"
           ? [...ancestors]
@@ -650,15 +612,6 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
                 ].includes(ancestor.type),
               )
           : undefined;
-      // A function's `var` is not visible from its parameter defaults, which
-      // have their own scope, so the shadow starts at the body.
-      const scope =
-        parent.kind === "var"
-          ? varScope?.type === "StaticBlock"
-            ? varScope
-            : (varScope?.body as PositionedNode | undefined)
-          : findLexicalScope(ancestors);
-      for (const name of bindingNames(node.id as PositionedNode)) addShadowRange(name, scope);
       // A `var` nested in a block outside any function is hoisted to module
       // scope, so `export { getServerSideProps }` can name it.
       const owner = ancestors.at(-2);
@@ -674,9 +627,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
         // target is kept, and it keeps the shared initializer live.
         const catchBound = new Set(
           identifiers
-            .filter((identifier) =>
-              isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
-            )
+            .filter((identifier) => isLocal(identifier))
             .map((identifier) => identifier.name),
         );
         if (catchBound.size > 0) catchBoundNames.set(node, catchBound);
@@ -712,10 +663,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       // branch must go with the binding it targets, or the assignment and
       // the server-only code on its right-hand side stay in the browser graph.
       const names = assignmentTargetIdentifiers(node.left as PositionedNode)
-        .filter(
-          (identifier) =>
-            !isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
-        )
+        .filter((identifier) => !isLocal(identifier))
         .map((identifier) => identifier.name);
       if (names.length > 0) {
         const statement =
@@ -738,10 +686,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
           ? bindingIdentifiers(left.declarations[0]?.id as PositionedNode)
           : assignmentTargetIdentifiers(left)
       )
-        .filter(
-          (identifier) =>
-            !isInsideRanges(identifier.start, shadowRanges.get(identifier.name) ?? []),
-        )
+        .filter((identifier) => !isLocal(identifier))
         .map((identifier) => identifier.name);
       if (names.length > 0) {
         assignments.push({
@@ -756,7 +701,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     }
     if (!isReferenceIdentifier(node, parent)) return;
     if (bindingPositions.has(node.start)) return;
-    if (isInsideRanges(node.start, shadowRanges.get(node.name) ?? [])) return;
+    if (isLocal(node)) return;
     const writer = [...ancestors]
       .reverse()
       .find(
