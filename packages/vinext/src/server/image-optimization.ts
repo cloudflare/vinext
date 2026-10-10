@@ -7,8 +7,9 @@
  * server), serves the original file as a passthrough with appropriate
  * Cache-Control headers.
  *
- * Format negotiation: inspects the `Accept` header and serves AVIF, WebP,
- * or JPEG depending on client support.
+ * Format negotiation: inspects the `Accept` header and serves AVIF or WebP
+ * when the client supports them. Otherwise PNG and GIF sources keep their
+ * format and everything else is served as JPEG.
  *
  * Security: All image responses include Content-Security-Policy and
  * X-Content-Type-Options headers to prevent XSS via SVG or Content-Type
@@ -188,13 +189,24 @@ export function parseImageParams(
 }
 
 /**
- * Negotiate the best output format based on the Accept header.
+ * Source formats that are kept when the client accepts neither AVIF nor WebP.
+ * JPEG has no alpha channel, so transcoding these to JPEG would flatten
+ * transparency. Next.js keeps the upstream type in the same situation.
+ */
+const SOURCE_FALLBACK_FORMATS = new Set(["image/png", "image/gif"]);
+
+/**
+ * Negotiate the best output format based on the Accept header and the media
+ * type of the source image.
  * Returns an IANA media type.
  */
-export function negotiateImageFormat(acceptHeader: string | null): string {
-  if (!acceptHeader) return "image/jpeg";
-  if (acceptHeader.includes("image/avif")) return "image/avif";
-  if (acceptHeader.includes("image/webp")) return "image/webp";
+export function negotiateImageFormat(
+  acceptHeader: string | null,
+  sourceMediaType?: string,
+): string {
+  if (acceptHeader?.includes("image/avif")) return "image/avif";
+  if (acceptHeader?.includes("image/webp")) return "image/webp";
+  if (sourceMediaType && SOURCE_FALLBACK_FORMATS.has(sourceMediaType)) return sourceMediaType;
   return "image/jpeg";
 }
 
@@ -336,9 +348,6 @@ export async function handleImageOptimization(
     return new Response("Image not found", { status: 404 });
   }
 
-  // Negotiate output format from Accept header
-  const format = negotiateImageFormat(request.headers.get("Accept"));
-
   // Block unsafe Content-Types (e.g., SVG which can contain embedded scripts).
   // Check the source Content-Type before any processing. SVG is only allowed
   // when dangerouslyAllowSVG is explicitly enabled in next.config.js.
@@ -354,6 +363,9 @@ export async function handleImageOptimization(
   if (sourceMediaType === "image/svg+xml") {
     return createPassthroughImageResponse(source, imageConfig);
   }
+
+  // Negotiate output format from Accept header and the source format
+  const format = negotiateImageFormat(request.headers.get("Accept"), sourceMediaType);
 
   // Transform if handler provided, otherwise serve original
   if (handlers.transformImage) {

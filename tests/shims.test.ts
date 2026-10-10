@@ -27315,6 +27315,20 @@ describe("image optimization request parsing", () => {
     expect(negotiateImageFormat(null)).toBe("image/jpeg");
   });
 
+  // Next.js keeps the upstream type when the client accepts neither AVIF nor WebP:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/image-optimizer.ts
+  it("negotiateImageFormat keeps PNG and GIF sources without AVIF or WebP", async () => {
+    const { negotiateImageFormat } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(negotiateImageFormat("image/png,*/*", "image/png")).toBe("image/png");
+    expect(negotiateImageFormat("*/*", "image/png")).toBe("image/png");
+    expect(negotiateImageFormat(null, "image/gif")).toBe("image/gif");
+    expect(negotiateImageFormat("image/avif,image/webp", "image/png")).toBe("image/avif");
+    expect(negotiateImageFormat("image/webp", "image/png")).toBe("image/webp");
+    expect(negotiateImageFormat("*/*", "image/jpeg")).toBe("image/jpeg");
+    expect(negotiateImageFormat("*/*", "image/bmp")).toBe("image/jpeg");
+  });
+
   it("IMAGE_OPTIMIZATION_PATH is /_next/image", async () => {
     const { IMAGE_OPTIMIZATION_PATH } =
       await import("../packages/vinext/src/server/image-optimization.js");
@@ -27462,6 +27476,33 @@ describe("handleImageOptimization", () => {
     expect(await response.text()).toBe("original-image-data");
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
     expect(response.headers.get("Vary")).toBe("Accept");
+  });
+
+  it("transforms a PNG source to PNG when the client accepts neither AVIF nor WebP", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_next/image?url=%2Flogo.png&w=640&q=75", {
+      headers: { Accept: "image/png,*/*" },
+    });
+    let capturedFormat: string | null = null;
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("original", {
+          status: 200,
+          headers: { "Content-Type": "image/png" },
+        }),
+      transformImage: async (
+        _body: ReadableStream,
+        options: { width: number; format: string; quality: number },
+      ) => {
+        capturedFormat = options.format;
+        return new Response("transformed", { headers: { "Content-Type": options.format } });
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(capturedFormat).toBe("image/png");
+    expect(response.headers.get("Content-Type")).toBe("image/png");
   });
 
   it("calls transformImage when provided", async () => {
