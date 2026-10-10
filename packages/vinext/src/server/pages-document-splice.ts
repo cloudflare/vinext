@@ -18,31 +18,54 @@ import {
 // They search `maskRawTextContent` output, so only real tags match.
 const HEAD_OPEN_TAG_PATTERN = /<head(?:\s[^>]*)?>/i;
 const NEXT_DATA_SCRIPT_TAG_PATTERN = /<script\b[^>]*\sid=["']__NEXT_DATA__["']/i;
-// Comments, and elements the HTML parser reads as text up to their closing
-// tag. React writes `dangerouslySetInnerHTML` into them unescaped, so their
-// content can hold any tag-like string, request data included. Matching both
-// in one left-to-right pass keeps a commented-out `<script>` from opening an
-// element and a `<!--` inside script text from opening a comment.
-const RAW_TEXT_PATTERN =
-  /<!--[\s\S]*?-->|(<(script|style|title|textarea|noscript)\b[^>]*>)([\s\S]*?)(?=<\/\2[\s/>])/gi;
+// Elements whose content the HTML parser reads as text up to their closing
+// tag (`plaintext` never closes). React writes `dangerouslySetInnerHTML`
+// into them unescaped, so their content can hold any tag-like string,
+// request data included.
+const RAW_TEXT_OPENER_PATTERN =
+  /<!--|<(script|style|title|textarea|noscript|xmp|iframe|noembed|noframes|plaintext)(?=[\s/>])/gi;
 
 /**
  * Blank comments and the content of raw-text elements, keeping those
  * elements' tags and the string's length, so a tag search on the result
  * finds only real markup at indexes that still map onto `html`. React
  * escapes `<`, `>` and quotes everywhere else, including attribute values.
+ *
+ * One left-to-right pass, like the HTML parser: a commented-out `<script>`
+ * opens no element, a `<!--` inside script text opens no comment, and an
+ * unterminated one runs to the end of the input without rescanning it.
  */
 export function maskRawTextContent(html: string): string {
-  return html.replace(
-    RAW_TEXT_PATTERN,
-    (
-      match: string,
-      openTag: string | undefined,
-      _name: string | undefined,
-      text: string | undefined,
-    ) =>
-      openTag === undefined ? " ".repeat(match.length) : openTag + " ".repeat(text?.length ?? 0),
-  );
+  let masked = "";
+  let copied = 0;
+  const opener = new RegExp(RAW_TEXT_OPENER_PATTERN);
+  for (let match = opener.exec(html); match; match = opener.exec(html)) {
+    let start: number;
+    let end: number;
+    const name = match[1]?.toLowerCase();
+    if (name === undefined) {
+      // Search from the opener's dashes: `<!-->` and `<!--->` are complete.
+      const close = html.indexOf("-->", match.index + 2);
+      start = match.index;
+      end = close === -1 ? html.length : close + 3;
+    } else {
+      // The first `>` ends the tag, since React escapes it in attributes.
+      const tagEnd = html.indexOf(">", match.index);
+      if (tagEnd === -1) break;
+      start = tagEnd + 1;
+      end = name === "plaintext" ? html.length : findClosingTag(html, name, start);
+    }
+    masked += html.slice(copied, start) + " ".repeat(end - start);
+    copied = end;
+    opener.lastIndex = end;
+  }
+  return masked + html.slice(copied);
+}
+
+function findClosingTag(html: string, name: string, from: number): number {
+  const closing = new RegExp(`</${name}(?=[\\s/>])`, "gi");
+  closing.lastIndex = from;
+  return closing.exec(html)?.index ?? html.length;
 }
 
 function spliceAt(html: string, start: number, end: number, insertion: string): string {

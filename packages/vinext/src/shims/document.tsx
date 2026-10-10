@@ -17,6 +17,7 @@ import {
   DOCUMENT_HEAD_CLOSE_ATTRIBUTE,
   DOCUMENT_HEAD_OPEN_ATTRIBUTE,
   DocumentPlaceholderContext,
+  getDocumentHeadCloseMarker,
   getDocumentMainPlaceholder,
   getDocumentScriptsPlaceholder,
 } from "./document-placeholders.js";
@@ -115,10 +116,26 @@ function DocumentHeadElement({
   // the open marker stays the tag's last attribute so the tag ends after it.
   // A caller-supplied attribute of the same name is dropped: spreading over
   // an existing key keeps that key's position.
-  const attributes = { ...props };
+  const { dangerouslySetInnerHTML, ...attributes } = props;
   Reflect.deleteProperty(attributes, DOCUMENT_HEAD_OPEN_ATTRIBUTE);
+  const openMarker = token ? { [DOCUMENT_HEAD_OPEN_ATTRIBUTE]: token } : {};
+  if (dangerouslySetInnerHTML) {
+    // Raw head HTML takes no children, so the close marker joins the HTML.
+    const html = String(dangerouslySetInnerHTML.__html ?? "");
+    return (
+      <head
+        {...attributes}
+        {...openMarker}
+        dangerouslySetInnerHTML={{
+          __html: token ? html + getDocumentHeadCloseMarker(token) : html,
+        }}
+      >
+        {children}
+      </head>
+    );
+  }
   return (
-    <head {...attributes} {...(token ? { [DOCUMENT_HEAD_OPEN_ATTRIBUTE]: token } : {})}>
+    <head {...attributes} {...openMarker}>
       {children}
       {token ? <template {...{ [DOCUMENT_HEAD_CLOSE_ATTRIBUTE]: token }} /> : null}
     </head>

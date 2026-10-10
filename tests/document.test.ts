@@ -64,6 +64,18 @@ describe("per-render placeholders", () => {
   });
 });
 
+describe("per-render placeholders with raw head HTML", () => {
+  it("append the close marker to <Head dangerouslySetInnerHTML>", () => {
+    const head = React.createElement(Head, {
+      dangerouslySetInnerHTML: { __html: "<title>t</title>" },
+    } as React.ComponentProps<typeof Head>);
+    expect(render(withDocumentPlaceholders(head, "token"))).toBe(
+      '<head data-vinext-head-open="token"><title>t</title><template data-vinext-head-close="token"></template></head>',
+    );
+    expect(render(head)).toBe("<head><title>t</title></head>");
+  });
+});
+
 describe("NextScript", () => {
   it("renders the __NEXT_SCRIPTS__ comment that dev-server replaces with hydration scripts", () => {
     const html = render(React.createElement(NextScript));

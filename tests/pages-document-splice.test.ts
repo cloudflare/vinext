@@ -7,6 +7,7 @@ import {
   withDocumentPlaceholders,
 } from "../packages/vinext/src/shims/document-placeholders.js";
 import {
+  maskRawTextContent,
   spliceDocumentHeadClose,
   spliceDocumentHeadOpen,
   spliceDocumentScripts,
@@ -113,6 +114,29 @@ describe("Pages Document splicing", () => {
     expect(spliced).toBe(
       `<html>${script}<head><a/>${comment}${script}<b/></head><body>${script}<div id="__next"></div>${script}  <c/>\n</body></html>`,
     );
+  });
+
+  describe("maskRawTextContent", () => {
+    it("blanks comments and every raw-text element's content, keeping the length", () => {
+      const html =
+        "<iframe></head></iframe><XMP></body></XMP><noembed></head></noembed>" +
+        "<!--></head><p></p><!-- </body> --><script><!--</head></script ><plaintext></body>";
+      expect(maskRawTextContent(html)).toBe(
+        "<iframe>       </iframe><XMP>       </XMP><noembed>       </noembed>" +
+          "     </head><p></p>" +
+          " ".repeat(16) +
+          "<script>           </script ><plaintext>       ",
+      );
+    });
+
+    it("scans unterminated openers in linear time", () => {
+      for (const opener of ["<!--", "<script>", "<script "]) {
+        const html = opener.repeat(250_000);
+        const started = performance.now();
+        expect(maskRawTextContent(html)).toHaveLength(html.length);
+        expect(performance.now() - started).toBeLessThan(1000);
+      }
+    });
   });
 
   describe("scripts without <NextScript />", () => {
