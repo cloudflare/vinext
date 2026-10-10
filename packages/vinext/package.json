@@ -98,6 +98,10 @@
       "types": "./dist/server/headers.d.ts",
       "import": "./dist/server/headers.js"
     },
+    "./internal/server/http-conditional": {
+      "types": "./dist/server/http-conditional.d.ts",
+      "import": "./dist/server/http-conditional.js"
+    },
     "./internal/server/isr-cache": {
       "types": "./dist/server/isr-cache.d.ts",
       "import": "./dist/server/isr-cache.js"

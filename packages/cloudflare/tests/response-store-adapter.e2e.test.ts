@@ -1000,6 +1000,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const conditional = await request("/pages-prewarm", conditionalRequest);
     assert.equal(conditional.status, 304);
     assert.equal(conditional.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(conditional.headers.get("content-type"), null);
     assert.equal(await conditional.text(), "");
     await waitForResponseEntries("/pages-prewarm", 1);
 
@@ -1013,6 +1014,84 @@ describe("Cloudflare Workers Response Store adapter", () => {
     // The stored page carries the validator the crawler revalidated against.
     assert.equal(visitor.headers.get("etag"), conditional.headers.get("etag"));
     assert.match(await visitor.text(), /Pages prewarm target/);
+  });
+
+  test("answers a stored page's conditional request as Next.js does", async () => {
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const page = await request("/pages-prewarm");
+    const buildId = (await page.text()).match(/"buildId":"([^"]+)"/)?.[1];
+    assert.ok(buildId, "missing the Pages buildId");
+    const pages = [
+      { path: "/pages-prewarm", headers: {} },
+      { path: `/_next/data/${buildId}/pages-prewarm.json`, headers: {} },
+      { path: "/prewarm-target", headers: {} },
+      { path: "/prewarm-target", headers: rscHeaders },
+      // A stored notFound() keeps its status, and its 304 stays a 304.
+      { path: "/special-error/not-found?_rsc", headers: rscHeaders },
+    ];
+    for (const { path, headers } of [...pages, { path: "/api/now", headers: {} }]) {
+      await (await request(path, { headers })).arrayBuffer();
+    }
+    for (const path of [
+      "/pages-prewarm",
+      pages[1].path,
+      "/prewarm-target",
+      "/special-error/not-found",
+      "/api/now",
+    ]) {
+      await waitForStoredEntries(async () => (await responseEntries(path)).slice(0, 1), 1);
+    }
+
+    for (const { path, headers } of pages) {
+      const stored = await request(path, { headers });
+      assert.equal(stored.headers.get("x-vinext-cache"), "HIT", path);
+      const body = await stored.arrayBuffer();
+      const etag = stored.headers.get("etag");
+      assert.ok(etag, `missing the stored ETag for ${path}`);
+      // Fetch adds Cache-Control: no-cache to a conditional request without
+      // one, and no-cache sends the page.
+      const conditional = { ...headers, "Cache-Control": "max-age=0", "If-None-Match": etag };
+
+      const notModified = await request(path, { headers: conditional });
+      assert.equal(notModified.status, 304, path);
+      assert.equal(notModified.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(notModified.headers.get("etag"), etag);
+      assert.equal(notModified.headers.get("cache-control"), stored.headers.get("cache-control"));
+      for (const name of ["content-encoding", "content-length", "content-type"]) {
+        assert.equal(notModified.headers.get(name), null, `${path} ${name}`);
+      }
+      assert.equal(await notModified.text(), "");
+      // Next.js sets the 304 after a middleware's status.
+      if (!path.startsWith("/special-error/")) {
+        const behindMiddleware = await request(path, {
+          headers: { ...conditional, "x-test-middleware-status": "1" },
+        });
+        assert.equal(behindMiddleware.status, 304, `${path} behind middleware`);
+        assert.equal(await behindMiddleware.text(), "");
+      }
+
+      for (const full of [
+        { ...conditional, "Cache-Control": "no-cache" },
+        { ...conditional, "If-None-Match": '"other"' },
+        { ...conditional, "If-Modified-Since": new Date().toUTCString() },
+      ]) {
+        const response = await request(path, { headers: full });
+        assert.equal(response.status, stored.status, `${path} ${JSON.stringify(full)}`);
+        assert.equal((await response.arrayBuffer()).byteLength, body.byteLength);
+      }
+    }
+
+    // Next.js sends a route handler's cached response in full.
+    const route = await request("/api/now");
+    const etag = route.headers.get("etag");
+    await route.arrayBuffer();
+    assert.ok(etag);
+    const routeConditional = await request("/api/now", {
+      headers: { "Cache-Control": "max-age=0", "If-None-Match": etag },
+    });
+    assert.equal(routeConditional.status, 200);
+    assert.equal(routeConditional.headers.get("x-vinext-cache"), "HIT");
+    assert.ok(((await routeConditional.json()) as { renderId?: string }).renderId);
   });
 
   test("caches HEAD independently without storing a body", async () => {

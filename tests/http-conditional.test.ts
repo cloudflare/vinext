@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateStaticPreconditions,
+  isPageNotModified,
   matchesIfMatch,
   matchesIfNoneMatch,
 } from "../packages/vinext/src/server/http-conditional.js";
@@ -69,6 +70,30 @@ describe("matchesIfNoneMatch", () => {
   it("rejects an absent or empty field value", () => {
     expect(matchesIfNoneMatch(undefined, '"asset"')).toBe(false);
     expect(matchesIfNoneMatch("", '"asset"')).toBe(false);
+  });
+});
+
+describe("isPageNotModified", () => {
+  it("answers a matching If-None-Match, as Next.js's fresh() does", () => {
+    expect(isPageNotModified({ ifNoneMatch: 'W/"page"' }, '"page"')).toBe(true);
+    expect(isPageNotModified({ ifNoneMatch: "*" }, '"page"')).toBe(true);
+    expect(isPageNotModified({ ifNoneMatch: '"other"' }, '"page"')).toBe(false);
+    expect(isPageNotModified({}, '"page"')).toBe(false);
+  });
+
+  it("sends the page for a request Cache-Control: no-cache", () => {
+    expect(
+      isPageNotModified({ cacheControl: "max-age=0, no-cache", ifNoneMatch: '"page"' }, '"page"'),
+    ).toBe(false);
+    expect(isPageNotModified({ cacheControl: "max-age=0", ifNoneMatch: '"page"' }, '"page"')).toBe(
+      true,
+    );
+  });
+
+  it("sends the page for If-Modified-Since, as a page has no Last-Modified", () => {
+    const ifModifiedSince = "Sat, 10 Oct 2026 00:00:00 GMT";
+    expect(isPageNotModified({ ifModifiedSince, ifNoneMatch: '"page"' }, '"page"')).toBe(false);
+    expect(isPageNotModified({ ifModifiedSince }, '"page"')).toBe(false);
   });
 });
 

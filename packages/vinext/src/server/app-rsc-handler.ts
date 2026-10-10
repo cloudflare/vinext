@@ -404,7 +404,9 @@ function applyMiddlewareContextToResponse(
   return preserveFullyBufferedBodyMetadata(
     response,
     new Response(response.body, {
-      status: middlewareContext.status ?? response.status,
+      // As in Next.js, which sets a 304 after middleware's status, a 304
+      // answers the request's own validator.
+      status: response.status === 304 ? 304 : (middlewareContext.status ?? response.status),
       statusText: response.statusText,
       headers,
     }),
@@ -426,8 +428,14 @@ function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boo
   const storedStatus = Number(marker);
   const isStoredSpecialError = storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
   // As on a single-stage render, the stored status takes precedence over a
-  // middleware status that the response stage's composition applied.
-  const status = !isStoredSpecialError ? response.status : isSegmentPrefetch ? 200 : storedStatus;
+  // middleware status that the response stage's composition applied. A 304
+  // answers the request's own validator, so it stays a 304.
+  const status =
+    response.status === 304 || !isStoredSpecialError
+      ? response.status
+      : isSegmentPrefetch
+        ? 200
+        : storedStatus;
   return preserveFullyBufferedBodyMetadata(
     response,
     new Response(response.body, {

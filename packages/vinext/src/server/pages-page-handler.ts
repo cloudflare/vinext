@@ -1036,6 +1036,7 @@ export function createPagesPageHandler(
           nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+          ifModifiedSince: request.headers.get("if-modified-since") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         });
 
@@ -1282,6 +1283,7 @@ export function createPagesPageHandler(
           nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+          ifModifiedSince: request.headers.get("if-modified-since") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         };
         let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);

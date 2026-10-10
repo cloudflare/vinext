@@ -37,7 +37,7 @@ import {
 } from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
-import { matchesIfNoneMatch } from "./http-conditional.js";
+import { isPageNotModified } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -63,17 +63,6 @@ export function isPagesStreamingBot(userAgent: string): boolean {
 
 export function generatePagesETag(payload: string): string {
   return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
-}
-
-/**
- * Returns true when a request `Cache-Control` header asks to bypass the 304
- * short-circuit. Mirrors the `fresh` package's check used by Next.js's
- * `sendEtagResponse` (`/(?:^|,)\s*?no-cache\s*?(?:,|$)/`). Shared by the
- * fresh-MISS bot path here and the ISR HIT/STALE paths in
- * `pages-page-data.ts` so the two cannot drift.
- */
-export function requestsNoCache(cacheControl: string | undefined): boolean {
-  return /(?:^|,)\s*no-cache\s*(?:,|$)/.test(cacheControl ?? "");
 }
 
 /**
@@ -229,6 +218,11 @@ type RenderPagesPageResponseOptions = {
    * Only evaluated on bot/buffered responses that carry an ETag.
    */
   ifNoneMatch?: string;
+  /**
+   * The incoming request's `If-Modified-Since` header value. As in Next.js,
+   * which gives a page no Last-Modified, a request with it gets the page.
+   */
+  ifModifiedSince?: string;
   /**
    * The incoming request's `Cache-Control` header value. When the value
    * contains `no-cache`, the 304 short-circuit is skipped and a full 200
@@ -793,11 +787,15 @@ export async function renderPagesPageResponse(
     const fullHtml = await readStreamAsText(compositeStream);
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
-    const noCacheRequested = requestsNoCache(options.requestCacheControl);
     if (
-      !noCacheRequested &&
-      options.ifNoneMatch &&
-      matchesIfNoneMatch(options.ifNoneMatch, etag) &&
+      isPageNotModified(
+        {
+          cacheControl: options.requestCacheControl,
+          ifModifiedSince: options.ifModifiedSince,
+          ifNoneMatch: options.ifNoneMatch,
+        },
+        etag,
+      ) &&
       rendersPagesNotModified(finalStatus)
     ) {
       return new Response(null, {
