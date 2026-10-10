@@ -7348,7 +7348,12 @@ export const loadServerActionClient = ${
         },
         handler(code) {
           if (this.environment?.name !== "client") return null;
-          if (getLeadingReactDirective(code) === "use server") return null;
+          // With App Router, @vitejs/plugin-rsc replaces a "use server" module
+          // in the client graph with server reference proxies, so its
+          // server-only imports never reach the browser. Pages-only builds
+          // have no such transform and would bundle the module as-is, which
+          // Next.js rejects too.
+          if (hasAppDir && getLeadingReactDirective(code) === "use server") return null;
           if (!hasServerOnlyMarkerImport(code)) return null;
 
           throw new Error(
