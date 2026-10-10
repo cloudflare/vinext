@@ -39,6 +39,8 @@ type ResponseStoreInvocation = {
 export type ResponseStoreInvocationCapture = {
   admittedResponse?: Promise<Response>;
   captureRscData?: boolean;
+  /** The render matched the request's If-None-Match; the adapter sends the 304. */
+  notModified?: boolean;
   rscData?: Promise<ArrayBuffer>;
   streamResponse?: boolean;
 };
@@ -79,6 +81,14 @@ export function captureResponseStoreRscData(rscData: Promise<ArrayBuffer>): void
   } else {
     void rscData.catch(() => {});
   }
+}
+
+/** A shared invocation stores the page, so its adapter sends the page's 304. */
+export function deferResponseStoreNotModified(): boolean {
+  const capture = invocationStorage.getStore()?.capture;
+  if (!capture) return false;
+  capture.notModified = true;
+  return true;
 }
 
 /** Stream the foreground body while retaining an independent admission branch. */

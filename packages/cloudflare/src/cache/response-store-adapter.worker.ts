@@ -348,10 +348,18 @@ function isCacheable(response: Response): boolean {
     response.headers.get("Cache-Control");
   return (
     response.status >= 200 &&
+    // A 304 answers one request's precondition; it is not the page.
+    response.status !== 304 &&
     (response.status < 400 || isStoredErrorStatus(response.status)) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
   );
+}
+
+/** Send the 304 for a page whose render matched the request's If-None-Match. */
+function notModifiedResponse(response: Response): Response {
+  void response.body?.cancel().catch(() => {});
+  return new Response(null, { headers: response.headers, status: 304 });
 }
 
 async function readStoredResponse(key: Request): Promise<Response | null> {
@@ -531,6 +539,11 @@ const handler = {
             : serializedInvocation,
         },
       );
+      // Next.js stores the page before it evaluates the ETag, so a render that
+      // matched the request's If-None-Match returns the page and its 304 is
+      // sent here. Admission keeps its own branch of a deferred body.
+      const foreground = (response: Response) =>
+        capture.notModified ? notModifiedResponse(response) : response;
       if (capture.admittedResponse) {
         ctx.waitUntil(
           capture.admittedResponse
@@ -555,18 +568,29 @@ const handler = {
         );
         // The foreground can precede admission. Retain browser revalidation
         // until the completed response has a proven policy.
-        return publicResponse(rendered, "MISS", props, true);
+        if (!capture.notModified) return publicResponse(rendered, "MISS", props, true);
+        // A 304 has no body to send ahead of admission, and it updates the
+        // client's stored headers, so it carries the admitted page's policy.
+        const notModified = notModifiedResponse(rendered);
+        const admitted = await capture.admittedResponse.catch(() => null);
+        return admitted
+          ? publicResponse(
+              new Response(null, { headers: admitted.headers, status: 304 }),
+              "MISS",
+              props,
+            )
+          : publicResponse(notModified, "MISS", props, true);
       }
       if (!isCacheable(rendered)) {
         void capture?.rscData?.catch(() => {});
-        return publicResponse(rendered, "BYPASS", props);
+        return publicResponse(foreground(rendered), "BYPASS", props);
       }
       if (rscSeed && !capture?.rscData) {
         await rendered.body?.cancel();
         throw new Error("Vinext response-store warmup did not capture the App page RSC payload");
       }
 
-      const [foreground, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
+      const [foregroundBody, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
         await responseStore.put(key, cacheResponse, {
@@ -616,7 +640,7 @@ const handler = {
           },
         );
       }
-      return publicResponse(new Response(foreground, rendered), "MISS", props);
+      return publicResponse(foreground(new Response(foregroundBody, rendered)), "MISS", props);
     };
 
     const { handleRequestStage } = await loadVinextRequestStage<

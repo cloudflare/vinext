@@ -25,6 +25,7 @@ import {
   buildPagesNextDataScript,
   generatePagesETag,
   isPagesStreamingBot,
+  rendersPagesNotModified,
   requestsNoCache,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
@@ -1070,7 +1071,12 @@ function finalizeCachedPagesResponse(
     const etag = generatePagesETag(html);
     response.headers.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
-    if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
+    if (
+      !noCacheRequested &&
+      options.ifNoneMatch &&
+      matchesIfNoneMatch(options.ifNoneMatch, etag) &&
+      rendersPagesNotModified(response.status)
+    ) {
       response = new Response(null, { status: 304, headers: response.headers });
     }
   }

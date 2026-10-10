@@ -171,6 +171,13 @@ export type CdnCacheAdapter = {
   captureAppPageRscData?(rscData: Promise<ArrayBuffer>): void;
 
   /**
+   * Whether this adapter sends the 304 for a Pages render whose If-None-Match
+   * matches. When it does, the render returns the page, so an adapter that
+   * stores completed responses stores the page rather than the 304.
+   */
+  deferNotModifiedResponse?(): boolean;
+
+  /**
    * Validate provider-specific request routing before the application handles
    * the request. Returning a response short-circuits the request pipeline;
    * returning `null` continues normally.
