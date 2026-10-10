@@ -226,16 +226,11 @@ export default function GsspServerOnlyPage({ keyLength }: { keyLength: number })
       expect(pageModule.status).toBe(200);
       expect(await pageModule.text()).not.toContain(SIGNING_KEY);
 
-      // The "use server" module's server-only import fails when the browser
-      // loads it.
+      // The "use server" module itself fails, so the browser never loads its
+      // other imports (the signing key).
       const sessionModule = await fetch(`${baseUrl}/server/session.ts`);
-      const serverOnlyImport = /["']([^"']*vinext:invalid-server-only:[^"']*)["']/.exec(
-        await sessionModule.text(),
-      )?.[1];
-      expect(serverOnlyImport).toBeDefined();
-      const serverOnlyModule = await fetch(new URL(serverOnlyImport!, baseUrl));
-      expect(serverOnlyModule.status).toBe(500);
-      expect(await serverOnlyModule.text()).toContain('depends on \\"server-only\\"');
+      expect(sessionModule.status).toBe(500);
+      expect(await sessionModule.text()).toContain('depends on \\"server-only\\"');
 
       await server.environments.client.depsOptimizer?.scanProcessing;
       expect(errors.filter((message) => message.includes("dependency scan"))).toEqual([]);

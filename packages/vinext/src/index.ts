@@ -461,10 +461,17 @@ installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
-// Pages-only client graphs resolve `server-only` to this virtual module, which
-// fails when loaded. The importer path follows the prefix.
+// In dev, `server-only` imports that only Vite's dependency scan reaches
+// resolve to this virtual module, which fails when loaded. The importer path
+// follows the prefix.
 const INVALID_SERVER_ONLY_ID_PREFIX = "\0vinext:invalid-server-only:";
 const INVALID_SERVER_ONLY_ID_RE = /^\0vinext:invalid-server-only:/;
+
+function createServerOnlyClientImportError(importer: string | undefined): Error {
+  return new Error(
+    `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but ${importer || "this module"} is reachable from a client bundle.`,
+  );
+}
 
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
@@ -7348,27 +7355,35 @@ export const loadServerActionClient = ${
       name: "vinext:validate-server-only-client-imports",
       // Pages-only client graphs are guarded at resolution, as in Next.js, so
       // every specifier form (static, dynamic, re-export, require) and file
-      // type is caught before the no-op `server-only` alias applies. Pages
-      // data exports are stripped before their imports resolve. The import
-      // resolves to a virtual module that fails when loaded, rather than
-      // throwing here, because Vite's dev dependency scan resolves imports of
-      // untransformed sources (including stripped data exports) but never
-      // loads virtual modules.
+      // type is caught before the no-op `server-only` alias applies, and the
+      // importing module itself fails. Pages data exports are stripped before
+      // their imports resolve.
       resolveId: {
         order: "pre",
         filter: { id: SERVER_ONLY_SPECIFIER_RE },
         handler(_source, importer) {
-          if (this.environment?.name !== "client" || hasAppDir) return null;
-          return { id: INVALID_SERVER_ONLY_ID_PREFIX + (importer ?? ""), moduleSideEffects: true };
+          const environment = this.environment;
+          if (environment?.name !== "client" || hasAppDir) return null;
+          // Vite's dev dependency scan also resolves imports of untransformed
+          // sources, including stripped data exports, whose importers never
+          // enter the client module graph. Those resolve to a virtual module
+          // that fails only if it is ever loaded; the scan never loads it.
+          if (
+            environment.mode === "dev" &&
+            !(importer && environment.moduleGraph.getModuleById(importer))
+          ) {
+            return {
+              id: INVALID_SERVER_ONLY_ID_PREFIX + (importer ?? ""),
+              moduleSideEffects: true,
+            };
+          }
+          throw createServerOnlyClientImportError(importer);
         },
       },
       load: {
         filter: { id: INVALID_SERVER_ONLY_ID_RE },
         handler(id) {
-          const importer = id.slice(INVALID_SERVER_ONLY_ID_PREFIX.length) || "this module";
-          throw new Error(
-            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but ${importer} is reachable from a client bundle.`,
-          );
+          throw createServerOnlyClientImportError(id.slice(INVALID_SERVER_ONLY_ID_PREFIX.length));
         },
       },
       transform: {
