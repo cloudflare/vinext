@@ -111,6 +111,7 @@ import {
   resolveSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
+import { createAppBrowserRefreshQueue } from "./app-browser-refresh-queue.js";
 import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
@@ -337,6 +338,10 @@ const historyController = new AppBrowserHistoryController({
 const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
+  // The router has just started a document load. A refresh the navigation's
+  // settle released now would refetch the page being left, and one that hard-
+  // navigates in turn would replace that load, so drop it.
+  onHardNavigation: () => refreshQueue.drop(),
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
 });
@@ -359,6 +364,29 @@ const discardedServerActionRefreshScheduler = hasServerActions
       markNavigationStart() {},
       schedule() {},
     };
+/**
+ * Runs router.refresh(). Like Next.js's refresh reducer, it invalidates the
+ * client caches when the refresh runs, not when it is queued, so a navigation
+ * ahead of it still sees them.
+ */
+function runRouterRefresh(): void {
+  clearClientNavigationCaches();
+  startTransition(() => {
+    void getNavigationRuntime()?.functions.navigate?.(
+      window.location.href,
+      0,
+      "refresh",
+      undefined,
+      undefined,
+      true,
+    );
+  });
+}
+
+const refreshQueue = createAppBrowserRefreshQueue({
+  onDropRefresh: clearClientNavigationCaches,
+  runRefresh: runRouterRefresh,
+});
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
@@ -1359,6 +1387,9 @@ function BrowserRoot({
     );
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
+        // The document load is deferred, and a refresh that ran first would
+        // replace it, so drop a queued refresh now.
+        refreshQueue.drop();
         setTreeStateValue({
           href,
           historyUpdateMode,
@@ -1589,7 +1620,7 @@ function restorePopstateScrollPosition(
 
   if (!(state && typeof state === "object" && "__vinext_scrollY" in state)) {
     if (window.location.hash) {
-      scrollToHashTargetOnNextFrame(window.location.hash);
+      scrollToHashTargetOnNextFrame(window.location.hash, shouldContinue);
     }
     return;
   }
@@ -1825,9 +1856,21 @@ function registerServerActionCallback(): void {
               previousNextUrl: null,
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
-            }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
-            });
+            }).then(
+              (outcome) => {
+                // The page has navigated. If the action ran under a refresh's
+                // id, that id now counts as a navigation, so it ends an
+                // earlier traversal's scroll restore.
+                if (outcome === "committed") {
+                  browserNavigationController.markNonRefreshNavigation(
+                    actionInitiation.navigationId,
+                  );
+                }
+              },
+              () => {
+                browserNavigationController.performHardNavigation(target.href);
+              },
+            );
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
             historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
@@ -2027,11 +2070,14 @@ function bootstrapHydration(
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
     initialBypassNavigationCache?: boolean,
   ): Promise<void> {
+    if (navigationKind === "refresh" && refreshQueue.queueRefresh()) return;
     serverActionSupplementalRefreshCoordinator.abortAll();
     const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
-    const navId = browserNavigationController.beginNavigation();
+    const navId = browserNavigationController.beginNavigation({
+      refresh: navigationKind === "refresh",
+    });
     const navigationCacheGeneration = clientNavigationCacheGeneration;
     discardedServerActionRefreshScheduler.markNavigationStart();
 
@@ -2078,6 +2124,19 @@ function bootstrapHydration(
         historyController.isCurrentBfcacheVersion(
           activeTraversalIntent?.historyState ?? window.history.state,
         ));
+    // A refresh does not hold later refreshes back; a newer one supersedes it
+    // (see createAppBrowserRefreshQueue).
+    const refreshQueueNavigation =
+      navigationKind === "refresh" ? null : refreshQueue.beginNavigation();
+    let followedRedirect = false;
+    const settleCommittedNavigation = () => {
+      // A refresh that followed a redirect has now left the page, so it ends a
+      // traversal's scroll restore.
+      if (navigationKind === "refresh" && followedRedirect) {
+        browserNavigationController.markNonRefreshNavigation(navId);
+      }
+      refreshQueueNavigation?.settle();
+    };
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (hasBrowserRouterState()) {
@@ -2327,6 +2386,7 @@ function bootstrapHydration(
             if (navigationKind === "traverse") {
               restoredBfcacheIds = null;
             }
+            followedRedirect = true;
             currentHref = cachedFetchDecision.redirect.href;
             currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
             currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
@@ -2381,6 +2441,7 @@ function bootstrapHydration(
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
           });
+          if (cachedRenderOutcome === "committed") settleCommittedNavigation();
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
             deleteVisitedResponse(rscUrl, requestInterceptionContext);
@@ -2607,6 +2668,7 @@ function bootstrapHydration(
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
           }
+          followedRedirect = true;
           currentHref = liveFetchDecision.redirect.href;
           currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
           currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;
@@ -2772,6 +2834,9 @@ function bootstrapHydration(
           visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
         });
         if (renderOutcome !== "committed") return;
+        // The destination is visible and in history. A refresh queued behind
+        // this navigation must not also wait for the rest of its stream.
+        settleCommittedNavigation();
         if (hasSupplementalRefresh) {
           clearVisitedResponseCache();
           return;
@@ -2901,6 +2966,10 @@ function bootstrapHydration(
       performHardNavigationForScrollIntent(errorDecision.url);
     } finally {
       navigationAbortHandle.release();
+      // A document load the router started has already dropped the queued
+      // refresh (onHardNavigation). Otherwise this releases it, even while a
+      // document load the router did not start is pending.
+      refreshQueueNavigation?.settle();
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
@@ -2913,6 +2982,9 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
+    refresh: () => {
+      if (!refreshQueue.queueRefresh()) runRouterRefresh();
+    },
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
     getPrefetchRouterState: () => {
@@ -2974,7 +3046,7 @@ function bootstrapHydration(
     ),
     getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
     getNavigate: () => getNavigationRuntime()?.functions.navigate,
-    isCurrentNavigation: browserNavigationController.isCurrentNavigation.bind(
+    isLatestNonRefreshNavigation: browserNavigationController.isLatestNonRefreshNavigation.bind(
       browserNavigationController,
     ),
     notifyAppRouterTransitionStart: (href) => {
@@ -3010,8 +3082,13 @@ function bootstrapHydration(
       return;
     }
     const snapshotNavigationId = browserNavigationController.beginNavigation();
-    if (
-      restoreHistoryStateSnapshot(
+    // This traversal replaces the navigation in flight, so it takes over a
+    // refresh queued behind it, as Next.js's restore action does. A traversal
+    // that refetches takes it over again in navigateRsc; the finally releases
+    // it if anything before that throws.
+    const refreshQueueNavigation = refreshQueue.beginNavigation();
+    try {
+      const restored = restoreHistoryStateSnapshot(
         event.state,
         snapshotNavigationId,
         () => {
@@ -3019,25 +3096,31 @@ function bootstrapHydration(
           notifyAppRouterTransitionStart(href, "traverse");
         },
         isExternalHistoryEntry,
-      )
-    ) {
-      window.__VINEXT_RSC_PENDING__ = null;
-      restoreSynchronousPopstateScrollPosition(
-        {
-          getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
-          isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
-          markScrollRestoreConsumed: (navId) => {
-            synchronousPopstateScrollRestoreNavigationId = navId;
-          },
-          restorePopstateScrollPosition,
-        },
-        event.state,
       );
+      if (restored) {
+        window.__VINEXT_RSC_PENDING__ = null;
+        restoreSynchronousPopstateScrollPosition(
+          {
+            getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
+            isLatestNonRefreshNavigation: (navId) =>
+              browserNavigationController.isLatestNonRefreshNavigation(navId),
+            markScrollRestoreConsumed: (navId) => {
+              synchronousPopstateScrollRestoreNavigationId = navId;
+            },
+            restorePopstateScrollPosition,
+          },
+          event.state,
+        );
+        browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
+        return;
+      }
       browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
-      return;
+      handlePopstate(event);
+    } finally {
+      // Released even if something above throws; otherwise every later
+      // refresh would queue behind it forever.
+      refreshQueueNavigation.settle();
     }
-    browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
-    handlePopstate(event);
   });
 
   if (import.meta.env.DEV && import.meta.hot) {
