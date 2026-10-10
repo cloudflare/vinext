@@ -376,6 +376,52 @@ test("useSearchParams() server-renders the real query once the page is dynamic",
   expect(headers["cf-cache-status"]).not.toBe("HIT");
 });
 
+test("a query-bearing miss stores nothing of its query for a query-free visitor", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(
+    backend === "workers-cache",
+    "the edge admits Workers Cache entries; its cross-query test covers what it stores",
+  );
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(90_000);
+
+  // Next.js keeps the request's query out of a static page's HTML, including
+  // its navigation payload, so the one stored entry serves every query. The
+  // on-demand path starts cold and every request carries a token no earlier
+  // request used, so only a query-bearing render can be the HIT.
+  const path = `/cached/${randomUUID()}`;
+  const secrets: string[] = [];
+  const expectNoSecrets = (body: string, trace: string) => {
+    for (const secret of secrets) expect(body, trace).not.toContain(secret);
+  };
+  await expect
+    .poll(
+      async () => {
+        const secret = randomUUID();
+        secrets.push(secret);
+        const response = await request.get(`${baseURL}${path}?token=${secret}`);
+        const headers = response.headers();
+        const trace = JSON.stringify({ backend, headers });
+        expect(response.ok(), trace).toBe(true);
+        expectNoSecrets(await response.text(), trace);
+        return headers[cacheStatusHeader];
+      },
+      // KV caches the miss's "not found" read in its location for up to 60s.
+      { intervals: [1_000], timeout: 75_000 },
+    )
+    .toBe("HIT");
+
+  // A query-free visitor gets that entry.
+  const visitor = await request.get(`${baseURL}${path}`);
+  const headers = visitor.headers();
+  const trace = JSON.stringify({ backend, headers });
+  expect(headers[cacheStatusHeader], trace).toBe("HIT");
+  expectNoSecrets(await visitor.text(), trace);
+});
+
 test("Workers Cache serves every query of a static page from one entry", async ({
   baseURL,
   request,

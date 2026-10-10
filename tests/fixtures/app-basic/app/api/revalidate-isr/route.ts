@@ -6,6 +6,7 @@ const RESETTABLE_ISR_PATHS = new Set([
   "/isr-test",
   "/client-isr-test",
   "/revalidate-test",
+  "/isr-search-params-suspense",
   "/revalidate-tag-test",
   "/revalidate-tag-test/nested",
   "/route-cache-identity",
