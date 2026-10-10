@@ -1,6 +1,6 @@
 import type { Plugin } from "vite";
 
-const SERVER_ONLY_SPECIFIER_RE = /^server-only$/;
+export const SERVER_ONLY_SPECIFIER_RE = /^server-only$/;
 
 /**
  * Reject `server-only` imports inside browser Web Worker bundles.

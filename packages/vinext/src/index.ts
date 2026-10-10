@@ -318,7 +318,10 @@ import {
   type EmittedModuleFileNameResolver,
 } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
-import { createWorkerServerOnlyImportsPlugin } from "./plugins/worker-server-only-imports.js";
+import {
+  createWorkerServerOnlyImportsPlugin,
+  SERVER_ONLY_SPECIFIER_RE,
+} from "./plugins/worker-server-only-imports.js";
 import { createWorkerUseServerPlugins } from "./plugins/worker-use-server.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import {
@@ -7338,6 +7341,23 @@ export const loadServerActionClient = ${
     // packages/next/src/build/webpack-config.ts (server-only/client-only layers)
     {
       name: "vinext:validate-server-only-client-imports",
+      // Pages-only client graphs are guarded at resolution, as in Next.js, so
+      // every specifier form (static, dynamic, re-export, require) and file
+      // type is caught before the no-op `server-only` alias applies. Pages
+      // data exports are stripped before their imports resolve. Vite's dev
+      // dependency scan crawls untransformed sources, so it is skipped.
+      resolveId: {
+        order: "pre",
+        filter: { id: SERVER_ONLY_SPECIFIER_RE },
+        handler(_source, importer, options) {
+          if (this.environment?.name !== "client" || hasAppDir) return null;
+          // `scan` is an internal Vite resolve option, absent from its types.
+          if ("scan" in options && options.scan === true) return null;
+          throw new Error(
+            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but ${importer ?? "this module"} is reachable from a client bundle.`,
+          );
+        },
+      },
       transform: {
         filter: {
           id: {
@@ -7347,13 +7367,12 @@ export const loadServerActionClient = ${
           code: "server-only",
         },
         handler(code) {
-          if (this.environment?.name !== "client") return null;
-          // With App Router, @vitejs/plugin-rsc replaces a "use server" module
-          // in the client graph with server reference proxies, so its
-          // server-only imports never reach the browser. Pages-only builds
-          // have no such transform and would bundle the module as-is, which
-          // Next.js rejects too.
-          if (hasAppDir && getLeadingReactDirective(code) === "use server") return null;
+          if (this.environment?.name !== "client" || !hasAppDir) return null;
+          // @vitejs/plugin-rsc replaces a "use server" module in the client
+          // graph with server reference proxies, so its server-only imports
+          // never reach the browser. Pages-only builds have no such transform,
+          // which is why they are guarded at resolution above instead.
+          if (getLeadingReactDirective(code) === "use server") return null;
           if (!hasServerOnlyMarkerImport(code)) return null;
 
           throw new Error(

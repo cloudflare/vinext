@@ -11,12 +11,17 @@
  * source-held signing key. Next.js 16.2.7 fails the build for this graph with
  * both webpack ("'server-only' cannot be imported from a Client Component
  * module", import trace through the barrel) and Turbopack.
+ *
+ * Pages-only client graphs are guarded when `server-only` resolves, so the
+ * dev server must also reject the module while still serving pages whose
+ * stripped data exports import `server-only`, without failing Vite's
+ * dependency scan of their untransformed sources.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createBuilder, type Plugin } from "vite";
+import { createBuilder, createLogger, createServer, type Plugin } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
@@ -24,8 +29,6 @@ const CF_EXAMPLE_DIR = path.resolve(import.meta.dirname, "../examples/pages-rout
 const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/pages-basic");
 const WORKSPACE_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const SIGNING_KEY = "__VINEXT_PAGES_USE_SERVER_SIGNING_KEY__";
-const SERVER_ONLY_ERROR =
-  /server[\\/]session\.ts[\s\S]*depends on "server-only".*reachable from a client bundle/;
 
 const tmpDirs: string[] = [];
 
@@ -74,21 +77,9 @@ function copyFixture(fixtureDir: string): string {
   );
   writeFile(
     root,
-    "server/session.ts",
-    `"use server";
-import "server-only";
-import { SESSION_SIGNING_KEY } from "./session-key";
-
-export async function greet(name: string) {
-  return "hello " + name;
-}
-
-export async function signSession(payload: string) {
-  return payload + "." + SESSION_SIGNING_KEY.length;
-}
-`,
+    "server/session-key.cjs",
+    `exports.SESSION_SIGNING_KEY = ${JSON.stringify(SIGNING_KEY)};\n`,
   );
-  writeFile(root, "server/index.ts", 'export { greet } from "./session";\n');
   writeFile(
     root,
     "pages/use-server-greet.tsx",
@@ -102,6 +93,53 @@ export default function UseServerGreetPage() {
   return root;
 }
 
+/** A `"use server"` module reached through a barrel that re-exports only `greet`. */
+function writeSessionModule(root: string, file: string, source: string) {
+  writeFile(root, `server/${file}`, source);
+  writeFile(root, "server/index.ts", `export { greet } from "./${file}";\n`);
+}
+
+const ESM_SESSION_BODY = `import { SESSION_SIGNING_KEY } from "./session-key";
+
+export async function greet(name: string) {
+  return "hello " + name;
+}
+
+export async function signSession(payload: string) {
+  return payload + "." + SESSION_SIGNING_KEY.length;
+}
+`;
+
+const SESSION_MODULES: Array<[form: string, file: string, source: string]> = [
+  ["a static import", "session.ts", `"use server";\nimport "server-only";\n${ESM_SESSION_BODY}`],
+  [
+    "a static import in .mts",
+    "session.mts",
+    `"use server";\nimport "server-only";\n${ESM_SESSION_BODY}`,
+  ],
+  [
+    "an ES module re-export",
+    "session.ts",
+    `"use server";\nexport * from "server-only";\n${ESM_SESSION_BODY}`,
+  ],
+  [
+    "a dynamic import",
+    "session.ts",
+    `"use server";\nvoid import("server-only");\n${ESM_SESSION_BODY}`,
+  ],
+  [
+    "a CommonJS require",
+    "session.cjs",
+    `"use server";
+require("server-only");
+const { SESSION_SIGNING_KEY } = require("./session-key.cjs");
+
+exports.greet = async (name) => "hello " + name;
+exports.signSession = async (payload) => payload + "." + SESSION_SIGNING_KEY.length;
+`,
+  ],
+];
+
 async function buildFixture(root: string, plugins: Plugin[] = []): Promise<void> {
   const builder = await createBuilder({
     root,
@@ -112,21 +150,90 @@ async function buildFixture(root: string, plugins: Plugin[] = []): Promise<void>
   await builder.buildApp();
 }
 
-describe("Pages Router client builds reject server-only behind a 'use server' directive", () => {
-  it("fails the Cloudflare Workers build when a page imports a barrel export", async () => {
-    const root = copyFixture(CF_EXAMPLE_DIR);
-    const { cloudflare } = (await import(
-      pathToFileURL(
-        path.join(CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
-      ).href
-    )) as { cloudflare: () => Plugin };
+describe.each([
+  ["Cloudflare Workers example", CF_EXAMPLE_DIR, true],
+  ["Node fixture", PAGES_FIXTURE_DIR, false],
+])("Pages Router client builds of the %s", (_, fixtureDir, useCloudflare) => {
+  it.each(SESSION_MODULES)(
+    "reject server-only behind a 'use server' directive through %s",
+    async (_form, file, source) => {
+      const root = copyFixture(fixtureDir);
+      writeSessionModule(root, file, source);
+      const plugins: Plugin[] = [];
+      if (useCloudflare) {
+        const { cloudflare } = (await import(
+          pathToFileURL(
+            path.join(CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
+          ).href
+        )) as { cloudflare: () => Plugin };
+        plugins.push(cloudflare());
+      }
 
-    await expect(buildFixture(root, [cloudflare()])).rejects.toThrow(SERVER_ONLY_ERROR);
-  }, 120_000);
+      // The error names the "use server" module as the importer.
+      const importer = path.join(fs.realpathSync(root), "server", file);
+      await expect(buildFixture(root, plugins)).rejects.toThrow(
+        `depends on "server-only". This API is only available in Server Components in the App Router, but ${importer} is reachable from a client bundle.`,
+      );
+    },
+    120_000,
+  );
+});
 
-  it("fails the Node build when a page imports a barrel export", async () => {
+describe("Pages Router dev server", () => {
+  it("rejects server-only behind a 'use server' directive and keeps data-export imports working", async () => {
     const root = copyFixture(PAGES_FIXTURE_DIR);
+    writeSessionModule(root, "session.ts", SESSION_MODULES[0][2]);
+    writeFile(
+      root,
+      "lib/gssp-server-only.ts",
+      `import "server-only";\n\nexport const GSSP_SECRET = ${JSON.stringify(SIGNING_KEY)};\n`,
+    );
+    writeFile(
+      root,
+      "pages/gssp-server-only.tsx",
+      `import { GSSP_SECRET } from "../lib/gssp-server-only";
 
-    await expect(buildFixture(root)).rejects.toThrow(SERVER_ONLY_ERROR);
+export async function getServerSideProps() {
+  return { props: { keyLength: GSSP_SECRET.length } };
+}
+
+export default function GsspServerOnlyPage({ keyLength }: { keyLength: number }) {
+  return <p data-testid="key-length">{keyLength}</p>;
+}
+`,
+    );
+
+    const errors: string[] = [];
+    const logger = createLogger("silent");
+    logger.error = (message) => void errors.push(message);
+    const server = await createServer({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      optimizeDeps: { holdUntilCrawlEnd: true },
+      server: { host: "127.0.0.1", port: 0 },
+      customLogger: logger,
+    });
+    try {
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address !== "object") throw new Error("dev server did not listen");
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const html = await (await fetch(`${baseUrl}/gssp-server-only`)).text();
+      expect(html).toContain(`data-testid="key-length">${SIGNING_KEY.length}<`);
+      const pageModule = await fetch(`${baseUrl}/pages/gssp-server-only.tsx`);
+      expect(pageModule.status).toBe(200);
+      expect(await pageModule.text()).not.toContain(SIGNING_KEY);
+
+      const sessionModule = await fetch(`${baseUrl}/server/session.ts`);
+      expect(sessionModule.status).toBe(500);
+      expect(await sessionModule.text()).toContain('depends on \\"server-only\\"');
+
+      await server.environments.client.depsOptimizer?.scanProcessing;
+      expect(errors.filter((message) => message.includes("dependency scan"))).toEqual([]);
+    } finally {
+      await server.close();
+    }
   }, 120_000);
 });
