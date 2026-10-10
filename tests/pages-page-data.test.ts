@@ -662,6 +662,38 @@ describe("pages page data", () => {
     expect(html.endsWith('</script><script src="/tail.js"></script></body></html>')).toBe(true);
   });
 
+  it("keeps markup-looking iframe text out of the regenerated body splice", async () => {
+    // `iframe` contents are RAWTEXT, and React leaves its
+    // `dangerouslySetInnerHTML` body verbatim.
+    const body =
+      '<iframe>X</div><img src=x><script id="__NEXT_DATA__" type="application/json">Y</iframe>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html><head></head><body><div id="__next">${body}</div>` +
+        '<script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>',
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async () => body),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(
+      html.startsWith(
+        `<!DOCTYPE html><html><head></head><body><div id="__next">${body}</div>` +
+          '<script id="__NEXT_DATA__" type="application/json">',
+      ),
+    ).toBe(true);
+    expect(html.match(/<img/g)).toHaveLength(1);
+  });
+
   it("reads a script tag inside a quoted attribute as attribute text", async () => {
     const body = '<span title="<script>">x</span>';
     const html = await renderPagesIsrHtml({

@@ -1121,17 +1121,18 @@ const SSR_HEAD_TAG_PATTERN =
  * text-only element, or any other start tag. Script and style are raw text:
  * React escapes only the element's own closing sequence in their children, so
  * page data rendered into one can spell out markup such as `</div>` or a
- * `__NEXT_DATA__`-shaped script tag without it being markup. Title and
- * textarea (RCDATA) and noscript (raw text while scripting is enabled) only
- * carry such text through `dangerouslySetInnerHTML`, as do comments and a `<`
- * inside an attribute value; consuming each start tag whole keeps a scan from
- * starting inside its quoted attributes.
+ * `__NEXT_DATA__`-shaped script tag without it being markup. The other
+ * RAWTEXT/RCDATA elements (and noscript, raw text while scripting is enabled)
+ * only carry such text through `dangerouslySetInnerHTML`, as do comments and a
+ * `<` inside an attribute value; `plaintext` turns everything after it into
+ * text. Consuming each start tag whole keeps a scan from starting inside its
+ * quoted attributes.
  *
  * Tag names end at whitespace, `/` or `>` as in the tokenizer, so a
  * `<script-x>` custom element (whose text React escapes) is just a start tag.
  */
 const SHELL_TEXT_REGION_PATTERN =
-  /<!--(?:-?>|[\s\S]*?--!?>)|(<(script|style|title|textarea|noscript)(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>)([\s\S]*?)(<\/\2(?=[\s/>])[^>]*>)|<[a-z][^\s/>]*(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+  /<!--(?:-?>|[\s\S]*?--!?>)|(<(script|style|title|textarea|noscript|iframe|xmp|noembed|noframes)(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>)([\s\S]*?)(<\/\2(?=[\s/>])[^>]*>)|<plaintext(?=[\s/>])[\s\S]*|<[a-z][^\s/>]*(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 
 /**
  * Blank every comment, the body of every text-only element, and any `<` inside
@@ -1142,7 +1143,9 @@ function maskShellText(html: string): string {
   return html.replace(
     SHELL_TEXT_REGION_PATTERN,
     (region: string, open?: string, _tag?: string, content?: string, close?: string) => {
-      if (region.startsWith("<!--")) return " ".repeat(region.length);
+      if (region.startsWith("<!--") || /^<plaintext/i.test(region)) {
+        return " ".repeat(region.length);
+      }
       if (open === undefined || content === undefined || close === undefined) {
         return "<" + region.slice(1).replaceAll("<", " ");
       }
