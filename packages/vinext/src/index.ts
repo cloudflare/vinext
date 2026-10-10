@@ -461,6 +461,11 @@ installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
+// Pages-only client graphs resolve `server-only` to this virtual module, which
+// fails when loaded. The importer path follows the prefix.
+const INVALID_SERVER_ONLY_ID_PREFIX = "\0vinext:invalid-server-only:";
+const INVALID_SERVER_ONLY_ID_RE = /^\0vinext:invalid-server-only:/;
+
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
 
@@ -7344,17 +7349,25 @@ export const loadServerActionClient = ${
       // Pages-only client graphs are guarded at resolution, as in Next.js, so
       // every specifier form (static, dynamic, re-export, require) and file
       // type is caught before the no-op `server-only` alias applies. Pages
-      // data exports are stripped before their imports resolve. Vite's dev
-      // dependency scan crawls untransformed sources, so it is skipped.
+      // data exports are stripped before their imports resolve. The import
+      // resolves to a virtual module that fails when loaded, rather than
+      // throwing here, because Vite's dev dependency scan resolves imports of
+      // untransformed sources (including stripped data exports) but never
+      // loads virtual modules.
       resolveId: {
         order: "pre",
         filter: { id: SERVER_ONLY_SPECIFIER_RE },
-        handler(_source, importer, options) {
+        handler(_source, importer) {
           if (this.environment?.name !== "client" || hasAppDir) return null;
-          // `scan` is an internal Vite resolve option, absent from its types.
-          if ("scan" in options && options.scan === true) return null;
+          return { id: INVALID_SERVER_ONLY_ID_PREFIX + (importer ?? ""), moduleSideEffects: true };
+        },
+      },
+      load: {
+        filter: { id: INVALID_SERVER_ONLY_ID_RE },
+        handler(id) {
+          const importer = id.slice(INVALID_SERVER_ONLY_ID_PREFIX.length) || "this module";
           throw new Error(
-            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but ${importer ?? "this module"} is reachable from a client bundle.`,
+            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but ${importer} is reachable from a client bundle.`,
           );
         },
       },
