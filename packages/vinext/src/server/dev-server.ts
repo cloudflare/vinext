@@ -463,8 +463,8 @@ async function streamPageToResponseImpl(
       renderedDocument.props,
       "next-script",
     );
-    // Replace __NEXT_MAIN__ with our stream marker
-    docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
+    // Replace the <Main /> placeholder with our stream marker
+    docHtml = docHtml.replace("<!-- __NEXT_MAIN__ -->", STREAM_BODY_MARKER);
     if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
@@ -474,8 +474,11 @@ async function streamPageToResponseImpl(
       );
     }
     // Inject scripts: replace placeholder or append before </body>
-    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", generatedScripts);
-    if (!docHtml.includes("__NEXT_DATA__")) {
+    // Detect NextScript by its placeholder: a bare "__NEXT_DATA__" can also
+    // come from request data the custom Document rendered.
+    if (docHtml.includes("<!-- __NEXT_SCRIPTS__ -->")) {
+      docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", generatedScripts);
+    } else {
       docHtml = docHtml.replace("</body>", `  ${generatedScripts}\n</body>`);
     }
     shellTemplate = docHtml;

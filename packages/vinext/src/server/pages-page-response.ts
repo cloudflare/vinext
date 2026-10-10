@@ -343,7 +343,7 @@ async function buildPagesShellHtml(
       renderedDocument.props,
       { configuredCrossOrigin: options.crossOrigin },
     );
-    html = html.replace("__NEXT_MAIN__", bodyMarker);
+    html = html.replace("<!-- __NEXT_MAIN__ -->", bodyMarker);
     // Next.js renders the collected `next/head` array before children declared
     // inside a custom Document's <Head>. Insert it after the opening tag so the
     // default charset remains the first element even when <Head> has props.
@@ -359,8 +359,11 @@ async function buildPagesShellHtml(
         `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n</head>`,
       );
     }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
-    if (!html.includes("__NEXT_DATA__")) {
+    // Detect NextScript by its placeholder: a bare "__NEXT_DATA__" can also
+    // come from request data the custom Document rendered.
+    if (html.includes("<!-- __NEXT_SCRIPTS__ -->")) {
+      html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
+    } else {
       html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
     }
     return html;

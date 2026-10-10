@@ -95,7 +95,7 @@ function createCommonOptions() {
   const isrSet = vi.fn(async () => {});
   const renderDocumentToString = vi.fn(
     async () =>
-      '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
+      '<!DOCTYPE html><html><head></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
   );
   const renderIsrPassToStringAsync = vi.fn(async () => "<div>cached-body</div>");
   const renderToReadableStream = vi.fn(async () => createStream(["<div>live-body</div>"]));
@@ -464,7 +464,7 @@ describe("pages page response", () => {
     async ({ disableOptimizedLoading, frameworkNonce, frameworkCrossOrigin }) => {
       const common = createCommonOptions();
       common.renderDocumentToString.mockResolvedValue(
-        '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+        '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
       );
 
       const response = await renderPagesPageResponse({
@@ -544,7 +544,7 @@ describe("pages page response", () => {
     const common = createCommonOptions();
     common.renderDocumentToString.mockResolvedValue(
       '<!DOCTYPE html><html><head data-theme="dark"><meta name="document-child" content="1" /></head>' +
-        '<body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
+        '<body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
     );
     common.options.getSSRHeadHTML = vi.fn(
       () =>
@@ -956,7 +956,7 @@ describe("pages page response", () => {
       const text = await new Response(stream).text();
       // The document shell render still needs the NEXT placeholders.
       if (!text.includes("data-collected")) {
-        return '<!DOCTYPE html><html><head><meta name="document-child" content="1" /></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>';
+        return '<!DOCTYPE html><html><head><meta name="document-child" content="1" /></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>';
       }
       return text;
     });
@@ -979,6 +979,75 @@ describe("pages page response", () => {
     );
     // The body still rendered.
     expect(html).toContain("<p>page</p>");
+  });
+
+  it("splices the page at <Main /> when Document request data contains the marker name", async () => {
+    const common = createCommonOptions();
+    const documentModule = await import("../packages/vinext/src/shims/document.js");
+    const { Head, Html, Main, NextScript } = documentModule;
+    const BaseDocument = documentModule.default;
+
+    class RouteDocument extends BaseDocument<{ route?: string }> {
+      static async getInitialProps(ctx: Parameters<typeof BaseDocument.getInitialProps>[0]) {
+        const initialProps = await BaseDocument.getInitialProps(ctx);
+        return { ...initialProps, route: ctx.asPath };
+      }
+
+      render() {
+        return React.createElement(
+          Html,
+          null,
+          React.createElement(Head),
+          React.createElement(
+            "body",
+            { "data-route": this.props.route },
+            React.createElement(Main),
+            React.createElement(NextScript),
+          ),
+        );
+      }
+    }
+
+    const label = "x onload=window.__documentMarkerXss=1//";
+    const routeUrl = `/?probe=__NEXT_MAIN__&label=${label}`;
+    const reactDomServer = await import("react-dom/server.edge");
+    const renderToString = async (element: React.ReactNode) =>
+      new Response(
+        await reactDomServer.renderToReadableStream(element as React.ReactElement),
+      ).text();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: RouteDocument as unknown as React.ComponentType,
+      enhancePageElement: () => React.createElement("div", { title: label }, "page"),
+      renderDocumentToString: renderToString,
+      renderToReadableStream: async (element: React.ReactNode) =>
+        await reactDomServer.renderToReadableStream(element as React.ReactElement),
+      routeUrl,
+    });
+
+    const html = await response.text();
+    expect(getStartTags(html, "body")).toEqual([
+      '<body data-route="/?probe=__NEXT_MAIN__&amp;label=x onload=window.__documentMarkerXss=1//">',
+    ]);
+    expect(html).toContain(
+      '<div id="__next"><div title="x onload=window.__documentMarkerXss=1//">page</div></div>',
+    );
+    expect(html).not.toContain("__NEXT_MAIN__ -->");
+    expect(html).not.toContain("<!--VINEXT_STREAM_BODY-->");
+  });
+
+  it("appends hydration scripts when a Document without NextScript renders __NEXT_DATA__ text", async () => {
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockResolvedValueOnce(
+      '<!DOCTYPE html><html><head></head><body data-route="/?probe=__NEXT_DATA__"><div id="__next"><!-- __NEXT_MAIN__ --></div></body></html>',
+    );
+
+    const response = await renderPagesPageResponse(common.options);
+
+    const html = await response.text();
+    expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
+    expect(html.indexOf('<script id="__NEXT_DATA__"')).toBeLessThan(html.indexOf("</body>"));
   });
 
   it("uses custom document html and styles without calling renderPage", async () => {
