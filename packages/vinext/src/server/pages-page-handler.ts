@@ -727,10 +727,35 @@ export function createPagesPageHandler(
         statusText: snapshot.statusText,
       });
     }
+    const routePattern = patternToNextFormat(route.pattern);
+    const renderStatusCode =
+      renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
+    // Error pages have their own ISR identity rather than the request URL's.
+    // Otherwise a cached notFound marker for the source page can short-circuit
+    // the recursive /404 render before the custom 404 module (and its
+    // getStaticProps) runs.
+    // The prerenderer stores _error's 404 document as /404; its 500
+    // representation must never reuse that snapshot.
+    const isStatusPageIdentity =
+      (isStaticPropsRender || pagesReadiness.autoExport) &&
+      (routePattern === "/404" || routePattern === "/500" || routePattern === "/_error");
+    const statusPagePathname =
+      routePattern === "/_error" && renderStatusCode === 404 ? "/404" : routePattern;
     // Pages getStaticProps renders are shared by pathname. Match Next.js by
     // removing request search state before exposing the render URL or router
     // context; otherwise a cold/stale request can persist its query in ISR.
-    const renderRouteUrl = isStaticPropsRender ? routeUrl.split("?")[0] : routeUrl;
+    // A getStaticProps status page is shared by every request that renders
+    // it, so Next.js renders it for its own pathname and the missing or
+    // failing request URL never reaches the stored document. Like Next.js's
+    // resolvedUrl, only a trailing slash carries over under trailingSlash.
+    const renderRouteUrl =
+      isStaticPropsRender && isStatusPageIdentity
+        ? vinextConfig.trailingSlash && routeUrl.split("?")[0].endsWith("/")
+          ? statusPagePathname + "/"
+          : statusPagePathname
+        : isStaticPropsRender
+          ? routeUrl.split("?")[0]
+          : routeUrl;
     const routerAsPathSource = isStaticPropsRender
       ? renderRouteUrl
       : (renderAsPath ?? renderRouteUrl);
@@ -744,25 +769,10 @@ export function createPagesPageHandler(
     const response = await runWithRequestContext(uCtx, async () => {
       ensureFetchPatch();
       try {
-        const routePattern = patternToNextFormat(route.pattern);
         setFrameworkRequestRoute(routePattern);
-        const renderStatusCode =
-          renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
-        // Error pages have their own ISR identity even though they render for
-        // the original request URL. Otherwise a cached notFound marker for the
-        // source page can short-circuit the recursive /404 render before the
-        // custom 404 module (and its getStaticProps) runs. Keep this separate
-        // from routeUrl so router, _document, and getInitialProps contexts
-        // continue to observe the original request-facing URL.
-        // The prerenderer stores _error's 404 document as /404; its 500
-        // representation must never reuse that snapshot.
-        const isrCachePathname =
-          (isStaticPropsRender || pagesReadiness.autoExport) &&
-          (routePattern === "/404" || routePattern === "/500" || routePattern === "/_error")
-            ? routePattern === "/_error" && renderStatusCode === 404
-              ? "/404"
-              : routePattern
-            : renderRouteUrl.split("?")[0];
+        const isrCachePathname = isStatusPageIdentity
+          ? statusPagePathname
+          : renderRouteUrl.split("?")[0];
         const isNotFoundErrorRender =
           routePattern === "/404" || (routePattern === "/_error" && renderStatusCode === 404);
         const isStatusErrorRender =
