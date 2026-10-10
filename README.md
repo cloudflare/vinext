@@ -487,7 +487,7 @@ export function RemoteCounter() {
 
 This bridge is browser-only. It does not provide App Router Module Federation SSR or transparently replace React imports inside third-party packages; compatible React versions remain the responsibility of the Module Federation `shared` configuration.
 
-See the [examples](#live-examples) for complete working configurations.
+See the [Module Federation guide](https://vinext.dev/docs/guides/module-federation) for loading remote components in the host.
 
 ### Other platforms (via Nitro)
 
