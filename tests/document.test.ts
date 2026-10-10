@@ -45,7 +45,11 @@ describe("per-render placeholders", () => {
         React.createElement(
           React.Fragment,
           null,
-          React.createElement(Head, { lang: "en" } as React.ComponentProps<typeof Head>, "x"),
+          React.createElement(
+            Head,
+            { "data-vinext-head-open": "user", lang: "en" } as React.ComponentProps<typeof Head>,
+            "x",
+          ),
           React.createElement(Main),
           React.createElement(NextScript),
         ),

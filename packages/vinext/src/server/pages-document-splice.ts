@@ -18,22 +18,30 @@ import {
 // They search `maskRawTextContent` output, so only real tags match.
 const HEAD_OPEN_TAG_PATTERN = /<head(?:\s[^>]*)?>/i;
 const NEXT_DATA_SCRIPT_TAG_PATTERN = /<script\b[^>]*\sid=["']__NEXT_DATA__["']/i;
-// Elements the HTML parser reads as text up to their closing tag. React
-// writes `dangerouslySetInnerHTML` into them unescaped, so their content can
-// hold any tag-like string, request data included.
-const RAW_TEXT_ELEMENT_PATTERN =
-  /(<(script|style|title|textarea|noscript)\b[^>]*>)([\s\S]*?)(?=<\/\2[\s/>])/gi;
+// Comments, and elements the HTML parser reads as text up to their closing
+// tag. React writes `dangerouslySetInnerHTML` into them unescaped, so their
+// content can hold any tag-like string, request data included. Matching both
+// in one left-to-right pass keeps a commented-out `<script>` from opening an
+// element and a `<!--` inside script text from opening a comment.
+const RAW_TEXT_PATTERN =
+  /<!--[\s\S]*?-->|(<(script|style|title|textarea|noscript)\b[^>]*>)([\s\S]*?)(?=<\/\2[\s/>])/gi;
 
 /**
- * Blank the content of raw-text elements, keeping their tags and the string's
- * length, so a tag search on the result finds only real markup at indexes
- * that still map onto `html`. React escapes `<`, `>` and quotes everywhere
- * else, including attribute values.
+ * Blank comments and the content of raw-text elements, keeping those
+ * elements' tags and the string's length, so a tag search on the result
+ * finds only real markup at indexes that still map onto `html`. React
+ * escapes `<`, `>` and quotes everywhere else, including attribute values.
  */
 export function maskRawTextContent(html: string): string {
   return html.replace(
-    RAW_TEXT_ELEMENT_PATTERN,
-    (_element, openTag: string, _name: string, text: string) => openTag + " ".repeat(text.length),
+    RAW_TEXT_PATTERN,
+    (
+      match: string,
+      openTag: string | undefined,
+      _name: string | undefined,
+      text: string | undefined,
+    ) =>
+      openTag === undefined ? " ".repeat(match.length) : openTag + " ".repeat(text?.length ?? 0),
   );
 }
 

@@ -384,14 +384,14 @@ describe("pages page data", () => {
     expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
-  it("ignores tag-like text in the cached Document's inline scripts", async () => {
+  it("ignores tag-like text in the cached Document's inline scripts and comments", async () => {
     const forged =
       '<div id="__next"></div><script id="__NEXT_DATA__" type="application/json"></script>' +
       "<script>window.__NEXT_DATA__ = {}</script>";
     const inlineScript = `<script>window.route = ${JSON.stringify(forged)};</script>`;
     const html = await renderPagesIsrHtml({
       buildId: "build-123",
-      cachedHtml: `<!DOCTYPE html><html><head></head><body>${inlineScript}<div id="__next"><div>stale-body</div></div>${inlineScript}<script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>`,
+      cachedHtml: `<!DOCTYPE html><html><head></head><body>${inlineScript}<!-- <script> --><div id="__next"><div>stale-body</div></div>${inlineScript}<script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>`,
       createPageElement(_pageProps: Record<string, unknown>) {
         return "page";
       },
@@ -407,7 +407,7 @@ describe("pages page data", () => {
 
     const [before, body, after] = html.split(inlineScript);
     expect(before).toBe("<!DOCTYPE html><html><head></head><body>");
-    expect(body).toBe('<div id="__next"><div>fresh-body</div></div>');
+    expect(body).toBe('<!-- <script> --><div id="__next"><div>fresh-body</div></div>');
     expect(after).toMatch(
       /^<script id="__NEXT_DATA__" type="application\/json">\{.*"page":"\/".*\}<\/script><\/body><\/html>$/,
     );

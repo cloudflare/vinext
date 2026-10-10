@@ -113,8 +113,12 @@ function DocumentHeadElement({
   // The renderer inserts `next/head` output after the opening tag and asset
   // tags before the closing <template>. Both markers are spliced out, and
   // the open marker stays the tag's last attribute so the tag ends after it.
+  // A caller-supplied attribute of the same name is dropped: spreading over
+  // an existing key keeps that key's position.
+  const attributes = { ...props };
+  Reflect.deleteProperty(attributes, DOCUMENT_HEAD_OPEN_ATTRIBUTE);
   return (
-    <head {...props} {...(token ? { [DOCUMENT_HEAD_OPEN_ATTRIBUTE]: token } : {})}>
+    <head {...attributes} {...(token ? { [DOCUMENT_HEAD_OPEN_ATTRIBUTE]: token } : {})}>
       {children}
       {token ? <template {...{ [DOCUMENT_HEAD_CLOSE_ATTRIBUTE]: token }} /> : null}
     </head>

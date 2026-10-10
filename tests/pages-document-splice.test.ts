@@ -98,19 +98,20 @@ describe("Pages Document splicing", () => {
     ).toBe('<html><head data-x="1"><a/><title>t</title><b/></head><body></body></html>');
   });
 
-  it("finds only real tags for a plain <head> Document, not text in its inline scripts", () => {
+  it("finds only real tags for a plain <head> Document, not text in its inline scripts or comments", () => {
     const forged = JSON.stringify(
       '<head></head><script id="__NEXT_DATA__" type="application/json"></script></body>',
     );
     const script = `<script>window.route = ${forged};</script>`;
-    const html = `<html>${script}<head>${script}</head><body>${script}<div id="__next"></div>${script}</body></html>`;
+    const comment = "<!-- <style> </head> -->";
+    const html = `<html>${script}<head>${comment}${script}</head><body>${script}<div id="__next"></div>${script}</body></html>`;
 
     let spliced = spliceDocumentHeadOpen(html, "token", "<a/>");
     spliced = spliceDocumentHeadClose(spliced, "token", "<b/>");
     spliced = spliceDocumentScripts(spliced, "token", "<c/>");
 
     expect(spliced).toBe(
-      `<html>${script}<head><a/>${script}<b/></head><body>${script}<div id="__next"></div>${script}  <c/>\n</body></html>`,
+      `<html>${script}<head><a/>${comment}${script}<b/></head><body>${script}<div id="__next"></div>${script}  <c/>\n</body></html>`,
     );
   });
 
