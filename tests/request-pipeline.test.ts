@@ -642,12 +642,12 @@ describe("resolvePublicFileRoute", () => {
     ).toBeNull();
   });
 
-  it("matches decoded request variants against encoded public-file keys", () => {
+  it("matches decoded request pathnames against decoded public-file keys", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/hello copy.txt",
       middlewareContext: { headers: null, status: null },
       pathname: "/hello%20copy.txt",
-      publicFiles: new Set(["/hello copy.txt", "/hello%20copy.txt"]),
+      publicFiles: new Set(["/hello copy.txt"]),
       request: new Request("https://example.com/hello%20copy.txt", { method: "POST" }),
     });
 

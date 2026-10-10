@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { publicFilePathVariants } from "./public-file-path.js";
 
 export function scanPublicFileRoutes(
   root: string,
@@ -46,7 +45,7 @@ export function scanPublicFileRoutes(
         continue;
       }
       const relativePath = path.relative(publicDir, fullPath);
-      routes.push(...publicFilePathVariants("/" + relativePath));
+      routes.push("/" + relativePath);
     }
   }
 

@@ -1610,16 +1610,16 @@ describe("scanPublicFileRoutes", () => {
 
   // Ported from Next.js: test/e2e/dynamic-routing/shared.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/shared.ts
-  it("stores public-file routes with URL-encoded path segments", () => {
+  it("stores public-file routes as decoded filenames", () => {
     writeFile(tmpDir, "public/hello copy.txt", "space");
     writeFile(tmpDir, "public/hello+copy.txt", "plus");
     writeFile(tmpDir, "public/hello%20copy.txt", "percent");
 
+    // Requests are matched after one decode, so an encoded key would let a
+    // double-encoded alias such as /hello%2520copy.txt match /hello copy.txt.
     expect(scanPublicFileRoutes(tmpDir)).toEqual([
       "/hello copy.txt",
       "/hello%20copy.txt",
-      "/hello%2520copy.txt",
-      "/hello%2Bcopy.txt",
       "/hello+copy.txt",
     ]);
   });
@@ -2418,7 +2418,7 @@ describe("fetchWorkerFilesystemRoute", () => {
   });
 
   it.each(["/hello%20copy.txt", "/hello copy.txt"])(
-    "matches encoded public-file inventory for %s",
+    "matches the decoded public-file inventory for %s",
     async (requestPathname) => {
       const fetchAsset = vi.fn(async () => new Response(null, { status: 200 }));
 
@@ -2427,7 +2427,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         requestPathname,
         "direct",
         fetchAsset,
-        new Set(["/hello copy.txt", "/hello%20copy.txt"]),
+        new Set(["/hello copy.txt"]),
       );
 
       expect(result).toBeInstanceOf(Response);

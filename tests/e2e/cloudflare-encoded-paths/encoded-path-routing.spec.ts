@@ -53,6 +53,18 @@ test("does not treat a route handler's reflected static-file header as a Worker 
   expect(await reflected.text()).toBe("route handler body");
 });
 
+// run_worker_first sends public files through middleware, which sees the raw
+// and once-decoded pathname. A double-encoded alias must not reach the file.
+test("does not serve a middleware-protected public file through a double-encoded alias", async () => {
+  const direct = await getRawPath("/members%20only/confidential.txt");
+  expect(direct.status).toBe(403);
+  expect(direct.body).toBe("blocked by middleware");
+
+  const alias = await getRawPath("/members%2520only/confidential.txt");
+  expect(alias.status).toBe(404);
+  expect(alias.body).not.toContain("members-only public file");
+});
+
 test("keeps direct and middleware-rewritten Worker App Page params canonical", async ({
   request,
 }) => {

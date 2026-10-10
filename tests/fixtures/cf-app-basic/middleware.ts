@@ -8,6 +8,10 @@ import { NextResponse, type NextRequest } from "next/server";
  * for #1520.
  */
 export async function middleware(request: NextRequest) {
+  // Protects public/members only/ the way a decoded-form scoped matcher would.
+  if (request.nextUrl.pathname.startsWith("/members%20only/")) {
+    return new NextResponse("blocked by middleware", { status: 403 });
+  }
   if (/^\/api\/browser-cache(?:-pages)?-bot-blocked$/.test(request.nextUrl.pathname)) {
     return request.headers.get("user-agent")?.toLowerCase().includes("gptbot")
       ? new NextResponse(null, { status: 403 })

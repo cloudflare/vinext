@@ -119,17 +119,19 @@ export async function fetchWorkerFilesystemRoute(
   const assetUrl = new URL(request.url);
   assetUrl.pathname = requestPathname;
   assetUrl.search = "";
-  const decodedAssetUrl = new URL(assetUrl);
+  let decodedPathname: string;
   try {
-    decodedAssetUrl.pathname = decodeURIComponent(assetUrl.pathname);
+    decodedPathname = decodeURIComponent(assetUrl.pathname);
   } catch {
     return false;
   }
+  const decodedAssetUrl = new URL(assetUrl);
+  decodedAssetUrl.pathname = decodedPathname;
   // Next.js serves public files under basePath, so a direct request outside it
   // never matches one; only a rewrite can bring it into the public filesystem.
-  const isPublicFile =
-    (phase !== "direct" || hadBasePath) &&
-    (publicFiles.has(assetUrl.pathname) || publicFiles.has(decodedAssetUrl.pathname));
+  // The inventory holds decoded filenames, matching the path the asset fetch
+  // resolves after its single decode.
+  const isPublicFile = (phase !== "direct" || hadBasePath) && publicFiles.has(decodedPathname);
   // Public files precede API routes in the filesystem order, so a file such as
   // public/api/schema.json is served rather than handed to API routing.
   if (!isPublicFile && (requestPathname === "/api" || requestPathname.startsWith("/api/"))) {

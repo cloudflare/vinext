@@ -343,7 +343,6 @@ import {
 } from "./plugins/typeof-window.js";
 import { hasMdxFiles, loadMdxEsmReader, pageExtensionsIncludeMdx } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
-import { publicFilePathVariants } from "./utils/public-file-path.js";
 import {
   methodNotAllowedResponse,
   notFoundStaticAssetResponse,
@@ -5938,7 +5937,7 @@ export const loadServerActionClient = ${
           ) {
             return null;
           }
-          return publicFilePathVariants(`/${relativePath}`);
+          return [`/${relativePath}`];
         };
         const updatePublicFileRoute = (filePath: string, present: boolean): void => {
           const routes = publicRoutesForFile(filePath);

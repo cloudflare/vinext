@@ -64,6 +64,7 @@ const projectServers = {
       "app-router-prod/special-error-navigation.spec.ts",
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
+      "app-router-prod/public-file-encoding.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {
@@ -572,7 +573,8 @@ const projectServers = {
     testDir: "./tests/e2e/cloudflare-encoded-paths",
     use: { baseURL: "http://localhost:4197" },
     server: {
-      command: "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4197",
+      command:
+        "CF_APP_BASIC_RUN_WORKER_FIRST=1 npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4197",
       cwd: "./tests/fixtures/cf-app-basic",
       port: 4197,
       reuseExistingServer: !process.env.CI,

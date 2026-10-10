@@ -33,6 +33,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  // Matched by the decoded-form `/members only/:path*` source below.
+  if (pathname.startsWith("/members%20only/")) {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
   if (pathname === "/static-file-header-collision.txt") {
     const response = NextResponse.next();
     response.headers.set("x-vinext-static-file", "/internal-header-secret.txt");
@@ -478,6 +486,7 @@ export const config = {
     "/middleware-blocked",
     "/internal-header-secret.txt",
     "/static-file-header-collision.txt",
+    "/members only/:path*",
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
