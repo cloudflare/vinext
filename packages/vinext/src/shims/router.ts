@@ -74,6 +74,7 @@ import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-p
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import {
   addLocalePrefix,
+  detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
   type DomainLocale,
@@ -1837,9 +1838,31 @@ function getClientConfigRouteContext(href: string): {
       host: parsed.hostname,
       query: parsed.searchParams,
     },
-    pathname,
+    pathname: normalizeClientConfigLocalePathname(pathname, parsed.hostname),
     search: parsed.search,
   };
+}
+
+/**
+ * Match config rules against the locale-prefixed pathname, as the server does
+ * (`normalizeDefaultLocalePathname`) and as Next.js's client router does before
+ * resolving rewrites (`addLocale(asPath, locale)`). Without this, a
+ * default-locale URL such as `/about` misses `locale: false` rules written
+ * against `/:locale/about` and matches unprefixed `locale: false` rules the
+ * server never applies to it.
+ */
+function normalizeClientConfigLocalePathname(pathname: string, hostname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales?.length) return pathname;
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
+  if (getLocalePathPrefix(pathname, locales)) return pathname;
+
+  const defaultLocale =
+    detectDomainLocale(getDomainLocales(), hostname)?.defaultLocale ??
+    window.__VINEXT_DEFAULT_LOCALE__;
+  if (!defaultLocale) return pathname;
+  if (pathname === "/") return __trailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  return `/${defaultLocale}${pathname}`;
 }
 
 async function resolveClientConfigRedirect(href: string): Promise<string | null> {

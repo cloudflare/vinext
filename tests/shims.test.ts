@@ -23765,6 +23765,64 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("matches i18n root config rules against the trailing-slash locale root", async () => {
+    // With trailingSlash, a root rule is emitted as `/:nextInternalLocale(...)/`
+    // (plus the `/en/` redirect literal), so the default-locale root must be
+    // matched as `/en/` on the client, as on the server.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const previousTrailingSlash = process.env.__VINEXT_TRAILING_SLASH;
+    process.env.__VINEXT_TRAILING_SLASH = "true";
+
+    const homeLoader = vi.fn(async () => makePageModule("home"));
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState } = createDataNavWindow({
+      locale: "en",
+      pathname: "/about/",
+      loaders: {
+        "/": homeLoader,
+        "/about": vi.fn(async () => makePageModule("about")),
+        "/somewhere/else": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { toClientRedirects } = await import("../packages/vinext/src/client/client-redirects.js");
+    (win as any).__VINEXT_CLIENT_REDIRECTS__ = toClientRedirects(
+      applyLocaleToRoutes(
+        [{ source: "/", destination: "/somewhere/else/", permanent: false }],
+        { locales: ["en", "fr"], defaultLocale: "en" },
+        "redirect",
+        { trailingSlash: true },
+      ),
+    );
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/")).toBe(true);
+
+      expect(homeLoader).not.toHaveBeenCalled();
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenLastCalledWith(expect.anything(), "", "/somewhere/else/");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      if (previousTrailingSlash === undefined) delete process.env.__VINEXT_TRAILING_SLASH;
+      else process.env.__VINEXT_TRAILING_SLASH = previousTrailingSlash;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("applies config redirects before rendering a matching plain dynamic page", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -30863,6 +30921,36 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
     expect(normalizeDefaultLocalePathname("/about", i18n)).toBe("/en/about");
     expect(normalizeDefaultLocalePathname("/", i18n)).toBe("/en");
     expect(normalizeDefaultLocalePathname("/api/health", i18n)).toBe("/en/api/health");
+  });
+
+  it("normalizeDefaultLocalePathname keeps the root slash when trailingSlash is on", async () => {
+    // resolve-routes.ts re-adds the slash (`maybeAddTrailingSlash`), so the
+    // `/:nextInternalLocale(...)/` root sources emitted for trailingSlash match.
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const { applyLocaleToRoutes, matchRedirect, matchRewrite } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    const root = normalizeDefaultLocalePathname("/", i18n, { trailingSlash: true });
+    expect(root).toBe("/en/");
+    expect(normalizeDefaultLocalePathname("/about/", i18n, { trailingSlash: true })).toBe(
+      "/en/about/",
+    );
+
+    const redirects = applyLocaleToRoutes(
+      [{ source: "/", destination: "/home/", permanent: false }],
+      i18n,
+      "redirect",
+      { trailingSlash: true },
+    );
+    expect(matchRedirect(root, redirects, emptyCtx)).toMatchObject({ destination: "/home/" });
+    const rewrites = applyLocaleToRoutes(
+      [{ source: "/", destination: "/home/" }],
+      i18n,
+      "rewrite",
+      { trailingSlash: true },
+    );
+    expect(matchRewrite(root, rewrites, emptyCtx)).toBe("/en/home/");
   });
 
   it("normalizeDefaultLocalePathname leaves locale-prefixed paths untouched", async () => {

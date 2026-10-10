@@ -419,6 +419,7 @@ export async function runPagesRequest(
   const requestConfigMatchPathname = i18nConfig
     ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
         hostname: requestHostname,
+        trailingSlash,
       })
     : requestConfigPathname;
 
@@ -628,7 +629,9 @@ export async function runPagesRequest(
   let resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
 
   const matchResolvedPathname = (p: string): string =>
-    i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
+    i18nConfig
+      ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname, trailingSlash })
+      : p;
   const configSourcePathname = (): string =>
     resolvedPathnameIsRequestPathname
       ? requestConfigMatchPathname

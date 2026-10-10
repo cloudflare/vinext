@@ -417,7 +417,10 @@ async function handleRequestImpl(
       pathname = dataNorm.normalizedPathname;
     }
     const responseStagePolicyPathname = i18nConfig
-      ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: url.hostname })
+      ? normalizeDefaultLocalePathname(pathname, i18nConfig, {
+          hostname: url.hostname,
+          trailingSlash,
+        })
       : pathname;
     const responseStagePolicyHeaders = resolveResponseStageCachePolicy({
       basePathState: { basePath, hadBasePath },
