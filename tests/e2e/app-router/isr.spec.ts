@@ -189,24 +189,31 @@ test.describe("App Router ISR", () => {
     page,
     request,
   }) => {
-    const path = "/nextjs-compat/use-search-params-static-bailout";
+    const path = "/isr-search-params-suspense";
     await resetIsrPath(request, path);
     const secret = `secret-${crypto.randomUUID()}`;
     const first = await request.get(`${baseUrl()}${path}?value=${secret}`);
     expect(first.status()).toBe(200);
+    expect(first.headers()["x-vinext-cache"]).toBe("MISS");
     const firstHtml = await first.text();
     // The server renders the Suspense fallback, as in Next.js's static HTML.
-    expect(firstHtml).toContain('id="search-params-suspense"');
+    expect(firstHtml).toContain('data-testid="search-value-fallback"');
     expect(firstHtml).not.toContain(secret);
+    const renderedAt = testIdText(firstHtml, "timestamp");
+    expect(renderedAt).toBeTruthy();
 
     const cached = await waitForCacheHit(request, path);
-    expect(await cached.text()).not.toContain(secret);
+    const cachedHtml = await cached.text();
+    expect(testIdText(cachedHtml, "timestamp")).toBe(renderedAt);
+    expect(cachedHtml).not.toContain(secret);
 
     // A later visitor's browser reads its own query from the stored document.
     const response = await page.goto(`${baseUrl()}${path}?value=mine`);
     expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
-    expect(await response?.text()).not.toContain(secret);
-    await expect(page.locator("#search-params-value")).toHaveText("mine");
+    const visitorHtml = (await response?.text()) ?? "";
+    expect(testIdText(visitorHtml, "timestamp")).toBe(renderedAt);
+    expect(visitorHtml).not.toContain(secret);
+    await expect(page.getByTestId("search-value")).toHaveText("mine");
   });
 
   test("a page that reads searchParams renders each query and stores none", async ({ request }) => {
