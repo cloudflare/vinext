@@ -1,5 +1,15 @@
 # @cloudflare/workers-response-store
 
+## 1.1.1
+
+### Bug Fixes
+
+- **Cloudflare:** keep Workers Cache off Worker-wide in every generated config (#3820)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.0
 
 ### Features
