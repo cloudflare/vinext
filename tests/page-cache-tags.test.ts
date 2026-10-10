@@ -25,6 +25,15 @@ describe("App Router page cache tags", () => {
     expect(buildPageCacheTags("/index", [], ["index"], "page")).toContain("_N_T_/");
   });
 
+  it("normalizes terminal slashes for revalidatePath compatibility", () => {
+    expect(buildPageCacheTags("/en/legacy/", [], ["[lang]", "legacy"], "page")).toContain(
+      "_N_T_/en/legacy",
+    );
+    expect(buildPageCacheTags("/en/legacy/", [], ["[lang]", "legacy"], "page")).not.toContain(
+      "_N_T_/en/legacy/",
+    );
+  });
+
   it("keeps route groups in derived pattern tags while preserving the resolved path tag", () => {
     expect(buildPageCacheTags("/blog/hello", [], ["(main)", "blog", "[slug]"], "page")).toEqual([
       "/blog/hello",
