@@ -38,6 +38,7 @@ import {
   ensureESModule,
   renameCJSConfigs,
   isPackageResolvable,
+  type PackageResolver,
 } from "../packages/vinext/src/utils/project.js";
 import {
   formatMissingCacheAdapterError,
@@ -98,6 +99,16 @@ function writeFile(dir: string, relativePath: string, content: string): void {
 function mkdir(dir: string, relativePath: string): void {
   fs.mkdirSync(path.join(dir, relativePath), { recursive: true });
 }
+
+/**
+ * Package resolver scoped to the project's own node_modules. The default
+ * resolver goes through `createRequire`, which also searches NODE_PATH and the
+ * global module folders; the pnpm shim that `vp` runs under exports a NODE_PATH
+ * containing a hoisted `wrangler`, so the default would find it from any
+ * tmpDir and make presence and absence assertions depend on the launcher.
+ */
+const resolveFromProjectNodeModules: PackageResolver = (root, packageName) =>
+  fs.existsSync(path.join(root, "node_modules", packageName));
 
 function writeWranglerPackageForTest(
   dir: string,
@@ -1196,7 +1207,7 @@ describe("detectProject", () => {
   it("detects Wrangler independently of its executable shim", () => {
     mkdir(tmpDir, "app");
     writeWranglerPackageForTest(tmpDir);
-    expect(detectProject(tmpDir).hasWrangler).toBe(true);
+    expect(detectProject(tmpDir, resolveFromProjectNodeModules).hasWrangler).toBe(true);
   });
 
   it("does not mistake the separate cf package for Wrangler", () => {
@@ -1204,7 +1215,7 @@ describe("detectProject", () => {
     writeFile(tmpDir, "node_modules/cf/package.json", JSON.stringify({ name: "cf" }));
     writeFile(tmpDir, "node_modules/.bin/cf.exe", "");
     writeFile(tmpDir, "node_modules/.bin/cf.bunx", "");
-    expect(detectProject(tmpDir).hasWrangler).toBe(false);
+    expect(detectProject(tmpDir, resolveFromProjectNodeModules).hasWrangler).toBe(false);
   });
 
   it("detects cloudflare.config.ts", () => {
