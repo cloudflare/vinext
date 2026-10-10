@@ -918,7 +918,7 @@ describe("use cache production argument isolation", () => {
     },
   );
 
-  it.each(["blob", "bytes", "map", "set", "form-order", "date"])(
+  it.each(["blob", "bytes", "map", "set", "nested-map", "form-order", "date"])(
     "preserves %s contents and repeat hits",
     async (kind) => {
       const base = { kind, partition: kind };

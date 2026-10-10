@@ -215,6 +215,8 @@ describe("use cache argument identity", () => {
     ["Date", (n: number) => new Date(n)],
     ["Map", (n: number) => new Map([["value", n]])],
     ["Set", (n: number) => new Set([n])],
+    ["Map key", (n: number) => new Map([[n, "value"]])],
+    ["nested Map/Set", (n: number) => new Map([["outer", new Set([new Map([["inner", n]])])]])],
   ])("preserves %s identity and stable repeat hits", async (_label, input) => {
     const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
     const cached = registerCachedFunction(fn, "test:built-in");
@@ -223,6 +225,15 @@ describe("use cache argument identity", () => {
     // Blob/typed-array transport wrappers receive a fresh timestamp each time.
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(await cached(input(0xa1))).toBe(first);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves each Map-scoped caller its own entry", async () => {
+    const fn = vi.fn(async (scope: Map<string, string>) => `record:${scope.get("tenant")}`);
+    const cached = registerCachedFunction(fn, "test:map-scope");
+    expect(await cached(new Map([["tenant", "a"]]))).toBe("record:a");
+    expect(await cached(new Map([["tenant", "b"]]))).toBe("record:b");
+    expect(await cached(new Map([["tenant", "a"]]))).toBe("record:a");
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
