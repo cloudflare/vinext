@@ -3476,6 +3476,30 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     );
   });
 
+  it("body placement: keeps replacement patterns in the pathname out of icon markup", () => {
+    const render = (pathname: string) =>
+      renderToStaticMarkup(
+        createAppPageRouteBodyMetadata(
+          { icons: { icon: "/favicon.ico", apple: "/apple.png" } },
+          pathname,
+          "body",
+        ) as React.ReactElement,
+      );
+
+    // `$<` matters because attribute escaping turns `<` into `&lt;`, producing `$&`.
+    for (const pattern of ["$&", "$'", "$<"]) {
+      const html = render(`/blog/x${pattern} onerror=alert(1) x`);
+      expect(html).not.toContain("onerror");
+      const markers = [...html.matchAll(/data-vinext-streamed-icon="([^"]+)"/g)].map(
+        ([, marker]) => marker,
+      );
+      expect(markers).toHaveLength(2);
+      for (const marker of markers) {
+        expect(marker).toMatch(/^vi[a-z0-9]+:\d$/);
+      }
+    }
+  });
+
   it("body placement: serializes icon-bearing metadata once", () => {
     let titleReads = 0;
     const title = 'data-vinext-streamed-icon="vinext-pending-streamed-icon-key:0';
