@@ -70,3 +70,33 @@ test.describe("Pages Router conditional data export on Cloudflare Workers", () =
     }
   });
 });
+
+test.describe("Pages Router data export importing server-only on Cloudflare Workers", () => {
+  const SERVER_ONLY_PAGE = "/server-only-data-export";
+  // Must match examples/pages-router-cloudflare/lib/server-only-data.ts.
+  const TOKEN = "VINEXT_SERVER_ONLY_DATA_TOKEN_9b47d2c1";
+
+  test("builds, renders and hydrates the page", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    const response = await page.goto(BASE + SERVER_ONLY_PAGE);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId("token-length")).toHaveText(String(TOKEN.length));
+    await expect(page.getByTestId("hydrated")).toHaveText("yes");
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("keeps the server-only module out of public JavaScript", async ({ request }) => {
+    const response = await request.get(BASE + SERVER_ONLY_PAGE);
+    expect(response.status()).toBe(200);
+    const html = await response.text();
+    expect(html).not.toContain(TOKEN);
+
+    const sources = await crawlPublicJavaScript(request, html);
+    expect([...sources.keys()].some((url) => url.includes("server-only-data-export"))).toBe(true);
+    for (const [url, source] of sources) {
+      expect(source, url).not.toContain(TOKEN);
+    }
+  });
+});
