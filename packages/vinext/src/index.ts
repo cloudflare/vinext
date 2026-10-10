@@ -2850,6 +2850,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
           nextConfig.trailingSlash ? "true" : "false",
         );
+        // Pages client config-rule matching sees the locale root as the server
+        // does (`localeRootHasTrailingSlash`).
+        defines["process.env.__VINEXT_SKIP_PROXY_URL_NORMALIZE"] = JSON.stringify(
+          nextConfig.skipProxyUrlNormalize ? "true" : "false",
+        );
         // Next.js uses this compile-time value to switch App Router navigation
         // from header-selected RSC responses to static `.txt` Flight assets.
         defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
@@ -4958,6 +4963,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 hasServerActions,
                 actionOwners: this.environment.config.command === "build" ? undefined : null,
                 i18n: nextConfig?.i18n,
+                skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
                   imageSizes: nextConfig?.images?.imageSizes,
@@ -6841,6 +6847,7 @@ export const loadServerActionClient = ${
                 assetPrefix: nextConfig?.assetPrefix,
                 basePath: bp,
                 trailingSlash: nextConfig?.trailingSlash ?? false,
+                skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize ?? false,
                 i18nConfig: nextConfig?.i18n ?? null,
                 configRedirects: nextConfig?.redirects ?? [],
                 configRewrites: nextConfig?.rewrites ?? {

@@ -7,6 +7,7 @@ import {
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
+import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
@@ -468,6 +469,38 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/ssr-page-2");
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssr-page-2");
   });
+
+  it.each([
+    [false, 307],
+    [true, 200],
+  ])(
+    "matches i18n trailingSlash root rules as `/en/` unless skipProxyUrlNormalize is %s",
+    async (skipProxyUrlNormalize, status) => {
+      // resolve-routes.ts `maybeAddTrailingSlash` re-adds the root slash only
+      // when proxy URL normalization is on.
+      const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+      const configRedirects = applyLocaleToRoutes(
+        [{ source: "/", destination: "/other/", permanent: false }],
+        i18nConfig,
+        "redirect",
+        { trailingSlash: true },
+      );
+      const result = await runPagesRequest(
+        makeRequest("/"),
+        baseDeps({
+          i18nConfig,
+          trailingSlash: true,
+          skipProxyUrlNormalize,
+          configRedirects,
+          matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false, pattern: "/" } }),
+          renderPage: makeRenderPage(),
+        }),
+      );
+
+      const response = result.type === "response" ? result.response : null;
+      expect(response?.status ?? 200).toBe(status);
+    },
+  );
 
   it("locale-prefixes the final matched path on i18n data responses", async () => {
     const result = await runPagesRequest(

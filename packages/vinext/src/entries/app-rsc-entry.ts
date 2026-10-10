@@ -208,6 +208,8 @@ type AppRouterConfig = {
   hasServerActions?: boolean;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
+  /** `skipProxyUrlNormalize` from next.config. */
+  skipProxyUrlNormalize?: boolean;
   imageConfig?: ImageConfig;
   /**
    * Absolute path to `app/global-not-found.{tsx,ts,js,jsx}` when present.
@@ -613,6 +615,7 @@ const __requestHandler = createAppRscRequestHandler({
   rootParamNamesByPattern: {},
   setNavigationContext,
   staticParamsMap: {},
+  skipProxyUrlNormalize: ${JSON.stringify(config?.skipProxyUrlNormalize ?? false)},
   trailingSlash: __trailingSlash,
   validateDevRequestOrigin: __validateDevRequestOrigin,
 });
@@ -2047,6 +2050,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   rootParamNamesByPattern: rootParamNamesMap,
   setNavigationContext,
   staticParamsMap: generateStaticParamsMap,
+  skipProxyUrlNormalize: ${JSON.stringify(config?.skipProxyUrlNormalize ?? false)},
   trailingSlash: __trailingSlash,
   validateDevRequestOrigin: __validateDevRequestOrigin,
 ${

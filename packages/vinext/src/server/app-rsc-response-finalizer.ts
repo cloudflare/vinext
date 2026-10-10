@@ -27,6 +27,8 @@ type FinalizeAppRscResponseOptions = {
    * default-locale URLs (issue #1336, item 4).
    */
   i18nConfig: NextI18nConfig | null;
+  /** See `localeRootHasTrailingSlash`. */
+  rootTrailingSlash?: boolean;
   /**
    * Original pre-middleware request context.
    * Next.js evaluates config header has/missing conditions against the
@@ -76,7 +78,10 @@ export async function applyAppRscConfigHeaders(
   const hadBasePath = !options.basePath || hasBasePath(pathname, options.basePath);
   pathname = stripBasePath(pathname, options.basePath);
   const matchPathname = options.i18nConfig
-    ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, { hostname: url.hostname })
+    ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, {
+        hostname: url.hostname,
+        rootTrailingSlash: options.rootTrailingSlash,
+      })
     : pathname;
 
   const { applyConfigHeadersToResponse } = await import("./config-headers.js");

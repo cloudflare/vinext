@@ -10,6 +10,7 @@ import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/ro
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
 import { compileClientMiddlewareMatchers } from "../packages/vinext/src/entries/pages-client-entry.js";
 import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
+import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
 import vinext from "../packages/vinext/src/index.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
@@ -23874,6 +23875,112 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it.each([
+    ["generated locale variants (async matcher)", true],
+    ["only the unprefixed fallback copy (sync matcher)", false],
+  ])(
+    "does not match later chain rules through unprefixed locale fallback copies: %s",
+    async (_label, withLocaleVariants) => {
+      // Next.js emits only the locale-prefixed variant of an ordinary rule, so
+      // an unprefixed intermediate destination ends the chain.
+      const previousWindow = (globalThis as any).window;
+      const originalFetch = globalThis.fetch;
+
+      const middleLoader = vi.fn(async () => makePageModule("middle"));
+      const finalLoader = vi.fn(async () => makePageModule("final"));
+      const { win } = createDataNavWindow({
+        locale: "en",
+        loaders: {
+          "/": vi.fn(async () => makePageModule("home")),
+          "/middle": middleLoader,
+          "/final": finalLoader,
+        },
+        ssgPatterns: [],
+        sspPatterns: [],
+      });
+      (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+      (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+      const { applyLocaleToRoutes } =
+        await import("../packages/vinext/src/config/config-matchers.js");
+      const ordinary = applyLocaleToRoutes<NextRewrite>(
+        [{ source: "/middle", destination: "/final" }],
+        { locales: ["en", "fr"], defaultLocale: "en" },
+        "rewrite",
+      ).filter((rule) => withLocaleVariants || rule.localeFallback);
+      (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+        beforeFiles: [
+          { source: "/:locale/start", destination: "/middle", locale: false },
+          ...ordinary,
+        ],
+        afterFiles: [],
+        fallback: [],
+      });
+      (globalThis as any).window = win;
+      vi.resetModules();
+
+      const fetchMock = vi.fn(async () => new Response("{}"));
+      globalThis.fetch = fetchMock as any;
+
+      try {
+        const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+        expect(await Router.push("/start")).toBe(true);
+
+        expect(middleLoader).toHaveBeenCalledTimes(1);
+        expect(finalLoader).not.toHaveBeenCalled();
+      } finally {
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        globalThis.fetch = originalFetch;
+        vi.resetModules();
+      }
+    },
+  );
+
+  it("keeps a source trailing slash required when the pathname has none", async () => {
+    // matchConfigPattern only makes a source's trailing slash optional when the
+    // pathname has one; the sync client matcher must agree.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const articleLoader = vi.fn(async () => makePageModule("article"));
+    const aboutLoader = vi.fn(async () => makePageModule("about"));
+    const { win } = createDataNavWindow({
+      locale: "en",
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/article": articleLoader,
+        "/about": aboutLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [{ source: "/:locale/article/", destination: "/about", locale: false }],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/article")).toBe(true);
+
+      expect(articleLoader).toHaveBeenCalledTimes(1);
+      expect(aboutLoader).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("applies config redirects before rendering a matching plain dynamic page", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -30982,9 +31089,9 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
     const { applyLocaleToRoutes, matchRedirect, matchRewrite } =
       await import("../packages/vinext/src/config/config-matchers.js");
     const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
-    const root = normalizeDefaultLocalePathname("/", i18n, { trailingSlash: true });
+    const root = normalizeDefaultLocalePathname("/", i18n, { rootTrailingSlash: true });
     expect(root).toBe("/en/");
-    expect(normalizeDefaultLocalePathname("/about/", i18n, { trailingSlash: true })).toBe(
+    expect(normalizeDefaultLocalePathname("/about/", i18n, { rootTrailingSlash: true })).toBe(
       "/en/about/",
     );
 

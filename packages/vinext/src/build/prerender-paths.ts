@@ -49,6 +49,7 @@ import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/con
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
+import { localeRootHasTrailingSlash } from "../utils/domain-locale.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
 import { resolveBuiltPagesEntryPath, resolveBuiltRscEntryPath } from "./server-entry.js";
@@ -1044,14 +1045,14 @@ async function resolveAppWarmPaths(options: {
 function cachePolicyRuleMatchesWarmPath(
   pathname: string,
   rule: ResolvedNextConfig["headers"][number],
-  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "skipProxyUrlNormalize" | "trailingSlash">,
 ): boolean {
   const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
   const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
   return hostnames.some((hostname) => {
     const matchPathname = normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
       hostname,
-      trailingSlash: config.trailingSlash,
+      rootTrailingSlash: localeRootHasTrailingSlash(config),
     });
     let sourceMatched = false;
     matchHeaders(
@@ -1075,7 +1076,7 @@ function cachePolicyRuleMatchesWarmPath(
 function cachePolicyRuleSourceMatchesWarmPath(
   pathname: string,
   rule: ResolvedNextConfig["headers"][number],
-  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "skipProxyUrlNormalize" | "trailingSlash">,
 ): boolean {
   return cachePolicyRuleMatchesWarmPath(
     pathname,
@@ -1122,7 +1123,10 @@ function routePatternCouldIntersectCachePolicyRule(
  */
 function annotateCacheabilityProbeSafety(
   routePatterns: Record<string, PrerenderRoutePattern>,
-  config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
+  config: Pick<
+    ResolvedNextConfig,
+    "basePath" | "headers" | "i18n" | "skipProxyUrlNormalize" | "trailingSlash"
+  >,
   routeMayResolve: ReadonlySet<string>,
   requestStageMayTerminate: ReadonlySet<string>,
   unlisted: ReadonlySet<string>,
@@ -1188,7 +1192,7 @@ function annotateCacheabilityProbeSafety(
 function configuredRulesAffectWarmPath(
   pathname: string,
   rules: ReadonlyArray<NextRewrite>,
-  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "skipProxyUrlNormalize" | "trailingSlash">,
 ): boolean {
   const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
   const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
@@ -1196,7 +1200,7 @@ function configuredRulesAffectWarmPath(
     hostnames.map((hostname) =>
       normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
         hostname,
-        trailingSlash: config.trailingSlash,
+        rootTrailingSlash: localeRootHasTrailingSlash(config),
       }),
     ),
   );
@@ -1219,7 +1223,7 @@ function configuredRewritesCanReplaceWarmPath(
   pathname: string,
   rewrites: ResolvedNextConfig["rewrites"],
   hasNonDynamicRoute: boolean,
-  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "skipProxyUrlNormalize" | "trailingSlash">,
   include: (rewrite: NextRewrite) => boolean,
 ): boolean {
   const applicableRewrites = [

@@ -88,6 +88,7 @@ import {
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import { localeRootHasTrailingSlash } from "../utils/domain-locale.js";
 import {
   badRequestResponse,
   notFoundResponse,
@@ -666,6 +667,7 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
   staticParamsMap: StaticParamsMap;
+  skipProxyUrlNormalize?: boolean;
   trailingSlash: boolean;
   validateDevRequestOrigin?: (request: Request) => Response | null;
 };
@@ -1079,8 +1081,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // below, the middleware-redirect config header match further down, and the
   // post-middleware rewrite matches. `i18nConfig` and `url.hostname` are
   // request-scoped constants from this point on.
+  const rootTrailingSlash = localeRootHasTrailingSlash(options);
   const matchPathname = (p: string): string =>
-    normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
+    normalizeDefaultLocalePathname(p, options.i18nConfig, {
+      hostname: url.hostname,
+      rootTrailingSlash,
+    });
 
   // Config sources match the request's raw encoded identity. Internal route
   // matching uses the normalized pathname separately, but decoding literal
@@ -3010,6 +3016,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            rootTrailingSlash: localeRootHasTrailingSlash(options),
             middlewareHeaders: middlewareContext.headers,
             recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,

@@ -34,6 +34,7 @@ import {
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
@@ -249,6 +250,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     renderResponseStageLocally: overrides.renderResponseStageLocally,
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,
     setNavigationContext: overrides.setNavigationContext ?? (() => {}),
+    skipProxyUrlNormalize: overrides.skipProxyUrlNormalize,
     staticParamsMap: overrides.staticParamsMap ?? {},
     trailingSlash: overrides.trailingSlash ?? false,
     validateDevRequestOrigin: overrides.validateDevRequestOrigin ?? (() => null),
@@ -286,6 +288,33 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  it.each([
+    [false, "/docs/other/"],
+    [true, null],
+  ])(
+    "matches i18n trailingSlash root rules as `/en/` unless skipProxyUrlNormalize is %s",
+    async (skipProxyUrlNormalize, location) => {
+      // resolve-routes.ts `maybeAddTrailingSlash` re-adds the root slash only
+      // when proxy URL normalization is on.
+      const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+      const handler = createHandler({
+        configRedirects: applyLocaleToRoutes(
+          [{ source: "/", destination: "/other/", permanent: false }],
+          i18nConfig,
+          "redirect",
+          { trailingSlash: true },
+        ),
+        i18nConfig,
+        skipProxyUrlNormalize,
+        trailingSlash: true,
+      });
+
+      const response = await handler(new Request("https://example.test/docs/"), null);
+
+      expect(response.headers.get("location")).toBe(location);
+    },
+  );
+
   // Ported from Next.js: test/e2e/invalid-static-asset-404-app
   // https://github.com/vercel/next.js/tree/canary/test/e2e/invalid-static-asset-404-app
   it.each(["", "/assets", "https://cdn.example.test/assets"])(

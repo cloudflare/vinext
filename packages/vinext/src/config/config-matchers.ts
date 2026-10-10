@@ -1526,7 +1526,7 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
     // Retain the original unprefixed source as a fallback so default-locale
     // requests that arrive without a prefix (e.g. `/old`) still match.
     // See the docblock above for why this differs from upstream Next.js.
-    out.push(r);
+    out.push({ ...r, localeFallback: true });
   }
   return out;
 }

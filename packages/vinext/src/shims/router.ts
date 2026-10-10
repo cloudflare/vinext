@@ -77,6 +77,7 @@ import {
   detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
+  localeRootHasTrailingSlash,
   type DomainLocale,
 } from "../utils/domain-locale.js";
 import {
@@ -108,6 +109,7 @@ import type { ClientRewrite } from "../client/client-rewrites.js";
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
+const __skipProxyUrlNormalize: boolean = process.env.__VINEXT_SKIP_PROXY_URL_NORMALIZE === "true";
 /** experimental.scrollRestoration from next.config.js, injected by the plugin at build time */
 const __scrollRestoration: boolean = process.env.__NEXT_SCROLL_RESTORATION === "true";
 
@@ -1868,7 +1870,13 @@ function normalizeClientConfigLocalePathname(pathname: string, hostname: string)
     detectDomainLocale(getDomainLocales(), hostname)?.defaultLocale ??
     window.__VINEXT_DEFAULT_LOCALE__;
   if (!defaultLocale) return pathname;
-  if (pathname === "/") return __trailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  if (pathname === "/") {
+    const rootTrailingSlash = localeRootHasTrailingSlash({
+      trailingSlash: __trailingSlash,
+      skipProxyUrlNormalize: __skipProxyUrlNormalize,
+    });
+    return rootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  }
   return `/${defaultLocale}${pathname}`;
 }
 
@@ -1947,7 +1955,10 @@ function matchSimpleClientConfigPattern(
     return undefined;
   }
 
-  const sourceParts = removeTrailingSlash(source).split("/");
+  // Like matchConfigPattern: a source's trailing slash is optional only when
+  // the pathname has one.
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
+  const sourceParts = (pathnameHadTrailingSlash ? removeTrailingSlash(source) : source).split("/");
   const pathParts = removeTrailingSlash(pathname).split("/");
   const params: Record<string, string> = {};
   let pathIndex = 0;
@@ -1999,6 +2010,7 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
   if (!routeContext) return false;
 
   for (const redirect of redirects) {
+    if (redirect.localeFallback) continue;
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
@@ -2019,6 +2031,7 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
+    if (rewrite.localeFallback) continue;
     const routeContext = getClientConfigRouteContext(currentHref, !matched);
     if (!routeContext) return null;
     if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
@@ -2092,6 +2105,7 @@ async function resolveClientConfigRewrite(
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
+    if (rewrite.localeFallback) continue;
     const result = await applyClientConfigRewrite(currentHref, rewrite, !matched);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;

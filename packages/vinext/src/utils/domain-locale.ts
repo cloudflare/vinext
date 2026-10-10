@@ -5,6 +5,18 @@ export type DomainLocale = {
   http?: true;
 };
 
+/**
+ * Whether config rules see the default-locale root as `/en/` rather than
+ * `/en`. Next.js's `maybeAddTrailingSlash` (resolve-routes.ts) re-adds the
+ * slash only when proxy URL normalization is on.
+ */
+export function localeRootHasTrailingSlash(config: {
+  trailingSlash?: boolean;
+  skipProxyUrlNormalize?: boolean;
+}): boolean {
+  return !!config.trailingSlash && !config.skipProxyUrlNormalize;
+}
+
 export function normalizeDomainHostname(hostname: string | null | undefined): string | undefined {
   if (!hostname) return undefined;
   return hostname.split(",", 1)[0]?.trim().split(":", 1)[0]?.toLowerCase() || undefined;
