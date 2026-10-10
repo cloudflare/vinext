@@ -465,6 +465,18 @@ describe("metadata routes integration (App Router)", () => {
     expect(text).toBe("og:my-post");
   });
 
+  it("returns 404 when a dynamic opengraph-image calls notFound()", async () => {
+    const res = await fetch(`${baseUrl}/blog/missing/opengraph-image`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("");
+  });
+
+  it("redirects when a dynamic opengraph-image calls redirect()", async () => {
+    const res = await fetch(`${baseUrl}/blog/moved/opengraph-image`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/blog/hello-world/opengraph-image");
+  });
+
   it("honors dynamicParams = false for dynamic metadata images", async () => {
     const publicImage = await fetch(
       `${baseUrl}/metadata-static-params/public-post/opengraph-image`,

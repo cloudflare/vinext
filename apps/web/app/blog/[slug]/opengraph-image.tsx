@@ -1,3 +1,4 @@
+import { notFound } from "next/navigation";
 import { renderBlogOgImage, OG_IMAGE_SIZE } from "../_og-image";
 import { formatPostDate, posts, postsBySlug } from "../_source";
 
@@ -11,8 +12,7 @@ export function generateStaticParams() {
 
 export default async function Image({ params }: { params: Promise<{ slug: string }> }) {
   const post = postsBySlug.get((await params).slug);
-  // vinext's metadata image routes turn notFound() into a 500, so return the 404 directly.
-  if (!post) return new Response("Not Found", { status: 404 });
+  if (!post) notFound();
 
   return renderBlogOgImage({
     title: post.title,
