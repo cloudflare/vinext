@@ -189,6 +189,160 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     );
   });
 
+  // Next.js renders a parent segment's loading.tsx around the child segment's
+  // layout (layout-router.tsx's LoadingBoundary uses `parentLoadingData`), so
+  // it never renders inside that layout. Regression for cloudflare/vinext#3725.
+  // Related Next.js test: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  for (const target of [
+    {
+      name: "a sibling page",
+      from: "",
+      current: "overview",
+      link: "settings",
+      heading: "Settings page",
+      shell: "tabs",
+    },
+    {
+      name: "a page with its own layout",
+      from: "",
+      current: "overview",
+      link: "nested",
+      heading: "Nested page",
+      shell: "tabs",
+    },
+    // A template's Slot is keyed by its child segment, so it remounts here; the
+    // ancestor loading must stay outside it, as in Next.js. This and the plain
+    // targets' links use prefetch={false}: with no omitted layout mounted, a
+    // prefetched loading shell may commit on click, which is a separate path.
+    {
+      name: "a sibling page under a group template",
+      from: "/alpha",
+      current: "alpha",
+      link: "beta",
+      heading: "Beta page",
+      shell: "grouped-template",
+    },
+    // Nothing sits between the loading and the pages, and the browser keys the
+    // page's Slot by the page, so the boundary must not live on the page entry.
+    {
+      name: "a sibling page with nothing in between",
+      from: "/plain/one",
+      current: "one",
+      link: "two",
+      heading: "Plain two page",
+      shell: null,
+    },
+    // The pages' own layouts sit below a layout-less segment, so the browser
+    // swaps their Slots; the boundary must not live on those layout entries.
+    {
+      name: "a sibling page with its own layout below a layout-less segment",
+      from: "/plain/three",
+      current: "three",
+      link: "four",
+      heading: "Plain four page",
+      shell: null,
+    },
+  ]) {
+    test(`an ancestor loading keeps the current page when navigating to ${target.name}`, async ({
+      page,
+    }) => {
+      await page.goto(`${BASE}/ancestor-loading-shared-layout${target.from}`);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator(`#ancestor-shared-layout-${target.current}`)).toBeVisible();
+
+      await page.evaluate(() => {
+        const state = window as unknown as { __sawAncestorSharedLayoutLoading?: boolean };
+        state.__sawAncestorSharedLayoutLoading = false;
+        new MutationObserver(() => {
+          if (document.getElementById("ancestor-shared-layout-loading")) {
+            state.__sawAncestorSharedLayoutLoading = true;
+          }
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+
+      await page.locator(`#ancestor-shared-layout-${target.link}-link`).click();
+      // The target page takes 3s; the current page and its shell stay on screen meanwhile.
+      await page.waitForTimeout(500);
+      await expect(page.locator(`#ancestor-shared-layout-${target.current}`)).toBeVisible();
+      if (target.shell) {
+        await expect(page.locator(`#ancestor-shared-layout-${target.shell}`)).toBeVisible();
+      }
+      await expect(page.locator(`#ancestor-shared-layout-${target.link}`)).toHaveText(
+        target.heading,
+        { timeout: 10_000 },
+      );
+
+      const sawLoading = await page.evaluate(
+        () =>
+          (window as unknown as { __sawAncestorSharedLayoutLoading?: boolean })
+            .__sawAncestorSharedLayoutLoading,
+      );
+      expect(sawLoading).toBe(false);
+    });
+  }
+
+  for (const target of [
+    { name: "a page", path: "settings", heading: "Settings page", shell: "tabs" },
+    { name: "a templated page", path: "templated", heading: "Templated page", shell: "tabs" },
+    // Only a template sits between the loading and the page, so the route
+    // entry's per-segment boundary is the one that streams the fallback.
+    {
+      name: "a page under a group template",
+      path: "beta",
+      heading: "Beta page",
+      shell: "grouped-template",
+    },
+    {
+      name: "a page with nothing in between",
+      path: "plain/two",
+      id: "two",
+      heading: "Plain two page",
+      shell: null,
+    },
+  ] as { name: string; path: string; id?: string; heading: string; shell: string | null }[]) {
+    test(`an ancestor loading replaces the segments below it on first entry to ${target.name}`, async ({
+      page,
+    }) => {
+      void page.goto(`${BASE}/ancestor-loading-shared-layout/${target.path}`);
+
+      await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({
+        timeout: 5_000,
+      });
+      // Whatever sits between the loading and the page (if anything) renders
+      // at once but the page takes 3s, so the loading UI must replace it rather
+      // than render inside it.
+      await page.waitForTimeout(600);
+      await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
+      if (target.shell) {
+        await expect(page.locator(`#ancestor-shared-layout-${target.shell}`)).toBeHidden();
+      }
+      await expect(page.locator(`#ancestor-shared-layout-${target.id ?? target.path}`)).toHaveText(
+        target.heading,
+        { timeout: 10_000 },
+      );
+      await expect(page.locator("#ancestor-shared-layout-loading")).toHaveCount(0);
+    });
+  }
+
+  test("ancestor loading above a slot's owner layout wraps that layout on first entry", async ({
+    page,
+  }) => {
+    void page.goto(`${BASE}/ancestor-loading-shared-layout/slotted`);
+
+    await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible({ timeout: 5_000 });
+    // The owner layout and its page render at once but the @panel slot takes
+    // 3s, so the loading UI must replace the layout rather than the slot.
+    await page.waitForTimeout(600);
+    await expect(page.locator("#ancestor-shared-layout-loading")).toBeVisible();
+    await expect(page.locator("#ancestor-shared-layout-slotted")).toBeHidden();
+    await expect(page.locator("#ancestor-shared-layout-panel")).toHaveText("Panel slot", {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#ancestor-shared-layout-slotted-page")).toBeVisible();
+    await expect(page.locator("#ancestor-shared-layout-loading")).toHaveCount(0);
+  });
+
   test("slow nested layout and page include both loading fallbacks in initial HTML", async ({
     request,
   }) => {
