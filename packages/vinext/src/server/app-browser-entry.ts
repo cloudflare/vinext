@@ -195,7 +195,6 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getVinextRscCompatibilityId,
-  isRscResponseContentType,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -2546,9 +2545,10 @@ function bootstrapHydration(
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
-        const isNavigationRscContentType = isRscResponseContentType(
-          navResponse.headers.get("content-type"),
-        );
+        const navContentType = navResponse.headers.get("content-type") ?? "";
+        const isNavigationRscContentType =
+          navContentType.startsWith(VINEXT_RSC_CONTENT_TYPE) ||
+          (IS_STATIC_EXPORT && navContentType.startsWith("text/plain"));
         // A static host reports the fetched transport URL (`/route/index.txt`),
         // but that is not a redirect and must never become browser-visible.
         const navigationResponseUrl = IS_STATIC_EXPORT

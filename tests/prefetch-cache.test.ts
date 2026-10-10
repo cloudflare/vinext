@@ -2761,27 +2761,26 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse("/download?doc=note", null, null)).toBeNull();
   });
 
-  it("accepts a text/plain Flight payload from a static export host", async () => {
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
-    const rscUrl = "/exported.txt";
-    const prepareSnapshot = vi.fn(async () => ({}) as never);
+  it.each([["text/plain; charset=utf-8"], ["application/octet-stream"], [null]])(
+    "accepts any successful static export prefetch response (content-type %s)",
+    async (contentType) => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+      const rscUrl = "/exported.txt";
+      const prepareSnapshot = vi.fn(async () => ({}) as never);
+      const response = new Response(new TextEncoder().encode("flight"));
+      if (contentType === null) response.headers.delete("content-type");
+      else response.headers.set("content-type", contentType);
 
-    prefetchRscResponse(
-      rscUrl,
-      Promise.resolve(
-        new Response("flight", { headers: { "content-type": "text/plain; charset=utf-8" } }),
-      ),
-      null,
-      null,
-      undefined,
-      { prepareSnapshot },
-    );
-    await getPrefetchCache().get(rscUrl)?.pending;
+      prefetchRscResponse(rscUrl, Promise.resolve(response), null, null, undefined, {
+        prepareSnapshot,
+      });
+      await getPrefetchCache().get(rscUrl)?.pending;
 
-    expect(prepareSnapshot).toHaveBeenCalledTimes(1);
-    expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
-  });
+      expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+      expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+    },
+  );
 
   it("preserves the original expiry when consuming a prefetched response", () => {
     const cache = getPrefetchCache();

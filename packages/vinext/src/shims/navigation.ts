@@ -33,7 +33,6 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
-  isRscResponseContentType,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -1482,6 +1481,25 @@ export async function fetchRouteTreeGatedPrefetch(options: {
 }
 
 /**
+ * Whether a prefetch response may be decoded as Flight. A successful response
+ * that is not Flight (e.g. a Route Handler's text download) is a miss: decoding
+ * its bytes would let text shaped like Flight resource hints insert scripts.
+ * Navigation then fetches it and falls back to a document navigation.
+ *
+ * Ported from Next.js: fetchPrefetchResponse in
+ * packages/next/src/client/components/segment-cache/cache.ts, which skips the
+ * check in `output: "export"` because a static host, not Next.js, chooses the
+ * MIME type of the exported `.txt` payloads.
+ */
+function isFlightPrefetchResponse(response: Response): boolean {
+  if (!response.ok) return false;
+  if (process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export") {
+    return true;
+  }
+  return response.headers.get("content-type")?.startsWith(VINEXT_RSC_CONTENT_TYPE) === true;
+}
+
+/**
  * Prefetch an RSC response and snapshot it for later consumption.
  * Stores the in-flight promise so immediate clicks can await it instead
  * of firing a duplicate fetch.
@@ -1531,11 +1549,7 @@ export function prefetchRscResponse(
 
   entry.pending = fetchPromise
     .then(async (response) => {
-      // Like Next.js' fetchPrefetchResponse, a successful response that is not
-      // Flight (e.g. a Route Handler's text download) is a miss: decoding its
-      // bytes as Flight would let attacker-influenced text inject resource
-      // hints. Navigation then fetches it and falls back to a hard navigation.
-      if (response.ok && isRscResponseContentType(response.headers.get("content-type"))) {
+      if (isFlightPrefetchResponse(response)) {
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
         const previousSize = getPrefetchCacheEntrySize(entry);
