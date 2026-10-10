@@ -13,10 +13,9 @@ const SERVER_ONLY_SPECIFIER_RE = /^server-only$/;
  *
  * Like `rsc:validate-imports`, this guards resolution rather than scanning
  * source, so every specifier form (static, dynamic, re-export, require) is
- * caught before vinext's no-op `server-only` alias applies. Unlike the main
- * client validator, `"use server"` modules are not exempt: the worker
- * container has no Server Function transform, so their module bodies would
- * be emitted verbatim.
+ * caught before vinext's no-op `server-only` alias applies. `"use server"`
+ * modules need no exemption: `vinext:worker-use-server` replaces them with
+ * Server Function references, so their imports are never resolved.
  */
 export function createWorkerServerOnlyImportsPlugin(): Plugin {
   return {
