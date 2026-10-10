@@ -1849,9 +1849,11 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { matchRedirect, preserveRedirectDestinationQuery } =
-    await import("../config/config-matchers.js");
-  const redirect = matchRedirect(
+  const [{ matchClientRedirect }, { preserveRedirectDestinationQuery }] = await Promise.all([
+    import("../client/client-redirect-matcher.js"),
+    import("../config/config-matchers.js"),
+  ]);
+  const redirect = matchClientRedirect(
     routeContext.pathname,
     redirects,
     routeContext.context,

@@ -20,7 +20,7 @@ import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
 import type { InitialDevServerErrorPayload } from "./server/dev-initial-server-error";
 import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/navigation";
-import type { NextRedirect } from "./config/next-config";
+import type { ClientRedirect } from "./client/client-redirects";
 import type { ClientRewrites } from "./client/client-rewrites";
 
 // `window.next` is declared inline in `./client/window-next.ts` (mirroring
@@ -116,7 +116,7 @@ declare global {
     __VINEXT_PAGES_SSP_PATTERNS__: string[] | undefined;
 
     /** Resolved client-safe Pages Router redirects from next.config.js. */
-    __VINEXT_CLIENT_REDIRECTS__: NextRedirect[] | undefined;
+    __VINEXT_CLIENT_REDIRECTS__: ClientRedirect[] | undefined;
 
     /** Resolved client-safe rewrites from next.config.js. */
     __VINEXT_CLIENT_REWRITES__: ClientRewrites | undefined;
