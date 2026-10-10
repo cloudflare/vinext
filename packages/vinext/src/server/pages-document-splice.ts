@@ -21,9 +21,22 @@ function spliceMarker(html: string, marker: string, insertion: string): string {
   return html.slice(0, index) + insertion + html.slice(index + marker.length);
 }
 
-/** Insert `insertion` right after `<Head>`'s opening tag. */
+/**
+ * Drop `<Head>`'s marker attribute and insert `insertion` right after its
+ * opening tag. Dev HTML transforms may add attributes after the marker.
+ */
 export function spliceDocumentHeadOpen(html: string, token: string, insertion: string): string {
-  return spliceMarker(html, getDocumentHeadOpenMarker(token), `>${insertion}`);
+  const marker = getDocumentHeadOpenMarker(token);
+  const index = html.indexOf(marker);
+  if (index === -1) return html;
+  const tagEnd = html.indexOf(">", index + marker.length) + 1;
+  if (tagEnd === 0) return html;
+  return (
+    html.slice(0, index) +
+    html.slice(index + marker.length, tagEnd) +
+    insertion +
+    html.slice(tagEnd)
+  );
 }
 
 /** Insert `insertion` right before `<Head>`'s closing tag. */

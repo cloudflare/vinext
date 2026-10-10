@@ -44,7 +44,7 @@ export function extractDocumentAssetProps(
   props: DocumentAssetProps;
 } {
   const headTagPattern = new RegExp(
-    `<head\\b[^>]*${escapeRegExp(getDocumentHeadOpenMarker(token))}`,
+    `<head\\b[^>]*${escapeRegExp(getDocumentHeadOpenMarker(token))}[^>]*>`,
     "i",
   );
   const nextScriptTagPattern = new RegExp(

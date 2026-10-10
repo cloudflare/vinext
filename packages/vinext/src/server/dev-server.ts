@@ -503,7 +503,7 @@ async function streamPageToResponseImpl(
     const generatedAssetHeadHTML = applyGeneratedAssetProps(assetHeadHTML, {}, "next-script");
     shellTemplate = `<!DOCTYPE html>
 <html>
-<head${getDocumentHeadOpenMarker(documentToken)}
+<head${getDocumentHeadOpenMarker(documentToken)}>
   ${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}
   ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}

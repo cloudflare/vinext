@@ -44,9 +44,9 @@ export function getDocumentScriptsPlaceholder(token: string | null): string {
   return token ? `<!--__NEXT_SCRIPTS__:${token}-->` : "<!-- __NEXT_SCRIPTS__ -->";
 }
 
-/** The end of `<Head>`'s opening tag. */
+/** The marker attribute on `<Head>`'s opening tag. */
 export function getDocumentHeadOpenMarker(token: string): string {
-  return ` ${DOCUMENT_HEAD_OPEN_ATTRIBUTE}="${token}">`;
+  return ` ${DOCUMENT_HEAD_OPEN_ATTRIBUTE}="${token}"`;
 }
 
 export function getDocumentHeadCloseMarker(token: string): string {

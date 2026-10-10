@@ -31,6 +31,14 @@ describe("Pages Document splicing", () => {
     });
   });
 
+  it("inserts after the opening Head tag when attributes follow its marker", () => {
+    const html =
+      '<html><head data-vinext-head-open="token" lang="en"><title>t</title></head></html>';
+    expect(spliceDocumentHeadOpen(html, token, "<meta open>")).toBe(
+      '<html><head lang="en"><meta open><title>t</title></head></html>',
+    );
+  });
+
   it("inserts $ replacement patterns verbatim", () => {
     const insertion = "$`$'$&$$";
     let html = spliceDocumentHeadOpen(documentHtml, token, insertion);
