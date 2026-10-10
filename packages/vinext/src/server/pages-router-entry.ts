@@ -64,7 +64,11 @@ async function handleSingleStageRequest(
 
   // Client build files resolve no route, so they keep the ASSETS cache policy
   // instead of passing through route cacheability admission.
-  const isClientBuildFile = isPagesClientBuildFileRequest(request);
+  const isClientBuildFile = isPagesClientBuildFileRequest(
+    request,
+    env,
+    ctx as PagesWorkerExecutionContext,
+  );
   let finalize: ((response: Response, context: typeof ctx) => Promise<Response>) | undefined;
   if (!isClientBuildFile && request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
     const cacheability = await import("./cacheability-request.js");

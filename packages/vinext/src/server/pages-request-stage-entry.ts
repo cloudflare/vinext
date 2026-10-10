@@ -180,10 +180,27 @@ const imageConfig: ImageConfig | undefined = vinextConfig?.images
  * outside `_next/static`. Such responses resolve no route, so the Worker
  * keeps their ASSETS cache policy out of route cacheability admission.
  */
-export function isPagesClientBuildFileRequest(request: Request): boolean {
+export function isPagesClientBuildFileRequest(
+  request: Request,
+  env: PagesWorkerEnv | undefined,
+  ctx: PagesWorkerExecutionContext | undefined,
+): boolean {
   return (
     (request.method === "GET" || request.method === "HEAD") &&
+    resolveAssetFetcher(ctx?.assets, env, "worker") !== undefined &&
     resolveClientBuildFile(new URL(request.url).pathname, basePath, clientBuildFiles) !== null
+  );
+}
+
+function resolveAssetFetcher(
+  assets: VinextAssetFetcher | undefined,
+  env: PagesWorkerEnv | undefined,
+  defaultHostRuntime: "node" | "worker",
+): VinextAssetFetcher | undefined {
+  return (
+    assets ??
+    getExplicitCdnCacheAdapter()?.assets ??
+    (defaultHostRuntime === "worker" ? env?.ASSETS : undefined)
   );
 }
 
@@ -291,9 +308,7 @@ async function handleRequestImpl(
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
-  assets ??=
-    getExplicitCdnCacheAdapter()?.assets ??
-    (defaultHostRuntime === "worker" ? env?.ASSETS : undefined);
+  assets = resolveAssetFetcher(assets, env, defaultHostRuntime);
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext at build time
