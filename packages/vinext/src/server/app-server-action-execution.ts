@@ -16,6 +16,7 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
+import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
@@ -221,6 +222,24 @@ type RenderServerActionRscStreamOptions<TTemporaryReferences> = {
 type DecodeServerActionReplyOptions<TTemporaryReferences> = {
   temporaryReferences: TTemporaryReferences;
 };
+
+/**
+ * Run a server-reference load or decode outside every request scope.
+ *
+ * Server reference modules are imported on the first request that names them
+ * — `loadServerAction()` imports the action's module, and the decoders import
+ * any reference the body carries — and a dynamic `import()` carries
+ * AsyncLocalStorage into the module's top-level evaluation. Module-scope
+ * `cookies()`/`headers()` would then capture that first caller's request for
+ * every later caller in the isolate. Next.js evaluates action modules outside
+ * the request store, where those calls throw.
+ *
+ * The result is awaited inside the callback because `decodeReply()` returns a
+ * lazy thenable that only resolves (and imports) its references once awaited.
+ */
+function loadOutsideRequestScopes<T>(load: () => T | PromiseLike<T>): Promise<T> {
+  return runOutsideRequestScopes(async () => await load());
+}
 
 export type HandleProgressiveServerActionRequestOptions = {
   actionId: string | null;
@@ -1258,7 +1277,7 @@ export async function handleProgressiveServerActionRequest(
       });
     }
 
-    const action = await options.decodeAction(body);
+    const action = await loadOutsideRequestScopes(() => options.decodeAction(body));
     if (!isAppServerActionFunction(action)) {
       // A multipart POST to a *page* is always a server-action attempt; a body
       // that decodes to no action means the referenced action doesn't exist
@@ -1378,7 +1397,9 @@ export async function handleProgressiveServerActionRequest(
         };
       }
 
-      const formState = await options.decodeFormState(actionResult, body);
+      const formState = await loadOutsideRequestScopes(() =>
+        options.decodeFormState(actionResult, body),
+      );
       return {
         kind: "form-state",
         formState: formState ?? null,
@@ -1550,6 +1571,8 @@ export async function handleServerActionRscRequest<
   if (options.request.method.toUpperCase() !== "POST" || !options.actionId) {
     return null;
   }
+  // Narrowed copy for the loader closures below.
+  const actionId = options.actionId;
 
   const csrfResponse = validateCsrfOrigin(options.request, options.allowedOrigins);
   if (csrfResponse) return csrfResponse;
@@ -1567,7 +1590,7 @@ export async function handleServerActionRscRequest<
     if (options.contentType.startsWith("multipart/form-data")) {
       let loadedAction: unknown;
       try {
-        loadedAction = await options.loadServerAction(options.actionId);
+        loadedAction = await loadOutsideRequestScopes(() => options.loadServerAction(actionId));
       } catch (error) {
         if (isServerActionNotFoundError(error, options.actionId)) {
           return createActionNotFoundResponse(options.actionId, {
@@ -1614,7 +1637,7 @@ export async function handleServerActionRscRequest<
     if (action === undefined) {
       let loadedAction: unknown;
       try {
-        loadedAction = await options.loadServerAction(options.actionId);
+        loadedAction = await loadOutsideRequestScopes(() => options.loadServerAction(actionId));
       } catch (error) {
         if (isServerActionNotFoundError(error, options.actionId)) {
           return createActionNotFoundResponse(options.actionId, {
@@ -1640,7 +1663,9 @@ export async function handleServerActionRscRequest<
     }
 
     const temporaryReferences = options.createTemporaryReferenceSet();
-    const args = await options.decodeReply(body, { temporaryReferences });
+    const args = await loadOutsideRequestScopes(() =>
+      options.decodeReply(body, { temporaryReferences }),
+    );
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionStatus = 200;

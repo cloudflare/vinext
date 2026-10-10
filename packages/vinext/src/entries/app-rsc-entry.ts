@@ -62,6 +62,10 @@ const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
   import.meta.url,
 );
+const serverReferenceLoaderPath = resolveEntryPath(
+  "../server/server-reference-loader.js",
+  import.meta.url,
+);
 const appActionForwardingPath = resolveEntryPath(
   "../server/app-action-forwarding.js",
   import.meta.url,
@@ -842,7 +846,9 @@ const __loadAppRouteHandlerDispatch = () => import(${JSON.stringify(appRouteHand
 ${
   hasServerActions
     ? `const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});
-const __loadAppActionForwarding = () => import(${JSON.stringify(appActionForwardingPath)});`
+const __loadAppActionForwarding = () => import(${JSON.stringify(appActionForwardingPath)});
+import { isolateServerReferenceLoads as __isolateServerReferenceLoads } from ${JSON.stringify(serverReferenceLoaderPath)};
+__isolateServerReferenceLoads();`
     : ""
 }
 ${
