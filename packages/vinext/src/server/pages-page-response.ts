@@ -2,6 +2,7 @@ import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -73,6 +74,21 @@ export function generatePagesETag(payload: string): string {
  */
 export function requestsNoCache(cacheControl: string | undefined): boolean {
   return /(?:^|,)\s*no-cache\s*(?:,|$)/.test(cacheControl ?? "");
+}
+
+/**
+ * Whether a render answers a matching If-None-Match with a 304. Next.js stores
+ * the page before it evaluates the ETag, so when the CDN adapter stores the
+ * completed response, the render returns the page and the adapter sends the 304.
+ * A page whose status carries no body has nothing to store.
+ */
+export function rendersPagesNotModified(status: number): boolean {
+  return (
+    status === 204 ||
+    status === 205 ||
+    status === 304 ||
+    getCdnCacheAdapter().deferNotModifiedResponse?.() !== true
+  );
 }
 
 type PagesFontPreload = {
@@ -778,7 +794,12 @@ export async function renderPagesPageResponse(
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
-    if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
+    if (
+      !noCacheRequested &&
+      options.ifNoneMatch &&
+      matchesIfNoneMatch(options.ifNoneMatch, etag) &&
+      rendersPagesNotModified(finalStatus)
+    ) {
       return new Response(null, {
         status: 304,
         headers: responseHeaders,

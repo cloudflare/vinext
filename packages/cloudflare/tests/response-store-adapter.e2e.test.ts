@@ -983,6 +983,38 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  // A crawler revalidating with a matching If-None-Match gets a 304. Next.js
+  // stores the page before it evaluates the ETag, so the 304 never replaces
+  // the page later visitors receive, and it evaluates the ETag on a HIT too.
+  test("stores a Pages page whole when a crawler's conditional request fills it", async () => {
+    const crawler = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+    const conditionalRequest = {
+      headers: {
+        // Fetch adds Cache-Control: no-cache to a conditional request without
+        // one, and no-cache skips the 304.
+        "Cache-Control": "max-age=0",
+        "If-None-Match": "*",
+        "User-Agent": crawler,
+      },
+    };
+    const conditional = await request("/pages-prewarm", conditionalRequest);
+    assert.equal(conditional.status, 304);
+    assert.equal(conditional.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(await conditional.text(), "");
+    await waitForResponseEntries("/pages-prewarm", 1);
+
+    const visitor = await request("/pages-prewarm");
+    assert.equal(visitor.status, 200);
+    assert.equal(visitor.headers.get("x-vinext-cache"), "HIT");
+    // A 304 updates the client's stored headers, so it carries the page's
+    // browser policy rather than the pending policy of an unadmitted render.
+    assert.equal(conditional.headers.get("cache-control"), visitor.headers.get("cache-control"));
+    assert.doesNotMatch(conditional.headers.get("cache-control") ?? "", /no-store/);
+    // The stored page carries the validator the crawler revalidated against.
+    assert.equal(visitor.headers.get("etag"), conditional.headers.get("etag"));
+    assert.match(await visitor.text(), /Pages prewarm target/);
+  });
+
   test("caches HEAD independently without storing a body", async () => {
     const first = await request("/pages-prewarm?head=1", { method: "HEAD" });
     const second = await request("/pages-prewarm?head=1", { method: "HEAD" });
