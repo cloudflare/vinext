@@ -96,7 +96,7 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   __ensureInstrumentation: mocks.ensureInstrumentation,
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
-  clientBuildFiles: new Set(["/remoteEntry.js", "/plugin file.js"]),
+  clientBuildFiles: new Set(["/remoteEntry.js", "/plugin file.js", "/literal%name.js"]),
   hasMiddleware: false,
   hasRequestAwareDocument: false,
   matchApiRoute: mocks.matchApiRoute,
@@ -988,6 +988,12 @@ describe("Pages Worker request stage", () => {
     });
 
     await expect(response.text()).resolves.toBe("/plugin%20file.js");
+
+    // A literal `%` in the file name reaches ASSETS encoded exactly once.
+    const literal = await worker.fetch(new Request("https://example.com/literal%25name.js"), {
+      ASSETS: { fetch: fetchAsset },
+    });
+    await expect(literal.text()).resolves.toBe("/literal%25name.js");
     expect(mocks.runMiddleware).not.toHaveBeenCalled();
   });
 
