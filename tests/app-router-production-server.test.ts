@@ -374,6 +374,11 @@ describe("App Router Production server (startProdServer)", () => {
                 fileName: "vinext-test-literal%name.js",
                 source: "export const literal = true;\n",
               });
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-literal%2Fname.js",
+                source: "export const encodedDelimiter = true;\n",
+              });
             },
           },
         ],
@@ -1882,6 +1887,10 @@ describe("App Router Production server (startProdServer)", () => {
     const literal = await fetch(`${baseUrl}/vinext-test-literal%25name.js`);
     expect(literal.status).toBe(200);
     expect(await literal.text()).toBe("export const literal = true;\n");
+
+    const encodedDelimiter = await fetch(`${baseUrl}/vinext-test-literal%252Fname.js`);
+    expect(encodedDelimiter.status).toBe(200);
+    expect(await encodedDelimiter.text()).toBe("export const encodedDelimiter = true;\n");
   });
 
   // Ported from Next.js: test/integration/image-optimizer/test/util.ts

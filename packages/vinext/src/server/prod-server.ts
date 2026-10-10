@@ -2047,7 +2047,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     if (req.method === "GET" || req.method === "HEAD") {
-      const clientBuildFile = resolveClientBuildFile(pathname, appRouterBasePath, clientBuildFiles);
+      const clientBuildFile = resolveClientBuildFile(
+        normalizedRawPathname,
+        appRouterBasePath,
+        clientBuildFiles,
+      );
       if (
         clientBuildFile &&
         (await tryServeStatic(req, res, clientDir, clientBuildFile, compress, staticCache))

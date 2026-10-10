@@ -96,7 +96,12 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   __ensureInstrumentation: mocks.ensureInstrumentation,
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
-  clientBuildFiles: new Set(["/remoteEntry.js", "/plugin file.js", "/literal%name.js"]),
+  clientBuildFiles: new Set([
+    "/remoteEntry.js",
+    "/plugin file.js",
+    "/literal%name.js",
+    "/literal%2Fname.js",
+  ]),
   hasMiddleware: false,
   hasRequestAwareDocument: false,
   matchApiRoute: mocks.matchApiRoute,
@@ -994,6 +999,11 @@ describe("Pages Worker request stage", () => {
       ASSETS: { fetch: fetchAsset },
     });
     await expect(literal.text()).resolves.toBe("/literal%25name.js");
+    const encodedDelimiter = await worker.fetch(
+      new Request("https://example.com/literal%252Fname.js"),
+      { ASSETS: { fetch: fetchAsset } },
+    );
+    await expect(encodedDelimiter.text()).resolves.toBe("/literal%252Fname.js");
     expect(mocks.runMiddleware).not.toHaveBeenCalled();
   });
 
