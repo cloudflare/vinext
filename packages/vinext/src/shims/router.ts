@@ -1812,12 +1812,14 @@ function hasClientAppRouteManifest(): boolean {
   return Array.isArray(routes) && routes.length > 0;
 }
 
-function getClientConfigRouteContext(href: string): {
+type ClientConfigRouteContext = {
   basePathState: { basePath: string; hadBasePath: boolean };
   context: RequestContext;
   pathname: string;
   search: string;
-} | null {
+};
+
+function getClientConfigRouteContext(href: string): ClientConfigRouteContext | null {
   let parsed: URL;
   try {
     parsed = new URL(href, window.location.href);
@@ -1842,13 +1844,10 @@ function getClientConfigRouteContext(href: string): {
   };
 }
 
-async function resolveClientConfigRedirect(href: string): Promise<string | null> {
-  const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
-  if (!redirects || redirects.length === 0) return null;
-
-  const routeContext = getClientConfigRouteContext(href);
-  if (!routeContext) return null;
-
+async function resolveClientConfigRedirect({
+  redirects,
+  routeContext,
+}: ClientConfigRedirectCandidate): Promise<string | null> {
   const { matchRedirect, preserveRedirectDestinationQuery } =
     await import("../config/config-matchers.js");
   const redirect = matchRedirect(
@@ -1873,14 +1872,14 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   );
 }
 
-async function applyClientConfigRewrite(
+function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
-): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
+  matchClientRewrite: typeof import("../client/client-rewrite-matcher.js").matchClientRewrite,
+): { href: string; kind: "rewrite" } | { kind: "document" } | null {
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
   const result = matchClientRewrite(
     routeContext.pathname,
     rewrite,
@@ -1958,12 +1957,17 @@ function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
-function clientConfigRedirectCouldMatch(href: string): boolean {
+type ClientConfigRedirectCandidate = {
+  redirects: NonNullable<typeof window.__VINEXT_CLIENT_REDIRECTS__>;
+  routeContext: ClientConfigRouteContext;
+};
+
+function findClientConfigRedirectCandidate(href: string): ClientConfigRedirectCandidate | null {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
-  if (!redirects || redirects.length === 0) return false;
+  if (!redirects || redirects.length === 0) return null;
 
   const routeContext = getClientConfigRouteContext(href);
-  if (!routeContext) return false;
+  if (!routeContext) return null;
 
   for (const redirect of redirects) {
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
@@ -1973,10 +1977,10 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
       continue;
     }
     const params = matchSimpleClientConfigPattern(routeContext.pathname, redirect.source);
-    if (params !== null) return true;
+    if (params !== null) return { redirects, routeContext };
   }
 
-  return false;
+  return null;
 }
 
 function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
@@ -2029,7 +2033,7 @@ function reusesMountedConfigRewritePage(href: string): boolean {
 
   if (target.origin !== current.origin || target.pathname !== current.pathname) return false;
   if (target.search === current.search) return false;
-  if (clientConfigRedirectCouldMatch(href)) return false;
+  if (findClientConfigRedirectCandidate(href)) return false;
 
   const rewrite = resolveClientConfigRewriteSync(href);
   if (rewrite?.kind !== "rewrite") return false;
@@ -2054,12 +2058,13 @@ async function resolveClientConfigRewrite(
   href: string,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
-  if (!rewrites) return null;
+  if (!rewrites || rewrites.beforeFiles.length === 0) return null;
 
+  const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const result = await applyClientConfigRewrite(currentHref, rewrite);
+    const result = applyClientConfigRewrite(currentHref, rewrite, matchClientRewrite);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;
     currentHref = result.href;
@@ -2904,10 +2909,12 @@ async function navigateClient(
       let browserUrl = url;
       let htmlFetchUrl = fetchUrl;
       const routeMasked = options.routeMasked ?? routeUrl !== url;
-      const configRedirect =
-        hasClientRedirectRules() && clientConfigRedirectCouldMatch(browserUrl)
-          ? await resolveClientConfigRedirect(browserUrl)
-          : null;
+      const redirectCandidate = hasClientRedirectRules()
+        ? findClientConfigRedirectCandidate(browserUrl)
+        : null;
+      const configRedirect = redirectCandidate
+        ? await resolveClientConfigRedirect(redirectCandidate)
+        : null;
       if (configRedirect) {
         const redirectedUrl = resolveLocalRedirectUrl(configRedirect);
         if (!redirectedUrl) {

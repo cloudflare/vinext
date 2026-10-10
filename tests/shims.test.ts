@@ -24795,6 +24795,64 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("loads the rewrite matcher once for several beforeFiles rules", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/c": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // The `has` rule matches the source, which sends resolution to the async
+    // matcher path; the cookie is absent so that rule itself does not rewrite.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [
+        { source: "/a", destination: "/x", has: [{ type: "cookie", key: "absent" }] },
+        { source: "/a", destination: "/b" },
+        { source: "/b", destination: "/c" },
+      ],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    let matcherLoads = 0;
+    vi.doMock("../packages/vinext/src/client/client-rewrite-matcher.js", async (importOriginal) => {
+      const original =
+        await importOriginal<
+          typeof import("../packages/vinext/src/client/client-rewrite-matcher.js")
+        >();
+      return {
+        get matchClientRewrite() {
+          matcherLoads++;
+          return original.matchClientRewrite;
+        },
+      };
+    });
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const result = await Router.push("/a");
+
+      expect(result).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(matcherLoads).toBe(1);
+    } finally {
+      vi.doUnmock("../packages/vinext/src/client/client-rewrite-matcher.js");
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("uses the rewrite destination instead of a retained dynamic route hint", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
