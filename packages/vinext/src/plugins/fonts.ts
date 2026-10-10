@@ -21,10 +21,11 @@
  *   won't resolve in the browser because the CSS is injected at runtime.
  *   This plugin rewrites those path strings into Vite asset import references
  *   so that both dev (/@fs/...) and prod (/assets/font-xxx.woff2) URLs are
- *   correct.
+ *   correct. Statically analyzable calls also receive the adjusted fallback
+ *   CSS (`adjustFontFallback`) computed from the font file.
  */
 
-import type { Plugin } from "vite";
+import type { Plugin, Rollup } from "vite";
 import { parseAst } from "vite";
 import path, { toSlash } from "pathslash";
 import fs from "node:fs";
@@ -36,12 +37,19 @@ import {
   buildFallbackFontFace,
   getFallbackFontOverrideMetrics,
 } from "../build/google-fonts/fallback-metrics.js";
+import {
+  getFallbackMetricsFromFontFile,
+  pickFontFileForFallbackGeneration,
+  readLocalFontMetrics,
+  type LocalFontMetrics,
+} from "../build/local-fonts/fallback-metrics.js";
 import { validateGoogleFontOptions } from "../build/google-fonts/validate.js";
 import { getFontAxes } from "../build/google-fonts/get-axes.js";
 import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
 import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 /**
  * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
@@ -1183,12 +1191,62 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
   } satisfies Plugin;
 }
 
+const RELATIVE_FONT_PATH_RE = /^\.\.?\//;
+
+/**
+ * Find the font file Next.js would generate the `adjustFontFallback` face
+ * from for a `localFont()` options object: the source closest to normal
+ * weight/style, resolved against the calling module (Next.js resolves `src`
+ * relative to it too). Returns undefined when the call opts out with
+ * `adjustFontFallback: false`, or when its options or sources aren't
+ * statically analyzable relative paths; such calls keep the plain fallback
+ * stack.
+ */
+function resolveLocalFontFallbackSource(
+  optionsStr: string,
+  importer: string,
+): { file: string; category: "serif" | "sans-serif" } | undefined {
+  const options = parseStaticObjectLiteral(optionsStr);
+  if (!options || options.adjustFontFallback === false) return undefined;
+
+  // Like Next.js, a string `src` takes the top-level weight/style, while each
+  // entry of a `src` array only uses its own.
+  const { src } = options;
+  const entries: unknown[] = Array.isArray(src)
+    ? src
+    : typeof src === "string"
+      ? [{ path: src, weight: options.weight, style: options.style }]
+      : [src];
+  const sources: Array<{ path: string; weight?: string; style?: string }> = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") return undefined;
+    const { path: sourcePath, weight, style } = entry as Record<string, unknown>;
+    if (
+      typeof sourcePath !== "string" ||
+      !RELATIVE_FONT_PATH_RE.test(sourcePath) ||
+      (weight !== undefined && typeof weight !== "string") ||
+      (style !== undefined && typeof style !== "string")
+    ) {
+      return undefined;
+    }
+    sources.push({ path: sourcePath, weight, style });
+  }
+
+  const picked = pickFontFileForFallbackGeneration(sources);
+  if (!picked) return undefined;
+  return {
+    file: path.resolve(path.dirname(stripViteModuleQuery(importer)), picked.path),
+    category: options.adjustFontFallback === "Times New Roman" ? "serif" : "sans-serif",
+  };
+}
+
 /**
  * Create the `vinext:local-fonts` Vite plugin.
  *
  * Rewrites relative font file paths in `next/font/local` calls into Vite
  * asset import references so that both dev (/@fs/...) and prod
- * (/assets/font-xxx.woff2) URLs resolve correctly.
+ * (/assets/font-xxx.woff2) URLs resolve correctly, and passes the binding
+ * name and adjusted fallback `@font-face` to the runtime shim.
  *
  * @param shimsDir - Absolute path to the shims directory (with trailing
  *   separator). Used to skip vinext's own shim files from transform — they
@@ -1202,9 +1260,65 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
  *   reason.
  */
 export function createLocalFontsPlugin(shimsDir: string): Plugin {
+  // Parsed fallback metrics keyed by font file path, so a font is read once
+  // even though every environment transforms the module that loads it.
+  // `null` records a file that couldn't be read as a font.
+  const fontMetricsCache = new Map<string, LocalFontMetrics | null>();
+  // Ids of the modules whose fallback CSS was generated from each font file.
+  const fontFileImporters = new Map<string, Set<string>>();
+
+  function readFontMetrics(
+    context: Rollup.TransformPluginContext,
+    file: string,
+    importer: string,
+  ): LocalFontMetrics | undefined {
+    let metrics = fontMetricsCache.get(file);
+    if (metrics === undefined) {
+      let bytes: Buffer;
+      try {
+        bytes = fs.readFileSync(file);
+      } catch {
+        // The rewritten asset import reports the missing file.
+        return undefined;
+      }
+      try {
+        metrics = readLocalFontMetrics(bytes);
+      } catch (error) {
+        // Next.js logs the fontkit error and generates no fallback face.
+        metrics = null;
+        context.warn(`Failed to load font file: ${file}\n${String(error)}`);
+      }
+      fontMetricsCache.set(file, metrics);
+    }
+    context.addWatchFile(file);
+    let importers = fontFileImporters.get(file);
+    if (!importers) fontFileImporters.set(file, (importers = new Set()));
+    importers.add(importer);
+    return metrics ?? undefined;
+  }
+
   return {
     name: "vinext:local-fonts",
     enforce: "pre",
+
+    watchChange(id) {
+      fontMetricsCache.delete(toSlash(id));
+    },
+
+    hotUpdate({ file, modules }) {
+      const importerIds = fontFileImporters.get(toSlash(file));
+      if (!importerIds) return;
+      // Server environments only soft-invalidate a module that statically
+      // imports the changed font, reusing a transform result that still
+      // holds the old fallback CSS. Updating the importers hard-invalidates
+      // them so every environment regenerates it.
+      const affectedModules = new Set(modules);
+      for (const importerId of importerIds) {
+        const module = this.environment.moduleGraph.getModuleById(importerId);
+        if (module) affectedModules.add(module);
+      }
+      return [...affectedModules];
+    },
 
     transform: {
       // NOTE: node_modules is intentionally NOT excluded here. npm packages
@@ -1293,9 +1407,24 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
           // a comment that would swallow the real comma → double comma.
           const lastChar = lastSignificantChar(optionsStr.slice(0, -1));
           const separator = lastChar === "{" || lastChar === "," ? "" : ", ";
+          // Generate the `adjustFontFallback` face at build time, like
+          // Next.js: a `local()` Arial/Times New Roman face with metric
+          // overrides derived from the font file.
+          const internalFontProperties = [`family: ${JSON.stringify(bindingName)}`];
+          const fallbackSource = resolveLocalFontFallbackSource(optionsStr, id);
+          const fallbackMetrics = fallbackSource && readFontMetrics(this, fallbackSource.file, id);
+          if (fallbackSource && fallbackMetrics) {
+            const adjustedFallbackCSS = buildFallbackFontFace(
+              bindingName,
+              getFallbackMetricsFromFontFile(fallbackMetrics, fallbackSource.category),
+            );
+            internalFontProperties.push(
+              `adjustedFallbackCSS: ${JSON.stringify(adjustedFallbackCSS)}`,
+            );
+          }
           s.appendLeft(
             insertAt,
-            `${separator}_vinext: { font: { family: ${JSON.stringify(bindingName)} } }`,
+            `${separator}_vinext: { font: { ${internalFontProperties.join(", ")} } }`,
           );
           familyPayloadInsertions.add(insertAt);
           hasChanges = true;

@@ -115,7 +115,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/font/local": {
     status: "supported",
     detail:
-      "className and variable modes both work; @font-face is generated at runtime; no adjusted fallback metrics (adjustFontFallback is ignored)",
+      "className and variable modes both work; @font-face is generated at runtime; adjusted fallback metrics (adjustFontFallback) are generated at build time for statically analyzable relative src paths",
   },
   "next/og": { status: "supported", detail: "ImageResponse via @vercel/og" },
   "next/config": {
