@@ -39,6 +39,7 @@ import {
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import { localeRootHasTrailingSlash } from "../utils/domain-locale.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import { resolveResponseStageCachePolicy } from "./config-headers.js";
 import {
@@ -154,6 +155,7 @@ export const pagesRequestStagePrerenderSecret: string | null = pagesEntry.preren
 const basePath: string = vinextConfig?.basePath ?? "";
 const assetPathPrefix: string = assetPrefixPathname(vinextConfig?.assetPrefix ?? "");
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+const skipProxyUrlNormalize: boolean = vinextConfig?.skipProxyUrlNormalize ?? false;
 const i18nConfig = vinextConfig?.i18n ?? null;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? {
@@ -408,7 +410,7 @@ async function handleRequestImpl(
     // `req.url`, matching prod-server's `originalRenderUrl` and Next.js.
     const originalRenderUrl = pathname + new URL(request.url).search;
     const dataNorm = normalizeDataRequest(request);
-    if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
+    if (dataNorm.notFoundResponse && !skipProxyUrlNormalize) {
       return dataNorm.notFoundResponse;
     }
     const isDataReq = dataNorm.isDataReq;
@@ -417,7 +419,10 @@ async function handleRequestImpl(
       pathname = dataNorm.normalizedPathname;
     }
     const responseStagePolicyPathname = i18nConfig
-      ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: url.hostname })
+      ? normalizeDefaultLocalePathname(pathname, i18nConfig, {
+          hostname: url.hostname,
+          rootTrailingSlash: localeRootHasTrailingSlash({ trailingSlash, skipProxyUrlNormalize }),
+        })
       : pathname;
     const responseStagePolicyHeaders = resolveResponseStageCachePolicy({
       basePathState: { basePath, hadBasePath },
@@ -436,6 +441,7 @@ async function handleRequestImpl(
       assetPrefix: vinextConfig?.assetPrefix,
       basePath,
       trailingSlash,
+      skipProxyUrlNormalize,
       i18nConfig,
       configRedirects,
       configRewrites,

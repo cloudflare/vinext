@@ -74,8 +74,10 @@ import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-p
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import {
   addLocalePrefix,
+  detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
+  localeRootHasTrailingSlash,
   type DomainLocale,
 } from "../utils/domain-locale.js";
 import {
@@ -107,6 +109,7 @@ import type { ClientRewrite } from "../client/client-rewrites.js";
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
+const __skipProxyUrlNormalize: boolean = process.env.__VINEXT_SKIP_PROXY_URL_NORMALIZE === "true";
 /** experimental.scrollRestoration from next.config.js, injected by the plugin at build time */
 const __scrollRestoration: boolean = process.env.__NEXT_SCROLL_RESTORATION === "true";
 
@@ -1812,7 +1815,12 @@ function hasClientAppRouteManifest(): boolean {
   return Array.isArray(routes) && routes.length > 0;
 }
 
-function getClientConfigRouteContext(href: string): {
+function getClientConfigRouteContext(
+  href: string,
+  // Only the navigation URL gets the default locale; like Next.js, later rules
+  // in a rewrite chain match the previous destination as-is.
+  prefixDefaultLocale = true,
+): {
   basePathState: { basePath: string; hadBasePath: boolean };
   context: RequestContext;
   pathname: string;
@@ -1837,9 +1845,39 @@ function getClientConfigRouteContext(href: string): {
       host: parsed.hostname,
       query: parsed.searchParams,
     },
-    pathname,
+    pathname: prefixDefaultLocale
+      ? normalizeClientConfigLocalePathname(pathname, parsed.hostname)
+      : pathname,
     search: parsed.search,
   };
+}
+
+/**
+ * Match config rules against the locale-prefixed pathname, as the server does
+ * (`normalizeDefaultLocalePathname`) and as Next.js's client router does before
+ * resolving rewrites (`addLocale(asPath, locale)`). Without this, a
+ * default-locale URL such as `/about` misses `locale: false` rules written
+ * against `/:locale/about` and matches unprefixed `locale: false` rules the
+ * server never applies to it.
+ */
+function normalizeClientConfigLocalePathname(pathname: string, hostname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales?.length) return pathname;
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
+  if (getLocalePathPrefix(pathname, locales)) return pathname;
+
+  const defaultLocale =
+    detectDomainLocale(getDomainLocales(), hostname)?.defaultLocale ??
+    window.__VINEXT_DEFAULT_LOCALE__;
+  if (!defaultLocale) return pathname;
+  if (pathname === "/") {
+    const rootTrailingSlash = localeRootHasTrailingSlash({
+      trailingSlash: __trailingSlash,
+      skipProxyUrlNormalize: __skipProxyUrlNormalize,
+    });
+    return rootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  }
+  return `/${defaultLocale}${pathname}`;
 }
 
 async function resolveClientConfigRedirect(href: string): Promise<string | null> {
@@ -1878,8 +1916,9 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
 async function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
+  prefixDefaultLocale: boolean,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
-  const routeContext = getClientConfigRouteContext(href);
+  const routeContext = getClientConfigRouteContext(href, prefixDefaultLocale);
   if (!routeContext) return null;
 
   const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
@@ -1908,15 +1947,23 @@ function shouldEvaluateClientConfigRule(
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
 }
 
+const SIMPLE_CLIENT_CONFIG_SEGMENT_RE = /^(?:[^:*+?()\\]*|:[\w-]+[*+]?)$/;
+
 function matchSimpleClientConfigPattern(
   pathname: string,
   source: string,
 ): Record<string, string> | null | undefined {
-  if (source.includes("(") || source.includes("\\") || /:[\w-]+[*+][^/]/.test(source)) {
+  // Only whole-segment literals, `:param` and `:param*`/`:param+` are handled
+  // here; anything else (regex groups, optional params, `/:slug.md`,
+  // `/blog-:slug`) is left to matchConfigPattern.
+  if (!source.split("/").every((part) => SIMPLE_CLIENT_CONFIG_SEGMENT_RE.test(part))) {
     return undefined;
   }
 
-  const sourceParts = removeTrailingSlash(source).split("/");
+  // Like matchConfigPattern: a source's trailing slash is optional only when
+  // the pathname has one.
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
+  const sourceParts = (pathnameHadTrailingSlash ? removeTrailingSlash(source) : source).split("/");
   const pathParts = removeTrailingSlash(pathname).split("/");
   const params: Record<string, string> = {};
   let pathIndex = 0;
@@ -1945,6 +1992,13 @@ function matchSimpleClientConfigPattern(
   return pathIndex === pathParts.length ? params : null;
 }
 
+function destinationPathUsesAnyParam(destination: string, params: Record<string, string>): boolean {
+  const keys = Object.keys(params);
+  if (keys.length === 0) return true;
+  const pathAndHost = destination.split("#", 1)[0]!.split("?", 1)[0]!;
+  return keys.some((key) => new RegExp(`:${key}([+*])?(?![A-Za-z0-9_])`).test(pathAndHost));
+}
+
 function simpleClientConfigSourceCouldMatch(pathname: string, source: string): boolean {
   const wildcardIndex = source.search(/[:(\\*+?]/);
   const literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
@@ -1968,6 +2022,7 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
   if (!routeContext) return false;
 
   for (const redirect of redirects) {
+    if (redirect.localeFallback) continue;
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
@@ -1988,7 +2043,8 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const routeContext = getClientConfigRouteContext(currentHref);
+    if (rewrite.localeFallback) continue;
+    const routeContext = getClientConfigRouteContext(currentHref, !matched);
     if (!routeContext) return null;
     if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
       continue;
@@ -2001,6 +2057,9 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     const params = matchSimpleClientConfigPattern(routeContext.pathname, rewrite.source);
     if (params === undefined) return undefined;
     if (params === null) continue;
+    // matchRewrite appends captures to the query when the destination's path
+    // and host use none of them; leave that case to it.
+    if (!destinationPathUsesAnyParam(rewrite.destination, params)) return undefined;
 
     const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
     if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };
@@ -2061,7 +2120,8 @@ async function resolveClientConfigRewrite(
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const result = await applyClientConfigRewrite(currentHref, rewrite);
+    if (rewrite.localeFallback) continue;
+    const result = await applyClientConfigRewrite(currentHref, rewrite, !matched);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;
     currentHref = result.href;

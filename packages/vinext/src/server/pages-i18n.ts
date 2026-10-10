@@ -95,13 +95,16 @@ export function detectPathnameLocale(
  * `:locale`. After normalisation the request looks like `/en/to-sv` and
  * the rule matches with `:locale=en`.
  *
+ * When the result is matched against config rules, pass
+ * `rootTrailingSlash: localeRootHasTrailingSlash(config)`.
+ *
  * Ported from Next.js: packages/next/src/server/lib/router-utils/resolve-routes.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
  */
 export function normalizeDefaultLocalePathname(
   pathname: string,
   i18n: NextI18nConfig | null | undefined,
-  options: { hostname?: string | null } = {},
+  options: { hostname?: string | null; rootTrailingSlash?: boolean } = {},
 ): string {
   if (!i18n) return pathname;
   // Don't touch internal paths.
@@ -113,7 +116,11 @@ export function normalizeDefaultLocalePathname(
   const domainLocale = detectDomainLocale(i18n.domains, options.hostname ?? undefined);
   const defaultLocale = domainLocale?.defaultLocale ?? i18n.defaultLocale;
 
-  if (pathname === "/") return `/${defaultLocale}`;
+  // With `rootTrailingSlash`, the root matches the `/:nextInternalLocale(...)/`
+  // root sources applyLocaleToRoutes emits for `trailingSlash`.
+  if (pathname === "/") {
+    return options.rootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  }
   return `/${defaultLocale}${pathname}`;
 }
 

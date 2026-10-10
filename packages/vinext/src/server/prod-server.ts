@@ -2476,6 +2476,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         assetPrefix,
         basePath,
         trailingSlash,
+        skipProxyUrlNormalize,
         i18nConfig,
         configRedirects,
         configRewrites,
