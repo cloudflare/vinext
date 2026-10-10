@@ -9,7 +9,8 @@
 type AdapterArgs = { env: unknown; options: { label: string } };
 type Entry = { lastModified: number; value: unknown };
 
-const PROBE_KEY_PREFIX = "unstable_cache:v2:unstable-cache-test:";
+// unstable_cache keys are `unstable_cache:v2:<callback hash>:<keyParts>:<args>`.
+const PROBE_KEY = /^unstable_cache:v2:[0-9a-f]{16}:unstable-cache-test:/;
 
 export default class ClassDataCacheAdapter {
   readonly #label: string;
@@ -20,7 +21,7 @@ export default class ClassDataCacheAdapter {
   }
 
   async get(key: string): Promise<Entry | null> {
-    if (key.startsWith(PROBE_KEY_PREFIX)) {
+    if (PROBE_KEY.test(key)) {
       return {
         lastModified: Date.now(),
         value: {

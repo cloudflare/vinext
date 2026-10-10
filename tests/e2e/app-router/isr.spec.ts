@@ -677,6 +677,24 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(value2).toBe(value1);
   });
 
+  // Next.js keys unstable_cache by the callback source as well as keyParts:
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  test("callbacks sharing keyParts and arguments keep separate entries", async ({ request }) => {
+    const id = `order-${Date.now()}`;
+
+    const receipt1 = await readSharedKeyPartsRoute(request, "receipt", id);
+    expect(receipt1).toMatchObject({ kind: "receipt", orderId: id });
+    expect(receipt1.customerEmail).toBe(`customer-${id}@example.com`);
+
+    const summary1 = await readSharedKeyPartsRoute(request, "summary", id);
+    expect(summary1).toMatchObject({ kind: "summary", orderId: id });
+    expect(summary1).not.toHaveProperty("customerEmail");
+
+    // Each callback still serves its own cached entry.
+    expect(await readSharedKeyPartsRoute(request, "summary", id)).toEqual(summary1);
+    expect(await readSharedKeyPartsRoute(request, "receipt", id)).toEqual(receipt1);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
   test("unstable_cache bypasses cache in draft mode", async ({ request }) => {
@@ -768,6 +786,18 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect((await readDraftCacheRoute(request)).data).toBe(normal.data);
   });
 });
+
+async function readSharedKeyPartsRoute(
+  request: APIRequestContext,
+  route: "receipt" | "summary",
+  id: string,
+) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-shared-key-parts/${route}?id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+  return (await response.json()) as Record<string, unknown>;
+}
 
 async function readDraftCachePage(request: APIRequestContext, key: string) {
   const response = await request.get(

@@ -616,7 +616,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
  * Wrap an async function with caching.
  *
  * Returns a new function that caches results. The cache key is derived
- * from keyParts + serialized arguments.
+ * from the callback source, keyParts and serialized arguments.
  */
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
@@ -624,12 +624,13 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   keyParts?: string[],
   options?: UnstableCacheOptions,
 ): T {
-  const baseKey = keyParts ? keyParts.join(":") : fnv1a64(fn.toString());
-  // Warning: fn.toString() as a cache key is minification-sensitive. In
-  // production builds where the function body is mangled, two logically
-  // different functions may hash to the same key, or the same function may
-  // hash differently across builds. Always pass explicit keyParts in
-  // production to get a stable, collision-free cache key.
+  // Like Next.js, the callback source is part of the key even when keyParts
+  // are given, so two callbacks sharing keyParts and arguments never share an
+  // entry. The source is minification-sensitive, so the same callback may
+  // key differently across builds.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  const fnKey = fnv1a64(fn.toString());
+  const baseKey = keyParts ? `${fnKey}:${keyParts.join(":")}` : fnKey;
   const tags = encodeCacheTags(options?.tags ?? []);
   const revalidateSeconds = options?.revalidate;
 
