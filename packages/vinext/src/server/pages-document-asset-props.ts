@@ -27,6 +27,24 @@ function removeAttributes(tag: string, names: readonly string[]): string {
   return tag.replace(new RegExp(`\\s(?:${names.join("|")})="[^"]*"`, "g"), "");
 }
 
+// Only real markup counts: React escapes `<` and quotes in rendered values,
+// so request data in a custom Document can't forge either of these.
+const NEXT_SCRIPTS_PLACEHOLDER = "<!-- __NEXT_SCRIPTS__ -->";
+const NEXT_DATA_SCRIPT_TAG_PATTERN = /<script\b[^>]*\sid=["']__NEXT_DATA__["']/i;
+
+/**
+ * Put the generated hydration scripts where `<NextScript />` rendered. A
+ * Document without NextScript gets them before `</body>` unless it already
+ * renders its own `__NEXT_DATA__` script.
+ */
+export function injectDocumentNextScripts(html: string, scripts: string): string {
+  if (html.includes(NEXT_SCRIPTS_PLACEHOLDER)) {
+    return html.replace(NEXT_SCRIPTS_PLACEHOLDER, scripts);
+  }
+  if (NEXT_DATA_SCRIPT_TAG_PATTERN.test(html)) return html;
+  return html.replace("</body>", `  ${scripts}\n</body>`);
+}
+
 export function extractDocumentAssetProps(html: string): {
   html: string;
   props: DocumentAssetProps;

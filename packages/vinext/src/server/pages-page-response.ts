@@ -33,6 +33,7 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
+  injectDocumentNextScripts,
 } from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
@@ -359,14 +360,7 @@ async function buildPagesShellHtml(
         `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n</head>`,
       );
     }
-    // Detect NextScript by its placeholder: a bare "__NEXT_DATA__" can also
-    // come from request data the custom Document rendered.
-    if (html.includes("<!-- __NEXT_SCRIPTS__ -->")) {
-      html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
-    } else {
-      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
-    }
-    return html;
+    return injectDocumentNextScripts(html, generatedNextDataScript);
   }
 
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's

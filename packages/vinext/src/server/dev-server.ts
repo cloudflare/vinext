@@ -27,6 +27,7 @@ import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
+  injectDocumentNextScripts,
   markDocumentAssetPropsProtectedTags,
   stripDocumentAssetPropsProtectionMarkers,
   type DocumentAssetProps,
@@ -474,14 +475,7 @@ async function streamPageToResponseImpl(
       );
     }
     // Inject scripts: replace placeholder or append before </body>
-    // Detect NextScript by its placeholder: a bare "__NEXT_DATA__" can also
-    // come from request data the custom Document rendered.
-    if (docHtml.includes("<!-- __NEXT_SCRIPTS__ -->")) {
-      docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", generatedScripts);
-    } else {
-      docHtml = docHtml.replace("</body>", `  ${generatedScripts}\n</body>`);
-    }
-    shellTemplate = docHtml;
+    shellTemplate = injectDocumentNextScripts(docHtml, generatedScripts);
   } else {
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
