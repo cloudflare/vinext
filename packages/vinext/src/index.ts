@@ -47,6 +47,7 @@ import {
   createValidFileMatcher,
   findFileWithExts,
 } from "./routing/file-matcher.js";
+import { patchViteBaseMiddleware } from "./server/dev-base-path.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import { signalFromNodeResponse } from "./server/node-response-signal.js";
@@ -6145,6 +6146,11 @@ export const loadServerActionClient = ${
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
+          const skipViteInternalsOutsideBasePath = patchViteBaseMiddleware(
+            server,
+            nextConfig?.basePath ?? "",
+            nextConfig?.trailingSlash ?? false,
+          );
           const viteFilesystemMiddlewares = server.middlewares.stack
             .filter(({ handle }) => {
               const name = typeof handle === "function" ? handle.name : "";
@@ -6183,6 +6189,10 @@ export const loadServerActionClient = ${
               publicMiddlewareEntry.handle = vinextServePublicMiddleware;
             }
           }
+
+          // Runs after the lookups above, which keep the unwrapped Vite
+          // filesystem middlewares for rewrites served from public files.
+          skipViteInternalsOutsideBasePath();
 
           const serveRewrittenViteFilesystemRoute = async (
             req: import("node:http").IncomingMessage,
@@ -6563,7 +6573,7 @@ export const loadServerActionClient = ${
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 const trailingSlashRedirect = normalizeTrailingSlash(
                   routeUrl.split("?")[0],
-                  bp,
+                  req.__vinextOutsideBasePath ? "" : bp,
                   nextConfig.trailingSlash,
                   qs,
                 );
@@ -6655,7 +6665,7 @@ export const loadServerActionClient = ${
               ].some((rewrite) =>
                 matchesRewriteSource(pathname, rewrite, {
                   basePath: bp,
-                  hadBasePath: true,
+                  hadBasePath: !req.__vinextOutsideBasePath,
                 }),
               );
               const isFilePathRequest = pathname.includes(".") && !pathname.endsWith(".html");
@@ -6685,8 +6695,11 @@ export const loadServerActionClient = ${
                   matchRoute(pageRouteUrl, pageRoutes) !== null ||
                   matchRoute(apiRouteUrl, apiRoutes) !== null;
               }
+              // Vite's file middlewares skip requests outside basePath, so
+              // only the pipeline can answer them.
               if (
                 isFilePathRequest &&
+                !req.__vinextOutsideBasePath &&
                 !isDataReq &&
                 !filePathMatchesRewrite &&
                 !filePathMatchesPagesRoute &&
@@ -6785,6 +6798,7 @@ export const loadServerActionClient = ${
                         nextConfig?.trailingSlash,
                         opts.isDataRequest,
                         pathname,
+                        !req.__vinextOutsideBasePath,
                       );
 
                       // Forward middleware context to the RSC entry so it can
@@ -6849,7 +6863,7 @@ export const loadServerActionClient = ${
                   fallback: [],
                 },
                 configHeaders: nextConfig?.headers ?? [],
-                hadBasePath: true, // Vite strips basePath before our middleware sees the request
+                hadBasePath: !req.__vinextOutsideBasePath,
                 isDataReq,
                 isDataRequest,
                 hasMiddleware: capturedMiddlewarePath !== null,

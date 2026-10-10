@@ -49,7 +49,6 @@ import {
 } from "./revalidation-request.js";
 import {
   methodNotAllowedResponse,
-  notFoundStaticAssetResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
@@ -407,7 +406,7 @@ export async function runPagesRequest(
   {
     const trailingSlashRedirect = isDataReq
       ? null
-      : normalizeTrailingSlash(pathname, basePath, trailingSlash, search);
+      : normalizeTrailingSlash(pathname, hadBasePath ? basePath : "", trailingSlash, search);
     if (trailingSlashRedirect) {
       return { type: "response", response: trailingSlashRedirect };
     }
@@ -463,6 +462,7 @@ export async function runPagesRequest(
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
+  let middlewareRewriteFired = false;
   const middlewareHeaders: HeaderRecord = {};
   const mergeConfigHeadersIntoEarlyResponse = (response: Response): Response => {
     if (configHeaders.length === 0) return response;
@@ -601,6 +601,7 @@ export async function runPagesRequest(
     if (result.rewriteUrl) {
       resolvedUrl = result.rewriteUrl;
       resolvedPathnameIsRequestPathname = false;
+      middlewareRewriteFired = true;
     }
 
     // Reconciled superset: result.status takes priority over result.rewriteStatus
@@ -736,15 +737,23 @@ export async function runPagesRequest(
 
   const isMissingBuildAsset = () =>
     isNextStaticPath(resolvedPathname, "", assetPrefixPathname(deps.assetPrefix ?? ""));
-  const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
+  const isOutsideBasePathUnclaimed = () =>
+    basePath && !hadBasePath && !configRewriteFired && !middlewareRewriteFired;
+  // Like any other response, the 404 carries the middleware headers and status
+  // and the `basePath: false` config headers staged for this request.
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
     type: "response",
-    response: isMissingBuildAsset()
-      ? notFoundStaticAssetResponse(headersFromRecord(middlewareHeaders))
-      : new Response("This page could not be found", {
+    response: finalizeMissingStaticAssetResponse(
+      mergeHeaders(
+        new Response("This page could not be found", {
           status: 404,
           headers: { "Content-Type": "text/html; charset=utf-8" },
         }),
+        middlewareHeaders,
+        middlewareStatus,
+      ),
+      isMissingBuildAsset(),
+    ),
   });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
