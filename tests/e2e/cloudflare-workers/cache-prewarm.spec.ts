@@ -376,6 +376,52 @@ test("useSearchParams() server-renders the real query once the page is dynamic",
   expect(headers["cf-cache-status"]).not.toBe("HIT");
 });
 
+test("a query-bearing miss stores nothing of its query for a query-free visitor", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(
+    backend === "workers-cache",
+    "the edge admits Workers Cache entries; its cross-query test covers what it stores",
+  );
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(90_000);
+
+  // Next.js keeps the request's query out of a static page's HTML, including
+  // its navigation payload, so the one stored entry can serve every query. An
+  // on-demand path starts cold, so the first visitor's request is the miss.
+  const path = `/cached/${randomUUID()}`;
+  const secret = randomUUID();
+  const first = await request.get(`${baseURL}${path}?token=${secret}`);
+  expect(first.ok(), JSON.stringify({ backend, headers: first.headers() })).toBe(true);
+  const firstBody = await first.text();
+  expect(firstBody).not.toContain(secret);
+  const renderOf = (body: string) => /data-render-id-tag[^>]*>([^<]+)</.exec(body)?.[1];
+  const firstRender = renderOf(firstBody);
+  expect(firstRender).toBeTruthy();
+
+  let hitRender: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${baseURL}${path}`);
+        const headers = response.headers();
+        expect(response.ok(), JSON.stringify({ backend, headers })).toBe(true);
+        const body = await response.text();
+        expect(body).not.toContain(secret);
+        hitRender = renderOf(body);
+        return headers[cacheStatusHeader];
+      },
+      // KV caches the miss's "not found" read in its location for up to 60s.
+      { intervals: [1_000], timeout: 75_000 },
+    )
+    .toBe("HIT");
+  // Response Store reads its writes at once, so the query-free visitor gets
+  // the first visitor's render. A KV poll that missed re-stored its own.
+  if (backend === "response-store") expect(hitRender).toBe(firstRender);
+});
+
 test("Workers Cache serves every query of a static page from one entry", async ({
   baseURL,
   request,

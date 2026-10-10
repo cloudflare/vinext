@@ -38,6 +38,10 @@ async function waitForCacheHit(request: APIRequestContext, path: string): Promis
   return response;
 }
 
+function testIdText(html: string, testId: string): string | undefined {
+  return html.match(new RegExp(`data-testid="${testId}"[^>]*>(?:<!--[^>]*-->)*([^<]*)<`))?.[1];
+}
+
 test.describe("App Router ISR", () => {
   // This suite runs against the dedicated app-router-isr-prod project because
   // ISR caching is intentionally disabled in development mode.
@@ -155,6 +159,70 @@ test.describe("App Router ISR", () => {
 
     const tsText = await page.getByTestId("timestamp").textContent();
     expect(Number(tsText)).toBeGreaterThan(0);
+  });
+
+  // Next.js never puts the request's query into a static page's HTML: the
+  // browser reads it from its own URL. One stored document serves every query,
+  // so a query-bearing miss must store nothing of its query, even in the
+  // navigation payload of a page that never reads it.
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  test("a query-bearing miss stores a document without the visitor's query", async ({
+    request,
+  }) => {
+    const secret = `secret-${crypto.randomUUID()}`;
+    const first = await request.get(`${baseUrl()}/revalidate-test?token=${secret}`);
+    expect(first.status()).toBe(200);
+    expect(first.headers()["x-vinext-cache"]).toBe("MISS");
+    const firstHtml = await first.text();
+    expect(firstHtml).not.toContain(secret);
+    const renderedAt = testIdText(firstHtml, "timestamp");
+    expect(renderedAt).toBeTruthy();
+
+    // The query-free visitor gets the first visitor's stored render.
+    const cached = await waitForCacheHit(request, "/revalidate-test");
+    const cachedHtml = await cached.text();
+    expect(testIdText(cachedHtml, "timestamp")).toBe(renderedAt);
+    expect(cachedHtml).not.toContain(secret);
+  });
+
+  test("a query-bearing miss keeps useSearchParams() values out of the stored document", async ({
+    page,
+    request,
+  }) => {
+    const path = "/nextjs-compat/use-search-params-static-bailout";
+    await resetIsrPath(request, path);
+    const secret = `secret-${crypto.randomUUID()}`;
+    const first = await request.get(`${baseUrl()}${path}?value=${secret}`);
+    expect(first.status()).toBe(200);
+    const firstHtml = await first.text();
+    // The server renders the Suspense fallback, as in Next.js's static HTML.
+    expect(firstHtml).toContain('id="search-params-suspense"');
+    expect(firstHtml).not.toContain(secret);
+
+    const cached = await waitForCacheHit(request, path);
+    expect(await cached.text()).not.toContain(secret);
+
+    // A later visitor's browser reads its own query from the stored document.
+    const response = await page.goto(`${baseUrl()}${path}?value=mine`);
+    expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(await response?.text()).not.toContain(secret);
+    await expect(page.locator("#search-params-value")).toHaveText("mine");
+  });
+
+  test("a page that reads searchParams renders each query and stores none", async ({ request }) => {
+    const secret = `secret-${crypto.randomUUID()}`;
+    const first = await request.get(`${baseUrl()}/isr-dynamic-search?filter=${secret}`);
+    expect(first.status()).toBe(200);
+    expect(testIdText(await first.text(), "filter")).toBe(secret);
+    expect(first.headers()["x-vinext-cache"]).toBeUndefined();
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const next = await request.get(`${baseUrl()}/isr-dynamic-search`);
+      const html = await next.text();
+      expect(next.headers()["x-vinext-cache"]).toBeUndefined();
+      expect(testIdText(html, "filter")).toBe("none");
+      expect(html).not.toContain(secret);
+    }
   });
 
   test("existing revalidate-test page exposes its 60s policy after population", async ({
