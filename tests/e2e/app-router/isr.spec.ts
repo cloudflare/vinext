@@ -364,6 +364,36 @@ test.describe("App Router ISR", () => {
     expect(await cachedAbout.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
   });
 
+  test("keeps a hostname-selected route handler response off other hosts", async ({ request }) => {
+    const path = "/api/host-tenant";
+    await resetIsrPath(request, path);
+    const port = new URL(baseUrl()).port;
+
+    // One server answers several hostnames through a single path-keyed cache,
+    // as a multi-domain Worker does. Prime from each host before reading from
+    // the other so neither direction can replay a stored response.
+    const tenants = ["tenant-a", "tenant-b", "tenant-a", "tenant-b"];
+    const responses = [];
+    for (const tenant of tenants) {
+      const response = await request.get(`${baseUrl()}${path}`, {
+        headers: { host: `${tenant}.localhost:${port}` },
+      });
+      expect(response.status()).toBe(200);
+      responses.push({
+        body: await response.json(),
+        cache: response.headers()["x-vinext-cache"],
+        cdnPolicy: response.headers()["cache-control"]?.includes("s-maxage") ?? false,
+      });
+    }
+    expect(responses).toEqual(
+      tenants.map((tenant) => ({
+        body: { tenant: `${tenant}.localhost` },
+        cache: undefined,
+        cdnPolicy: false,
+      })),
+    );
+  });
+
   test("keeps trailing-slash route handler cache entries distinct", async ({ request }) => {
     const plainPath = "/api/route-cache-identity/trailing";
     const trailingPath = `${plainPath}/`;
