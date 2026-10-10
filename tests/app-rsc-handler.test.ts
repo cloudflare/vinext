@@ -315,6 +315,32 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it("applies i18n trailingSlash root headers to a staged root response", async () => {
+    const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+    const handler = createHandler({
+      configHeaders: applyLocaleToRoutes(
+        [{ source: "/", headers: [{ key: "x-root-header", value: "applied" }] }],
+        i18nConfig,
+        "header",
+        { trailingSlash: true },
+      ),
+      i18nConfig,
+      renderNotFound: async () => new Response("root", { status: 404 }),
+      trailingSlash: true,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/"),
+      null,
+      false,
+      (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+        handler.handleResponseStage(stageRequest, null, props),
+    );
+
+    expect(response.headers.get("x-root-header")).toBe("applied");
+    await response.text();
+  });
+
   // Ported from Next.js: test/e2e/invalid-static-asset-404-app
   // https://github.com/vercel/next.js/tree/canary/test/e2e/invalid-static-asset-404-app
   it.each(["", "/assets", "https://cdn.example.test/assets"])(

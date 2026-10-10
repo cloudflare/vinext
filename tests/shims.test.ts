@@ -23936,6 +23936,93 @@ describe("Pages Router _next/data client navigation", () => {
     },
   );
 
+  it("leaves params with literal suffixes to the full config matcher", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const slugLoader = vi.fn(async () => makePageModule("slug"));
+    const docsLoader = vi.fn(async () => makePageModule("docs"));
+    const { win } = createDataNavWindow({
+      locale: "en",
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/[slug]": slugLoader,
+        "/docs/[locale]": docsLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [{ source: "/:locale/:slug.md", destination: "/docs/:locale", locale: false }],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/foo.txt")).toBe(true);
+
+      expect(slugLoader).toHaveBeenCalledTimes(1);
+      expect(docsLoader).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("adds unused source captures to the rewritten query, as matchRewrite does", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const { win, buildId } = createDataNavWindow({
+      locale: "en",
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/promo": vi.fn(async () => makePageModule("promo")),
+        "/about": vi.fn(async () => makePageModule("about")),
+      },
+      ssgPatterns: [],
+      sspPatterns: ["/about"],
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [{ source: "/:locale/promo", destination: "/about", locale: false }],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response("{}"),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/promo")).toBe(true);
+
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+        `/_next/data/${buildId}/about.json?locale=en`,
+      ]);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("keeps a source trailing slash required when the pathname has none", async () => {
     // matchConfigPattern only makes a source's trailing slash optional when the
     // pathname has one; the sync client matcher must agree.

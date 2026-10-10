@@ -1947,11 +1947,16 @@ function shouldEvaluateClientConfigRule(
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
 }
 
+const SIMPLE_CLIENT_CONFIG_SEGMENT_RE = /^(?:[^:*+?()\\]*|:[\w-]+[*+]?)$/;
+
 function matchSimpleClientConfigPattern(
   pathname: string,
   source: string,
 ): Record<string, string> | null | undefined {
-  if (source.includes("(") || source.includes("\\") || /:[\w-]+[*+][^/]/.test(source)) {
+  // Only whole-segment literals, `:param` and `:param*`/`:param+` are handled
+  // here; anything else (regex groups, optional params, `/:slug.md`,
+  // `/blog-:slug`) is left to matchConfigPattern.
+  if (!source.split("/").every((part) => SIMPLE_CLIENT_CONFIG_SEGMENT_RE.test(part))) {
     return undefined;
   }
 
@@ -1985,6 +1990,13 @@ function matchSimpleClientConfigPattern(
   }
 
   return pathIndex === pathParts.length ? params : null;
+}
+
+function destinationPathUsesAnyParam(destination: string, params: Record<string, string>): boolean {
+  const keys = Object.keys(params);
+  if (keys.length === 0) return true;
+  const pathAndHost = destination.split("#", 1)[0]!.split("?", 1)[0]!;
+  return keys.some((key) => new RegExp(`:${key}([+*])?(?![A-Za-z0-9_])`).test(pathAndHost));
 }
 
 function simpleClientConfigSourceCouldMatch(pathname: string, source: string): boolean {
@@ -2045,6 +2057,9 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     const params = matchSimpleClientConfigPattern(routeContext.pathname, rewrite.source);
     if (params === undefined) return undefined;
     if (params === null) continue;
+    // matchRewrite appends captures to the query when the destination's path
+    // and host use none of them; leave that case to it.
+    if (!destinationPathUsesAnyParam(rewrite.destination, params)) return undefined;
 
     const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
     if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };
