@@ -55,10 +55,27 @@ describe("vinext:action-bound-args", () => {
   });
 
   it("fails the build for an encrypted closure it cannot bind", async () => {
-    const code = `import * as __vite_rsc_encryption_runtime from "rsc";
-export const action = __vite_rsc_encryption_runtime.encryptActionBoundArgs([secret]);`;
-    await expect(handler.call(context, code, "/app/page.js")).rejects.toThrow(
-      "could not bind an inline Server Action's encrypted closure to its action id",
-    );
+    for (const code of [
+      `import * as __vite_rsc_encryption_runtime from "rsc";
+export const action = __vite_rsc_encryption_runtime.encryptActionBoundArgs([secret]);`,
+      // A renamed runtime namespace must not slip past the check.
+      useServerTransform(`export default function Page({ label }) {
+  async function preview() { "use server"; return label; }
+  return preview;
+}`).replaceAll("__vite_rsc_encryption_runtime", "__renamed_runtime"),
+    ]) {
+      await expect(handler.call(context, code, "/app/page.js")).rejects.toThrow(
+        "could not bind an inline Server Action's encrypted closure to its action id",
+      );
+    }
+  });
+
+  it("rejects every closure for an action whose registration was pruned", async () => {
+    const code = useServerTransform(`export default function Page({ label }) {
+  const preview = typeof window !== "undefined" ? async () => { "use server"; return label; } : null;
+  return preview;
+}`).replace(/\? \/\* #__PURE__ \*\/ [^:]*:/, "? undefined :");
+    const result = await handler.call(context, code, "/app/page.js");
+    expect(result!.code).toContain(`$$vinextActionBoundArgs.decryptBoundArgs("", $$hoist_encoded)`);
   });
 });

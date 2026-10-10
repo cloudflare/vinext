@@ -6,6 +6,7 @@ import { magicStringTransformResult } from "./transform-result.js";
 // @vitejs/plugin-rsc's `rsc:use-server` transform encrypts an inline Server
 // Action's closure captures through this namespace import.
 const ENCRYPTION_RUNTIME = "__vite_rsc_encryption_runtime";
+const RUNTIME_METHOD_RE = /\b(?:en|de)cryptActionBoundArgs\b/;
 const BOUND_ARGS_RUNTIME = "$$vinextActionBoundArgs";
 
 function isRuntimeCall(node: ESTree.Node | null | undefined, method: string): boolean {
@@ -63,15 +64,16 @@ function readClosureDecrypt(
  * and decrypts them at the top of `fn` without naming the action, so any
  * action's closure would decrypt in any other action. This rewrites both calls
  * to the vinext runtime, which seals and checks `key#name` (the `Next-Action`
- * id) with the captures. An encryption call this cannot bind fails the build
- * rather than shipping an unbound closure.
+ * id) with the captures. Any `*.encryptActionBoundArgs` /
+ * `*.decryptActionBoundArgs` call this cannot bind fails the build rather than
+ * shipping an unbound closure.
  */
 export function createActionBoundArgsPlugin(options: { runtime: string }): Plugin {
   return {
     name: "vinext:action-bound-args",
     enforce: "post",
     transform: {
-      filter: { code: ENCRYPTION_RUNTIME },
+      filter: { code: RUNTIME_METHOD_RE },
       async handler(code, id) {
         const ast = await parseAstAsync(code);
         const output = new MagicString(code);
@@ -84,8 +86,9 @@ export function createActionBoundArgsPlugin(options: { runtime: string }): Plugi
         walkAst(ast, (node) => {
           if (
             node.type === "MemberExpression" &&
-            node.object.type === "Identifier" &&
-            node.object.name === ENCRYPTION_RUNTIME
+            !node.computed &&
+            node.property.type === "Identifier" &&
+            RUNTIME_METHOD_RE.test(node.property.name)
           ) {
             runtimeCalls++;
           }
@@ -120,8 +123,10 @@ export function createActionBoundArgsPlugin(options: { runtime: string }): Plugi
         });
 
         for (const [name, call] of decrypts) {
-          const actionId = actionIds.get(name);
-          if (actionId === undefined) continue;
+          // A hoisted action whose registration was pruned as a dead branch
+          // (e.g. a `typeof window` check) never issues a closure, so bind it
+          // to an id no closure is sealed for: it rejects every payload.
+          const actionId = actionIds.get(name) ?? "";
           output.overwrite(
             call.callee.start,
             call.callee.end,

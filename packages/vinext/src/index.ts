@@ -8549,6 +8549,13 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
   }
+  // Unconditional: a manually configured rsc() may live outside the early
+  // app-dir check, and the plugin only touches plugin-rsc's closure encryption.
+  plugins.push(
+    createActionBoundArgsPlugin({
+      runtime: pathToFileURL(resolveShimModulePath(shimsDir, "action-bound-args")).href,
+    }),
+  );
   if (earlyAppDirExists) {
     plugins.push(
       createActionOwnerManifestPlugin({
@@ -8563,11 +8570,6 @@ export const loadServerActionClient = ${
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
         },
-      }),
-    );
-    plugins.push(
-      createActionBoundArgsPlugin({
-        runtime: pathToFileURL(resolveShimModulePath(shimsDir, "action-bound-args")).href,
       }),
     );
     plugins.push(createScanBuildCssPlugin());
