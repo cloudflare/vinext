@@ -1117,41 +1117,37 @@ const SSR_HEAD_TAG_PATTERN =
   /<(title|meta|link|style|script|base|noscript)\b[^>]*?\sdata-next-head=""[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g;
 
 /**
- * Matches a whole head element whose body may contain markup-looking text.
- * Script/style are raw-text elements, title is RCDATA, and noscript is raw
- * text while scripting is enabled. In all four, a literal `</head>` does not
- * close the document head. `headChildToHTML()` only escapes the element's own
- * closing sequence for script/style, while `dangerouslySetInnerHTML` may leave
- * `</head>` intact in any of them.
+ * Matches, in the order the HTML tokenizer reaches them, an HTML comment, a
+ * text-only element, or any other start tag. Script and style are raw text:
+ * React escapes only the element's own closing sequence in their children, so
+ * page data rendered into one can spell out markup such as `</div>` or a
+ * `__NEXT_DATA__`-shaped script tag without it being markup. Title and
+ * textarea (RCDATA) and noscript (raw text while scripting is enabled) only
+ * carry such text through `dangerouslySetInnerHTML`, as do comments and a `<`
+ * inside an attribute value; consuming each start tag whole keeps a scan from
+ * starting inside its quoted attributes.
+ *
+ * Tag names end at whitespace, `/` or `>` as in the tokenizer, so a
+ * `<script-x>` custom element (whose text React escapes) is just a start tag.
  */
-const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
+const SHELL_TEXT_REGION_PATTERN =
+  /<!--(?:-?>|[\s\S]*?--!?>)|(<(script|style|title|textarea|noscript)(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>)([\s\S]*?)(<\/\2(?=[\s/>])[^>]*>)|<[a-z][^\s/>]*(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 
 /**
- * Matches an HTML comment or a `<script>`/`<style>` element, whichever the
- * tokenizer reaches first. Script and style are raw text: React escapes only
- * the element's own closing sequence in their children, so page data rendered
- * into one can spell out markup such as `</div>` or a `__NEXT_DATA__`-shaped
- * script tag without it being markup. A comment (only reachable through
- * `dangerouslySetInnerHTML`) likewise turns any tag inside it into text.
- * Tag names end at whitespace, `/` or `>` as in the HTML tokenizer, so a
- * `<script-x>` custom element (whose text React escapes) is not taken for a
- * raw-text open.
+ * Blank every comment, the body of every text-only element, and any `<` inside
+ * a start tag, so string searches over the shell only see real markup.
+ * Length-preserving, so indexes still map onto `html`.
  */
-const RAW_TEXT_REGION_PATTERN =
-  /<!--(?:-?>|[\s\S]*?--!?>)|(<(script|style)(?=[\s/>])[^>]*>)([\s\S]*?)(<\/\2(?=[\s/>])[^>]*>)/gi;
-
-/**
- * Blank every comment and the body of every raw-text element (keeping its
- * tags), so string searches only see real markup. Length-preserving, so
- * indexes still map onto `html`.
- */
-function maskRawTextContent(html: string): string {
+function maskShellText(html: string): string {
   return html.replace(
-    RAW_TEXT_REGION_PATTERN,
-    (region: string, open?: string, _tag?: string, content?: string, close?: string) =>
-      open === undefined || content === undefined || close === undefined
-        ? " ".repeat(region.length)
-        : open + " ".repeat(content.length) + close,
+    SHELL_TEXT_REGION_PATTERN,
+    (region: string, open?: string, _tag?: string, content?: string, close?: string) => {
+      if (region.startsWith("<!--")) return " ".repeat(region.length);
+      if (open === undefined || content === undefined || close === undefined) {
+        return "<" + region.slice(1).replaceAll("<", " ");
+      }
+      return "<" + open.slice(1).replaceAll("<", " ") + " ".repeat(content.length) + close;
+    },
   );
 }
 
@@ -1180,22 +1176,16 @@ function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
   // cached head alone rather than deleting the tags we do have.
   if (!freshHead) return cachedHtml;
 
-  // Blank out raw-text/RCDATA elements before locating the boundary so a
-  // `</head>` string inside one is not mistaken for the closing tag — that
-  // would truncate the scan and leave stale tags behind the fresh head. The
-  // replacement is length-preserving, so the index still maps onto
-  // `cachedHtml`.
-  const headEnd = cachedHtml
-    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
-    .indexOf("</head>");
+  // Locate the boundary and the collector's run on a masked copy. A `</head>`
+  // in text would truncate the scan and leave stale tags behind the fresh
+  // head; a `data-next-head` tag spelled out inside a `_document`-owned
+  // `<style>`/`<script>` would widen the splice and turn the rest of that
+  // element's text into markup.
+  const scanHtml = maskShellText(cachedHtml);
+  const headEnd = scanHtml.indexOf("</head>");
   if (headEnd < 0) return cachedHtml;
 
-  // Match tags on the masked copy too, so a `data-next-head` tag spelled out
-  // inside a `_document`-owned `<style>`/`<script>` cannot widen the splice
-  // and turn the rest of that element's text into markup.
-  const matches = [
-    ...maskRawTextContent(cachedHtml).slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN),
-  ];
+  const matches = [...scanHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
   const first = matches[0];
   const last = matches[matches.length - 1];
   if (!first || !last || first.index === undefined || last.index === undefined) {
@@ -1215,7 +1205,7 @@ function rewritePagesCachedHtml(
   // Locate the shell boundaries on a masked copy: the cached body is page
   // output, and a fake data script or `</div>` inside its `<style>` text would
   // otherwise move the splice and lift the bytes between into live markup.
-  const scanHtml = maskRawTextContent(cachedHtml);
+  const scanHtml = maskShellText(cachedHtml);
   const bodyMarker = '<div id="__next">';
   const bodyStart = scanHtml.indexOf(bodyMarker);
   const contentStart = bodyStart >= 0 ? bodyStart + bodyMarker.length : -1;

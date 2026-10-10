@@ -662,6 +662,64 @@ describe("pages page data", () => {
     expect(html.endsWith('</script><script src="/tail.js"></script></body></html>')).toBe(true);
   });
 
+  it("reads a script tag inside a quoted attribute as attribute text", async () => {
+    const body = '<span title="<script>">x</span>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html><head></head><body>${body}<div id="__next"><p>stale-body</p></div>` +
+        '<script id="__NEXT_DATA__" type="application/json">{"old":1}</script>' +
+        '<script src="/tail.js"></script></body></html>',
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async () => "<p>fresh-body</p>"),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(
+      html.startsWith(
+        `<!DOCTYPE html><html><head></head><body>${body}<div id="__next"><p>fresh-body</p></div>` +
+          '<script id="__NEXT_DATA__" type="application/json">',
+      ),
+    ).toBe(true);
+    expect(html.endsWith('</script><script src="/tail.js"></script></body></html>')).toBe(true);
+  });
+
+  it("refreshes next/head tags past a script tag inside a head comment", async () => {
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head><!-- <script> --><title data-next-head="">stale</title></head>' +
+        '<body><div id="__next"><div>stale-body</div></div>' +
+        '<script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>',
+      collectIsrHeadHTML: vi.fn(() => '<title data-next-head="">fresh</title>'),
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain('<head><!-- <script> --><title data-next-head="">fresh</title></head>');
+    expect(html).not.toContain("stale");
+  });
+
   it("keeps a next/head-shaped tag in document style text out of the head splice", async () => {
     // A `_document`-owned style after the collector's run is never
     // regenerated; if its text could end the run, everything after that
