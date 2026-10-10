@@ -1,6 +1,6 @@
 import { ACTION_REVALIDATED_HEADER } from "./headers.js";
 import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
-import { ServerActionResultFacts } from "./navigation-planner.js";
+import type { ServerActionResultFacts } from "./navigation-planner.js";
 import type { OperationLane } from "./operation-token.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
