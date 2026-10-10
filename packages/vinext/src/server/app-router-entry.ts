@@ -27,6 +27,7 @@ import rscHandler, {
   __assetPrefix as __rscAssetPrefix,
   __basePath as __rscBasePath,
   __cacheabilityManifest as __rscCacheabilityManifest,
+  __clientBuildFiles as __rscClientBuildFiles,
   __ensureInstrumentation,
   __ensureHybridPagesApplication,
   __imageAllowedWidths as __rscImageAllowedWidths,
@@ -46,6 +47,7 @@ import {
   isImageOptimizationPath,
 } from "./image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -83,6 +85,9 @@ import type { VinextRequestStageContext } from "./multi-stage.js";
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
 // compile-time constants in the generated RSC entry — see entries/app-rsc-entry.ts.
 const __workerBasePath: string = typeof __rscBasePath === "string" ? __rscBasePath : "";
+const __workerClientBuildFiles: ReadonlySet<string> = new Set(
+  Array.isArray(__rscClientBuildFiles) ? __rscClientBuildFiles : [],
+);
 const __workerAssetPathPrefix: string = assetPrefixPathname(
   typeof __rscAssetPrefix === "string" ? __rscAssetPrefix : "",
 );
@@ -232,6 +237,20 @@ async function handleRequest(
   } catch {
     // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
     return badRequestResponse();
+  }
+
+  // Client build files outside `_next/static` are build output like the
+  // hashed assets, so serve them before middleware when the Worker runs first.
+  if (assets && (request.method === "GET" || request.method === "HEAD")) {
+    const clientBuildFile = resolveClientBuildFile(
+      url.pathname,
+      __workerBasePath,
+      __workerClientBuildFiles,
+    );
+    if (clientBuildFile) {
+      const response = await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
+      return finalizeCacheabilityResponse ? finalizeCacheabilityResponse(response, ctx) : response;
+    }
   }
 
   // Valid assets are served by Cloudflare's ASSETS binding before the worker

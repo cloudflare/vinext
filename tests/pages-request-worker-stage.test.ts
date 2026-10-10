@@ -96,6 +96,7 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   __ensureInstrumentation: mocks.ensureInstrumentation,
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
+  clientBuildFiles: new Set(["/remoteEntry.js"]),
   hasMiddleware: false,
   hasRequestAwareDocument: false,
   matchApiRoute: mocks.matchApiRoute,
@@ -960,5 +961,20 @@ describe("Pages Worker request stage", () => {
 
     await expect(response.text()).resolves.toBe("local");
     expect(mocks.renderResponse).toHaveBeenCalledOnce();
+  });
+
+  it("serves client build files from ASSETS before middleware", async () => {
+    const fetchAsset = vi.fn(
+      async (request: Request) => new Response(new URL(request.url).pathname),
+    );
+
+    const response = await worker.fetch(new Request("https://example.com/remoteEntry.js"), {
+      ASSETS: { fetch: fetchAsset },
+    });
+
+    await expect(response.text()).resolves.toBe("/remoteEntry.js");
+    expect(fetchAsset).toHaveBeenCalledOnce();
+    expect(mocks.runMiddleware).not.toHaveBeenCalled();
+    expect(mocks.renderResponse).not.toHaveBeenCalled();
   });
 });

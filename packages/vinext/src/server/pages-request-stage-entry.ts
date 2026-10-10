@@ -27,6 +27,8 @@ import {
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
+import { createStaticAssetRequest } from "./worker-utils.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
@@ -144,6 +146,7 @@ const {
   matchPageRoute,
   normalizeDataRequest,
   publicFiles,
+  clientBuildFiles,
   runMiddleware,
   vinextConfig,
 } = pagesEntry;
@@ -383,6 +386,15 @@ async function handleRequestImpl(
       normalizePathnameForRouteMatchStrict(pathname);
     } catch {
       return new Response("Bad Request", { status: 400 });
+    }
+
+    // Client build files outside `_next/static` are build output like the
+    // hashed assets, so serve them before middleware when the Worker runs first.
+    if (assets && (request.method === "GET" || request.method === "HEAD")) {
+      const clientBuildFile = resolveClientBuildFile(pathname, basePath, clientBuildFiles);
+      if (clientBuildFile) {
+        return await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
+      }
     }
 
     // Valid assets are served by Cloudflare's ASSETS binding before the worker

@@ -269,6 +269,7 @@ import {
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
+  collectClientBuildFiles,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { readPrerenderSecret, readServerRuntimeOutputDirs } from "./build/server-manifest.js";
@@ -1737,6 +1738,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       ? path.dirname(outputDir)
       : outputDir;
   let pagesClientAssetsModule: string | null = internalOptions.__pagesClientAssetsModule ?? null;
+  let clientBuildFiles: string[] = [];
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
   // so request handling can use O(1) membership checks without filesystem I/O.
   // Production builds leave it null and scan the configured public directory
@@ -8246,6 +8248,10 @@ export const loadServerActionClient = ${
       enforce: "post",
       // See vinext:pages-client-assets-resolver above.
       sharedDuringBuild: true,
+      writeBundle(_options, bundle) {
+        if (this.environment.name !== "client") return;
+        clientBuildFiles = collectClientBuildFiles(Object.keys(bundle));
+      },
       closeBundle: {
         sequential: true,
         order: "post",
@@ -8279,6 +8285,7 @@ export const loadServerActionClient = ${
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
               crossOrigin: nextConfig.crossOrigin ?? "",
+              clientBuildFiles: clientBuildFiles.length > 0 ? clientBuildFiles : undefined,
             });
           }
 

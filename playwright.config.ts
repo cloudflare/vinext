@@ -628,6 +628,27 @@ const projectServers = {
       },
     ],
   },
+  "module-federation-cloudflare": {
+    testDir: "./tests/e2e/module-federation",
+    use: { baseURL: "http://localhost:4222" },
+    server: {
+      command:
+        "npx vp run vinext#build && npx vp build --config vite.cloudflare.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4222",
+      cwd: "./tests/fixtures/module-federation-host",
+      port: 4222,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+    additionalServers: [
+      {
+        command: "npx vp build && npx vp preview --port 4221 --strictPort",
+        cwd: "./tests/fixtures/module-federation-remote",
+        port: 4221,
+        reuseExistingServer: !process.env.CI,
+        timeout: 60_000,
+      },
+    ],
+  },
   "nextjs-worker-cloudflare": {
     testDir: "./tests/e2e/nextjs-worker",
     use: { baseURL: "http://localhost:4202" },

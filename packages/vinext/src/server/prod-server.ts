@@ -26,6 +26,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "pathslash";
 import zlib from "node:zlib";
+import { resolveClientBuildFile } from "./client-build-files.js";
 import { StaticFileCache, contentTypeForPath, etagFromFilenameHash } from "./static-file-cache.js";
 import { signalFromNodeResponse } from "./node-response-signal.js";
 import {
@@ -1960,6 +1961,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     res.end("Image not found");
   };
 
+  // Files the client build emits outside `_next/static`, for example a
+  // Module Federation host's `remoteEntry.js`. Workers Static Assets serves
+  // them before the Worker runs, and so does this server, before routing.
+  const clientBuildFiles: ReadonlySet<string> = new Set(
+    Array.isArray(rscModule.__clientBuildFiles) ? rscModule.__clientBuildFiles : [],
+  );
+
   const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPathname = rawUrl.split("?")[0];
@@ -2035,6 +2043,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
           return;
         }
+      }
+    }
+
+    if (req.method === "GET" || req.method === "HEAD") {
+      const clientBuildFile = resolveClientBuildFile(pathname, appRouterBasePath, clientBuildFiles);
+      if (
+        clientBuildFile &&
+        (await tryServeStatic(req, res, clientDir, clientBuildFile, compress, staticCache))
+      ) {
+        return;
       }
     }
 
