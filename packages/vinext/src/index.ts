@@ -1748,6 +1748,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
+  let clientReferenceGroupRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -4915,6 +4916,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
                 (path): path is string => path !== null,
               );
+              clientReferenceGroupRoutes =
+                this.environment.config.command === "build" ? routes : null;
             }
             const generateEntry =
               id === RESOLVED_APP_REQUEST_ENTRY
@@ -8509,6 +8512,7 @@ export const loadServerActionClient = ${
         onComplete() {
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
+          clientReferenceGroupRoutes = null;
         },
       }),
     );
@@ -8516,7 +8520,21 @@ export const loadServerActionClient = ${
   }
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
-    plugins.push(createRscClientReferenceLoadersPlugin());
+    plugins.push(
+      createRscClientReferenceLoadersPlugin({
+        canonicalizeModuleId: canonicalize,
+        getRoutes: () => clientReferenceGroupRoutes,
+        getSharedRoots: () => rscActionOwnerSharedRoots,
+        isAlwaysLoadedClientModule(id) {
+          const chunkName = appClientManualChunks(id);
+          return chunkName === "framework" || chunkName === "vinext";
+        },
+        ownClientChunkGroups: new Set([
+          ...appClientCodeSplittingConfig.groups,
+          ...clientCodeSplittingConfig.groups,
+        ]),
+      }),
+    );
   } else if (manualUseCachePluginPromise) {
     plugins.push(cacheFlightCodecPlugin(), manualUseCachePluginPromise);
   }
