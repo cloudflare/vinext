@@ -229,6 +229,17 @@ export default function Page() {
 `,
     );
     await write(
+      "app/bound-args/page.tsx",
+      `export default async function Page({ searchParams }) {
+  const label = (await searchParams).label ?? "guest";
+  const role = "viewer";
+  const previewLabel = async () => { "use server"; return "PREVIEW:" + label; };
+  const readBoundSecret = async () => { "use server"; return role === "admin" ? "BOUND_ARGS_SECRET" : "DENIED:" + role; };
+  return <><form action={previewLabel}><button>preview</button></form><form action={readBoundSecret}><button>read</button></form></>;
+}
+`,
+    );
+    await write(
       "app/oracle/page.tsx",
       `export default async function Page({ searchParams }) {
   const value = (await searchParams).value ?? "public";
@@ -358,6 +369,32 @@ export default function Page() {
       expect(response.redirect).toBeNull();
       expect(response.body).not.toContain("ADMIN_SECRET_MARKER_42");
       expect(response.body).not.toContain("victim-carol");
+    }
+  });
+
+  it("only decrypts an inline action's closure for the action it was bound to", async () => {
+    const previewId = findActionId(builtSource, "$$hoist_0_previewLabel");
+    const readSecretId = findActionId(builtSource, "$$hoist_1_readBoundSecret");
+    const sealed = (actionId: string, captures: string[]) =>
+      encryptBoundArgsFixture(`0:${JSON.stringify([actionId, captures])}\n`);
+    const readSecret = async (encryptedBoundArgs: string) => {
+      const response = await handler(
+        actionRequest("/bound-args", readSecretId, [encryptedBoundArgs]),
+      );
+      return { body: await response.text(), status: response.status };
+    };
+
+    const bound = await readSecret(await sealed(readSecretId, ["admin"]));
+    expect(bound.status).toBe(200);
+    expect(bound.body).toContain("BOUND_ARGS_SECRET");
+
+    for (const replayed of [
+      await sealed(previewId, ["admin"]),
+      await encryptBoundArgsFixture('0:["admin"]\n'),
+    ]) {
+      const response = await readSecret(replayed);
+      expect(response.body).not.toContain("BOUND_ARGS_SECRET");
+      expect(response.status).toBe(500);
     }
   });
 

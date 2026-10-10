@@ -322,6 +322,7 @@ import {
   createWorkerServerOnlyImportsPlugin,
   SERVER_ONLY_SPECIFIER_RE,
 } from "./plugins/worker-server-only-imports.js";
+import { createActionBoundArgsPlugin } from "./plugins/action-bound-args.js";
 import { createWorkerUseServerPlugins } from "./plugins/worker-use-server.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import {
@@ -8562,6 +8563,11 @@ export const loadServerActionClient = ${
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
         },
+      }),
+    );
+    plugins.push(
+      createActionBoundArgsPlugin({
+        runtime: pathToFileURL(resolveShimModulePath(shimsDir, "action-bound-args")).href,
       }),
     );
     plugins.push(createScanBuildCssPlugin());
