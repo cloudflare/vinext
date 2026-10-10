@@ -169,3 +169,36 @@ test("shares a dynamic Pages ISR entry with its encoded spelling on Workers", as
   expect(literal.body).toContain(`dynamic encoded-isr ${slug}`);
   expect(literal.headers["x-vinext-cache"]).toBe("HIT");
 });
+
+// Next.js builds each catch-all element separately, so `["public", "item"]`
+// is `/public/item` and `["encoded/value"]` is `/encoded%2Fvalue`.
+test("admits only listed catch-all elements for fallback false paths on Workers", async () => {
+  const listed = await getRawPath("/static-catchall/public/item");
+  expect(listed.status).toBe(200);
+  expect(listed.body).toContain("static-catchall [&quot;public&quot;,&quot;item&quot;]");
+
+  const listedSlash = await getRawPath("/static-catchall/encoded%2Fvalue");
+  expect(listedSlash.status).toBe(200);
+  expect(listedSlash.body).toContain("static-catchall [&quot;encoded/value&quot;]");
+
+  for (const path of ["/static-catchall/public%2Fitem", "/static-catchall/encoded/value"]) {
+    const unlisted = await getRawPath(path);
+    expect({ path, status: unlisted.status }).toEqual({ path, status: 404 });
+    expect(unlisted.body).not.toContain("static-catchall [");
+  }
+
+  const buildId = listed.body.match(/"buildId":"([^"]+)"/)?.[1];
+  expect(buildId).toBeTruthy();
+  for (const path of ["public/item", "encoded%2Fvalue"]) {
+    const data = await getRawPath(`/_next/data/${buildId}/static-catchall/${path}.json`);
+    expect({ path, status: data.status }).toEqual({ path, status: 200 });
+  }
+  for (const path of ["public%2Fitem", "encoded/value"]) {
+    const data = await getRawPath(`/_next/data/${buildId}/static-catchall/${path}.json`);
+    expect({ path, status: data.status, body: data.body }).toEqual({
+      path,
+      status: 404,
+      body: '{"notFound":true}',
+    });
+  }
+});
