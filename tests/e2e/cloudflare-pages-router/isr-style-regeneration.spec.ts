@@ -25,9 +25,14 @@ test("keeps markup-looking style text inert across stale regeneration on Workers
   expect(missHtml).toContain("<img src=x onerror=window.__isrStyleXss=1>");
   const firstRender = renderedAt(missHtml);
 
-  await new Promise((resolve) => setTimeout(resolve, 1_100));
-  const stale = await request.get(path);
-  expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
+  // Poll rather than sleep a fixed interval: the MISS entry is written in the
+  // background, so its one-second window may start after the response.
+  await expect
+    .poll(async () => (await request.get(path)).headers()["x-vinext-cache"], {
+      intervals: [1_100, 250],
+      timeout: 10_000,
+    })
+    .toBe("STALE");
 
   // The STALE response scheduled the regeneration in the background; wait for
   // a response served from the regenerated entry.

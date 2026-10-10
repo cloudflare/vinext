@@ -565,6 +565,70 @@ describe("pages page data", () => {
     expect(html).not.toContain('{"old":1}');
   });
 
+  it("does not take a script-named custom element for a raw-text open", async () => {
+    // `<script-x>` is an ordinary element whose text React escapes. Masking
+    // from it would run to the first `</script>` — here spelled out in style
+    // text — and leave the rest of that style text unmasked.
+    const styleText =
+      ":root{--slug:\"</script></div><img src=x onerror=alert(1)><script id='__NEXT_DATA__' type='application/json'>\"}";
+    const body = `<script-x>hi</script-x><style>${styleText}</style>`;
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html><head></head><body><div id="__next">${body}<p>stale-body</p></div>` +
+        '<script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>',
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async () => `${body}<p>fresh-body</p>`),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(
+      html.startsWith(
+        `<!DOCTYPE html><html><head></head><body><div id="__next">${body}<p>fresh-body</p></div>` +
+          '<script id="__NEXT_DATA__" type="application/json">',
+      ),
+    ).toBe(true);
+    expect(html.match(/<img/g)).toHaveLength(1);
+  });
+
+  it("finds the legacy inline data script past a lookalike in style text", async () => {
+    const styleText = ':root{--slug:"</div><img src=x><script>window.__NEXT_DATA__"}';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html><head></head><body><div id="__next"><style>${styleText}</style></div>` +
+        '<script>window.__NEXT_DATA__ = {"old":1}</script><script src="/tail.js"></script></body></html>',
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async () => "<p>fresh-body</p>"),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(
+      html.startsWith(
+        '<!DOCTYPE html><html><head></head><body><div id="__next"><p>fresh-body</p></div>' +
+          '<script id="__NEXT_DATA__" type="application/json">',
+      ),
+    ).toBe(true);
+    expect(html.endsWith('</script><script src="/tail.js"></script></body></html>')).toBe(true);
+    expect(html).not.toContain("<img");
+  });
+
   it("keeps a next/head-shaped tag in document style text out of the head splice", async () => {
     // A `_document`-owned style after the collector's run is never
     // regenerated; if its text could end the run, everything after that
