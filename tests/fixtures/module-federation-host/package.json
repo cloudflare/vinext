@@ -1,0 +1,17 @@
+{
+  "name": "module-federation-host-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "@module-federation/vinext": "^0.2.0",
+    "vite-plus": "catalog:"
+  }
+}

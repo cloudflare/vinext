@@ -1,0 +1,116 @@
+export const metadata = {
+  slug: "guides/module-federation",
+  title: "Module Federation",
+  description:
+    "Load client components from independently deployed Module Federation remotes in a vinext application.",
+  section: "Guides",
+  sectionOrder: 3,
+  order: 3,
+  navTitle: "Module Federation",
+  keywords: [
+    "vinext Module Federation",
+    "micro-frontends",
+    "@module-federation/vinext",
+    "remote components",
+  ],
+};
+
+import { PackageManagerCommand } from "../apps/web/app/docs/_package-manager";
+
+# Module Federation
+
+Vinext supports client-side Module Federation: a vinext host can load client components that a separately built and deployed remote exposes at runtime. Use [`@module-federation/vinext`](https://github.com/module-federation/vinext), a thin wrapper around [`@module-federation/vite`](https://github.com/module-federation/vite) with vinext defaults.
+
+## Install
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm add @module-federation/vinext",
+    npm: "npm install @module-federation/vinext",
+    yarn: "yarn add @module-federation/vinext",
+    bun: "bun add @module-federation/vinext",
+    vp: "vp add @module-federation/vinext",
+  }}
+/>
+
+## Configure the host
+
+Register `federation()` before `vinext()` and list each remote the host loads:
+
+```ts
+// vite.config.ts
+import { federation } from "@module-federation/vinext";
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [
+    federation({
+      name: "host",
+      remotes: {
+        catalog: {
+          type: "module",
+          name: "catalog",
+          entry: "https://catalog.example.com/remoteEntry.js",
+          entryGlobalName: "catalog",
+          shareScope: "default",
+        },
+      },
+    }),
+    vinext(),
+  ],
+});
+```
+
+The wrapper applies these defaults:
+
+- `react`, `react/`, `react-dom`, and `react-dom/` are shared as singletons.
+- `filename` is `remoteEntry.js`.
+- `hostInitInjectLocation` is `entry`, so the host's federation startup runs from the vinext browser entry. Vinext has no conventional HTML entry to inject it into.
+
+Explicit options override these defaults, and every `@module-federation/vite` option remains available. Options are merged shallowly: passing your own `shared` replaces the whole default map, so keep `react`, `react/`, `react-dom`, and `react-dom/` as singletons in it, in both the host and remotes.
+
+## Load a remote component
+
+The vinext React bridge is browser-only, so render remote components on the client. In a client component, `next/dynamic` with `ssr: false` loads the remote after hydration and renders the fallback on the server:
+
+```tsx
+// app/catalog-widget.tsx
+"use client";
+
+import dynamic from "next/dynamic";
+
+export const CatalogWidget = dynamic(() => import("catalog/Widget"), {
+  ssr: false,
+  loading: () => <p>Loading catalog…</p>,
+});
+```
+
+Server components can render `<CatalogWidget />` like any other client component. TypeScript does not know about the `catalog/Widget` module; the plugin's `dts` option can generate types for remotes, or you can declare the module yourself.
+
+## Write remote components
+
+A remote is a Vite build that uses `federation()` with `exposes`. In a remote client component, use `getVinextReact()` before reading React hooks:
+
+```tsx
+"use client";
+
+import * as React from "react";
+import { getVinextReact } from "vinext/client";
+
+const { useState } = getVinextReact(React);
+
+export default function Widget() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount((value) => value + 1)}>{count}</button>;
+}
+```
+
+Vinext registers the host's browser React instance before application modules execute, and `getVinextReact()` returns it, so the remote's hooks run against the same React that renders the host. The first registration remains stable across remote evaluation and HMR. Outside the browser, `getVinextReact()` returns the React instance passed to it.
+
+When a remote is served from a different origin than the host, enable CORS on the remote's server.
+
+## Limitations
+
+- The `getVinextReact()` bridge is browser-only. Vinext does not provide App Router Module Federation SSR.
+- `getVinextReact()` only covers code that calls it. It does not transparently replace React imports inside third-party packages; keeping React versions compatible across the host and remotes is the job of the Module Federation `shared` configuration.
