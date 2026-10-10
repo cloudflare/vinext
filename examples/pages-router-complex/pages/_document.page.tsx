@@ -16,6 +16,7 @@ type SiteDocumentProps = {
   palette?: PaletteName | null;
   htmlLang: string;
   route: string;
+  campaign: string | null;
 } & DocumentInitialProps;
 
 class SiteDocument extends Document<SiteDocumentProps> {
@@ -29,6 +30,7 @@ class SiteDocument extends Document<SiteDocumentProps> {
       palette: paletteForPath(ctx.req?.url || "/"),
       htmlLang: htmlLangFor(zone.language),
       route: ctx.asPath ?? "/",
+      campaign: typeof ctx.query.utm_campaign === "string" ? ctx.query.utm_campaign : null,
     };
   }
 
@@ -92,6 +94,15 @@ class SiteDocument extends Document<SiteDocumentProps> {
                 "  };",
                 "}",
               ].join("\n"),
+            }}
+          />
+          <script
+            type="text/javascript"
+            dangerouslySetInnerHTML={{
+              __html: `window.__ATLAS_CAMPAIGN__ = ${JSON.stringify(this.props.campaign).replace(
+                /<\/script/gi,
+                "<\\/script",
+              )};`,
             }}
           />
           <Main />

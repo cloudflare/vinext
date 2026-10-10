@@ -9,6 +9,7 @@ import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Document, { Html, Head, Main, NextScript } from "../packages/vinext/src/shims/document.js";
+import { withDocumentPlaceholders } from "../packages/vinext/src/shims/document-placeholders.js";
 
 function render(el: React.ReactElement): string {
   return ReactDOMServer.renderToString(el);
@@ -20,20 +21,27 @@ describe("Main", () => {
     // The renderers replace this HTML comment with the rendered page content
     expect(html).toBe('<div id="__next"><!-- __NEXT_MAIN__ --></div>');
   });
+});
 
-  it("uses a placeholder that request data rendered by a Document cannot forge", () => {
-    // React escapes `<` in attribute and text values, so a request-derived
-    // value containing the marker name can't produce the comment placeholder.
+describe("Document placeholders", () => {
+  it("marks Head, Main and NextScript with the renderer's per-render token", () => {
     const html = render(
-      React.createElement(
-        "body",
-        { "data-route": "/?probe=<!-- __NEXT_MAIN__ -->" },
-        "<!-- __NEXT_MAIN__ -->",
-        React.createElement(Main),
+      withDocumentPlaceholders(
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(Head, { lang: "en" }, "x"),
+          React.createElement(Main),
+          React.createElement(NextScript),
+        ),
+        "token",
       ),
     );
-    expect(html.split("<!-- __NEXT_MAIN__ -->")).toHaveLength(2);
-    expect(html.indexOf("<!-- __NEXT_MAIN__ -->")).toBe(html.indexOf('<div id="__next">') + 17);
+    expect(html).toBe(
+      '<head lang="en" data-vinext-head-open="token">x<template data-vinext-head-close="token"></template></head>' +
+        '<div id="__next"><!--__NEXT_MAIN__:token--></div>' +
+        "<span><!--__NEXT_SCRIPTS__:token--></span>",
+    );
   });
 });
 

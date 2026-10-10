@@ -52,6 +52,39 @@ test.describe("custom _document", () => {
     );
   });
 
+  test("request data in a raw Document script cannot stand in for <Main />", async ({ page }) => {
+    // The Document writes utm_campaign into an inline <script> before
+    // <Main />, escaping only </script, so a comment survives verbatim there.
+    const campaign = "<!-- __NEXT_MAIN__ -->";
+    await page.goto(`/lookup?utm_campaign=${encodeURIComponent(campaign)}&term=owl`);
+
+    expect(
+      await page.evaluate(() => (window as { __ATLAS_CAMPAIGN__?: unknown }).__ATLAS_CAMPAIGN__),
+    ).toBe(campaign);
+    await expect(page.locator('#__next [data-testid="frame-masthead"]')).toHaveCount(1);
+    await expect(page.locator('#__next [data-testid="lookup-results"]')).toHaveAttribute(
+      "data-term",
+      "owl",
+    );
+  });
+
+  test("request data with $-replacement patterns is inserted verbatim", async ({ page }) => {
+    // The term flows into page attributes, the next/head title and
+    // __NEXT_DATA__, which are all spliced into the custom Document.
+    const term = "$`$'$&";
+    await page.goto(`/lookup?term=${encodeURIComponent(term)}`);
+
+    await expect(page.locator('#__next [data-testid="lookup-results"]')).toHaveAttribute(
+      "data-term",
+      term,
+    );
+    await expect(page).toHaveTitle(`Lookup: ${term} | atlas`);
+    const nextData = await page.evaluate(
+      () => JSON.parse(document.getElementById("__NEXT_DATA__")?.textContent ?? "null") as unknown,
+    );
+    expect(nextData).toMatchObject({ props: { pageProps: { results: { term } } } });
+  });
+
   test("server HTML carries the beforeInteractive bootstrap and preconnects", async ({
     request,
   }) => {

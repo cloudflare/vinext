@@ -85,6 +85,22 @@ async function settleMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+/**
+ * Stand in for a rendered Document: mark `html`'s Head, Main and NextScript
+ * placeholders with the token the renderer provides on `element`.
+ */
+function renderMockDocument(element: React.ReactNode, html: string): string {
+  const token = (element as React.ReactElement<{ value: string }>).props.value;
+  return html
+    .replace(
+      /<head([^>]*)>/,
+      (_, attributes) => `<head${attributes} data-vinext-head-open="${token}">`,
+    )
+    .replace("</head>", () => `<template data-vinext-head-close="${token}"></template></head>`)
+    .replace("<!-- __NEXT_MAIN__ -->", () => `<!--__NEXT_MAIN__:${token}-->`)
+    .replace("<!-- __NEXT_SCRIPTS__ -->", () => `<!--__NEXT_SCRIPTS__:${token}-->`);
+}
+
 function createCommonOptions() {
   const clearSsrContext = vi.fn();
   const createPageElement = vi.fn((pageProps: Record<string, unknown>) =>
@@ -93,9 +109,11 @@ function createCommonOptions() {
     }),
   );
   const isrSet = vi.fn(async () => {});
-  const renderDocumentToString = vi.fn(
-    async () =>
+  const renderDocumentToString = vi.fn(async (element: React.ReactNode) =>
+    renderMockDocument(
+      element,
       '<!DOCTYPE html><html><head></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
+    ),
   );
   const renderIsrPassToStringAsync = vi.fn(async () => "<div>cached-body</div>");
   const renderToReadableStream = vi.fn(async () => createStream(["<div>live-body</div>"]));
@@ -463,8 +481,11 @@ describe("pages page response", () => {
     "keeps framework script ownership with $label",
     async ({ disableOptimizedLoading, frameworkNonce, frameworkCrossOrigin }) => {
       const common = createCommonOptions();
-      common.renderDocumentToString.mockResolvedValue(
-        '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+      common.renderDocumentToString.mockImplementation(async (element) =>
+        renderMockDocument(
+          element,
+          '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+        ),
       );
 
       const response = await renderPagesPageResponse({
@@ -542,9 +563,12 @@ describe("pages page response", () => {
     // Ported from Next.js: test/e2e/next-head/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
     const common = createCommonOptions();
-    common.renderDocumentToString.mockResolvedValue(
-      '<!DOCTYPE html><html><head data-theme="dark"><meta name="document-child" content="1" /></head>' +
-        '<body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
+    common.renderDocumentToString.mockImplementation(async (element) =>
+      renderMockDocument(
+        element,
+        '<!DOCTYPE html><html><head data-theme="dark"><meta name="document-child" content="1" /></head>' +
+          '<body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
+      ),
     );
     common.options.getSSRHeadHTML = vi.fn(
       () =>
@@ -956,7 +980,10 @@ describe("pages page response", () => {
       const text = await new Response(stream).text();
       // The document shell render still needs the NEXT placeholders.
       if (!text.includes("data-collected")) {
-        return '<!DOCTYPE html><html><head><meta name="document-child" content="1" /></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>';
+        return renderMockDocument(
+          element,
+          '<!DOCTYPE html><html><head><meta name="document-child" content="1" /></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
+        );
       }
       return text;
     });
@@ -981,7 +1008,7 @@ describe("pages page response", () => {
     expect(html).toContain("<p>page</p>");
   });
 
-  it("splices the page at <Main /> when Document request data contains the marker name", async () => {
+  it("splices the page at <Main /> when Document request data contains the marker", async () => {
     const common = createCommonOptions();
     const documentModule = await import("../packages/vinext/src/shims/document.js");
     const { Head, Html, Main, NextScript } = documentModule;
@@ -1001,6 +1028,9 @@ describe("pages page response", () => {
           React.createElement(
             "body",
             { "data-route": this.props.route },
+            React.createElement("script", {
+              dangerouslySetInnerHTML: { __html: "/*<!-- __NEXT_MAIN__ -->*/" },
+            }),
             React.createElement(Main),
             React.createElement(NextScript),
           ),
@@ -1033,21 +1063,36 @@ describe("pages page response", () => {
     expect(html).toContain(
       '<div id="__next"><div title="x onload=window.__documentMarkerXss=1//">page</div></div>',
     );
-    expect(html).not.toContain("__NEXT_MAIN__ -->");
-    expect(html).not.toContain("<!--VINEXT_STREAM_BODY-->");
+    expect(html).toContain("<script>/*<!-- __NEXT_MAIN__ -->*/</script>");
+    expect(html).not.toContain("__NEXT_MAIN__:");
   });
 
-  it("appends hydration scripts when a Document without NextScript renders __NEXT_DATA__ text", async () => {
+  it("inserts request data with $ replacement patterns verbatim", async () => {
     const common = createCommonOptions();
-    common.renderDocumentToString.mockResolvedValueOnce(
-      '<!DOCTYPE html><html><head></head><body data-route="/?probe=__NEXT_DATA__"><div id="__next"><!-- __NEXT_MAIN__ --></div></body></html>',
+    const title = "$`$'$&";
+    common.options.getSSRHeadHTML = vi.fn(() => `<title>${title}</title>`);
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      pageProps: { title },
+    });
+
+    const html = await response.text();
+    expect(html).toContain(`<head><title>${title}</title>`);
+    expect(html).toContain(`"title":"${title}"`);
+  });
+
+  it("puts the body after a Document without Main and adds no scripts without NextScript, like Next.js", async () => {
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockImplementation(async (element) =>
+      renderMockDocument(element, "<!DOCTYPE html><html><head></head><body></body></html>"),
     );
 
     const response = await renderPagesPageResponse(common.options);
 
     const html = await response.text();
-    expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
-    expect(html.indexOf('<script id="__NEXT_DATA__"')).toBeLessThan(html.indexOf("</body>"));
+    expect(html).toMatch(/<\/body><\/html><div>live-body<\/div>$/);
+    expect(html).not.toContain("__NEXT_DATA__");
   });
 
   it("uses custom document html and styles without calling renderPage", async () => {
