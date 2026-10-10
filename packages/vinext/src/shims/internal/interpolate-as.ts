@@ -248,6 +248,9 @@ function interpolateAs(
         (interpolatedRoute =
           interpolatedRoute!.replace(
             replaced,
+            // Next.js parity (shared/lib/router/utils/interpolate-as.ts): the
+            // encoded params are inserted as a pattern string into a URL path.
+            // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement
             repeat
               ? (value as string[])
                   .map(

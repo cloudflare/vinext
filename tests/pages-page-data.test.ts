@@ -384,6 +384,35 @@ describe("pages page data", () => {
     expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
+  it("ignores tag-like text in the cached Document's inline scripts", async () => {
+    const forged =
+      '<div id="__next"></div><script id="__NEXT_DATA__" type="application/json"></script>' +
+      "<script>window.__NEXT_DATA__ = {}</script>";
+    const inlineScript = `<script>window.route = ${JSON.stringify(forged)};</script>`;
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml: `<!DOCTYPE html><html><head></head><body>${inlineScript}<div id="__next"><div>stale-body</div></div>${inlineScript}<script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>`,
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async () => "<div>fresh-body</div>"),
+      routePattern: "/",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    const [before, body, after] = html.split(inlineScript);
+    expect(before).toBe("<!DOCTYPE html><html><head></head><body>");
+    expect(body).toBe('<div id="__next"><div>fresh-body</div></div>');
+    expect(after).toMatch(
+      /^<script id="__NEXT_DATA__" type="application\/json">\{.*"page":"\/".*\}<\/script><\/body><\/html>$/,
+    );
+  });
+
   it("refreshes next/head tags in the regenerated shell without disturbing document markup", async () => {
     // The collector only yields tags once the page has rendered, so the
     // regenerated head must come from the callback the render pass invokes

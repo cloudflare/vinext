@@ -46,6 +46,7 @@ import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { tracePagesData, tracePagesDocument } from "./pages-execution-tracing.js";
+import { maskRawTextContent } from "./pages-document-splice.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -1147,25 +1148,44 @@ function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
   );
 }
 
+/** Index of an inline `<script>window.__NEXT_DATA__` tag, skipping script text. */
+function findLegacyNextDataScript(cachedHtml: string, searchable: string): number {
+  const legacyMarker = "<script>window.__NEXT_DATA__";
+  for (
+    let index = cachedHtml.indexOf(legacyMarker);
+    index !== -1;
+    index = cachedHtml.indexOf(legacyMarker, index + 1)
+  ) {
+    if (searchable.startsWith("<script>", index)) return index;
+  }
+  return -1;
+}
+
 function rewritePagesCachedHtml(
   cachedHtml: string,
   freshBody: string,
   nextDataScript: string,
 ): string {
+  // Locate tags in the masked copy so tag-like text inside a Document's
+  // inline scripts cannot move where the fresh body and data go.
+  const searchable = maskRawTextContent(cachedHtml);
   const bodyMarker = '<div id="__next">';
-  const bodyStart = cachedHtml.indexOf(bodyMarker);
+  const bodyStart = searchable.indexOf(bodyMarker);
   const contentStart = bodyStart >= 0 ? bodyStart + bodyMarker.length : -1;
-  const canonicalNextDataStart = cachedHtml.search(
+  const canonicalNextDataStart = searchable.search(
     /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>/,
   );
-  const legacyNextDataStart = cachedHtml.indexOf("<script>window.__NEXT_DATA__");
-  const nextDataStart = canonicalNextDataStart >= 0 ? canonicalNextDataStart : legacyNextDataStart;
+  const nextDataStart =
+    canonicalNextDataStart >= 0
+      ? canonicalNextDataStart
+      : findLegacyNextDataScript(cachedHtml, searchable);
 
   if (contentStart >= 0 && nextDataStart >= 0) {
-    const region = cachedHtml.slice(contentStart, nextDataStart);
+    const region = searchable.slice(contentStart, nextDataStart);
     const lastCloseDiv = region.lastIndexOf("</div>");
-    const gap = lastCloseDiv >= 0 ? region.slice(lastCloseDiv + 6) : "";
-    const nextDataEnd = cachedHtml.indexOf("</script>", nextDataStart) + 9;
+    const gap =
+      lastCloseDiv >= 0 ? cachedHtml.slice(contentStart + lastCloseDiv + 6, nextDataStart) : "";
+    const nextDataEnd = searchable.indexOf("</script>", nextDataStart) + 9;
     const tail = cachedHtml.slice(nextDataEnd);
 
     return cachedHtml.slice(0, contentStart) + freshBody + "</div>" + gap + nextDataScript + tail;

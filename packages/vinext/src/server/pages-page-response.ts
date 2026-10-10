@@ -1,6 +1,10 @@
 import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
+import {
+  createDocumentPlaceholderToken,
+  withDocumentPlaceholders,
+} from "vinext/shims/document-placeholders";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -33,8 +37,13 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
-  injectDocumentNextScripts,
 } from "./pages-document-asset-props.js";
+import {
+  spliceDocumentHeadClose,
+  spliceDocumentHeadOpen,
+  spliceDocumentScripts,
+  splitDocumentAtMain,
+} from "./pages-document-splice.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
 import { matchesIfNoneMatch } from "./http-conditional.js";
@@ -302,8 +311,14 @@ export function buildPagesNextDataScript(
   return `<script id="__NEXT_DATA__" type="application/json"${createNonceAttribute(options.scriptNonce)}>${options.safeJsonStringify(nextDataPayload)}</script>`;
 }
 
+type PagesShell = {
+  /** HTML before the page body. */
+  prefix: string;
+  /** HTML after the page body. */
+  suffix: string;
+};
+
 async function buildPagesShellHtml(
-  bodyMarker: string,
   fontHeadHTML: string,
   nextDataScript: string,
   options: Pick<
@@ -322,15 +337,17 @@ async function buildPagesShellHtml(
     resolvedDocProps?: Record<string, unknown> | null;
     crossOrigin?: string;
   },
-): Promise<string> {
+): Promise<PagesShell> {
   if (options.DocumentComponent) {
     const docProps =
       options.resolvedDocProps ?? (await loadUserDocumentInitialProps(options.DocumentComponent));
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
+    const placeholderToken = createDocumentPlaceholderToken();
     const renderedDocument = extractDocumentAssetProps(
-      await options.renderDocumentToString(docElement),
+      await options.renderDocumentToString(withDocumentPlaceholders(docElement, placeholderToken)),
+      placeholderToken,
     );
     let html = renderedDocument.html;
     const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
@@ -344,23 +361,19 @@ async function buildPagesShellHtml(
       renderedDocument.props,
       { configuredCrossOrigin: options.crossOrigin },
     );
-    html = html.replace("<!-- __NEXT_MAIN__ -->", bodyMarker);
     // Next.js renders the collected `next/head` array before children declared
     // inside a custom Document's <Head>. Insert it after the opening tag so the
     // default charset remains the first element even when <Head> has props.
-    if (options.ssrHeadHTML) {
-      html = html.replace(
-        /<head(?:\s[^>]*)?>/i,
-        (openingHead) => `${openingHead}${options.ssrHeadHTML}`,
-      );
-    }
-    if (generatedAssetTags || fontHeadHTML || options.tailHeadHTML) {
-      html = html.replace(
-        "</head>",
-        `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n</head>`,
-      );
-    }
-    return injectDocumentNextScripts(html, generatedNextDataScript);
+    html = spliceDocumentHeadOpen(html, placeholderToken, options.ssrHeadHTML);
+    html = spliceDocumentHeadClose(
+      html,
+      placeholderToken,
+      generatedAssetTags || fontHeadHTML || options.tailHeadHTML
+        ? `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n`
+        : "",
+    );
+    html = spliceDocumentScripts(html, placeholderToken, generatedNextDataScript);
+    return splitDocumentAtMain(html, placeholderToken);
   }
 
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
@@ -380,16 +393,16 @@ async function buildPagesShellHtml(
       configuredCrossOrigin: options.crossOrigin,
     },
   );
-  return (
-    "<!DOCTYPE html>\n<html>\n<head>\n" +
-    `  ${options.ssrHeadHTML}${fontHeadHTML}\n` +
-    `  ${generatedAssetTags}\n` +
-    `  ${options.tailHeadHTML}\n` +
-    "</head>\n<body>\n" +
-    `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${generatedNextDataScript}\n` +
-    "</body>\n</html>"
-  );
+  return {
+    prefix:
+      "<!DOCTYPE html>\n<html>\n<head>\n" +
+      `  ${options.ssrHeadHTML}${fontHeadHTML}\n` +
+      `  ${generatedAssetTags}\n` +
+      `  ${options.tailHeadHTML}\n` +
+      "</head>\n<body>\n" +
+      '  <div id="__next">',
+    suffix: `</div>\n  ${generatedNextDataScript}\n</body>\n</html>`,
+  };
 }
 
 async function buildPagesCompositeStream(
@@ -538,7 +551,6 @@ export async function renderPagesPageResponse(
     nextData: options.nextData,
     vinext: options.vinext,
   });
-  const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
@@ -628,25 +640,27 @@ export async function renderPagesPageResponse(
     if (tailHeadHTML) tailHeadHTML += "\n  ";
     tailHeadHTML += documentRenderPage.stylesHTML;
   }
-  const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
-    assetTags: options.assetTags,
-    disableOptimizedLoading: options.disableOptimizedLoading,
-    DocumentComponent: options.DocumentComponent,
-    renderDocumentToString: options.renderDocumentToString,
-    ssrHeadHTML,
-    tailHeadHTML,
-    // When the renderPage path already invoked getInitialProps, reuse its
-    // resolved props instead of calling it a second time.
-    // `skipped` means it was never invoked → fall through to the fast path.
-    resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
-    crossOrigin: options.crossOrigin,
-  });
+  const { prefix: shellPrefix, suffix: shellSuffix } = await buildPagesShellHtml(
+    fontHeadHTML,
+    nextDataScript,
+    {
+      assetTags: options.assetTags,
+      disableOptimizedLoading: options.disableOptimizedLoading,
+      DocumentComponent: options.DocumentComponent,
+      renderDocumentToString: options.renderDocumentToString,
+      ssrHeadHTML,
+      tailHeadHTML,
+      // When the renderPage path already invoked getInitialProps, reuse its
+      // resolved props instead of calling it a second time.
+      // `skipped` means it was never invoked → fall through to the fast path.
+      resolvedDocProps:
+        documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
+      crossOrigin: options.crossOrigin,
+    },
+  );
 
   options.clearSsrContext();
 
-  const markerIndex = shellHtml.indexOf(bodyMarker);
-  const shellPrefix = shellHtml.slice(0, markerIndex);
-  const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
   const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,

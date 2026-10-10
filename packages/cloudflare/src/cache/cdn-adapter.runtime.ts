@@ -197,7 +197,10 @@ function toEdgeCacheControl(cacheControl: string): string {
       directive
         .replace(/^s-maxage\s*=/i, "max-age=")
         // Bare `stale-while-revalidate` (not followed by `=`) → explicit window.
-        .replace(/^stale-while-revalidate$/i, `stale-while-revalidate=${UNBOUNDED_SWR_SECONDS}`),
+        .replace(
+          /^stale-while-revalidate$/i,
+          () => `stale-while-revalidate=${UNBOUNDED_SWR_SECONDS}`,
+        ),
     )
     .join(", ");
   return directives.some((directive) => /^public$/i.test(directive))

@@ -401,6 +401,9 @@ function resolveStringTitle(title: Metadata["title"]): string | undefined {
 }
 
 function applyTitleTemplate(template: string | undefined, title: string): string {
+  // Next.js parity (lib/metadata/resolvers/resolve-title.ts): the title is
+  // inserted as a pattern string, and the result is text React escapes.
+  // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement
   return template ? template.replace(/%s/g, title) : title;
 }
 
