@@ -751,6 +751,26 @@ describe("pages page data", () => {
         "/public%2Fitem",
       ),
     ).toBe(false);
+
+    // Holes in a sparse entry and non-string elements never match request params.
+    const sparse = ["public"];
+    sparse.length = 2;
+    expect(
+      matchesPagesStaticPath(
+        { params: { slug: sparse } },
+        { slug: ["public", "anything"] },
+        routeParams,
+        "/public/anything",
+      ),
+    ).toBe(false);
+    expect(
+      matchesPagesStaticPath(
+        { params: { slug: [null] as unknown as string[] } },
+        { slug: ["null"] },
+        routeParams,
+        "/null",
+      ),
+    ).toBe(false);
   });
 
   it("renders unlisted fallback false paths in preview mode without caching them", async () => {
