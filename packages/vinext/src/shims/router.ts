@@ -1813,7 +1813,12 @@ function hasClientAppRouteManifest(): boolean {
   return Array.isArray(routes) && routes.length > 0;
 }
 
-function getClientConfigRouteContext(href: string): {
+function getClientConfigRouteContext(
+  href: string,
+  // Only the navigation URL gets the default locale; like Next.js, later rules
+  // in a rewrite chain match the previous destination as-is.
+  prefixDefaultLocale = true,
+): {
   basePathState: { basePath: string; hadBasePath: boolean };
   context: RequestContext;
   pathname: string;
@@ -1838,7 +1843,9 @@ function getClientConfigRouteContext(href: string): {
       host: parsed.hostname,
       query: parsed.searchParams,
     },
-    pathname: normalizeClientConfigLocalePathname(pathname, parsed.hostname),
+    pathname: prefixDefaultLocale
+      ? normalizeClientConfigLocalePathname(pathname, parsed.hostname)
+      : pathname,
     search: parsed.search,
   };
 }
@@ -1901,8 +1908,9 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
 async function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
+  prefixDefaultLocale: boolean,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
-  const routeContext = getClientConfigRouteContext(href);
+  const routeContext = getClientConfigRouteContext(href, prefixDefaultLocale);
   if (!routeContext) return null;
 
   const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
@@ -2011,7 +2019,7 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const routeContext = getClientConfigRouteContext(currentHref);
+    const routeContext = getClientConfigRouteContext(currentHref, !matched);
     if (!routeContext) return null;
     if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
       continue;
@@ -2084,7 +2092,7 @@ async function resolveClientConfigRewrite(
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const result = await applyClientConfigRewrite(currentHref, rewrite);
+    const result = await applyClientConfigRewrite(currentHref, rewrite, !matched);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;
     currentHref = result.href;

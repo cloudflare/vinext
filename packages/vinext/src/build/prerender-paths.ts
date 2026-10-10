@@ -1051,6 +1051,7 @@ function cachePolicyRuleMatchesWarmPath(
   return hostnames.some((hostname) => {
     const matchPathname = normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
       hostname,
+      trailingSlash: config.trailingSlash,
     });
     let sourceMatched = false;
     matchHeaders(
@@ -1193,7 +1194,10 @@ function configuredRulesAffectWarmPath(
   const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
   const matchPathnames = new Set(
     hostnames.map((hostname) =>
-      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
+      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
+        hostname,
+        trailingSlash: config.trailingSlash,
+      }),
     ),
   );
   return rules.some((rule) =>

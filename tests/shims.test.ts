@@ -23792,13 +23792,15 @@ describe("Pages Router _next/data client navigation", () => {
     const { applyLocaleToRoutes } =
       await import("../packages/vinext/src/config/config-matchers.js");
     const { toClientRedirects } = await import("../packages/vinext/src/client/client-redirects.js");
+    // Drop the unprefixed `/` fallback copy so only the locale-root variants
+    // can match.
     (win as any).__VINEXT_CLIENT_REDIRECTS__ = toClientRedirects(
       applyLocaleToRoutes(
         [{ source: "/", destination: "/somewhere/else/", permanent: false }],
         { locales: ["en", "fr"], defaultLocale: "en" },
         "redirect",
         { trailingSlash: true },
-      ),
+      ).filter((redirect) => redirect.source !== "/"),
     );
     (globalThis as any).window = win;
     vi.resetModules();
@@ -23818,6 +23820,55 @@ describe("Pages Router _next/data client navigation", () => {
       else (globalThis as any).window = previousWindow;
       if (previousTrailingSlash === undefined) delete process.env.__VINEXT_TRAILING_SLASH;
       else process.env.__VINEXT_TRAILING_SLASH = previousTrailingSlash;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("matches later rewrites in a chain against the previous destination as-is", async () => {
+    // Next.js prefixes the default locale onto the navigation URL only; a
+    // later rule matches the previous rule's destination unchanged.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const middleLoader = vi.fn(async () => makePageModule("middle"));
+    const finalLoader = vi.fn(async () => makePageModule("final"));
+    const { win, pushState } = createDataNavWindow({
+      locale: "en",
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/middle": middleLoader,
+        "/final": finalLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [
+        { source: "/:locale/start", destination: "/middle", locale: false },
+        { source: "/middle", destination: "/final", locale: false },
+      ],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/start")).toBe(true);
+
+      expect(middleLoader).not.toHaveBeenCalled();
+      expect(finalLoader).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenLastCalledWith(expect.anything(), "", "/start");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
       globalThis.fetch = originalFetch;
       vi.resetModules();
     }
