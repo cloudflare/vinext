@@ -184,8 +184,8 @@ describe("Document base class", () => {
     const html = render(React.createElement(MyDocument));
     expect(html).toMatch(/<html[^>]*lang="ja"/);
     expect(html).toContain('id="doc-marker"');
-    expect(html).toContain("__NEXT_MAIN__");
-    expect(html).toContain("__NEXT_SCRIPTS__");
+    expect(html).toContain("<!-- __NEXT_MAIN__ -->");
+    expect(html).toContain("<!-- __NEXT_SCRIPTS__ -->");
   });
 
   it("delegates static getInitialProps to ctx.defaultGetInitialProps", async () => {
