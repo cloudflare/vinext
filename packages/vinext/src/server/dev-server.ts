@@ -22,16 +22,25 @@ import {
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
 import "vinext/shims/router-state";
+import {
+  createDocumentPlaceholderToken,
+  withDocumentPlaceholders,
+} from "vinext/shims/document-placeholders";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
-  injectDocumentNextScripts,
   markDocumentAssetPropsProtectedTags,
   stripDocumentAssetPropsProtectionMarkers,
   type DocumentAssetProps,
 } from "./pages-document-asset-props.js";
+import {
+  spliceDocumentHeadClose,
+  spliceDocumentHeadOpen,
+  spliceDocumentScripts,
+  splitDocumentAtMain,
+} from "./pages-document-splice.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
@@ -254,9 +263,6 @@ function writeGsspRedirect(
   res.end(location);
 }
 
-/** Body placeholder used to split the document shell for streaming. */
-const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
-
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
   res.removeHeader("Transfer-Encoding");
@@ -424,6 +430,8 @@ async function streamPageToResponseImpl(
   }
 
   // Build the document shell with a placeholder for the body
+  const streamBodyMarker = `<!--VINEXT_STREAM_BODY:${ssrHeadMarkerId}-->`;
+  const placeholderToken = createDocumentPlaceholderToken();
   let shellTemplate: string;
   let documentAssetProps: DocumentAssetProps = {};
   const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
@@ -451,7 +459,10 @@ async function streamPageToResponseImpl(
     const docElement = docProps
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
-    const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
+    const renderedDocument = extractDocumentAssetProps(
+      await renderToStringAsync(withDocumentPlaceholders(docElement, placeholderToken)),
+      placeholderToken,
+    );
     documentAssetProps = renderedDocument.props;
     let docHtml = protectAssetTags(renderedDocument.html);
     const generatedScripts = applyGeneratedAssetProps(
@@ -464,18 +475,18 @@ async function streamPageToResponseImpl(
       renderedDocument.props,
       "next-script",
     );
-    // Replace the <Main /> placeholder with our stream marker
-    docHtml = docHtml.replace("<!-- __NEXT_MAIN__ -->", STREAM_BODY_MARKER);
-    if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
-      docHtml = docHtml.replace(
-        "</head>",
-        `${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}` +
-          `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
-          `  ${protectAssetTags(tailHeadHTML)}\n</head>`,
-      );
-    }
-    // Inject scripts: replace placeholder or append before </body>
-    shellTemplate = injectDocumentNextScripts(docHtml, generatedScripts);
+    docHtml = spliceDocumentHeadClose(
+      docHtml,
+      placeholderToken,
+      headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML
+        ? `${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}` +
+            `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
+            `  ${protectAssetTags(tailHeadHTML)}\n`
+        : "",
+    );
+    docHtml = spliceDocumentScripts(docHtml, placeholderToken, generatedScripts);
+    const { prefix, suffix } = splitDocumentAtMain(docHtml, placeholderToken);
+    shellTemplate = prefix + streamBodyMarker + suffix;
   } else {
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
@@ -491,7 +502,7 @@ async function streamPageToResponseImpl(
   ${protectAssetTags(tailHeadHTML)}
 </head>
 <body>
-  <div id="__next">${STREAM_BODY_MARKER}</div>
+  <div id="__next">${streamBodyMarker}</div>
   ${generatedScripts}
 </body>
 </html>`;
@@ -524,14 +535,17 @@ async function streamPageToResponseImpl(
     transformedShell =
       transformedShell.slice(0, ssrHeadStart) +
       transformedShell.slice(ssrHeadEnd + ssrHeadEndMarker.length);
-    transformedShell = transformedShell.replace(
-      /<head(?:\s[^>]*)?>/i,
-      (openingHead) => `${openingHead}${transformedHeadHTML}`,
+    transformedShell = spliceDocumentHeadOpen(
+      transformedShell,
+      placeholderToken,
+      transformedHeadHTML,
     );
+  } else {
+    transformedShell = spliceDocumentHeadOpen(transformedShell, placeholderToken, "");
   }
-  const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
+  const markerIdx = transformedShell.indexOf(streamBodyMarker);
   const prefix = transformedShell.slice(0, markerIdx);
-  const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
+  const suffix = transformedShell.slice(markerIdx + streamBodyMarker.length);
   const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
 
   // Send headers and start streaming.

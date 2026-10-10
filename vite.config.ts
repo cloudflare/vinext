@@ -58,6 +58,7 @@ export default defineConfig({
     jsPlugins: [
       "./oxlint-plugins/prefer-import-alias.ts",
       "./oxlint-plugins/prefer-shared-utils.ts",
+      "./oxlint-plugins/no-dynamic-string-replacement.ts",
     ],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
@@ -123,6 +124,18 @@ export default defineConfig({
               ],
             },
           ],
+        },
+      },
+      {
+        // Runtime code splices rendered HTML and request data; a dynamic
+        // String#replace replacement would expand `$&`-style patterns in it.
+        files: [
+          "packages/vinext/src/{cache,client,entries,image,routing,server,shims,utils}/**/*.{ts,tsx}",
+          "packages/cloudflare/src/**/*.{ts,tsx}",
+          "packages/workers-response-store/src/**/*.{ts,tsx}",
+        ],
+        rules: {
+          "vinext-security/no-dynamic-string-replacement": "error",
         },
       },
       {

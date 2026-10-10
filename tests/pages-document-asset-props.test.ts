@@ -2,7 +2,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
-  injectDocumentNextScripts,
   markDocumentAssetPropsProtectedTags,
   stripDocumentAssetPropsProtectionMarkers,
 } from "../packages/vinext/src/server/pages-document-asset-props.js";
@@ -15,12 +14,12 @@ describe("Pages Document asset props", () => {
       ' data-vinext-head-cross-origin="text-value"' +
       "</div>";
     const source =
-      '<html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="anonymous"></head>' +
+      '<html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="anonymous" data-vinext-head-open="token"></head>' +
       `<body>${preserved}` +
-      '<span data-vinext-script-nonce="script-nonce" data-vinext-script-cross-origin="use-credentials"><!-- __NEXT_SCRIPTS__ --></span>' +
+      '<span data-vinext-script-nonce="script-nonce" data-vinext-script-cross-origin="use-credentials"><!--__NEXT_SCRIPTS__:token--></span>' +
       "</body></html>";
 
-    const extracted = extractDocumentAssetProps(source);
+    const extracted = extractDocumentAssetProps(source, "token");
 
     expect(extracted.props).toEqual({
       headNonce: "head-nonce",
@@ -29,7 +28,28 @@ describe("Pages Document asset props", () => {
       scriptCrossOrigin: "use-credentials",
     });
     expect(extracted.html).toBe(
-      `<html><head></head><body>${preserved}<span><!-- __NEXT_SCRIPTS__ --></span></body></html>`,
+      `<html><head data-vinext-head-open="token"></head><body>${preserved}<span><!--__NEXT_SCRIPTS__:token--></span></body></html>`,
+    );
+  });
+
+  it("ignores marker-carrying tags that are not this render's Head and NextScript", () => {
+    const decoys =
+      '<span data-vinext-script-nonce="decoy"><!-- __NEXT_SCRIPTS__ --></span>' +
+      '<span data-vinext-script-nonce="decoy"><!--__NEXT_SCRIPTS__:other--></span>';
+    const source =
+      '<html><head data-vinext-head-nonce="head-nonce" data-vinext-head-open="token"></head>' +
+      `<body>${decoys}<span data-vinext-script-nonce="script-nonce"><!--__NEXT_SCRIPTS__:token--></span></body></html>`;
+
+    const extracted = extractDocumentAssetProps(source, "token");
+
+    expect(extracted.props).toEqual({
+      headNonce: "head-nonce",
+      headCrossOrigin: undefined,
+      scriptNonce: "script-nonce",
+      scriptCrossOrigin: undefined,
+    });
+    expect(extracted.html).toBe(
+      `<html><head data-vinext-head-open="token"></head><body>${decoys}<span><!--__NEXT_SCRIPTS__:token--></span></body></html>`,
     );
   });
 
@@ -76,33 +96,5 @@ describe("Pages Document asset props", () => {
     expect(applied).toContain('nonce="head-nonce"');
     expect(applied).toContain('crossorigin="use-credentials"');
     expect(applied).not.toContain("next-script-nonce");
-  });
-
-  describe("injectDocumentNextScripts", () => {
-    const scripts = '<script id="__NEXT_DATA__" type="application/json">{}</script>';
-
-    it("replaces the NextScript placeholder", () => {
-      expect(
-        injectDocumentNextScripts(
-          "<html><body><span><!-- __NEXT_SCRIPTS__ --></span></body></html>",
-          scripts,
-        ),
-      ).toBe(`<html><body><span>${scripts}</span></body></html>`);
-    });
-
-    it("appends before </body> when request data merely contains __NEXT_DATA__", () => {
-      const html =
-        '<html><body data-route="/?probe=__NEXT_DATA__&amp;x= id=&quot;__NEXT_DATA__&quot;">' +
-        "__NEXT_DATA__</body></html>";
-      expect(injectDocumentNextScripts(html, scripts)).toBe(
-        html.replace("</body>", `  ${scripts}\n</body>`),
-      );
-    });
-
-    it("leaves a Document that renders its own __NEXT_DATA__ script unchanged", () => {
-      const html =
-        '<html><body><script id="__NEXT_DATA__" type="application/json">{"page":"/"}</script></body></html>';
-      expect(injectDocumentNextScripts(html, scripts)).toBe(html);
-    });
   });
 });

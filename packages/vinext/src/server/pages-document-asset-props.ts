@@ -1,3 +1,7 @@
+import {
+  getDocumentHeadOpenMarker,
+  getDocumentScriptsPlaceholder,
+} from "vinext/shims/document-placeholders";
 import { escapeHtmlAttr } from "./html.js";
 
 export type DocumentAssetProps = {
@@ -27,43 +31,68 @@ function removeAttributes(tag: string, names: readonly string[]): string {
   return tag.replace(new RegExp(`\\s(?:${names.join("|")})="[^"]*"`, "g"), "");
 }
 
-// Only real markup counts: React escapes `<` and quotes in rendered values,
-// so request data in a custom Document can't forge either of these.
-const NEXT_SCRIPTS_PLACEHOLDER = "<!-- __NEXT_SCRIPTS__ -->";
-const NEXT_DATA_SCRIPT_TAG_PATTERN = /<script\b[^>]*\sid=["']__NEXT_DATA__["']/i;
+type TagRange = { start: number; end: number };
 
-/**
- * Put the generated hydration scripts where `<NextScript />` rendered. A
- * Document without NextScript gets them before `</body>` unless it already
- * renders its own `__NEXT_DATA__` script.
- */
-export function injectDocumentNextScripts(html: string, scripts: string): string {
-  if (html.includes(NEXT_SCRIPTS_PLACEHOLDER)) {
-    return html.replace(NEXT_SCRIPTS_PLACEHOLDER, scripts);
-  }
-  if (NEXT_DATA_SCRIPT_TAG_PATTERN.test(html)) return html;
-  return html.replace("</body>", `  ${scripts}\n</body>`);
+/** The `<tagName ...>` opening tag that ends right before `index`. */
+function findOpeningTagEndingAt(html: string, tagName: string, index: number): TagRange | null {
+  const start = html.lastIndexOf(`<${tagName}`, index);
+  if (start === -1) return null;
+  const tag = html.slice(start, index);
+  return new RegExp(`^<${tagName}\\b[^>]*>$`, "i").test(tag) ? { start, end: index } : null;
 }
 
-export function extractDocumentAssetProps(html: string): {
+function locateHeadTag(html: string, token: string): TagRange | null {
+  const markerIndex = html.indexOf(getDocumentHeadOpenMarker(token));
+  if (markerIndex === -1) return null;
+  const start = html.lastIndexOf("<head", markerIndex);
+  return start === -1 ? null : { start, end: markerIndex };
+}
+
+function locateNextScriptTag(html: string, token: string): TagRange | null {
+  const placeholderIndex = html.indexOf(getDocumentScriptsPlaceholder(token));
+  return placeholderIndex === -1 ? null : findOpeningTagEndingAt(html, "span", placeholderIndex);
+}
+
+/**
+ * Read the asset props `<Head>` and `<NextScript />` carry as marker
+ * attributes, located through this render's placeholders, and strip them.
+ */
+export function extractDocumentAssetProps(
+  html: string,
+  token: string,
+): {
   html: string;
   props: DocumentAssetProps;
 } {
-  const headTag = html.match(/<head\b[^>]*>/i)?.[0];
-  const nextScriptTag = html.match(/<span\b[^>]*>(?=<!-- __NEXT_SCRIPTS__ -->)/i)?.[0];
+  const headRange = locateHeadTag(html, token);
+  const nextScriptRange = locateNextScriptTag(html, token);
+  const headTag = headRange ? html.slice(headRange.start, headRange.end) : undefined;
+  const nextScriptTag = nextScriptRange
+    ? html.slice(nextScriptRange.start, nextScriptRange.end)
+    : undefined;
   const props = {
     headNonce: readAttribute(headTag, HEAD_NONCE_ATTR),
     headCrossOrigin: readAttribute(headTag, HEAD_CROSS_ORIGIN_ATTR),
     scriptNonce: readAttribute(nextScriptTag, SCRIPT_NONCE_ATTR),
     scriptCrossOrigin: readAttribute(nextScriptTag, SCRIPT_CROSS_ORIGIN_ATTR),
   };
-  const cleanedHtml = html
-    .replace(/<head\b[^>]*>/i, (tag) =>
-      removeAttributes(tag, [HEAD_NONCE_ATTR, HEAD_CROSS_ORIGIN_ATTR]),
-    )
-    .replace(/<span\b[^>]*>(?=<!-- __NEXT_SCRIPTS__ -->)/i, (tag) =>
-      removeAttributes(tag, [SCRIPT_NONCE_ATTR, SCRIPT_CROSS_ORIGIN_ATTR]),
-    );
+  // Edit the later tag first so the earlier range stays valid.
+  const edits = [
+    headRange && { range: headRange, names: [HEAD_NONCE_ATTR, HEAD_CROSS_ORIGIN_ATTR] },
+    nextScriptRange && {
+      range: nextScriptRange,
+      names: [SCRIPT_NONCE_ATTR, SCRIPT_CROSS_ORIGIN_ATTR],
+    },
+  ]
+    .filter((edit) => edit !== null)
+    .sort((a, b) => b.range.start - a.range.start);
+  let cleanedHtml = html;
+  for (const { range, names } of edits) {
+    cleanedHtml =
+      cleanedHtml.slice(0, range.start) +
+      removeAttributes(cleanedHtml.slice(range.start, range.end), names) +
+      cleanedHtml.slice(range.end);
+  }
   return { html: cleanedHtml, props };
 }
 
@@ -77,7 +106,7 @@ function addAttribute(
   const attributePattern = new RegExp(`\\s${name}(?:="[^"]*")?`, "i");
   if (attributePattern.test(tag)) {
     return replaceExisting
-      ? tag.replace(attributePattern, ` ${name}="${escapeHtmlAttr(value)}"`)
+      ? tag.replace(attributePattern, () => ` ${name}="${escapeHtmlAttr(value)}"`)
       : tag;
   }
   if (!tag.endsWith(">")) return tag;

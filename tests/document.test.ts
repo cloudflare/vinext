@@ -9,6 +9,7 @@ import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Document, { Html, Head, Main, NextScript } from "../packages/vinext/src/shims/document.js";
+import { withDocumentPlaceholders } from "../packages/vinext/src/shims/document-placeholders.js";
 
 function render(el: React.ReactElement): string {
   return ReactDOMServer.renderToString(el);
@@ -34,6 +35,44 @@ describe("Main", () => {
     );
     expect(html.split("<!-- __NEXT_MAIN__ -->")).toHaveLength(2);
     expect(html.indexOf("<!-- __NEXT_MAIN__ -->")).toBe(html.indexOf('<div id="__next">') + 17);
+  });
+});
+
+describe("per-render placeholders", () => {
+  it("mark every splice point with the renderer's token", () => {
+    const html = render(
+      withDocumentPlaceholders(
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(
+            Head,
+            { "data-vinext-head-open": "user", lang: "en" } as React.ComponentProps<typeof Head>,
+            "x",
+          ),
+          React.createElement(Main),
+          React.createElement(NextScript),
+        ),
+        "token",
+      ),
+    );
+    expect(html).toBe(
+      '<head lang="en" data-vinext-head-open="token">x<template data-vinext-head-close="token"></template></head>' +
+        '<div id="__next"><!--__NEXT_MAIN__:token--></div>' +
+        "<span><!--__NEXT_SCRIPTS__:token--></span>",
+    );
+  });
+});
+
+describe("per-render placeholders with raw head HTML", () => {
+  it("append the close marker to <Head dangerouslySetInnerHTML>", () => {
+    const head = React.createElement(Head, {
+      dangerouslySetInnerHTML: { __html: "<title>t</title>" },
+    } as React.ComponentProps<typeof Head>);
+    expect(render(withDocumentPlaceholders(head, "token"))).toBe(
+      '<head data-vinext-head-open="token"><title>t</title><template data-vinext-head-close="token"></template></head>',
+    );
+    expect(render(head)).toBe("<head><title>t</title></head>");
   });
 });
 

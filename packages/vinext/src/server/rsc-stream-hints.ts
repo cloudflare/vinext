@@ -52,7 +52,8 @@ function normalizeReactFlightHintLine(line: Uint8Array): Uint8Array {
   const text = decoder.decode(line);
   const normalized = text.replace(
     REACT_FLIGHT_STYLESHEET_PRELOAD_HINT,
-    `$1,"style"${STYLESHEET_TO_STYLE_JSON_PADDING}$2`,
+    (_hint, before: string, after: string) =>
+      `${before},"style"${STYLESHEET_TO_STYLE_JSON_PADDING}${after}`,
   );
   if (normalized === text) return line;
 
