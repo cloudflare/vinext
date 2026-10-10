@@ -27,6 +27,7 @@ export function __ensureInstrumentation() {
   instrumentationCalls++;
 }
 export const publicFiles = new Set();
+export const clientBuildFiles = new Set();
 export const runMiddleware = null;
 export const vinextConfig = {};
 `,
