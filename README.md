@@ -437,10 +437,14 @@ export default defineConfig({
 
 #### Module Federation (client-side)
 
-For client-side Module Federation, configure React and React DOM as singleton shared modules in both the host and remotes:
+Use [`@module-federation/vinext`](https://github.com/module-federation/vinext), a thin wrapper around `@module-federation/vite` with vinext defaults. Register `federation()` before `vinext()`:
+
+```bash
+npm install @module-federation/vinext
+```
 
 ```ts
-import { federation } from "@module-federation/vite";
+import { federation } from "@module-federation/vinext";
 import { defineConfig } from "vite";
 import vinext from "vinext";
 
@@ -448,17 +452,22 @@ export default defineConfig({
   plugins: [
     federation({
       name: "host",
-      shared: {
-        react: { singleton: true },
-        "react/": { singleton: true },
-        "react-dom": { singleton: true },
-        "react-dom/": { singleton: true },
+      remotes: {
+        catalog: {
+          type: "module",
+          name: "catalog",
+          entry: "https://catalog.example.com/remoteEntry.js",
+          entryGlobalName: "catalog",
+          shareScope: "default",
+        },
       },
     }),
     vinext(),
   ],
 });
 ```
+
+The wrapper shares `react` and `react-dom` as singletons, defaults `filename` to `remoteEntry.js`, and injects the host's federation startup into the entry, because vinext has no conventional HTML entry. Explicit options override these defaults, and every `@module-federation/vite` option remains available. Passing your own `shared` replaces the default map, so keep `react`, `react/`, `react-dom`, and `react-dom/` as singletons in it, in both the host and remotes.
 
 In a remote client component, use `getVinextReact()` before reading React hooks. vinext registers the host's browser React instance before application modules execute, and the first registration remains stable across remote evaluation and HMR:
 
