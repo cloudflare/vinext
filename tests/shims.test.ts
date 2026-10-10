@@ -5701,6 +5701,35 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  // Next.js keys unstable_cache by `${cb.toString()}-${keyParts.join(",")}`,
+  // so the callback identity survives explicit keyParts.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  it("unstable_cache keeps callbacks sharing keyParts and arguments apart", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    try {
+      let receiptCalls = 0;
+      const getReceipt = unstable_cache(
+        async (id: string) => {
+          receiptCalls++;
+          return { id, customerEmail: `${id}@example.com` };
+        },
+        ["order"],
+      );
+      const getSummary = unstable_cache(async (id: string) => ({ id }), ["order"]);
+
+      expect(await getReceipt("1")).toEqual({ id: "1", customerEmail: "1@example.com" });
+      expect(await getSummary("1")).toEqual({ id: "1" });
+      expect(await getReceipt("1")).toEqual({ id: "1", customerEmail: "1@example.com" });
+      expect(receiptCalls).toBe(1);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("unstable_cache caches undefined results", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
