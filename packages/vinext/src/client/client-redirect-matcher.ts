@@ -35,9 +35,10 @@ function getMatcherRule(redirect: ClientRedirect): NextRedirect[] {
 /**
  * Resolve the first matching client-safe redirect. A matching server-owned
  * rule stops client evaluation and returns null so a later client-safe rule
- * cannot take its place. The navigation then continues, and the server applies
- * the rule if the navigation requests a data or document response, as Next.js
- * does for every config redirect.
+ * cannot take its place. The navigation then continues as it does in Next.js,
+ * which never resolves config redirects in the browser: a document request (or
+ * a data request that falls back to one) reaches the server rule, while a page
+ * without data fetching renders without it.
  */
 export function matchClientRedirect(
   pathname: string,

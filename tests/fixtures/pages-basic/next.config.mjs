@@ -69,6 +69,18 @@ const nextConfig = {
         destination: "/nav-test",
         permanent: false,
       },
+      {
+        source: "/server-condition-redirect/component-only",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "cookie",
+            key: "redirect-capability",
+            value: "cookie-capability-9a41d7",
+          },
+        ],
+      },
     ];
   },
   async rewrites() {

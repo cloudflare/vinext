@@ -112,6 +112,41 @@ test.describe("Config redirect conditions (Pages Router production)", () => {
     expect(new URL(page.url()).pathname).toBe("/about");
   });
 
+  test("client navigation renders a component-only source page, like Next.js", async ({
+    baseURL,
+    context,
+    page,
+  }) => {
+    const base = baseURL ?? BASE;
+    // Next.js 16.2.7 does not apply config redirects to client navigation of a
+    // page without data fetching, even when middleware matches it and its
+    // data probe is redirected. Only a document request reaches the rule.
+    await context.addCookies([
+      {
+        name: "redirect-capability",
+        value: COOKIE_VALUE,
+        url: base,
+        httpOnly: true,
+      },
+    ]);
+    await page.goto(`${base}/`);
+    await waitForHydration(page);
+    await page.evaluate(() => {
+      (window as any).__COMPONENT_ONLY_NAV_MARKER__ = true;
+    });
+
+    await page.evaluate(() =>
+      (window as any).next.router.push("/server-condition-redirect/component-only"),
+    );
+    await expect(page.locator("h1")).toHaveText("Component Only Redirect Source");
+    expect(new URL(page.url()).pathname).toBe("/server-condition-redirect/component-only");
+    expect(await page.evaluate(() => (window as any).__COMPONENT_ONLY_NAV_MARKER__)).toBe(true);
+
+    await page.goto(`${base}/server-condition-redirect/component-only`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(new URL(page.url()).pathname).toBe("/about");
+  });
+
   test("client navigation leaves a header-conditioned rule to the server", async ({
     baseURL,
     page,
