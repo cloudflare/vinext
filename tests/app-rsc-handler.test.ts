@@ -331,10 +331,22 @@ describe("createAppRscHandler", () => {
       i18nConfig,
     });
 
-    const response = await handler(new Request("https://example.test/docs/fr/old?x=1"), null);
+    const documentResponse = await handler(
+      new Request("https://example.test/docs/fr/old?x=1"),
+      null,
+    );
+    expect(documentResponse.status).toBe(307);
+    expect(documentResponse.headers.get("location")).toBe("http://example.fr/docs/new?x=1");
 
-    expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe("http://example.fr/docs/new?x=1");
+    // An RSC navigation keeps the query too, without the cache-busting param.
+    const headers = createRscRequestHeaders();
+    const rscUrl = await createRscRequestUrl("/docs/fr/old?x=1", headers);
+    const rscResponse = await handler(
+      new Request(new URL(rscUrl, "https://example.test"), { headers }),
+      null,
+    );
+    expect(rscResponse.status).toBe(307);
+    expect(rscResponse.headers.get("location")).toBe("http://example.fr/docs/new?x=1");
   });
 
   it("applies i18n trailingSlash root headers to a staged root response", async () => {

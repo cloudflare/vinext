@@ -88,7 +88,7 @@ import {
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
-import { localeRootHasTrailingSlash } from "../utils/domain-locale.js";
+import { isDomainLocaleUrl, localeRootHasTrailingSlash } from "../utils/domain-locale.js";
 import {
   badRequestResponse,
   notFoundResponse,
@@ -1115,15 +1115,31 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // cache-busting `_rsc` param onto the Location. For plain (document)
     // requests, carry the original request query onto the Location so it
     // survives the redirect, mirroring Next.js resolve-routes.ts (issue #1529).
-    const location =
-      isRscRequest && request.headers.get(RSC_HEADER) === "1"
-        ? await createRscRedirectLocation(destination, request)
-        : configMatchers.preserveRedirectDestinationQuery(
-            destination,
-            url.search,
-            redirect.destinationQuery,
-            options.i18nConfig?.domains,
-          );
+    // A redirect to one of the app's locale domains keeps the request query
+    // (without the cache-busting param) for RSC navigations too.
+    const domainLocales = options.i18nConfig?.domains;
+    let location: string;
+    if (isRscRequest && request.headers.get(RSC_HEADER) === "1") {
+      if (isDomainLocaleUrl(destination, domainLocales)) {
+        const queryUrl = new URL(url);
+        stripRscCacheBustingSearchParam(queryUrl);
+        location = configMatchers.preserveRedirectDestinationQuery(
+          destination,
+          queryUrl.search,
+          redirect.destinationQuery,
+          domainLocales,
+        );
+      } else {
+        location = await createRscRedirectLocation(destination, request);
+      }
+    } else {
+      location = configMatchers.preserveRedirectDestinationQuery(
+        destination,
+        url.search,
+        redirect.destinationQuery,
+        domainLocales,
+      );
+    }
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },
