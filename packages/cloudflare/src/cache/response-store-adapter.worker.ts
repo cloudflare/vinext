@@ -17,6 +17,7 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "vinext/internal/server/headers";
+import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
@@ -356,10 +357,70 @@ function isCacheable(response: Response): boolean {
   );
 }
 
-/** Send the 304 for a page whose render matched the request's If-None-Match. */
+/**
+ * A page's 304 headers. Next.js sends the 304 before it sets the payload's
+ * headers, so it carries no representation or body framing headers.
+ */
+function notModifiedHeaders(source: Headers): Headers {
+  const headers = new Headers(source);
+  for (const name of ["Content-Encoding", "Content-Length", "Content-Type", "Transfer-Encoding"]) {
+    headers.delete(name);
+  }
+  return headers;
+}
+
+/** Send the 304 for a page whose ETag matched the request's If-None-Match. */
 function notModifiedResponse(response: Response): Response {
   void response.body?.cancel().catch(() => {});
-  return new Response(null, { headers: response.headers, status: 304 });
+  return new Response(null, { headers: notModifiedHeaders(response.headers), status: 304 });
+}
+
+/**
+ * Whether Next.js sends this stored response through `sendRenderResult`, which
+ * answers a conditional request by the page's ETag. It sends every App page
+ * that way. A Pages redirect, and a Pages data request's notFound, are sent
+ * without an ETag, as is a route handler's response. A Pages API response is
+ * never stored.
+ */
+function answersConditionalRequest(responseStageProps: unknown, status: number): boolean {
+  if (responseStageProps === null || typeof responseStageProps !== "object") return false;
+  const kind = Reflect.get(responseStageProps, "kind");
+  if (kind === "app-page" || kind === "app-not-found") return true;
+  let isDataRequest: boolean;
+  if (kind === "hybrid-pages") {
+    if (Reflect.get(responseStageProps, "resourceKind") !== "page") return false;
+    isDataRequest = Reflect.get(responseStageProps, "isDataRequest") === true;
+  } else if (kind === "pages-page") {
+    const renderOptions: unknown = Reflect.get(responseStageProps, "renderOptions");
+    isDataRequest =
+      renderOptions !== null &&
+      typeof renderOptions === "object" &&
+      Reflect.get(renderOptions, "isDataReq") === true;
+  } else {
+    return false;
+  }
+  return (status >= 200 && status < 300) || (status === 404 && !isDataRequest);
+}
+
+/** Answer a stored page's conditional request as Next.js does for a cached page. */
+function storedForRequest(
+  stored: Response,
+  request: Request,
+  responseStageProps: unknown,
+): Response {
+  const etag = stored.headers.get("ETag");
+  return etag &&
+    answersConditionalRequest(responseStageProps, stored.status) &&
+    isPageNotModified(
+      {
+        cacheControl: request.headers.get("Cache-Control") ?? undefined,
+        ifModifiedSince: request.headers.get("If-Modified-Since") ?? undefined,
+        ifNoneMatch: request.headers.get("If-None-Match") ?? undefined,
+      },
+      etag,
+    )
+    ? notModifiedResponse(stored)
+    : stored;
 }
 
 async function readStoredResponse(key: Request): Promise<Response | null> {
@@ -506,12 +567,14 @@ const handler = {
       const key = await cacheRequest(invocation);
       const stored = await readStoredResponse(key);
       if (stored) {
-        if (!rscKey) return publicResponse(stored, "HIT", props);
+        if (!rscKey) {
+          return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
+        }
 
         const storedRsc = await readStoredResponse(rscKey);
         if (storedRsc) {
           void storedRsc.body?.cancel().catch(() => {});
-          return publicResponse(stored, "HIT", props);
+          return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
         }
         void stored.body?.cancel().catch(() => {});
       }
@@ -575,7 +638,7 @@ const handler = {
         const admitted = await capture.admittedResponse.catch(() => null);
         return admitted
           ? publicResponse(
-              new Response(null, { headers: admitted.headers, status: 304 }),
+              new Response(null, { headers: notModifiedHeaders(admitted.headers), status: 304 }),
               "MISS",
               props,
             )

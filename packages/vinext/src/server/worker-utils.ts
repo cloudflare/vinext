@@ -67,7 +67,9 @@ export function mergeHeaders(
   extraHeaders: Record<string, string | string[]>,
   statusOverride?: number,
 ): Response {
-  const status = statusOverride ?? response.status;
+  // As in Next.js, which sets a 304 after middleware's status, a 304 answers
+  // the request's own validator.
+  const status = response.status === 304 ? 304 : (statusOverride ?? response.status);
   const merged = new Headers();
   for (const [k, v] of Object.entries(extraHeaders)) {
     if (isContentLengthHeader(k)) continue;

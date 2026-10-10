@@ -26,12 +26,11 @@ import {
   generatePagesETag,
   isPagesStreamingBot,
   rendersPagesNotModified,
-  requestsNoCache,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
-import { matchesIfNoneMatch } from "./http-conditional.js";
+import { isPageNotModified } from "./http-conditional.js";
 import {
   createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,
@@ -377,6 +376,11 @@ export type ResolvePagesPageDataOptions = {
    * response is a `304 Not Modified` with no body.
    */
   ifNoneMatch?: string;
+  /**
+   * The incoming request's `If-Modified-Since` header value. As in Next.js,
+   * which gives a page no Last-Modified, a request with it gets the page.
+   */
+  ifModifiedSince?: string;
   /**
    * The incoming request's `Cache-Control` header value. When it contains
    * `no-cache`, the 304 short-circuit is skipped and a full response is
@@ -1060,7 +1064,11 @@ function finalizeCachedPagesResponse(
   response: Response,
   options: Pick<
     ResolvePagesPageDataOptions,
-    "userAgent" | "ifNoneMatch" | "requestCacheControl" | "notFoundSourceHeaders"
+    | "userAgent"
+    | "ifModifiedSince"
+    | "ifNoneMatch"
+    | "requestCacheControl"
+    | "notFoundSourceHeaders"
   >,
   html?: string,
 ): ResolvePagesPageDataResponseResult {
@@ -1070,11 +1078,15 @@ function finalizeCachedPagesResponse(
   if (html !== undefined && options.userAgent && isPagesStreamingBot(options.userAgent)) {
     const etag = generatePagesETag(html);
     response.headers.set("ETag", etag);
-    const noCacheRequested = requestsNoCache(options.requestCacheControl);
     if (
-      !noCacheRequested &&
-      options.ifNoneMatch &&
-      matchesIfNoneMatch(options.ifNoneMatch, etag) &&
+      isPageNotModified(
+        {
+          cacheControl: options.requestCacheControl,
+          ifModifiedSince: options.ifModifiedSince,
+          ifNoneMatch: options.ifNoneMatch,
+        },
+        etag,
+      ) &&
       rendersPagesNotModified(response.status)
     ) {
       response = new Response(null, { status: 304, headers: response.headers });
