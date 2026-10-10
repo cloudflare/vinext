@@ -537,12 +537,16 @@ async function streamPageToResponseImpl(
   const ssrHeadEnd = transformedShell.indexOf(ssrHeadEndMarker);
   let transformedHeadHTML = "";
   if (ssrHeadStart !== -1 && ssrHeadEnd > ssrHeadStart) {
-    transformedHeadHTML = transformedShell.slice(
+    const ssrHeadHTML = transformedShell.slice(
       ssrHeadStart + ssrHeadStartMarker.length,
       ssrHeadEnd,
     );
+    // If a transform dropped <Head>'s marker, keep the block where it is.
+    const moveToHeadOpen = transformedShell.includes(getDocumentHeadOpenMarker(documentToken));
+    if (moveToHeadOpen) transformedHeadHTML = ssrHeadHTML;
     transformedShell =
       transformedShell.slice(0, ssrHeadStart) +
+      (moveToHeadOpen ? "" : ssrHeadHTML) +
       transformedShell.slice(ssrHeadEnd + ssrHeadEndMarker.length);
   }
   transformedShell = spliceDocumentHeadOpen(transformedShell, documentToken, transformedHeadHTML);
