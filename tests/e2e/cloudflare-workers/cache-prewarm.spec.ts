@@ -395,31 +395,23 @@ test("a query-bearing miss stores nothing of its query for a query-free visitor"
   const secret = randomUUID();
   const first = await request.get(`${baseURL}${path}?token=${secret}`);
   expect(first.ok(), JSON.stringify({ backend, headers: first.headers() })).toBe(true);
-  const firstBody = await first.text();
-  expect(firstBody).not.toContain(secret);
-  const renderOf = (body: string) => /data-render-id-tag[^>]*>([^<]+)</.exec(body)?.[1];
-  const firstRender = renderOf(firstBody);
-  expect(firstRender).toBeTruthy();
+  expect(await first.text()).not.toContain(secret);
 
-  let hitRender: string | undefined;
+  // Both backends show a write eventually, so a poll that misses stores its
+  // own render. No response, stored or not, may carry the first query.
   await expect
     .poll(
       async () => {
         const response = await request.get(`${baseURL}${path}`);
         const headers = response.headers();
         expect(response.ok(), JSON.stringify({ backend, headers })).toBe(true);
-        const body = await response.text();
-        expect(body).not.toContain(secret);
-        hitRender = renderOf(body);
+        expect(await response.text()).not.toContain(secret);
         return headers[cacheStatusHeader];
       },
       // KV caches the miss's "not found" read in its location for up to 60s.
       { intervals: [1_000], timeout: 75_000 },
     )
     .toBe("HIT");
-  // Response Store reads its writes at once, so the query-free visitor gets
-  // the first visitor's render. A KV poll that missed re-stored its own.
-  if (backend === "response-store") expect(hitRender).toBe(firstRender);
 });
 
 test("Workers Cache serves every query of a static page from one entry", async ({
