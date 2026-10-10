@@ -6,7 +6,10 @@ import type {
 } from "../config/next-config.js";
 import type { BasePathMatchState } from "../config/config-matchers.js";
 import { requestContextFromRequest } from "../config/request-context.js";
-import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import {
+  normalizePathnameForRouteMatch,
+  normalizePathnameForRouteMatchStrict,
+} from "../routing/utils.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { traceFindPageComponents } from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -1645,7 +1648,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const publicFileResponse = filesystemRouteEligible
     ? resolvePublicFileRoute({
-        cleanPathname,
+        // A direct request pathname is already normalized; a rewrite
+        // destination is still URL-encoded.
+        cleanPathname: cleanPathnameIsRequestPathname
+          ? cleanPathname
+          : normalizePathnameForRouteMatch(cleanPathname),
         middlewareContext,
         pathname,
         publicFiles: options.publicFiles,

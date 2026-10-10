@@ -54,6 +54,7 @@ import {
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import { publicFileRouteKey } from "../packages/vinext/src/utils/public-file-path.js";
 import {
   runWithExecutionContext,
   type ExecutionContextLike,
@@ -9419,6 +9420,34 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBeNull();
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
     expect(matchRoute).not.toHaveBeenCalled();
+  });
+
+  it("serves public files by their normalized request pathname", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/files/:name", destination: "/:name" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      matchRoute: () => null,
+      publicFiles: new Set(
+        ["/members only/file.txt", "/hello copy.txt", "/C#-notes.txt"].map(publicFileRouteKey),
+      ),
+    });
+    const signalFor = async (path: string) => {
+      const response = await handler(new Request(`https://example.test/docs${path}`), null);
+      const signal = readStaticFileSignal(response);
+      return signal === null ? null : decodeURIComponent(signal);
+    };
+
+    expect(await signalFor("/members%20only/file.txt")).toBe("/members only/file.txt");
+    expect(await signalFor("/C%23-notes.txt")).toBe("/C%23-notes.txt");
+    // Rewrite destinations are still URL-encoded when public files are checked.
+    expect(await signalFor("/files/hello%20copy.txt")).toBe("/hello copy.txt");
+    // Middleware matchers see this alias as /members%20only/file.txt, so it
+    // must not reach public/members only/file.txt.
+    expect(await signalFor("/members%2520only/file.txt")).toBeNull();
   });
 
   it.each([

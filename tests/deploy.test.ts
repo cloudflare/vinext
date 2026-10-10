@@ -1610,14 +1610,16 @@ describe("scanPublicFileRoutes", () => {
 
   // Ported from Next.js: test/e2e/dynamic-routing/shared.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/shared.ts
-  it("stores public-file routes as decoded filenames", () => {
+  it("stores public-file routes as normalized request pathnames", () => {
     writeFile(tmpDir, "public/hello copy.txt", "space");
     writeFile(tmpDir, "public/hello+copy.txt", "plus");
     writeFile(tmpDir, "public/hello%20copy.txt", "percent");
+    writeFile(tmpDir, "public/C#-notes.txt", "hash");
 
-    // Requests are matched after one decode, so an encoded key would let a
-    // double-encoded alias such as /hello%2520copy.txt match /hello copy.txt.
+    // One key per file: an encoded variant such as /hello%20copy.txt for
+    // public/hello copy.txt would let the double-encoded alias match.
     expect(scanPublicFileRoutes(tmpDir)).toEqual([
+      "/C%23-notes.txt",
       "/hello copy.txt",
       "/hello%20copy.txt",
       "/hello+copy.txt",

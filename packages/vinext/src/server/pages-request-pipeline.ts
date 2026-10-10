@@ -43,6 +43,7 @@ import {
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
@@ -119,19 +120,17 @@ export async function fetchWorkerFilesystemRoute(
   const assetUrl = new URL(request.url);
   assetUrl.pathname = requestPathname;
   assetUrl.search = "";
-  let decodedPathname: string;
+  const decodedAssetUrl = new URL(assetUrl);
+  let publicFileKey: string;
   try {
-    decodedPathname = decodeURIComponent(assetUrl.pathname);
+    decodedAssetUrl.pathname = decodeURIComponent(assetUrl.pathname);
+    publicFileKey = normalizePathnameForRouteMatchStrict(assetUrl.pathname);
   } catch {
     return false;
   }
-  const decodedAssetUrl = new URL(assetUrl);
-  decodedAssetUrl.pathname = decodedPathname;
   // Next.js serves public files under basePath, so a direct request outside it
   // never matches one; only a rewrite can bring it into the public filesystem.
-  // The inventory holds decoded filenames, matching the path the asset fetch
-  // resolves after its single decode.
-  const isPublicFile = (phase !== "direct" || hadBasePath) && publicFiles.has(decodedPathname);
+  const isPublicFile = (phase !== "direct" || hadBasePath) && publicFiles.has(publicFileKey);
   // Public files precede API routes in the filesystem order, so a file such as
   // public/api/schema.json is served rather than handed to API routing.
   if (!isPublicFile && (requestPathname === "/api" || requestPathname.startsWith("/api/"))) {
