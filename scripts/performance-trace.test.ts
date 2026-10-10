@@ -488,7 +488,7 @@ describe("performance traces", () => {
     ]);
     const comment = await readFile(commentPath, "utf8");
     expect(comment).toContain("<!-- vinext-performance-benchmarks -->");
-    expect(comment).toContain("1 improved · 0 regressed · 1 within ±1.5%");
+    expect(comment).toContain("1 improved · 0 regressed · 1 within noise threshold");
     expect(comment).toContain("🟢 -10.0%");
     expect(comment).toContain("⚫ +0.6%");
     expect(comment).toContain("@\u200beveryone");
