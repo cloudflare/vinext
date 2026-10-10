@@ -31,6 +31,11 @@ import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
+  getDomainLocaleOrigin,
+  isDomainLocaleUrl,
+  type DomainLocale,
+} from "../utils/domain-locale.js";
+import {
   substituteDestinationParams,
   substituteRedirectDestinationQuery,
   type RedirectDestinationQueryPart,
@@ -1190,7 +1195,8 @@ export function sanitizeDestination(dest: string): string {
  * Pass the match's
  * `destinationQuery` so substituted params keep their value boundaries;
  * without it the destination's own query is split. External destinations are returned untouched (a config redirect to another
- * origin should not leak the original request's query).
+ * origin should not leak the original request's query), except those on the
+ * app's own i18n `domains`, such as the domain default-locale redirects.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
  */
@@ -1198,8 +1204,13 @@ export function preserveRedirectDestinationQuery(
   destination: string,
   requestSearch: string,
   destinationQuery?: RedirectDestinationQueryPart[],
+  domainLocales?: readonly DomainLocale[],
 ): string {
-  if (requestSearch === "" || requestSearch === "?" || isExternalUrl(destination)) {
+  if (
+    requestSearch === "" ||
+    requestSearch === "?" ||
+    (isExternalUrl(destination) && !isDomainLocaleUrl(destination, domainLocales))
+  ) {
     return destination;
   }
 
@@ -1432,8 +1443,10 @@ function _escapeRegexString(value: string): string {
  *     URL so a `:locale` segment in the source captures the prefix itself.
  *   - Otherwise an internal locale-capture variant is produced whose source
  *     starts with `/:nextInternalLocale(en|sv|nl)` so that locale-prefixed
- *     URLs match. For redirects only, a second variant prefixed with
- *     `/${defaultLocale}` is also emitted, matching Next.js exactly.
+ *     URLs match. For redirects only, literal default-locale variants come
+ *     first, matching Next.js exactly: one per domain (`/${domain.defaultLocale}`
+ *     → `http(s)://${domain}${basePath}${destination}`), then one for the
+ *     global `/${defaultLocale}` with the unprefixed destination.
  *   - **Vinext divergence**: we ALSO retain the original (unprefixed) source
  *     so that requests for the default locale that arrive without a prefix
  *     still match. Next.js solves this upstream by path-normalising every
@@ -1457,7 +1470,7 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
   routes: T[],
   i18n: NextI18nConfig | null | undefined,
   type: "redirect" | "rewrite" | "header",
-  options: { trailingSlash?: boolean } = {},
+  options: { trailingSlash?: boolean; basePath?: string } = {},
 ): T[] {
   if (!i18n || routes.length === 0) return routes;
 
@@ -1471,16 +1484,22 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
   // rather than `/:nextInternalLocale(en|fr)`.
   const suffixFor = (source: string): string => (source === "/" && !trailingSlash ? "" : source);
 
-  // For redirects, Next.js emits a per-default-locale literal variant
-  // (so that `/${defaultLocale}/old` redirects to the unprefixed destination
-  // and the default locale is implicitly stripped). For rewrites Next.js
+  // For redirects, Next.js emits a literal variant per default locale, so
+  // `/${defaultLocale}/old` redirects to the destination without the locale.
+  // Each domain's default redirects to that domain (absolute, with basePath),
+  // and these come before the global default, so they win when a domain's
+  // default equals it. The request host is not checked. For rewrites Next.js
   // emits only the `:nextInternalLocale` form. We mirror that distinction.
-  //
-  // The list is a single-element array today; domain-locale support (which
-  // Next.js wires up alongside `i18n.domains`) will append each domain's
-  // `defaultLocale` here once vinext mirrors that branch — tracked as part
-  // of #1336's follow-ups.
-  const defaultLocales: string[] = type === "redirect" ? [i18n.defaultLocale] : [];
+  const defaultLocales: Array<{ locale: string; base: string }> =
+    type === "redirect"
+      ? [
+          ...(i18n.domains ?? []).map((domain) => ({
+            locale: domain.defaultLocale,
+            base: getDomainLocaleOrigin(domain),
+          })),
+          { locale: i18n.defaultLocale, base: "" },
+        ]
+      : [];
 
   const out: T[] = [];
   for (const r of routes) {
@@ -1497,12 +1516,16 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
     // For each default locale, emit a literal `/${locale}/...` variant
     // whose destination does NOT carry a locale prefix (Next.js parity).
     if (!isExternal) {
-      for (const locale of defaultLocales) {
-        const localizedSource = `/${locale}${suffixFor(r.source)}`;
-        out.push({
+      for (const { locale, base } of defaultLocales) {
+        const localizedRoute = {
           ...r,
-          source: localizedSource,
-        });
+          source: `/${locale}${suffixFor(r.source)}`,
+        };
+        if (base && "destination" in localizedRoute && destination !== undefined) {
+          const destinationBasePath = r.basePath === false ? "" : (options.basePath ?? "");
+          localizedRoute.destination = `${base}${destinationBasePath}${destination}`;
+        }
+        out.push(localizedRoute);
       }
     }
 

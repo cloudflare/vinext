@@ -31131,6 +31131,89 @@ describe("locale: false on rewrites/redirects (issue #1336)", () => {
     expect(matchRedirect("/sv/old", rules, emptyCtx)?.destination).toBe("/sv/new");
     expect(matchRedirect("/nl/old", rules, emptyCtx)?.destination).toBe("/nl/new");
   });
+
+  it("processRoutes: redirects each domain's default locale to that domain first", async () => {
+    // Observed on real Next.js 16.2.7: the per-domain variants come before the
+    // global default one and ignore the request host, and basePath goes inside
+    // the absolute destination unless the rule opts out of basePath.
+    const { matchRedirect, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18n = {
+      locales: ["en", "fr", "nl"],
+      defaultLocale: "en",
+      domains: [
+        { domain: "example.com", defaultLocale: "en" },
+        { domain: "example.fr", defaultLocale: "fr", http: true as const },
+      ],
+    };
+    const rules = applyLocaleToRoutes(
+      [
+        { source: "/old", destination: "/new", permanent: false as const },
+        { source: "/ext", destination: "https://ext.test/x", permanent: false as const },
+        {
+          source: "/nobp",
+          destination: "/new",
+          permanent: false as const,
+          basePath: false as const,
+        },
+      ],
+      i18n,
+      "redirect",
+      { basePath: "/app" },
+    );
+    const underBasePath = { basePath: "/app", hadBasePath: true };
+    expect(matchRedirect("/en/old", rules, emptyCtx, underBasePath)?.destination).toBe(
+      "https://example.com/app/new",
+    );
+    expect(matchRedirect("/fr/old", rules, emptyCtx, underBasePath)?.destination).toBe(
+      "http://example.fr/app/new",
+    );
+    expect(matchRedirect("/nl/old", rules, emptyCtx, underBasePath)?.destination).toBe("/nl/new");
+    expect(matchRedirect("/fr/ext", rules, emptyCtx, underBasePath)?.destination).toBe(
+      "https://ext.test/x",
+    );
+    expect(
+      matchRedirect("/fr/nobp", rules, emptyCtx, { basePath: "/app", hadBasePath: false })
+        ?.destination,
+    ).toBe("http://example.fr/new");
+    expect(rules.filter((rule) => rule.source.endsWith("/ext")).map((rule) => rule.source)).toEqual(
+      ["/:nextInternalLocale(en|fr|nl)/ext", "/ext"],
+    );
+
+    // Without a domain whose default is the global default, the global
+    // default variant keeps its relative destination.
+    const frDomainOnly = applyLocaleToRoutes(
+      [{ source: "/old", destination: "/new", permanent: false as const }],
+      { ...i18n, domains: [i18n.domains[1]] },
+      "redirect",
+    );
+    expect(matchRedirect("/en/old", frDomainOnly, emptyCtx)?.destination).toBe("/new");
+    expect(matchRedirect("/fr/old", frDomainOnly, emptyCtx)?.destination).toBe(
+      "http://example.fr/new",
+    );
+
+    // With trailingSlash, the root variants keep the slash, as in Next.js.
+    const rootRules = applyLocaleToRoutes(
+      [{ source: "/", destination: "/new/", permanent: false as const }],
+      i18n,
+      "redirect",
+      { basePath: "/app", trailingSlash: true },
+    );
+    expect(rootRules.slice(0, 3).map((rule) => [rule.source, rule.destination])).toEqual([
+      ["/en/", "https://example.com/app/new/"],
+      ["/fr/", "http://example.fr/app/new/"],
+      ["/en/", "/new/"],
+    ]);
+
+    // Rewrites never get domain variants.
+    const rewrites = applyLocaleToRoutes(
+      [{ source: "/old", destination: "/new" }],
+      i18n,
+      "rewrite",
+      { basePath: "/app" },
+    );
+    expect(rewrites.every((rule) => rule.destination.startsWith("/"))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
