@@ -19,3 +19,12 @@ export async function callPassedAction(
 ): Promise<ModuleScopeResult> {
   return action();
 }
+
+export async function callAwaitedAction(
+  pending: Promise<() => Promise<ModuleScopeResult>>,
+): Promise<ModuleScopeResult> {
+  // React resolves a server reference inside a promise argument only once the
+  // action awaits it, so this loads the referenced module mid-action.
+  const action = await pending;
+  return action();
+}

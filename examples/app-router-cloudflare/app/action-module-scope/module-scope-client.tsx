@@ -2,12 +2,14 @@
 
 import { useActionState, useState } from "react";
 import { readArgumentActionScope } from "./argument-actions";
-import { callPassedAction, readFetchActionScope } from "./fetch-actions";
+import { callAwaitedAction, callPassedAction, readFetchActionScope } from "./fetch-actions";
 import { submitFormActionScope } from "./form-actions";
+import { readPromiseActionScope } from "./promise-actions";
 
 export function ModuleScopeClient() {
   const [fetchResult, setFetchResult] = useState("");
   const [argumentResult, setArgumentResult] = useState("");
+  const [promiseResult, setPromiseResult] = useState("");
   const [formResult, formAction] = useActionState(submitFormActionScope, null);
 
   return (
@@ -30,6 +32,18 @@ export function ModuleScopeClient() {
         Pass action as an argument
       </button>
       <pre data-testid="argument-result">{argumentResult}</pre>
+      <button
+        data-testid="promise-action"
+        type="button"
+        onClick={async () =>
+          setPromiseResult(
+            JSON.stringify(await callAwaitedAction(Promise.resolve(readPromiseActionScope))),
+          )
+        }
+      >
+        Pass action inside a promise argument
+      </button>
+      <pre data-testid="promise-result">{promiseResult}</pre>
       <form action={formAction}>
         <button data-testid="form-action" type="submit">
           Submit form

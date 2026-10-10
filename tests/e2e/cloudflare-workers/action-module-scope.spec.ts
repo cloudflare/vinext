@@ -1,5 +1,6 @@
 import type { Browser, BrowserContextOptions } from "@playwright/test";
 import { test, expect } from "../fixtures";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4176";
 const PAGE = `${BASE}/action-module-scope`;
@@ -18,6 +19,7 @@ async function openSession(browser: Browser, session: string, options: BrowserCo
   await context.addCookies([{ name: "session", value: session, url: BASE }]);
   const page = await context.newPage();
   await page.goto(PAGE);
+  if (options.javaScriptEnabled !== false) await waitForAppRouterHydration(page);
   return { context, page };
 }
 
@@ -44,6 +46,17 @@ test.describe("server action module evaluation", () => {
       const { context, page } = await openSession(browser, session);
       await page.getByTestId("argument-action").click();
       await expect(page.getByTestId("argument-result")).toHaveText(expectedResult(session));
+      await context.close();
+    }
+  });
+
+  test("an action module loaded from a promise argument does not capture the caller's request", async ({
+    browser,
+  }) => {
+    for (const session of ["first-caller", "later-caller"]) {
+      const { context, page } = await openSession(browser, session);
+      await page.getByTestId("promise-action").click();
+      await expect(page.getByTestId("promise-result")).toHaveText(expectedResult(session));
       await context.close();
     }
   });

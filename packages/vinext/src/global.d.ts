@@ -313,6 +313,14 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __vite_rsc_client_require__: ((id: string) => Promise<unknown>) | undefined;
+
+  /**
+   * Vite RSC's RSC-side server-reference module loader. Set by
+   * `@vitejs/plugin-rsc`; vinext wraps it so server-reference modules are
+   * evaluated outside the request that first names them.
+   */
+  // oxlint-disable-next-line no-var
+  var __vite_rsc_server_require__: ((id: string) => unknown) | undefined;
 }
 
 // ---------------------------------------------------------------------------
