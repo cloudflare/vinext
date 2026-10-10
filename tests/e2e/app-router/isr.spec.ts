@@ -770,6 +770,31 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(await readSharedKeyPartsRoute(request, "receipt", id)).toEqual(receipt1);
   });
 
+  // Next.js joins keyParts with "," before hashing, a known TODO, so tuples
+  // whose parts join alike share an entry there. vinext keeps them apart.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  for (const order of ["first", "second"] as const) {
+    test(`keyParts tuples that join alike keep separate entries (${order} tuple primed)`, async ({
+      request,
+    }) => {
+      const id = `record-${order}-${Date.now()}`;
+      const first = { tenant: "tenant:team", scope: "reports", id };
+      const second = { tenant: "tenant", scope: "team:reports", id };
+      const [primed, other] = order === "first" ? [first, second] : [second, first];
+
+      const primedRecord = await readKeyPartsTupleRoute(request, primed);
+      expect(primedRecord).toMatchObject(primed);
+
+      const otherRecord = await readKeyPartsTupleRoute(request, other);
+      expect(otherRecord).toMatchObject(other);
+      expect(otherRecord.nonce).not.toBe(primedRecord.nonce);
+
+      // Each tuple still serves its own cached entry.
+      expect(await readKeyPartsTupleRoute(request, primed)).toEqual(primedRecord);
+      expect(await readKeyPartsTupleRoute(request, other)).toEqual(otherRecord);
+    });
+  }
+
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
   test("unstable_cache bypasses cache in draft mode", async ({ request }) => {
@@ -869,6 +894,17 @@ async function readSharedKeyPartsRoute(
 ) {
   const response = await request.get(
     `${baseUrl()}/nextjs-compat/api/unstable-cache-shared-key-parts/${route}?id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+  return (await response.json()) as Record<string, unknown>;
+}
+
+async function readKeyPartsTupleRoute(
+  request: APIRequestContext,
+  tuple: { tenant: string; scope: string; id: string },
+) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-key-parts-tuple?${new URLSearchParams(tuple)}`,
   );
   expect(response.status()).toBe(200);
   return (await response.json()) as Record<string, unknown>;

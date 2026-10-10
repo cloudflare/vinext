@@ -18,6 +18,7 @@
  * deprecated for consumers and retained for backwards compatibility.
  */
 
+import { createHash } from "node:crypto";
 import {
   getHeadersAccessPhase,
   isDraftModeEnabled,
@@ -615,8 +616,8 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
 /**
  * Wrap an async function with caching.
  *
- * Returns a new function that caches results. The cache key is derived
- * from the callback source, keyParts and serialized arguments.
+ * Returns a new function that caches results. The cache key is a SHA-256
+ * digest of the callback source, keyParts and serialized arguments.
  */
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
@@ -624,19 +625,20 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   keyParts?: string[],
   options?: UnstableCacheOptions,
 ): T {
-  // Like Next.js, the callback source is part of the key even when keyParts
-  // are given, so two callbacks sharing keyParts and arguments never share an
-  // entry. The source is minification-sensitive, so the same callback may
-  // key differently across builds.
+  // Like Next.js, the key covers the callback source as well as keyParts and
+  // arguments, and is a SHA-256 digest so its size stays fixed. Next.js joins
+  // keyParts with "," (a known TODO), so ["a,b", "c"] and ["a", "b,c"] share
+  // an entry there; encoding the tuple as JSON keeps them apart. The source is
+  // minification-sensitive, so the same callback may key differently across
+  // builds.
   // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
-  const fnKey = fnv1a64(fn.toString());
-  const baseKey = keyParts ? `${fnKey}:${keyParts.join(":")}` : fnKey;
+  const fnSource = fn.toString();
   const tags = encodeCacheTags(options?.tags ?? []);
   const revalidateSeconds = options?.revalidate;
 
   const cachedFn = async (...args: Parameters<T>) => {
-    const argsKey = JSON.stringify(args);
-    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${baseKey}:${argsKey}`;
+    const invocationKey = JSON.stringify([fnSource, keyParts ?? null, args]);
+    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${createHash("sha256").update(invocationKey).digest("hex")}`;
     addCollectedRequestTags(tags);
     recordUnstableCacheObservation({
       kind: "unstable_cache",
