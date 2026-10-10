@@ -273,6 +273,8 @@ export type RouteManifestRoute = {
   id: string;
   pattern: string;
   patternParts: readonly string[];
+  /** Filesystem segments from app/ to the route, route groups included. */
+  treeSegments: readonly string[];
   isDynamic: boolean;
   paramNames: readonly string[];
   rootParamNames: readonly string[];
@@ -472,6 +474,7 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       id: route.ids.route,
       pattern: route.pattern,
       patternParts: [...route.patternParts],
+      treeSegments: [...route.routeSegments],
       isDynamic: route.isDynamic,
       paramNames: [...route.params],
       rootParamNames: [...route.rootParamNames],

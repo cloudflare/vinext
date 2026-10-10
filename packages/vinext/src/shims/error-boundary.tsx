@@ -10,6 +10,7 @@ import {
 import DefaultGlobalError from "./default-global-error.js";
 import { handleAppNavigationFailure } from "../client/app-nav-failure-handler.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
+import { trackSegmentFallback } from "./internal/shown-segment-fallbacks.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 export type ErrorBoundaryProps = {
@@ -281,10 +282,16 @@ export class ErrorBoundaryInner extends React.Component<
 
   componentDidMount(): void {
     addDevErrorRecoveryListener(this.handleDevErrorRecovery);
+    trackSegmentFallback(this, this.state.error !== null);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.error !== null);
   }
 
   componentWillUnmount(): void {
     removeDevErrorRecoveryListener(this.handleDevErrorRecovery);
+    trackSegmentFallback(this, false);
   }
 
   reset = () => {
@@ -371,7 +378,7 @@ type NotFoundBoundaryState = {
  * The ErrorBoundary above re-throws notFound errors so they propagate up to this
  * boundary. This must be placed above the ErrorBoundary in the component tree.
  */
-class NotFoundBoundaryInner extends React.Component<
+export class NotFoundBoundaryInner extends React.Component<
   NotFoundBoundaryInnerProps,
   NotFoundBoundaryState
 > {
@@ -400,6 +407,18 @@ class NotFoundBoundaryInner extends React.Component<
     }
     // Not a notFound error — re-throw so it reaches an ErrorBoundary or propagates
     throw error;
+  }
+
+  componentDidMount(): void {
+    trackSegmentFallback(this, this.state.notFound);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.notFound);
+  }
+
+  componentWillUnmount(): void {
+    trackSegmentFallback(this, false);
   }
 
   render() {
@@ -478,6 +497,18 @@ export class ForbiddenBoundaryInner extends React.Component<
     throw error;
   }
 
+  componentDidMount(): void {
+    trackSegmentFallback(this, this.state.forbidden);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.forbidden);
+  }
+
+  componentWillUnmount(): void {
+    trackSegmentFallback(this, false);
+  }
+
   render() {
     if (this.state.forbidden) {
       return (
@@ -548,6 +579,18 @@ export class UnauthorizedBoundaryInner extends React.Component<
       }
     }
     throw error;
+  }
+
+  componentDidMount(): void {
+    trackSegmentFallback(this, this.state.unauthorized);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.unauthorized);
+  }
+
+  componentWillUnmount(): void {
+    trackSegmentFallback(this, false);
   }
 
   render() {

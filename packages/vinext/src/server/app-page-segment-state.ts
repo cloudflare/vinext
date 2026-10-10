@@ -201,6 +201,14 @@ export function resolveAppPagePatternStateKey(
   );
 }
 
+// The browser matches the current route by this source page, so the server
+// and the client share one format.
+export function createAppPageSourcePage(
+  routeSegments: readonly string[] | null | undefined,
+): string {
+  return `/${[...(routeSegments ?? []), "page"].join("/")}`;
+}
+
 export function resolveAppPageTemplateStateKey(
   routeSegments: readonly string[],
   treePosition: number,

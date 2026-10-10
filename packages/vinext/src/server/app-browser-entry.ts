@@ -165,6 +165,7 @@ import {
 } from "vinext/shims/error-boundary";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
+import { isSegmentFallbackShown } from "vinext/shims/internal/shown-segment-fallbacks";
 import {
   BfcacheIdentityMapContext,
   ElementsContext,
@@ -2479,6 +2480,7 @@ function bootstrapHydration(
                 currentLayoutIds: navigationInitiationState.layoutIds,
                 currentParams: navigationInitiationState.navigationSnapshot.params,
                 routeManifest,
+                segmentFallbackShown: isSegmentFallbackShown(),
                 targetRouteParams: optimisticPayload.routeParams,
                 targetUrlParts: optimisticPayload.urlParts,
                 template: optimisticPayload.template,

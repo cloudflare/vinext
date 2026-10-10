@@ -3,6 +3,7 @@ import {
   AppElementsWire,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
@@ -61,6 +62,7 @@ import {
 } from "./app-rsc-render-mode.js";
 import {
   APP_PAGE_SEGMENT_KEY,
+  createAppPageSourcePage,
   resolveAppPageChildSegments,
   resolveAppPageSegmentStateKey,
   resolveAppPageTemplateStateKey,
@@ -73,7 +75,7 @@ import {
   traceGetLayoutOrPageModule,
 } from "./app-page-tracing.js";
 
-export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
+export { createAppPageSourcePage, resolveAppPageChildSegments } from "./app-page-segment-state.js";
 
 type AppPageComponentProps = {
   children?: ReactNode;
@@ -453,12 +455,6 @@ function createAppPageTemplateEntries<TModule extends AppPageModule>(
       treePosition,
     };
   });
-}
-
-export function createAppPageSourcePage(
-  routeSegments: readonly string[] | null | undefined,
-): string {
-  return `/${[...(routeSegments ?? []), "page"].join("/")}`;
 }
 
 function resolveAppPageLayoutSegmentProviderSegments(
@@ -1951,6 +1947,9 @@ export function buildAppPageElements<
           // diagnostics can recognize this as a loading-boundary response without
           // requiring source text to appear in client component references.
           [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+          ...(prefetchLoadingEntry
+            ? { [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: prefetchLoadingEntry.treePosition }
+            : {}),
         }
       : {},
   );
