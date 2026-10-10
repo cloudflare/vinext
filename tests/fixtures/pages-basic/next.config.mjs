@@ -37,6 +37,50 @@ const nextConfig = {
         destination: "/about?next=/:next&safe=1",
         permanent: false,
       },
+      // Used by E2E: pages-router-prod/redirect-conditions.spec.ts — header and
+      // cookie condition values are server-only and must stay out of the
+      // public client bundle.
+      {
+        source: "/server-condition-redirect/header",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "header",
+            key: "x-redirect-capability",
+            value: "header-capability-5f0c2e",
+          },
+        ],
+      },
+      {
+        source: "/server-condition-redirect/shadowed",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "cookie",
+            key: "redirect-capability",
+            value: "cookie-capability-9a41d7",
+          },
+        ],
+      },
+      {
+        source: "/server-condition-redirect/shadowed",
+        destination: "/nav-test",
+        permanent: false,
+      },
+      {
+        source: "/server-condition-redirect/component-only",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "cookie",
+            key: "redirect-capability",
+            value: "cookie-capability-9a41d7",
+          },
+        ],
+      },
     ];
   },
   async rewrites() {

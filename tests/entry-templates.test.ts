@@ -2122,6 +2122,83 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  it("embeds only client-safe redirect data in the Pages browser entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-redirects-"));
+
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({
+          redirects: async () => [
+            {
+              source: "/conditional",
+              destination: "/about",
+              permanent: false,
+              has: [{ type: "query", key: "preview", value: "1" }],
+            },
+            {
+              source: "/header",
+              destination: "/header-target-canary",
+              permanent: false,
+              has: [
+                { type: "query", key: "from", value: "nav" },
+                { type: "header", key: "x-origin-auth", value: "header-secret-canary" },
+              ],
+            },
+            {
+              source: "/cookie",
+              destination: "/cookie-target-canary",
+              permanent: true,
+              has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
+            },
+            {
+              source: "/missing-cookie",
+              destination: "/missing-target-canary",
+              permanent: false,
+              missing: [{ type: "cookie", key: "session", value: "missing-condition-canary" }],
+            },
+          ],
+        }),
+        createValidFileMatcher(),
+      );
+
+      const published = JSON.parse(code.match(/window\.__VINEXT_CLIENT_REDIRECTS__ = (.*);\n/)![1]);
+      expect(published).toEqual([
+        {
+          source: "/conditional",
+          has: [{ type: "query", key: "preview", value: "1" }],
+          destination: "/about",
+          permanent: false,
+        },
+        {
+          source: "/header",
+          has: [{ type: "query", key: "from", value: "nav" }],
+          requiresServerEvaluation: true,
+        },
+        { source: "/cookie", requiresServerEvaluation: true },
+        { source: "/missing-cookie", requiresServerEvaluation: true },
+      ]);
+      expect(code).not.toContain("x-origin-auth");
+      expect(code).not.toContain("header-secret-canary");
+      expect(code).not.toContain("header-target-canary");
+      expect(code).not.toContain("internal-access");
+      expect(code).not.toContain("cookie-secret-canary");
+      expect(code).not.toContain("cookie-target-canary");
+      expect(code).not.toContain("missing-condition-canary");
+      expect(code).not.toContain("missing-target-canary");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("embeds the build-time public-file inventory", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-public-entry-"));
     const pagesDir = path.join(tmpDir, "pages");
