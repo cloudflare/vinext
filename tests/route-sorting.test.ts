@@ -716,6 +716,27 @@ describe("sortRoutes", () => {
     ]);
   });
 
+  it("prefers a static route over a dynamic route with infix-static segments", () => {
+    // Regression for #1964: a dynamic route whose infix-static bonus drives its
+    // raw precedence negative (e.g. /:id/b = -400) must NOT sort before a purely
+    // static route (/x/b = 0). The manifest linear scanner
+    // (findRouteManifestRouteByMatchedUrl) returns the first matching route in
+    // this order, so a negative-scoring dynamic route would shadow the static one.
+    expect(order(["/:id/b", "/x/b"])).toEqual(["/x/b", "/:id/b"]);
+    expect(order(["/:a/x/y/:b", "/p/x/y/q"])).toEqual(["/p/x/y/q", "/:a/x/y/:b"]);
+  });
+
+  it("preserves specificity ordering among infix dynamic routes (more infixes win)", () => {
+    // Must-not-break guard alongside #1964: lifting the dynamic band above 0 has
+    // to keep the documented intra-dynamic ordering — more static infixes = more
+    // specific = higher priority (sorts first).
+    expect(order(["/:a/:b+", "/:a/x/:b+", "/:a/x/y/:b+"])).toEqual([
+      "/:a/x/y/:b+",
+      "/:a/x/:b+",
+      "/:a/:b+",
+    ]);
+  });
+
   it("breaks ties lexicographically for a deterministic total order", () => {
     expect(order(["/zebra", "/apple", "/mango"])).toEqual(["/apple", "/mango", "/zebra"]);
   });
