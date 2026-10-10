@@ -203,11 +203,14 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
               input.callback,
             );
             finalizeSpan();
+            // The body wrapper only keeps the request span open until the body
+            // settles, so skip it when no backend records that span.
             if (
               result instanceof Response &&
               result.body &&
               !result.body.locked &&
-              !isFullyBufferedBody(result)
+              !isFullyBufferedBody(result) &&
+              frameworkTracer.isRecording()
             ) {
               let finishBody!: () => void;
               let failBody!: (error: unknown) => void;

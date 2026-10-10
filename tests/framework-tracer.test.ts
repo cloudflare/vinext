@@ -210,6 +210,24 @@ describe("framework tracer", () => {
     expect(tracer.trace({ type: "sync" }, () => "ok")).toBe("ok");
     await expect(tracer.trace({ type: "async" }, async () => "ok")).resolves.toBe("ok");
   });
+
+  it("records when any integration records and treats unknown integrations as recording", () => {
+    const silent: FrameworkTracingIntegration = {
+      id: "silent",
+      isRecording: () => false,
+      enterSpan: (_descriptor, callback) => callback({ setAttribute() {} }),
+    };
+    const sampled: FrameworkTracingIntegration = {
+      ...silent,
+      id: "sampled",
+      isRecording: () => true,
+    };
+
+    expect(createFrameworkTracer([]).isRecording()).toBe(false);
+    expect(createFrameworkTracer([silent]).isRecording()).toBe(false);
+    expect(createFrameworkTracer([silent, sampled]).isRecording()).toBe(true);
+    expect(createFrameworkTracer([silent, recordingIntegration([])]).isRecording()).toBe(true);
+  });
 });
 
 describe("OpenTelemetry integration", () => {
@@ -487,5 +505,27 @@ describe("OpenTelemetry integration", () => {
       }),
     ).toBe("ok");
     expect(calls).toBe(1);
+  });
+
+  it("records only while an enabled provider is registered", () => {
+    const tracer = createFrameworkTracer([openTelemetryTracingIntegration]);
+    const getTracer = () => ({ startActiveSpan: () => undefined });
+
+    delete (globalThis as Record<symbol, unknown>)[apiSymbol];
+    expect(tracer.isRecording()).toBe(false);
+
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      trace: { getDelegate: () => ({ constructor: { name: "NoopTracerProvider" } }), getTracer },
+    };
+    expect(tracer.isRecording()).toBe(false);
+
+    // A provider registered later in the isolate is observed on the next check.
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      trace: {
+        getDelegate: () => ({ constructor: { name: "ApplicationTracerProvider" } }),
+        getTracer,
+      },
+    };
+    expect(tracer.isRecording()).toBe(true);
   });
 });

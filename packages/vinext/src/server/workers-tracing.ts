@@ -69,6 +69,11 @@ export function createWorkersTracingIntegration(
 
   return {
     id: "cloudflare-workers",
+    isRecording() {
+      // Runtimes without getActiveSpan cannot report sampling, so assume they record.
+      if (!tracing.getActiveSpan) return true;
+      return tracing.getActiveSpan()?.isTraced === true;
+    },
     getActiveSpan() {
       const span = tracing.getActiveSpan?.();
       return span ? backendSpan(span) : undefined;
