@@ -16,6 +16,7 @@ describe("generateRscEntry ISR code generation", () => {
       errorPath: null,
       layoutErrorPaths: [null],
       notFoundPath: null,
+      notFoundPaths: [null],
       forbiddenPaths: [],
       forbiddenPath: null,
       unauthorizedPaths: [],

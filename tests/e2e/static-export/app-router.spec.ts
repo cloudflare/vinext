@@ -64,7 +64,7 @@ test.describe("Static Export — App Router", () => {
     await expect(nav.locator('a[href="/blog/getting-started/"]')).toBeVisible();
     await expect(nav.locator('a[href="/old-school/"]')).toBeVisible();
     await expect(nav.locator('a[href="/products/widget/"]')).toBeVisible();
-    await expect(nav.locator('a[href="/missing-static-artifact/"]')).toBeVisible();
+    await expect(nav.locator('a[href="/missing/static-artifact/"]')).toBeVisible();
   });
 
   test("soft navigation fetches the exported Flight text without a document reload", async ({
@@ -212,11 +212,11 @@ test.describe("Static Export — App Router", () => {
     await page.goto(`${BASE}/`);
     await waitForAppRouterHydration(page);
     await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
-    await page.locator('a[href="/missing-static-artifact/"]').click();
-    await page.waitForURL(`${BASE}/missing-static-artifact/`);
+    await page.locator('a[href="/missing/static-artifact/"]').click();
+    await page.waitForURL(`${BASE}/missing/static-artifact/`);
 
-    expect(flightPaths).toContain("/missing-static-artifact/index.txt");
-    expect(documentPaths).toContain("/missing-static-artifact/");
+    expect(flightPaths).toContain("/missing/static-artifact/index.txt");
+    expect(documentPaths).toContain("/missing/static-artifact/");
     expect(
       await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation")),
     ).toBeUndefined();
@@ -230,5 +230,18 @@ test.describe("Static Export — App Router", () => {
   test("404 page for non-existent route", async ({ page }) => {
     const response = await page.goto(`${BASE}/nonexistent-page/`);
     expect(response?.status()).toBe(404);
+    // 404.html is the route-miss 404, even though the top-level [section]
+    // route would match any one-segment URL (#3680).
+    await expect(page.locator("h1")).toHaveText("404");
+    await expect(page.locator("body")).toContainText("This page could not be found.");
+    // The static root layout still wraps it.
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  });
+
+  test("top-level dynamic route renders its generateStaticParams page", async ({ page }) => {
+    const response = await page.goto(`${BASE}/guides/`);
+    expect(response?.status()).toBe(200);
+    await expect(page.locator("h1")).toHaveText("Section");
+    await expect(page.locator("main")).toContainText("Section: guides");
   });
 });

@@ -31,6 +31,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -1054,6 +1055,28 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       staticParamsMap: options.staticParamsMap,
     });
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
+  }
+
+  // Matched on the WHATWG-parsed pathname, which prod-server also gates behind
+  // the prerender secret.
+  if (url.pathname === VINEXT_PRERENDER_NOT_FOUND_PATH && process.env.VINEXT_PRERENDER === "1") {
+    // Next.js renders 404.html from its own /_not-found entry. A URL can't
+    // stand in for it: a top-level dynamic or catch-all route would claim it.
+    // So render the route-miss 404 directly, skipping routing, middleware and
+    // rewrites, none of which run when Next.js builds /_not-found.
+    setFrameworkRequestRoute("/404", isRscRequest);
+    const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
+      options.renderNotFound({
+        isRscRequest,
+        middlewareContext,
+        request,
+        route: null,
+        scriptNonce: undefined,
+      }),
+    );
+    if (renderedNotFoundResponse) return withUnmatchedRouteCacheControl(renderedNotFoundResponse);
+    options.clearRequestContext();
+    return withUnmatchedRouteCacheControl(notFoundResponse());
   }
 
   const metadataBypassesTrailingSlash =

@@ -518,7 +518,7 @@ describe("prerenderApp — RSC extraction", () => {
         return;
       }
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === "/__vinext/prerender/not-found") {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -562,6 +562,53 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
+  // A normal app/404/page.tsx also renders as route "/404", so it must not
+  // pass for the route-miss 404.html that a hybrid build keeps over `_error`.
+  for (const endpointStatus of [403, 404]) {
+    it(`reports appNotFoundRendered only when the route-miss 404 renders (endpoint ${endpointStatus})`, async () => {
+      const root = tmpDir("vinext-prerender-app-not-found-flag-");
+      const outDir = path.join(root, "out");
+      const appDir = path.join(root, "app");
+      fs.mkdirSync(path.join(appDir, "404"), { recursive: true });
+      fs.writeFileSync(
+        path.join(appDir, "404", "page.tsx"),
+        "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+      );
+
+      const server = createServer((req, res) => {
+        if (req.url === "/__vinext/prerender/not-found") {
+          res.statusCode = endpointStatus;
+          res.end("<html><body>route miss</body></html>");
+          return;
+        }
+        res.setHeader("content-type", "text/html");
+        res.end("<html><body>app/404/page.tsx</body></html>");
+      });
+
+      const port = await listen(server);
+      try {
+        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+        const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+        const prerenderResult = await prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(root, "dist", "server", "index.js"),
+          routes: await appRouter(appDir),
+          outDir,
+          config: await resolveNextConfig({}),
+          _prodServer: { server, port },
+        });
+
+        expect(findRoute(prerenderResult.routes, "/404")).toMatchObject({ status: "rendered" });
+        expect(prerenderResult.appNotFoundRendered).toBe(endpointStatus === 404 ? true : undefined);
+      } finally {
+        await closeServer(server);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("falls back to a second RSC: 1 invocation when middleware short-circuits with custom HTML", async () => {
     // Middleware that returns a 200 HTML body bypasses the App Router
     // pipeline — the response contains no embed chunks. The driver must
@@ -584,7 +631,7 @@ describe("prerenderApp — RSC extraction", () => {
     const server = createServer((req, res) => {
       const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === "/__vinext/prerender/not-found") {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -654,7 +701,7 @@ describe("prerenderApp — RSC extraction", () => {
     const server = createServer((req, res) => {
       const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === "/__vinext/prerender/not-found") {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -717,7 +764,7 @@ describe("prerenderApp — RSC extraction", () => {
     const server = createServer((req, res) => {
       const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === "/__vinext/prerender/not-found") {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -784,7 +831,7 @@ describe("prerenderApp — special errors that escape the shell", () => {
       "export const revalidate = 60;\nexport default function Page() { return null; }\n",
     );
     const server = createServer((req, res) => {
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === "/__vinext/prerender/not-found") {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -2639,7 +2686,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
         res.end(JSON.stringify([{ locale: "en", slug: "hello" }]));
         return;
       }
-      if (url.pathname === "/__vinext_nonexistent_for_404__") {
+      if (url.pathname === "/__vinext/prerender/not-found") {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;

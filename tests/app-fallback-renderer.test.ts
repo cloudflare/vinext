@@ -662,6 +662,58 @@ describe("app fallback renderer default not-found UI", () => {
     // The default not-found body must NOT leak through.
     expect(html).not.toContain("This page could not be found.");
   });
+
+  // Next.js wraps /_not-found in its built-in <html><body> layout when app/
+  // has no usable root layout (next-app-loader's defaultLayoutPath).
+  it("renders a route miss with no root layout as a full default document", async () => {
+    const { renderer } = createRenderer();
+    const request = new Request("https://example.com/missing");
+
+    const response = await renderer.renderNotFound(null, false, request, undefined, undefined, {
+      headers: null,
+      status: null,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toMatch(/^<html>.*<body>.*This page could not be found\..*<\/body><\/html>$/s);
+  });
+
+  it("keeps a static root layout around a route miss", async () => {
+    function RootLayout({ children }: { children: React.ReactNode }) {
+      return React.createElement(
+        "html",
+        { lang: "en" },
+        React.createElement("body", null, children),
+      );
+    }
+    const { renderer } = createRenderer({ rootLayoutModules: [{ default: RootLayout }] });
+    const request = new Request("https://example.com/missing");
+
+    const response = await renderer.renderNotFound(null, false, request, undefined, undefined, {
+      headers: null,
+      status: null,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toMatch(/^<html lang="en">.*This page could not be found\./s);
+    expect(html?.match(/<html/g)).toHaveLength(1);
+  });
+
+  it("wraps a custom root not-found in the built-in document when there is no root layout", async () => {
+    const { renderer } = createRenderer({ rootNotFoundModule: notFoundModule });
+    const request = new Request("https://example.com/missing");
+
+    const response = await renderer.renderNotFound(null, false, request, undefined, undefined, {
+      headers: null,
+      status: null,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toMatch(/^<html>.*<body>.*data-boundary="not-found".*<\/body><\/html>$/s);
+  });
 });
 
 // Mirrors Next.js 16 experimental.globalNotFound behavior.
