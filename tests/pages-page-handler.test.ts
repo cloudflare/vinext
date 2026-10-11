@@ -1602,6 +1602,33 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
     await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
   });
 
+  it("runs after() callbacks once the sent response closes", async () => {
+    const pageWrites = serveEntry("miss");
+    let callbackRan = false;
+    let releaseProps: (() => void) | undefined;
+    const handler = makeHandler("_app", {
+      async getStaticProps() {
+        after(() => {
+          callbackRan = true;
+        });
+        await new Promise<void>((resolve) => {
+          releaseProps = resolve;
+        });
+        return { props: { value: "fresh" }, revalidate: 1 };
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.status).toBe(302);
+    expect(callbackRan).toBe(false);
+
+    // `getStaticProps` is still pending, but the visitor's response is done.
+    await response.text();
+    await vi.waitFor(() => expect(callbackRan).toBe(true));
+    releaseProps?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
   it("keeps the sent response out of the shared response cache", async () => {
     const pageWrites = serveEntry("miss");
     const state: RouteCacheabilityState = { captureDeadlineAt: Date.now() + 1_000, mode: "admit" };

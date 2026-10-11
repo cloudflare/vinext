@@ -1251,6 +1251,8 @@ export function createPagesPageHandler(
           return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }
         if (pageDataResult.kind === "response") {
+          // The visitor already has the response user code sent; leave it as is.
+          if (sendsEarly && pageResponseSent()) return pageDataResult.response;
           let response =
             isOnDemandRevalidate && pageDataResult.onDemandRevalidateSuccess !== false
               ? withPagesCacheState(pageDataResult.response, "REVALIDATED", isrCachePathname)
@@ -1387,6 +1389,8 @@ export function createPagesPageHandler(
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         };
         let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);
+        // The visitor already has the response user code sent; leave it as is.
+        if (sendsEarly && pageResponseSent()) return pageResponse;
         if (shouldApplyErrorResponsePolicy) {
           pageResponse = applyPagesErrorCachePolicy(
             pageResponse,
@@ -1456,16 +1460,17 @@ export function createPagesPageHandler(
         "_app or _document sent the response of a getStaticProps page",
       );
     }
-    if (settled.rendered) return closeAfterResponseWithBody(settled.response, uCtx);
-    // The render settles into this same sent response, so keep the request
-    // context open until it has stored the entry.
-    getRequestExecutionContext()?.waitUntil(
-      rendering.then(
-        () => closeAfterResponse(uCtx),
-        () => closeAfterResponse(uCtx),
-      ),
-    );
-    return settled.response;
+    if (!settled.rendered) {
+      // The render settles into this same sent response; let it finish
+      // storing the entry without holding the visitor's response.
+      getRequestExecutionContext()?.waitUntil(
+        rendering.then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+    }
+    return closeAfterResponseWithBody(settled.response, uCtx);
   }
 
   return renderPage;
