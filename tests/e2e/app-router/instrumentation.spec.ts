@@ -17,9 +17,8 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * Tests that verify the startup state — these must NOT reset before running,
- * because register() is called once at server startup and the flag won't be
- * re-set after a DELETE reset.
+ * Tests that verify the startup state. register() is called once at server
+ * startup; a DELETE reset keeps its flag.
  */
 test.describe("instrumentation.ts startup", () => {
   test("register() was called before the first request", async ({ request }) => {
@@ -41,8 +40,6 @@ test.describe("instrumentation.ts startup", () => {
 test.describe("instrumentation.ts onRequestError", () => {
   test.beforeEach(async ({ request }) => {
     // Reset captured state before each test so tests are independent.
-    // Note: this also resets registerCalled, which is why register() startup
-    // tests live in a separate describe block above.
     const res = await request.delete("/api/instrumentation-test");
     expect(res.status()).toBe(200);
   });
