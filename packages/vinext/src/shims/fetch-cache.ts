@@ -58,7 +58,7 @@ export type { FetchCacheMode, FetchCacheState } from "./fetch-cache-state.js";
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v5";
+const CACHE_KEY_PREFIX = "v6";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -72,7 +72,7 @@ class BodyTooLargeForCacheKeyError extends Error {
 
 class SkipCacheKeyGenerationError extends Error {
   constructor() {
-    super("Fetch body could not be serialized for cache key generation");
+    super("Fetch request could not be serialized for cache key generation");
   }
 }
 
@@ -122,6 +122,34 @@ const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
 function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): boolean {
   const headers = collectHeaders(input, init);
   return AUTH_HEADERS.some((name) => name in headers);
+}
+
+type WorkersRequestFields = { cf?: unknown; encodeResponseBody?: unknown; fetcher?: unknown };
+
+/**
+ * Workers' fetch() accepts non-standard RequestInit fields that change the
+ * response without changing the URL or headers: `cf` (e.g. `resolveOverride`
+ * picks the origin), `encodeResponseBody` (whether the body is decoded) and
+ * `fetcher` (sends the request through a service binding). Next.js keys only
+ * standard fields because it never runs on Workers; vinext keys these too so
+ * one destination's response is never reused for another's.
+ *
+ * Returns null when the request carries a `fetcher`: a binding has no
+ * serializable identity, so the fetch must skip caching and dedupe.
+ */
+function getWorkersFetchKeyParts(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+): [cf: unknown, encodeResponseBody: unknown] | null {
+  const initFields = init as WorkersRequestFields | undefined;
+  const inputFields = input instanceof Request ? (input as WorkersRequestFields) : undefined;
+  // RequestInit fields replace a Request input's, like the Request constructor.
+  const fetcher = initFields?.fetcher !== undefined ? initFields.fetcher : inputFields?.fetcher;
+  if (fetcher !== undefined && fetcher !== null) return null;
+  const cf = initFields?.cf !== undefined ? initFields.cf : inputFields?.cf;
+  // Workers honors encodeResponseBody only on the fetch init; a Request does
+  // not carry it.
+  return [cf ?? null, initFields?.encodeResponseBody ?? "automatic"];
 }
 
 const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"));
@@ -467,6 +495,10 @@ async function buildFetchCacheKey(
   }
 
   const method = normalizeFetchMethod(init?.method ?? inputRequest?.method ?? "GET");
+  const workersKeyParts = getWorkersFetchKeyParts(input, init);
+  if (!workersKeyParts) {
+    throw new SkipCacheKeyGenerationError();
+  }
 
   const headers = collectHeaders(input, init);
   const { bodyChunks, canonicalizedContentType, defaultContentType, bodyMetadata } =
@@ -491,6 +523,7 @@ async function buildFetchCacheKey(
     init?.cache ?? inputRequest?.cache ?? "default",
     bodyChunks,
     bodyMetadata,
+    ...workersKeyParts,
   ]);
 
   return sha256Hex(cacheString);
@@ -841,7 +874,10 @@ function getFetchCacheDirective(
   return input.cache;
 }
 
-function buildFetchDedupeKey(request: Request): string {
+function buildFetchDedupeKey(
+  request: Request,
+  workersKeyParts: [cf: unknown, encodeResponseBody: unknown],
+): string {
   const filteredHeaders = Array.from(request.headers.entries()).filter(
     ([key]) => !HEADER_BLOCKLIST.includes(key.toLowerCase()),
   );
@@ -855,6 +891,7 @@ function buildFetchDedupeKey(request: Request): string {
     request.referrer,
     request.referrerPolicy,
     request.integrity,
+    ...workersKeyParts,
   ]);
 }
 
@@ -875,6 +912,11 @@ function createFetchDedupeCandidate(
     return null;
   }
 
+  const workersKeyParts = getWorkersFetchKeyParts(input, init);
+  if (!workersKeyParts) {
+    return null;
+  }
+
   // RequestInit overrides a Request input too. Normalize whenever init is
   // present so the dedupe key describes the request that fetch will execute.
   // Eligible GET/HEAD requests have no body stream for this to disturb.
@@ -886,7 +928,7 @@ function createFetchDedupeCandidate(
 
   return {
     url: request.url,
-    key: buildFetchDedupeKey(request),
+    key: buildFetchDedupeKey(request, workersKeyParts),
   };
 }
 
