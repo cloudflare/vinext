@@ -323,7 +323,7 @@ describe("pages page response", () => {
     );
   });
 
-  it("finishes the ISR write before returning when awaitIsrWrite is set", async () => {
+  it("finishes the ISR write before returning for a stale regeneration", async () => {
     // Stale regeneration has no response whose lifetime the write can extend.
     const common = createCommonOptions();
     let written = false;
@@ -334,7 +334,7 @@ describe("pages page response", () => {
 
     const response = await renderPagesPageResponse({
       ...common.options,
-      awaitIsrWrite: true,
+      isStaleRegeneration: true,
       DocumentComponent: null,
       getSSRHeadHTML: undefined,
       isrRevalidateSeconds: 60,

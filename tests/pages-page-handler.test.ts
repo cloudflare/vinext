@@ -1385,6 +1385,51 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
     expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
   });
 
+  it("still stores the regeneration when `_document` ends the response", async () => {
+    // Next.js ignores a response sent from `_document` for getStaticProps pages.
+    const pageWrites = serveStaleEntry();
+    const DocumentComponent = Object.assign(
+      () =>
+        React.createElement(
+          "html",
+          null,
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", {
+              id: "__next",
+              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+            }),
+          ),
+        ),
+      {
+        async getInitialProps(ctx: {
+          res: { end: (body?: string) => void };
+          defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+        }) {
+          const props = await ctx.defaultGetInitialProps(ctx);
+          ctx.res.end("ended by document");
+          return props;
+        },
+      },
+    );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+    const [, entry] = pageWrites()[0] ?? [];
+    if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+    expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+    expect(entry.html).not.toContain("ended by document");
+  });
+
   it("reports a failed regeneration without writing the entry", async () => {
     const pageWrites = serveStaleEntry();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

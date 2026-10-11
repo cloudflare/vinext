@@ -1111,7 +1111,7 @@ export function createPagesPageHandler(
                 isrRevalidateSeconds: regeneration.revalidateSeconds,
                 ...withErrorStatusCode(regeneration.pageProps, regeneration.props),
               }),
-              awaitIsrWrite: true,
+              isStaleRegeneration: true,
               renderDocumentToString: (element) =>
                 renderAllReady(element).then((stream) => new Response(stream).text()),
               renderToReadableStream: renderAllReady,

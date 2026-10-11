@@ -168,8 +168,12 @@ type RenderPagesPageResponseOptions = {
   isrRevalidateSeconds: number | false | null;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
-  /** Background ISR regeneration; the cache write must finish before returning. */
-  awaitIsrWrite?: boolean;
+  /**
+   * Background ISR regeneration. Nobody reads the response, so the cache write
+   * must finish before returning and a response sent from `_document` cannot
+   * cut the render short.
+   */
+  isStaleRegeneration?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
@@ -586,7 +590,13 @@ export async function renderPagesPageResponse(
         asPath: options.routeUrl,
       },
     });
-    if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
+    if (
+      // Next.js ignores a response sent from `_document` for getStaticProps
+      // pages and still renders and stores the entry.
+      !options.isStaleRegeneration &&
+      options.documentReqRes?.res.headersSent &&
+      options.documentReqRes.responsePromise
+    ) {
       return { documentRenderPage, responseSent: true };
     }
 
@@ -698,7 +708,7 @@ export async function renderPagesPageResponse(
       status: finalStatus,
       stream: cacheBodyStream,
     };
-    if (options.isOnDemandRevalidate || options.awaitIsrWrite) {
+    if (options.isOnDemandRevalidate || options.isStaleRegeneration) {
       // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.
       // Do the equivalent here so `await res.revalidate()` cannot resolve
       // before the regenerated HTML is fully rendered and persisted. Stale
