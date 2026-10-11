@@ -85,6 +85,22 @@ async function settleMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+/**
+ * Stand in for a rendered Document: mark `html`'s Head, Main and NextScript
+ * placeholders with the token the renderer provides on `element`.
+ */
+function renderMockDocument(element: React.ReactNode, html: string): string {
+  const token = (element as React.ReactElement<{ value: string }>).props.value;
+  return html
+    .replace(
+      /<head([^>]*)>/,
+      (_, attributes) => `<head${attributes} data-vinext-head-open="${token}">`,
+    )
+    .replace("</head>", () => `<template data-vinext-head-close="${token}"></template></head>`)
+    .replace("<!-- __NEXT_MAIN__ -->", () => `<!--__NEXT_MAIN__:${token}-->`)
+    .replace("<!-- __NEXT_SCRIPTS__ -->", () => `<!--__NEXT_SCRIPTS__:${token}-->`);
+}
+
 function createCommonOptions() {
   const clearSsrContext = vi.fn();
   const createPageElement = vi.fn((pageProps: Record<string, unknown>) =>
@@ -93,11 +109,12 @@ function createCommonOptions() {
     }),
   );
   const isrSet = vi.fn(async () => {});
-  const renderDocumentToString = vi.fn(
-    async () =>
-      '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
+  const renderDocumentToString = vi.fn(async (element: React.ReactNode) =>
+    renderMockDocument(
+      element,
+      '<!DOCTYPE html><html><head></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
+    ),
   );
-  const renderIsrPassToStringAsync = vi.fn(async () => "<div>cached-body</div>");
   const renderToReadableStream = vi.fn(async () => createStream(["<div>live-body</div>"]));
 
   return {
@@ -105,7 +122,6 @@ function createCommonOptions() {
     createPageElement,
     isrSet,
     renderDocumentToString,
-    renderIsrPassToStringAsync,
     renderToReadableStream,
     options: {
       assetTags: '<script type="module" src="/entry.js" crossorigin></script>',
@@ -313,7 +329,6 @@ describe("pages page response", () => {
     await settleMicrotasks();
 
     expect(common.createPageElement).toHaveBeenCalledTimes(1);
-    expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
     expect(common.isrSet).toHaveBeenCalledTimes(1);
     expect(common.isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
@@ -324,6 +339,32 @@ describe("pages page response", () => {
       }),
       { cacheControl: { revalidate: 60, expire: 300 } },
     );
+  });
+
+  it("finishes the ISR write before returning for a stale regeneration", async () => {
+    // Stale regeneration has no response whose lifetime the write can extend.
+    const common = createCommonOptions();
+    let written = false;
+    common.isrSet.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      written = true;
+    });
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isStaleRegeneration: true,
+      DocumentComponent: null,
+      getSSRHeadHTML: undefined,
+      isrRevalidateSeconds: 60,
+    });
+
+    expect(written).toBe(true);
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({ html: expect.stringContaining("<div>live-body</div>") }),
+      { cacheControl: { revalidate: 60 } },
+    );
+    await response.body?.cancel();
   });
 
   it("reports the resolved Pages tag after an on-demand regeneration", async () => {
@@ -408,7 +449,6 @@ describe("pages page response", () => {
       await expect(response.text()).rejects.toThrow("stream failed");
       await settleMicrotasks();
 
-      expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
       expect(common.isrSet).not.toHaveBeenCalled();
       expect(consoleError).toHaveBeenCalledWith(
         "[vinext] Pages ISR cache write failed for pages:/posts/post:",
@@ -463,8 +503,11 @@ describe("pages page response", () => {
     "keeps framework script ownership with $label",
     async ({ disableOptimizedLoading, frameworkNonce, frameworkCrossOrigin }) => {
       const common = createCommonOptions();
-      common.renderDocumentToString.mockResolvedValue(
-        '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+      common.renderDocumentToString.mockImplementation(async (element) =>
+        renderMockDocument(
+          element,
+          '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><span data-vinext-script-nonce="next-script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+        ),
       );
 
       const response = await renderPagesPageResponse({
@@ -542,9 +585,12 @@ describe("pages page response", () => {
     // Ported from Next.js: test/e2e/next-head/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
     const common = createCommonOptions();
-    common.renderDocumentToString.mockResolvedValue(
-      '<!DOCTYPE html><html><head data-theme="dark"><meta name="document-child" content="1" /></head>' +
-        '<body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
+    common.renderDocumentToString.mockImplementation(async (element) =>
+      renderMockDocument(
+        element,
+        '<!DOCTYPE html><html><head data-theme="dark"><meta name="document-child" content="1" /></head>' +
+          '<body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
+      ),
     );
     common.options.getSSRHeadHTML = vi.fn(
       () =>
@@ -791,7 +837,6 @@ describe("pages page response", () => {
 
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("x-vinext-cache")).toBeNull();
-    expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
@@ -956,7 +1001,10 @@ describe("pages page response", () => {
       const text = await new Response(stream).text();
       // The document shell render still needs the NEXT placeholders.
       if (!text.includes("data-collected")) {
-        return '<!DOCTYPE html><html><head><meta name="document-child" content="1" /></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>';
+        return renderMockDocument(
+          element,
+          '<!DOCTYPE html><html><head><meta name="document-child" content="1" /></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div><!-- __NEXT_SCRIPTS__ --></body></html>',
+        );
       }
       return text;
     });
@@ -979,6 +1027,93 @@ describe("pages page response", () => {
     );
     // The body still rendered.
     expect(html).toContain("<p>page</p>");
+  });
+
+  it("splices the page at <Main /> when Document request data contains the marker", async () => {
+    const common = createCommonOptions();
+    const documentModule = await import("../packages/vinext/src/shims/document.js");
+    const { Head, Html, Main, NextScript } = documentModule;
+    const BaseDocument = documentModule.default;
+
+    class RouteDocument extends BaseDocument<{ route?: string }> {
+      static async getInitialProps(ctx: Parameters<typeof BaseDocument.getInitialProps>[0]) {
+        const initialProps = await BaseDocument.getInitialProps(ctx);
+        return { ...initialProps, route: ctx.asPath };
+      }
+
+      render() {
+        return React.createElement(
+          Html,
+          null,
+          React.createElement(Head),
+          React.createElement(
+            "body",
+            { "data-route": this.props.route },
+            React.createElement("script", {
+              dangerouslySetInnerHTML: { __html: "/*<!-- __NEXT_MAIN__ -->*/" },
+            }),
+            React.createElement(Main),
+            React.createElement(NextScript),
+          ),
+        );
+      }
+    }
+
+    const label = "x onload=window.__documentMarkerXss=1//";
+    const routeUrl = `/?probe=__NEXT_MAIN__&label=${label}`;
+    const reactDomServer = await import("react-dom/server.edge");
+    const renderToString = async (element: React.ReactNode) =>
+      new Response(
+        await reactDomServer.renderToReadableStream(element as React.ReactElement),
+      ).text();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: RouteDocument as unknown as React.ComponentType,
+      enhancePageElement: () => React.createElement("div", { title: label }, "page"),
+      renderDocumentToString: renderToString,
+      renderToReadableStream: async (element: React.ReactNode) =>
+        await reactDomServer.renderToReadableStream(element as React.ReactElement),
+      routeUrl,
+    });
+
+    const html = await response.text();
+    expect(getStartTags(html, "body")).toEqual([
+      '<body data-route="/?probe=__NEXT_MAIN__&amp;label=x onload=window.__documentMarkerXss=1//">',
+    ]);
+    expect(html).toContain(
+      '<div id="__next"><div title="x onload=window.__documentMarkerXss=1//">page</div></div>',
+    );
+    expect(html).toContain("<script>/*<!-- __NEXT_MAIN__ -->*/</script>");
+    expect(html).not.toContain("__NEXT_MAIN__:");
+  });
+
+  it("inserts request data with $ replacement patterns verbatim", async () => {
+    const common = createCommonOptions();
+    const title = "$`$'$&";
+    common.options.getSSRHeadHTML = vi.fn(() => `<title>${title}</title>`);
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      pageProps: { title },
+    });
+
+    const html = await response.text();
+    expect(html).toContain(`<head><title>${title}</title>`);
+    expect(html).toContain(`"title":"${title}"`);
+  });
+
+  it("puts the body after a Document without Main and adds no scripts without NextScript, like Next.js", async () => {
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockImplementation(async (element) =>
+      renderMockDocument(element, "<!DOCTYPE html><html><head></head><body></body></html>"),
+    );
+
+    const response = await renderPagesPageResponse(common.options);
+
+    const html = await response.text();
+    expect(html).toMatch(/<\/body><\/html><div>live-body<\/div>$/);
+    expect(html).not.toContain("__NEXT_DATA__");
   });
 
   it("uses custom document html and styles without calling renderPage", async () => {
@@ -1339,7 +1474,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1362,7 +1496,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
     });
 
@@ -1395,7 +1529,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1417,7 +1550,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
       ifNoneMatch: expectedEtag,
     });
@@ -1453,7 +1586,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1475,7 +1607,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
       ifNoneMatch: expectedEtag,
       // Next.js gives a page no Last-Modified, so fresh() sends it in full.
@@ -1515,7 +1647,6 @@ describe("pages page response", () => {
     );
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1537,7 +1668,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
       ifNoneMatch: expectedEtag,
     }).finally(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
@@ -1575,7 +1706,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1597,7 +1727,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>stale</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
     });
 
@@ -1631,7 +1761,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1653,7 +1782,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>stale</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
       ifNoneMatch: expectedEtag,
     });
@@ -1689,7 +1818,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1711,7 +1839,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>stale</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Mozilla/5.0 Chrome/120",
       ifNoneMatch: etag,
     });
@@ -1773,7 +1901,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1795,7 +1922,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
       ifNoneMatch: expectedEtag,
       requestCacheControl: "no-cache",
@@ -1831,7 +1958,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1853,7 +1979,7 @@ describe("pages page response", () => {
       safeJsonStringify: JSON.stringify,
       sanitizeDestination: (d) => d,
       triggerBackgroundRegeneration: vi.fn(),
-      renderIsrPassToStringAsync: vi.fn(async () => "<p>stale</p>"),
+      renderIsrDocument: vi.fn(async () => {}),
       userAgent: "Googlebot",
       ifNoneMatch: expectedEtag,
       requestCacheControl: "no-cache",

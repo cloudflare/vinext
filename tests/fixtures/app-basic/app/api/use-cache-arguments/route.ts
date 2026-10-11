@@ -125,6 +125,7 @@ export async function GET(request: Request) {
   }
   if (kind === "map") input = new Map([["text", text]]);
   if (kind === "set") input = new Set([text]);
+  if (kind === "nested-map") input = new Map([["scope", new Set([new Map([["text", text]])])]]);
   if (kind === "form-order") {
     const form = new FormData();
     for (const key of text) form.append(key, key);

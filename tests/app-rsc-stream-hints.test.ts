@@ -216,6 +216,102 @@ describe("RSC stream hint helpers", () => {
     ]);
   });
 
+  it("forwards a long non-hint row chunk by chunk instead of carrying it to its newline", async () => {
+    // Carrying the row would concatenate and rescan it on every chunk:
+    // quadratic in its length. A page's client props arrive as one such row.
+    const encoder = new TextEncoder();
+    const inputs = [
+      encoder.encode('0:D{"name":"page"}\n1:{"items":["'),
+      ...Array.from({ length: 2000 }, () => encoder.encode("x".repeat(1024))),
+      encoder.encode('"]}\n2:"after"\n'),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+    }
+
+    expect(chunks).toHaveLength(inputs.length);
+    for (const [index, input] of inputs.entries()) expect(chunks[index]).toBe(input);
+  });
+
+  it("still carries a row that may be a stylesheet hint when a chunk ends at its tag", async () => {
+    const stream = normalizeReactFlightPreloadHints(
+      streamFromChunks(['0:D{"name":"page"}\n:H', 'L["/assets/app.css","stylesheet"]\n']),
+    );
+
+    await expect(readStream(stream)).resolves.toBe(
+      '0:D{"name":"page"}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n'),
+    );
+  });
+
+  it("rewrites a hint that follows a forwarded row's newline in the same chunk", async () => {
+    const inputs = [
+      '0:D{"name":"page"}\n1:{"items":["',
+      "x".repeat(64),
+      '"]}\n:HL["/assets/app.css","stylesheet"]\n2:"after"\n',
+    ];
+    const reader = normalizeReactFlightPreloadHints(streamFromChunks(inputs)).getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      inputs[0],
+      inputs[1],
+      '"]}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n') + '2:"after"\n',
+    ]);
+  });
+
+  it("forwards a plain row only up to its last complete UTF-8 character", async () => {
+    // The inline RSC embed decodes each chunk on its own, so a chunk ending
+    // mid-character would be embedded as base64 instead of text.
+    const encoder = new TextEncoder();
+    const row = encoder.encode('0:D{"name":"page"}\n1:{"t":"あい😀"}\n');
+    const hint = ':HL["/assets/app.css","stylesheet"]\n';
+    const firstSplit = row.indexOf(0x81) + 1; // inside あ
+    const secondSplit = row.indexOf(0x9f) + 1; // inside 😀
+    const inputs = [
+      row.slice(0, firstSplit),
+      row.slice(firstSplit, secondSplit),
+      new Uint8Array([...row.slice(secondSplit), ...encoder.encode(hint)]),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      '0:D{"name":"page"}\n1:{"t":"',
+      "あい",
+      '😀"}\n' + normalizedStyleHint(hint),
+    ]);
+  });
+
   it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
     const encoder = new TextEncoder();
     const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);

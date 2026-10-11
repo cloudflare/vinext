@@ -156,6 +156,15 @@ describe("use cache File identity and replay in Workers", () => {
     expect(result.after.execution).toBe(result.first.execution + 1);
   });
 
+  it.each(["map", "set", "nested-map"])("isolates %s contents and reuses entries", async (kind) => {
+    const base = { kind, partition: `contents-${kind}` };
+    const first = await request({ ...base, text: "ab" });
+    const second = await request({ ...base, text: "ba" });
+    expect(second.value).not.toEqual(first.value);
+    expect(second.execution).not.toBe(first.execution);
+    expect(await request({ ...base, text: "ab" })).toEqual(first);
+  });
+
   it("isolates indexed array values when an iterator hides them", async () => {
     const base = { kind: "array-iterator", partition: "array-iterator" };
     const first = await request({ ...base, text: "private" });

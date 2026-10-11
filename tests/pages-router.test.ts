@@ -6902,7 +6902,7 @@ export default function CounterPage() {
       // metadata derived from getStaticProps must advance with the body rather
       // than remaining in the cached shell. Exercise vinext's natural stale
       // background path here: on-demand revalidation uses a different
-      // foreground-render path and would not cover renderPagesIsrHtml().
+      // foreground-render path and would not cover background regeneration.
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const staleRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(staleRes.status).toBe(200);
@@ -8645,6 +8645,25 @@ export default class CustomDocument extends Document {
     expect(headContents).toContain('window.__VINEXT_HEAD_MARKER__ = "<!--VINEXT_SSR_HEAD_END-->";');
     expect(headContents.match(/id="head-marker-content"/g)).toHaveLength(1);
     expectFragmentsInOrder(headContents, ['id="head-marker-content"', 'name="document-child"']);
+  });
+
+  it("keeps collected head tags when a dev HTML transform drops the Head marker", async () => {
+    const transform = devServer.transformIndexHtml.bind(devServer);
+    const transformSpy = vi
+      .spyOn(devServer, "transformIndexHtml")
+      .mockImplementation(async (...args) =>
+        (await transform(...args)).replace(/ data-vinext-head-open="[^"]*"/, ""),
+      );
+    try {
+      const response = await fetch(`${devUrl}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+      expect(headContents).toContain('name="page-head"');
+      expect(html).not.toContain("VINEXT_SSR_HEAD");
+    } finally {
+      transformSpy.mockRestore();
+    }
   });
 
   it.each(["dev", "prod"] as const)(

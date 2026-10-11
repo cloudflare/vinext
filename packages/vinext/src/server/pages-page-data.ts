@@ -1,6 +1,5 @@
 import { recordRouteCacheability } from "vinext/shims/cacheability-classification";
 import type { ReactNode } from "react";
-import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
@@ -14,15 +13,9 @@ import type {
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import {
-  buildPagesCacheValue,
-  isrCacheControl,
-  type ISRCacheEntry,
-  type IsrWritePolicy,
-} from "./isr-cache.js";
+import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
-  buildPagesNextDataScript,
   generatePagesETag,
   isPagesStreamingBot,
   rendersPagesNotModified,
@@ -245,29 +238,9 @@ export type PagesPageModule = {
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
 };
 
-type RenderPagesIsrHtmlOptions = {
-  buildId: string | null;
-  cachedHtml: string;
-  collectIsrHeadHTML?: (() => string) | undefined;
-  createPageElement: (props: Record<string, unknown>) => ReactNode;
-  i18n: PagesI18nRenderContext;
-  pageProps: Record<string, unknown>;
-  props?: Record<string, unknown>;
-  params: Record<string, unknown>;
-  renderIsrPassToStringAsync: (
-    element: ReactNode,
-    onHeadReady?: () => Promise<void>,
-  ) => Promise<string>;
-  routePattern: string;
-  safeJsonStringify: (value: unknown) => string;
-  vinext?: VinextNextData["__vinext"];
-  nextData?: PagesNextDataExtras;
-};
-
 export type ResolvePagesPageDataOptions = {
   applyRequestContexts: () => void;
   basePath?: string;
-  buildId: string | null;
   /**
    * When true, this is a `/_next/data/<buildId>/<page>.json` request. Callers
    * that respond with a JSON envelope (`{ pageProps }`) instead of HTML must
@@ -364,17 +337,19 @@ export type ResolvePagesPageDataOptions = {
     renderFn: () => Promise<void>,
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
   ) => void;
-  renderIsrPassToStringAsync: (
-    element: ReactNode,
-    onHeadReady?: () => Promise<void>,
-  ) => Promise<string>;
   /**
-   * Serializes the `<head>` collected by an ISR regeneration render. Called
-   * inside that render's head scope so the regenerated shell can pick up
-   * `next/head` output derived from the refreshed `getStaticProps` data.
+   * Render the whole document for regenerated props and store it as the ISR
+   * entry, through the same pipeline (and with the same cache write) as a
+   * foreground MISS. Next.js re-runs its full render on regeneration too;
+   * resolves once the entry is written.
    */
-  collectIsrHeadHTML?: (() => string) | undefined;
-  vinext?: VinextNextData["__vinext"];
+  renderIsrDocument: (input: {
+    documentReqRes: PagesGsspContextResponse;
+    expireSeconds: number | undefined;
+    pageProps: Record<string, unknown>;
+    props: Record<string, unknown>;
+    revalidateSeconds: number | false;
+  }) => Promise<void>;
   nextData?: PagesNextDataExtras;
   /**
    * The request's User-Agent string. When this matches a known crawler/bot
@@ -1118,142 +1093,6 @@ function finalizeCachedPagesResponse(
   return { kind: "response", response };
 }
 
-/**
- * Matches one serialized `next/head` tag. `getSSRHeadHTML()` stamps every tag
- * it emits with `data-next-head=""` (see `shims/head.ts`), which is the same
- * marker Next.js uses to reconcile the head on the client — so it is a stable
- * anchor for finding the collector's output inside an already-rendered shell.
- *
- * Raw-content tags are safe to match non-greedily: `headChildToHTML()` escapes
- * closing-tag sequences in `<style>`/`<script>` bodies, so the first `</style>`
- * encountered is always the real terminator.
- */
-const SSR_HEAD_TAG_PATTERN =
-  /<(title|meta|link|style|script|base|noscript)\b[^>]*?\sdata-next-head=""[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g;
-
-/**
- * Matches a whole head element whose body may contain markup-looking text.
- * Script/style are raw-text elements, title is RCDATA, and noscript is raw
- * text while scripting is enabled. In all four, a literal `</head>` does not
- * close the document head. `headChildToHTML()` only escapes the element's own
- * closing sequence for script/style, while `dangerouslySetInnerHTML` may leave
- * `</head>` intact in any of them.
- */
-const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
-
-/**
- * Replace the `next/head` region of a cached shell with a freshly collected
- * one.
- *
- * ISR regeneration re-renders the page body but reuses the cached shell, so
- * without this the `<head>` stays frozen at whatever the first cache-filling
- * render produced — a page whose `<title>`/meta derive from `getStaticProps`
- * data would serve an updated body under permanently stale metadata.
- *
- * The collector emits its tags as one contiguous run (`ssrHeadHTML` is
- * concatenated ahead of trace meta and `_document` styles in
- * `buildPagesShellHtml`), so replacing first-match-start through
- * last-match-end swaps exactly that run and leaves `_document`-owned head
- * markup either side of it untouched.
- *
- * Only the `next/head` run refreshes. `_document`-rendered head children and
- * CSS-in-JS `styles` still come from the cached shell, because regeneration
- * never re-renders `_document` — refreshing those means running the full
- * document pipeline on regeneration the way Next.js does.
- */
-function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
-  // An empty collection means the render produced no head at all; leave the
-  // cached head alone rather than deleting the tags we do have.
-  if (!freshHead) return cachedHtml;
-
-  // Blank out raw-text/RCDATA elements before locating the boundary so a
-  // `</head>` string inside one is not mistaken for the closing tag — that
-  // would truncate the scan and leave stale tags behind the fresh head. The
-  // replacement is length-preserving, so the index still maps onto
-  // `cachedHtml`.
-  const headEnd = cachedHtml
-    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
-    .indexOf("</head>");
-  if (headEnd < 0) return cachedHtml;
-
-  const matches = [...cachedHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
-  const first = matches[0];
-  const last = matches[matches.length - 1];
-  if (!first || !last || first.index === undefined || last.index === undefined) {
-    return cachedHtml;
-  }
-
-  return (
-    cachedHtml.slice(0, first.index) + freshHead + cachedHtml.slice(last.index + last[0].length)
-  );
-}
-
-function rewritePagesCachedHtml(
-  cachedHtml: string,
-  freshBody: string,
-  nextDataScript: string,
-): string {
-  const bodyMarker = '<div id="__next">';
-  const bodyStart = cachedHtml.indexOf(bodyMarker);
-  const contentStart = bodyStart >= 0 ? bodyStart + bodyMarker.length : -1;
-  const canonicalNextDataStart = cachedHtml.search(
-    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>/,
-  );
-  const legacyNextDataStart = cachedHtml.indexOf("<script>window.__NEXT_DATA__");
-  const nextDataStart = canonicalNextDataStart >= 0 ? canonicalNextDataStart : legacyNextDataStart;
-
-  if (contentStart >= 0 && nextDataStart >= 0) {
-    const region = cachedHtml.slice(contentStart, nextDataStart);
-    const lastCloseDiv = region.lastIndexOf("</div>");
-    const gap = lastCloseDiv >= 0 ? region.slice(lastCloseDiv + 6) : "";
-    const nextDataEnd = cachedHtml.indexOf("</script>", nextDataStart) + 9;
-    const tail = cachedHtml.slice(nextDataEnd);
-
-    return cachedHtml.slice(0, contentStart) + freshBody + "</div>" + gap + nextDataScript + tail;
-  }
-
-  return (
-    '<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n  <div id="__next">' +
-    freshBody +
-    "</div>\n  " +
-    nextDataScript +
-    "\n</body>\n</html>"
-  );
-}
-
-export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Promise<string> {
-  const renderProps = options.props ?? { pageProps: options.pageProps };
-  const collectHead = options.collectIsrHeadHTML;
-  let freshHead = "";
-  const freshBody = await options.renderIsrPassToStringAsync(
-    options.createPageElement(renderProps),
-    collectHead &&
-      (async () => {
-        freshHead = collectHead();
-      }),
-  );
-  const nextDataScript = buildPagesNextDataScript({
-    buildId: options.buildId,
-    i18n: options.i18n,
-    pageProps: options.pageProps,
-    props: renderProps,
-    params: options.params,
-    routePattern: options.routePattern,
-    safeJsonStringify: options.safeJsonStringify,
-    // Serialize the same readiness flags (gssp/gsp/autoExport/…) the initial
-    // render emits, so the regenerated HTML hydrates with the identical initial
-    // `router.isReady` the server computed instead of a flag-less fallback.
-    nextData: options.nextData,
-    vinext: options.vinext,
-  });
-
-  return rewritePagesCachedHtml(
-    refreshCachedHeadTags(options.cachedHtml, freshHead),
-    freshBody,
-    nextDataScript,
-  );
-}
-
 export async function resolvePagesPageData(
   options: ResolvePagesPageDataOptions,
 ): Promise<ResolvePagesPageDataResult> {
@@ -1574,9 +1413,10 @@ export async function resolvePagesPageData(
         async function () {
           return options.runInFreshUnifiedContext(async () => {
             options.applyRequestContexts();
-            const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
-              options.createGsspReqRes(),
-            );
+            // `_app.getInitialProps` and `_document` share one req/res, as in the
+            // foreground render.
+            const reqRes = options.createGsspReqRes();
+            const freshAppResult = await loadPagesAppInitialRenderProps(options, () => reqRes);
             if (freshAppResult.kind === "response") return;
 
             let freshPageProps = freshAppResult.pageProps;
@@ -1629,34 +1469,23 @@ export async function resolvePagesPageData(
             }
 
             if (cachedValue?.kind === "PAGES" && !cachedValue.generatedFromDataRequest) {
-              const freshHtml = await tracePagesDocument(options.routePattern, () =>
-                renderPagesIsrHtml({
-                  buildId: options.buildId,
-                  cachedHtml: cachedValue.html,
-                  createPageElement: options.createPageElement,
-                  i18n: options.i18n,
+              // The render pipeline owns the entry write, so this span covers
+              // it too.
+              await tracePagesDocument(options.routePattern, () =>
+                options.renderIsrDocument({
+                  documentReqRes: reqRes,
+                  expireSeconds,
                   pageProps: freshPageProps,
                   props: freshRenderProps,
-                  params: options.params,
-                  renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
-                  collectIsrHeadHTML: options.collectIsrHeadHTML,
-                  routePattern: options.routePattern,
-                  safeJsonStringify: options.safeJsonStringify,
-                  nextData: options.nextData,
-                  vinext: options.vinext,
+                  revalidateSeconds,
                 }),
-              );
-              await options.isrSet(
-                cacheKey,
-                buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
-                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
               );
               return;
             }
 
-            // A cached redirect/not-found has no reusable HTML shell. Persist
-            // the resolved props and let the next foreground request render
-            // the canonical PAGES representation without re-running user code.
+            // A cached redirect/not-found or data-first entry regenerates as
+            // props only. Let the next foreground request render the canonical
+            // PAGES representation without re-running user code.
             await options.isrSet(
               cacheKey,
               {

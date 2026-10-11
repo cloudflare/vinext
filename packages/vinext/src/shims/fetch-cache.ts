@@ -23,17 +23,28 @@ import { Buffer } from "node:buffer";
 
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
+import { sha256Hex } from "../utils/hash.js";
 import { traceAppFetch } from "../server/app-fetch-tracing.js";
 import type { FrameworkSpan } from "../server/framework-tracer.js";
-import { getOrCreateAls } from "./internal/als-registry.js";
+import {
+  fallbackFetchCacheState as _fallbackState,
+  fetchCacheAls as _als,
+  getFetchCacheState as _getState,
+  resetFallbackFetchCacheState as _resetFallbackState,
+  type FetchCacheMode,
+  type FetchDedupeEntry,
+} from "./fetch-cache-state.js";
 import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import {
-  isInsideUnifiedScope,
-  getRequestContext,
-  runWithUnifiedStateMutation,
-} from "./unified-request-context.js";
+import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
+
+export {
+  addCollectedRequestTags,
+  getCurrentFetchSoftTags,
+  runWithDetachedFetchObservations,
+} from "./fetch-cache-state.js";
+export type { FetchCacheMode, FetchCacheState } from "./fetch-cache-state.js";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -482,12 +493,7 @@ async function buildFetchCacheKey(
     bodyMetadata,
   ]);
 
-  const encoder = new TextEncoder();
-  const buffer = encoder.encode(cacheString);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.prototype.map
-    .call(new Uint8Array(hashBuffer), (b: number) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return sha256Hex(cacheString);
 }
 
 // ---------------------------------------------------------------------------
@@ -500,12 +506,6 @@ type NextFetchOptions = {
 };
 
 type InternalNextFetchOptions = NextFetchOptions & { internal?: boolean };
-
-type FetchDedupeEntry = {
-  key: string;
-  promise: Promise<Response>;
-  response: Response | null;
-};
 
 // Extend the standard RequestInit to include `next`
 declare global {
@@ -549,37 +549,6 @@ const _gFetch = globalThis as unknown as Record<PropertyKey, unknown>;
 const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
   globalThis.fetch) as typeof globalThis.fetch;
 
-// ---------------------------------------------------------------------------
-// AsyncLocalStorage for request-scoped fetch cache state.
-// Uses Symbol.for() on globalThis so the storage is shared across Vite's
-// multi-environment module instances.
-// ---------------------------------------------------------------------------
-export type FetchCacheState = {
-  cacheableFetchUrls: Set<string>;
-  currentRequestTags: string[];
-  currentFetchSoftTags: string[];
-  currentFetchCacheMode: FetchCacheMode | null;
-  currentFetchRevalidate: number | null;
-  currentForceDynamicFetchDefault: boolean;
-  dynamicFetchUrls: Set<string>;
-  refreshStaleFetchesInForeground: boolean;
-  isFetchDedupeActive: boolean;
-  currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
-  nextFetchId: number;
-};
-
-export type FetchCacheMode =
-  | "auto"
-  | "default-cache"
-  | "default-no-store"
-  | "force-cache"
-  | "force-no-store"
-  | "only-cache"
-  | "only-no-store";
-
-const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
-const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = getOrCreateAls<FetchCacheState>("vinext.fetchCache.als");
 const _noop = (): void => {};
 
 let _responseBodyRegistry: FinalizationRegistry<WeakRef<ReadableStream<Uint8Array>>> | undefined;
@@ -591,45 +560,6 @@ if (globalThis.FinalizationRegistry) {
       void stream.cancel("Response object has been garbage collected").then(_noop, _noop);
     }
   });
-}
-
-const _fallbackState = (_g[_FALLBACK_KEY] ??= {
-  cacheableFetchUrls: new Set<string>(),
-  currentRequestTags: [],
-  currentFetchSoftTags: [],
-  currentFetchCacheMode: null,
-  currentFetchRevalidate: null,
-  currentForceDynamicFetchDefault: false,
-  dynamicFetchUrls: new Set<string>(),
-  refreshStaleFetchesInForeground: false,
-  isFetchDedupeActive: false,
-  currentFetchDedupeEntries: new Map(),
-  nextFetchId: 1,
-} satisfies FetchCacheState) as FetchCacheState;
-
-function _getState(): FetchCacheState {
-  if (isInsideUnifiedScope()) {
-    return getRequestContext();
-  }
-  return _als.getStore() ?? _fallbackState;
-}
-
-/**
- * Reset the fallback state for a new request.  Used by `withFetchCache()`
- * in single-threaded contexts where ALS.run() isn't used.
- */
-function _resetFallbackState(isFetchDedupeActive: boolean): void {
-  _fallbackState.cacheableFetchUrls = new Set<string>();
-  _fallbackState.currentRequestTags = [];
-  _fallbackState.currentFetchSoftTags = [];
-  _fallbackState.currentFetchCacheMode = null;
-  _fallbackState.currentFetchRevalidate = null;
-  _fallbackState.currentForceDynamicFetchDefault = false;
-  _fallbackState.dynamicFetchUrls = new Set<string>();
-  _fallbackState.refreshStaleFetchesInForeground = false;
-  _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
-  _fallbackState.currentFetchDedupeEntries = new Map();
-  _fallbackState.nextFetchId = 1;
 }
 
 function getFetchObservationUrl(input: string | URL | Request): string {
@@ -780,28 +710,6 @@ export function getCollectedFetchTags(): string[] {
 }
 
 /**
- * Append cache tags to the current request's collected tags.
- *
- * Mirrors Next.js's `propagateCacheLifeAndTagsToRevalidateStore`: tags declared
- * inside a `"use cache"` function (via `cacheTag()`, persisted on the data cache
- * entry) must also bubble up to the surrounding page / route-handler ISR entry
- * so `revalidateTag()` / `revalidatePath()` can evict the rendered output, not
- * just the inner data cache entry. Without this, a cached `"use cache"` result
- * keeps being served from a stale page/route entry after its tag is revalidated
- * (issue #1453). Tags are already encoded by the caller; deduped to match the
- * tagged-fetch path. A no-op for empty input.
- */
-export function addCollectedRequestTags(tags: readonly string[]): void {
-  if (tags.length === 0) return;
-  const reqTags = _getState().currentRequestTags;
-  for (const tag of tags) {
-    if (!reqTags.includes(tag)) {
-      reqTags.push(tag);
-    }
-  }
-}
-
-/**
  * Set path-derived implicit tags for fetch cache reads in the current render.
  *
  * These are intentionally not persisted on fetch entries. They mirror Next.js
@@ -810,17 +718,6 @@ export function addCollectedRequestTags(tags: readonly string[]): void {
  */
 export function setCurrentFetchSoftTags(tags: string[]): void {
   _getState().currentFetchSoftTags = [...tags];
-}
-
-/**
- * Read the path-derived soft tags for the current render.
- *
- * Used by the "use cache" runtime to pass soft tags to the cache handler
- * so that `revalidatePath()` invalidates "use cache" entries during the
- * affected route's next request, even when the entry carries no hard tags.
- */
-export function getCurrentFetchSoftTags(): string[] {
-  return _getState().currentFetchSoftTags;
 }
 
 export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
@@ -1493,6 +1390,7 @@ function stripNextFromInit(
 // ---------------------------------------------------------------------------
 
 const _PATCH_KEY = Symbol.for("vinext.fetchCache.patchInstalled");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 
 function _ensurePatchInstalled(): void {
   if (_g[_PATCH_KEY]) return;
@@ -1518,30 +1416,6 @@ export function withFetchCache(): () => void {
   return () => {
     _resetFallbackState(false);
   };
-}
-
-/**
- * Run `fn` with the request's fetch settings but its own record of the tags and
- * URLs its fetches touch, so work done on the request's behalf after the fact
- * (a background regeneration) leaves the request's response untouched.
- */
-export function runWithDetachedFetchObservations<T>(fn: () => Promise<T>): Promise<T> {
-  if (isInsideUnifiedScope()) {
-    return runWithUnifiedStateMutation((uCtx) => {
-      uCtx.cacheableFetchUrls = new Set<string>();
-      uCtx.currentRequestTags = [];
-      uCtx.dynamicFetchUrls = new Set<string>();
-    }, fn);
-  }
-  return _als.run(
-    {
-      ..._getState(),
-      cacheableFetchUrls: new Set<string>(),
-      currentRequestTags: [],
-      dynamicFetchUrls: new Set<string>(),
-    },
-    fn,
-  );
 }
 
 /**

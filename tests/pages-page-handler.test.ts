@@ -5,6 +5,8 @@
  * verifying route matching, 404/500 fallback, _next/data envelope,
  * i18n redirect, 405 method check, and internal-error guard.
  */
+import React from "react";
+import { renderToReadableStream } from "react-dom/server.edge";
 import { afterEach, describe, it, expect, vi } from "vite-plus/test";
 import {
   createPagesPageHandler,
@@ -129,7 +131,6 @@ function makeOpts(
         },
       });
     },
-    renderIsrPassToStringAsync: async (_element) => "<html><body>isr</body></html>",
     safeJsonStringify: (v) => JSON.stringify(v),
     sanitizeDestination: (d) => d,
     createPageElement: (_PageComp, _AppComp, _props) => null,
@@ -1169,6 +1170,295 @@ describe("createPagesPageHandler — 405 method check", () => {
 // ---------------------------------------------------------------------------
 // i18n redirect — 307 short-circuit from resolvePagesI18nRequest
 // ---------------------------------------------------------------------------
+
+describe("createPagesPageHandler — stale ISR regeneration", () => {
+  function serveStaleEntry() {
+    const adapter = new DefaultCdnCacheAdapter();
+    vi.spyOn(adapter, "get").mockResolvedValue({
+      lastModified: 0,
+      cacheState: "stale",
+      cacheControl: { revalidate: 1 },
+      value: {
+        kind: "PAGES",
+        html: '<html><head></head><body><div id="__next"><p>stale</p></div></body></html>',
+        pageData: { pageProps: { value: "stale" } },
+        status: 200,
+        headers: undefined,
+      },
+    });
+    const set = vi.spyOn(adapter, "set").mockResolvedValue();
+    setCdnCacheAdapter(adapter);
+    // Earlier tests' scheduled writes can land on this adapter, so only look
+    // at this page's key.
+    return () => set.mock.calls.filter(([key]) => key === pagesIsrCacheKey("/", "test-build-id"));
+  }
+
+  function makeStaticPage(page: (props: Record<string, unknown>) => React.ReactNode) {
+    return makeOpts({
+      pageRoutes: [
+        makeRoute(
+          "/",
+          makePageModule({
+            getStaticProps: async () => ({ props: { value: "fresh" }, revalidate: 1 }),
+          }),
+        ),
+      ],
+      renderToReadableStream,
+      createPageElement: (_Page, _App, props) => page(props),
+      enhancePageElement: (_Page, _App, props) => page(props),
+    });
+  }
+
+  it("regenerates the whole document instead of patching the cached shell", async () => {
+    // Next.js re-runs its full render on regeneration, `_document` included.
+    const pageWrites = serveStaleEntry();
+
+    let documentRenders = 0;
+    const DocumentComponent = Object.assign(
+      ({ docValue }: { docValue: string }) =>
+        React.createElement(
+          "html",
+          null,
+          React.createElement(
+            "head",
+            null,
+            React.createElement("meta", { name: "doc", content: docValue }),
+          ),
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", {
+              id: "__next",
+              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+            }),
+          ),
+        ),
+      {
+        async getInitialProps(ctx: {
+          defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+        }) {
+          documentRenders += 1;
+          return { ...(await ctx.defaultGetInitialProps(ctx)), docValue: `doc-${documentRenders}` };
+        },
+      },
+    );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage((props) =>
+        React.createElement("p", null, String((props.pageProps as { value: string }).value)),
+      ),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(await response.text()).toContain("<p>stale</p>");
+
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+    const [, entry, context] = pageWrites()[0] ?? [];
+    expect(context).toMatchObject({ cacheControl: { revalidate: 1 } });
+    if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+    expect(documentRenders).toBe(1);
+    expect(entry.pageData).toEqual({ pageProps: { value: "fresh" } });
+    expect(entry.status).toBe(200);
+    expect(entry.html).toContain('<meta name="doc" content="doc-1"/>');
+    expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+    expect(entry.html).toContain('"props":{"pageProps":{"value":"fresh"}}');
+    expect(entry.html).not.toContain("stale");
+  });
+
+  it("waits for every Suspense boundary before storing a regeneration", async () => {
+    // Next.js renders a regeneration with `allReady` resolved. React flushes
+    // late boundaries inline here either way, so hold `allReady` directly.
+    const pageWrites = serveStaleEntry();
+    let releaseAllReady: (() => void) | undefined;
+    const allReady = new Promise<void>((resolve) => {
+      releaseAllReady = resolve;
+    });
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => null),
+      async renderToReadableStream() {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("<p>fresh</p>"));
+            controller.close();
+          },
+        });
+        return Object.assign(stream, { allReady });
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pageWrites()).toHaveLength(0);
+
+    releaseAllReady?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("renders the document shell with every Suspense boundary resolved too", async () => {
+    const pageWrites = serveStaleEntry();
+    const releases: Array<() => void> = [];
+    const DocumentComponent = () =>
+      React.createElement(
+        "html",
+        null,
+        React.createElement(
+          "body",
+          null,
+          React.createElement("div", {
+            id: "__next",
+            dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+          }),
+        ),
+      );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+      async renderToReadableStream(element) {
+        const stream = await renderToReadableStream(element);
+        const allReady = new Promise<void>((resolve) => releases.push(resolve));
+        return Object.assign(stream, { allReady });
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+
+    // The page body renders first, then the `_document` shell.
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    releases[0]?.();
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pageWrites()).toHaveLength(0);
+
+    releases[1]?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("keeps the route status when `_document` changes the response status", async () => {
+    // Next.js stores no status for a Pages entry, so a status `_document` set
+    // on its res never replays from the cache.
+    const pageWrites = serveStaleEntry();
+    const DocumentComponent = Object.assign(
+      () =>
+        React.createElement(
+          "html",
+          null,
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", {
+              id: "__next",
+              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+            }),
+          ),
+        ),
+      {
+        async getInitialProps(ctx: {
+          res: { statusCode: number };
+          defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+        }) {
+          ctx.res.statusCode = 404;
+          return ctx.defaultGetInitialProps(ctx);
+        },
+      },
+    );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+    const [, entry] = pageWrites()[0] ?? [];
+    if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+    expect(entry.status).toBe(200);
+    expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+  });
+
+  it("still stores the regeneration when `_document` ends the response", async () => {
+    // Next.js ignores a response sent from `_document` for getStaticProps pages.
+    const pageWrites = serveStaleEntry();
+    const DocumentComponent = Object.assign(
+      () =>
+        React.createElement(
+          "html",
+          null,
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", {
+              id: "__next",
+              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+            }),
+          ),
+        ),
+      {
+        async getInitialProps(ctx: {
+          res: { end: (body?: string) => void };
+          defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+        }) {
+          const props = await ctx.defaultGetInitialProps(ctx);
+          ctx.res.end("ended by document");
+          return props;
+        },
+      },
+    );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+    const [, entry] = pageWrites()[0] ?? [];
+    if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+    expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+    expect(entry.html).not.toContain("ended by document");
+  });
+
+  it("reports a failed regeneration without writing the entry", async () => {
+    const pageWrites = serveStaleEntry();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const DocumentComponent = Object.assign(() => null, {
+      async getInitialProps() {
+        throw new Error("document failed");
+      },
+    });
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+
+    try {
+      const response = await handler(makeRequest(), "/", null, null, null);
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      await vi.waitFor(() =>
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining("ISR background regeneration failed"),
+          expect.objectContaining({ message: "document failed" }),
+        ),
+      );
+      expect(pageWrites()).toHaveLength(0);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+});
 
 describe("createPagesPageHandler — i18n ISR identity", () => {
   it("ignores old domain-only entries even when the build ID is unchanged", async () => {

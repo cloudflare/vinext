@@ -6,6 +6,10 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
+  createDocumentPlaceholderToken,
+  withDocumentPlaceholders,
+} from "vinext/shims/document-placeholders";
+import {
   applyCdnResponseHeaders,
   hasCdnResponsePolicy,
   BROWSER_REVALIDATE_CACHE_CONTROL,
@@ -35,6 +39,12 @@ import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
 } from "./pages-document-asset-props.js";
+import {
+  spliceDocumentHeadClose,
+  spliceDocumentHeadOpen,
+  spliceDocumentScripts,
+  splitDocumentAtMain,
+} from "./pages-document-splice.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
 import { isPageNotModified } from "./http-conditional.js";
@@ -168,6 +178,12 @@ type RenderPagesPageResponseOptions = {
   isrRevalidateSeconds: number | false | null;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
+  /**
+   * Background ISR regeneration. Nobody reads the response, so the cache write
+   * must finish before returning and a response sent from `_document` cannot
+   * cut the render short.
+   */
+  isStaleRegeneration?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
@@ -312,7 +328,6 @@ export function buildPagesNextDataScript(
 }
 
 async function buildPagesShellHtml(
-  bodyMarker: string,
   fontHeadHTML: string,
   nextDataScript: string,
   options: Pick<
@@ -331,15 +346,17 @@ async function buildPagesShellHtml(
     resolvedDocProps?: Record<string, unknown> | null;
     crossOrigin?: string;
   },
-): Promise<string> {
+): Promise<{ prefix: string; suffix: string }> {
   if (options.DocumentComponent) {
     const docProps =
       options.resolvedDocProps ?? (await loadUserDocumentInitialProps(options.DocumentComponent));
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
+    const token = createDocumentPlaceholderToken();
     const renderedDocument = extractDocumentAssetProps(
-      await options.renderDocumentToString(docElement),
+      await options.renderDocumentToString(withDocumentPlaceholders(docElement, token)),
+      token,
     );
     let html = renderedDocument.html;
     const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
@@ -353,27 +370,19 @@ async function buildPagesShellHtml(
       renderedDocument.props,
       { configuredCrossOrigin: options.crossOrigin },
     );
-    html = html.replace("__NEXT_MAIN__", bodyMarker);
     // Next.js renders the collected `next/head` array before children declared
     // inside a custom Document's <Head>. Insert it after the opening tag so the
     // default charset remains the first element even when <Head> has props.
-    if (options.ssrHeadHTML) {
-      html = html.replace(
-        /<head(?:\s[^>]*)?>/i,
-        (openingHead) => `${openingHead}${options.ssrHeadHTML}`,
-      );
-    }
-    if (generatedAssetTags || fontHeadHTML || options.tailHeadHTML) {
-      html = html.replace(
-        "</head>",
-        `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n</head>`,
-      );
-    }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
-    if (!html.includes("__NEXT_DATA__")) {
-      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
-    }
-    return html;
+    html = spliceDocumentHeadOpen(html, token, options.ssrHeadHTML);
+    html = spliceDocumentHeadClose(
+      html,
+      token,
+      generatedAssetTags || fontHeadHTML || options.tailHeadHTML
+        ? `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n`
+        : "",
+    );
+    html = spliceDocumentScripts(html, token, generatedNextDataScript);
+    return splitDocumentAtMain(html, token);
   }
 
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
@@ -393,16 +402,16 @@ async function buildPagesShellHtml(
       configuredCrossOrigin: options.crossOrigin,
     },
   );
-  return (
-    "<!DOCTYPE html>\n<html>\n<head>\n" +
-    `  ${options.ssrHeadHTML}${fontHeadHTML}\n` +
-    `  ${generatedAssetTags}\n` +
-    `  ${options.tailHeadHTML}\n` +
-    "</head>\n<body>\n" +
-    `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${generatedNextDataScript}\n` +
-    "</body>\n</html>"
-  );
+  return {
+    prefix:
+      "<!DOCTYPE html>\n<html>\n<head>\n" +
+      `  ${options.ssrHeadHTML}${fontHeadHTML}\n` +
+      `  ${generatedAssetTags}\n` +
+      `  ${options.tailHeadHTML}\n` +
+      "</head>\n<body>\n" +
+      '  <div id="__next">',
+    suffix: `</div>\n  ${generatedNextDataScript}\n</body>\n</html>`,
+  };
 }
 
 async function buildPagesCompositeStream(
@@ -551,7 +560,6 @@ export async function renderPagesPageResponse(
     nextData: options.nextData,
     vinext: options.vinext,
   });
-  const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
@@ -584,7 +592,13 @@ export async function renderPagesPageResponse(
         asPath: options.routeUrl,
       },
     });
-    if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
+    if (
+      // Next.js ignores a response sent from `_document` for getStaticProps
+      // pages and still renders and stores the entry.
+      !options.isStaleRegeneration &&
+      options.documentReqRes?.res.headersSent &&
+      options.documentReqRes.responsePromise
+    ) {
       return { documentRenderPage, responseSent: true };
     }
 
@@ -641,25 +655,27 @@ export async function renderPagesPageResponse(
     if (tailHeadHTML) tailHeadHTML += "\n  ";
     tailHeadHTML += documentRenderPage.stylesHTML;
   }
-  const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
-    assetTags: options.assetTags,
-    disableOptimizedLoading: options.disableOptimizedLoading,
-    DocumentComponent: options.DocumentComponent,
-    renderDocumentToString: options.renderDocumentToString,
-    ssrHeadHTML,
-    tailHeadHTML,
-    // When the renderPage path already invoked getInitialProps, reuse its
-    // resolved props instead of calling it a second time.
-    // `skipped` means it was never invoked → fall through to the fast path.
-    resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
-    crossOrigin: options.crossOrigin,
-  });
+  const { prefix: shellPrefix, suffix: shellSuffix } = await buildPagesShellHtml(
+    fontHeadHTML,
+    nextDataScript,
+    {
+      assetTags: options.assetTags,
+      disableOptimizedLoading: options.disableOptimizedLoading,
+      DocumentComponent: options.DocumentComponent,
+      renderDocumentToString: options.renderDocumentToString,
+      ssrHeadHTML,
+      tailHeadHTML,
+      // When the renderPage path already invoked getInitialProps, reuse its
+      // resolved props instead of calling it a second time.
+      // `skipped` means it was never invoked → fall through to the fast path.
+      resolvedDocProps:
+        documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
+      crossOrigin: options.crossOrigin,
+    },
+  );
 
   options.clearSsrContext();
 
-  const markerIndex = shellHtml.indexOf(bodyMarker);
-  const shellPrefix = shellHtml.slice(0, markerIndex);
-  const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
   const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
@@ -669,8 +685,8 @@ export async function renderPagesPageResponse(
 
   let responseBodyStream = bodyStream;
   if (
-    // Keep nonce-bearing pages out of ISR writes: rewritePagesCachedHtml()
-    // later matches the cached __NEXT_DATA__ block via a bare <script> marker.
+    // Keep nonce-bearing pages out of ISR writes so one request's nonce is
+    // never replayed to other visitors from the shared cache.
     !options.scriptNonce &&
     options.isrRevalidateSeconds !== null &&
     (options.isrRevalidateSeconds === false || options.isrRevalidateSeconds > 0)
@@ -696,10 +712,11 @@ export async function renderPagesPageResponse(
       status: finalStatus,
       stream: cacheBodyStream,
     };
-    if (options.isOnDemandRevalidate) {
+    if (options.isOnDemandRevalidate || options.isStaleRegeneration) {
       // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.
       // Do the equivalent here so `await res.revalidate()` cannot resolve
-      // before the regenerated HTML is fully rendered and persisted.
+      // before the regenerated HTML is fully rendered and persisted. Stale
+      // regeneration likewise has no response for the write to outlive.
       await writePagesIsrCache(cacheWriteOptions);
     } else {
       schedulePagesIsrCacheWrite(cacheWriteOptions);

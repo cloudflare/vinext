@@ -5730,6 +5730,121 @@ describe("next/cache shim", () => {
     }
   });
 
+  // Next.js joins keyParts with "," (a known TODO), so tuples whose parts join
+  // alike collide there. vinext encodes the tuple so they keep separate entries.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  it.each([
+    [
+      ["tenant:team", "reports"],
+      ["tenant", "team:reports"],
+    ],
+    [
+      ["tenant", "team:reports"],
+      ["tenant:team", "reports"],
+    ],
+    [
+      ["a,b", "c"],
+      ["a", "b,c"],
+    ],
+  ])("unstable_cache keeps keyParts %j and %j apart", async (primedParts, otherParts) => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    try {
+      let calls = 0;
+      const getRecord = (keyParts: string[]) =>
+        unstable_cache(async () => {
+          calls++;
+          return keyParts;
+        }, keyParts);
+
+      expect(await getRecord(primedParts)()).toEqual(primedParts);
+      expect(await getRecord(otherParts)()).toEqual(otherParts);
+      expect(await getRecord(primedParts)()).toEqual(primedParts);
+      expect(await getRecord(otherParts)()).toEqual(otherParts);
+      expect(calls).toBe(2);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("unstable_cache keys entries by a fixed-size digest", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    const keys: string[] = [];
+    class RecordingCacheHandler extends MemoryCacheHandler {
+      override async get(key: string, ctx?: Record<string, unknown>) {
+        keys.push(key);
+        return super.get(key, ctx);
+      }
+    }
+    setCacheHandler(new RecordingCacheHandler());
+
+    try {
+      await unstable_cache(async (value: string) => value, ["x".repeat(1000)])("y".repeat(1000));
+      expect(keys).toHaveLength(1);
+      expect(keys[0]).toMatch(/^unstable_cache:v2:[0-9a-f]{64}$/);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  // Next.js captures `${cb.toString()}-${keyParts.join(",")}` when
+  // unstable_cache() is called, so mutating keyParts later keeps the entry.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  it("unstable_cache captures keyParts when the wrapper is created", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    try {
+      let calls = 0;
+      const keyParts = ["a"];
+      const cached = unstable_cache(async () => ++calls, keyParts);
+
+      expect(await cached()).toBe(1);
+      keyParts[0] = "b";
+      expect(await cached()).toBe(1);
+      expect(await unstable_cache(async () => ++calls, ["b"])()).toBe(2);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  // Next.js's browser build of next/cache returns a pass-through
+  // unstable_cache, so Client Components can import and call it.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/cache.js
+  it("unstable_cache calls the callback without caching in the browser", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    let lookups = 0;
+    class RecordingCacheHandler extends MemoryCacheHandler {
+      override async get(key: string, ctx?: Record<string, unknown>) {
+        lookups++;
+        return super.get(key, ctx);
+      }
+    }
+    setCacheHandler(new RecordingCacheHandler());
+    vi.stubGlobal("window", {});
+
+    try {
+      let calls = 0;
+      const cached = unstable_cache(async (value: string) => `${value}-${++calls}`, ["client"]);
+
+      expect(await cached("x")).toBe("x-1");
+      expect(await cached("x")).toBe("x-2");
+      expect(lookups).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("unstable_cache caches undefined results", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");

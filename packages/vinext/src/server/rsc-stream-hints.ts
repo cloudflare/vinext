@@ -80,6 +80,22 @@ function indexOfByte(bytes: Uint8Array, byte: number, from: number): number {
   return -1;
 }
 
+// Where a trailing, still incomplete UTF-8 character starts, or the byte length
+// if there is none. A forwarded plain-row chunk ends there: the inline RSC
+// embed decodes each chunk on its own and falls back to base64 for one that
+// splits a character.
+function utf8CompleteEnd(bytes: Uint8Array, from: number): number {
+  const length = bytes.byteLength;
+  // A UTF-8 character is at most 4 bytes, so only its last 3 can be missing.
+  for (let index = length - 1; index >= from && index >= length - 3; index--) {
+    const byte = bytes[index];
+    if ((byte & 0xc0) === 0x80) continue;
+    const characterLength = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    return index + characterLength > length ? index : length;
+  }
+  return length;
+}
+
 function parseHexBytes(bytes: Uint8Array, start: number, end: number): number | null {
   if (start === end) return null;
 
@@ -145,6 +161,12 @@ export function normalizeReactFlightPreloadHints(
   let carry: Uint8Array | null = null;
   let rawBytesRemaining = 0;
   let passThrough = false;
+  // Inside a newline-framed row that cannot be a stylesheet hint, whose bytes
+  // so far are already forwarded, apart from a split UTF-8 character. Carrying
+  // such a row instead would copy and rescan it on every chunk until its
+  // newline: quadratic in the row's length, and a page's client props are one
+  // row.
+  let inPlainRow = false;
 
   return stream.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
@@ -154,11 +176,31 @@ export function normalizeReactFlightPreloadHints(
           return;
         }
 
+        // Where this chunk's first unfinished row starts. Inside a plain row,
+        // only a split UTF-8 character's leading bytes are ever carried.
+        let start = 0;
+        if (inPlainRow) {
+          const end = indexOfByte(chunk, NEWLINE_BYTE, 0);
+          if (end === -1) {
+            const bytes = carry === null ? chunk : concatBytes(carry, chunk);
+            const complete = utf8CompleteEnd(bytes, 0);
+            carry = complete === bytes.byteLength ? null : bytes.slice(complete);
+            if (complete > 0) {
+              controller.enqueue(
+                complete === bytes.byteLength ? bytes : bytes.subarray(0, complete),
+              );
+            }
+            return;
+          }
+          inPlainRow = false;
+          start = (carry === null ? 0 : carry.byteLength) + end + 1;
+        }
+
         const bytes = carry === null ? chunk : concatBytes(carry, chunk);
         carry = null;
         const byteLength = bytes.byteLength;
         // Offset of the first byte not yet known to belong to a complete row.
-        let offset = 0;
+        let offset = start;
         let emittedThrough = 0;
         // Copy-on-write output: only allocate when a hint row is rewritten.
         let output = bytes;
@@ -212,7 +254,19 @@ export function normalizeReactFlightPreloadHints(
           }
 
           const newline = indexOfByte(bytes, NEWLINE_BYTE, offset);
-          if (newline === -1) break;
+          if (newline === -1) {
+            // Only an `HL` row is ever rewritten, so only a row that may still
+            // be one is carried. Any other row's bytes are forwarded now, up
+            // to its last complete UTF-8 character.
+            const mayBeHint =
+              tagByte === HINT_TAG_BYTE &&
+              (colon + 2 === byteLength || bytes[colon + 2] === LINK_HINT_CODE_BYTE);
+            if (!mayBeHint) {
+              inPlainRow = true;
+              offset = utf8CompleteEnd(bytes, offset);
+            }
+            break;
+          }
 
           if (tagByte === HINT_TAG_BYTE && bytes[colon + 2] === LINK_HINT_CODE_BYTE) {
             const line = bytes.subarray(offset, newline + 1);

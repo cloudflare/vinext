@@ -765,6 +765,104 @@ describe("app route handler runtime helpers", () => {
     expect(tracked.didAccessDynamicRequest()).toBe(true);
   });
 
+  it("tracks every host-derived nextUrl field", () => {
+    for (const prop of ["protocol", "username", "password", "host", "hostname", "port"] as const) {
+      const accesses: string[] = [];
+      const tracked = createTrackedAppRouteRequest(
+        new Request("https://tenant-a.example.com:8443/demo"),
+        {
+          onDynamicAccess(access) {
+            accesses.push(access);
+          },
+        },
+      );
+
+      void tracked.request.nextUrl[prop];
+      expect(accesses).toEqual([`nextUrl.${prop}`]);
+      expect(tracked.didAccessDynamicRequest()).toBe(true);
+
+      const clonedAccesses: string[] = [];
+      const cloned = createTrackedAppRouteRequest(
+        new Request("https://tenant-a.example.com/demo"),
+        {
+          onDynamicAccess(access) {
+            clonedAccesses.push(access);
+          },
+        },
+      );
+      void cloned.request.nextUrl.clone()[prop];
+      expect(clonedAccesses).toEqual([`nextUrl.${prop}`]);
+    }
+  });
+
+  it("tracks domain-selected locale fields only when i18n domains are configured", () => {
+    const withoutDomains = createTrackedAppRouteRequest(new Request("https://example.fr/demo"), {
+      i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+    });
+    expect(withoutDomains.request.nextUrl.locale).toBe("en");
+    expect(withoutDomains.request.nextUrl.defaultLocale).toBe("en");
+    expect(withoutDomains.didAccessDynamicRequest()).toBe(false);
+
+    for (const prop of ["locale", "defaultLocale", "domainLocale"] as const) {
+      const accesses: string[] = [];
+      const tracked = createTrackedAppRouteRequest(new Request("https://example.fr/demo"), {
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [{ domain: "example.fr", defaultLocale: "fr" }],
+        },
+        onDynamicAccess(access) {
+          accesses.push(access);
+        },
+      });
+
+      void tracked.request.nextUrl[prop];
+      expect(accesses).toEqual([`nextUrl.${prop}`]);
+    }
+  });
+
+  it("answers host-derived nextUrl fields with Next.js build values for dynamic error", () => {
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://tenant-a.example.fr:8443/base/demo?secret=1"),
+      {
+        basePath: "/base",
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [{ domain: "tenant-a.example.fr", defaultLocale: "fr" }],
+        },
+        requestMode: "error",
+      },
+    );
+
+    for (const nextUrl of [tracked.request.nextUrl, tracked.request.nextUrl.clone()]) {
+      expect(nextUrl.protocol).toBe("http:");
+      expect(nextUrl.host).toBe("localhost:3000");
+      expect(nextUrl.hostname).toBe("localhost");
+      expect(nextUrl.port).toBe("3000");
+      expect(nextUrl.username).toBe("");
+      expect(nextUrl.password).toBe("");
+      expect(nextUrl.locale).toBe("en");
+      expect(nextUrl.defaultLocale).toBe("en");
+      expect(nextUrl.domainLocale).toBeUndefined();
+      expect(nextUrl.pathname).toBe("/demo");
+      expect(nextUrl.basePath).toBe("/base");
+      expect(() => nextUrl.origin).toThrow("used nextUrl.origin");
+    }
+  });
+
+  it("keeps host-derived nextUrl fields at the static host for force-static", () => {
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://tenant-a.example.com:8443/demo"),
+      { requestMode: "force-static" },
+    );
+
+    expect(tracked.request.nextUrl.hostname).toBe("localhost");
+    expect(tracked.request.nextUrl.host).toBe("localhost:3000");
+    expect(tracked.request.nextUrl.origin).toBe("http://localhost:3000");
+    expect(tracked.didAccessDynamicRequest()).toBe(false);
+  });
+
   it("tracks body-reading request methods without breaking Request internals", async () => {
     const accesses: string[] = [];
     const tracked = createTrackedAppRouteRequest(
