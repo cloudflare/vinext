@@ -205,6 +205,7 @@ export function addScripts(
     warmCdnCache?: boolean;
     legacyWrangler?: boolean;
     scriptNames?: "namespaced" | "standard";
+    workerName?: string;
   } = {},
 ): string[] {
   const pkgPath = path.join(root, "package.json");
@@ -273,7 +274,7 @@ export function addScripts(
       );
       if (options.deployResponseStore && !pkg.scripts["deploy:response-store"]) {
         pkg.scripts["deploy:response-store"] = !options.legacyWrangler
-          ? `cf deploy --prebuilt --mode production --worker ${compactResourceName(detectProject(root).projectName, "-response-store", 63)}`
+          ? `cf deploy --prebuilt --mode production --worker ${compactResourceName(options.workerName ?? detectProject(root).projectName, "-response-store", 63)}`
           : "wrangler deploy --config wrangler.response-store.jsonc";
         added.push("deploy:response-store");
       }
@@ -805,6 +806,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     warmCdnCache: options.cloudflare?.warmCdnCache ?? false,
     legacyWrangler: options.cloudflare?.legacyWrangler,
     scriptNames: options.scriptNames,
+    workerName: options.cloudflare?.name,
   });
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────

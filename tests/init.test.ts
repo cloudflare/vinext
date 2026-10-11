@@ -1209,6 +1209,79 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     },
   );
 
+  it.each([false, true])(
+    "uses the --name Worker name in generated config (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
+      setupProject(tmpDir, { router: "app" });
+      await runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+          name: "storefront-production",
+        },
+      });
+      const config = readFile(tmpDir, legacyWrangler ? "wrangler.jsonc" : "cloudflare.config.ts");
+      if (legacyWrangler) {
+        expect(JSON.parse(config).name).toBe("storefront-production");
+      } else {
+        expect(config).toContain('name: "storefront-production"');
+      }
+      expect(config).not.toContain("test-project");
+    },
+  );
+
+  it("names the Response Store Worker and its deploy script after --name", async () => {
+    setupProject(tmpDir, { router: "app" });
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        responseStoreMode: "service-binding",
+        imageOptimization: "none",
+        name: "storefront-production",
+      },
+    });
+    const config = readFile(tmpDir, "cloudflare.config.ts");
+    expect(config).toContain('name: "storefront-production-response-store"');
+    expect(config).not.toContain("test-project");
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:response-store"]).toBe(
+      "cf deploy --prebuilt --mode production --worker storefront-production-response-store",
+    );
+  });
+
+  it.each([
+    [false, "cloudflare.config.ts"],
+    [true, "wrangler.jsonc"],
+  ])(
+    "rejects --name instead of ignoring it (legacy Wrangler: %s, existing %s)",
+    async (legacyWrangler, existingConfig) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(
+        tmpDir,
+        existingConfig,
+        legacyWrangler ? `{ "name": "existing" }\n` : "export default {};\n",
+      );
+      const before = snapshotProject(tmpDir);
+
+      await expect(
+        runInit(tmpDir, {
+          cloudflare: {
+            dataCache: "none",
+            cdnCache: "none",
+            imageOptimization: "none",
+            legacyWrangler,
+            name: "storefront-production",
+          },
+        }),
+      ).rejects.toThrow(`--name cannot rename the Worker in the existing ${existingConfig}`);
+
+      expect(snapshotProject(tmpDir)).toBe(before);
+    },
+  );
+
   it("omits KV setup steps when Wrangler already has a namespace ID", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(

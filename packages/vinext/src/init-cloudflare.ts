@@ -72,6 +72,17 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
+  if (cloudflare.name) {
+    // Existing config is kept as-is, so --name would otherwise be silently ignored.
+    const existingConfig = (
+      cloudflare.legacyWrangler ? ["wrangler.jsonc", "wrangler.json"] : ["cloudflare.config.ts"]
+    ).find((name) => fs.existsSync(path.join(context.root, name)));
+    if (existingConfig) {
+      throw new Error(
+        `--name cannot rename the Worker in the existing ${existingConfig}. Set the name in that file instead.`,
+      );
+    }
+  }
   if (!cloudflare.legacyWrangler) {
     const existingWrangler = [
       "wrangler.toml",
@@ -196,7 +207,7 @@ export function setupCloudflarePlatform(
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
   if (!cloudflare.legacyWrangler) return setupCfPlatform(context, cloudflare);
-  const projectInfo = detectProject(context.root);
+  const projectInfo = detectCloudflareProject(context.root, cloudflare);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
@@ -346,11 +357,16 @@ export function setupCloudflarePlatform(
   };
 }
 
+function detectCloudflareProject(root: string, cloudflare: CloudflareInitOptions) {
+  const projectInfo = detectProject(root);
+  return cloudflare.name ? { ...projectInfo, projectName: cloudflare.name } : projectInfo;
+}
+
 function setupCfPlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
-  const projectInfo = detectProject(context.root);
+  const projectInfo = detectCloudflareProject(context.root, cloudflare);
   const serviceBinding =
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding";

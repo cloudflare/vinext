@@ -6,6 +6,7 @@ import {
   parseDataCacheArg,
   parseCdnCacheArg,
   parseImageOptimizationArg,
+  parseNameArg,
   parseResponseStoreModeArg,
   parsePrerenderArg,
   parseWarmCdnCacheArg,
@@ -25,6 +26,35 @@ describe("parsePlatformArg", () => {
   it("rejects missing and unsupported values", () => {
     expect(() => parsePlatformArg(["--platform"])).toThrow("requires a value");
     expect(() => parsePlatformArg(["--platform=vercel"])).toThrow('Unsupported platform "vercel"');
+  });
+});
+
+describe("parseNameArg", () => {
+  it("parses both supported flag forms", () => {
+    expect(parseNameArg(["--name", "storefront"])).toBe("storefront");
+    expect(parseNameArg(["--name=storefront-production-2"])).toBe("storefront-production-2");
+    expect(parseNameArg(["--platform=cloudflare"])).toBeUndefined();
+  });
+
+  it("rejects missing values", () => {
+    expect(() => parseNameArg(["--name"])).toThrow("--name requires a Worker name");
+    expect(() => parseNameArg(["--name", "--force"])).toThrow("--name requires a Worker name");
+    expect(() => parseNameArg(["--name="])).toThrow("--name requires a Worker name");
+  });
+
+  it.each([
+    "Storefront",
+    "store_front",
+    "store front",
+    "-storefront",
+    "storefront-",
+    "a".repeat(64),
+  ])("rejects the invalid Worker name %j", (name) => {
+    expect(() => parseNameArg([`--name=${name}`])).toThrow(`Invalid --name value "${name}"`);
+  });
+
+  it("accepts a Worker name at the length limit", () => {
+    expect(parseNameArg([`--name=${"a".repeat(63)}`])).toBe("a".repeat(63));
   });
 });
 
@@ -471,6 +501,20 @@ describe("resolveInitOptions", () => {
         isInteractive: false,
       }),
     ).rejects.toThrow("--legacy-wrangler-cloudflare-init requires --platform=cloudflare");
+  });
+
+  it("passes --name through only for Cloudflare init", async () => {
+    const options = await resolveInitOptions(
+      ["--platform=cloudflare", "--name=storefront", "--cdn-cache=none"],
+      { env: {}, isInteractive: false },
+    );
+    expect(options.cloudflare?.name).toBe("storefront");
+    await expect(
+      resolveInitOptions(["--platform=node", "--name=storefront"], {
+        env: {},
+        isInteractive: false,
+      }),
+    ).rejects.toThrow("--name requires --platform=cloudflare");
   });
 
   it("keeps prerender available for Node init", async () => {

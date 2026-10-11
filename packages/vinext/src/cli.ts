@@ -368,6 +368,7 @@ function printHelp(cmd?: string) {
     --no-install         Update dependency entries without installing them
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
+    --name <name>        Cloudflare Worker name (default: derived from package.json)
     --prerender          Configure Vite builds to pre-render static routes
                          (Cloudflare deploy won't serve them unless using Static Assets)
     --warm-cache         Add cache warming to the Cloudflare deploy script
