@@ -1903,7 +1903,7 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
-  it("serves public files under basePath and 404s without it", async () => {
+  it("serves public files under basePath, 404s without it, and gates its image endpoint", async () => {
     // Ported from Next.js: test/e2e/basepath/basepath.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/basepath.test.ts
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-public-basepath-"));
@@ -1955,6 +1955,26 @@ describe("App Router Production server (startProdServer)", () => {
 
       const withoutBasePathRes = await fetch(`${tmpBaseUrl}/logo/logo.svg`);
       expect(withoutBasePathRes.status).toBe(404);
+
+      // Middleware runs before the image endpoint reads a source, in both the
+      // Next.js form and the unprefixed form vinext's next/image emits.
+      for (const imagePath of [
+        "/app/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
+        "/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
+      ]) {
+        const imageRes = await fetch(`${tmpBaseUrl}${imagePath}`);
+        expect(imageRes.status, imagePath).toBe(403);
+        expect(await imageRes.text(), imagePath).toBe("image endpoint blocked by middleware");
+      }
+      const imageRes = await fetch(`${tmpBaseUrl}/_next/image?url=%2Fheart.png&w=640&q=75`);
+      expect(imageRes.status).toBe(200);
+      expect(imageRes.headers.get("content-type")).toBe("image/png");
+      await imageRes.arrayBuffer();
+      const protectedImageRes = await fetch(
+        `${tmpBaseUrl}/_next/image?url=%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
+      );
+      expect(protectedImageRes.status).toBe(404);
+      await protectedImageRes.arrayBuffer();
     } finally {
       basePathServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

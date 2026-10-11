@@ -65,6 +65,7 @@ const projectServers = {
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
       "app-router-prod/public-file-encoding.spec.ts",
+      "app-router-prod/image-middleware.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {

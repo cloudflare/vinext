@@ -34,9 +34,11 @@ import {
   IMAGE_RESPONSE_CACHE_STATE,
   parseImageParams,
   isSafeImageContentType,
+  readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
+  type ImageOptimizationSignal,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
 import { registerPrerenderCloudflareLoader } from "../build/prerender-cloudflare-loader.js";
@@ -1847,6 +1849,117 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // .br/.gz/.zst variants (generated at build time) are detected automatically.
   const staticCache = await StaticFileCache.create(clientDir);
 
+  // Image optimization passthrough (Node.js prod server has no Images binding;
+  // serves the original file with cache headers and security headers). Runs
+  // only after the RSC handler admitted the endpoint through middleware and
+  // rewrites, whose response headers Next.js also sends with the image.
+  const serveImageOptimization = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    request: Request,
+    signal: ImageOptimizationSignal,
+    sourceBasePath: string,
+  ): Promise<void> => {
+    const stagedHeaders = omitHeadersCaseInsensitive(
+      mergeResponseHeaders({}, new Response(null, { headers: signal.middlewareHeaders })),
+      OMIT_STATIC_RESPONSE_HEADERS,
+    );
+    for (const [name, value] of Object.entries(stagedHeaders)) {
+      res.setHeader(name, value);
+    }
+    // The query middleware and rewrites selected, which the handler validated.
+    const parsedUrl = new URL(`/${signal.search}`, "http://localhost");
+    const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
+    if (!params) {
+      res.writeHead(400);
+      res.end("Bad Request");
+      return;
+    }
+    // Block SVG and other unsafe content types by checking the file extension
+    // of the file actually served, not the `url` text, whose query or hash
+    // could carry an image extension. SVG is only allowed when
+    // dangerouslyAllowSVG is enabled in next.config.js.
+    const sendUnsafeContentType = () => {
+      res.writeHead(400);
+      res.end("The requested resource is not an allowed image type");
+    };
+    const isSafeSourcePath = (sourcePath: string) =>
+      isSafeImageContentType(contentTypeForPath(sourcePath), imageConfig?.dangerouslyAllowSVG);
+    // Serve the original image with CSP and security headers
+    const imageSecurityHeaders: Record<string, string> = {
+      "Content-Security-Policy":
+        imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
+      "X-Content-Type-Options": "nosniff",
+      "Content-Disposition":
+        imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
+    };
+    const serveSource = (sourcePath: string): Promise<boolean> =>
+      tryServeStatic(
+        req,
+        res,
+        clientDir,
+        sourcePath,
+        false,
+        staticCache,
+        imageSecurityHeaders,
+        undefined,
+        IMAGE_REPRESENTATION_HEADERS,
+      );
+
+    // Serve the source only as an anonymous direct request would receive it.
+    // Build assets bypass middleware there too.
+    const sourceUrl = new URL(
+      sourceBasePath && !hasBasePath(params.imageUrl, sourceBasePath)
+        ? sourceBasePath + params.imageUrl
+        : params.imageUrl,
+      request.url,
+    );
+    let sourcePathname: string | null = null;
+    try {
+      sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
+    } catch {
+      // A malformed source is never served.
+    }
+    if (!isSafeSourcePath(sourcePathname ?? params.imageUrl)) {
+      sendUnsafeContentType();
+      return;
+    }
+    const assetLookupPath =
+      sourcePathname !== null
+        ? resolveAppRouterAssetPath(sourcePathname, appAssetPathPrefix, appRouterAssetPrefix)
+        : null;
+    if (assetLookupPath && (await serveSource(assetLookupPath))) return;
+
+    // Any other source goes through the application pipeline as a GET without
+    // the caller's headers, like Next.js' fetchInternalImage, so middleware
+    // admits it. Only a public file that pipeline selects is served.
+    if (sourcePathname !== null) {
+      const sourceResponse = await rscHandler(
+        new Request(sourceUrl, { signal: request.signal }),
+        createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
+      );
+      const sourceSignal = sourceResponse.ok ? readStaticFileSignal(sourceResponse) : null;
+      cancelResponseBody(sourceResponse);
+      if (request.signal.aborted) return;
+      if (sourceSignal !== null) {
+        let sourcePath = sourceSignal;
+        try {
+          sourcePath = decodeURIComponent(sourceSignal);
+        } catch {
+          // Serve the encoded form, as the static-file signal branch does.
+        }
+        // Middleware can rewrite the source to a file of another type.
+        if (!isSafeSourcePath(sourcePath)) {
+          sendUnsafeContentType();
+          return;
+        }
+        if (await serveSource(sourcePath)) return;
+      }
+    }
+    res.writeHead(404);
+    res.end("Image not found");
+  };
+
   const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPathname = rawUrl.split("?")[0];
@@ -1925,51 +2038,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
     }
 
-    // Image optimization passthrough (Node.js prod server has no Images binding;
-    // serves the original file with cache headers and security headers)
-    if (isImageOptimizationPath(pathname)) {
-      const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
-      if (!params) {
-        res.writeHead(400);
-        res.end("Bad Request");
-        return;
-      }
-      // Block SVG and other unsafe content types by checking the file extension.
-      // SVG is only allowed when dangerouslyAllowSVG is enabled in next.config.js.
-      const ct = contentTypeForPath(params.imageUrl);
-      if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
-        res.writeHead(400);
-        res.end("The requested resource is not an allowed image type");
-        return;
-      }
-      // Serve the original image with CSP and security headers
-      const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy":
-          imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Disposition":
-          imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
-      };
-      if (
-        await tryServeStatic(
-          req,
-          res,
-          clientDir,
-          params.imageUrl,
-          false,
-          staticCache,
-          imageSecurityHeaders,
-          undefined,
-          IMAGE_REPRESENTATION_HEADERS,
-        )
-      ) {
-        return;
-      }
-      res.writeHead(404);
-      res.end("Image not found");
-      return;
-    }
+    // vinext's next/image emits the image endpoint without the basePath, where
+    // Next.js prefixes it. Admit that form as the basePath endpoint and resolve
+    // its unprefixed sources under the basePath.
+    const imageEndpointBasePath =
+      appRouterBasePath && isImageOptimizationPath(pathname) ? appRouterBasePath : "";
 
     try {
       // Static-asset checks above use the normalized pathname, but the RSC
@@ -1978,7 +2051,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // percent signs eligible for a second decode inside normalizeRscRequest.
       const request = nodeToWebRequest(
         req,
-        rawUrl,
+        imageEndpointBasePath + rawUrl,
         prerenderSecret,
         appRouterI18nConfig,
         appRouterAuthorizeOnDemandRevalidate,
@@ -1994,6 +2067,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const response = await rscHandler(request, ctx);
       if (request.signal.aborted) {
         cancelResponseBody(response);
+        return;
+      }
+
+      const imageSignal = readImageOptimizationSignal(response);
+      if (imageSignal) {
+        cancelResponseBody(response);
+        await serveImageOptimization(req, res, request, imageSignal, imageEndpointBasePath);
         return;
       }
 

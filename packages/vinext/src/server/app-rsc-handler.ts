@@ -112,6 +112,7 @@ import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   isImageOptimizationPath,
+  markImageOptimizationSignal,
   resolveDevImageRedirect,
   type ImageConfig,
 } from "./image-optimization.js";
@@ -1637,9 +1638,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       options.imageConfig?.qualities,
       { isDev: options.isDev },
     );
-    if (!imageRedirect)
-      return new Response("Invalid image optimization parameters", { status: 400 });
-    return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
+    const middlewareHeaders = new Headers();
+    mergeMiddlewareResponseHeaders(middlewareHeaders, middlewareContext.headers);
+    if (!imageRedirect) {
+      return new Response("Invalid image optimization parameters", {
+        status: 400,
+        headers: middlewareHeaders,
+      });
+    }
+    return markImageOptimizationSignal(
+      Response.redirect(new URL(imageRedirect, url.origin).href, 302),
+      { middlewareHeaders, search: url.search },
+    );
   }
 
   const metadataRouteResponse = await renderMetadataRouteIfMatched();
