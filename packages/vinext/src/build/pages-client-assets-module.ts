@@ -18,7 +18,8 @@ export function buildPagesClientAssetsModule(assets: PagesClientAssets): string 
  * Select the client bundle files that live outside `_next/static`, as URL
  * pathnames. Plugins emit these at the output root, for example a Module
  * Federation host's `remoteEntry.js`. Public directory files are copied
- * outside the bundle, and vinext's own build metadata is excluded.
+ * outside the bundle, and build metadata (vinext's and Cloudflare's
+ * `.assetsignore`) is excluded.
  */
 export function collectClientBuildFiles(fileNames: Iterable<string>): string[] {
   const files: string[] = [];
@@ -26,6 +27,8 @@ export function collectClientBuildFiles(fileNames: Iterable<string>): string[] {
     const pathname = `/${fileName}`;
     if (pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`)) continue;
     if (pathname.startsWith("/.vite/") || fileName === VINEXT_CLIENT_ENTRY_MANIFEST) continue;
+    // Deployment metadata from @cloudflare/vite-plugin, never served.
+    if (fileName === ".assetsignore") continue;
     files.push(pathname);
   }
   return files.sort();
