@@ -666,7 +666,11 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${await sha256Hex(invocationKey)}`;
 
     const isDraftMode = isDraftModeEnabled();
-    if (!isDraftMode) {
+    // Like Next.js, an unstable_cache called inside another's callback skips
+    // the read and reruns, so regenerating the outer entry also refreshes what
+    // it calls. The fresh result is still stored.
+    // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+    if (!isDraftMode && !isInsideUnstableCacheScope()) {
       // Try to get from cache. Stale entries are usable in normal App Router
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.

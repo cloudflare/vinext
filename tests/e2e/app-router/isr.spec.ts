@@ -808,6 +808,23 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(pageErrors).toEqual([]);
   });
 
+  // Next.js skips the read for an unstable_cache called inside another's
+  // callback, so revalidating the outer entry's tag reruns the inner one too.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  test("revalidating an unstable_cache reruns a nested unstable_cache", async ({ request }) => {
+    const id = `nested-${Date.now()}`;
+
+    const first = await readNestedCacheRoute(request, id);
+    expect(await readNestedCacheRoute(request, id)).toEqual(first);
+
+    const revalidate = await request.get(
+      `${baseUrl()}/nextjs-compat/api/unstable-cache-nested?id=${id}&revalidate=1`,
+    );
+    expect(revalidate.status()).toBe(200);
+
+    expect((await readNestedCacheRoute(request, id)).nonce).not.toBe(first.nonce);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
   test("unstable_cache bypasses cache in draft mode", async ({ request }) => {
@@ -918,6 +935,14 @@ async function readKeyPartsTupleRoute(
 ) {
   const response = await request.get(
     `${baseUrl()}/nextjs-compat/api/unstable-cache-key-parts-tuple?${new URLSearchParams(tuple)}`,
+  );
+  expect(response.status()).toBe(200);
+  return (await response.json()) as Record<string, unknown>;
+}
+
+async function readNestedCacheRoute(request: APIRequestContext, id: string) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-nested?id=${encodeURIComponent(id)}`,
   );
   expect(response.status()).toBe(200);
   return (await response.json()) as Record<string, unknown>;

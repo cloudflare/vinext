@@ -5898,6 +5898,40 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  // Next.js bypasses the read for an unstable_cache nested in another's
+  // callback, so revalidating the outer entry reruns the inner one too.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  it("unstable_cache reruns a nested unstable_cache when the outer entry revalidates", async () => {
+    const { unstable_cache, revalidateTag, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    try {
+      let innerCalls = 0;
+      const inner = unstable_cache(async () => `inner-${++innerCalls}`, [], {
+        revalidate: 360,
+      });
+      const outer = unstable_cache(() => inner(), [], {
+        revalidate: 1000,
+        tags: ["outer-tag"],
+      });
+
+      expect(await outer()).toBe("inner-1");
+      expect(await outer()).toBe("inner-1");
+      // A direct call still reads the entry the nested call stored.
+      expect(await inner()).toBe("inner-1");
+
+      await Promise.resolve(revalidateTag("outer-tag"));
+
+      expect(await outer()).toBe("inner-2");
+      expect(await inner()).toBe("inner-2");
+      expect(innerCalls).toBe(2);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("revalidateTag accepts optional cacheLife profile (Next.js 16)", async () => {
     const { revalidateTag, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
