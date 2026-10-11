@@ -808,7 +808,8 @@ export function createAppPageRouteBodyMetadata(
   const metadataHtml = streamedIconKey
     ? renderedMetadataHtml.replaceAll(
         `<link data-vinext-streamed-icon="${STREAMED_ICON_KEY_PLACEHOLDER}:`,
-        `<link data-vinext-streamed-icon="${escapeHtmlAttr(metadataKey)}:`,
+        // A replacer function keeps `$` sequences in the key literal.
+        () => `<link data-vinext-streamed-icon="${escapeHtmlAttr(metadataKey)}:`,
       )
     : renderedMetadataHtml;
   const parserInsertedMetadataHtml =
