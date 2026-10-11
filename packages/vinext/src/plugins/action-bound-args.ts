@@ -4,19 +4,23 @@ import { stringLiteralValue, walkAst } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 // @vitejs/plugin-rsc's `rsc:use-server` transform encrypts an inline Server
-// Action's closure captures through this namespace import.
-const ENCRYPTION_RUNTIME = "__vite_rsc_encryption_runtime";
-const RUNTIME_METHOD_RE = /\b(?:en|de)cryptActionBoundArgs\b/;
+// Action's closure captures through a namespace import of this module (a
+// `file://` URL of the installed package).
+const ENCRYPTION_RUNTIME_RE = /@vitejs\/plugin-rsc\/(?:dist\/)?utils\/encryption-runtime(?:\.js)?$/;
 const BOUND_ARGS_RUNTIME = "$$vinextActionBoundArgs";
 
-function isRuntimeCall(node: ESTree.Node | null | undefined, method: string): boolean {
+function isRuntimeCall(
+  node: ESTree.Node | null | undefined,
+  method: string,
+  runtimes: Set<string>,
+): boolean {
   return (
     node?.type === "CallExpression" &&
     node.arguments.length === 1 &&
     node.callee.type === "MemberExpression" &&
     !node.callee.computed &&
     node.callee.object.type === "Identifier" &&
-    node.callee.object.name === ENCRYPTION_RUNTIME &&
+    runtimes.has(node.callee.object.name) &&
     node.callee.property.type === "Identifier" &&
     node.callee.property.name === method
   );
@@ -43,12 +47,16 @@ function readServerReference(node: ESTree.Node): [string, string] | null {
 /** `async function fn($$hoist_encoded, ...) { const [...] = await <decrypt>($$hoist_encoded); ...` */
 function readClosureDecrypt(
   node: ESTree.Node,
+  runtimes: Set<string>,
 ): [string, ESTree.CallExpression & { callee: ESTree.MemberExpression }] | null {
   if (node.type !== "FunctionDeclaration" || !node.id) return null;
   const statement = node.body?.body[0];
   if (statement?.type !== "VariableDeclaration" || statement.declarations.length !== 1) return null;
   const init = statement.declarations[0].init;
-  if (init?.type !== "AwaitExpression" || !isRuntimeCall(init.argument, "decryptActionBoundArgs")) {
+  if (
+    init?.type !== "AwaitExpression" ||
+    !isRuntimeCall(init.argument, "decryptActionBoundArgs", runtimes)
+  ) {
     return null;
   }
   const call = init.argument as ESTree.CallExpression & { callee: ESTree.MemberExpression };
@@ -64,18 +72,31 @@ function readClosureDecrypt(
  * and decrypts them at the top of `fn` without naming the action, so any
  * action's closure would decrypt in any other action. This rewrites both calls
  * to the vinext runtime, which seals and checks `key#name` (the `Next-Action`
- * id) with the captures. Any `*.encryptActionBoundArgs` /
- * `*.decryptActionBoundArgs` call this cannot bind fails the build rather than
- * shipping an unbound closure.
+ * id) with the captures. Any use of the encryption runtime this cannot bind
+ * fails the build rather than shipping an unbound closure.
  */
 export function createActionBoundArgsPlugin(options: { runtime: string }): Plugin {
   return {
     name: "vinext:action-bound-args",
     enforce: "post",
     transform: {
-      filter: { code: RUNTIME_METHOD_RE },
+      filter: { code: "encryption-runtime" },
       async handler(code, id) {
         const ast = await parseAstAsync(code);
+        const runtimes = new Set<string>();
+        for (const statement of ast.body) {
+          if (
+            statement.type !== "ImportDeclaration" ||
+            typeof statement.source.value !== "string" ||
+            !ENCRYPTION_RUNTIME_RE.test(statement.source.value)
+          ) {
+            continue;
+          }
+          for (const specifier of statement.specifiers) {
+            if (specifier.type === "ImportNamespaceSpecifier") runtimes.add(specifier.local.name);
+          }
+        }
+        if (runtimes.size === 0) return;
         const output = new MagicString(code);
         const actionIds = new Map<string, string>();
         const decrypts: [string, ESTree.CallExpression & { callee: ESTree.MemberExpression }][] =
@@ -86,9 +107,8 @@ export function createActionBoundArgsPlugin(options: { runtime: string }): Plugi
         walkAst(ast, (node) => {
           if (
             node.type === "MemberExpression" &&
-            !node.computed &&
-            node.property.type === "Identifier" &&
-            RUNTIME_METHOD_RE.test(node.property.name)
+            node.object.type === "Identifier" &&
+            runtimes.has(node.object.name)
           ) {
             runtimeCalls++;
           }
@@ -96,7 +116,7 @@ export function createActionBoundArgsPlugin(options: { runtime: string }): Plugi
           const reference = readServerReference(node);
           if (reference) actionIds.set(reference[0], reference[1]);
 
-          const decrypt = readClosureDecrypt(node);
+          const decrypt = readClosureDecrypt(node, runtimes);
           if (decrypt) decrypts.push(decrypt);
 
           // `<registration>.bind(null, <encrypt>([...captures]))`
@@ -107,7 +127,7 @@ export function createActionBoundArgsPlugin(options: { runtime: string }): Plugi
             node.callee.property.type === "Identifier" &&
             node.callee.property.name === "bind" &&
             node.arguments.length === 2 &&
-            isRuntimeCall(node.arguments[1], "encryptActionBoundArgs")
+            isRuntimeCall(node.arguments[1], "encryptActionBoundArgs", runtimes)
           ) {
             const registration = readServerReference(node.callee.object);
             if (!registration) return;
