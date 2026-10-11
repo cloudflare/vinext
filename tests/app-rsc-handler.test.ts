@@ -7926,6 +7926,113 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each([
+    { phase: "beforeFiles", action: false },
+    { phase: "afterFiles", action: false },
+    { phase: "fallback", action: false },
+    { phase: "afterFiles", action: true },
+    { phase: "fallback", action: true },
+  ] as const)(
+    "forwards middleware's request header override to $phase external rewrite proxies (action: $action)",
+    async ({ phase, action }) => {
+      // Next.js applies the override to req.headers before any config rewrite
+      // runs, so credentials deleted by middleware never reach the proxy.
+      const receivedRequests: Array<{
+        body: string;
+        headers: import("node:http").IncomingHttpHeaders;
+        url: string;
+      }> = [];
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        req.on("end", () => {
+          receivedRequests.push({
+            body: Buffer.concat(chunks).toString("utf8"),
+            headers: req.headers,
+            url: req.url ?? "",
+          });
+          res.writeHead(200, { "content-type": "text/plain" });
+          res.end("upstream");
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      // Server Actions resolve late rewrites early only outside the basePath.
+      const rewrite = {
+        source: "/outside",
+        destination: `http://127.0.0.1:${address.port}/proxy`,
+        ...(action ? { basePath: false as const } : {}),
+      };
+
+      try {
+        const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+        headers.set("authorization", "Bearer secret");
+        headers.set("cookie", "session=secret");
+        headers.set("x-kept", "kept");
+        if (action) {
+          headers.set("next-action", "action-id");
+          headers.set("content-type", "text/plain");
+        }
+        const requestUrl = await createRscRequestUrl(
+          action ? "/outside" : "/docs/outside",
+          headers,
+        );
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            beforeFiles: phase === "beforeFiles" ? [rewrite] : [],
+            afterFiles: phase === "afterFiles" ? [rewrite] : [],
+            fallback: phase === "fallback" ? [rewrite] : [],
+          },
+          middlewareModule: {
+            default(request: NextRequest) {
+              const nextHeaders = new Headers(request.headers);
+              nextHeaders.delete("authorization");
+              nextHeaders.delete("cookie");
+              nextHeaders.set("x-from-middleware", "added");
+              return new Response(null, {
+                headers: {
+                  "x-middleware-next": "1",
+                  "x-middleware-override-headers": [...nextHeaders.keys()].join(","),
+                  ...Object.fromEntries(
+                    [...nextHeaders].map(([name, value]) => [
+                      `x-middleware-request-${name}`,
+                      value,
+                    ]),
+                  ),
+                },
+              });
+            },
+          },
+          matchRoute: () => null,
+        });
+
+        const response = await handler(
+          new Request(
+            `https://example.test${requestUrl}`,
+            action ? { body: "action-body", headers, method: "POST" } : { headers },
+          ),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(receivedRequests).toHaveLength(1);
+        const [received] = receivedRequests;
+        expect(received.body).toBe(action ? "action-body" : "");
+        expect(received.headers.authorization).toBeUndefined();
+        expect(received.headers.cookie).toBeUndefined();
+        expect(received.headers["x-kept"]).toBe("kept");
+        expect(received.headers["x-from-middleware"]).toBe("added");
+        // Flight headers are not overridable, so the proxy still receives them.
+        expect(received.headers[RSC_HEADER.toLowerCase()]).toBe("1");
+        const forwardedUrl = new URL(`http://vinext.local${received.url}`);
+        expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(true);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   it("applies basePath false rewrites before rejecting outside-basePath requests", async () => {
     // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts

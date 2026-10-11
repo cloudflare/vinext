@@ -739,6 +739,7 @@ async function applyRewrite(
   options: {
     basePathState: BasePathMatchState;
     clearRequestContext: () => void;
+    middlewareContext: AppRscMiddlewareContext;
     request: Request;
     requestContext: RequestContext;
     rewrites: NextRewrite[];
@@ -766,8 +767,15 @@ async function applyRewrite(
   if (isExternalUrl(rewritten)) {
     const validationResponse = await options.validateExternalRewriteRequest();
     if (validationResponse) return validationResponse;
+    // Next.js applies middleware's request-header override before any config
+    // rewrite, so the external origin receives the post-middleware headers.
+    const { requestWithMiddlewareContextHeaders } = await import("./app-middleware.js");
+    const proxyRequest = requestWithMiddlewareContextHeaders(
+      options.request,
+      options.middlewareContext,
+    );
     options.clearRequestContext();
-    return configMatchers.proxyExternalRequest(options.request, rewritten);
+    return configMatchers.proxyExternalRequest(proxyRequest, rewritten);
   }
 
   return rewritten;
@@ -1523,6 +1531,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       {
         basePathState,
         clearRequestContext: options.clearRequestContext,
+        middlewareContext,
         // External RSC rewrites must forward the validated `_rsc` token so the
         // destination server can validate the request without the original URL.
         request: normalizedUserlandRequest,
@@ -1566,6 +1575,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         {
           basePathState,
           clearRequestContext: options.clearRequestContext,
+          middlewareContext,
           request: normalizedUserlandRequest,
           requestContext: requestContextForResolvedUrl(
             postMiddlewareRequestContext,
@@ -1596,6 +1606,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           {
             basePathState,
             clearRequestContext: options.clearRequestContext,
+            middlewareContext,
             request: normalizedUserlandRequest,
             requestContext: requestContextForResolvedUrl(
               postMiddlewareRequestContext,
@@ -2328,6 +2339,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         {
           basePathState,
           clearRequestContext: options.clearRequestContext,
+          middlewareContext,
           // External RSC rewrites must forward the validated `_rsc` token.
           request: normalizedUserlandRequest,
           requestContext: requestContextForResolvedUrl(
@@ -2387,6 +2399,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         {
           basePathState,
           clearRequestContext: options.clearRequestContext,
+          middlewareContext,
           // External RSC rewrites must forward the validated `_rsc` token.
           request: normalizedUserlandRequest,
           requestContext: requestContextForResolvedUrl(
