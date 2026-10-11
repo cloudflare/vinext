@@ -254,6 +254,28 @@ describe("RSC stream hint helpers", () => {
     );
   });
 
+  it("rewrites a hint that follows a forwarded row's newline in the same chunk", async () => {
+    const inputs = [
+      '0:D{"name":"page"}\n1:{"items":["',
+      "x".repeat(64),
+      '"]}\n:HL["/assets/app.css","stylesheet"]\n2:"after"\n',
+    ];
+    const reader = normalizeReactFlightPreloadHints(streamFromChunks(inputs)).getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      inputs[0],
+      inputs[1],
+      '"]}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n') + '2:"after"\n',
+    ]);
+  });
+
   it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
     const encoder = new TextEncoder();
     const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);
