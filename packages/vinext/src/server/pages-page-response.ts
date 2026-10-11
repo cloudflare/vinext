@@ -178,11 +178,7 @@ type RenderPagesPageResponseOptions = {
   isrRevalidateSeconds: number | false | null;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
-  /**
-   * Background ISR regeneration. Nobody reads the response, so the cache write
-   * must finish before returning and a response sent from `_document` cannot
-   * cut the render short.
-   */
+  /** Background ISR regeneration; the cache write must finish before returning. */
   isStaleRegeneration?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
@@ -593,9 +589,9 @@ export async function renderPagesPageResponse(
       },
     });
     if (
-      // Next.js ignores a response sent from `_document` for getStaticProps
-      // pages and still renders and stores the entry.
-      !options.isStaleRegeneration &&
+      // Next.js still renders and stores a getStaticProps page whose response
+      // was sent; it returns the sent response after the ISR write below.
+      !options.isStaticPropsRoute &&
       options.documentReqRes?.res.headersSent &&
       options.documentReqRes.responsePromise
     ) {
@@ -709,7 +705,9 @@ export async function renderPagesPageResponse(
       setCache: options.isrSet,
       shellPrefix,
       shellSuffix,
-      status: finalStatus,
+      // Next.js stores no status for a Pages entry, so one that `_app` or
+      // `_document` set on its res never replays from the cache.
+      status: options.isStaticPropsRoute ? (options.statusCode ?? 200) : finalStatus,
       stream: cacheBodyStream,
     };
     if (options.isOnDemandRevalidate || options.isStaleRegeneration) {
@@ -721,6 +719,13 @@ export async function renderPagesPageResponse(
     } else {
       schedulePagesIsrCacheWrite(cacheWriteOptions);
     }
+  }
+
+  // `_app` or `_document` sent the response of a getStaticProps page. The
+  // entry above is still stored, but the visitor gets the sent response.
+  if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
+    await responseBodyStream.cancel();
+    return options.documentReqRes.responsePromise;
   }
 
   const compositeStream = await buildPagesCompositeStream(

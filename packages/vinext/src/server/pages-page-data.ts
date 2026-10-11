@@ -707,7 +707,9 @@ async function loadPagesAppInitialRenderProps(
     },
   });
 
-  if (isResponseSent(res)) {
+  // Next.js keeps resolving a getStaticProps page whose `_app` sent the
+  // response, so its entry is still stored.
+  if (isResponseSent(res) && typeof options.pageModule.getStaticProps !== "function") {
     return { kind: "response", response: responsePromise };
   }
 
@@ -1282,6 +1284,13 @@ export async function resolvePagesPageData(
   let renderProps: PagesRenderProps = { pageProps };
   if (previewData !== false) renderProps.__N_PREVIEW = true;
 
+  // A getStaticProps page whose `_app` or `_document` sent the response is
+  // still resolved and stored, but the visitor gets the sent response.
+  async function takeSentResponse(): Promise<ResolvePagesPageDataResponseResult | null> {
+    if (!sharedReqRes || !isResponseSent(sharedReqRes.res)) return null;
+    return { kind: "response", response: await sharedReqRes.responsePromise };
+  }
+
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
     const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
     if (result.kind === "response") {
@@ -1710,10 +1719,12 @@ export async function resolvePagesPageData(
         );
         applyPagesTerminalMissHeaders(response, revalidateSeconds, pathname, expireSeconds);
       }
-      return {
-        kind: "response",
-        response,
-      };
+      return (
+        (await takeSentResponse()) ?? {
+          kind: "response",
+          response,
+        }
+      );
     }
 
     if (result?.notFound) {
@@ -1738,7 +1749,7 @@ export async function resolvePagesPageData(
           expireSeconds,
         );
       }
-      return notFoundResult;
+      return (await takeSentResponse()) ?? notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
@@ -1828,6 +1839,12 @@ export async function resolvePagesPageData(
       pageProps = { ...pageProps, ...initialProps };
       renderProps = { ...renderProps, pageProps };
     }
+  }
+
+  // The HTML render stores the entry and returns the sent response itself.
+  if (options.isDataReq) {
+    const sentResponse = await takeSentResponse();
+    if (sentResponse) return sentResponse;
   }
 
   return {

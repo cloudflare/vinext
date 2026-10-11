@@ -444,6 +444,127 @@ describe("pages page data", () => {
     expect(isrSet).not.toHaveBeenCalled();
   });
 
+  describe("getStaticProps page whose `_app` sends the response", () => {
+    // Next.js ignores a sent response for getStaticProps pages
+    // (`isResSent(res) && !isSSG` in render.tsx): the page still resolves and
+    // its entry is stored, but the visitor gets the sent response.
+    const AppComponent = Object.assign(function App() {}, {
+      getInitialProps({ ctx }: { ctx: { res: { headersSent: boolean } } }) {
+        ctx.res.headersSent = true;
+        return { appValue: "app", pageProps: {} };
+      },
+    });
+    function sentResponseOptions(overrides: Partial<ResolvePagesPageDataOptions>) {
+      return createOptions({
+        AppComponent,
+        createGsspReqRes() {
+          return {
+            req: {},
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {};
+              },
+            },
+            responsePromise: Promise.resolve(new Response("sent by app", { status: 302 })),
+          };
+        },
+        ...overrides,
+      });
+    }
+
+    it("still resolves the page for the HTML render", async () => {
+      const result = await resolvePagesPageData(
+        sentResponseOptions({
+          pageModule: { getStaticProps: () => ({ props: { fromStatic: true }, revalidate: 10 }) },
+        }),
+      );
+
+      // The HTML render stores the entry and then returns the sent response.
+      expect(result).toMatchObject({
+        kind: "render",
+        isrRevalidateSeconds: 10,
+        props: { appValue: "app", pageProps: { fromStatic: true } },
+      });
+      if (result.kind !== "render") throw new Error("expected render");
+      expect(result.documentReqRes?.res.headersSent).toBe(true);
+    });
+
+    it.each([
+      {
+        outcome: "props for a data request",
+        isDataReq: true,
+        result: { props: { fromStatic: true } },
+        stored: undefined,
+      },
+      {
+        outcome: "a redirect",
+        isDataReq: false,
+        result: { redirect: { destination: "/target", permanent: false } },
+        stored: expect.objectContaining({ kind: "REDIRECT" }),
+      },
+      { outcome: "notFound", isDataReq: false, result: { notFound: true }, stored: null },
+    ])("stores $outcome and returns the sent response", async ({ isDataReq, result, stored }) => {
+      const getStaticProps = vi.fn(() => result);
+      const isrSet = vi.fn(async () => {});
+      const resolved = await resolvePagesPageData(
+        sentResponseOptions({ isDataReq, isrSet, pageModule: { getStaticProps } }),
+      );
+
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      if (stored === undefined) {
+        expect(isrSet).not.toHaveBeenCalled();
+      } else {
+        expect(isrSet).toHaveBeenCalledWith("pages:/posts/post", stored, expect.anything());
+      }
+      if (resolved.kind !== "response") throw new Error("expected response");
+      expect(resolved.response.status).toBe(302);
+      await expect(resolved.response.text()).resolves.toBe("sent by app");
+    });
+
+    it("still regenerates a stale entry", async () => {
+      const renderIsrDocument = vi.fn<ResolvePagesPageDataOptions["renderIsrDocument"]>(
+        async () => {},
+      );
+      let regenerationPromise: Promise<void> | undefined;
+      await resolvePagesPageData(
+        sentResponseOptions({
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: true,
+            value: {
+              cacheControl: { revalidate: 1, expire: undefined },
+              value: { kind: "PAGES", html: "<p>stale</p>", pageData: {} },
+            },
+          }),
+          pageModule: { getStaticProps: () => ({ props: { fromStatic: true }, revalidate: 10 }) },
+          renderIsrDocument,
+          triggerBackgroundRegeneration: vi.fn((_key, callback) => {
+            regenerationPromise = callback();
+          }),
+        }),
+      );
+
+      await regenerationPromise;
+      expect(renderIsrDocument).toHaveBeenCalledOnce();
+      expect(renderIsrDocument.mock.calls[0]?.[0]).toMatchObject({
+        props: { appValue: "app", pageProps: { fromStatic: true } },
+        revalidateSeconds: 10,
+      });
+    });
+
+    it("keeps stopping at the sent response for getServerSideProps pages", async () => {
+      const getServerSideProps = vi.fn(() => ({ props: {} }));
+      const resolved = await resolvePagesPageData(
+        sentResponseOptions({ pageModule: { getServerSideProps } }),
+      );
+
+      expect(getServerSideProps).not.toHaveBeenCalled();
+      if (resolved.kind !== "response") throw new Error("expected response");
+      await expect(resolved.response.text()).resolves.toBe("sent by app");
+    });
+  });
+
   it("returns a notFound signal when getStaticPaths excludes a dynamic HTML path", async () => {
     const result = await resolvePagesPageData(
       createOptions({

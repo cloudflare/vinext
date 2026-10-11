@@ -10279,6 +10279,24 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(hitHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
     });
   }
+
+  // Next.js ignores a response App.getInitialProps sent for a getStaticProps
+  // page (`isResSent(res) && !isSSG`): the visitor gets the sent response, but
+  // the page is still rendered and stored.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+  it("stores a GSP page whose App.getInitialProps sent the response in prod", async () => {
+    const missResponse = await fetch(`${prodUrl}/gsp-sent-response`, { redirect: "manual" });
+    expect(missResponse.status).toBe(302);
+    expect(missResponse.headers.get("location")).toBe("/missing");
+    await missResponse.body?.cancel();
+
+    await vi.waitFor(async () => {
+      const hitResponse = await fetch(`${prodUrl}/gsp-sent-response`, { redirect: "manual" });
+      expect(hitResponse.status).toBe(200);
+      expect(hitResponse.headers.get("x-nextjs-cache")).toBe("HIT");
+      expect(await hitResponse.text()).toContain('<div id="page-content">gsp-sent-response</div>');
+    });
+  });
 });
 
 describe("Pages production asset manifest reuse", () => {

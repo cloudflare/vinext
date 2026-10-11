@@ -1130,9 +1130,6 @@ export function createPagesPageHandler(
               renderDocumentToString: (element) =>
                 renderAllReady(element).then((stream) => new Response(stream).text()),
               renderToReadableStream: renderAllReady,
-              // Next.js never stores a status `_document` set on its res for a
-              // Pages entry; keep the route's own status in the regenerated one.
-              statusCode: renderStatusCode ?? 200,
             });
             // The entry is written; nobody reads this response.
             await response.body?.cancel();
