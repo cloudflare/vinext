@@ -17,7 +17,11 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "vinext/internal/server/headers";
-import { isPageNotModified } from "vinext/internal/server/http-conditional";
+import {
+  generateETag,
+  generatesETags,
+  isPageNotModified,
+} from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
@@ -73,6 +77,7 @@ export type VinextResponseStoreEnv = WorkersResponseStoreClientEnv | WorkersResp
 const ROUTE_REVALIDATOR_ID = "vinext:response";
 const RESPONSE_STORE_KEY_PARAM = "__workers_response_store";
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+const STORED_WITHOUT_ETAG_HEADER = "X-Vinext-Response-Store-Without-ETag";
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const REPLAY_REQUEST_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
   name.trim().toLowerCase(),
@@ -237,7 +242,10 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
           await response.body?.cancel().catch(() => {});
           throw new Error("Vinext response-stage regeneration was not cacheable");
         }
-        return withoutRequestScopedHeaders(response, invocation.props);
+        return forStorage(
+          withoutRequestScopedHeaders(response, invocation.props),
+          invocation.props,
+        );
       }
       if (
         input.id === CACHE_FUNCTION_REVALIDATOR_ID &&
@@ -376,16 +384,19 @@ function notModifiedResponse(response: Response): Response {
 }
 
 /**
- * Whether Next.js sends this stored response through `sendRenderResult`, which
- * answers a conditional request by the page's ETag. It sends every App page
- * that way. A Pages redirect, and a Pages data request's notFound, are sent
- * without an ETag, as is a route handler's response. A Pages API response is
- * never stored.
+ * Whether Next.js sends this stored response with an ETag, which answers a
+ * conditional request. `sendRenderResult` gives a page's HTML one, but not its
+ * RSC payload or a Pages data request's JSON: it sends those from a Buffer,
+ * which it treats as dynamic. It gives a Pages page one whatever its status,
+ * but a Pages redirect is sent without an ETag, as is a route handler's
+ * response. A Pages API response is never stored.
  */
 function answersConditionalRequest(responseStageProps: unknown, status: number): boolean {
   if (responseStageProps === null || typeof responseStageProps !== "object") return false;
   const kind = Reflect.get(responseStageProps, "kind");
-  if (kind === "app-page" || kind === "app-not-found") return true;
+  if (kind === "app-page" || kind === "app-not-found") {
+    return Reflect.get(responseStageProps, "isRscRequest") !== true;
+  }
   let isDataRequest: boolean;
   if (kind === "hybrid-pages") {
     if (Reflect.get(responseStageProps, "resourceKind") !== "page") return false;
@@ -399,17 +410,65 @@ function answersConditionalRequest(responseStageProps: unknown, status: number):
   } else {
     return false;
   }
-  return (status >= 200 && status < 300) || (status === 404 && !isDataRequest);
+  return !isDataRequest && (status < 300 || isStoredErrorStatus(status));
 }
 
-/** Answer a stored page's conditional request as Next.js does for a cached page. */
+/**
+ * The entry to store for a response. A page is stored with Next.js's ETag, a
+ * hash of its payload, so a regeneration that renders the same page keeps the
+ * validator its clients hold. Reading the body never delays a client:
+ * admission reads its own branch of the body, no client waits on a
+ * regeneration, and a fill's client waits for the store's write.
+ *
+ * The store gives an entry without an ETag a per-revision one, which Next.js
+ * never sends, so such an entry is marked to drop it from its HITs.
+ */
+async function forStorage(response: Response, responseStageProps: unknown): Promise<Response> {
+  const headers = new Headers(response.headers);
+  let body: ArrayBuffer | ReadableStream<Uint8Array> | null = response.body;
+  if (
+    response.body !== null &&
+    generatesETags() &&
+    answersConditionalRequest(responseStageProps, response.status)
+  ) {
+    body = await response.arrayBuffer();
+    // Next.js hashes the string it decodes from the rendered page.
+    headers.set("ETag", generateETag(new TextDecoder().decode(body)));
+  } else if (headers.has("ETag")) {
+    return response;
+  } else {
+    headers.set(STORED_WITHOUT_ETAG_HEADER, "1");
+  }
+  return new Response(body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+/**
+ * Send a stored response as Next.js sends a cached one, answering a page's
+ * conditional request. With `generateEtags: false`, Next.js keeps an ETag the
+ * page set but never answers a conditional request with it.
+ */
 function storedForRequest(
   stored: Response,
   request: Request,
   responseStageProps: unknown,
 ): Response {
+  if (stored.headers.has(STORED_WITHOUT_ETAG_HEADER)) {
+    const headers = new Headers(stored.headers);
+    headers.delete("ETag");
+    headers.delete(STORED_WITHOUT_ETAG_HEADER);
+    return new Response(stored.body, {
+      headers,
+      status: stored.status,
+      statusText: stored.statusText,
+    });
+  }
   const etag = stored.headers.get("ETag");
   return etag &&
+    generatesETags() &&
     answersConditionalRequest(responseStageProps, stored.status) &&
     isPageNotModified(
       {
@@ -615,10 +674,14 @@ const handler = {
                 await admitted.body?.cancel().catch(() => {});
                 return;
               }
-              await responseStore.put(key, withoutRequestScopedHeaders(admitted, props), {
-                coalesce: true,
-                revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
-              });
+              await responseStore.put(
+                key,
+                await forStorage(withoutRequestScopedHeaders(admitted, props), props),
+                {
+                  coalesce: true,
+                  revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
+                },
+              );
             })
             .catch((error) => {
               console.error(
@@ -656,7 +719,7 @@ const handler = {
       const [foregroundBody, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
-        await responseStore.put(key, cacheResponse, {
+        await responseStore.put(key, await forStorage(cacheResponse, props), {
           coalesce: true,
           revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
         });
@@ -691,12 +754,15 @@ const handler = {
         const serializedRscInvocation = JSON.stringify(rscInvocation);
         await responseStore.put(
           rscKey,
-          new Response(rscData, {
-            headers: rscHeaders,
-            // As in Next.js, the page's RSC payload takes its document's
-            // status, except that it carries a redirect as a 200.
-            status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
-          }),
+          await forStorage(
+            new Response(rscData, {
+              headers: rscHeaders,
+              // As in Next.js, the page's RSC payload takes its document's
+              // status, except that it carries a redirect as a 200.
+              status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
+            }),
+            rscSeed.props,
+          ),
           {
             coalesce: true,
             revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedRscInvocation] },

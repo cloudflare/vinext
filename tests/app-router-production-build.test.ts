@@ -272,7 +272,7 @@ describe("App Router Production build", () => {
 
       expect(
         JSON.parse(fs.readFileSync(path.join(outDir, "server", "vinext-server.json"), "utf-8")),
-      ).toEqual({ prerenderSecret: sharedSecret, compress: true });
+      ).toEqual({ prerenderSecret: sharedSecret, compress: true, generateEtags: true });
       expect(fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8")).toContain(
         sharedSecret,
       );

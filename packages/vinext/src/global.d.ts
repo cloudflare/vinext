@@ -431,6 +431,12 @@ declare global {
       __VINEXT_DEPLOYMENT_ID?: string;
 
       /**
+       * `"false"` when `next.config.js` sets `generateEtags: false`, so no
+       * page gets an ETag.
+       */
+      __VINEXT_GENERATE_ETAGS?: string;
+
+      /**
        * `"true"` when `next.config.js` enables
        * `experimental.prefetchInlining`.
        */

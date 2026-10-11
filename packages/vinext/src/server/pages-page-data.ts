@@ -23,14 +23,13 @@ import {
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
   buildPagesNextDataScript,
-  generatePagesETag,
   isPagesStreamingBot,
   rendersPagesNotModified,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
-import { isPageNotModified } from "./http-conditional.js";
+import { generateETag, generatesETags, isPageNotModified } from "./http-conditional.js";
 import {
   createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,
@@ -1083,8 +1082,13 @@ function finalizeCachedPagesResponse(
   // Cache hits bypass the request/response context that normally inherits these
   // headers. Merge once, before a generated validator can supersede a source ETag.
   response = mergePagesNotFoundSourceHeaders(response, options.notFoundSourceHeaders);
-  if (html !== undefined && options.userAgent && isPagesStreamingBot(options.userAgent)) {
-    const etag = generatePagesETag(html);
+  if (
+    html !== undefined &&
+    generatesETags() &&
+    options.userAgent &&
+    isPagesStreamingBot(options.userAgent)
+  ) {
+    const etag = generateETag(html);
     response.headers.set("ETag", etag);
     if (
       isPageNotModified(

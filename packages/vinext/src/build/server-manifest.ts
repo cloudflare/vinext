@@ -34,6 +34,13 @@ export function readServerCompress(serverDir: string): boolean {
   return manifest?.compress !== false;
 }
 
+/** Read next.config `generateEtags` from vinext-server.json. */
+export function readServerGenerateEtags(serverDir: string): boolean {
+  const manifestPath = path.join(serverDir, "vinext-server.json");
+  const manifest = readJsonFile<{ generateEtags?: unknown }>(manifestPath);
+  return manifest?.generateEtags !== false;
+}
+
 /**
  * Read every server output root that contains a deployable response-stage
  * graph. Paths are stored relative to the project root so build artifacts stay

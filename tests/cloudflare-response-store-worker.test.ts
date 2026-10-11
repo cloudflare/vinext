@@ -13,6 +13,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { generateETag } from "../packages/vinext/src/server/http-conditional.js";
 
 const stages = vi.hoisted(() => ({ request: vi.fn(), response: vi.fn() }));
 
@@ -927,5 +928,231 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     );
     expect(regenerated.status).toBe(403);
     expect(await regenerated.text()).toBe("regenerated");
+  });
+
+  // Next.js's ETag hashes the page it sends, so a regeneration that renders
+  // the same page keeps the validator its clients hold.
+  it("stores a page with Next.js's ETag of its payload", async () => {
+    dispatchWithIdentity();
+    let body = "page";
+    stages.response.mockImplementation(async (request: Request) => {
+      const isWarmup = request.headers.get("user-agent") === "vinext-cloudflare-cdn-warm";
+      if (isWarmup) {
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+      }
+      // The stored ETag replaces one the render set.
+      const response = new Response(body, {
+        headers: {
+          "Cache-Control": "public, max-age=60",
+          ...(isWarmup ? {} : { ETag: 'W/"rendered"' }),
+        },
+      });
+      return isWarmup
+        ? response
+        : (deferResponseStoreAdmission(response, async (admitted) => admitted) ?? response);
+    });
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const missContext = context();
+    const miss = await handler.fetch(
+      new Request("https://example.com/a"),
+      {} as never,
+      missContext,
+    );
+    await miss.text();
+    await Promise.all(missContext.waitUntil.mock.calls.map(([promise]) => promise));
+    body = "\uFEFFwarmed";
+    const warmup = await handler.fetch(
+      new Request("https://example.com/b", {
+        headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+      }),
+      {} as never,
+      context(),
+    );
+    await warmup.text();
+
+    const stored = [...entries.values()];
+    // Next.js decodes the rendered page as a stream, which drops a BOM. It
+    // sends a page's RSC payload from a Buffer, without an ETag.
+    expect(stored.map((entry) => entry.headers.get("ETag"))).toEqual([
+      generateETag("page"),
+      generateETag("warmed"),
+      null,
+    ]);
+    const hit = await handler.fetch(
+      new Request("https://example.com/a", {
+        headers: { "Cache-Control": "max-age=0", "If-None-Match": generateETag("page") },
+      }),
+      {} as never,
+      context(),
+    );
+    expect(hit.status).toBe(304);
+    expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+
+    body = "page";
+    const regenerated = await createVinextResponseStoreOptions().regenerate(
+      {
+        args: stored[0]!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request("https://example.com/a"),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    expect(regenerated.headers.get("ETag")).toBe(generateETag("page"));
+    expect(await regenerated.text()).toBe("page");
+  });
+
+  // Next.js sends a route handler's ETag, if it sets one, and a page's RSC
+  // payload without one, so the store's per-revision ETag never reaches a HIT.
+  it.each([
+    ["a route handler", { isRscRequest: false, kind: "app-route-handler" }, null],
+    [
+      "a route handler that sets an ETag",
+      { isRscRequest: false, kind: "app-route-handler" },
+      'W/"app"',
+    ],
+    ["a page's RSC payload", { isRscRequest: true }, null],
+  ])("sends %s with its own ETag on a HIT", async (_name, overrides, etag) => {
+    dispatchWithIdentity(false, overrides);
+    stages.response.mockImplementation(
+      async () =>
+        new Response("payload", {
+          headers: { "Cache-Control": "public, max-age=60", ...(etag ? { ETag: etag } : {}) },
+        }),
+    );
+    const { store } = createMemoryStore();
+    // The store gives an entry without an ETag a per-revision one.
+    const fetch = store.fetch;
+    store.fetch = vi.fn(async (request: Request) => {
+      const response = await fetch(request);
+      if (response.status !== 200 || response.headers.has("ETag")) return response;
+      const headers = new Headers(response.headers);
+      headers.set("ETag", 'W/"entry:1"');
+      return new Response(response.body, { headers, status: response.status });
+    });
+    const handler = createVinextResponseStoreHandler(store);
+
+    await (
+      await handler.fetch(new Request("https://example.com/a"), {} as never, context())
+    ).text();
+    const hit = await handler.fetch(
+      new Request("https://example.com/a", {
+        headers: { "Cache-Control": "max-age=0", "If-None-Match": "*" },
+      }),
+      {} as never,
+      context(),
+    );
+
+    expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(hit.status).toBe(200);
+    expect(hit.headers.get("ETag")).toBe(etag);
+    expect([...hit.headers.keys()].some((name) => name.includes("without-etag"))).toBe(false);
+    expect(await hit.text()).toBe("payload");
+  });
+
+  // Next.js gives a Pages page its ETag whatever its status.
+  it.each([401, 403])("stores a Pages page with status %i with its ETag", async (status) => {
+    dispatchWithIdentity(true, {
+      isDataRequest: false,
+      kind: "hybrid-pages",
+      resourceKind: "page",
+    });
+    stages.response.mockImplementation(
+      async () =>
+        new Response("denied", { headers: { "Cache-Control": "public, max-age=60" }, status }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    await (
+      await handler.fetch(new Request("https://example.com/a"), {} as never, context())
+    ).text();
+    expect([...entries.values()][0]?.headers.get("ETag")).toBe(generateETag("denied"));
+
+    const hit = await handler.fetch(
+      new Request("https://example.com/a", {
+        headers: { "Cache-Control": "max-age=0", "If-None-Match": generateETag("denied") },
+      }),
+      {} as never,
+      context(),
+    );
+    expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(hit.status).toBe(304);
+  });
+
+  // With `generateEtags: false`, Next.js sends a page without an ETag, so it
+  // never answers a conditional request with a 304.
+  it("gives a page no ETag with generateEtags: false", async () => {
+    vi.stubEnv("__VINEXT_GENERATE_ETAGS", "false");
+    try {
+      dispatchWithIdentity();
+      stages.response.mockImplementation(
+        async () => new Response("page", { headers: { "Cache-Control": "public, max-age=60" } }),
+      );
+      const { entries, store } = createMemoryStore();
+      // The store gives an entry without an ETag a per-revision one.
+      const fetch = store.fetch;
+      store.fetch = vi.fn(async (request: Request) => {
+        const response = await fetch(request);
+        if (response.status !== 200) return response;
+        const headers = new Headers(response.headers);
+        headers.set("ETag", 'W/"entry:1"');
+        return new Response(response.body, { headers, status: response.status });
+      });
+      const handler = createVinextResponseStoreHandler(store);
+
+      await (
+        await handler.fetch(new Request("https://example.com/page"), {} as never, context())
+      ).text();
+      expect([...entries.values()][0]?.headers.has("ETag")).toBe(false);
+
+      const hit = await handler.fetch(
+        new Request("https://example.com/page", {
+          headers: { "Cache-Control": "max-age=0", "If-None-Match": "*" },
+        }),
+        {} as never,
+        context(),
+      );
+      expect(hit.status).toBe(200);
+      expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+      expect(hit.headers.has("ETag")).toBe(false);
+      expect(await hit.text()).toBe("page");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps a page's own ETag with generateEtags: false but never sends a 304", async () => {
+    vi.stubEnv("__VINEXT_GENERATE_ETAGS", "false");
+    try {
+      dispatchWithIdentity();
+      stages.response.mockImplementation(
+        async () =>
+          new Response("page", {
+            headers: { "Cache-Control": "public, max-age=60", ETag: '"own"' },
+          }),
+      );
+      const { store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+
+      await (
+        await handler.fetch(new Request("https://example.com/page"), {} as never, context())
+      ).text();
+      const hit = await handler.fetch(
+        new Request("https://example.com/page", {
+          headers: { "Cache-Control": "max-age=0", "If-None-Match": '"own"' },
+        }),
+        {} as never,
+        context(),
+      );
+      expect(hit.status).toBe(200);
+      expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+      expect(hit.headers.get("ETag")).toBe('"own"');
+      expect(await hit.text()).toBe("page");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

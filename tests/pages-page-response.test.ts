@@ -11,8 +11,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesPageResponse,
   isPagesStreamingBot,
-  generatePagesETag,
 } from "../packages/vinext/src/server/pages-page-response.js";
+import { generateETag } from "../packages/vinext/src/server/http-conditional.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
 import { renderTracedPagesPageResponse } from "../packages/vinext/src/server/pages-page-handler.js";
 
@@ -1213,6 +1213,24 @@ describe("pages page response", () => {
     expect(notModifiedResponse.headers.get("etag")).toBe(etag);
   });
 
+  it("gives a crawler's page no ETag with generateEtags: false", async () => {
+    vi.stubEnv("__VINEXT_GENERATE_ETAGS", "false");
+    let response: Response;
+    try {
+      response = await renderPagesPageResponse({
+        ...createCommonOptions().options,
+        userAgent: "Googlebot",
+        ifNoneMatch: "*",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("etag")).toBeNull();
+    expect(await response.text()).toContain("<!DOCTYPE html>");
+  });
+
   it("returns the page for a matching If-None-Match when the CDN adapter sends the 304", async () => {
     const common = createCommonOptions();
     const etag = (
@@ -1238,7 +1256,7 @@ describe("pages page response", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("etag")).toBe(etag);
-    expect(generatePagesETag(await response.text())).toBe(etag);
+    expect(generateETag(await response.text())).toBe(etag);
   });
 
   it("keeps the 304 for a bodiless page status when the CDN adapter sends the 304", async () => {
@@ -1258,6 +1276,27 @@ describe("pages page response", () => {
 
     expect(response.status).toBe(304);
     expect(deferNotModifiedResponse).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["with ETags", "true", undefined],
+    ["with generateEtags: false", "false", "*"],
+  ])("sends a bodiless page status to a crawler %s", async (_name, generateEtags, ifNoneMatch) => {
+    vi.stubEnv("__VINEXT_GENERATE_ETAGS", generateEtags);
+    let response: Response;
+    try {
+      response = await renderPagesPageResponse({
+        ...createCommonOptions().options,
+        statusCode: 204,
+        userAgent: "Googlebot",
+        ifNoneMatch,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(response.status).toBe(204);
+    expect(response.body).toBeNull();
   });
 
   it("returns 200 + ETag when If-None-Match does not match on bot response", async () => {
@@ -1321,7 +1360,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: false,
@@ -1377,7 +1416,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: false,
@@ -1431,11 +1470,70 @@ describe("pages page response", () => {
     }
   });
 
+  it("gives an ISR cache-HIT no ETag with generateEtags: false", async () => {
+    const cachedHtml =
+      '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
+      "<script>window.__NEXT_DATA__ = {}</script></body></html>";
+    vi.stubEnv("__VINEXT_GENERATE_ETAGS", "false");
+    let result: Awaited<ReturnType<typeof resolvePagesPageData>>;
+    try {
+      result = await resolvePagesPageData({
+        applyRequestContexts: vi.fn(),
+        buildId: "build-123",
+        isDataReq: false,
+        createGsspReqRes: vi.fn() as never,
+        createPageElement: vi.fn(),
+        fontLinkHeader: "",
+        i18n: { locale: "en", locales: ["en"], defaultLocale: "en" },
+        isrCacheKey: (_router: string, pathname: string) => `pages:${pathname}`,
+        isrGet: vi.fn(async () => ({
+          isStale: false,
+          value: {
+            value: {
+              kind: "PAGES" as const,
+              html: cachedHtml,
+              pageData: {},
+              headers: undefined,
+              status: 200,
+            },
+            cacheControl: { revalidate: 60, expire: undefined },
+          },
+        })) as never,
+        isrSet: vi.fn(async () => {}),
+        expireSeconds: undefined,
+        pageModule: {
+          getStaticProps: vi.fn(async () => ({ props: {}, revalidate: 60 })),
+        },
+        params: {},
+        query: {},
+        route: { isDynamic: false },
+        routePattern: "/posts",
+        routeUrl: "/posts",
+        runInFreshUnifiedContext: async (cb) => cb(),
+        safeJsonStringify: JSON.stringify,
+        sanitizeDestination: (d) => d,
+        triggerBackgroundRegeneration: vi.fn(),
+        renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+        userAgent: "Googlebot",
+        ifNoneMatch: generateETag(cachedHtml),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(result.kind).toBe("response");
+    if (result.kind === "response") {
+      expect(result.response.status).toBe(200);
+      expect(result.response.headers.get("etag")).toBeNull();
+      expect(await result.response.text()).toBe(cachedHtml);
+    }
+  });
+
   it("returns the cached page on ISR cache-HIT for If-None-Match sent with If-Modified-Since", async () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: false,
@@ -1494,7 +1592,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: false,
@@ -1557,7 +1655,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>stale</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: true,
@@ -1613,7 +1711,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>stale</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: true,
@@ -1671,7 +1769,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>stale</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const etag = generatePagesETag(cachedHtml);
+    const etag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: true,
@@ -1755,7 +1853,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: false,
@@ -1813,7 +1911,7 @@ describe("pages page response", () => {
     const cachedHtml =
       '<!DOCTYPE html><html><head></head><body><div id="__next"><p>stale</p></div>' +
       "<script>window.__NEXT_DATA__ = {}</script></body></html>";
-    const expectedEtag = generatePagesETag(cachedHtml);
+    const expectedEtag = generateETag(cachedHtml);
 
     const isrGetMock = vi.fn(async () => ({
       isStale: true,

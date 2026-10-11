@@ -285,6 +285,12 @@ export type NextConfig = {
    * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/compress
    */
   compress?: boolean;
+  /**
+   * Give pages, and the Node production server's static files, an ETag.
+   * Defaults to true.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/generateEtags
+   */
+  generateEtags?: boolean;
   /** Keep the original request URL visible to middleware/proxy. */
   skipProxyUrlNormalize?: boolean;
   /** @deprecated Use `skipProxyUrlNormalize` instead. */
@@ -513,6 +519,8 @@ export type ResolvedNextConfig = {
   trailingSlash: boolean;
   /** Whether the Node production server compresses responses (`compress`, default true). */
   compress: boolean;
+  /** Whether pages and static files get an ETag (`generateEtags`, default true). */
+  generateEtags: boolean;
   skipProxyUrlNormalize: boolean;
   typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
@@ -798,7 +806,7 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
  * config that mutates it cannot leak into later loads.
  */
 function createFunctionConfigDefaults(): NextConfig {
-  return { pageExtensions: [...DEFAULT_PAGE_EXTENSIONS], compress: true };
+  return { pageExtensions: [...DEFAULT_PAGE_EXTENSIONS], compress: true, generateEtags: true };
 }
 
 /**
@@ -1713,6 +1721,7 @@ export async function resolveNextConfig(
       assetPrefix: "",
       trailingSlash: false,
       compress: true,
+      generateEtags: true,
       skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
@@ -2074,6 +2083,7 @@ export async function resolveNextConfig(
     trailingSlash: config.trailingSlash ?? false,
     // Next.js disables compression only for an explicit `compress: false`.
     compress: config.compress !== false,
+    generateEtags: config.generateEtags !== false,
     skipProxyUrlNormalize:
       config.skipProxyUrlNormalize ?? config.skipMiddlewareUrlNormalize ?? false,
     typescript:

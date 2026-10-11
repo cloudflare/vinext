@@ -27,7 +27,6 @@ import {
   type RenderPageEnhancers,
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
-import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
@@ -37,7 +36,7 @@ import {
 } from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
-import { isPageNotModified } from "./http-conditional.js";
+import { generateETag, generatesETags, isPageNotModified } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -53,16 +52,6 @@ import { isPageNotModified } from "./http-conditional.js";
  */
 export function isPagesStreamingBot(userAgent: string): boolean {
   return isBotUserAgent(userAgent);
-}
-
-// ---------------------------------------------------------------------------
-// ETag generation — FNV-1a 52-bit, matching Next.js's generateETag() in
-// packages/next/src/server/lib/etag.ts. Both produce a strong ETag (no W/
-// prefix) when weak=false, which is the default Next.js uses at runtime.
-// ---------------------------------------------------------------------------
-
-export function generatePagesETag(payload: string): string {
-  return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
 }
 
 /**
@@ -785,9 +774,10 @@ export async function renderPagesPageResponse(
   // setup above so bot responses still carry the correct cache semantics.
   if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
     const fullHtml = await readStreamAsText(compositeStream);
-    const etag = generatePagesETag(fullHtml);
-    responseHeaders.set("ETag", etag);
+    const etag = generatesETags() ? generateETag(fullHtml) : null;
+    if (etag) responseHeaders.set("ETag", etag);
     if (
+      etag &&
       isPageNotModified(
         {
           cacheControl: options.requestCacheControl,
@@ -803,7 +793,8 @@ export async function renderPagesPageResponse(
         headers: responseHeaders,
       });
     }
-    return new Response(fullHtml, {
+    const hasBody = finalStatus !== 204 && finalStatus !== 205 && finalStatus !== 304;
+    return new Response(hasBody ? fullHtml : null, {
       status: finalStatus,
       headers: responseHeaders,
     });

@@ -58,6 +58,8 @@ describe("ifRangeAllowsRange", () => {
     expect(ifRangeAllowsRange('W/"asset"', '"asset"', mtimeMs)).toBe(false);
     expect(ifRangeAllowsRange('"asset"', 'W/"asset"', mtimeMs)).toBe(false);
     expect(ifRangeAllowsRange('"other"', '"asset"', mtimeMs)).toBe(false);
+    // An entity tag matches nothing on a representation without an ETag.
+    expect(ifRangeAllowsRange('""', undefined, mtimeMs)).toBe(false);
   });
 
   it("accepts an equal or future If-Range date", () => {

@@ -451,6 +451,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "vinext never sends an X-Powered-By header",
   },
+  generateEtags: {
+    status: "partial",
+    detail:
+      "false gives pages and the Node production server's static files no ETag; Cloudflare Workers static assets and the Vite dev server's files keep theirs",
+  },
 };
 
 // ── Library support map ────────────────────────────────────────────────────

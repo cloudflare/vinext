@@ -78,7 +78,11 @@ import type {
   PrerenderSpecialErrorMarker,
 } from "vinext/shims/request-context";
 import { collectInlineCssManifest } from "../build/inline-css.js";
-import { readPrerenderSecret, readServerCompress } from "../build/server-manifest.js";
+import {
+  readPrerenderSecret,
+  readServerCompress,
+  readServerGenerateEtags,
+} from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
@@ -494,6 +498,8 @@ function mergeVaryHeader(
   return merged;
 }
 
+const ETAG_HEADER: ReadonlySet<string> = new Set(["etag"]);
+
 const OMIT_METHOD_NOT_ALLOWED_HEADERS: ReadonlySet<string> = new Set([
   "allow",
   "content-encoding",
@@ -694,6 +700,9 @@ function sendCompressed(
  * `extraHeaders` go on every response for the file. `representationHeaders` go
  * only on responses that carry the file's bytes (200 and 206), never on a 304,
  * 412, 416 or 405.
+ *
+ * Without `generateEtags`, the file has no ETag, as next.config
+ * `generateEtags: false` gives `next start`'s static files none.
  */
 async function tryServeStatic(
   req: IncomingMessage,
@@ -701,6 +710,7 @@ async function tryServeStatic(
   clientDir: string,
   pathname: string,
   compress: boolean,
+  generateEtags: boolean,
   cache?: StaticFileCache,
   extraHeaders?: Record<string, string | string[]>,
   statusCode?: number,
@@ -783,18 +793,26 @@ async function tryServeStatic(
     // The cache adds `Vary: Accept-Encoding` to the identity and 304 headers
     // whenever a precompressed sidecar exists. With compression disabled no
     // representation varies by Accept-Encoding, so drop that token.
-    const notModifiedBaseHeaders = encodingAllowed
-      ? entry.notModifiedHeaders
-      : omitVaryToken(entry.notModifiedHeaders, "Accept-Encoding");
-    const originalHeaders = encodingAllowed
-      ? entry.original.headers
-      : omitVaryToken(entry.original.headers, "Accept-Encoding");
-    const variantHeaders = variant === entry.original ? originalHeaders : variant.headers;
+    const fileHeaders = (headers: Record<string, string | string[]>) =>
+      generateEtags ? headers : omitHeadersCaseInsensitive(headers, ETAG_HEADER);
+    const notModifiedBaseHeaders = fileHeaders(
+      encodingAllowed
+        ? entry.notModifiedHeaders
+        : omitVaryToken(entry.notModifiedHeaders, "Accept-Encoding"),
+    );
+    const originalHeaders = fileHeaders(
+      encodingAllowed
+        ? entry.original.headers
+        : omitVaryToken(entry.original.headers, "Accept-Encoding"),
+    );
+    const variantHeaders =
+      variant === entry.original ? originalHeaders : fileHeaders(variant.headers);
 
+    const entryEtag = generateEtags ? entry.etag : undefined;
     const validators = extraHeaders
-      ? resolveStaticValidators(entry.etag, entry.mtimeMs, extraHeaders)
+      ? resolveStaticValidators(entryEtag, entry.mtimeMs, extraHeaders)
       : undefined;
-    const effectiveEtag = validators ? validators.etag : entry.etag;
+    const effectiveEtag = validators ? validators.etag : entryEtag;
     const effectiveMtimeMs = validators ? validators.mtimeMs : entry.mtimeMs;
 
     const preconditionResult =
@@ -827,7 +845,7 @@ async function tryServeStatic(
       requestRange,
       ifRange,
       entry.original.size,
-      effectiveEtag ?? "",
+      effectiveEtag,
       effectiveMtimeMs,
       responseStatus,
     );
@@ -939,13 +957,14 @@ async function tryServeStatic(
   // ext and the hash extraction both come from the same file — they can diverge
   // after HTML fallback (e.g. /_next/static/widget-abc123 → widget-abc123.html).
   // Fall back to mtime for non-hashed files.
-  const etag =
-    (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
-    `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
+  const etag = generateEtags
+    ? (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
+      `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`
+    : undefined;
   const baseHeaders: Record<string, string | string[]> = {
     "Content-Type": ct,
     "Cache-Control": cacheControl,
-    ETag: etag,
+    ...(etag ? { ETag: etag } : {}),
     "Last-Modified": new Date(resolved.mtimeMs).toUTCString(),
     "Accept-Ranges": "bytes",
     ...extraHeaders,
@@ -981,7 +1000,7 @@ async function tryServeStatic(
   if (preconditionResult === "not-modified") {
     const notModifiedBaseHeaders: Record<string, string | string[]> = {
       "Cache-Control": cacheControl,
-      ETag: etag,
+      ...(etag ? { ETag: etag } : {}),
       "Last-Modified": new Date(resolved.mtimeMs).toUTCString(),
       ...extraHeaders,
     };
@@ -998,7 +1017,7 @@ async function tryServeStatic(
     requestRange,
     ifRange,
     resolved.size,
-    effectiveEtag ?? "",
+    effectiveEtag,
     effectiveMtimeMs,
     responseStatus,
   );
@@ -1097,7 +1116,7 @@ function sendStaticMethodNotAllowed(
 }
 
 function resolveStaticValidators(
-  etag: string,
+  etag: string | undefined,
   mtimeMs: number,
   extraHeaders: Record<string, string | string[]>,
 ): { etag: string | undefined; mtimeMs: number } {
@@ -1147,7 +1166,7 @@ function resolveRequestedRange(
   rangeHeader: string | undefined,
   ifRangeHeader: string | undefined,
   size: number,
-  etag: string,
+  etag: string | undefined,
   mtimeMs: number,
   responseStatus: number,
 ): ByteRange {
@@ -1747,6 +1766,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const prerenderSecret = readPrerenderSecret(serverDir);
   // next.config `compress: false` turns compression off, as in `next start`.
   const compress = compressOption && readServerCompress(serverDir);
+  // next.config `generateEtags: false` gives static files no ETag.
+  const generateEtags = readServerGenerateEtags(serverDir);
 
   // Import the RSC handler. importServerEntryModule uses the bare file://
   // URL so lazy chunks that import the entry back resolve to the same module
@@ -1919,7 +1940,17 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         appRouterAssetPrefix,
       );
       if (assetLookupPath) {
-        if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
+        if (
+          await tryServeStatic(
+            req,
+            res,
+            clientDir,
+            assetLookupPath,
+            compress,
+            generateEtags,
+            staticCache,
+          )
+        ) {
           return;
         }
       }
@@ -1958,6 +1989,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           clientDir,
           params.imageUrl,
           false,
+          // Next.js's image optimizer always sends an ETag.
+          true,
           staticCache,
           imageSecurityHeaders,
           undefined,
@@ -2017,6 +2050,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           clientDir,
           staticFilePath,
           compress,
+          generateEtags,
           staticCache,
           staticResponseHeaders,
           response.status,
@@ -2194,6 +2228,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // next.config `compress: false` turns compression off, as in `next start`.
   const compress = compressOption && readServerCompress(serverDir);
+  // next.config `generateEtags: false` gives static files no ETag.
+  const generateEtags = readServerGenerateEtags(serverDir);
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";
@@ -2360,7 +2396,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // router classifies unmatched static paths after resolving rewrites.
     const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
     if (pagesAssetLookup) {
-      if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
+      if (
+        await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          pagesAssetLookup,
+          compress,
+          generateEtags,
+          staticCache,
+        )
+      ) {
         return;
       }
     }
@@ -2582,6 +2628,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 clientDir,
                 params.imageUrl,
                 false,
+                // Next.js's image optimizer always sends an ETag.
+                true,
                 staticCache,
                 imageSecurityHeaders,
                 undefined,
@@ -2608,6 +2656,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             clientDir,
             requestPathname,
             compress,
+            generateEtags,
             staticCache,
             stagedHeaders,
           );

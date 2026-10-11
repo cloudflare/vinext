@@ -2868,6 +2868,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
           nextConfig.trailingSlash ? "true" : "false",
         );
+        // next.config `generateEtags: false` gives no page an ETag, so none
+        // answers a conditional request with a 304, as in Next.js.
+        defines["process.env.__VINEXT_GENERATE_ETAGS"] = JSON.stringify(
+          nextConfig.generateEtags ? "true" : "false",
+        );
         // Next.js uses this compile-time value to switch App Router navigation
         // from header-selected RSC responses to static `.txt` Flight assets.
         defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
@@ -8014,6 +8019,9 @@ export const loadServerActionClient = ${
             // next.config `compress`, read by the Node production server for
             // every entry shape (including Worker-style facades).
             compress: nextConfig?.compress !== false,
+            // next.config `generateEtags`, read by the Node production server
+            // for static files.
+            generateEtags: nextConfig?.generateEtags !== false,
             ...(serverRuntimeOutputDirs.size === 0
               ? {}
               : {

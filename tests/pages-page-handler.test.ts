@@ -31,7 +31,7 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
-import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
+import { generateETag } from "../packages/vinext/src/server/http-conditional.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -885,7 +885,7 @@ describe("createPagesPageHandler — preview responses", () => {
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-payload.ts
       // Bot ETag coverage: test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts
       const html = "prebuilt 404";
-      const etag = generatePagesETag(html);
+      const etag = generateETag(html);
       const sourceEtag = '"source-page"';
       const adapter = Object.assign(new DefaultCdnCacheAdapter(), {
         hasPrerenderedPages: true,

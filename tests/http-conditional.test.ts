@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { generateETag as nextGenerateETag } from "next/dist/server/lib/etag.js";
 import {
   evaluateStaticPreconditions,
+  generateETag,
   isPageNotModified,
   matchesIfMatch,
   matchesIfNoneMatch,
 } from "../packages/vinext/src/server/http-conditional.js";
+
+describe("generateETag", () => {
+  it("gives a payload the ETag Next.js gives it", () => {
+    for (const payload of ["", "<html></html>", '{"pageProps":{}}', "\uFEFF\u00e9\u{1F600}"]) {
+      expect(generateETag(payload)).toBe(nextGenerateETag(payload));
+    }
+  });
+});
 
 describe("matchesIfNoneMatch", () => {
   it("matches an identical entity tag", () => {
@@ -110,9 +120,11 @@ describe("matchesIfMatch", () => {
     expect(matchesIfMatch('"other", "asset,part"', '"asset,part"')).toBe(true);
   });
 
-  it("matches a standalone wildcard when the representation exists", () => {
-    expect(matchesIfMatch(" \t * \t ", undefined)).toBe(true);
+  it("matches a standalone wildcard when the representation has an ETag", () => {
+    expect(matchesIfMatch(" \t * \t ", '"asset"')).toBe(true);
     expect(matchesIfMatch('*, "asset"', '"asset"')).toBe(false);
+    // Next.js's `send` fails every If-Match without an ETag.
+    expect(matchesIfMatch("*", undefined)).toBe(false);
   });
 
   it("rejects malformed entity-tag lists", () => {

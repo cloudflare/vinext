@@ -60,14 +60,18 @@ export function parseByteRange(value: string | undefined, size: number): ByteRan
  */
 export function ifRangeAllowsRange(
   value: string | undefined,
-  etag: string,
+  etag: string | undefined,
   mtimeMs: number,
 ): boolean {
   if (!value) return true;
 
   const trimmed = value.trim();
   if (trimmed.startsWith('"') || trimmed.startsWith("W/")) {
-    return !trimmed.startsWith("W/") && !etag.startsWith("W/") && trimmed === etag;
+    // As in Next.js's `send`, an entity tag matches only a representation
+    // with an ETag.
+    return (
+      etag !== undefined && !trimmed.startsWith("W/") && !etag.startsWith("W/") && trimmed === etag
+    );
   }
 
   const timestamp = parseHttpDate(trimmed);
