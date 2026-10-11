@@ -2170,6 +2170,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible) return null;
+    // Pages routes match the raw request pathname, as in the Pages-only
+    // pipeline and Next.js: static segments keep their encoded identity, so
+    // `/%66r/...` is not the `fr` locale and `/%61bout` is not `/about`, and the
+    // route trie decodes dynamic captures once. `cleanPathname` is the decoded
+    // canonical form, so it only names the Pages route after a rewrite.
+    const pagesRouteUrl = cleanPathnameIsRequestPathname
+      ? requestCleanPathname + resolvedUrl.slice(pathnameForResolvedUrl(resolvedUrl).length)
+      : resolvedUrl;
     let sharedOuterPolicyNeedsReconciliation = false;
     const dispatchPagesResponseStage = dispatchResponseStage
       ? async (
@@ -2221,7 +2229,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               requestOrigin: url.origin,
               resourceKind,
               requestUrl: request.url,
-              resolvedUrl,
+              resolvedUrl: pagesRouteUrl,
               scriptNonce: scriptNonce ?? null,
             },
             { cache },
@@ -2259,7 +2267,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             isRscRequest,
             matchKind,
             middlewareContext,
-            pathname: resolvedUrl,
+            pathname: pagesRouteUrl,
             pagesDataRequest,
             request,
             url,
