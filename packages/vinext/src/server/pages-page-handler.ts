@@ -1095,6 +1095,13 @@ export function createPagesPageHandler(
           asPath: routerAsPath,
           resolvedUrl: pagesResolvedUrl,
           async renderIsrDocument(regeneration) {
+            // Next.js renders a regeneration with every Suspense boundary
+            // resolved rather than streaming fallbacks into the entry.
+            const renderAllReady = async (element: ReactNode) => {
+              const stream = await renderToReadableStream(element);
+              await (stream as ReadableStream<Uint8Array> & { allReady?: Promise<void> }).allReady;
+              return stream;
+            };
             const response = await renderPagesPageResponse({
               ...buildPageResponseOptions({
                 documentReqRes: regeneration.documentReqRes,
@@ -1105,14 +1112,12 @@ export function createPagesPageHandler(
                 ...withErrorStatusCode(regeneration.pageProps, regeneration.props),
               }),
               awaitIsrWrite: true,
-              // Next.js renders a regeneration with every Suspense boundary
-              // resolved rather than streaming fallbacks into the entry.
-              async renderToReadableStream(element) {
-                const stream = await renderToReadableStream(element);
-                await (stream as ReadableStream<Uint8Array> & { allReady?: Promise<void> })
-                  .allReady;
-                return stream;
-              },
+              renderDocumentToString: (element) =>
+                renderAllReady(element).then((stream) => new Response(stream).text()),
+              renderToReadableStream: renderAllReady,
+              // Next.js never stores a status `_document` set on its res for a
+              // Pages entry; keep the route's own status in the regenerated one.
+              statusCode: renderStatusCode ?? 200,
             });
             // The entry is written; nobody reads this response.
             await response.body?.cancel();

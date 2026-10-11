@@ -1298,6 +1298,93 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
     await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
   });
 
+  it("renders the document shell with every Suspense boundary resolved too", async () => {
+    const pageWrites = serveStaleEntry();
+    const releases: Array<() => void> = [];
+    const DocumentComponent = () =>
+      React.createElement(
+        "html",
+        null,
+        React.createElement(
+          "body",
+          null,
+          React.createElement("div", {
+            id: "__next",
+            dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+          }),
+        ),
+      );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+      async renderToReadableStream(element) {
+        const stream = await renderToReadableStream(element);
+        const allReady = new Promise<void>((resolve) => releases.push(resolve));
+        return Object.assign(stream, { allReady });
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+
+    // The page body renders first, then the `_document` shell.
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    releases[0]?.();
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pageWrites()).toHaveLength(0);
+
+    releases[1]?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("keeps the route status when `_document` changes the response status", async () => {
+    // Next.js stores no status for a Pages entry, so a status `_document` set
+    // on its res never replays from the cache.
+    const pageWrites = serveStaleEntry();
+    const DocumentComponent = Object.assign(
+      () =>
+        React.createElement(
+          "html",
+          null,
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", {
+              id: "__next",
+              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+            }),
+          ),
+        ),
+      {
+        async getInitialProps(ctx: {
+          res: { statusCode: number };
+          defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+        }) {
+          ctx.res.statusCode = 404;
+          return ctx.defaultGetInitialProps(ctx);
+        },
+      },
+    );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+    const [, entry] = pageWrites()[0] ?? [];
+    if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+    expect(entry.status).toBe(200);
+    expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+  });
+
   it("reports a failed regeneration without writing the entry", async () => {
     const pageWrites = serveStaleEntry();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
