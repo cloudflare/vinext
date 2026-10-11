@@ -276,6 +276,42 @@ describe("RSC stream hint helpers", () => {
     ]);
   });
 
+  it("forwards a plain row only up to its last complete UTF-8 character", async () => {
+    // The inline RSC embed decodes each chunk on its own, so a chunk ending
+    // mid-character would be embedded as base64 instead of text.
+    const encoder = new TextEncoder();
+    const row = encoder.encode('0:D{"name":"page"}\n1:{"t":"あい😀"}\n');
+    const hint = ':HL["/assets/app.css","stylesheet"]\n';
+    const firstSplit = row.indexOf(0x81) + 1; // inside あ
+    const secondSplit = row.indexOf(0x9f) + 1; // inside 😀
+    const inputs = [
+      row.slice(0, firstSplit),
+      row.slice(firstSplit, secondSplit),
+      new Uint8Array([...row.slice(secondSplit), ...encoder.encode(hint)]),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      '0:D{"name":"page"}\n1:{"t":"',
+      "あい",
+      '😀"}\n' + normalizedStyleHint(hint),
+    ]);
+  });
+
   it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
     const encoder = new TextEncoder();
     const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);
