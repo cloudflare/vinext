@@ -25,7 +25,6 @@ import {
   PAGES_PREVIEW_CACHE_CONTROL,
   type PagesPreviewState,
 } from "./pages-preview.js";
-import { hasUserDocumentGetInitialProps } from "./document-initial-head.js";
 import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
@@ -339,15 +338,6 @@ export type CreatePagesPageHandlerOptions = {
   getFontPreloads: () => Array<{ href: string; type: string }>;
   /** `renderToReadableStream` from `react-dom/server.edge`. */
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
-  /**
-   * Render a second ISR pass to a string (wraps renderToReadableStream).
-   * `onHeadReady` runs inside the pass's head scope, after the render and
-   * before the scope unwinds, so callers can read the collected `<head>`.
-   */
-  renderIsrPassToStringAsync: (
-    element: ReactNode,
-    onHeadReady?: () => Promise<void>,
-  ) => Promise<string>;
   /** `safeJsonStringify` from `vinext/html`. */
   safeJsonStringify: (value: unknown) => string;
   /** `sanitizeDestination` from the config-matchers module. */
@@ -454,7 +444,6 @@ export function createPagesPageHandler(
     getFontStyles,
     getFontPreloads,
     renderToReadableStream,
-    renderIsrPassToStringAsync,
     safeJsonStringify,
     sanitizeDestination,
     createPageElement,
@@ -945,6 +934,119 @@ export function createPagesPageHandler(
           return reqRes;
         };
 
+        type PageRenderInput = Pick<
+          Parameters<typeof renderPagesPageResponse>[0],
+          "documentReqRes" | "expireSeconds" | "gsspRes" | "isFallback" | "isrRevalidateSeconds"
+        > & { pageProps: Record<string, unknown>; renderProps: Record<string, unknown> };
+        // Shared by the foreground render and stale ISR regeneration, so a
+        // regenerated entry runs the same document pipeline as a MISS — the
+        // way Next.js re-runs its full render — instead of patching the cached
+        // shell. Declared before the data step because regeneration starts
+        // inside it.
+        const buildPageResponseOptions = (
+          render: PageRenderInput,
+        ): Parameters<typeof renderPagesPageResponse>[0] => {
+          // Include both the global _app module and the matched page module.
+          // _app is wrapped around every page and any CSS/JS it imports must
+          // be linked from the rendered HTML (LHF-5 symptom). Match Next.js
+          // document ordering: shared _app files first, then page files.
+          const pageModuleIds: (string | null | undefined)[] = [];
+          if (appAssetPath) pageModuleIds.push(appAssetPath);
+          if (route.filePath) pageModuleIds.push(route.filePath);
+          const initialStylesheetHrefs = new Set<string>();
+          const assetTags = collectAssetTags({
+            manifest,
+            moduleIds: pageModuleIds,
+            scriptNonce,
+            disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
+            basePath: vinextConfig.basePath,
+            assetPrefix: vinextConfig.assetPrefix,
+            deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
+            crossOrigin: vinextConfig.crossOrigin,
+            initialStylesheetHrefs,
+          });
+
+          return {
+            assetTags,
+            buildId,
+            clearSsrContext() {
+              if (typeof setSSRContext === "function") setSSRContext(null);
+            },
+            createPageElement(currentProps) {
+              const el = createPageElement(PageComponent, AppComponent, currentProps);
+              return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
+            },
+            enhancePageElement(renderPageOpts) {
+              const el = enhancePageElement(
+                PageComponent,
+                AppComponent,
+                render.renderProps,
+                renderPageOpts,
+              );
+              return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
+            },
+            DocumentComponent,
+            err: err instanceof Error ? err : undefined,
+            flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+            fontLinkHeader,
+            fontPreloads: allFontPreloads,
+            getFontLinks,
+            getFontStyles,
+            getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+            clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
+              ? vinextConfig.clientTraceMetadata
+              : undefined,
+            documentReqRes: render.documentReqRes,
+            gsspRes: render.gsspRes,
+            isrCacheKey: pageIsrCacheKey,
+            isrCachePathname,
+            expireSeconds: render.expireSeconds,
+            isrRevalidateSeconds: render.isrRevalidateSeconds,
+            isStaticPropsRoute,
+            isrSet: routeIsrSet,
+            i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
+            isFallback: render.isFallback,
+            pageProps: render.pageProps,
+            props: render.renderProps,
+            params,
+            query,
+            renderDocumentToString(element) {
+              return renderToStringAsync(element);
+            },
+            renderToReadableStream,
+            resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+            setDocumentInitialHead:
+              typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
+            routePattern,
+            routeUrl: renderRouteUrl,
+            safeJsonStringify,
+            scriptNonce,
+            initialStylesheetHrefs,
+            crossOrigin: vinextConfig.crossOrigin,
+            disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
+            statusCode: renderStatusCode,
+            nextData: serializedPagesNextData,
+          };
+        };
+        // `_error` renders receive the response status as a page prop.
+        const withErrorStatusCode = (
+          pageProps: Record<string, unknown>,
+          renderProps: Record<string, unknown>,
+        ) => {
+          if (
+            routePattern === "/_error" &&
+            typeof renderStatusCode === "number" &&
+            renderProps.pageProps !== undefined
+          ) {
+            const statusPageProps = { ...pageProps, statusCode: renderStatusCode };
+            return {
+              pageProps: statusPageProps,
+              renderProps: { ...renderProps, pageProps: statusPageProps },
+            };
+          }
+          return { pageProps, renderProps };
+        };
+
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
           err: err instanceof Error ? err : undefined,
@@ -993,22 +1095,29 @@ export function createPagesPageHandler(
           query,
           asPath: routerAsPath,
           resolvedUrl: pagesResolvedUrl,
-          renderIsrPassToStringAsync,
-          // Regeneration re-renders the page but reuses the cached shell, so
-          // the refreshed `next/head` output has to be read out of the render
-          // pass explicitly.
-          //
-          // Skipped when `_document` overrides `getInitialProps`: those apps
-          // resolve their head through `runDocumentRenderPage`, which supplies
-          // a real `renderPage` plus the request context (`req`/`res`/
-          // pathname/query/asPath) that regeneration cannot reproduce without
-          // running the whole document pipeline again. Collecting a head
-          // without them would swap a complete cached head for a degraded one,
-          // so those entries keep serving the cached head as before.
-          collectIsrHeadHTML:
-            getSSRHeadHTML && !hasUserDocumentGetInitialProps(DocumentComponent)
-              ? getSSRHeadHTML
-              : undefined,
+          async renderIsrDocument(regeneration) {
+            const response = await renderPagesPageResponse({
+              ...buildPageResponseOptions({
+                documentReqRes: regeneration.documentReqRes,
+                expireSeconds: regeneration.expireSeconds,
+                gsspRes: null,
+                isFallback: false,
+                isrRevalidateSeconds: regeneration.revalidateSeconds,
+                ...withErrorStatusCode(regeneration.pageProps, regeneration.props),
+              }),
+              awaitIsrWrite: true,
+              // Next.js renders a regeneration with every Suspense boundary
+              // resolved rather than streaming fallbacks into the entry.
+              async renderToReadableStream(element) {
+                const stream = await renderToReadableStream(element);
+                await (stream as ReadableStream<Uint8Array> & { allReady?: Promise<void> })
+                  .allReady;
+                return stream;
+              },
+            });
+            // The entry is written; nobody reads this response.
+            await response.body?.cancel();
+          },
           route: { isDynamic: route.isDynamic },
           routePattern,
           routeUrl: renderRouteUrl,
@@ -1096,17 +1205,12 @@ export function createPagesPageHandler(
           return finalizePagesPreviewResponse(withBrowserPolicy(response), preview);
         }
 
-        let pageProps = pageDataResult.pageProps;
-        let renderProps = pageDataResult.props;
-        if (previewData !== false) renderProps = { ...renderProps, __N_PREVIEW: true };
-        if (
-          routePattern === "/_error" &&
-          typeof renderStatusCode === "number" &&
-          renderProps.pageProps !== undefined
-        ) {
-          pageProps = { ...pageProps, statusCode: renderStatusCode };
-          renderProps = { ...renderProps, pageProps };
-        }
+        const { pageProps, renderProps } = withErrorStatusCode(
+          pageDataResult.pageProps,
+          previewData !== false
+            ? { ...pageDataResult.props, __N_PREVIEW: true }
+            : pageDataResult.props,
+        );
         const gsspRes = pageDataResult.gsspRes;
         const documentReqRes =
           serializedPagesNextData.autoExport === true && !options?.__notFoundSourceHeaders
@@ -1205,82 +1309,17 @@ export function createPagesPageHandler(
           );
         }
 
-        // Include both the global _app module and the matched page module.
-        // _app is wrapped around every page and any CSS/JS it imports must
-        // be linked from the rendered HTML (LHF-5 symptom). Match Next.js
-        // document ordering: shared _app files first, then page files.
-        const pageModuleIds: (string | null | undefined)[] = [];
-        if (appAssetPath) pageModuleIds.push(appAssetPath);
-        if (route.filePath) pageModuleIds.push(route.filePath);
-        const initialStylesheetHrefs = new Set<string>();
-        const assetTags = collectAssetTags({
-          manifest,
-          moduleIds: pageModuleIds,
-          scriptNonce,
-          disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
-          basePath: vinextConfig.basePath,
-          assetPrefix: vinextConfig.assetPrefix,
-          deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
-          crossOrigin: vinextConfig.crossOrigin,
-          initialStylesheetHrefs,
-        });
-
         const pageResponseOptions: Parameters<typeof renderPagesPageResponse>[0] = {
-          assetTags,
-          buildId,
-          clearSsrContext() {
-            if (typeof setSSRContext === "function") setSSRContext(null);
-          },
-          createPageElement(currentProps) {
-            const el = createPageElement(PageComponent, AppComponent, currentProps);
-            return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
-          },
-          enhancePageElement(renderPageOpts) {
-            const el = enhancePageElement(PageComponent, AppComponent, renderProps, renderPageOpts);
-            return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
-          },
-          DocumentComponent,
-          err: err instanceof Error ? err : undefined,
-          flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
-          fontLinkHeader,
-          fontPreloads: allFontPreloads,
-          getFontLinks,
-          getFontStyles,
-          getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
-          clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
-            ? vinextConfig.clientTraceMetadata
-            : undefined,
-          documentReqRes,
-          gsspRes,
-          isrCacheKey: pageIsrCacheKey,
-          isrCachePathname,
-          expireSeconds: isrExpireSeconds,
-          isrRevalidateSeconds,
+          ...buildPageResponseOptions({
+            documentReqRes,
+            expireSeconds: isrExpireSeconds,
+            gsspRes,
+            isFallback: isFallbackRender,
+            isrRevalidateSeconds,
+            pageProps,
+            renderProps,
+          }),
           isOnDemandRevalidate,
-          isStaticPropsRoute,
-          isrSet: routeIsrSet,
-          i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
-          isFallback: isFallbackRender,
-          pageProps,
-          props: renderProps,
-          params,
-          query,
-          renderDocumentToString(element) {
-            return renderToStringAsync(element);
-          },
-          renderToReadableStream,
-          resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
-          setDocumentInitialHead:
-            typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
-          routePattern,
-          routeUrl: renderRouteUrl,
-          safeJsonStringify,
-          scriptNonce,
-          initialStylesheetHrefs,
-          crossOrigin: vinextConfig.crossOrigin,
-          disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
-          statusCode: renderStatusCode,
-          nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
           ifModifiedSince: request.headers.get("if-modified-since") ?? undefined,

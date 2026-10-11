@@ -168,6 +168,8 @@ type RenderPagesPageResponseOptions = {
   isrRevalidateSeconds: number | false | null;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
+  /** Background ISR regeneration; the cache write must finish before returning. */
+  awaitIsrWrite?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
@@ -669,8 +671,8 @@ export async function renderPagesPageResponse(
 
   let responseBodyStream = bodyStream;
   if (
-    // Keep nonce-bearing pages out of ISR writes: rewritePagesCachedHtml()
-    // later matches the cached __NEXT_DATA__ block via a bare <script> marker.
+    // Keep nonce-bearing pages out of ISR writes so one request's nonce is
+    // never replayed to other visitors from the shared cache.
     !options.scriptNonce &&
     options.isrRevalidateSeconds !== null &&
     (options.isrRevalidateSeconds === false || options.isrRevalidateSeconds > 0)
@@ -696,10 +698,11 @@ export async function renderPagesPageResponse(
       status: finalStatus,
       stream: cacheBodyStream,
     };
-    if (options.isOnDemandRevalidate) {
+    if (options.isOnDemandRevalidate || options.awaitIsrWrite) {
       // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.
       // Do the equivalent here so `await res.revalidate()` cannot resolve
-      // before the regenerated HTML is fully rendered and persisted.
+      // before the regenerated HTML is fully rendered and persisted. Stale
+      // regeneration likewise has no response for the write to outlive.
       await writePagesIsrCache(cacheWriteOptions);
     } else {
       schedulePagesIsrCacheWrite(cacheWriteOptions);

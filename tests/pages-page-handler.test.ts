@@ -5,6 +5,8 @@
  * verifying route matching, 404/500 fallback, _next/data envelope,
  * i18n redirect, 405 method check, and internal-error guard.
  */
+import React from "react";
+import { renderToReadableStream } from "react-dom/server.edge";
 import { afterEach, describe, it, expect, vi } from "vite-plus/test";
 import {
   createPagesPageHandler,
@@ -129,7 +131,6 @@ function makeOpts(
         },
       });
     },
-    renderIsrPassToStringAsync: async (_element) => "<html><body>isr</body></html>",
     safeJsonStringify: (v) => JSON.stringify(v),
     sanitizeDestination: (d) => d,
     createPageElement: (_PageComp, _AppComp, _props) => null,
@@ -1169,6 +1170,93 @@ describe("createPagesPageHandler — 405 method check", () => {
 // ---------------------------------------------------------------------------
 // i18n redirect — 307 short-circuit from resolvePagesI18nRequest
 // ---------------------------------------------------------------------------
+
+describe("createPagesPageHandler — stale ISR regeneration", () => {
+  it("regenerates the whole document instead of patching the cached shell", async () => {
+    // Next.js re-runs its full render on regeneration, `_document` included.
+    const adapter = new DefaultCdnCacheAdapter();
+    vi.spyOn(adapter, "get").mockResolvedValue({
+      lastModified: 0,
+      cacheState: "stale",
+      cacheControl: { revalidate: 1 },
+      value: {
+        kind: "PAGES",
+        html: '<html><head></head><body><div id="__next"><p>stale</p></div></body></html>',
+        pageData: { pageProps: { value: "stale" } },
+        status: 200,
+        headers: undefined,
+      },
+    });
+    const set = vi.spyOn(adapter, "set").mockResolvedValue();
+    setCdnCacheAdapter(adapter);
+
+    let documentRenders = 0;
+    const DocumentComponent = Object.assign(
+      ({ docValue }: { docValue: string }) =>
+        React.createElement(
+          "html",
+          null,
+          React.createElement(
+            "head",
+            null,
+            React.createElement("meta", { name: "doc", content: docValue }),
+          ),
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", {
+              id: "__next",
+              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
+            }),
+          ),
+        ),
+      {
+        async getInitialProps(ctx: {
+          defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+        }) {
+          documentRenders += 1;
+          return { ...(await ctx.defaultGetInitialProps(ctx)), docValue: `doc-${documentRenders}` };
+        },
+      },
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getStaticProps: async () => ({ props: { value: "fresh" }, revalidate: 1 }),
+            }),
+          ),
+        ],
+        renderToReadableStream,
+        createPageElement: (_Page, _App, props) =>
+          React.createElement("p", null, String((props.pageProps as { value: string }).value)),
+        enhancePageElement: (_Page, _App, props) =>
+          React.createElement("p", null, String((props.pageProps as { value: string }).value)),
+        DocumentComponent:
+          DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+      }),
+    );
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(await response.text()).toContain("<p>stale</p>");
+
+    await vi.waitFor(() => expect(set).toHaveBeenCalledOnce());
+    const [key, entry, context] = set.mock.calls[0] ?? [];
+    expect(key).toBe(pagesIsrCacheKey("/", "test-build-id"));
+    expect(context).toMatchObject({ cacheControl: { revalidate: 1 } });
+    if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+    expect(documentRenders).toBe(1);
+    expect(entry.pageData).toEqual({ pageProps: { value: "fresh" } });
+    expect(entry.status).toBe(200);
+    expect(entry.html).toContain('<meta name="doc" content="doc-1"/>');
+    expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+    expect(entry.html).toContain('"props":{"pageProps":{"value":"fresh"}}');
+    expect(entry.html).not.toContain("stale");
+  });
+});
 
 describe("createPagesPageHandler — i18n ISR identity", () => {
   it("ignores old domain-only entries even when the build ID is unchanged", async () => {
