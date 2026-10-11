@@ -1607,16 +1607,22 @@ describe("i18n domain routing with basePath (Pages Router)", () => {
   // Next.js renders the shared getStaticProps /404 for "/404", keeping the
   // request's trailing slash even when a locale prefix is stripped.
   it("renders the shared /404 for its own path under a locale prefix", async () => {
-    const res = await requestNodeServerWithHost(
-      domainPort,
-      "/app/fr/missing-share-token/",
-      "example.com",
-    );
+    // A locale-prefixed miss, a direct status request and a rewritten miss.
+    for (const [path, host, requestToken] of [
+      ["/app/en/missing-share-token/", "example.fr", "missing-share-token"],
+      ["/app/fr/404/", "example.com", "/fr/404"],
+      ["/app/missing-alias/", "example.com", "missing-alias"],
+    ]) {
+      const res = await requestNodeServerWithHost(domainPort, path, host);
 
-    expect(res.status).toBe(404);
-    // Vite's dev html-proxy script URLs carry the request path, so check the
-    // rendered router state rather than the whole document.
-    expect(res.body).toContain('<p id="as-path">/404/</p>');
+      if (requestToken === "missing-share-token") expect(res.status).toBe(404);
+      // Vite's dev html-proxy script URLs carry the request path, so check the
+      // rendered router state rather than the whole document.
+      expect({ path, body: res.body.match(/<p id="as-path">[^<]*<\/p>/)?.[0] }).toEqual({
+        path,
+        body: '<p id="as-path">/404/</p>',
+      });
+    }
   });
 });
 

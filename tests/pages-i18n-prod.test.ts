@@ -390,15 +390,19 @@ describe("Pages i18n domain routing with basePath (production)", () => {
   // Next.js renders the shared getStaticProps /404 for "/404", keeping the
   // request's trailing slash even when a locale prefix is stripped.
   it("renders the shared /404 for its own path under a locale prefix", async () => {
-    const res = await requestNodeServerWithHost(
-      prodPort,
-      "/app/fr/missing-share-token/",
-      "example.com",
-    );
+    // Each case renders a cold /404 in its own locale/domain cache variant:
+    // a locale-prefixed miss, a direct status request and a rewritten miss.
+    for (const [path, host, requestToken] of [
+      ["/app/en/missing-share-token/", "example.fr", "missing-share-token"],
+      ["/app/fr/404/", "example.com", "/fr/404"],
+      ["/app/missing-alias/", "example.com", "missing-alias"],
+    ]) {
+      const res = await requestNodeServerWithHost(prodPort, path, host);
 
-    expect(res.status).toBe(404);
-    expect(res.body).not.toContain("missing-share-token");
-    expect(res.body).toContain('<p id="as-path">/404/</p>');
+      expect({ path, status: res.status }).toEqual({ path, status: 404 });
+      expect(res.body).not.toContain(requestToken);
+      expect(res.body).toContain('<p id="as-path">/404/</p>');
+    }
   });
 
   testLocaleIsrIsolation(() => prodPort, "/app", "/");

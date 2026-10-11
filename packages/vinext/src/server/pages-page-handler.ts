@@ -26,7 +26,11 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { hasUserDocumentGetInitialProps } from "./document-initial-head.js";
-import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-page-data.js";
+import {
+  mergePagesNotFoundSourceHeaders,
+  resolvePagesPageData,
+  resolvePagesStatusPageRenderPath,
+} from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
@@ -745,15 +749,15 @@ export function createPagesPageHandler(
     // removing request search state before exposing the render URL or router
     // context; otherwise a cold/stale request can persist its query in ISR.
     // A getStaticProps status page is shared by every request that renders
-    // it, so Next.js renders it for its own pathname and the missing or
-    // failing request URL never reaches the stored document. Like Next.js's
-    // resolvedUrl, only the request's trailing slash carries over under
-    // trailingSlash, read before locale stripping drops it.
+    // it, so the missing or failing request URL never reaches the stored
+    // document.
     const renderRouteUrl =
       isStaticPropsRender && isStatusPageIdentity
-        ? vinextConfig.trailingSlash && url.split("?")[0].endsWith("/")
-          ? statusPagePathname + "/"
-          : statusPagePathname
+        ? resolvePagesStatusPageRenderPath(
+            statusPagePathname,
+            vinextConfig.trailingSlash,
+            originalRequestUrl.pathname,
+          )
         : isStaticPropsRender
           ? routeUrl.split("?")[0]
           : routeUrl;

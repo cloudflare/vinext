@@ -115,6 +115,21 @@ export function assertPages404DoesNotReturnNotFound(
  * - packages/next/src/server/render.tsx (`metadata.cacheControl`)
  * - packages/next/src/server/route-modules/pages/pages-handler.ts
  */
+/**
+ * Next.js renders a shared getStaticProps status page (/404, /500) for its own
+ * pathname, never for the request that reached it. Only the original
+ * request's trailing slash carries over under `trailingSlash`, read before
+ * rewrites and locale stripping.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+ */
+export function resolvePagesStatusPageRenderPath(
+  statusPathname: string,
+  trailingSlash: boolean,
+  requestPathname: string,
+): string {
+  return trailingSlash && requestPathname.endsWith("/") ? statusPathname + "/" : statusPathname;
+}
+
 export function resolvePagesRevalidateSeconds(
   result: PagesPagePropsResult,
   routeUrl = "",

@@ -59,6 +59,7 @@ import {
   resolvePagesRedirect,
   resolvePagesRedirectLocation,
   resolvePagesRevalidateSeconds,
+  resolvePagesStatusPageRenderPath,
   type PagesRedirectResult,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
@@ -767,6 +768,7 @@ export function createSSRHandler(
       defaultLocale: currentDefaultLocale,
       crossOrigin,
       trailingSlash,
+      requestPathname: new URL(originalUrl, "http://vinext.local").pathname,
     };
 
     const match = matchRoute(localeStrippedUrl, routes);
@@ -902,7 +904,15 @@ export function createSSRHandler(
           // Match Next.js's Pages handler: getStaticProps renders receive only
           // route params and a resolved asPath without request search state.
           query = mergeRouteParamsIntoQuery({}, params);
-          requestAsPath = localeStrippedUrl.split("?")[0];
+          const routePattern = patternToNextFormat(route.pattern);
+          requestAsPath =
+            routePattern === "/404" || routePattern === "/500"
+              ? resolvePagesStatusPageRenderPath(
+                  routePattern,
+                  trailingSlash,
+                  errorPageContext.requestPathname,
+                )
+              : localeStrippedUrl.split("?")[0];
         }
         const supportsPreview =
           typeof pageModule.getStaticProps === "function" ||
@@ -1850,6 +1860,8 @@ async function renderErrorPage(
     defaultLocale?: string;
     crossOrigin?: string;
     trailingSlash?: boolean;
+    /** Pathname of the request before rewrites and locale stripping. */
+    requestPathname?: string;
     /** Original Pages route that produced this development-only notFound render. */
     notFoundSrcPage?: string;
   } = { basePath: "" },
@@ -1891,13 +1903,13 @@ async function renderErrorPage(
 
       const createElement = React.createElement;
       res.statusCode = statusCode;
-      // As in production, Next.js renders a getStaticProps status page for its
-      // own pathname rather than the request URL.
       const renderUrl =
         errorPage !== "/_error" && typeof errorModule.getStaticProps === "function"
-          ? context.trailingSlash && url.split("?")[0].endsWith("/")
-            ? errorPage + "/"
-            : errorPage
+          ? resolvePagesStatusPageRenderPath(
+              errorPage,
+              context.trailingSlash === true,
+              context.requestPathname ?? url.split("?")[0],
+            )
           : url;
       const errorRouter = {
         pathname: errorPage,
