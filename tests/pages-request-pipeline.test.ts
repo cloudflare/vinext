@@ -2167,6 +2167,39 @@ describe("afterFiles rewrites", () => {
     );
   });
 
+  it("serializes rewrite destinations in every rewrite phase", async () => {
+    // Next.js parses every rewrite destination as a URL, so a literal `é`
+    // reaches route matching as `%C3%A9`, the same as the raw request pathname.
+    for (const phase of ["beforeFiles", "afterFiles", "fallback"] as const) {
+      const renderPage = vi.fn(
+        async (_req: Request, url: string, _opts?: PagesRenderOptions) =>
+          new Response("page", { status: url.startsWith("/source") ? 404 : 200 }),
+      );
+      const matchPageRoute = vi.fn((pathname: string) =>
+        pathname === "/caf%C3%A9" ? { route: { isDynamic: false } } : null,
+      );
+      await runPagesRequest(
+        makeRequest("/source?q=1"),
+        baseDeps({
+          matchPageRoute,
+          configRewrites: {
+            beforeFiles: [],
+            afterFiles: [],
+            fallback: [],
+            [phase]: [{ source: "/source", destination: "/café" }],
+          },
+          renderPage,
+        }),
+      );
+      expect(renderPage, phase).toHaveBeenLastCalledWith(
+        expect.any(Request),
+        "/caf%C3%A9?q=1",
+        undefined,
+        expect.any(Headers),
+      );
+    }
+  });
+
   it("continues afterFiles rewrites until a Pages destination resolves", async () => {
     const renderPage = makeRenderPage(200);
     const matchPageRoute = vi.fn((pathname: string) =>

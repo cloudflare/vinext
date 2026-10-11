@@ -6612,32 +6612,44 @@ export const loadServerActionClient = ${
               // deferred until after middleware so it may answer the raw URL.
               let isDataReq = false;
               let dataNotFoundResponse: Response | null = null;
-              if (isNextDataPathname(pathname)) {
+              // Like page routing, data recognition reads the raw path: a
+              // decoded `/_next/%64ata/...` is an ordinary page path.
+              const rawRoutePathname = routeUrl.split("?")[0];
+              if (isNextDataPathname(rawRoutePathname)) {
                 // Use the plugin's resolved buildId so a user-supplied
                 // `generateBuildId` in next.config.mjs is honored in dev —
                 // matching the value embedded into the prod entry. Fall back
                 // to the env-var define (set by the plugin) and finally
                 // "development" if the plugin hasn't resolved a config yet.
-                const dataMatch = parseNextDataPathname(pathname, devBuildId);
-                if (dataMatch) {
+                // Route and middleware identity come from the raw page path, as
+                // for page requests and the production data normalization:
+                // `/%66r/...` is no locale and `a%2561` decodes once.
+                const rawDataMatch = parseNextDataPathname(rawRoutePathname, devBuildId);
+                const dataMatch = rawDataMatch ? parseNextDataPathname(pathname, devBuildId) : null;
+                if (dataMatch && rawDataMatch) {
                   isDataReq = true;
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  const addTrailingSlash = shouldAddTrailingSlashToPagesDataPath(
+                    capturedMiddlewarePath !== null,
+                    nextConfig?.trailingSlash === true,
+                    nextConfig?.skipProxyUrlNormalize === true,
+                  );
                   const pagePathname = normalizeNextDataPagePathname(
                     dataMatch.pagePathname,
-                    shouldAddTrailingSlashToPagesDataPath(
-                      capturedMiddlewarePath !== null,
-                      nextConfig?.trailingSlash === true,
-                      nextConfig?.skipProxyUrlNormalize === true,
-                    ),
+                    addTrailingSlash,
+                  );
+                  const rawPagePathname = normalizeNextDataPagePathname(
+                    rawDataMatch.pagePathname,
+                    addTrailingSlash,
                   );
                   url = pagePathname + qs;
-                  if (!nextConfig?.skipProxyUrlNormalize) middlewareUrl = url;
-                  routeUrl = url;
+                  routeUrl = rawPagePathname + qs;
+                  if (!nextConfig?.skipProxyUrlNormalize) middlewareUrl = routeUrl;
                   pathname = pagePathname;
-                  configMatchPathname = pagePathname;
+                  configMatchPathname = rawPagePathname;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
-                  req.url = url;
+                  req.url = routeUrl;
                 } else {
                   // Stale buildId or malformed path. Return a JSON 404 here
                   // (matching the prod-server path) so clients hard-navigate

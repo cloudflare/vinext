@@ -14882,6 +14882,27 @@ describe("matchRewrite with external URLs", () => {
     expect(isExternalUrl(result!)).toBe(false);
   });
 
+  it("URL-parses only the destination template, not substituted params", async () => {
+    // Next.js prepareDestination parses the template before compiling params,
+    // so a literal `é` is encoded while a captured `..` or `\\` stays verbatim.
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/source",
+        has: [{ type: "query" as const, key: "n", value: "(?<n>.*)" }],
+        destination: "/café/:n?q=a b",
+      },
+    ];
+    for (const [n, expected] of [
+      ["../admin", "/caf%C3%A9/../admin?q=a%20b"],
+      ["..\\admin", "/caf%C3%A9/..\\admin?q=a%20b"],
+      ["thé", "/caf%C3%A9/thé?q=a%20b"],
+    ]) {
+      const ctx = { ...emptyCtx, query: new URLSearchParams({ n }) };
+      expect(matchRewrite("/source", rewrites, ctx), n).toBe(expected);
+    }
+  });
+
   it("appends unused rewrite source params to the destination query", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     const rewrites = [{ source: "/blog-:param", destination: "/blog/post-3" }];

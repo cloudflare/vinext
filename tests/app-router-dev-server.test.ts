@@ -2696,6 +2696,54 @@ describe("App Router public files whose route starts with basePath in dev", () =
     expect(res.headers.get("allow")).toBe("GET, HEAD");
     expect(await res.text()).toBe("Method Not Allowed");
   });
+
+  // Next.js routes `_next/data` by the raw page path, like the page request:
+  // an encoded locale names no locale and dynamic params decode once.
+  it("routes Pages data requests by the raw page path behind basePath and i18n", async () => {
+    const html = await (await fetch(`${baseUrl}/docs/pages-to-app/x`)).text();
+    const buildId = html.match(/"buildId":"([^"]+)"/)?.[1];
+    expect(buildId).toBeTruthy();
+    const dataUrl = (page: string) => `${baseUrl}/docs/_next/data/${buildId}/${page}.json`;
+
+    for (const page of ["pages-to-app/a%2561", "fr/pages-to-app/a%2561"]) {
+      const res = await fetch(dataUrl(page));
+      expect(res.status, page).toBe(200);
+      expect((await res.json()).pageProps, page).toEqual({ params: { slug: "a%61" } });
+    }
+
+    for (const page of ["%66r/pages-to-app/a", "%70ages-to-app/a"]) {
+      const res = await fetch(dataUrl(page));
+      expect(res.status, page).toBeLessThan(500);
+      expect(await res.text(), page).not.toContain("pageProps");
+    }
+
+    // An encoded `_next/data` prefix is an ordinary page path, as in production.
+    const encodedPrefix = await fetch(
+      `${baseUrl}/docs/_next/%64ata/${buildId}/pages-to-app/a.json`,
+    );
+    expect(encodedPrefix.status).toBe(404);
+    expect(await encodedPrefix.text()).not.toContain("pageProps");
+  });
+
+  // Next.js parses every rewrite destination as a URL, so the static
+  // `encoded-parity-café` page 404s in every phase and a capture decodes once.
+  it("serializes Pages rewrite destinations in every rewrite phase", async () => {
+    for (const phase of ["before", "after", "fallback"]) {
+      const staticPage = await fetch(`${baseUrl}/docs/encoded-parity-pages/${phase}`);
+      expect(staticPage.status, phase).toBe(404);
+      expect(await staticPage.text(), phase).not.toContain("encoded-parity-cafe");
+
+      const dynamicPage = await fetch(`${baseUrl}/docs/encoded-parity-pages/${phase}-dynamic`);
+      expect(dynamicPage.status, phase).toBe(200);
+      expect(await dynamicPage.text(), phase).toContain('"slug":"café"');
+
+      const capture = (n: string) =>
+        fetch(`${baseUrl}/docs/encoded-parity-pages/${phase}-capture?n=${encodeURIComponent(n)}`);
+      const dotCapture = await capture("../pages-script-manual-nonce");
+      expect(dotCapture.status, phase).toBe(404);
+      expect(await dotCapture.text(), phase).not.toContain("<p>script-nonce</p>");
+    }
+  });
 });
 
 describe("App Router client modules nested in packages in dev", () => {
