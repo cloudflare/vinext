@@ -1,5 +1,6 @@
 import { testRouteHandlerStoragePolicies } from "../route-handler-storage-policy";
 import { test, expect, type APIRequestContext, type APIResponse } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 function baseUrl(): string {
   const url = test.info().project.use.baseURL;
@@ -823,6 +824,32 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(revalidate.status()).toBe(200);
 
     expect((await readNestedCacheRoute(request, id)).nonce).not.toBe(first.nonce);
+  });
+
+  test("a Server Action reruns a nested unstable_cache after the outer entry revalidates", async ({
+    page,
+    request,
+  }) => {
+    const id = `nested-action-${Date.now()}`;
+    await page.goto(`${baseUrl()}/nextjs-compat/action-nested-unstable-cache?id=${id}`);
+    await waitForAppRouterHydration(page);
+
+    const reads = page.locator("#nested-reads li");
+    const read = async (count: number) => {
+      await page.click("#read-nested");
+      await expect(reads).toHaveCount(count);
+      return reads.nth(count - 1).textContent();
+    };
+
+    const first = await read(1);
+    expect(await read(2)).toBe(first);
+
+    const revalidate = await request.get(
+      `${baseUrl()}/nextjs-compat/api/unstable-cache-nested?id=${id}&revalidate=1`,
+    );
+    expect(revalidate.status()).toBe(200);
+
+    expect(await read(3)).not.toBe(first);
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts

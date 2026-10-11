@@ -5912,15 +5912,16 @@ describe("next/cache shim", () => {
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { createRequestContext, runWithRequestContext } =
       await import("../packages/vinext/src/shims/unified-request-context.js");
-    const { setCurrentFetchSoftTags } = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const { runInWorkStoreScope } =
+      await import("../packages/vinext/src/shims/internal/work-store-scope.js");
 
     setCacheHandler(new MemoryCacheHandler());
     const id = `${options.appRouter ? "app" : "pages"}-${options.useCacheBetween ? "use-cache" : "direct"}`;
+    // No soft tags are set, as in a Server Action before its rerender.
     const request = <T>(fn: () => Promise<T>) =>
-      runWithRequestContext(createRequestContext(), () => {
-        if (options.appRouter) setCurrentFetchSoftTags(["_N_T_/layout", "_N_T_/nested/page"]);
-        return fn();
-      });
+      runWithRequestContext(createRequestContext(), () =>
+        options.appRouter ? runInWorkStoreScope(fn) : fn(),
+      );
 
     try {
       let innerCalls = 0;

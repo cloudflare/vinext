@@ -28,6 +28,7 @@ import { fnv1a64, sha256Hex } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
+import { isInsideWorkStoreScope } from "./internal/work-store-scope.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
@@ -536,12 +537,10 @@ export function isInsideUnstableCacheScope(): boolean {
 
 /**
  * Whether an unstable_cache call is nested in another one's callback, as
- * Next.js's `isNestedUnstableCache` decides: only in an App Router render, and
- * only when the innermost cache scope is that callback rather than a "use
- * cache" function it called. Next.js checks this only when an App Router work
- * store exists, which always carries implicit tags; vinext sets the matching
- * soft tags only for App Router work, so Pages Router and calls outside a
- * render have none.
+ * Next.js's `isNestedUnstableCache` decides: only where Next.js has a work
+ * store (not in Pages Router or outside a render), and only when the
+ * innermost cache scope is that callback rather than a "use cache" function
+ * it called.
  * Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
  */
 function isNestedUnstableCacheCall(): boolean {
@@ -549,7 +548,7 @@ function isNestedUnstableCacheCall(): boolean {
   return (
     callback !== undefined &&
     callback.useCacheContext === _useCacheContextAls.getStore() &&
-    getCurrentFetchSoftTags().length > 0
+    isInsideWorkStoreScope()
   );
 }
 

@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
 import type { RootParams } from "vinext/shims/root-params";
@@ -625,17 +626,19 @@ async function runAppPageRevalidationContext<
     unstableCacheRevalidation: "foreground",
   });
 
-  const revalidation = runWithRequestContext(requestContext, async () => {
-    ensureFetchPatch();
-    setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
-    setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
-    options.setNavigationContext({
-      pathname: options.displayPathname ?? options.cleanPathname,
-      searchParams: new URLSearchParams(),
-      params: options.params,
-    });
-    return await runWithFetchDedupe(renderFn);
-  });
+  const revalidation = runWithRequestContext(requestContext, () =>
+    runInWorkStoreScope(async () => {
+      ensureFetchPatch();
+      setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
+      setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
+      options.setNavigationContext({
+        pathname: options.displayPathname ?? options.cleanPathname,
+        searchParams: new URLSearchParams(),
+        params: options.params,
+      });
+      return await runWithFetchDedupe(renderFn);
+    }),
+  );
   try {
     return await revalidation;
   } finally {

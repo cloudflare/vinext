@@ -17,6 +17,7 @@ import {
   markFullyBufferedBody,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import {
   buildAppRouteCacheValue,
@@ -426,19 +427,21 @@ async function runMetadataRouteRegeneration(
 ): Promise<void> {
   const requestContext = createRequestContext({ executionContext });
   try {
-    await runWithRequestContext(requestContext, async () => {
-      ensureFetchPatch();
-      beginMetadataRouteCacheability(route);
-      setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-      const rendered = await render();
-      if (rendered) {
-        try {
-          await writeRenderedMetadataRoute(options, route, routeKey, rendered, previousEntry);
-        } finally {
-          void rendered.response.body?.cancel().catch(() => {});
+    await runWithRequestContext(requestContext, () =>
+      runInWorkStoreScope(async () => {
+        ensureFetchPatch();
+        beginMetadataRouteCacheability(route);
+        setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
+        const rendered = await render();
+        if (rendered) {
+          try {
+            await writeRenderedMetadataRoute(options, route, routeKey, rendered, previousEntry);
+          } finally {
+            void rendered.response.body?.cancel().catch(() => {});
+          }
         }
-      }
-    });
+      }),
+    );
   } finally {
     await closeAfterResponse(requestContext);
   }

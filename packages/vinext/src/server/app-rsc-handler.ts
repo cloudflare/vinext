@@ -179,6 +179,7 @@ import {
   copyLinkHeaderProvenance,
 } from "./app-response-header-provenance.js";
 import { traceAppPageRender } from "./app-page-tracing.js";
+import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -2257,20 +2258,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : undefined;
     const response =
       !isInterceptionMatch && (match === null || match.route.isDynamic)
-        ? ((await options.renderPagesFallback?.({
-            appRouteMatch: match ?? null,
-            allowRscDocumentFallback:
-              didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
-            dispatchPagesResponseStage,
-            isDataRequest,
-            isRscRequest,
-            matchKind,
-            middlewareContext,
-            pathname: resolvedUrl,
-            pagesDataRequest,
-            request,
-            url,
-          })) ?? null)
+        ? ((await runOutsideWorkStoreScope(() =>
+            options.renderPagesFallback?.({
+              appRouteMatch: match ?? null,
+              allowRscDocumentFallback:
+                didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
+              dispatchPagesResponseStage,
+              isDataRequest,
+              isRscRequest,
+              matchKind,
+              middlewareContext,
+              pathname: resolvedUrl,
+              pagesDataRequest,
+              request,
+              url,
+            }),
+          )) ?? null)
         : null;
     if (response) preserveRouteCacheabilityResponsePolicy();
     if (!response) return null;

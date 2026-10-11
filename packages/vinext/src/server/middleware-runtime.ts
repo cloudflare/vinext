@@ -9,6 +9,7 @@ import {
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
 import { NextFetchEvent, NextRequest } from "vinext/shims/server";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { normalizePath } from "./normalize-path.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
@@ -342,7 +343,12 @@ function releaseMiddlewareRequestBody(
   void Promise.allSettled(waitUntilPromises).then(cancel);
 }
 
-export async function executeMiddleware(
+export function executeMiddleware(options: ExecuteMiddlewareOptions): Promise<MiddlewareResult> {
+  // Next.js runs middleware with a work store, in Pages Router apps too.
+  return runInWorkStoreScope(() => executeMiddlewareModule(options));
+}
+
+async function executeMiddlewareModule(
   options: ExecuteMiddlewareOptions,
 ): Promise<MiddlewareResult> {
   const middlewareFn = resolveMiddlewareModuleHandler(options.module, {
