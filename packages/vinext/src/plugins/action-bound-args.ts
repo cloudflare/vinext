@@ -72,18 +72,28 @@ function readClosureDecrypt(
  * and decrypts them at the top of `fn` without naming the action, so any
  * action's closure would decrypt in any other action. This rewrites both calls
  * to the vinext runtime, which seals and checks `key#name` (the `Next-Action`
- * id) with the captures. Any use of the encryption runtime this cannot bind
- * fails the build rather than shipping an unbound closure.
+ * id) with the captures. Any use of the encryption runtime this cannot bind,
+ * including a reference other than a namespace import, fails the build rather
+ * than shipping an unbound closure.
  */
-export function createActionBoundArgsPlugin(options: { runtime: string }): Plugin {
+export function createActionBoundArgsPlugin(options: {
+  runtime: string;
+  shimsDir: string;
+}): Plugin {
+  const shimsPrefix = `${options.shimsDir}/`;
   return {
     name: "vinext:action-bound-args",
     enforce: "post",
     transform: {
       filter: { code: "encryption-runtime" },
       async handler(code, id) {
+        // vinext's own runtimes (this one, "use cache") call the helpers directly.
+        if (id.startsWith(shimsPrefix)) return;
         const ast = await parseAstAsync(code);
         const runtimes = new Set<string>();
+        // A bare `import "<runtime>"` (plugin-rsc's scan build strips modules
+        // down to these) cannot call it.
+        let importedSources = 0;
         for (const statement of ast.body) {
           if (
             statement.type !== "ImportDeclaration" ||
@@ -92,19 +102,30 @@ export function createActionBoundArgsPlugin(options: { runtime: string }): Plugi
           ) {
             continue;
           }
-          for (const specifier of statement.specifiers) {
-            if (specifier.type === "ImportNamespaceSpecifier") runtimes.add(specifier.local.name);
+          const [specifier, ...rest] = statement.specifiers;
+          if (!specifier) {
+            importedSources++;
+          } else if (specifier.type === "ImportNamespaceSpecifier" && rest.length === 0) {
+            importedSources++;
+            runtimes.add(specifier.local.name);
           }
         }
-        if (runtimes.size === 0) return;
         const output = new MagicString(code);
         const actionIds = new Map<string, string>();
         const decrypts: [string, ESTree.CallExpression & { callee: ESTree.MemberExpression }][] =
           [];
         const bound = new Set<ESTree.Node>();
         let runtimeCalls = 0;
+        let runtimeSources = 0;
 
         walkAst(ast, (node) => {
+          if (
+            node.type === "Literal" &&
+            typeof node.value === "string" &&
+            ENCRYPTION_RUNTIME_RE.test(node.value)
+          ) {
+            runtimeSources++;
+          }
           if (
             node.type === "MemberExpression" &&
             node.object.type === "Identifier" &&
@@ -156,7 +177,7 @@ export function createActionBoundArgsPlugin(options: { runtime: string }): Plugi
           bound.add(call.callee);
         }
 
-        if (bound.size !== runtimeCalls) {
+        if (runtimeSources !== importedSources || bound.size !== runtimeCalls) {
           this.error(
             `vinext: could not bind an inline Server Action's encrypted closure to its action id (${id}).`,
           );

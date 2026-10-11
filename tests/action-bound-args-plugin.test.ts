@@ -9,7 +9,10 @@ type TransformHandler = (
   id: string,
 ) => Promise<{ code: string } | undefined>;
 
-const plugin = createActionBoundArgsPlugin({ runtime: "/runtime.js" });
+const plugin = createActionBoundArgsPlugin({
+  runtime: "/runtime.js",
+  shimsDir: "/vinext/shims",
+});
 const handler = (plugin.transform as { handler: TransformHandler }).handler;
 const context = {
   error(message: string): never {
@@ -76,6 +79,22 @@ describe("vinext:action-bound-args", () => {
     await expect(handler.call(context, code, "/app/page.js")).rejects.toThrow(
       "could not bind an inline Server Action's encrypted closure to its action id",
     );
+  });
+
+  it("fails the build for any other reference to the encryption runtime", async () => {
+    const source = `"file:///app/node_modules/@vitejs/plugin-rsc/dist/utils/encryption-runtime.js"`;
+    for (const code of [
+      `import { encryptActionBoundArgs } from ${source};\nexport const sealed = encryptActionBoundArgs([secret]);`,
+      `export const runtime = import(${source});`,
+      `export * from ${source};`,
+    ]) {
+      await expect(handler.call(context, code, "/app/page.js")).rejects.toThrow(
+        "could not bind an inline Server Action's encrypted closure to its action id",
+      );
+    }
+    expect(await handler.call(context, `import ${source};`, "/app/page.js")).toBeUndefined();
+    const shim = `import { encryptActionBoundArgs } from "@vitejs/plugin-rsc/utils/encryption-runtime";`;
+    expect(await handler.call(context, shim, "/vinext/shims/action-bound-args.ts")).toBeUndefined();
   });
 
   it("leaves unrelated APIs with the same method names alone", async () => {

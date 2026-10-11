@@ -8554,6 +8554,7 @@ export const loadServerActionClient = ${
   plugins.push(
     createActionBoundArgsPlugin({
       runtime: pathToFileURL(resolveShimModulePath(shimsDir, "action-bound-args")).href,
+      shimsDir,
     }),
   );
   if (earlyAppDirExists) {
