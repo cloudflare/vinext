@@ -1151,6 +1151,63 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
   });
 
+  test.each(["authorization", "cookie", "proxy-authorization", "x-api-key"])(
+    "never stores a public Pages API response for a request carrying %s",
+    async (header) => {
+      const pathname = "/api/credential-echo";
+      const read = async (credential?: string) => {
+        const response = await request(
+          pathname,
+          credential === undefined ? undefined : { headers: { [header]: credential } },
+        );
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as {
+          credentials: Record<string, string | null>;
+          renderId: string;
+        };
+        return {
+          cache: response.headers.get("x-vinext-cache"),
+          credential: body.credentials[header],
+          renderId: body.renderId,
+        };
+      };
+
+      for (const credential of ["first-secret", "second-secret"]) {
+        const credentialed = await read(credential);
+        assert.equal(credentialed.credential, credential);
+        assert.notEqual(credentialed.cache, "HIT");
+      }
+
+      // The same route is stored for a request without credentials, so the
+      // credentialed requests above were rejected by the guardrail alone.
+      const anonymous = await read();
+      assert.equal(anonymous.credential, null);
+      assert.equal(anonymous.cache, "MISS");
+      await waitForResponseEntries(pathname, 1);
+      const hit = await read();
+      assert.equal(hit.cache, "HIT");
+      assert.equal(hit.credential, null);
+      assert.equal(hit.renderId, anonymous.renderId);
+    },
+  );
+
+  // A replay carries no credentials, so it cannot reproduce a credentialed render.
+  test.each(["none", "authorization", "cookie", "proxy-authorization", "x-api-key"])(
+    "replays the page for its data entries only without credentials (%s)",
+    async (credential) => {
+      const response = await request(
+        "/unstable-cache-siblings",
+        credential === "none" ? undefined : { headers: { [credential]: "secret" } },
+      );
+      assert.equal(response.status, 200);
+      await response.text();
+      const entries = async () => (await metadataEntries()).flat() as StoredResponseEntry[];
+      await waitForStoredEntries(entries, 2);
+      const replayed = (await entries()).filter((entry) => entry.revalidator?.id === "vinext:data");
+      assert.equal(replayed.length, credential === "none" ? 2 : 0);
+    },
+  );
+
   test("keeps concurrent cold renders successful", async () => {
     const responses = await Promise.all(
       Array.from({ length: 8 }, () => request("/cached/concurrent")),

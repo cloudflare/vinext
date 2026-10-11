@@ -127,6 +127,44 @@ test("browser caches private responses without putting them in the backing store
   expect((await direct.json()).renderId).not.toBe(first.body.renderId);
 });
 
+test("a public Pages API response is never shared across x-api-key callers", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL || !hasResponseCache, "requires a configured response cache backend");
+  test.skip(
+    backend === "workers-cache" && !baseURL?.startsWith("https://"),
+    "Workers Cache storage requires the deployed edge",
+  );
+  // A keyless entry would serve credentialed callers too, so isolate the URL.
+  const url = `${baseURL}/api/credential-echo?run=${randomUUID()}`;
+  const read = async (apiKey: string) => {
+    const response = await request.get(url, { headers: { "x-api-key": apiKey } });
+    expect(response.status()).toBe(200);
+    expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+    expect((await response.json()).credentials["x-api-key"]).toBe(apiKey);
+  };
+  await read(`first-${randomUUID()}`);
+  // A stored first response would reach a later caller once its write lands.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await read(`second-${randomUUID()}`);
+  }
+  // The same URL is stored without credentials, so the reads above prove the
+  // credential guardrail rather than a route the backend never stores.
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(url);
+        const status = response.headers()[cacheStatusHeader];
+        expect((await response.json()).credentials["x-api-key"]).toBeNull();
+        return status;
+      },
+      { timeout: 15_000 },
+    )
+    .toBe("HIT");
+});
+
 test("backing store freshness follows its own policy in both directions", async ({
   baseURL,
   request,

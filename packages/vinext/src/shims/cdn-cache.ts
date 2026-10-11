@@ -124,6 +124,24 @@ export function isNonCacheableCacheControl(
 }
 
 /**
+ * Request headers that identify the caller. A shared response cache never
+ * admits a Route Handler or API response's own policy for a request carrying
+ * them, and never replays such a render to refill its data entries.
+ * `x-api-key` matches the fetch cache's credential headers.
+ */
+const SHARED_CACHE_CREDENTIAL_HEADERS = [
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "x-api-key",
+] as const;
+
+/** Whether a request carries credentials a shared response cache must not capture. */
+export function hasSharedCacheCredentials(headers: Headers): boolean {
+  return SHARED_CACHE_CREDENTIAL_HEADERS.some((name) => headers.has(name));
+}
+
+/**
  * The serving strategy for page-level ISR. Implement this to delegate
  * page/route/image caching to a CDN edge instead of the origin store.
  */
