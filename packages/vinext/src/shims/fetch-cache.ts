@@ -147,8 +147,10 @@ function getWorkersFetchKeyParts(
   const fetcher = initFields?.fetcher !== undefined ? initFields.fetcher : inputFields?.fetcher;
   if (fetcher !== undefined && fetcher !== null) return null;
   const cf = initFields?.cf !== undefined ? initFields.cf : inputFields?.cf;
-  // Workers honors encodeResponseBody only on the fetch init; a Request does
-  // not carry it.
+  // A workerd Request also stores encodeResponseBody, but exposes no getter
+  // for it, so only an init value can be keyed. Skipping every Request input
+  // instead would cache and dedupe far less than Next.js for a field that
+  // changes only the body encoding, not the origin.
   return [cf ?? null, initFields?.encodeResponseBody ?? "automatic"];
 }
 
