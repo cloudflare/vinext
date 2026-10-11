@@ -7,18 +7,29 @@ import {
 // names the action it was bound to and only decrypts for that action.
 // plugin-rsc's encryption authenticates the captures but not their action, so
 // on its own a same-route action's closure would decrypt as this action's.
+//
+// The sealed value is an object: plugin-rsc's own closures (e.g. sealed under a
+// persisted `defineEncryptionKey` by an earlier deployment) are always arrays,
+// and vinext's "use cache" envelopes are strings, so neither can pass as one.
+type BoundArgs = { actionId: string; captures: unknown[] };
 
 export function encryptBoundArgs(actionId: string, captures: unknown[]): Promise<string> {
-  return encryptActionBoundArgs([actionId, captures]);
+  return encryptActionBoundArgs({ actionId, captures } satisfies BoundArgs);
 }
 
 export async function decryptBoundArgs(
   actionId: string,
   encrypted: ReturnType<typeof encryptActionBoundArgs>,
 ): Promise<unknown[]> {
-  const payload = await decryptActionBoundArgs(encrypted);
-  if (!Array.isArray(payload) || payload[0] !== actionId || !Array.isArray(payload[1])) {
+  const payload = (await decryptActionBoundArgs(encrypted)) as Partial<BoundArgs> | null;
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload) ||
+    payload.actionId !== actionId ||
+    !Array.isArray(payload.captures)
+  ) {
     throw new Error("Invalid Server Action payload: failed to decrypt.");
   }
-  return payload[1];
+  return payload.captures;
 }

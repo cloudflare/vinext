@@ -376,7 +376,7 @@ export default function Page() {
     const previewId = findActionId(builtSource, "$$hoist_0_previewLabel");
     const readSecretId = findActionId(builtSource, "$$hoist_1_readBoundSecret");
     const sealed = (actionId: string, captures: string[]) =>
-      encryptBoundArgsFixture(`0:${JSON.stringify([actionId, captures])}\n`);
+      encryptBoundArgsFixture(`0:${JSON.stringify({ actionId, captures })}\n`);
     const readSecret = async (encryptedBoundArgs: string) => {
       const response = await handler(
         actionRequest("/bound-args", readSecretId, [encryptedBoundArgs]),
@@ -390,7 +390,10 @@ export default function Page() {
 
     for (const replayed of [
       await sealed(previewId, ["admin"]),
+      // plugin-rsc's unbound closures, including one that captured exactly an
+      // action id and an array.
       await encryptBoundArgsFixture('0:["admin"]\n'),
+      await encryptBoundArgsFixture(`0:${JSON.stringify([readSecretId, ["admin"]])}\n`),
     ]) {
       const response = await readSecret(replayed);
       expect(response.body).not.toContain("BOUND_ARGS_SECRET");

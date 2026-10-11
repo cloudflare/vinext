@@ -115,24 +115,22 @@ export function createActionBoundArgsPlugin(options: {
         const decrypts: [string, ESTree.CallExpression & { callee: ESTree.MemberExpression }][] =
           [];
         const bound = new Set<ESTree.Node>();
-        let runtimeCalls = 0;
         let runtimeSources = 0;
+        let runtimeReferences = 0;
 
         walkAst(ast, (node) => {
           if (
-            node.type === "Literal" &&
-            typeof node.value === "string" &&
-            ENCRYPTION_RUNTIME_RE.test(node.value)
+            (node.type === "ImportDeclaration" ||
+              node.type === "ImportExpression" ||
+              node.type === "ExportAllDeclaration" ||
+              node.type === "ExportNamedDeclaration") &&
+            node.source?.type === "Literal" &&
+            typeof node.source.value === "string" &&
+            ENCRYPTION_RUNTIME_RE.test(node.source.value)
           ) {
             runtimeSources++;
           }
-          if (
-            node.type === "MemberExpression" &&
-            node.object.type === "Identifier" &&
-            runtimes.has(node.object.name)
-          ) {
-            runtimeCalls++;
-          }
+          if (node.type === "Identifier" && runtimes.has(node.name)) runtimeReferences++;
 
           const reference = readServerReference(node);
           if (reference) actionIds.set(reference[0], reference[1]);
@@ -177,7 +175,13 @@ export function createActionBoundArgsPlugin(options: {
           bound.add(call.callee);
         }
 
-        if (runtimeSources !== importedSources || bound.size !== runtimeCalls) {
+        // Every reference to a runtime namespace must be its import or a call
+        // rewritten above; anything else (e.g. destructuring) could call it
+        // unbound.
+        if (
+          runtimeSources !== importedSources ||
+          runtimeReferences !== runtimes.size + bound.size
+        ) {
           this.error(
             `vinext: could not bind an inline Server Action's encrypted closure to its action id (${id}).`,
           );

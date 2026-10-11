@@ -87,12 +87,20 @@ describe("vinext:action-bound-args", () => {
       `import { encryptActionBoundArgs } from ${source};\nexport const sealed = encryptActionBoundArgs([secret]);`,
       `export const runtime = import(${source});`,
       `export * from ${source};`,
+      `import * as runtime from ${source};\nconst { encryptActionBoundArgs: encrypt } = runtime;\nexport const sealed = encrypt([secret]);`,
     ]) {
       await expect(handler.call(context, code, "/app/page.js")).rejects.toThrow(
         "could not bind an inline Server Action's encrypted closure to its action id",
       );
     }
     expect(await handler.call(context, `import ${source};`, "/app/page.js")).toBeUndefined();
+    expect(
+      await handler.call(
+        context,
+        `export const docs = "@vitejs/plugin-rsc/utils/encryption-runtime";`,
+        "/app/page.js",
+      ),
+    ).toBeUndefined();
     const shim = `import { encryptActionBoundArgs } from "@vitejs/plugin-rsc/utils/encryption-runtime";`;
     expect(await handler.call(context, shim, "/vinext/shims/action-bound-args.ts")).toBeUndefined();
   });
