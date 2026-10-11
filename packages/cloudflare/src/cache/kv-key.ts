@@ -1,4 +1,4 @@
-import { fnv1a64 } from "vinext/internal/utils/hash";
+import { createHash } from "node:crypto";
 
 /** Key prefix for tag invalidation timestamps. */
 const TAG_PREFIX = "__tag:";
@@ -51,6 +51,15 @@ function kvKeyByteLength(key: string): number {
 }
 
 /**
+ * Digest a key that is too long or unsafe to store verbatim. Logical keys can
+ * carry request input, so the digest must be collision resistant: two keys
+ * sharing a digest would share an entry.
+ */
+function digestKey(key: string): string {
+  return createHash("sha256").update(key).digest("hex");
+}
+
+/**
  * Keep short app prefixes readable, but bound the namespace portion so a
  * hashed entry or tag key is always able to fit within Cloudflare KV's limit.
  */
@@ -60,10 +69,10 @@ function normalizeAppPrefix(appPrefix: string | undefined): string {
   const prefix = `${appPrefix}:`;
   const longestCategoryPrefix =
     ENTRY_PREFIX.length >= TAG_PREFIX.length ? ENTRY_PREFIX : TAG_PREFIX;
-  const shortestHashedKey = `${prefix}${longestCategoryPrefix}${HASHED_KEY_PREFIX}${fnv1a64("")}`;
+  const shortestHashedKey = `${prefix}${longestCategoryPrefix}${HASHED_KEY_PREFIX}${digestKey("")}`;
   if (kvKeyByteLength(shortestHashedKey) <= KV_KEY_MAX_BYTES) return prefix;
 
-  return `__app:${fnv1a64(appPrefix)}:`;
+  return `__app:${digestKey(appPrefix)}:`;
 }
 
 function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: string): string {
@@ -73,7 +82,7 @@ function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: str
   const colonTag = categoryPrefix === TAG_PREFIX && logicalKey.includes(":");
   if (!colonTag && kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) return key;
 
-  return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${fnv1a64(logicalKey)}`;
+  return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${digestKey(logicalKey)}`;
 }
 
 /** Create the deterministic key namespace for runtime cache operations. */

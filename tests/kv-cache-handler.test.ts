@@ -17,6 +17,7 @@ import {
   MemoryCacheHandler,
 } from "../packages/vinext/src/shims/cache.js";
 import { buildAppPageCacheTags } from "../packages/vinext/src/server/app-page-cache.js";
+import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import {
   _drainPendingRevalidations,
   _runWithCacheState,
@@ -240,11 +241,31 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{16}$/);
+      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{64}$/);
 
       kv.get.mockClear();
       expect(await prefixedHandler.get(logicalKey)).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(storedKey);
+    });
+
+    it("keeps oversized logical keys whose fnv1a64 digests collide in separate entries", async () => {
+      // Found by a collision search: the two root param values leave fnv1a64
+      // in the same state, so the full keys collide too. A request choosing
+      // one value must not read the entry cached for the other.
+      const key = (tenant: string) =>
+        `use-cache:build:e2e:fn-id:args:root-params:[["tenant","${tenant}${"x".repeat(500)}"]]`;
+      const privateKey = key("9321894c994f7f38");
+      const publicKey = key("573a3dc6dd8b8674");
+      expect(fnv1a64(privateKey)).toBe(fnv1a64(publicKey));
+
+      await handler.set(privateKey, { ...pageValue, html: "<html>private</html>" });
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{64}$/);
+      expect(await handler.get(publicKey)).toBeNull();
+      expect(await handler.get(privateKey)).toMatchObject({
+        value: { html: "<html>private</html>" },
+      });
     });
 
     it("measures multibyte logical keys by UTF-8 byte length", async () => {
@@ -254,7 +275,7 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{16}$/);
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{64}$/);
       expect(await handler.get(logicalKey)).not.toBeNull();
     });
 
@@ -267,7 +288,7 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^__app:[0-9a-f]{16}:cache:short$/);
+      expect(storedKey).toMatch(/^__app:[0-9a-f]{64}:cache:short$/);
 
       await prefixedHandler.revalidateByPathPrefix!("/");
       expect(kv.list).toHaveBeenCalledWith(
@@ -281,7 +302,7 @@ describe("KVCacheHandler", () => {
 
       const tagKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(tagKey).length).toBeLessThanOrEqual(512);
-      expect(tagKey).toMatch(/^__tag:__hash:[0-9a-f]{16}$/);
+      expect(tagKey).toMatch(/^__tag:__hash:[0-9a-f]{64}$/);
 
       store.set(
         "cache:tagged-with-long-tag",
@@ -789,7 +810,7 @@ describe("KVCacheHandler", () => {
         }
 
         expect(kv.put).toHaveBeenLastCalledWith(
-          expect.stringMatching(/^__tag:__hash:[0-9a-f]{16}$/),
+          expect.stringMatching(/^__tag:__hash:[0-9a-f]{64}$/),
           expect.stringMatching(/^\d+$/),
         );
         const reader = new KVCacheHandler(kv as any);
