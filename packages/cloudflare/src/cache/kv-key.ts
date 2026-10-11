@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { fnv1a64 } from "vinext/internal/utils/hash";
 
 /** Key prefix for tag invalidation timestamps. */
 const TAG_PREFIX = "__tag:";
@@ -51,12 +52,22 @@ function kvKeyByteLength(key: string): number {
 }
 
 /**
- * Digest a key that is too long or unsafe to store verbatim. Logical keys can
+ * Digest an entry key that is too long to store verbatim. Logical keys can
  * carry request input, so the digest must be collision resistant: two keys
  * sharing a digest would share an entry.
  */
-function digestKey(key: string): string {
+function digestEntryKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
+}
+
+/**
+ * Digest a tag that is too long or unsafe to store verbatim. Tags sharing a
+ * digest share one invalidation marker, which can only invalidate extra
+ * entries. Markers are permanent, so a new digest would drop the
+ * invalidations already recorded for entries still in KV.
+ */
+function digestTag(tag: string): string {
+  return fnv1a64(tag);
 }
 
 /**
@@ -69,10 +80,10 @@ function normalizeAppPrefix(appPrefix: string | undefined): string {
   const prefix = `${appPrefix}:`;
   const longestCategoryPrefix =
     ENTRY_PREFIX.length >= TAG_PREFIX.length ? ENTRY_PREFIX : TAG_PREFIX;
-  const shortestHashedKey = `${prefix}${longestCategoryPrefix}${HASHED_KEY_PREFIX}${digestKey("")}`;
+  const shortestHashedKey = `${prefix}${longestCategoryPrefix}${HASHED_KEY_PREFIX}${digestEntryKey("")}`;
   if (kvKeyByteLength(shortestHashedKey) <= KV_KEY_MAX_BYTES) return prefix;
 
-  return `__app:${digestKey(appPrefix)}:`;
+  return `__app:${fnv1a64(appPrefix)}:`;
 }
 
 function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: string): string {
@@ -82,7 +93,8 @@ function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: str
   const colonTag = categoryPrefix === TAG_PREFIX && logicalKey.includes(":");
   if (!colonTag && kvKeyByteLength(key) <= KV_KEY_MAX_BYTES) return key;
 
-  return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${digestKey(logicalKey)}`;
+  const digest = categoryPrefix === TAG_PREFIX ? digestTag(logicalKey) : digestEntryKey(logicalKey);
+  return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${digest}`;
 }
 
 /** Create the deterministic key namespace for runtime cache operations. */

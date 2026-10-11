@@ -288,7 +288,7 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^__app:[0-9a-f]{64}:cache:short$/);
+      expect(storedKey).toMatch(/^__app:[0-9a-f]{16}:cache:short$/);
 
       await prefixedHandler.revalidateByPathPrefix!("/");
       expect(kv.list).toHaveBeenCalledWith(
@@ -302,7 +302,7 @@ describe("KVCacheHandler", () => {
 
       const tagKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(tagKey).length).toBeLessThanOrEqual(512);
-      expect(tagKey).toMatch(/^__tag:__hash:[0-9a-f]{64}$/);
+      expect(tagKey).toMatch(/^__tag:__hash:[0-9a-f]{16}$/);
 
       store.set(
         "cache:tagged-with-long-tag",
@@ -313,6 +313,19 @@ describe("KVCacheHandler", () => {
 
       expect(await freshHandler.get("tagged-with-long-tag")).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(tagKey);
+    });
+
+    it("honors tag markers stored before oversized entry keys moved to SHA-256", async () => {
+      // Markers are permanent and outlive entries with short keys, so a tag
+      // revalidated before an upgrade must still invalidate those entries.
+      const tag = "posts:all";
+      store.set(`__tag:__hash:${fnv1a64(tag)}`, String(Date.now()));
+      store.set(
+        "cache:invalidated-before-upgrade",
+        validEntry(pageValue, { tags: [tag], lastModified: Date.now() - 1_000 }),
+      );
+
+      expect(await handler.get("invalidated-before-upgrade")).toBeNull();
     });
   });
 
@@ -810,7 +823,7 @@ describe("KVCacheHandler", () => {
         }
 
         expect(kv.put).toHaveBeenLastCalledWith(
-          expect.stringMatching(/^__tag:__hash:[0-9a-f]{64}$/),
+          expect.stringMatching(/^__tag:__hash:[0-9a-f]{16}$/),
           expect.stringMatching(/^\d+$/),
         );
         const reader = new KVCacheHandler(kv as any);
