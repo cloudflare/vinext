@@ -78,6 +78,17 @@ test("keeps direct and middleware-rewritten Worker App Page params canonical", a
   }
 });
 
+test("routes hybrid Pages by the raw Worker pathname", async () => {
+  const response = await getRawPath("/pages-encoded-parity/a%2561");
+  expect(response.status).toBe(200);
+  expect(response.body).toContain('data-slug="a%61"');
+
+  // Static Pages segments keep their encoded identity, as in Next.js.
+  const alias = await getRawPath("/%70ages-encoded-parity/a");
+  expect(alias.status).toBe(404);
+  expect(alias.body).not.toContain("Pages encoded parity");
+});
+
 test("enforces canonical dynamicParams=false values on Workers", async () => {
   const allowed = await getRawPath("/encoded-parity/static/a%252Fb");
   expect(allowed.status).toBe(200);

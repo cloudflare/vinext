@@ -100,7 +100,30 @@ type NextUrlDynamicAccess =
   | "nextUrl.href"
   | "nextUrl.toJSON"
   | "nextUrl.toString"
-  | "nextUrl.origin";
+  | "nextUrl.origin"
+  | HostDerivedNextUrlDynamicAccess;
+
+// Deliberate vinext divergence from Next.js, which only tracks the fields
+// above. Next.js builds a route handler's first stored entry from a
+// localhost:3000 prerender, so the build never stores a visitor's URL scheme or
+// authority. vinext learns dynamism from the live request instead, and the ISR
+// key carries only the pathname, so reading any of these parts must mark the
+// route dynamic. Otherwise one Worker serving several hostnames would store one
+// host's response and replay it on the others.
+type HostDerivedNextUrlDynamicAccess =
+  | "nextUrl.protocol"
+  | "nextUrl.username"
+  | "nextUrl.password"
+  | "nextUrl.host"
+  | "nextUrl.hostname"
+  | "nextUrl.port"
+  | DomainLocaleNextUrlDynamicAccess;
+
+// With i18n domains configured, NextURL picks the default locale by hostname.
+type DomainLocaleNextUrlDynamicAccess =
+  | "nextUrl.locale"
+  | "nextUrl.defaultLocale"
+  | "nextUrl.domainLocale";
 
 type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
 type AppRouteRequestMode = "auto" | "force-static" | "error";
@@ -261,27 +284,55 @@ export function createTrackedAppRouteRequest(
     options.onDynamicAccess?.(access);
   };
 
+  // The reads Next.js tracks in proxyNextRequest() and rejects for
+  // `dynamic = "error"` in packages/next/src/server/route-modules/app-route/module.ts.
+  const isNextDynamicNextUrlProperty = (prop: PropertyKey): boolean => {
+    switch (prop) {
+      case "search":
+      case "searchParams":
+      case "url":
+      case "href":
+      case "toJSON":
+      case "toString":
+      case "origin":
+        return true;
+      default:
+        return false;
+    }
+  };
+
+  const hasI18nDomains = (options.i18n?.domains?.length ?? 0) > 0;
+  const isHostDerivedNextUrlProperty = (prop: PropertyKey): boolean => {
+    switch (prop) {
+      case "protocol":
+      case "username":
+      case "password":
+      case "host":
+      case "hostname":
+      case "port":
+        return true;
+      case "locale":
+      case "defaultLocale":
+      case "domainLocale":
+        return hasI18nDomains;
+      default:
+        return false;
+    }
+  };
+
   // Mirror the dynamic request reads that Next.js tracks inside
   // packages/next/src/server/route-modules/app-route/module.ts
-  // via proxyNextRequest(), but keep the logic in a normal typed module.
+  // via proxyNextRequest(), plus the host-derived parts described above, but
+  // keep the logic in a normal typed module.
   const wrapNextUrl = (nextUrl: NextURL): NextURL => {
     const nextUrlHandler: ProxyHandler<NextURL> = {
       get(target, prop): unknown {
-        switch (prop) {
-          case "search":
-          case "searchParams":
-          case "url":
-          case "href":
-          case "toJSON":
-          case "toString":
-          case "origin":
-            markDynamicAccess(`nextUrl.${String(prop)}` as NextUrlDynamicAccess);
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
-          case "clone":
-            return () => wrapNextUrl(target.clone());
-          default:
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        if (isNextDynamicNextUrlProperty(prop) || isHostDerivedNextUrlProperty(prop)) {
+          markDynamicAccess(`nextUrl.${String(prop)}` as NextUrlDynamicAccess);
+          return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
         }
+        if (prop === "clone") return () => wrapNextUrl(target.clone());
+        return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
       },
     };
 
@@ -324,22 +375,24 @@ export function createTrackedAppRouteRequest(
   };
 
   const wrapRequireStaticNextUrl = (nextUrl: NextURL): NextURL => {
+    let staticNextUrl: NextURL | null = null;
     const nextUrlHandler: ProxyHandler<NextURL> = {
       get(target, prop): unknown {
-        switch (prop) {
-          case "search":
-          case "searchParams":
-          case "url":
-          case "href":
-          case "toJSON":
-          case "toString":
-          case "origin":
-            return throwStaticGenerationError(`nextUrl.${String(prop)}`);
-          case "clone":
-            return () => wrapRequireStaticNextUrl(target.clone());
-          default:
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        if (isNextDynamicNextUrlProperty(prop)) {
+          return throwStaticGenerationError(`nextUrl.${String(prop)}`);
         }
+        if (isHostDerivedNextUrlProperty(prop)) {
+          // Next.js allows these reads and stores its localhost:3000 build
+          // values, so answer from the same static URL instead of the
+          // visitor's host.
+          if (staticNextUrl === null) {
+            staticNextUrl = target.clone();
+            staticNextUrl.href = cleanStaticUrl(target.href);
+          }
+          return Reflect.get(staticNextUrl, prop, staticNextUrl);
+        }
+        if (prop === "clone") return () => wrapRequireStaticNextUrl(target.clone());
+        return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
       },
     };
 

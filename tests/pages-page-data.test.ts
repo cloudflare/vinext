@@ -1,9 +1,7 @@
-import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   getPagesRouteParams,
   matchesPagesStaticPath,
-  renderPagesIsrHtml,
   resolvePagesRevalidateSeconds,
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
@@ -256,7 +254,6 @@ function createOptions(
 ): ResolvePagesPageDataOptions {
   return {
     applyRequestContexts: vi.fn(),
-    buildId: "build-123",
     createGsspReqRes() {
       return {
         req: {},
@@ -289,7 +286,7 @@ function createOptions(
     pageModule: {},
     params: { slug: "post" },
     query: { slug: "post" },
-    renderIsrPassToStringAsync: vi.fn(async () => "<div>fresh-body</div>"),
+    renderIsrDocument: vi.fn(async () => {}),
     route: { isDynamic: false },
     routePattern: "/posts/[slug]",
     routeUrl: "/posts/post",
@@ -352,179 +349,6 @@ describe("pages page data", () => {
     });
   });
 
-  it("renders fresh ISR HTML while preserving custom document gaps and tail scripts", async () => {
-    const html = await renderPagesIsrHtml({
-      buildId: "build-123",
-      cachedHtml:
-        '<!DOCTYPE html><html><head><title>cached</title></head><body><div id="__next"><div>stale-body</div></div><aside data-gap="1"></aside><script>window.__NEXT_DATA__ = {"old":1}</script><script src="/tail.js"></script></body></html>',
-      createPageElement(_pageProps: Record<string, unknown>) {
-        return "page";
-      },
-      i18n: {
-        locale: "en",
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-        domainLocales: [{ domain: "example.com", defaultLocale: "en", locales: ["en"] }],
-      },
-      pageProps: { title: "fresh" },
-      params: { slug: "post" },
-      renderIsrPassToStringAsync: vi.fn(async () => "<div>fresh-body</div>"),
-      routePattern: "/posts/[slug]",
-      safeJsonStringify(value: unknown) {
-        return JSON.stringify(value);
-      },
-      vinext: { hasMiddleware: true },
-    });
-
-    expect(html).toContain("<div>fresh-body</div>");
-    expect(html).toContain('<aside data-gap="1"></aside>');
-    expect(html).toContain('<script src="/tail.js"></script>');
-    expect(html).toContain('"page":"/posts/[slug]"');
-    expect(html).toContain('"slug":"post"');
-    expect(html).toContain('"__vinext":{"hasMiddleware":true}');
-  });
-
-  it("refreshes next/head tags in the regenerated shell without disturbing document markup", async () => {
-    // The collector only yields tags once the page has rendered, so the
-    // regenerated head must come from the callback the render pass invokes
-    // rather than from anything captured beforehand.
-    const collectIsrHeadHTML = vi.fn(() => '<title data-next-head="">fresh</title>');
-
-    const html = await renderPagesIsrHtml({
-      buildId: "build-123",
-      cachedHtml:
-        '<!DOCTYPE html><html><head><meta charSet="utf-8" data-next-head="" /><title data-next-head="">stale</title><style data-vinext-doc="">.a{}</style></head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
-      collectIsrHeadHTML,
-      createPageElement(_pageProps: Record<string, unknown>) {
-        return "page";
-      },
-      i18n: {
-        locale: "en",
-        locales: ["en"],
-        defaultLocale: "en",
-        domainLocales: [],
-      },
-      pageProps: { title: "fresh" },
-      params: { slug: "post" },
-      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
-        return "<div>fresh-body</div>";
-      }),
-      routePattern: "/posts/[slug]",
-      safeJsonStringify(value: unknown) {
-        return JSON.stringify(value);
-      },
-    });
-
-    expect(collectIsrHeadHTML).toHaveBeenCalled();
-    expect(html).toContain('<title data-next-head="">fresh</title>');
-    expect(html).not.toContain("stale");
-    // Head markup outside the collector's run belongs to _document and is not
-    // regenerated, so the swap must leave it in place.
-    expect(html).toContain('<style data-vinext-doc="">.a{}</style>');
-    expect(html).toContain("<div>fresh-body</div>");
-  });
-
-  it("leaves the cached head alone when the regeneration collects no head", async () => {
-    const cachedHead = '<title data-next-head="">cached</title>';
-    const html = await renderPagesIsrHtml({
-      buildId: "build-123",
-      cachedHtml: `<!DOCTYPE html><html><head>${cachedHead}</head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
-      collectIsrHeadHTML: vi.fn(() => ""),
-      createPageElement(_pageProps: Record<string, unknown>) {
-        return "page";
-      },
-      i18n: {
-        locale: "en",
-        locales: ["en"],
-        defaultLocale: "en",
-        domainLocales: [],
-      },
-      pageProps: {},
-      params: {},
-      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
-        return "<div>fresh-body</div>";
-      }),
-      routePattern: "/posts/[slug]",
-      safeJsonStringify(value: unknown) {
-        return JSON.stringify(value);
-      },
-    });
-
-    expect(html).toContain(cachedHead);
-    expect(html).toContain("<div>fresh-body</div>");
-  });
-
-  it("swaps the whole head run when an inline script body contains a literal </head>", async () => {
-    // A `<script>` body is raw text, and the head serializer only escapes
-    // `</script` — so this string is legal page content, not the closing head
-    // tag. Reading it as markup would end the scan early and leave every tag
-    // after it stale while the fresh head was inserted before it.
-    const inlineScript = '<script data-next-head="">var marker = "</head>";</script>';
-    const html = await renderPagesIsrHtml({
-      buildId: "build-123",
-      cachedHtml:
-        `<!DOCTYPE html><html><head>${inlineScript}<title data-next-head="">stale</title></head>` +
-        `<body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
-      collectIsrHeadHTML: vi.fn(() => '<title data-next-head="">fresh</title>'),
-      createPageElement(_pageProps: Record<string, unknown>) {
-        return "page";
-      },
-      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
-      pageProps: {},
-      params: {},
-      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
-        return "<div>fresh-body</div>";
-      }),
-      routePattern: "/posts/[slug]",
-      safeJsonStringify(value: unknown) {
-        return JSON.stringify(value);
-      },
-    });
-
-    expect(html).toContain('<title data-next-head="">fresh</title>');
-    expect(html).not.toContain("stale");
-    // The stale script belongs to the same collector run, so the swap replaces
-    // it rather than leaving a duplicate behind the fresh head.
-    expect(html).not.toContain("var marker");
-  });
-
-  it("swaps the whole head run when title RCDATA contains a literal </head>", async () => {
-    // `title` is an RCDATA element: only its own `</title>` end tag closes it,
-    // so `</head>` here is text rather than the document-head boundary.
-    const titleWithMarkupText =
-      '<title data-next-head="">stale prefix </head> stale suffix</title>';
-    const html = await renderPagesIsrHtml({
-      buildId: "build-123",
-      cachedHtml:
-        '<!DOCTYPE html><html><head><meta charset="utf-8" data-next-head="" />' +
-        `${titleWithMarkupText}</head>` +
-        '<body><div id="__next"><div>stale-body</div></div>' +
-        '<script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
-      collectIsrHeadHTML: vi.fn(() => '<title data-next-head="">fresh</title>'),
-      createPageElement(_pageProps: Record<string, unknown>) {
-        return "page";
-      },
-      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
-      pageProps: {},
-      params: {},
-      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
-        return "<div>fresh-body</div>";
-      }),
-      routePattern: "/posts/[slug]",
-      safeJsonStringify(value: unknown) {
-        return JSON.stringify(value);
-      },
-    });
-
-    expect(html).toContain('<title data-next-head="">fresh</title>');
-    expect(html).not.toContain("stale prefix");
-    expect(html.match(/<title data-next-head="">/g)).toHaveLength(1);
-  });
-
   it("preserves custom app props in fallback shells", async () => {
     const AppComponent = Object.assign(function App() {}, {
       getInitialProps() {
@@ -554,25 +378,28 @@ describe("pages page data", () => {
 
   it("preserves custom app props during stale ISR regeneration", async () => {
     const isrSet = vi.fn(async () => {});
-    const createPageElement = vi.fn(() => "page");
+    const renderIsrDocument = vi.fn<ResolvePagesPageDataOptions["renderIsrDocument"]>(
+      async () => {},
+    );
+    let appRes: unknown;
     let requestContextsApplied = false;
     let appGetInitialPropsCalls = 0;
     let regenerationPromise: Promise<void> | undefined;
     const result = await resolvePagesPageData(
       createOptions({
         AppComponent: Object.assign(function App() {}, {
-          getInitialProps() {
+          getInitialProps({ ctx }: { ctx: { res?: unknown } }) {
             appGetInitialPropsCalls += 1;
             if (appGetInitialPropsCalls > 1) {
               expect(requestContextsApplied).toBe(true);
             }
+            appRes = ctx.res;
             return { appValue: "fresh-app", pageProps: { fromApp: true } };
           },
         }),
         applyRequestContexts() {
           requestContextsApplied = true;
         },
-        createPageElement,
         isrGet: vi.fn().mockResolvedValue({
           isStale: true,
           value: {
@@ -592,6 +419,7 @@ describe("pages page data", () => {
             return { props: { fromStatic: true }, revalidate: 10 };
           },
         },
+        renderIsrDocument,
         triggerBackgroundRegeneration: vi.fn((_key, callback) => {
           regenerationPromise = callback();
         }),
@@ -600,20 +428,20 @@ describe("pages page data", () => {
 
     expect(result.kind).toBe("response");
     await regenerationPromise;
-    expect(createPageElement).toHaveBeenCalledWith({
-      appValue: "fresh-app",
+    // The whole document renders from the fresh envelope, and `_document`
+    // sees the same req/res that `_app.getInitialProps` did.
+    expect(renderIsrDocument).toHaveBeenCalledOnce();
+    const regeneration = renderIsrDocument.mock.calls[0]?.[0];
+    expect(regeneration).toMatchObject({
+      expireSeconds: 300,
       pageProps: { fromApp: true, fromStatic: true },
+      props: { appValue: "fresh-app", pageProps: { fromApp: true, fromStatic: true } },
+      revalidateSeconds: 10,
     });
-    expect(isrSet).toHaveBeenCalledWith(
-      "pages:/posts/post",
-      expect.objectContaining({
-        pageData: {
-          appValue: "fresh-app",
-          pageProps: { fromApp: true, fromStatic: true },
-        },
-      }),
-      { cacheControl: { revalidate: 10, expire: 300 } },
-    );
+    expect(appRes).toBeDefined();
+    expect(regeneration?.documentReqRes.res).toBe(appRes);
+    // The render pipeline owns the cache write.
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("returns a notFound signal when getStaticPaths excludes a dynamic HTML path", async () => {
@@ -1632,6 +1460,9 @@ describe("pages page data", () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();
     const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
+    const renderIsrDocument = vi.fn<ResolvePagesPageDataOptions["renderIsrDocument"]>(
+      async () => {},
+    );
     const runInFreshUnifiedContext = vi.fn(async <T>(callback: () => Promise<T>): Promise<T> =>
       callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
@@ -1667,9 +1498,9 @@ describe("pages page data", () => {
             };
           },
         },
+        renderIsrDocument,
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
-        vinext: { hasMiddleware: true },
       }),
     );
 
@@ -1706,37 +1537,25 @@ describe("pages page data", () => {
 
     expect(runInFreshUnifiedContext).toHaveBeenCalledOnce();
     expect(applyRequestContexts).toHaveBeenCalledOnce();
-    expect(isrSet).toHaveBeenCalledWith(
-      "pages:/posts/post",
+    expect(renderIsrDocument).toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: "PAGES",
-        html: expect.stringContaining("<div>fresh-body</div>"),
-        pageData: { pageProps: { title: "fresh" } },
+        pageProps: { title: "fresh" },
+        props: { pageProps: { title: "fresh" } },
+        revalidateSeconds: false,
       }),
-      { cacheControl: { revalidate: false } },
     );
-    expect(isrSet).toHaveBeenCalledWith(
-      "pages:/posts/post",
-      expect.objectContaining({
-        kind: "PAGES",
-        html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
-        pageData: { pageProps: { title: "fresh" } },
-      }),
-      { cacheControl: { revalidate: false } },
-    );
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("preserves _app.getInitialProps app-level props during stale ISR regeneration", async () => {
     let regenPromise: Promise<void> | null = null;
     const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
+    const renderIsrDocument = vi.fn<ResolvePagesPageDataOptions["renderIsrDocument"]>(
+      async () => {},
+    );
     const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
       regenPromise = renderFn();
     });
-    let capturedRenderProps: Record<string, unknown> | undefined;
-    function createPageElement(props: Record<string, unknown>): ReactNode {
-      capturedRenderProps = props;
-      return null;
-    }
 
     const result = await resolvePagesPageData(
       createOptions({
@@ -1753,7 +1572,6 @@ describe("pages page data", () => {
             },
           },
         ),
-        createPageElement,
         isrGet: vi.fn().mockResolvedValue({
           isStale: true,
           value: {
@@ -1777,6 +1595,7 @@ describe("pages page data", () => {
             };
           },
         },
+        renderIsrDocument,
         triggerBackgroundRegeneration,
       }),
     );
@@ -1793,28 +1612,14 @@ describe("pages page data", () => {
     const pendingRegen: Promise<void> = regenPromise;
     await pendingRegen;
 
-    expect(capturedRenderProps).toEqual(
+    expect(renderIsrDocument).toHaveBeenCalledWith(
       expect.objectContaining({
-        appProp: "from-app",
         pageProps: { pageProp: "from-page" },
+        props: { appProp: "from-app", pageProps: { pageProp: "from-page" } },
+        revalidateSeconds: 60,
       }),
     );
-
-    expect(isrSet).toHaveBeenCalledOnce();
-    const regeneratedCacheValue = isrSet.mock.calls[0]?.[1];
-    expect(regeneratedCacheValue).toEqual(
-      expect.objectContaining({
-        kind: "PAGES",
-        pageData: {
-          appProp: "from-app",
-          pageProps: { pageProp: "from-page" },
-        },
-      }),
-    );
-    if (regeneratedCacheValue?.kind !== "PAGES") throw new Error("expected PAGES cache value");
-    expect(regeneratedCacheValue?.html).toContain('"appProp":"from-app"');
-    expect(regeneratedCacheValue?.html).toContain('"pageProp":"from-page"');
-    expect(regeneratedCacheValue?.html).toContain('"page":"/posts/[slug]"');
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("does not run _app.getInitialProps on a fresh ISR cache HIT", async () => {
@@ -1938,73 +1743,6 @@ describe("pages page data", () => {
     // App GIP must run exactly once, inside the background regeneration callback.
     expect(regenGipCalls).toBe(1);
     expect(appGip).toHaveBeenCalledOnce();
-    expect(isrSet).toHaveBeenCalledOnce();
-  });
-
-  it("preserves vinext module metadata during stale ISR regeneration", async () => {
-    let regenPromise: Promise<void> | null = null;
-    const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
-    const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
-      regenPromise = renderFn();
-    });
-
-    const result = await resolvePagesPageData(
-      createOptions({
-        isrGet: vi.fn().mockResolvedValue({
-          isStale: true,
-          value: {
-            lastModified: 1,
-            cacheState: "stale",
-            value: {
-              kind: "PAGES",
-              html: '<!DOCTYPE html><html><body><div id="__next"><main>stale 404</main></div><script>window.__NEXT_DATA__ = {"page":"/404","query":{},"props":{"pageProps":{"marker":"stale"}}}</script></body></html>',
-              pageData: { marker: "stale" },
-              headers: undefined,
-              status: 404,
-            },
-          },
-        }),
-        isrSet,
-        pageModule: {
-          async getStaticProps() {
-            return {
-              props: { marker: "fresh" },
-              revalidate: 60,
-            };
-          },
-        },
-        renderIsrPassToStringAsync: vi.fn(async () => "<main>fresh 404</main>"),
-        routePattern: "/404",
-        routeUrl: "/missing",
-        statusCode: 404,
-        triggerBackgroundRegeneration,
-        vinext: {
-          pageModuleUrl: "/assets/pages/404.js",
-          appModuleUrl: "/assets/pages/_app.js",
-        },
-      }),
-    );
-
-    expect(result.kind).toBe("response");
-    if (result.kind !== "response") {
-      throw new Error("expected response result");
-    }
-    expect(result.response.status).toBe(404);
-
-    if (!regenPromise) {
-      throw new Error("expected stale ISR regeneration to start");
-    }
-    const pendingRegen: Promise<void> = regenPromise;
-    await pendingRegen;
-
-    expect(isrSet).toHaveBeenCalledOnce();
-    const regeneratedCacheValue = isrSet.mock.calls[0]?.[1];
-    if (regeneratedCacheValue?.kind !== "PAGES") throw new Error("expected PAGES cache value");
-    expect(regeneratedCacheValue?.html).toContain("<main>fresh 404</main>");
-    expect(regeneratedCacheValue?.html).toContain('"__vinext"');
-    expect(regeneratedCacheValue?.html).toContain('"pageModuleUrl":"/assets/pages/404.js"');
-    expect(regeneratedCacheValue?.html).toContain('"appModuleUrl":"/assets/pages/_app.js"');
-    expect(regeneratedCacheValue?.status).toBe(404);
   });
 
   it("uses stored cache-control metadata for Pages Router cached HIT responses", async () => {

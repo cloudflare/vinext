@@ -41,7 +41,6 @@ const middlewareRequestHeadersPath = resolveEntryPath(
   "../utils/middleware-request-headers.js",
   import.meta.url,
 );
-const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
 const appRouteHandlerDispatchPath = resolveEntryPath(
   "../server/app-route-handler-dispatch.js",
   import.meta.url,
@@ -453,7 +452,6 @@ ${
 import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry";
 import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
-import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext } from ${JSON.stringify(appRouteHandlerMiddlewareContextPath)};`
     : ""
 }
@@ -606,7 +604,6 @@ const __requestHandler = createAppRscRequestHandler({
           };
         },
         buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
-        decodePathParams: __decodePathParams,
         applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
         getDraftModeCookieHeader,
       }
@@ -833,7 +830,6 @@ ${
     : ""
 }
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
-import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 ${
   hasPagesDir
@@ -2042,7 +2038,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           };
         },
         buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
-        decodePathParams: __decodePathParams,
         applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
         getDraftModeCookieHeader,
       }

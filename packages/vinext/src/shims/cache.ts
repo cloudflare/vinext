@@ -38,7 +38,7 @@ import {
   addCollectedRequestTags,
   getCurrentFetchSoftTags,
   runWithDetachedFetchObservations,
-} from "./fetch-cache.js";
+} from "./fetch-cache-state.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,

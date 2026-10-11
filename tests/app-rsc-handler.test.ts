@@ -3178,6 +3178,44 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("nonce-render");
   });
 
+  it("routes hybrid Pages by the raw request pathname until a rewrite replaces it", async () => {
+    // Next.js reads the Pages locale and static segments from the raw pathname
+    // and decodes dynamic captures once, so `/%66r/...` must not reach the
+    // Pages router as the decoded `fr` locale that middleware never matched.
+    const pathnames: Array<string | undefined> = [];
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("page")),
+    );
+    const handler = createHandler({
+      configRewrites: {
+        afterFiles: [],
+        beforeFiles: [{ source: "/legacy", destination: "/blog/a%2561" }],
+        fallback: [],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) => {
+        pathnames.push(options.pathname);
+        return options.dispatchPagesResponseStage?.(options.request, "page") ?? null;
+      },
+    });
+
+    for (const pathname of ["/docs/%66r/a%2561?q=1", "/docs/legacy?q=1"]) {
+      await handler(
+        new Request(new URL(pathname, "https://example.test")),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+    }
+
+    expect(pathnames).toEqual(["/%66r/a%2561?q=1", "/blog/a%2561?q=1"]);
+    expect(dispatchResponseStage.mock.calls.map(([, props]) => props)).toMatchObject([
+      { kind: "hybrid-pages", resolvedUrl: "/%66r/a%2561?q=1" },
+      { kind: "hybrid-pages", resolvedUrl: "/blog/a%2561?q=1" },
+    ]);
+  });
+
   it("restores hybrid Pages pre-handler headers inside the response stage", async () => {
     // Next.js exposes middleware response headers through `res.getHeader()` in
     // getServerSideProps. Keep the same response snapshot across the App to
