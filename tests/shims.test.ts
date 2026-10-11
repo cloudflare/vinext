@@ -8863,6 +8863,19 @@ describe("Flight transport deterministic hashing", () => {
     expect(key1).not.toBe(key2);
   });
 
+  it("preserves the order of repeated field values", async () => {
+    // get() returns the first value, so these select different records.
+    const fd1 = new FormData();
+    fd1.append("scope", "private");
+    fd1.append("scope", "public");
+
+    const fd2 = new FormData();
+    fd2.append("scope", "public");
+    fd2.append("scope", "private");
+
+    expect(await replyToCacheKey(fd1)).not.toBe(await replyToCacheKey(fd2));
+  });
+
   it("produces stable hash for FormData with Blob entries", async () => {
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "application/octet-stream" });
 
