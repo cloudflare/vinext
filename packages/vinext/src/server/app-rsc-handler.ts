@@ -1629,8 +1629,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (lateActionRscCacheBustingRedirect) return lateActionRscCacheBustingRedirect;
 
   if (filesystemRouteEligible && isImageOptimizationPath(cleanPathname)) {
+    // Rewrites to or of the endpoint replace the query in `resolvedUrl`.
+    const imageUrl = new URL(resolvedUrl, url);
     const imageRedirect = resolveDevImageRedirect(
-      url,
+      imageUrl,
       [
         ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
@@ -1648,7 +1650,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     return markImageOptimizationSignal(
       Response.redirect(new URL(imageRedirect, url.origin).href, 302),
-      { middlewareHeaders, search: url.search },
+      { middlewareHeaders, search: imageUrl.search },
     );
   }
 

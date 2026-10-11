@@ -68,12 +68,13 @@ test.describe("image optimization endpoint behind middleware", () => {
     expect(Buffer.from(await image.body()).equals(heartPng)).toBe(true);
   });
 
-  test("serves the image query middleware rewrites to", async ({ request }) => {
+  test("serves the image query middleware or config rewrites to", async ({ request }) => {
     const direct = await request.get("/heart.png");
     const heartPng = Buffer.from(await direct.body());
 
     for (const path of [
       "/middleware-image-rewrite",
+      "/config-image-rewrite",
       imagePath("/_next/image", "/image-endpoint-replaced.png"),
     ]) {
       const image = await request.get(path);
