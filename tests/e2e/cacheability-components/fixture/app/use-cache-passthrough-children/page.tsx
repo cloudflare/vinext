@@ -10,8 +10,6 @@ const SECRETS: Record<string, string> = {
   bob: "BOB_PRIVATE_SECRET",
 };
 
-let generation = 0;
-
 // `partition` only keys the entry.
 async function CachedWrapper({
   partition: _partition,
@@ -21,7 +19,8 @@ async function CachedWrapper({
   children: ReactNode;
 }) {
   "use cache";
-  const generated = ++generation;
+  // Unique per execution: a module counter could restart with a new isolate.
+  const generated = crypto.randomUUID();
   return (
     <section id="wrapper">
       <span id="wrapper-generated">{generated}</span>

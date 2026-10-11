@@ -19,7 +19,7 @@ async function visit(request: APIRequestContext, partition: string, session?: st
     secret: text("secret"),
     wrapper: text("wrapper-generated"),
   };
-  expect(result.wrapper).toMatch(/^\d+$/);
+  expect(result.wrapper).toMatch(/^[0-9a-f-]{36}$/);
   // Covers the inline Flight payload as well as the HTML.
   for (const secret of SECRETS) {
     if (secret !== result.secret) expect(html).not.toContain(secret);
