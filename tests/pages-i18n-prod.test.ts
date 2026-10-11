@@ -387,6 +387,20 @@ describe("Pages i18n domain routing with basePath (production)", () => {
     expect(res.body).toContain('href="http://example.fr/app/about" id="switch-locale"');
   });
 
+  // Next.js renders the shared getStaticProps /404 for "/404", keeping the
+  // request's trailing slash even when a locale prefix is stripped.
+  it("renders the shared /404 for its own path under a locale prefix", async () => {
+    const res = await requestNodeServerWithHost(
+      prodPort,
+      "/app/fr/missing-share-token/",
+      "example.com",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).not.toContain("missing-share-token");
+    expect(res.body).toContain('<p id="as-path">/404/</p>');
+  });
+
   testLocaleIsrIsolation(() => prodPort, "/app", "/");
 
   it("preserves domain identity for only-generated revalidation with basePath", async () => {

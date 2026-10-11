@@ -747,10 +747,11 @@ export function createPagesPageHandler(
     // A getStaticProps status page is shared by every request that renders
     // it, so Next.js renders it for its own pathname and the missing or
     // failing request URL never reaches the stored document. Like Next.js's
-    // resolvedUrl, only a trailing slash carries over under trailingSlash.
+    // resolvedUrl, only the request's trailing slash carries over under
+    // trailingSlash, read before locale stripping drops it.
     const renderRouteUrl =
       isStaticPropsRender && isStatusPageIdentity
-        ? vinextConfig.trailingSlash && routeUrl.split("?")[0].endsWith("/")
+        ? vinextConfig.trailingSlash && url.split("?")[0].endsWith("/")
           ? statusPagePathname + "/"
           : statusPagePathname
         : isStaticPropsRender
