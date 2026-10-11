@@ -252,6 +252,8 @@ export type ResolvePagesPageDataOptions = {
   isDataReq?: boolean;
   err?: unknown;
   createGsspReqRes: () => PagesGsspContextResponse;
+  /** The req/res for a stale regeneration's render; defaults to `createGsspReqRes`. */
+  createRegenerationReqRes?: () => PagesGsspContextResponse;
   createAppTree?: (props: Record<string, unknown>) => ReactNode;
   createPageElement: (props: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
@@ -1427,7 +1429,7 @@ export async function resolvePagesPageData(
             options.applyRequestContexts();
             // `_app.getInitialProps` and `_document` share one req/res, as in the
             // foreground render.
-            const reqRes = options.createGsspReqRes();
+            const reqRes = (options.createRegenerationReqRes ?? options.createGsspReqRes)();
             const freshAppResult = await loadPagesAppInitialRenderProps(options, () => reqRes);
             if (freshAppResult.kind === "response") return;
 

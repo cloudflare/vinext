@@ -35,6 +35,11 @@ import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
 import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -1569,9 +1574,53 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
 
     const response = await handler(makeRequest(), "/", null, null, null);
     expect(response.status).toBe(302);
+    await vi.waitFor(() => expect(releaseBody).toBeDefined());
     expect(pageWrites()).toHaveLength(0);
 
     releaseBody?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("returns the sent response while getStaticProps is still running", async () => {
+    const pageWrites = serveEntry("miss");
+    let releaseProps: (() => void) | undefined;
+    const handler = makeHandler("_app", {
+      async getStaticProps() {
+        await new Promise<void>((resolve) => {
+          releaseProps = resolve;
+        });
+        return { props: { value: "fresh" }, revalidate: 1 };
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/login");
+    expect(pageWrites()).toHaveLength(0);
+
+    releaseProps?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("keeps the sent response out of the shared response cache", async () => {
+    const pageWrites = serveEntry("miss");
+    const state: RouteCacheabilityState = { captureDeadlineAt: Date.now() + 1_000, mode: "admit" };
+    const background: Promise<unknown>[] = [];
+    const context = {
+      waitUntil(promise: Promise<unknown>) {
+        background.push(promise);
+      },
+    };
+    Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+
+    const response = await runWithExecutionContext(context, () =>
+      makeHandler("_app")(makeRequest(), "/", null, null, null),
+    );
+    expect(response.status).toBe(302);
+    expect(state.finalResponseVetoReason).toBeDefined();
+
+    // The ISR entry itself is still stored.
+    await Promise.all(background);
     await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
   });
 
@@ -1598,9 +1647,11 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
       })(makeRequest(), "/", null, null, null);
       expect(response.status).toBe(302);
       expect(response.headers.get("location")).toBe("/login");
-      expect(consoleError).toHaveBeenCalledWith(
-        "[vinext] SSR error:",
-        expect.objectContaining({ message: "getStaticProps failed" }),
+      await vi.waitFor(() =>
+        expect(consoleError).toHaveBeenCalledWith(
+          "[vinext] SSR error:",
+          expect.objectContaining({ message: "getStaticProps failed" }),
+        ),
       );
     } finally {
       consoleError.mockRestore();
