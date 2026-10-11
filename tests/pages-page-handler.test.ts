@@ -1473,7 +1473,12 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
     res.end();
   }
 
-  function makeHandler(sender: "_app" | "_document") {
+  function makeHandler(
+    sender: "_app" | "_document",
+    overrides: Partial<Pick<CreatePagesPageHandlerOptions, "renderToReadableStream">> & {
+      getStaticProps?: () => Promise<Record<string, unknown>>;
+    } = {},
+  ) {
     const page = (props: Record<string, unknown>) =>
       React.createElement("p", null, String((props.pageProps as { value: string }).value));
     return createPagesPageHandler({
@@ -1482,11 +1487,13 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
           makeRoute(
             "/",
             makePageModule({
-              getStaticProps: async () => ({ props: { value: "fresh" }, revalidate: 1 }),
+              getStaticProps:
+                overrides.getStaticProps ??
+                (async () => ({ props: { value: "fresh" }, revalidate: 1 })),
             }),
           ),
         ],
-        renderToReadableStream,
+        renderToReadableStream: overrides.renderToReadableStream ?? renderToReadableStream,
         createPageElement: (_Page, _App, props) => page(props),
         enhancePageElement: (_Page, _App, props) => page(props),
       }),
@@ -1536,6 +1543,69 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
       expect(entry.status).toBe(200);
     },
   );
+
+  it("returns the sent response without waiting for the rest of the render", async () => {
+    const pageWrites = serveEntry("miss");
+    let releaseBody: (() => void) | undefined;
+    let renders = 0;
+    const handler = makeHandler("_app", {
+      async renderToReadableStream(element) {
+        const stream = await renderToReadableStream(element);
+        renders += 1;
+        // Hold the page body open; the `_document` shell renders normally.
+        if (renders > 1) return stream;
+        const held = new Promise<void>((resolve) => {
+          releaseBody = resolve;
+        });
+        return stream.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            async flush() {
+              await held;
+            },
+          }),
+        );
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.status).toBe(302);
+    expect(pageWrites()).toHaveLength(0);
+
+    releaseBody?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("reports an on-demand revalidation as regenerated", async () => {
+    const pageWrites = serveEntry("miss");
+    const request = new Request("http://localhost/", {
+      headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+    });
+
+    const response = await makeHandler("_app")(request, "/", null, null, null);
+    expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe("_N_T_/");
+    expect(pageWrites()).toHaveLength(1);
+  });
+
+  it("keeps the sent response when the page fails afterwards", async () => {
+    serveEntry("miss");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await makeHandler("_app", {
+        async getStaticProps() {
+          throw new Error("getStaticProps failed");
+        },
+      })(makeRequest(), "/", null, null, null);
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/login");
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] SSR error:",
+        expect.objectContaining({ message: "getStaticProps failed" }),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 
   it.each(["_app", "_document"] as const)(
     "stores a stale regeneration when %s sends the response",

@@ -523,6 +523,28 @@ describe("pages page data", () => {
       await expect(resolved.response.text()).resolves.toBe("sent by app");
     });
 
+    it("reports the stored redirect to an on-demand revalidation", async () => {
+      const isrSet = vi.fn(async () => {});
+      const resolved = await resolvePagesPageData(
+        sentResponseOptions({
+          isOnDemandRevalidate: true,
+          isrSet,
+          pageModule: {
+            getStaticProps: () => ({ redirect: { destination: "/target", permanent: false } }),
+          },
+        }),
+      );
+
+      expect(isrSet).toHaveBeenCalledWith(
+        "pages:/posts/post",
+        expect.objectContaining({ kind: "REDIRECT" }),
+        expect.anything(),
+      );
+      if (resolved.kind !== "response") throw new Error("expected response");
+      expect(resolved.response.status).toBe(307);
+      expect(resolved.response.headers.get("location")).toBe("/target");
+    });
+
     it("still regenerates a stale entry", async () => {
       const renderIsrDocument = vi.fn<ResolvePagesPageDataOptions["renderIsrDocument"]>(
         async () => {},

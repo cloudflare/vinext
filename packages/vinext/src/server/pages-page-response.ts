@@ -722,9 +722,16 @@ export async function renderPagesPageResponse(
   }
 
   // `_app` or `_document` sent the response of a getStaticProps page. The
-  // entry above is still stored, but the visitor gets the sent response.
-  if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
-    await responseBodyStream.cancel();
+  // entry above is still stored, but the visitor gets the sent response. An
+  // on-demand revalidation reports the regenerated entry instead.
+  if (
+    !options.isOnDemandRevalidate &&
+    options.documentReqRes?.res.headersSent &&
+    options.documentReqRes.responsePromise
+  ) {
+    // Cancelling one tee branch settles only once the cache branch finishes,
+    // so don't hold the sent response for the rest of the render.
+    responseBodyStream.cancel().catch(() => {});
     return options.documentReqRes.responsePromise;
   }
 

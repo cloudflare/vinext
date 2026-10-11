@@ -760,6 +760,31 @@ export function createPagesPageHandler(
       executionContext: getRequestExecutionContext(),
     });
 
+    // The req/res `_app`, the page data and `_document` share for this render.
+    let pageReqRes: ReturnType<typeof createPagesReqRes> | null = null;
+    const reportSsrError = async (e: unknown) => {
+      console.error("[vinext] SSR error:", e);
+      await reportRequestError(
+        e,
+        {
+          path: url,
+          method: request.method,
+          headers: Object.fromEntries(request.headers.entries()),
+        },
+        {
+          routerKind: "Pages Router",
+          routePath: route.pattern,
+          routeType: "render",
+          revalidateReason: isOnDemandRevalidateRequest(
+            request.headers.get(PRERENDER_REVALIDATE_HEADER),
+          )
+            ? "on-demand"
+            : typeof pageModule.getStaticProps === "function"
+              ? "stale"
+              : undefined,
+        },
+      );
+    };
     const response = await runWithRequestContext(uCtx, async () => {
       ensureFetchPatch();
       try {
@@ -931,13 +956,13 @@ export function createPagesPageHandler(
         const routePathname = parsedRouteUrl.pathname || "/";
         const pagesResolvedUrl = routePathname + originalRequestUrl.search;
         const createPageReqRes = () => {
-          const reqRes = createPagesReqRes({
+          const reqRes = (pageReqRes = createPagesReqRes({
             body: undefined,
             initialResponseHeaders,
             query,
             request,
             url: originalRequestPathAndSearch,
-          });
+          }));
           if (typeof renderStatusCode === "number") {
             reqRes.res.statusCode = renderStatusCode;
           }
@@ -1340,7 +1365,18 @@ export function createPagesPageHandler(
           ifModifiedSince: request.headers.get("if-modified-since") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         };
-        let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);
+        const rendering = renderTracedPagesPageResponse(pageResponseOptions);
+        // Next.js keeps rendering and storing a getStaticProps page whose
+        // `_app` or `_document` sent the response, but the sent response is
+        // already on its way. An on-demand revalidation waits for the entry.
+        const sendsEarly = isStaticPropsRoute && !isOnDemandRevalidate && documentReqRes !== null;
+        let pageResponse = sendsEarly
+          ? await Promise.race([rendering, documentReqRes.responsePromise])
+          : await rendering;
+        if (sendsEarly && documentReqRes.res.headersSent) {
+          const backgroundRender = rendering.then(() => undefined, reportSsrError);
+          getRequestExecutionContext()?.waitUntil(backgroundRender);
+        }
         if (shouldApplyErrorResponsePolicy) {
           pageResponse = applyPagesErrorCachePolicy(
             pageResponse,
@@ -1351,27 +1387,17 @@ export function createPagesPageHandler(
         }
         return finalizePagesPreviewResponse(withBrowserPolicy(pageResponse), preview);
       } catch (e) {
-        console.error("[vinext] SSR error:", e);
-        await reportRequestError(
-          e,
-          {
-            path: url,
-            method: request.method,
-            headers: Object.fromEntries(request.headers.entries()),
-          },
-          {
-            routerKind: "Pages Router",
-            routePath: route.pattern,
-            routeType: "render",
-            revalidateReason: isOnDemandRevalidateRequest(
-              request.headers.get(PRERENDER_REVALIDATE_HEADER),
-            )
-              ? "on-demand"
-              : typeof pageModule.getStaticProps === "function"
-                ? "stale"
-                : undefined,
-          },
-        );
+        await reportSsrError(e);
+
+        // Next.js keeps a response `_app` or `_document` already sent for a
+        // getStaticProps page and only reports the error.
+        if (
+          isStaticPropsRoute &&
+          !isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER)) &&
+          pageReqRes?.res.headersSent
+        ) {
+          return pageReqRes.responsePromise;
+        }
 
         // Data requests can't render HTML; avoid recursion if already rendering
         // the error page. Mirrors Next.js base-server.ts: render /500 or _error

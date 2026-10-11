@@ -1285,9 +1285,12 @@ export async function resolvePagesPageData(
   if (previewData !== false) renderProps.__N_PREVIEW = true;
 
   // A getStaticProps page whose `_app` or `_document` sent the response is
-  // still resolved and stored, but the visitor gets the sent response.
+  // still resolved and stored, but the visitor gets the sent response. An
+  // on-demand revalidation reports the regenerated entry instead.
   async function takeSentResponse(): Promise<ResolvePagesPageDataResponseResult | null> {
-    if (!sharedReqRes || !isResponseSent(sharedReqRes.res)) return null;
+    if (options.isOnDemandRevalidate || !sharedReqRes || !isResponseSent(sharedReqRes.res)) {
+      return null;
+    }
     return { kind: "response", response: await sharedReqRes.responsePromise };
   }
 
