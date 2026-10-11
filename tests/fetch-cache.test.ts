@@ -3506,6 +3506,24 @@ describe("fetch cache shim", () => {
       expect(a2).toEqual(a1);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
+
+    it("does not dedupe render fetches across Request cf or encodeResponseBody", async () => {
+      const url = "https://api.example.com/workers-fields-dedupe";
+      const manualInit: WorkersInit = { encodeResponseBody: "manual", cache: "no-store" };
+
+      const responses = await Promise.all([
+        fetch(url, { cache: "no-store" }),
+        fetch(url, manualInit),
+        fetch(workersRequest(url, { cf: { resolveOverride: "origin-a.example.com" } }), {
+          cache: "no-store",
+        }),
+      ]);
+      const bodies = await Promise.all(responses.map((res) => res.json()));
+
+      expect(new Set(bodies.map((body) => body.count))).toEqual(new Set([1, 2, 3]));
+      expect(bodies[2].origin).toBe("origin-a.example.com");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
   });
 
   // ── Body restoration after cache key generation ───────────────────

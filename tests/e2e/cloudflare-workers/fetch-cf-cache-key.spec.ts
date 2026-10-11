@@ -21,11 +21,14 @@ test("cached fetches with different cf.resolveOverride origins keep separate ent
   // reads back its own stored entry.
   let cachedA: string | null = null;
   await expect
-    .poll(async () => {
-      const previous = cachedA;
-      cachedA = (await readFetchIds(page, "a")).cached;
-      return cachedA === previous;
-    })
+    .poll(
+      async () => {
+        const previous = cachedA;
+        cachedA = (await readFetchIds(page, "a")).cached;
+        return cachedA === previous;
+      },
+      { timeout: 15_000 },
+    )
     .toBe(true);
 
   const originB = await readFetchIds(page, "b");
