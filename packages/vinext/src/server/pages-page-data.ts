@@ -1,6 +1,5 @@
 import { recordRouteCacheability } from "vinext/shims/cacheability-classification";
 import type { ReactNode } from "react";
-import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
@@ -227,7 +226,6 @@ export type PagesPageModule = {
 export type ResolvePagesPageDataOptions = {
   applyRequestContexts: () => void;
   basePath?: string;
-  buildId: string | null;
   /**
    * When true, this is a `/_next/data/<buildId>/<page>.json` request. Callers
    * that respond with a JSON envelope (`{ pageProps }`) instead of HTML must
@@ -337,7 +335,6 @@ export type ResolvePagesPageDataOptions = {
     props: Record<string, unknown>;
     revalidateSeconds: number | false;
   }) => Promise<void>;
-  vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
   /**
    * The request's User-Agent string. When this matches a known crawler/bot
@@ -1457,6 +1454,8 @@ export async function resolvePagesPageData(
             }
 
             if (cachedValue?.kind === "PAGES" && !cachedValue.generatedFromDataRequest) {
+              // The render pipeline owns the entry write, so this span covers
+              // it too.
               await tracePagesDocument(options.routePattern, () =>
                 options.renderIsrDocument({
                   documentReqRes: reqRes,

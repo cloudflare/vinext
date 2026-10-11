@@ -323,6 +323,32 @@ describe("pages page response", () => {
     );
   });
 
+  it("finishes the ISR write before returning when awaitIsrWrite is set", async () => {
+    // Stale regeneration has no response whose lifetime the write can extend.
+    const common = createCommonOptions();
+    let written = false;
+    common.isrSet.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      written = true;
+    });
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      awaitIsrWrite: true,
+      DocumentComponent: null,
+      getSSRHeadHTML: undefined,
+      isrRevalidateSeconds: 60,
+    });
+
+    expect(written).toBe(true);
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({ html: expect.stringContaining("<div>live-body</div>") }),
+      { cacheControl: { revalidate: 60 } },
+    );
+    await response.body?.cancel();
+  });
+
   it("reports the resolved Pages tag after an on-demand regeneration", async () => {
     const common = createCommonOptions();
 
@@ -1334,7 +1360,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1390,7 +1415,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1448,7 +1472,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1510,7 +1533,6 @@ describe("pages page response", () => {
     );
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1570,7 +1592,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1626,7 +1647,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1684,7 +1704,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1768,7 +1787,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),
@@ -1826,7 +1844,6 @@ describe("pages page response", () => {
 
     const result = await resolvePagesPageData({
       applyRequestContexts: vi.fn(),
-      buildId: "build-123",
       isDataReq: false,
       createGsspReqRes: vi.fn() as never,
       createPageElement: vi.fn(),

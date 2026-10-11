@@ -254,7 +254,6 @@ function createOptions(
 ): ResolvePagesPageDataOptions {
   return {
     applyRequestContexts: vi.fn(),
-    buildId: "build-123",
     createGsspReqRes() {
       return {
         req: {},
@@ -1502,7 +1501,6 @@ describe("pages page data", () => {
         renderIsrDocument,
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
-        vinext: { hasMiddleware: true },
       }),
     );
 

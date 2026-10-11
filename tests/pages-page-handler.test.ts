@@ -1172,8 +1172,7 @@ describe("createPagesPageHandler — 405 method check", () => {
 // ---------------------------------------------------------------------------
 
 describe("createPagesPageHandler — stale ISR regeneration", () => {
-  it("regenerates the whole document instead of patching the cached shell", async () => {
-    // Next.js re-runs its full render on regeneration, `_document` included.
+  function serveStaleEntry() {
     const adapter = new DefaultCdnCacheAdapter();
     vi.spyOn(adapter, "get").mockResolvedValue({
       lastModified: 0,
@@ -1189,6 +1188,30 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
     });
     const set = vi.spyOn(adapter, "set").mockResolvedValue();
     setCdnCacheAdapter(adapter);
+    // Earlier tests' scheduled writes can land on this adapter, so only look
+    // at this page's key.
+    return () => set.mock.calls.filter(([key]) => key === pagesIsrCacheKey("/", "test-build-id"));
+  }
+
+  function makeStaticPage(page: (props: Record<string, unknown>) => React.ReactNode) {
+    return makeOpts({
+      pageRoutes: [
+        makeRoute(
+          "/",
+          makePageModule({
+            getStaticProps: async () => ({ props: { value: "fresh" }, revalidate: 1 }),
+          }),
+        ),
+      ],
+      renderToReadableStream,
+      createPageElement: (_Page, _App, props) => page(props),
+      enhancePageElement: (_Page, _App, props) => page(props),
+    });
+  }
+
+  it("regenerates the whole document instead of patching the cached shell", async () => {
+    // Next.js re-runs its full render on regeneration, `_document` included.
+    const pageWrites = serveStaleEntry();
 
     let documentRenders = 0;
     const DocumentComponent = Object.assign(
@@ -1219,33 +1242,20 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
         },
       },
     );
-    const handler = createPagesPageHandler(
-      makeOpts({
-        pageRoutes: [
-          makeRoute(
-            "/",
-            makePageModule({
-              getStaticProps: async () => ({ props: { value: "fresh" }, revalidate: 1 }),
-            }),
-          ),
-        ],
-        renderToReadableStream,
-        createPageElement: (_Page, _App, props) =>
-          React.createElement("p", null, String((props.pageProps as { value: string }).value)),
-        enhancePageElement: (_Page, _App, props) =>
-          React.createElement("p", null, String((props.pageProps as { value: string }).value)),
-        DocumentComponent:
-          DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
-      }),
-    );
+    const handler = createPagesPageHandler({
+      ...makeStaticPage((props) =>
+        React.createElement("p", null, String((props.pageProps as { value: string }).value)),
+      ),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
 
     const response = await handler(makeRequest(), "/", null, null, null);
     expect(response.headers.get("x-vinext-cache")).toBe("STALE");
     expect(await response.text()).toContain("<p>stale</p>");
 
-    await vi.waitFor(() => expect(set).toHaveBeenCalledOnce());
-    const [key, entry, context] = set.mock.calls[0] ?? [];
-    expect(key).toBe(pagesIsrCacheKey("/", "test-build-id"));
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+    const [, entry, context] = pageWrites()[0] ?? [];
     expect(context).toMatchObject({ cacheControl: { revalidate: 1 } });
     if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
     expect(documentRenders).toBe(1);
@@ -1255,6 +1265,66 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
     expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
     expect(entry.html).toContain('"props":{"pageProps":{"value":"fresh"}}');
     expect(entry.html).not.toContain("stale");
+  });
+
+  it("waits for every Suspense boundary before storing a regeneration", async () => {
+    // Next.js renders a regeneration with `allReady` resolved. React flushes
+    // late boundaries inline here either way, so hold `allReady` directly.
+    const pageWrites = serveStaleEntry();
+    let releaseAllReady: (() => void) | undefined;
+    const allReady = new Promise<void>((resolve) => {
+      releaseAllReady = resolve;
+    });
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => null),
+      async renderToReadableStream() {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("<p>fresh</p>"));
+            controller.close();
+          },
+        });
+        return Object.assign(stream, { allReady });
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pageWrites()).toHaveLength(0);
+
+    releaseAllReady?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("reports a failed regeneration without writing the entry", async () => {
+    const pageWrites = serveStaleEntry();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const DocumentComponent = Object.assign(() => null, {
+      async getInitialProps() {
+        throw new Error("document failed");
+      },
+    });
+    const handler = createPagesPageHandler({
+      ...makeStaticPage(() => React.createElement("p", null, "fresh")),
+      DocumentComponent:
+        DocumentComponent as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+
+    try {
+      const response = await handler(makeRequest(), "/", null, null, null);
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      await vi.waitFor(() =>
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining("ISR background regeneration failed"),
+          expect.objectContaining({ message: "document failed" }),
+        ),
+      );
+      expect(pageWrites()).toHaveLength(0);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 
