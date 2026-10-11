@@ -8915,7 +8915,11 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(transferEncoding)).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    // The fixture holds its Suspense boundary for 600ms after render starts.
+    // Measure the shell against the response end rather than the request
+    // start, since a cold first request spends time loading modules before
+    // rendering begins. A buffering compressor would deliver both together.
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(response.rawBody.byteLength).toBeGreaterThan(0);
     expect(response.rawSnapshot.byteLength).toBeGreaterThan(0);
@@ -8943,7 +8947,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(partialHtml).toContain("Loading delayed chunk...");
     expect(partialHtml).not.toContain("Delayed stream content loaded");
@@ -9027,7 +9031,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(partialHtml).toContain("Loading delayed gSSP chunk...");
     expect(partialHtml).not.toContain("Delayed gSSP stream content loaded");
     expect(finalHtml).toContain("Streaming gSSP Content-Length Test");
