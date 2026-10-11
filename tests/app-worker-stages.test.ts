@@ -113,6 +113,31 @@ describe("App Worker response stage", () => {
     );
   });
 
+  // Next.js restores the work store before regenerating a cache entry.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("replays a targeted cache function in the work store scope", async () => {
+    const { isInsideWorkStoreScope } =
+      await import("../packages/vinext/src/shims/internal/work-store-scope.js");
+    let inScope: boolean | undefined;
+    stages.invokeCacheFunction.mockImplementation(async () => {
+      inScope = isInsideWorkStoreScope();
+    });
+
+    await invokeCacheFunction(
+      {
+        encryptedArgs: "[]",
+        referenceId: "test#cached",
+        rootParams: {},
+        softTags: [],
+      },
+      undefined,
+      undefined,
+      async () => new Response(),
+    );
+
+    expect(inScope).toBe(true);
+  });
+
   it("validates readiness from inside the App response stage", async () => {
     const validateRequest = vi.fn(() => null);
     const adapter: CdnCacheAdapter = {

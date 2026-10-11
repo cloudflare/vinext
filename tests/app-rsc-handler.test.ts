@@ -2311,6 +2311,58 @@ describe("createAppRscHandler", () => {
     await expect(response.text()).resolves.toBe("page");
   });
 
+  // Next.js renders Pages Router routes without a work store, but runs
+  // middleware with one.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+  it.each(["single-stage", "response-stage"] as const)(
+    "runs the hybrid Pages fallback outside the work store scope (%s)",
+    async (mode) => {
+      const { isInsideWorkStoreScope } =
+        await import("../packages/vinext/src/shims/internal/work-store-scope.js");
+      const scopes: Record<string, boolean> = {};
+      let responseStageHandler: ReturnType<typeof createHandler>;
+      const options = {
+        configHeaders: [],
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        middlewareModule: {
+          default() {
+            scopes.middleware = isInsideWorkStoreScope();
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+        renderPagesFallback: async (fallbackOptions) => {
+          if (fallbackOptions.dispatchPagesResponseStage) {
+            return fallbackOptions.dispatchPagesResponseStage(
+              fallbackOptions.request,
+              "page",
+              "server",
+            );
+          }
+          scopes.pages = isInsideWorkStoreScope();
+          return new Response("page");
+        },
+      } satisfies Partial<TestHandlerOptions>;
+      responseStageHandler = createHandler(options);
+      const requestStageHandler = createHandler(options);
+      const dispatchResponseStage: DispatchAppWorkerResponseStage = (
+        request,
+        props,
+        stageOptions,
+      ) => responseStageHandler.handleResponseStage(request, null, props, stageOptions);
+
+      const response = await requestStageHandler(
+        new Request("https://example.test/docs/pages"),
+        null,
+        false,
+        mode === "response-stage" ? dispatchResponseStage : undefined,
+      );
+
+      await expect(response.text()).resolves.toBe("page");
+      expect(scopes).toEqual({ middleware: true, pages: false });
+    },
+  );
+
   it.each(["page", "api"] as const)(
     "does not turn hybrid Pages %s next.config Content-Length into response framing",
     async (resourceKind) => {

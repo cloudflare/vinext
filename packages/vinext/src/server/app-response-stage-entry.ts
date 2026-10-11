@@ -8,6 +8,7 @@ import rscHandler, {
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 // @ts-expect-error -- virtual module resolved by vinext
@@ -62,8 +63,10 @@ export async function invokeCacheFunction(
     executionContext,
     rootParams: invocation.rootParams,
   });
+  // Like Next.js, which restores the work store before regenerating a cache
+  // entry, the replay runs in the work store scope.
   await runWithRequestContext(context, () =>
-    invokeRegisteredCacheFunction(invocation, loadServerAction),
+    runInWorkStoreScope(() => invokeRegisteredCacheFunction(invocation, loadServerAction)),
   );
 }
 
