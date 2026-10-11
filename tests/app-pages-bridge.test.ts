@@ -25,7 +25,6 @@ describe("renderPagesFallback", () => {
       }
       return merged;
     },
-    decodePathParams: (pathname: string) => decodeURIComponent(pathname),
     applyRouteHandlerMiddlewareContext: (res: Response, mwCtx: AppMiddlewareContext) => {
       const mergedHeaders = new Headers(res.headers);
       if (mwCtx.headers) {
@@ -667,7 +666,7 @@ describe("renderPagesFallback", () => {
     expect(Buffer.from(await response!.arrayBuffer())).toEqual(encodedBody);
   });
 
-  it("routes normal paths through renderPage and passes decoded pathname + search", async () => {
+  it("routes normal paths through renderPage and passes the raw pathname + search", async () => {
     const renderPage = vi.fn((_req: Request, _url: string) => new Response("page-response"));
     const deps = {
       ...defaultDeps,
@@ -688,7 +687,7 @@ describe("renderPagesFallback", () => {
     );
 
     expect(renderPage).toHaveBeenCalledTimes(1);
-    expect(renderPage.mock.calls[0][1]).toBe("/about us?foo=bar");
+    expect(renderPage.mock.calls[0][1]).toBe("/about%20us?foo=bar");
     expect(res).not.toBeNull();
     expect(await res!.text()).toBe("page-response");
   });
@@ -772,7 +771,7 @@ describe("renderPagesFallback", () => {
     expect(handleApiRoute).toHaveBeenCalledTimes(1);
   });
 
-  it("decodes rewritten page paths without decoding their query", async () => {
+  it("keeps rewritten page paths raw for Pages matching", async () => {
     const matchPageRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/café" },
     }));
@@ -794,17 +793,17 @@ describe("renderPagesFallback", () => {
       },
     );
 
-    expect(matchPageRoute).toHaveBeenCalledWith("/café?value=hello%20world", request);
+    expect(matchPageRoute).toHaveBeenCalledWith("/caf%C3%A9?value=hello%20world", request);
     expect(renderPage).toHaveBeenCalledWith(
       request,
-      "/café?value=hello%20world",
+      "/caf%C3%A9?value=hello%20world",
       {},
       undefined,
       null,
     );
   });
 
-  it("decodes rewritten API paths without decoding their query", async () => {
+  it("keeps rewritten API paths raw for Pages matching", async () => {
     const matchApiRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/api/café" },
     }));
@@ -826,10 +825,10 @@ describe("renderPagesFallback", () => {
       },
     );
 
-    expect(matchApiRoute).toHaveBeenCalledWith("/api/café?value=hello%20world", request);
+    expect(matchApiRoute).toHaveBeenCalledWith("/api/caf%C3%A9?value=hello%20world", request);
     expect(handleApiRoute).toHaveBeenCalledWith(
       request,
-      "/api/café?value=hello%20world",
+      "/api/caf%C3%A9?value=hello%20world",
       undefined,
       "http://localhost",
       "node",

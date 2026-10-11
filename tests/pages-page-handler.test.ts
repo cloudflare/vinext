@@ -32,6 +32,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
 import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
 
@@ -1227,10 +1228,8 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
           React.createElement(
             "body",
             null,
-            React.createElement("div", {
-              id: "__next",
-              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
-            }),
+            React.createElement(Main),
+            React.createElement(NextScript),
           ),
         ),
       {
@@ -1305,14 +1304,7 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
       React.createElement(
         "html",
         null,
-        React.createElement(
-          "body",
-          null,
-          React.createElement("div", {
-            id: "__next",
-            dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
-          }),
-        ),
+        React.createElement("body", null, React.createElement(Main)),
       );
     const handler = createPagesPageHandler({
       ...makeStaticPage(() => React.createElement("p", null, "fresh")),
@@ -1349,14 +1341,7 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
         React.createElement(
           "html",
           null,
-          React.createElement(
-            "body",
-            null,
-            React.createElement("div", {
-              id: "__next",
-              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
-            }),
-          ),
+          React.createElement("body", null, React.createElement(Main)),
         ),
       {
         async getInitialProps(ctx: {
@@ -1393,14 +1378,7 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
         React.createElement(
           "html",
           null,
-          React.createElement(
-            "body",
-            null,
-            React.createElement("div", {
-              id: "__next",
-              dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" },
-            }),
-          ),
+          React.createElement("body", null, React.createElement(Main)),
         ),
       {
         async getInitialProps(ctx: {
