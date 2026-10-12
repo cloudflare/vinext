@@ -443,6 +443,27 @@ describe("create-vinext-app CLI", () => {
     expect(fs.existsSync(path.join(appPath, "wrangler.response-store.jsonc"))).toBe(false);
   });
 
+  it("accepts a space-separated Worker name before the app directory", async () => {
+    const appPath = path.join(tmpDir, "named-app");
+
+    await withQuietConsole(() =>
+      runCreateVinextAppCli([
+        "--name",
+        "storefront",
+        appPath,
+        "--platform=cloudflare",
+        "--cdn-cache=none",
+        "--skip-install",
+        "--disable-git",
+        "--use-pnpm",
+        "--yes",
+      ]),
+    );
+
+    expect(readFile(appPath, "cloudflare.config.ts")).toContain('name: "storefront"');
+    expect(fs.existsSync(path.join(tmpDir, "storefront"))).toBe(false);
+  });
+
   it.each(["--experimental-cf", "--experimental-cf=true", "--experimental-cf=false"])(
     "generates a cf project through the shared init flow with %s",
     async (flag) => {

@@ -280,6 +280,7 @@ function printHelp(): void {
 
   Options:
     --platform <target>          Deployment target: cloudflare or node
+    --name <name>                Cloudflare Worker name (default: derived from the directory)
     --data-cache <type>          Cloudflare data cache: kv or none
     --cdn-cache <type>           Cloudflare CDN cache: none, response-store, workers-cache,
                                  static-assets, or data-cache
@@ -341,6 +342,7 @@ function parseArgs(args: string[]): ParsedArgs {
     if (arg.startsWith("-")) {
       if (
         arg === "--platform" ||
+        arg === "--name" ||
         arg === "--data-cache" ||
         arg === "--cdn-cache" ||
         arg === "--response-store-mode" ||
