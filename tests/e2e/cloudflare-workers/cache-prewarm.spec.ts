@@ -311,9 +311,11 @@ test("a next.config public policy with Vary: Cookie keeps each session's page pr
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
 
+  test.setTimeout(60_000);
+
   const url = `${baseURL}/vary-cookie?case=${randomUUID()}`;
   const renderIds = new Set<string>();
-  for (const session of ["alice", "alice", "bob", undefined]) {
+  const expectPrivateRender = async (session?: string) => {
     const response = await request.get(url, {
       headers: { accept: "text/html", ...(session ? { cookie: `session=${session}` } : {}) },
     });
@@ -327,9 +329,17 @@ test("a next.config public policy with Vary: Cookie keeps each session's page pr
     expect(/data-vary-cookie-viewer="([^"]*)"/.exec(body)?.[1], trace).toBe(session ?? "anonymous");
     const renderId = /data-render-id="([^"]*)"/.exec(body)?.[1];
     expect(renderId, trace).toBeTruthy();
+    expect(renderIds.has(renderId!), trace).toBe(false);
     renderIds.add(renderId!);
+  };
+
+  for (const session of ["alice", "alice", "bob", undefined]) await expectPrivateRender(session);
+  // Backends publish a completed response after it returns, so keep probing
+  // other sessions through the window a wrongly stored entry would appear in.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await expectPrivateRender(attempt % 2 === 0 ? `visitor-${attempt}` : undefined);
   }
-  expect(renderIds.size).toBe(4);
 });
 
 test("a static page with no revalidate source is served from the configured cache", async ({
