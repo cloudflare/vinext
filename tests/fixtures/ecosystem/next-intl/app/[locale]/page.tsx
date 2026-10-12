@@ -1,4 +1,6 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
+import { Link } from "../../i18n/navigation";
+import { Greeting } from "./greeting";
 
 export default async function HomePage({
   params,
@@ -17,6 +19,10 @@ export default async function HomePage({
     <div>
       <h1 data-testid="title">{t("title")}</h1>
       <p data-testid="description">{t("description")}</p>
+      <Greeting />
+      <Link href="/" locale="de" data-testid="locale-link">
+        Deutsch
+      </Link>
     </div>
   );
 }

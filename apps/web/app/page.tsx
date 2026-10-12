@@ -6,13 +6,13 @@ import { Text } from "@cloudflare/kumo/components/text";
 import {
   ArrowSquareOutIcon,
   ArrowUpRightIcon,
+  BookOpenIcon,
   CloudIcon,
   DatabaseIcon,
   FileCodeIcon,
   GaugeIcon,
   GithubLogoIcon,
   LightningIcon,
-  NewspaperIcon,
   PackageIcon,
   PlugsIcon,
   SparkleIcon,
@@ -88,10 +88,10 @@ const STATS = [
     detail: "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
   },
   {
-    value: "~33%",
+    value: "~23%",
     label: "smaller client bundles",
     detail:
-      "185 KB → 125 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
+      "185 KB → 143 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
   },
   {
     value: "94%",
@@ -188,7 +188,7 @@ export default defineConfig({
     description:
       "Add the Cloudflare Vite plugin, Workers Cache for route-level ISR, Workers KV for data caching, and Cloudflare Images optimization.",
     code: `import { cloudflare } from "@cloudflare/vite-plugin";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { workersCacheCdnAdapter } from "@vinext/cloudflare/cache/workers-cache-cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import { defineConfig } from "vite";
@@ -198,7 +198,7 @@ export default defineConfig({
   plugins: [
     vinext({
       cache: {
-        cdn: cdnAdapter(),
+        cdn: workersCacheCdnAdapter(),
         data: kvDataAdapter(),
       },
       images: {
@@ -285,14 +285,8 @@ export default function Home() {
           >
             Get vinext on GitHub
           </LinkButton>
-          <LinkButton
-            variant="secondary"
-            size="lg"
-            icon={<NewspaperIcon />}
-            href="https://blog.cloudflare.com/vinext/"
-            external
-          >
-            Read the announcement
+          <LinkButton variant="secondary" size="lg" icon={<BookOpenIcon />} href="/docs">
+            Read the docs
           </LinkButton>
         </div>
       </section>

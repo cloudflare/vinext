@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { compileClientMiddlewareMatchers } from "../packages/vinext/src/entries/pages-client-entry.js";
 import ReactDOMServer from "react-dom/server";
 import type { ElementType, ReactNode } from "react";
 import {
@@ -38,6 +39,7 @@ type CapturedClickEvent = {
 type CapturedIntentEvent = Pick<MouseEvent, "currentTarget">;
 
 type CapturedAnchorProps = {
+  href?: string;
   onClick?: (event: CapturedClickEvent) => void | Promise<void>;
   onMouseEnter?: (event: CapturedIntentEvent) => void;
   onTouchStart?: (event: CapturedIntentEvent) => void;
@@ -78,6 +80,11 @@ const linkPrefetchRoutes = [
     isDynamic: false,
   },
 ] satisfies VinextLinkPrefetchRoute[];
+
+/** A successful App Router prefetch response; prefetches drop non-Flight responses. */
+function createFlightResponse(body: BodyInit, headers: Record<string, string> = {}): Response {
+  return new Response(body, { headers: { "content-type": "text/x-component", ...headers } });
+}
 
 function createTestNavigationRuntime(
   navigate: unknown,
@@ -1074,10 +1081,13 @@ describe("Link onNavigate prop", () => {
 
 describe("Pages Router Link onClick semantics", () => {
   async function renderPagesRouterLinkAndClick(args: {
-    href: string | { pathname?: string; query?: Record<string, string>; hash?: string };
+    href: React.ComponentProps<
+      typeof import("../packages/vinext/src/shims/link.js").default
+    >["href"];
     props?: Record<string, unknown>;
     currentHref?: string;
     pagesRouterAsPath?: string;
+    pagesRouterPathname?: string;
     locale?: string;
   }) {
     vi.resetModules();
@@ -1173,7 +1183,14 @@ describe("Pages Router Link onClick semantics", () => {
     ReactDOMServer.renderToString(
       React.createElement(
         RouterContext.Provider,
-        { value: {} as never },
+        {
+          value: (args.pagesRouterPathname === undefined
+            ? {}
+            : {
+                pathname: args.pagesRouterPathname,
+                asPath: args.pagesRouterAsPath ?? args.pagesRouterPathname,
+              }) as never,
+        },
         React.createElement(
           IsolatedLink,
           { href: args.href, prefetch: false, ...args.props },
@@ -1203,7 +1220,14 @@ describe("Pages Router Link onClick semantics", () => {
     // observe side effects.
     for (let i = 0; i < 20; i++) await Promise.resolve();
 
-    return { clickEvent, pushState, replaceState, dispatchEvent, pagesRouterCalls };
+    return {
+      anchorHref: capturedAnchorProps?.href,
+      clickEvent,
+      pushState,
+      replaceState,
+      dispatchEvent,
+      pagesRouterCalls,
+    };
   }
 
   it("fires the onClick prop on Link click", async () => {
@@ -1311,6 +1335,75 @@ describe("Pages Router Link onClick semantics", () => {
     ]);
   });
 
+  it("normalises a dynamic route pattern before forwarding an explicit as value", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await renderPagesRouterLinkAndClick({
+        href: "/posts//[id]",
+        props: { as: "/posts/1" },
+      });
+
+      expect(result.pagesRouterCalls).toEqual([
+        { href: "/posts/[id]", as: "/posts/1", replace: false },
+      ]);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Invalid href '/posts//[id]'"),
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("resolves object href and as values before Pages Router navigation", async () => {
+    const result = await renderPagesRouterLinkAndClick({
+      href: { protocol: "http:", pathname: "route" },
+      props: { as: { protocol: "http:", pathname: "mask" } },
+      currentHref: "http://example.com/dir/current",
+      pagesRouterPathname: "/dir/current",
+      pagesRouterAsPath: "/dir/current",
+    });
+
+    expect(result.anchorHref).toBe("/dir/mask");
+    expect(result.pagesRouterCalls).toEqual([
+      { href: "/dir/route", as: "/dir/mask", replace: false },
+    ]);
+  });
+
+  it("resolves relative string href and as values before Pages Router navigation", async () => {
+    const result = await renderPagesRouterLinkAndClick({
+      href: "route",
+      props: { as: "mask" },
+      currentHref: "http://example.com/dir/current",
+      pagesRouterPathname: "/dir/current",
+      pagesRouterAsPath: "/dir/current",
+    });
+
+    expect(result.anchorHref).toBe("/dir/mask");
+    expect(result.pagesRouterCalls).toEqual([
+      { href: "/dir/route", as: "/dir/mask", replace: false },
+    ]);
+  });
+
+  it("leaves same-scheme relative object hrefs outside basePath to the browser", async () => {
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    try {
+      const result = await renderPagesRouterLinkAndClick({
+        href: { protocol: "http:", pathname: "sibling" },
+        currentHref: "http://example.com/docs/dir/current",
+        pagesRouterPathname: "/dir/current",
+        pagesRouterAsPath: "/dir/current",
+      });
+
+      expect(result.anchorHref).toBe("http:sibling");
+      expect(result.clickEvent.defaultPrevented).toBe(false);
+      expect(result.pagesRouterCalls).toEqual([]);
+    } finally {
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+    }
+  });
+
   it("preserves a basePath page when navigating to a hash link", async () => {
     // Ported from Next.js: test/e2e/basepath/query-hash.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/query-hash.test.ts
@@ -1394,7 +1487,7 @@ async function renderIsolatedLink(options: {
   });
 
   const fetch = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-    Promise.resolve(new Response("")),
+    Promise.resolve(createFlightResponse("")),
   );
   const navigate = vi.fn();
   const pagePrefetchLinks: CapturedPrefetchLinkElement[] = [];
@@ -2073,7 +2166,7 @@ describe("Link prefetch scheduling", () => {
         await import("../packages/vinext/src/shims/navigation.js");
       prefetchRscResponse(
         "/viewport-prefetch-target?searchParam=a_PPR&_rsc=first",
-        Promise.resolve(new Response("target-page-with-search-param")),
+        Promise.resolve(createFlightResponse("target-page-with-search-param")),
         null,
         null,
         undefined,
@@ -2277,7 +2370,7 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
     });
     result.fetch.mockResolvedValueOnce(
-      new Response("", { headers: { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" } }),
+      createFlightResponse("", { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" }),
     );
 
     try {
@@ -2661,7 +2754,7 @@ describe("Link prefetch scheduling", () => {
 
     result.fetch
       .mockImplementationOnce(() => shellPromise)
-      .mockImplementationOnce(() => Promise.resolve(new Response("full")));
+      .mockImplementationOnce(() => Promise.resolve(createFlightResponse("full")));
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -2683,7 +2776,7 @@ describe("Link prefetch scheduling", () => {
       if (resolveShell === undefined) {
         throw new Error("Expected shell prefetch resolver");
       }
-      resolveShell(new Response(shellBody));
+      resolveShell(createFlightResponse(shellBody));
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
@@ -2833,7 +2926,7 @@ describe("Link prefetch scheduling", () => {
       });
       result.fetch
         .mockImplementationOnce(() => routeTreeResponse)
-        .mockImplementation(() => Promise.resolve(new Response("")));
+        .mockImplementation(() => Promise.resolve(createFlightResponse("")));
 
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
@@ -2854,7 +2947,7 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
-      releaseRouteTree?.(new Response(""));
+      releaseRouteTree?.(createFlightResponse(""));
       await waitForFetchCalls(result.fetch, 2);
 
       expect(result.fetch).toHaveBeenCalledTimes(2);
@@ -2897,7 +2990,9 @@ describe("Link prefetch scheduling", () => {
       });
       result.fetch
         .mockImplementationOnce(() => routeTreeResponse)
-        .mockImplementation(() => Promise.resolve(new Response("concrete root-param page")));
+        .mockImplementation(() =>
+          Promise.resolve(createFlightResponse("concrete root-param page")),
+        );
 
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
@@ -2907,7 +3002,7 @@ describe("Link prefetch scheduling", () => {
       expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
 
-      releaseRouteTree?.(new Response(""));
+      releaseRouteTree?.(createFlightResponse(""));
       await waitForFetchCalls(result.fetch, 2);
 
       expectCanonicalRscFetchCall(
@@ -3350,9 +3445,9 @@ describe("Link prefetch scheduling", () => {
     const actualLoader = vi.fn(async () => ({ default: null }));
     const result = await renderIsolatedLink({
       appNavigation: false,
-      href: "/actual",
+      href: "/actual?source=1",
       nodeEnv: "production",
-      props: { as: "/masked" },
+      props: { as: "/masked?visible=1" },
       windowOverrides: {
         __NEXT_DATA__: {
           buildId: "build-id",
@@ -3361,7 +3456,7 @@ describe("Link prefetch scheduling", () => {
             pageModuleUrl: "/_next/static/chunks/pages/current.js",
           },
         },
-        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_MIDDLEWARE_MATCHER__: compileClientMiddlewareMatchers(["/masked"]),
         __VINEXT_PAGE_LOADERS__: {
           "/actual": actualLoader,
         },
@@ -3385,7 +3480,7 @@ describe("Link prefetch scheduling", () => {
       expect(actualLoader).toHaveBeenCalled();
       expect(result.fetch).toHaveBeenCalledTimes(2);
       for (const call of result.fetch.mock.calls) {
-        expect(call[0]).toBe("/_next/data/build-id/masked.json");
+        expect(call[0]).toBe("/_next/data/build-id/masked.json?source=1");
         expect(call[1]?.headers).toMatchObject({
           Accept: "application/json",
           purpose: "prefetch",
@@ -3394,6 +3489,61 @@ describe("Link prefetch scheduling", () => {
         });
       }
       expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not prefetch a masked Pages link with a dangerous hidden route", async () => {
+    const observer = stubIntersectionObserver();
+    const rootLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "javascript:alert(1)",
+      nodeEnv: "production",
+      props: { as: "/safe" },
+      windowOverrides: {
+        __NEXT_DATA__: { buildId: "build-id" },
+        __VINEXT_PAGE_LOADERS__: { "/": rootLoader },
+        __VINEXT_PAGE_PATTERNS__: ["/"],
+        __VINEXT_PAGES_SSG_PATTERNS__: ["/"],
+        __VINEXT_PAGES_SSP_PATTERNS__: [],
+      },
+    });
+
+    try {
+      expect(observer.observe).not.toHaveBeenCalled();
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(rootLoader).not.toHaveBeenCalled();
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches an App link by a safe as when its hidden href is dangerous", async () => {
+    vi.stubEnv("__VINEXT_HAS_PAGES_ROUTER", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "javascript:alert(1)",
+      nodeEnv: "production",
+      props: { as: "/viewport-prefetch-target" },
+    });
+
+    try {
+      expect(observer.observe).toHaveBeenCalledWith(result.anchor);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({ priority: "low" }),
+      );
     } finally {
       result.restoreNodeEnv();
     }
@@ -3417,7 +3567,7 @@ describe("Link prefetch scheduling", () => {
             pageModuleUrl: "/_next/static/chunks/pages/current.js",
           },
         },
-        __VINEXT_MIDDLEWARE_MATCHER__: ["/:path*"],
+        __VINEXT_MIDDLEWARE_MATCHER__: compileClientMiddlewareMatchers(["/:path*"]),
         __VINEXT_PAGE_LOADERS__: {
           "/dynamic-no-cache/[id]": dynamicLoader,
         },
@@ -3472,7 +3622,7 @@ describe("Link prefetch scheduling", () => {
             pageModuleUrl: "/_next/static/chunks/pages/current.js",
           },
         },
-        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_MIDDLEWARE_MATCHER__: compileClientMiddlewareMatchers(["/masked"]),
         __VINEXT_PAGE_LOADERS__: {
           "/actual": actualLoader,
         },

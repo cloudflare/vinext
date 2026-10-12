@@ -7,6 +7,12 @@ import { createBenchmarkMetadata } from "../../metadata";
 
 export const revalidate = 300;
 
+// An empty list opts every path into on-demand ISR; without
+// generateStaticParams a dynamic-segment route renders per request.
+export function generateStaticParams() {
+  return [];
+}
+
 export async function generateMetadata({
   params,
 }: {

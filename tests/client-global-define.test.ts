@@ -16,7 +16,7 @@
  * deps (which bypass plugin transforms) get the rewrite too.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
-import { createServer, type ViteDevServer } from "vite-plus";
+import { createServer, loadEnv, type ViteDevServer } from "vite-plus";
 import os from "node:os";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -109,6 +109,35 @@ describe("client `global` define (config)", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it.each(["serve", "build"])(
+    "preserves quoted JSON through %s config loading",
+    async (command) => {
+      const key = "NEXT_PUBLIC_DOTENV_JSON";
+      const previous = process.env[key];
+      delete process.env[key];
+      const tmpDir = await setupTmpProject(`export default {};`);
+      try {
+        await fsp.writeFile(path.join(tmpDir, ".env"), `${key}="{"a":"b"}"\n`);
+        const plugins = vinext() as VinextPlugin[];
+        const mainPlugin = plugins.find((p) => p.name === "vinext:config");
+        const mode = command === "build" ? "production" : "development";
+        const result = (await mainPlugin!.config!(
+          { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+          { command, mode },
+        )) as { define?: Record<string, string> };
+
+        expect(process.env[key]).toBe('{"a":"b"}');
+        expect(result.define?.[`process.env.${key}`]).toBe(JSON.stringify('{"a":"b"}'));
+        // Vite's later env pass must preserve the value already loaded by vinext.
+        expect(loadEnv(mode, tmpDir, "NEXT_PUBLIC_")[key]).toBe('{"a":"b"}');
+      } finally {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+        await fsp.rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("excludes .env.local from NEXT_PUBLIC defines in test mode", async () => {
     const previousFromTest = process.env.NEXT_PUBLIC_FROM_TEST_MODE;

@@ -414,6 +414,53 @@ describe("vinext:import-meta-url plugin", () => {
     expect(clientResult).toBeNull();
   });
 
+  it("omits sourcemaps only for builds that discard them", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transform = unwrapHook(capability.vitePlugin.transform);
+    const renderChunk = unwrapHook(capability.vitePlugin.renderChunk);
+    const context = (mode: "dev" | "build", sourcemap: boolean | "hidden" = false) => ({
+      environment: { name: "ssr", mode, config: { consumer: "server", build: { sourcemap } } },
+    });
+    const expectSourcemap = (result: { map?: unknown } | null | undefined) =>
+      expect(result?.map).toMatchObject({ version: 3, mappings: expect.any(String) });
+
+    for (const [source, id] of [
+      ["export const url = import.meta.url;\n", pagePath],
+      ["exports.path = __dirname;\n", cjsDependencyPath],
+    ]) {
+      const withoutMap = transform.call(context("build"), source, id);
+      expect(withoutMap?.code).not.toBe(source);
+      expect(withoutMap?.map).toBeNull();
+      // Build environments share cached source results, so later builds that
+      // keep sourcemaps still receive them.
+      for (const sourcemap of [true, "hidden"] as const) {
+        const withMap = transform.call(context("build", sourcemap), source, id);
+        expect(withMap?.code).toBe(withoutMap?.code);
+        expectSourcemap(withMap);
+      }
+      expectSourcemap(transform.call(context("dev"), source, id));
+    }
+
+    const bundled = transform.call(
+      context("build"),
+      "exports.path = __filename;",
+      cjsDependencyPath,
+    );
+    const emit = (sourcemap: boolean) =>
+      renderChunk.call(
+        context("build", sourcemap),
+        bundled?.code ?? "",
+        { fileName: "entry.js" },
+        { format: "es" },
+      );
+    const emittedWithoutMap = emit(false);
+    expectFinalizedCjsGlobal(emittedWithoutMap?.code, "__filename");
+    expect(emittedWithoutMap?.map).toBeNull();
+    const emittedWithMap = emit(true);
+    expect(emittedWithMap?.code).toBe(emittedWithoutMap?.code);
+    expectSourcemap(emittedWithMap);
+  });
+
   it("finalizes optimized ESM dependency URLs relative to the emitted chunk", () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(

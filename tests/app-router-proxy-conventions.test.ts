@@ -45,8 +45,12 @@ async function createFixture(): Promise<string> {
   return fixtureDir;
 }
 
-async function startFixture(root: string, appDir?: string | null): Promise<string> {
-  const result = await startFixtureServer(root, { appDir });
+async function startFixture(
+  root: string,
+  appDir?: string | null,
+  resolve?: { preserveSymlinks?: boolean },
+): Promise<string> {
+  const result = await startFixtureServer(root, { appDir, resolve });
   server = result.server;
   return result.baseUrl;
 }
@@ -161,6 +165,80 @@ export async function proxy() {
     expect(errorBody).toContain("https://nextjs.org/docs/messages/middleware-to-proxy");
     expect(errorBody).toContain('"plugin":"vinext:validate-middleware-exports"');
   });
+
+  // Vite transforms the symlink target, whose path differs from the detected
+  // proxy.ts, so validation must compare canonical (realpath) paths.
+  it.skipIf(process.platform === "win32")(
+    "rejects an invalid export from a symlinked proxy file",
+    async () => {
+      const root = await createFixture();
+      await fs.mkdir(path.join(root, "shared"));
+      await fs.writeFile(
+        path.join(root, "shared", "proxy-impl.ts"),
+        "export function middleware() {}\n",
+      );
+      await fs.symlink(path.join(root, "shared", "proxy-impl.ts"), path.join(root, "proxy.ts"));
+
+      const baseUrl = await startFixture(root);
+      const response = await fetch(`${baseUrl}/`);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toContain('"plugin":"vinext:validate-middleware-exports"');
+    },
+  );
+
+  // An inline vinext() plugin survives server.restart(), so the canonical proxy
+  // path must be re-resolved with the rest of the config.
+  it.skipIf(process.platform === "win32")(
+    "rejects an invalid symlinked proxy file after a server restart",
+    async () => {
+      const root = await createFixture();
+      const proxyPath = path.join(root, "proxy.ts");
+      await fs.writeFile(proxyPath, `export function proxy() { return new Response("valid"); }\n`);
+
+      const baseUrl = await startFixture(root);
+      const valid = await fetch(`${baseUrl}/`);
+      expect(await valid.text()).toBe("valid");
+
+      await fs.mkdir(path.join(root, "shared"));
+      await fs.writeFile(
+        path.join(root, "shared", "proxy-impl.ts"),
+        "export function middleware() {}\n",
+      );
+      await fs.rm(proxyPath);
+      await fs.symlink(path.join(root, "shared", "proxy-impl.ts"), proxyPath);
+      await server!.restart();
+
+      const { body } = await waitForResponse(`${baseUrl}/`, (response) => response.status === 500);
+      expect(body).toContain('"plugin":"vinext:validate-middleware-exports"');
+    },
+  );
+
+  // With preserveSymlinks, Vite keeps the logical proxy.ts id, so a canonical
+  // path memoized before the restart must not survive config resolution.
+  it.skipIf(process.platform === "win32")(
+    "rejects an invalid symlinked proxy file after a restart with preserveSymlinks",
+    async () => {
+      const root = await createFixture();
+      const proxyPath = path.join(root, "proxy.ts");
+      await fs.writeFile(proxyPath, `export function proxy() { return new Response("valid"); }\n`);
+
+      const baseUrl = await startFixture(root, undefined, { preserveSymlinks: true });
+      const valid = await fetch(`${baseUrl}/`);
+      expect(await valid.text()).toBe("valid");
+
+      await fs.mkdir(path.join(root, "shared"));
+      await fs.writeFile(
+        path.join(root, "shared", "proxy-impl.ts"),
+        "export function middleware() {}\n",
+      );
+      await fs.rm(proxyPath);
+      await fs.symlink(path.join(root, "shared", "proxy-impl.ts"), proxyPath);
+      await server!.restart();
+
+      const { body } = await waitForResponse(`${baseUrl}/`, (response) => response.status === 500);
+      expect(body).toContain('"plugin":"vinext:validate-middleware-exports"');
+    },
+  );
 
   it("recovers after proxy.ts changes from an invalid to a valid export", async () => {
     const root = await createFixture();

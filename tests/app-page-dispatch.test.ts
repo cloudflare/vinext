@@ -1,5 +1,5 @@
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
@@ -12,7 +12,6 @@ import {
   buildPageElements,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
-import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import {
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
@@ -33,7 +32,7 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
-import { after, connection } from "../packages/vinext/src/shims/server.js";
+import { after } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -44,6 +43,14 @@ import {
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
 import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
+  cacheabilityManifestRouteKey,
+  parseCacheabilityManifest,
+} from "../packages/vinext/src/server/cacheability-manifest.js";
+import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
@@ -52,6 +59,8 @@ import {
   consumeRenderRequestApiUsage,
   draftMode,
   getHeadersContext,
+  headers,
+  headersContextFromRequest,
   markDynamicUsage,
   markRenderRequestApiUsage,
   setHeadersContext,
@@ -59,7 +68,48 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
+  createWorkerCacheabilityAdmissionContext,
+  finalizeWorkerCacheabilityResponse,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  usePathname,
+  useSearchParams,
+  type NavigationContext,
+} from "../packages/vinext/src/shims/navigation.js";
+import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
+import { cacheLife } from "../packages/vinext/src/shims/cache.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+
+// handleSsr's build-time modules. The stand-in Flight client hands SSR the
+// payload the stand-in Flight render last serialized, once it has read the
+// stream's first chunk, and keeps draining the rest.
+const ssrFlight = vi.hoisted(() => ({ payload: undefined as unknown }));
+vi.mock("virtual:vite-rsc/client-references", () => ({ default: {} }));
+vi.mock("virtual:vinext-pages-client-assets", () => ({ default: {} }));
+vi.mock("@vitejs/plugin-rsc/ssr", () => ({
+  async createFromReadableStream(stream: ReadableStream<Uint8Array>) {
+    const payload = ssrFlight.payload;
+    const reader = stream.getReader();
+    await reader.read();
+    void (async () => {
+      while (!(await reader.read()).done) {
+        // drain
+      }
+    })();
+    return payload;
+  },
+}));
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -162,6 +212,14 @@ function findPageElement(payload: unknown): React.ReactElement | null {
   return null;
 }
 
+function findMetadataOutletElements(payload: unknown): React.ReactElement[] {
+  return Object.entries(captureRecord(payload)).flatMap(([key, value]) =>
+    key.startsWith("__vinext_streaming_metadata_outlet:") && React.isValidElement(value)
+      ? [value]
+      : [],
+  );
+}
+
 async function renderReactNodeText(node: unknown): Promise<string> {
   if (node === null || node === undefined || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") {
@@ -199,7 +257,13 @@ function renderPagePayloadToStream(payload: unknown): ReadableStream<Uint8Array>
       }
       didRender = true;
       const pageElement = findPageElement(payload);
-      const text = pageElement ? await renderReactNodeText(pageElement) : "";
+      // Flight renders every entry, so the head resolves during the render.
+      // Its outlet awaits generateMetadata() and generateViewport(). None of
+      // these tests expects a head error, so a rejection fails the render.
+      const [text] = await Promise.all([
+        pageElement ? renderReactNodeText(pageElement) : "",
+        ...findMetadataOutletElements(payload).map((outlet) => renderReactNodeText(outlet)),
+      ]);
       controller.enqueue(new TextEncoder().encode(text));
       controller.close();
     },
@@ -234,6 +298,25 @@ function buildCachedAppPageValue(
     value.renderObservation = renderObservation;
   }
   return value;
+}
+
+// Lists `/posts/listed` as static; every other `/posts/[slug]` path has no state.
+function createPostsCacheabilityManifest() {
+  return parseCacheabilityManifest(
+    JSON.stringify({
+      buildId: "build-a",
+      routes: {
+        [cacheabilityManifestRouteKey("app-page", "/posts/[slug]")]: {
+          kind: "app-page",
+          pattern: "/posts/[slug]",
+          state: "runtime-check",
+          staticPaths: { html: ["/posts/listed"], "rsc-full": ["/posts/listed"] },
+        },
+      },
+      version: 1,
+    }),
+    "build-a",
+  );
 }
 
 function expectCachedAppPageSearchParamsObservation(value: unknown, html: string): void {
@@ -282,6 +365,7 @@ function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
 
 type CreateDispatchOptionsOverrides = {
   buildPageElement?: DispatchOptions["buildPageElement"];
+  renderWholeDocument?: DispatchOptions["renderWholeDocument"];
   bypassInterceptionContextCache?: DispatchOptions["bypassInterceptionContextCache"];
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
@@ -292,6 +376,9 @@ type CreateDispatchOptionsOverrides = {
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
   hasCustomGlobalError?: DispatchOptions["hasCustomGlobalError"];
+  hasAnyGenerateStaticParams?: DispatchOptions["hasAnyGenerateStaticParams"];
+  hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
+  isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
   formState?: DispatchOptions["formState"];
   getSourceRoute?: DispatchOptions["getSourceRoute"];
   getNavigationContext?: DispatchOptions["getNavigationContext"];
@@ -313,7 +400,6 @@ type CreateDispatchOptionsOverrides = {
   pprFallbackShell?: DispatchOptions["pprFallbackShell"];
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
-  probePage?: DispatchOptions["probePage"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
   renderMode?: DispatchOptions["renderMode"];
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
@@ -322,6 +408,7 @@ type CreateDispatchOptionsOverrides = {
   resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
   resolveRouteRevalidateSeconds?: DispatchOptions["resolveRouteRevalidateSeconds"];
   resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
+  resolveRouteStaticEligible?: DispatchOptions["resolveRouteStaticEligible"];
   route?: TestRoute;
   scheduleBackgroundRegeneration?: DispatchOptions["scheduleBackgroundRegeneration"];
   searchParams?: URLSearchParams;
@@ -374,7 +461,12 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
         params: { slug: "hello" },
       })),
     getSourceRoute: overrides.getSourceRoute ?? (() => undefined),
-    hasGenerateStaticParams: typeof overrides.generateStaticParams === "function",
+    hasAnyGenerateStaticParams:
+      overrides.hasAnyGenerateStaticParams ??
+      overrides.hasGenerateStaticParams ??
+      typeof overrides.generateStaticParams === "function",
+    hasGenerateStaticParams:
+      overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
     hasCustomGlobalError: overrides.hasCustomGlobalError,
     hasPageDefaultExport: true,
     hasPageModule: true,
@@ -384,9 +476,13 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     actionFailed: overrides.actionFailed,
     interceptionContext: overrides.interceptionContext ?? null,
     isProgressiveActionRender: overrides.isProgressiveActionRender,
+    isStaticGenerationEdgeRuntime: overrides.isStaticGenerationEdgeRuntime,
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
     isrGet,
+    isrFallbackShellHtmlKey(pathname: string) {
+      return `shell:${pathname}`;
+    },
     isrHtmlKey(pathname: string) {
       return `html:${pathname}`;
     },
@@ -407,7 +503,6 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     pprFallbackShell: overrides.pprFallbackShell,
     pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
-    probePage: overrides.probePage ?? (() => null),
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
     renderMode: overrides.renderMode,
     renderErrorBoundaryPage: vi.fn(async () => null),
@@ -415,9 +510,12 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     renderToReadableStream,
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
+    renderWholeDocument: overrides.renderWholeDocument,
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
     resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
     resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
+    resolveRouteStaticEligible:
+      overrides.resolveRouteStaticEligible ?? ((candidate) => !candidate.isDynamic),
     route,
     runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
       return probe();
@@ -480,7 +578,7 @@ function createPprBlogDispatchOptions(overrides: CreateDispatchOptionsOverrides 
 
 function createPprBlogFallbackShellGetter(stale: boolean) {
   return vi.fn(async (key: string) => {
-    if (key === "html:/en/blog/[slug]") {
+    if (key === "shell:/en/blog/[slug]") {
       return buildISRCacheEntry(
         buildCachedAppPageValue("<html><head></head><body>Locale: en</body></html>"),
         stale,
@@ -591,7 +689,6 @@ function createLayoutParamProbe(
 describe("app page dispatch", () => {
   it("does not probe layouts below an active ancestor loading boundary", async () => {
     const probeLayoutAt = vi.fn((_layoutIndex: number) => null);
-    const probePage = vi.fn(() => null);
     const route = createRoute({
       layouts: [{}, {}, {}],
       layoutTreePositions: [0, 1, 2],
@@ -600,7 +697,7 @@ describe("app page dispatch", () => {
       loadingTreePositions: [1],
       routeSegments: ["parent", "slow"],
     });
-    const { options } = createDispatchOptions({ probeLayoutAt, probePage, route });
+    const { options } = createDispatchOptions({ probeLayoutAt, route });
 
     const response = await dispatchAppPage(options);
     await response.text();
@@ -608,7 +705,6 @@ describe("app page dispatch", () => {
     // The loading at position 1 catches descendants, but not a layout at the
     // same position. Probe the root and co-located layout only.
     expect(probeLayoutAt.mock.calls.map(([layoutIndex]) => layoutIndex)).toEqual([1, 0]);
-    expect(probePage).not.toHaveBeenCalled();
   });
 
   it("disables streaming metadata while producing prerendered HTML", async () => {
@@ -647,61 +743,17 @@ describe("app page dispatch", () => {
     });
   });
 
-  it("does not run a speculative connection() page probe for HTML renders", async () => {
-    const probePage = vi.fn(async () => {
-      await connection();
-    });
-    const { options } = createDispatchOptions({ probePage });
-
-    const response = await Promise.race([
-      dispatchAppPage(options),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("dispatch timed out")), 250);
-      }),
-    ]);
-
-    expect(response.status).toBe(200);
-    expect(probePage).not.toHaveBeenCalled();
-    await expect(response.text()).resolves.toBe("<html>page</html>");
-  });
-
-  it.each([
-    ["force-dynamic", { dynamicConfig: "force-dynamic" as const }],
-    [
-      "draft mode",
-      {
-        request: new Request("https://example.test/posts/hello", {
-          headers: { Cookie: "__prerender_bypass=draft-secret" },
-        }),
-      },
-    ],
-    ["progressive actions", { isProgressiveActionRender: true }],
-    ["revalidate zero", { revalidateSeconds: 0 }],
-  ])("does not probe queryless production HTML for %s", async (_name, overrides) => {
-    const probePage = vi.fn(() => null);
-    const { options } = createDispatchOptions({
-      isProduction: true,
-      probePage,
-      revalidateSeconds: 60,
-      ...overrides,
-    });
-
-    const response = await dispatchAppPage(options);
-
-    expect(probePage).not.toHaveBeenCalled();
-    await expect(response.text()).resolves.toBe("<html>page</html>");
-  });
-
   afterEach(() => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();
+    // Tests that run outside a request share the fallback state, whose dynamic
+    // latch is otherwise only reset by a new headers context.
+    setHeadersContext(headersContextFromRequest(new Request("https://example.test/")));
+    setHeadersContext(null);
     vi.unstubAllEnvs();
   });
 
   it("serves cached production HTML instead of revalidating params or rendering", async () => {
-    const probePage = vi.fn(() => {
-      throw new Error("cache hit must not execute page code");
-    });
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("cache hit should not render the page");
@@ -711,7 +763,6 @@ describe("app page dispatch", () => {
       },
       isProduction: true,
       isrGet: vi.fn(async () => buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>"))),
-      probePage,
       revalidateSeconds: 60,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
     });
@@ -719,16 +770,179 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
+  });
+
+  it("sends the request's navigation params and path on a cached RSC hit", async () => {
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("cache hit should not render the page");
+      },
+      cleanPathname: "/posts/first",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer)),
+      ),
+      hasGenerateStaticParams: true,
+      params: { slug: "first" },
+      revalidateSeconds: 60,
+      route: createRoute({
+        isDynamic: true,
+        params: ["slug"],
+        // An active slot's params are part of what a fresh render sends.
+        slots: {
+          "sidebar@app/posts/@sidebar": {
+            page: { default: "sidebar-page" },
+            slotParamNames: ["section"],
+            slotPatternParts: [":section", ":slug"],
+          },
+        },
+      }),
+    });
+    options.renderedPathAndSearch = "/posts/first";
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent(JSON.stringify({ slug: "first", section: "posts" })),
+    );
+    expect(response.headers.get("x-vinext-rendered-path-and-search")).toBe(
+      encodeURIComponent("/posts/first"),
+    );
+  });
+
+  it("hydrates an intercepting source route before resolving a cached RSC hit's params", async () => {
+    // The source route's slots are lazy until ensureRouteLoaded runs.
+    const sidebarSlot: {
+      page?: { default?: unknown } | null;
+      slotParamNames: readonly string[];
+      slotPatternParts: readonly string[];
+    } = { slotParamNames: ["catchAll"], slotPatternParts: [":catchAll+"] };
+    const sourceRoute = createRoute({
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      slots: {
+        "modal@app/feed/@modal": {
+          page: { default: "modal-page" },
+          slotParamNames: ["id"],
+          slotPatternParts: ["photos", ":id"],
+        },
+        "sidebar@app/feed/@sidebar": sidebarSlot,
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("cache hit should not render the page");
+      },
+      cleanPathname: "/photos/123",
+      async ensureRouteLoaded(loadedRoute) {
+        if (loadedRoute === sourceRoute) sidebarSlot.page = { default: "sidebar-page" };
+      },
+      hasGenerateStaticParams: true,
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer)),
+      ),
+      params: { id: "123" },
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["id"], pattern: "/photos/[id]" }),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          interceptBranchSegments: ["(.)photos", "[id]"],
+          interceptionGraphId: "graph-interception:/feed->/photos/:id",
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent(JSON.stringify({ id: "123", catchAll: ["photos", "123"] })),
+    );
+  });
+
+  it("validates generated params before hydrating a route for cached RSC hit params", async () => {
+    const ensureRouteLoaded = vi.fn(async () => {
+      throw new Error("route modules should not load for a generated-param miss");
+    });
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("not found", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      ensureRouteLoaded,
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage({ ...options, dynamicParamsConfig: false });
+
+    expect(response.status).toBe(404);
+    expect(ensureRouteLoaded).not.toHaveBeenCalled();
+  });
+
+  it("bounds a redirect from a generated-param miss by the route's dynamic stale time (#3745)", async () => {
+    // A not-found boundary that calls redirect() answers an RSC request with
+    // a streamed redirect, which a prefetch may replay.
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () =>
+        new Response("flight", {
+          headers: { [VINEXT_RSC_REDIRECT_HEADER]: "/login" },
+        }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 0,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage({
+      ...options,
+      dynamicParamsConfig: false,
+      dynamicStaleTimeSeconds: 45,
+    });
+
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalled();
+    expect(response.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/login");
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("45");
   });
 
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
     );
-    const probePage = vi.fn(() => null);
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
@@ -744,7 +958,6 @@ describe("app page dispatch", () => {
           });
         },
       }),
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -752,15 +965,16 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
-  it("caches fresh query-bearing HTML when the page probe does not read searchParams", async () => {
-    const probePage = vi.fn(() => null);
+  it("renders query-bearing HTML as a cache candidate and stores it when searchParams is unread", async () => {
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const ssrOptions: { isCacheCandidate?: boolean }[] = [];
     const waitUntilPromises: Promise<unknown>[] = [];
     const executionContext = {
       waitUntil(promise) {
@@ -770,7 +984,12 @@ describe("app page dispatch", () => {
     const { options } = createDispatchOptions({
       isProduction: true,
       isrSet,
-      probePage,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+          ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+          return createStream(["<html>page</html>"]);
+        },
+      }),
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("utm_source=google"),
     });
@@ -779,8 +998,10 @@ describe("app page dispatch", () => {
       dispatchAppPage(options),
     );
 
-    expect(probePage).not.toHaveBeenCalled();
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    // SSR keeps the query out of the output unless the render turns dynamic,
+    // so a candidate miss reports MISS with or without a query.
+    expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await expect(response.text()).resolves.toBe("<html>page</html>");
     await Promise.all(waitUntilPromises.splice(0));
@@ -796,6 +1017,346 @@ describe("app page dispatch", () => {
     expect(cachePolicy.cacheControl.revalidate).toBe(60);
     expect(cachePolicy.tags).toEqual(expect.arrayContaining(["_N_T_/posts/hello"]));
     expect(cachePolicy.cacheControl.expire).toBeUndefined();
+  });
+
+  it("renders draft-mode and dev HTML outside cache-candidate mode", async () => {
+    for (const overrides of [
+      {
+        isProduction: true,
+        request: new Request("https://example.com/posts/hello?q=1", {
+          headers: { cookie: "__prerender_bypass=draft-secret" },
+        }),
+      },
+      { isProduction: false },
+    ]) {
+      const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+      const { options } = createDispatchOptions({
+        ...overrides,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+            ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        revalidateSeconds: 60,
+        searchParams: new URLSearchParams("q=1"),
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      expect(ssrOptions).toEqual([{ isCacheCandidate: false }]);
+    }
+  });
+
+  // The deploy probe must render the way the runtime does, or the manifest it
+  // produces would certify a render the runtime never serves.
+  it("renders the Workers Cache deploy probe in cache-candidate mode without reading the cache", async () => {
+    const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+    const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+    const context: ExecutionContextLike = { waitUntil() {} };
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 10_000,
+      mode: "probe",
+    };
+    Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+          ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+    });
+
+    const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+    await response.text();
+
+    expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
+    expect(isrGet).not.toHaveBeenCalled();
+  });
+
+  // Discovery can list paths of a route Next.js classifies as dynamic, such as
+  // one whose only generateStaticParams sits above its last dynamic segment.
+  // The probe must report the whole pattern dynamic so it gets no entry.
+  it("reports a route that isn't statically generated as pattern-dynamic to the deploy probe", async () => {
+    const cases: [Partial<Parameters<typeof createDispatchOptions>[0]>, string | undefined][] = [
+      [
+        {
+          hasAnyGenerateStaticParams: true,
+          hasGenerateStaticParams: false,
+          route: createRoute({ isDynamic: true, params: ["slug"] }),
+        },
+        "route is not statically generated",
+      ],
+      [{ isStaticGenerationEdgeRuntime: true }, "route is not statically generated"],
+      [
+        {
+          hasGenerateStaticParams: true,
+          route: createRoute({ isDynamic: true, params: ["slug"] }),
+        },
+        undefined,
+      ],
+      [{}, undefined],
+    ];
+    for (const [overrides, expected] of cases) {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "probe",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({ isProduction: true, ...overrides });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+
+      expect(state.patternDynamicReason).toBe(expected);
+    }
+  });
+
+  // Next.js serves a path its build never certified per request, so a Workers
+  // Cache path its manifest gives no state renders with real values from the
+  // start. A certified path, and every path without a manifest, keeps
+  // candidate mode.
+  it("renders a path its Workers Cache manifest gives no state outside cache-candidate mode", async () => {
+    const manifest = parseCacheabilityManifest(
+      JSON.stringify({
+        buildId: "build-a",
+        routes: {
+          [cacheabilityManifestRouteKey("app-page", "/posts/[slug]")]: {
+            kind: "app-page",
+            pattern: "/posts/[slug]",
+            state: "runtime-check",
+            staticPaths: { html: ["/posts/listed"] },
+          },
+        },
+        version: 1,
+      }),
+      "build-a",
+    );
+    const cases: [RouteCacheabilityState["admission"], string, boolean][] = [
+      [
+        { manifest, policy: "manifest", representation: "html", routePathname: "/posts/hello" },
+        "/posts/hello",
+        false,
+      ],
+      [
+        { manifest, policy: "manifest", representation: "html", routePathname: "/posts/listed" },
+        "/posts/listed",
+        true,
+      ],
+      [
+        // A curl-style request maps to html at admission, as it does here.
+        {
+          manifest,
+          policy: "manifest",
+          representation: "app-route",
+          routePathname: "/posts/listed",
+        },
+        "/posts/listed",
+        true,
+      ],
+      [
+        { policy: "runtime", representation: "html", routePathname: "/posts/hello" },
+        "/posts/hello",
+        true,
+      ],
+    ];
+    for (const [admission, cleanPathname, expected] of cases) {
+      const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        admission,
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({
+        cleanPathname,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+            ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        revalidateSeconds: 60,
+        searchParams: new URLSearchParams("q=1"),
+      });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+      expect(ssrOptions, JSON.stringify(admission)).toEqual([{ isCacheCandidate: expected }]);
+    }
+  });
+
+  // Next.js never stores a path its build didn't certify, so a Workers Cache
+  // path its manifest gives no state never reads, serves or regenerates a core
+  // ISR entry. A certified path, and every path without a manifest, keeps the
+  // core cache.
+  it("skips the core ISR cache for a path its Workers Cache manifest gives no state", async () => {
+    const manifest = createPostsCacheabilityManifest();
+    const cases: [RouteCacheabilityState["admission"], string, boolean][] = [
+      [{ manifest, policy: "manifest", routePathname: "/posts/hello" }, "/posts/hello", false],
+      [{ manifest, policy: "manifest", routePathname: "/posts/listed" }, "/posts/listed", true],
+      [{ policy: "runtime", routePathname: "/posts/hello" }, "/posts/hello", true],
+    ];
+    for (const [admission, cleanPathname, readsCore] of cases) {
+      for (const isRscRequest of [false, true]) {
+        const label = JSON.stringify({ admission, isRscRequest });
+        const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () =>
+          buildISRCacheEntry(
+            buildCachedAppPageValue(
+              isRscRequest ? "" : "<html>stale</html>",
+              new TextEncoder().encode("stale-flight").buffer,
+            ),
+            true,
+          ),
+        );
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const scheduleBackgroundRegeneration = vi.fn();
+        const context: ExecutionContextLike = { waitUntil() {} };
+        const state: RouteCacheabilityState = {
+          admission: admission && {
+            ...admission,
+            representation: isRscRequest ? "rsc-full" : "html",
+          },
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "admit",
+        };
+        Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+        const { options } = createDispatchOptions({
+          cleanPathname,
+          isProduction: true,
+          isRscRequest,
+          isrGet,
+          isrSet,
+          revalidateSeconds: 60,
+          scheduleBackgroundRegeneration,
+        });
+
+        const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+        await response.text();
+
+        if (readsCore) {
+          expect(response.headers.get("x-vinext-cache"), label).toBe("STALE");
+          expect(isrGet, label).toHaveBeenCalled();
+          expect(scheduleBackgroundRegeneration, label).toHaveBeenCalledTimes(1);
+        } else {
+          expect(response.headers.get("x-vinext-cache"), label).not.toBe("STALE");
+          expect(isrGet, label).not.toHaveBeenCalled();
+          expect(scheduleBackgroundRegeneration, label).not.toHaveBeenCalled();
+          expect(isrSet, label).not.toHaveBeenCalled();
+        }
+      }
+    }
+  });
+
+  // A core entry another request stored under the query-free key must not
+  // reach a path Next.js serves per request: each request renders with its
+  // own query, and none stores its render.
+  it("renders a path its Workers Cache manifest gives no state with each request's query", async () => {
+    const manifest = createPostsCacheabilityManifest();
+    const sharedFlight = new TextEncoder().encode("shared-flight").buffer;
+    const cache = new Map<string, ISRCacheEntry>([
+      [
+        "html:/posts/hello",
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>shared</html>",
+            sharedFlight,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+        ),
+      ],
+      [
+        "rsc:/posts/hello",
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            sharedFlight,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+        ),
+      ],
+    ]);
+    const isrGet = vi.fn<DispatchOptions["isrGet"]>(async (key) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+      cache.set(key, { isStale: false, value: { lastModified: Date.now(), value: data } });
+    });
+    for (const isRscRequest of [false, true]) {
+      const renders: { isCacheCandidate?: boolean; q: string | null | undefined }[] = [];
+      const pageQueries: (string | null)[] = [];
+      for (const q of ["1", "2"]) {
+        let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
+        const waitUntilPromises: Promise<unknown>[] = [];
+        const context: ExecutionContextLike = {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        };
+        const state: RouteCacheabilityState = {
+          admission: {
+            manifest,
+            policy: "manifest",
+            representation: isRscRequest ? "rsc-full" : "html",
+            routePathname: "/posts/hello",
+          },
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "admit",
+        };
+        Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+        const { options } = createDispatchOptions({
+          async buildPageElement(_route, _params, _opts, searchParams) {
+            pageQueries.push(searchParams.get("q"));
+            return React.createElement("main", null, "page");
+          },
+          cleanPathname: "/posts/hello",
+          getNavigationContext: () => navigationContext,
+          isProduction: true,
+          isRscRequest,
+          isrGet,
+          isrSet,
+          loadSsrHandler: async () => ({
+            async handleSsr(_rscStream, ssrNavigationContext, _fontData, handleSsrOptions) {
+              renders.push({
+                isCacheCandidate: handleSsrOptions?.isCacheCandidate,
+                q: ssrNavigationContext?.searchParams.get("q"),
+              });
+              void handleSsrOptions?.sideStream?.cancel().catch(() => {});
+              return createStream(["<html>page</html>"]);
+            },
+          }),
+          revalidateSeconds: 60,
+          searchParams: new URLSearchParams({ q }),
+          setNavigationContext(nextNavigationContext) {
+            navigationContext = nextNavigationContext;
+          },
+        });
+
+        const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+        expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+        await response.text();
+        await Promise.all(waitUntilPromises);
+      }
+
+      expect(pageQueries, `isRscRequest: ${isRscRequest}`).toEqual(["1", "2"]);
+      expect(renders).toEqual(
+        isRscRequest
+          ? []
+          : [
+              { isCacheCandidate: false, q: "1" },
+              { isCacheCandidate: false, q: "2" },
+            ],
+      );
+    }
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("writes HTML-captured RSC data under the plain key when interception context is absent", async () => {
@@ -904,13 +1465,6 @@ describe("app page dispatch", () => {
         return createStream([`<html>${renderedText}</html>`]);
       },
     });
-    const probePage = vi.fn((searchParams: URLSearchParams) =>
-      probeAppPage({
-        asyncRouteParams: makeThenableParams({}),
-        pageComponent: Page,
-        searchParams,
-      }),
-    );
 
     async function request(searchParams: URLSearchParams): Promise<{
       response: Response;
@@ -923,7 +1477,6 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
-        probePage: () => probePage(searchParams),
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -941,13 +1494,11 @@ describe("app page dispatch", () => {
     expect(queryless.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(queryless.text).toBe("<html>empty</html>");
     expect(cache.has("html:/query-proof")).toBe(false);
-    expect(probePage).not.toHaveBeenCalled();
     expect(pageExecutions).toBe(1);
 
     const withQuery = await request(new URLSearchParams({ q: "hello" }));
     expect(withQuery.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(withQuery.text).toBe("<html>hello</html>");
-    expect(probePage).not.toHaveBeenCalled();
     expect(pageExecutions).toBe(2);
   });
 
@@ -1026,7 +1577,6 @@ describe("app page dispatch", () => {
           return createStream([`<html>${renderedText}</html>`]);
         },
       });
-      const probePage = vi.fn(() => null);
 
       async function request(searchParams: URLSearchParams): Promise<Response> {
         const { options } = createDispatchOptions({
@@ -1036,7 +1586,6 @@ describe("app page dispatch", () => {
           isrGet,
           isrSet,
           loadSsrHandler,
-          probePage,
           renderToReadableStream: renderPagePayloadToStream,
           revalidateSeconds: 60,
           route,
@@ -1053,7 +1602,6 @@ describe("app page dispatch", () => {
       const queryless = await request(new URLSearchParams());
       expect(queryless.headers.get("x-vinext-cache")).not.toBe("HIT");
       expect(cache.has("html:/head-proof")).toBe(false);
-      expect(probePage).not.toHaveBeenCalled();
 
       const withQuery = await request(new URLSearchParams({ q: "hello" }));
       expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");
@@ -1152,9 +1700,6 @@ describe("app page dispatch", () => {
           isRscRequest: true,
           isrGet,
           isrSet,
-          probePage() {
-            return null;
-          },
           renderToReadableStream: renderPagePayloadToStream,
           revalidateSeconds: 60,
           route,
@@ -1177,24 +1722,20 @@ describe("app page dispatch", () => {
     },
   );
 
-  it("preserves deferred metadata dynamic usage across a concurrent layout probe", async () => {
-    let releaseMetadata!: () => void;
-    const metadataGate = new Promise<void>((resolve) => {
-      releaseMetadata = resolve;
-    });
-    let metadataObserved!: () => void;
-    const metadataObservedPromise = new Promise<void>((resolve) => {
-      metadataObserved = resolve;
-    });
+  it("keeps metadata dynamic usage from the render after a layout probe", async () => {
+    // generateMetadata() runs inside the render, after the layout probe's
+    // isolated dynamic scope has closed, so its searchParams read reaches the
+    // render's own dynamic usage.
+    let metadataStarted = false;
+    let metadataStartedDuringProbe: boolean | undefined;
     const layoutModule = {
       default: ({ children }: { children?: React.ReactNode }) => children ?? null,
     };
     const pageModule = {
       default: () => React.createElement("h1", null, "metadata body"),
       async generateMetadata(props: { searchParams: Promise<Record<string, unknown>> }) {
-        await metadataGate;
+        metadataStarted = true;
         await props.searchParams;
-        metadataObserved();
         return { title: "deferred metadata" };
       },
     };
@@ -1260,11 +1801,7 @@ describe("app page dispatch", () => {
       isrGet,
       isrSet,
       async probeLayoutAt() {
-        releaseMetadata();
-        await metadataObservedPromise;
-        return null;
-      },
-      probePage() {
+        metadataStartedDuringProbe = metadataStarted;
         return null;
       },
       renderToReadableStream: renderPagePayloadToStream,
@@ -1278,6 +1815,8 @@ describe("app page dispatch", () => {
     await response.text();
     await Promise.all(waitUntilPromises);
 
+    expect(metadataStartedDuringProbe).toBe(false);
+    expect(metadataStarted).toBe(true);
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(cache.has("rsc:/deferred-metadata-proof")).toBe(false);
   });
@@ -1349,9 +1888,6 @@ describe("app page dispatch", () => {
           });
         },
         params: {},
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -1362,7 +1898,9 @@ describe("app page dispatch", () => {
       );
       const completed = extractRscCompletionMetadata(await response.arrayBuffer());
       await Promise.all(waitUntilPromises.splice(0));
-      expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+      // A query-bearing RSC render may still read searchParams after its
+      // headers are built, so it sends no provisional cache state.
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
       expect(response.headers.get("x-vinext-rsc-completion-metadata")).toBe("1");
       expect(completed.metadata).toEqual({
         dynamicStaleTimeSeconds: 0,
@@ -1387,15 +1925,9 @@ describe("app page dispatch", () => {
         ),
       ),
     );
-    const probePage = vi.fn(() => {
-      const unusedCommentOnlySearchParams = "searchParams";
-      expect(unusedCommentOnlySearchParams).toBe("searchParams");
-      return null;
-    });
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -1403,12 +1935,11 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached static page</html>");
   });
 
-  it("lets force-static override observed searchParams access", async () => {
+  it("serves force-static pages from the cache when the request has a query", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached force static</html>")),
     );
@@ -1416,11 +1947,6 @@ describe("app page dispatch", () => {
       dynamicConfig: "force-static",
       isProduction: true,
       isrGet,
-      probePage() {
-        markDynamicUsage();
-        markRenderRequestApiUsage("searchParams");
-        return null;
-      },
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -1437,7 +1963,6 @@ describe("app page dispatch", () => {
     // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
     const buildQueries: string[] = [];
-    const probeQueries: string[] = [];
     const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
       async (_route, _params, _opts, searchParams) => {
@@ -1448,10 +1973,6 @@ describe("app page dispatch", () => {
     const { options } = createDispatchOptions({
       buildPageElement,
       isRscRequest: true,
-      probePage(searchParams) {
-        probeQueries.push(searchParams?.get("searchParam") ?? "empty");
-        return null;
-      },
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
       renderToReadableStream(element) {
         if (typeof element !== "string") {
@@ -1467,7 +1988,6 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("empty");
     expect(buildQueries).toEqual([""]);
-    expect(probeQueries).toEqual(["empty"]);
     const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
     expect(navigationContext?.searchParams.toString()).toBe("");
   });
@@ -1548,7 +2068,6 @@ describe("app page dispatch", () => {
           },
           routePath: "/force-static-query",
         }).then(toDispatchElementRecord);
-      const probeQueries: string[] = [];
       const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
       const request = new Request("https://example.test/force-static-query?user=alice", {
         headers: {
@@ -1567,10 +2086,6 @@ describe("app page dispatch", () => {
             return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
           },
         }),
-        probePage(searchParams) {
-          probeQueries.push(searchParams?.get("user") ?? "empty");
-          return null;
-        },
         request,
         renderToReadableStream: renderPagePayloadToStream,
         route,
@@ -1583,7 +2098,6 @@ describe("app page dispatch", () => {
       await expect(response.text()).resolves.toBe(isRscRequest ? "empty" : "<html>empty</html>");
       expect(metadataQueries).toEqual(["empty"]);
       expect(viewportQueries).toEqual(["empty"]);
-      expect(probeQueries).toEqual(isRscRequest ? ["empty"] : []);
       expect(pageHeaders).toEqual([null]);
       expect(pageDraftModes).toEqual([isDraftMode]);
       const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
@@ -1738,9 +2252,6 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -1834,9 +2345,6 @@ describe("app page dispatch", () => {
             return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
           },
         }),
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         params: {},
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
@@ -2366,12 +2874,17 @@ describe("app page dispatch", () => {
         },
       },
     });
-    const currentRoute = createRoute({ params: ["id"], pattern: "/photos/[id]" });
+    const currentRoute = createRoute({
+      isDynamic: true,
+      params: ["id"],
+      pattern: "/photos/[id]",
+    });
     const middlewareHeaders = new Headers({ "x-from-middleware": "yes" });
     const setNavigationContext = vi.fn();
     let capturedInterceptOpts: Parameters<DispatchOptions["buildPageElement"]>[2];
     const { options } = createDispatchOptions({
       cleanPathname: "/photos/123",
+      isProduction: true,
       async buildPageElement(route, params, opts) {
         capturedInterceptOpts = opts;
         return `${route.pattern}:${JSON.stringify(params)}:${opts?.interceptSlotKey ?? "direct"}`;
@@ -2414,6 +2927,9 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(202);
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
+    // The response renders the static /feed source, so the dynamic target's
+    // classification doesn't make it uncacheable.
+    expect(response.headers.get("cache-control")).toBeNull();
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
     expect(capturedInterceptOpts).toMatchObject({
       interceptGraphId: "graph-interception:/feed->/photos/:id",
@@ -2426,6 +2942,55 @@ describe("app page dispatch", () => {
       pathname: "/photos/123",
       searchParams: new URLSearchParams("from=feed"),
     });
+  });
+
+  it("sends the never-cache header on intercepted RSC of a source route that can't be static", async () => {
+    // app/photos/[id]/page.tsx generates its params, so the target is static,
+    // but app/feed/page.tsx sets dynamic = "force-dynamic".
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      isDynamic: true,
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const resolveRouteStaticEligible = vi.fn((route: TestRoute) => route !== sourceRoute);
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      generateStaticParams: async () => [{ id: "123" }],
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      resolveRouteDynamicConfig: (route) => (route === sourceRoute ? "force-dynamic" : undefined),
+      resolveRouteStaticEligible,
+      route: currentRoute,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("/feed");
+    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(sourceRoute);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    // Dev keeps its no-store header.
+    const devResponse = await dispatchAppPage({ ...options, isProduction: false });
+    expect(devResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await devResponse.text();
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
@@ -2533,6 +3098,76 @@ describe("app page dispatch", () => {
       interceptSourceMatchedUrl: "/feed",
     });
     expect(options.isrGet).not.toHaveBeenCalled();
+    expect(options.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("fails regenerating a stale intercepted entry whose source route turned revalidate = 0", async () => {
+    // app/feed/page.tsx now sets dynamic = "force-dynamic" (revalidate 0),
+    // while the matched /photos/[id] route keeps revalidate = 60.
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    let scheduledRender: unknown = null;
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream: () => createStream(["fresh-flight"]),
+      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 0 : null),
+      revalidateSeconds: 60,
+      route: currentRoute,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).rejects.toThrow(
+      "Page changed from static to dynamic at runtime /photos/123",
+    );
     expect(options.isrSet).not.toHaveBeenCalled();
   });
 
@@ -2722,6 +3357,87 @@ describe("app page dispatch", () => {
     expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
   });
 
+  describe("intercepted RSC of a known-dynamic source or current route", () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const knownDynamicConfigs = [
+      { dynamicConfig: "force-dynamic", revalidateSeconds: 0 },
+      { dynamicConfig: undefined, revalidateSeconds: 0 },
+    ];
+
+    function dispatchIntercept(overrides: CreateDispatchOptionsOverrides) {
+      const { options } = createDispatchOptions({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/photos/123",
+        findIntercept: () => ({
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1 ? sourceRoute : undefined;
+        },
+        isProduction: true,
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: currentRoute,
+        ...overrides,
+      });
+      return dispatchAppPage(options);
+    }
+
+    for (const config of knownDynamicConfigs) {
+      const label = config.dynamicConfig ?? "revalidate = 0";
+
+      // A standard build already classifies such a source as non-static. A
+      // cacheComponents build keeps every route static-eligible, so only the
+      // source's own dynamic config marks the response.
+      it(`sends the never-cache header for a ${label} source in a cacheComponents build`, async () => {
+        const response = await dispatchIntercept({
+          pprRuntime: appPagePprRuntime,
+          resolveRouteDynamicConfig: (route) =>
+            route === sourceRoute ? config.dynamicConfig : undefined,
+          resolveRouteRevalidateSeconds: (route) =>
+            route === sourceRoute ? config.revalidateSeconds : null,
+        });
+
+        await expect(response.text()).resolves.toBe("/feed");
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+      });
+
+      for (const pprRuntime of [undefined, appPagePprRuntime]) {
+        const build = pprRuntime ? "a cacheComponents build" : "a standard build";
+
+        it(`keeps a ${label} current route's header off a static source in ${build}`, async () => {
+          const response = await dispatchIntercept({
+            dynamicConfig: config.dynamicConfig,
+            pprRuntime,
+            resolveRouteDynamicConfig: (route) =>
+              route === currentRoute ? config.dynamicConfig : undefined,
+            resolveRouteRevalidateSeconds: (route) =>
+              route === currentRoute ? config.revalidateSeconds : null,
+            resolveRouteStaticEligible: (route) => route !== currentRoute,
+            revalidateSeconds: config.revalidateSeconds,
+          });
+
+          await expect(response.text()).resolves.toBe("/feed");
+          expect(response.headers.get("cache-control")).toBeNull();
+        });
+      }
+    }
+  });
+
   it("passes empty searchParams to a force-static intercept source route", async () => {
     const sourceRoute = createRoute({
       params: [],
@@ -2776,6 +3492,8 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("empty");
     expect(buildPageElement.mock.calls[0]?.[3].toString()).toBe("");
+    // Client pages read an empty query in the browser too.
+    expect(buildPageElement.mock.calls[0]?.[5]?.isForceStatic).toBe(true);
     expect(setNavigationContext).toHaveBeenLastCalledWith(
       expect.objectContaining({ searchParams: expect.any(URLSearchParams) }),
     );
@@ -2841,12 +3559,40 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("popular");
     expect(buildOptions).toEqual([
       {
+        isForceStatic: false,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
+        placeStreamedMetadataInHead: false,
         serveStreamingMetadata: true,
       },
     ]);
   });
+
+  it.each([
+    { dynamicConfig: "force-static", isForceStatic: true },
+    { dynamicConfig: undefined, isForceStatic: false },
+  ])(
+    "tells the page builder whether the route is force-static ($dynamicConfig)",
+    async ({ dynamicConfig, isForceStatic }) => {
+      // Client pages carry it to the browser, which keeps force-static
+      // searchParams empty as SSR renders them.
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => "page");
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        dynamicConfig,
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        searchParams: new URLSearchParams("tab=popular"),
+      });
+
+      await expect((await dispatchAppPage(options)).text()).resolves.toBe("page");
+      expect(buildPageElement.mock.calls.map((call) => call[5]?.isForceStatic)).toEqual([
+        isForceStatic,
+      ]);
+    },
+  );
 
   it("preserves request headers for an ordinary intercept source route", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
@@ -2964,7 +3710,8 @@ describe("app page dispatch", () => {
     await scheduledRender();
 
     expect(capturedWaitForAllReady).toBe(true);
-    expect(capturedServeStreamingMetadata).toBe(false);
+    // A request without a user agent streams metadata.
+    expect(capturedServeStreamingMetadata).toBe(true);
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(createRscOnErrorHandler).toHaveBeenCalledWith("/posts/hello", "/posts/[slug]", {
       revalidateReason: "stale",
@@ -3024,8 +3771,575 @@ describe("app page dispatch", () => {
     );
   });
 
+  it.each([
+    {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      headers: undefined,
+      htmlHeaders: { link: "</font.woff2>; rel=preload" },
+      html: "<html>not found</html>",
+      status: 404,
+    },
+    {
+      digest: "NEXT_REDIRECT;replace;/target;307;",
+      headers: { location: "/target" },
+      htmlHeaders: { location: "/target" },
+      html: "",
+      status: 307,
+    },
+  ])(
+    "stores a stale regeneration whose shell ended in a $status",
+    async ({ digest, headers, htmlHeaders, html, status }) => {
+      let scheduledRender: unknown = null;
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        isrSet,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            throw Object.assign(new Error(digest), { digest });
+          },
+        }),
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+      options.renderHttpAccessFallbackPage = vi.fn(async (statusCode: number) => {
+        const link = "</font.woff2>; rel=preload";
+        const fallback = new Response("<html>not found</html>", {
+          headers: { link },
+          status: statusCode,
+        });
+        markFrameworkLinkHeaders(fallback.headers, link);
+        return fallback;
+      });
+
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("<html>stale</html>");
+      if (typeof scheduledRender !== "function") {
+        throw new Error("expected stale HTML response to schedule regeneration");
+      }
+      await scheduledRender();
+
+      expect(
+        isrSet.mock.calls.map(([key, value]) => ({
+          headers: value.headers,
+          html: value.html,
+          key,
+          rsc: value.rscData ? new TextDecoder().decode(value.rscData) : undefined,
+          status: value.status,
+        })),
+      ).toEqual([
+        { headers, html: "", key: "rsc:/posts/hello", rsc: "page-flight-with-digest", status },
+        { headers: htmlHeaders, html, key: "html:/posts/hello", rsc: undefined, status },
+      ]);
+      if (status === 404) {
+        // The stored document must not carry the request's query.
+        expect(options.renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+          404,
+          expect.objectContaining({ isCacheCandidate: true }),
+          null,
+        );
+      }
+    },
+  );
+
+  it("stores only the renderer's Link from a stale 404 regeneration when middleware also sets one", async () => {
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const frameworkLink = "</font.woff2>; rel=preload";
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      middlewareContext: { headers: new Headers({ link: "</mw.css>; rel=preload" }), status: null },
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+    options.renderHttpAccessFallbackPage = vi.fn(async (statusCode: number) => {
+      const fallback = new Response("<html>not found</html>", {
+        headers: { link: frameworkLink },
+        status: statusCode,
+      });
+      markFrameworkLinkHeaders(fallback.headers, frameworkLink);
+      return fallback;
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["rsc:/posts/hello", undefined],
+      ["html:/posts/hello", { link: frameworkLink }],
+    ]);
+  });
+
+  it("does not store a regeneration whose page reads a dynamic API after its shell rejected", async () => {
+    // A root layout's `<Suspense><Session /></Suspense>` reads cookies() after
+    // the page's redirect() rejected the shell.
+    let scheduledRender: unknown = null;
+    let requestContextCleared = false;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      clearRequestContext() {
+        requestContextCleared = true;
+      },
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_REDIRECT;replace;/target;307;";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      renderToReadableStream: () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("page-flight-with-digest"));
+            setTimeout(() => {
+              // Without a request context, cookies() rejects instead.
+              if (!requestContextCleared) markDynamicUsage();
+              controller.close();
+            }, 5);
+          },
+        }),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    requestContextCleared = false;
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).rejects.toThrow(
+      "Page changed from static to dynamic at runtime /posts/hello",
+    );
+    expect(isrSet.mock.calls.map(([, value]) => value.status)).not.toContain(307);
+  });
+
+  it("stores generateMetadata()'s special error that rejects a regeneration's shell with its status", async () => {
+    // As in Next.js, a regeneration that an html-limited bot triggers blocks
+    // on metadata, so the error rejects its shell, and it stores the 404.
+    const metadataNotFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      request: new Request("https://example.test/posts/hello", {
+        headers: { "user-agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+      }),
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          // SSR's copy of the error is decoded from its Flight digest,
+          // without the server-side metadata marker.
+          throw Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+          });
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+    expect(isrSet.mock.calls.map(([key, value]) => [key, value.status])).toContainEqual([
+      expect.stringContaining("html:"),
+      404,
+    ]);
+  });
+
+  // An RSC regeneration writes only the RSC entry. Storing the bot's 404 there
+  // would leave it beside the previous document, so it keeps the entry.
+  it("keeps the entry when generateMetadata()'s special error rejects an RSC regeneration's shell", async () => {
+    const metadataNotFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isRscRequest: true,
+      request: new Request("https://example.test/posts/hello", {
+        headers: { "user-agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+      }),
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          throw Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+          });
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    // The regeneration fails, as one whose shell another error rejected does.
+    await expect(scheduledRender()).rejects.toMatchObject({ digest: metadataNotFoundDigest });
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  // As in Next.js, a regeneration streams metadata as the request that
+  // triggered it does, so generateMetadata()'s special error rejects its
+  // shell only for an html-limited bot.
+  it.each([
+    { serveStreamingMetadata: true, userAgent: "Mozilla/5.0" },
+    { serveStreamingMetadata: false, userAgent: "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+  ])(
+    "builds a regeneration that $userAgent triggers with serveStreamingMetadata $serveStreamingMetadata",
+    async ({ serveStreamingMetadata, userAgent }) => {
+      let scheduledRender: unknown = null;
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            return createStream(["<html>fresh</html>"]);
+          },
+        }),
+        request: new Request("https://example.test/posts/hello", {
+          headers: { "user-agent": userAgent },
+        }),
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      if (typeof scheduledRender !== "function") {
+        throw new Error("expected stale HTML response to schedule regeneration");
+      }
+      buildPageElement.mockClear();
+      await scheduledRender();
+
+      // Its document is rendered whole, so the metadata waits in <head>.
+      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead: true,
+        serveStreamingMetadata,
+      });
+    },
+  );
+
+  it("mirrors self.__next_f in a regenerated document that streams a caught special error", async () => {
+    let scheduledRender: unknown = null;
+    const mirrorPredicates: Array<unknown> = [];
+    const notFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          mirrorPredicates.push(captureOptions?.mirrorNextFlight);
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        // A loading.tsx caught the page's notFound(), so the shell rendered.
+        onError(
+          Object.assign(new Error(notFoundDigest), { digest: notFoundDigest }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(mirrorPredicates).toHaveLength(1);
+    const mirror = mirrorPredicates[0];
+    expect(typeof mirror).toBe("function");
+    expect((mirror as () => boolean)()).toBe(true);
+  });
+
+  // Only a render vinext already completes before writing, such as a
+  // background regeneration, waits for streamed metadata in <head>. A request
+  // render streams it, even when the page may be stored.
+  it.each([
+    { name: "a cache candidate", overrides: {} },
+    { name: "a force-dynamic page", overrides: { dynamicConfig: "force-dynamic" } },
+    { name: "a dev render", overrides: { isProduction: false } },
+  ] as const)("streams the metadata of $name rendered for a request", async ({ overrides }) => {
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+      ...overrides,
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({ serveStreamingMetadata: true });
+    expect(buildPageElement.mock.calls[0]?.[5]?.placeStreamedMetadataInHead).not.toBe(true);
+  });
+
+  // An adapter asks for this when no client waits on the render, such as its
+  // regeneration or a deployment warm-up.
+  it.each([
+    { name: "a document", isRscRequest: false, waitForAllReady: true },
+    { name: "an RSC payload", isRscRequest: true, waitForAllReady: undefined },
+  ])(
+    "renders $name whole, with its streamed metadata in <head>, when asked",
+    async ({ isRscRequest, waitForAllReady }) => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const ssrOptions: unknown[] = [];
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        isRscRequest,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            ssrOptions.push(captureOptions);
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        renderWholeDocument: true,
+        revalidateSeconds: 60,
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+
+      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead: true,
+        serveStreamingMetadata: true,
+      });
+      // An RSC payload streams either way; only a document waits for SSR.
+      if (isRscRequest) {
+        expect(ssrOptions).toEqual([]);
+      } else {
+        expect(ssrOptions[0]).toMatchObject({ waitForAllReady });
+      }
+    },
+  );
+
+  it("stores an intercepted RSC regeneration whose shell ended in a 404", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      renderToReadableStream: () => createStream(["modal-flight-with-digest"]),
+      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 60 : null),
+      revalidateSeconds: 60,
+      route: currentRoute,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(
+      isrSet.mock.calls.map(([, value]) => ({
+        rsc: value.rscData ? new TextDecoder().decode(value.rscData) : undefined,
+        status: value.status,
+      })),
+    ).toEqual([{ rsc: "modal-flight-with-digest", status: 404 }]);
+  });
+
   it.each(["page", "metadata"] as const)(
-    "records searchParams access when stale regeneration reads them in %s",
+    "keeps the previous entry when a stale regeneration reads searchParams in %s",
     async (reader) => {
       async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
         if (reader !== "page") return React.createElement("main", null, "static body");
@@ -3052,6 +4366,14 @@ describe("app page dispatch", () => {
       const route = createRoute({ pattern: "/regen-proof", routeSegments: ["regen-proof"] });
       let scheduledRender: unknown = null;
       const written: CachedAppPageValue[] = [];
+      const staleValue = buildCachedAppPageValue(
+        "<html>stale</html>",
+        undefined,
+        undefined,
+        buildQueryInvariantRenderObservation(),
+      );
+      const staleEntry = buildISRCacheEntry(staleValue, true);
+      staleEntry.value.cacheControl = { revalidate: 60 };
       const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
         (_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
           buildPageElements({
@@ -3080,17 +4402,7 @@ describe("app page dispatch", () => {
         buildPageElement,
         cleanPathname: "/regen-proof",
         isProduction: true,
-        isrGet: vi.fn(async () =>
-          buildISRCacheEntry(
-            buildCachedAppPageValue(
-              "<html>stale</html>",
-              undefined,
-              undefined,
-              buildQueryInvariantRenderObservation(),
-            ),
-            true,
-          ),
-        ),
+        isrGet: vi.fn(async () => staleEntry),
         isrSet: vi.fn(async (_key, value) => {
           written.push(value);
         }),
@@ -3120,16 +4432,171 @@ describe("app page dispatch", () => {
         throw new Error("expected stale response to schedule regeneration");
       }
 
-      await scheduledRender();
-
-      expect(
-        written.map(
-          (value) =>
-            value.renderObservation?.requestApis.find((api) => api.kind === "searchParams")?.status,
-        ),
-      ).toEqual(["observed", "observed"]);
+      // Reading searchParams makes the regeneration dynamic, so it fails and
+      // core re-stores only the previous entry.
+      await expect(scheduledRender()).rejects.toThrow(
+        "Page changed from static to dynamic at runtime /regen-proof",
+      );
+      expect(written).toEqual([staleValue]);
     },
   );
+
+  it("doesn't fail a PPR regeneration that reads headers()", async () => {
+    async function Page(): Promise<React.ReactNode> {
+      const requestHeaders = await headers();
+      return React.createElement("main", null, requestHeaders.get("x-test") ?? "none");
+    }
+    const route = createRoute({ pattern: "/regen-ppr", routeSegments: ["regen-ppr"] });
+    let scheduledRender: unknown = null;
+    const staleValue = buildCachedAppPageValue(
+      "<html>stale</html>",
+      undefined,
+      undefined,
+      buildQueryInvariantRenderObservation(),
+    );
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+      (_route, params, _opts, searchParams, layoutParamAccess) =>
+        buildPageElements({
+          layoutParamAccess,
+          metadataRoutes: [],
+          params,
+          pageRequest: {
+            isRscRequest: false,
+            mountedSlotsHeader: null,
+            opts: undefined,
+            request: new Request("https://example.test/regen-ppr"),
+            searchParams,
+          },
+          route: {
+            layouts: [],
+            page: { default: Page },
+            pattern: "/regen-ppr",
+            routeSegments: ["regen-ppr"],
+          },
+          routePath: "/regen-ppr",
+        }).then(toDispatchElementRecord),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/regen-ppr",
+      isProduction: true,
+      isrGet: vi.fn(async () => {
+        const entry = buildISRCacheEntry(staleValue, true);
+        entry.value.cacheControl = { revalidate: 60 };
+        return entry;
+      }),
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+        },
+      }),
+      pprRuntime: appPagePprRuntime,
+      renderToReadableStream: renderPagePayloadToStream,
+      revalidateSeconds: 60,
+      route,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale response to schedule regeneration");
+    }
+    await expect(scheduledRender()).resolves.toBeUndefined();
+  });
+
+  it("stores a force-static regeneration that reads headers() and searchParams", async () => {
+    async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+      const requestHeaders = await headers();
+      const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
+      return React.createElement(
+        "main",
+        null,
+        `${requestHeaders.get("x-test") ?? "none"}:${isQueryRecord(query) ? String(query.q ?? "empty") : "invalid"}`,
+      );
+    }
+    const route = createRoute({ pattern: "/regen-static", routeSegments: ["regen-static"] });
+    let scheduledRender: unknown = null;
+    const writtenKeys: string[] = [];
+    const { options } = createDispatchOptions({
+      buildPageElement: (_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
+        buildPageElements({
+          layoutParamAccess,
+          metadataRoutes: [],
+          params,
+          pageRequest: {
+            isRscRequest: false,
+            mountedSlotsHeader: null,
+            opts: undefined,
+            request: new Request("https://example.test/regen-static"),
+            searchParams,
+            observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess,
+            observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess,
+          },
+          route: {
+            layouts: [],
+            page: { default: Page },
+            pattern: "/regen-static",
+            routeSegments: ["regen-static"],
+          },
+          routePath: "/regen-static",
+        }).then(toDispatchElementRecord),
+      cleanPathname: "/regen-static",
+      dynamicConfig: "force-static",
+      isProduction: true,
+      isrGet: vi.fn(async () => {
+        const entry = buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>stale</html>",
+            undefined,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        );
+        entry.value.cacheControl = { revalidate: 60 };
+        return entry;
+      }),
+      isrSet: vi.fn(async (key) => {
+        writtenKeys.push(key);
+      }),
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+        },
+      }),
+      renderToReadableStream: renderPagePayloadToStream,
+      revalidateSeconds: 60,
+      route,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale response to schedule regeneration");
+    }
+
+    // force-static makes those reads static, so they are no dynamic signal.
+    await scheduledRender();
+    expect(writtenKeys.sort()).toEqual(["html:/regen-static", "rsc:/regen-static"]);
+  });
 
   it("does not report a stale RSC failure again after Flight recreates the error", async () => {
     const route = createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] });
@@ -3434,7 +4901,7 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(404);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 
@@ -3450,7 +4917,7 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "html:/en/blog/[slug]",
+      "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toContain("Locale: en");
@@ -3471,8 +4938,9 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
+    // The query-bearing render is a cache candidate, so its MISS is final.
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     await expect(response.text()).resolves.toContain("fresh render");
     expect(buildPageElement).toHaveBeenCalled();
   });
@@ -3489,7 +4957,7 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "html:/en/blog/[slug]",
+      "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("STALE");
     await expect(response.text()).resolves.toContain("Locale: en");
@@ -3500,7 +4968,7 @@ describe("app page dispatch", () => {
   it("falls through to a fresh render when the cached fallback shell requires resume", async () => {
     const buildPageElement = createParamTextPageElement("fresh");
     const isrGet = vi.fn(async (key: string) => {
-      if (key === "html:/en/blog/[slug]") {
+      if (key === "shell:/en/blog/[slug]") {
         return buildISRCacheEntry(
           buildCachedAppPageValue(
             markAppPprDynamicFallbackShellHtml(
@@ -3541,7 +5009,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/known-post"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
@@ -3563,7 +5031,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/hello world"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
@@ -3595,8 +5063,1005 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/worker-known"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+  });
+
+  describe("static eligibility (Next.js route classification)", () => {
+    const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    function createDynamicSegmentRoute(): TestRoute {
+      return createRoute({ isDynamic: true, params: ["slug"] });
+    }
+
+    async function dispatchAndDrain(options: DispatchOptions) {
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const response = await runWithExecutionContext(
+        {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        },
+        () => dispatchAppPage(options),
+      );
+      const body = await response.text();
+      await Promise.all(waitUntilPromises.splice(0));
+      return { body, response };
+    }
+
+    // Next.js classifies a dynamic-segment route without generateStaticParams
+    // as dynamic (ƒ): it renders per request and is never full-page cached,
+    // even with a revalidate export.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2358-L2408
+    for (const isRscRequest of [false, true]) {
+      it(`never caches a dynamic-segment route without generateStaticParams (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+        const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          isProduction: true,
+          isRscRequest,
+          isrGet,
+          isrSet,
+          revalidateSeconds: 60,
+          route: createDynamicSegmentRoute(),
+        });
+
+        const { response } = await dispatchAndDrain(options);
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+        expect(response.headers.get("x-vinext-cache")).toBeNull();
+        expect(isrGet).not.toHaveBeenCalled();
+        expect(isrSet).not.toHaveBeenCalled();
+      });
+    }
+
+    it("caches a dynamic-segment route whose generateStaticParams sits at its last dynamic segment", async () => {
+      const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        hasGenerateStaticParams: true,
+        isProduction: true,
+        isrGet,
+        isrSet,
+        revalidateSeconds: 60,
+        route: createDynamicSegmentRoute(),
+      });
+
+      const { response } = await dispatchAndDrain(options);
+
+      expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(isrGet).toHaveBeenCalledWith("html:/posts/hello");
+      expect(isrSet.mock.calls.map(([key]) => key)).toContain("html:/posts/hello");
+      expect(isrSet.mock.calls[0]![2].cacheControl.revalidate).toBe(60);
+    });
+
+    it("keeps the revalidate = false default from a parent generateStaticParams in a cacheComponents build", async () => {
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        hasAnyGenerateStaticParams: true,
+        hasGenerateStaticParams: false,
+        isProduction: true,
+        isrSet,
+        pprRuntime: appPagePprRuntime,
+        route: createDynamicSegmentRoute(),
+      });
+
+      await dispatchAndDrain(options);
+
+      const htmlWrite = isrSet.mock.calls.find(([key]) => key === "html:/posts/hello");
+      expect(htmlWrite?.[2].cacheControl.revalidate).toBe(Infinity);
+    });
+
+    for (const dynamicConfig of ["force-static", "error"]) {
+      it(`caches a dynamic-segment route with dynamic = "${dynamicConfig}"`, async () => {
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          dynamicConfig,
+          isProduction: true,
+          isrSet,
+          route: createDynamicSegmentRoute(),
+        });
+
+        await dispatchAndDrain(options);
+
+        expect(isrSet.mock.calls.map(([key]) => key)).toContain("html:/posts/hello");
+      });
+    }
+
+    // Next.js disables static generation for edge-runtime pages whatever their
+    // segments or config.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2333-L2340
+    for (const [name, overrides] of [
+      ["without dynamic segments", {}],
+      ["with revalidate = 60", { revalidateSeconds: 60 }],
+      [
+        "with generateStaticParams",
+        { hasGenerateStaticParams: true, route: createDynamicSegmentRoute() },
+      ],
+      ["with force-static", { dynamicConfig: "force-static" }],
+    ] satisfies [string, CreateDispatchOptionsOverrides][]) {
+      it(`never caches an edge-runtime page ${name}`, async () => {
+        const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          isProduction: true,
+          isStaticGenerationEdgeRuntime: true,
+          isrGet,
+          isrSet,
+          ...overrides,
+        });
+
+        const { response } = await dispatchAndDrain(options);
+
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+        expect(isrGet).not.toHaveBeenCalled();
+        expect(isrSet).not.toHaveBeenCalled();
+      });
+    }
+
+    for (const fallback of ["rendered", "plain"] as const) {
+      it(`never caches a ${fallback} generated-param miss of an edge-runtime page`, async () => {
+        const middlewareCacheControl = "public, max-age=5";
+        const dispatch = async (middlewareHeaders?: Headers) => {
+          const { options } = createDispatchOptions({
+            async generateStaticParams() {
+              return [{ slug: "known" }];
+            },
+            hasGenerateStaticParams: true,
+            isProduction: true,
+            isStaticGenerationEdgeRuntime: true,
+            route: createDynamicSegmentRoute(),
+          });
+          options.renderHttpAccessFallbackPage = async () =>
+            fallback === "rendered"
+              ? new Response("not found", {
+                  headers: middlewareHeaders ?? undefined,
+                  status: 404,
+                })
+              : null;
+          if (middlewareHeaders) options.middlewareContext.headers = middlewareHeaders;
+          return dispatchAppPage({ ...options, dynamicParamsConfig: false });
+        };
+
+        const response = await dispatch();
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+
+        // Middleware's own cache policy still wins.
+        if (fallback === "rendered") {
+          const withMiddlewarePolicy = await dispatch(
+            new Headers({ "cache-control": middlewareCacheControl }),
+          );
+          expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+        }
+      });
+    }
+
+    it("never caches the missing default export response of a non-static page", async () => {
+      const dispatch = async (overrides: CreateDispatchOptionsOverrides) => {
+        const { options: dispatchOptions } = createDispatchOptions({
+          isProduction: true,
+          ...overrides,
+        });
+        return dispatchAppPage({ ...dispatchOptions, hasPageDefaultExport: false });
+      };
+
+      for (const response of [
+        await dispatch({ isStaticGenerationEdgeRuntime: true }),
+        await dispatch({ route: createDynamicSegmentRoute() }),
+      ]) {
+        expect(response.status).toBe(500);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+      }
+
+      // A static page's response keeps no policy of its own.
+      const staticResponse = await dispatch({});
+      expect(staticResponse.status).toBe(500);
+      expect(staticResponse.headers.get("cache-control")).toBeNull();
+    });
+
+    it("renders non-GET requests to a dynamic-segment route without generateStaticParams", async () => {
+      const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        request: new Request("https://example.test/posts/hello", { method: "POST" }),
+        route: createDynamicSegmentRoute(),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(200);
+      expect(buildPageElement).toHaveBeenCalled();
+    });
+
+    it("renders non-GET requests to a dynamic-segment route in a cacheComponents build", async () => {
+      const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        pprRuntime: appPagePprRuntime,
+        request: new Request("https://example.test/posts/hello", { method: "POST" }),
+        route: createDynamicSegmentRoute(),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(200);
+      expect(buildPageElement).toHaveBeenCalled();
+    });
+
+    it("reports a dynamic-segment route without generateStaticParams as uncacheable to adapter admission", async () => {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({
+        isProduction: true,
+        revalidateSeconds: 60,
+        route: createDynamicSegmentRoute(),
+      });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+
+      await expect(state.completion).resolves.toEqual({
+        cacheable: false,
+        reason: "route is not statically generated",
+      });
+    });
+
+    // Next.js defaults every static or SSG route to `revalidate = false`, so a
+    // static page with no revalidate source is served until it's revalidated.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts
+    for (const isRscRequest of [false, true]) {
+      it(`stores a static route with no revalidate source indefinitely (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          isProduction: true,
+          isRscRequest,
+          isrSet,
+          route: createRoute({ pattern: "/about", routeSegments: ["about"] }),
+          cleanPathname: "/about",
+        });
+
+        const { response } = await dispatchAndDrain(options);
+
+        expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+        const key = isRscRequest ? "rsc:/about" : "html:/about";
+        const write = isrSet.mock.calls.find(([writtenKey]) => writtenKey === key);
+        expect(write?.[2].cacheControl.revalidate).toBe(Infinity);
+      });
+    }
+
+    it("reports a static route with no revalidate source as cacheable to adapter admission", async () => {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({ isProduction: true });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+
+      await expect(state.completion).resolves.toMatchObject({
+        cacheable: true,
+        cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      });
+    });
+  });
+});
+
+// The plan's canary and classification tests at the dispatch level. SSR runs
+// through the production handleSsr, candidate useSearchParams() gate included.
+// A stand-in Flight render serializes the whole page payload, awaiting every
+// thenable as Flight does, so a query that reached either output shows in the
+// stored bytes. The stand-in Flight client hands SSR the payload it rendered.
+describe("query-free App page ISR entries", () => {
+  const ROUTE_ID = "route:/posts/[slug]";
+  let productionHandleSsr: typeof import("../packages/vinext/src/server/app-ssr-entry.js").handleSsr;
+
+  beforeAll(async () => {
+    // handleSsr reads plugin-rsc's build-time `import.meta.viteRsc`, which
+    // only the RSC plugin's transform provides. Vitest's import.meta is a
+    // plain object, so give it an empty bootstrap for this block.
+    Object.defineProperty(Object.prototype, "viteRsc", {
+      configurable: true,
+      value: { loadBootstrapScriptContent: async () => "" },
+    });
+    ({ handleSsr: productionHandleSsr } =
+      await import("../packages/vinext/src/server/app-ssr-entry.js"));
+  });
+
+  afterAll(() => {
+    Reflect.deleteProperty(Object.prototype, "viteRsc");
+  });
+
+  function SearchValue(): React.ReactNode {
+    return React.createElement("p", null, `search:${useSearchParams().toString()}`);
+  }
+
+  // A static page whose client component reads useSearchParams() inside Suspense.
+  function suspenseSearchPage(): React.ReactElement {
+    return React.createElement(
+      "main",
+      null,
+      React.createElement(
+        React.Suspense,
+        { fallback: React.createElement("p", null, "search-fallback") },
+        React.createElement(SearchValue),
+      ),
+    );
+  }
+
+  function suspenseSearchPayload(): Readonly<Record<string, React.ReactNode>> {
+    return toDispatchElementRecord({
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [],
+        rootLayoutTreePath: null,
+        routeId: ROUTE_ID,
+      }),
+      [ROUTE_ID]: suspenseSearchPage(),
+    });
+  }
+
+  // Flight awaits a promise and sends its value, so a thenable's resolved
+  // value and its own enumerable properties are both serialized.
+  async function serializeFlightValue(value: unknown, seen: WeakSet<object>): Promise<unknown> {
+    if (typeof value === "function") return `fn:${value.name}`;
+    if (typeof value === "symbol" || typeof value === "bigint") return String(value);
+    if (value === null || typeof value !== "object") return value;
+    if (seen.has(value)) return "[seen]";
+    seen.add(value);
+    if (React.isValidElement(value)) {
+      return {
+        props: await serializeFlightValue(value.props, seen),
+        type: await serializeFlightValue(value.type, seen),
+      };
+    }
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((item) => serializeFlightValue(item, seen)));
+    }
+    const record = Object.fromEntries(
+      await Promise.all(
+        Object.keys(value).map(async (key) => [
+          key,
+          await serializeFlightValue(Reflect.get(value, key), seen),
+        ]),
+      ),
+    );
+    if (isPromiseLike(value)) {
+      return { resolved: await serializeFlightValue(await value, seen), thenable: record };
+    }
+    return record;
+  }
+
+  function serializePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
+    ssrFlight.payload = payload;
+    return new ReadableStream({
+      async start(controller) {
+        const json = JSON.stringify(await serializeFlightValue(payload, new WeakSet()));
+        controller.enqueue(new TextEncoder().encode(json));
+        controller.close();
+      },
+    });
+  }
+
+  function createProductionSsrHandler(
+    renders: (boolean | undefined)[],
+  ): DispatchOptions["loadSsrHandler"] {
+    return async () => ({
+      handleSsr(rscStream, navigationContext, fontData, ssrOptions) {
+        renders.push(ssrOptions?.isCacheCandidate);
+        return productionHandleSsr(
+          rscStream,
+          navigationContext as NavigationContext,
+          { ...fontData, preloads: [...fontData.preloads] },
+          ssrOptions,
+        );
+      },
+    });
+  }
+
+  function createCache() {
+    const cache = new Map<string, ISRCacheEntry>();
+    const isrGet = vi.fn<DispatchOptions["isrGet"]>(async (key) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data, policy) => {
+      cache.set(key, {
+        isStale: false,
+        value: { cacheControl: policy.cacheControl, lastModified: Date.now(), value: data },
+      });
+    });
+    return { cache, isrGet, isrSet };
+  }
+
+  // Dispatches one production request and waits for its cache writes.
+  async function dispatchQuery(
+    search: string,
+    overrides: CreateDispatchOptionsOverrides,
+    executionContext: ExecutionContextLike = { waitUntil() {} },
+    onResponse?: () => void,
+  ) {
+    const waitUntilPromises: Promise<unknown>[] = [];
+    Reflect.set(executionContext, "waitUntil", (promise: Promise<unknown>) => {
+      waitUntilPromises.push(promise);
+    });
+    let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => suspenseSearchPayload(),
+      // A scanned /posts/[slug] route is dynamic, so it's a cache candidate
+      // only through generateStaticParams.
+      generateStaticParams: async () => [{ slug: "hello" }],
+      getNavigationContext: () => navigationContext,
+      isProduction: true,
+      renderToReadableStream: serializePayloadToStream,
+      // The request targets the pathname being dispatched, so a literal-route
+      // override gets a matching request.
+      request: new Request(
+        `https://example.test${overrides.cleanPathname ?? "/posts/hello"}${search}`,
+      ),
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+      searchParams: new URLSearchParams(search),
+      setNavigationContext(next) {
+        navigationContext = next;
+      },
+      ...overrides,
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({
+        executionContext,
+        headersContext: headersContextFromRequest(options.request),
+      }),
+      () => runWithExecutionContext(executionContext, () => dispatchAppPage(options)),
+    );
+    onResponse?.();
+    const body = await response.text();
+    await Promise.all(waitUntilPromises.splice(0));
+    return { body, response };
+  }
+
+  function expectEntryFreeOf(entry: ISRCacheEntry | undefined, canary: string): void {
+    const value = entry?.value.value;
+    if (!isCachedAppPageValue(value)) throw new Error("Expected an APP_PAGE cache entry");
+    const rscText = value.rscData ? new TextDecoder().decode(value.rscData) : "";
+    expect(value.html + rscText).not.toBe("");
+    expect(value.html).not.toContain(canary);
+    expect(rscText).not.toContain(canary);
+    expect(JSON.stringify(value.headers ?? {})).not.toContain(canary);
+  }
+
+  // A client component's notFound() rejects the shell during SSR itself.
+  // generateMetadata() threw the same digest in the RSC render, but runs only
+  // there, so the shell's 404 is the page's and is stored, as in Next.js.
+  it("stores a client component's SSR notFound() when generateMetadata() also threw a 404", async () => {
+    const { cache, isrGet, isrSet } = createCache();
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    function ClientNotFound(): React.ReactNode {
+      notFound();
+    }
+
+    const { response } = await dispatchQuery("", {
+      buildPageElement: async () =>
+        toDispatchElementRecord({
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            layoutIds: [],
+            rootLayoutTreePath: null,
+            routeId: ROUTE_ID,
+          }),
+          [ROUTE_ID]: React.createElement("main", null, React.createElement(ClientNotFound)),
+        }),
+      isrGet,
+      isrSet,
+      loadSsrHandler: createProductionSsrHandler([]),
+      renderToReadableStream(payload, { onError }) {
+        onError(
+          Object.assign(new Error(digest), {
+            digest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return serializePayloadToStream(payload);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    const stored = cache.get("html:/posts/hello")?.value.value as CachedAppPageValue | undefined;
+    expect(stored?.status).toBe(404);
+  });
+
+  // Ported from Next.js app-static.test.ts:4622-4700 and the plan's canary
+  // test: useSearchParams() inside Suspense keeps the page cached with the
+  // fallback, and the stored entry never carries the query. A cacheComponents
+  // build prerenders the same page as fully static, so it shares the rule,
+  // and also stores a dynamic route without generateStaticParams.
+  it.each([
+    { build: "a standard build", generateStaticParams: undefined, pprRuntime: undefined },
+    {
+      build: "a cacheComponents build",
+      generateStaticParams: undefined,
+      pprRuntime: appPagePprRuntime,
+    },
+    {
+      build: "a cacheComponents build without generateStaticParams",
+      generateStaticParams: null,
+      pprRuntime: appPagePprRuntime,
+    },
+  ])(
+    "keeps a canary query out of a static Suspense useSearchParams() page's HTML and RSC entries in $build",
+    async ({ generateStaticParams, pprRuntime }) => {
+      const canary = crypto.randomUUID();
+      const { cache, isrGet, isrSet } = createCache();
+      const renders: (boolean | undefined)[] = [];
+      const overrides = {
+        // Without generateStaticParams, the route's own lifetime makes it storable.
+        ...(generateStaticParams === null ? { generateStaticParams, revalidateSeconds: 60 } : {}),
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler(renders),
+        pprRuntime,
+      };
+
+      const miss = await dispatchQuery(`?canary=${canary}`, overrides);
+
+      expect(renders).toEqual([true]);
+      expect(miss.response.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(miss.body).toContain("<p>search-fallback</p>");
+      expect(miss.body).not.toContain(canary);
+      expect([...cache.keys()].sort()).toEqual(["html:/posts/hello", "rsc:/posts/hello"]);
+      expectEntryFreeOf(cache.get("html:/posts/hello"), canary);
+      expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
+
+      const stored = cache.get("html:/posts/hello")!.value.value as CachedAppPageValue;
+      const storedRsc = new TextDecoder().decode(
+        (cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue).rscData,
+      );
+      for (const search of ["", "?other=1"]) {
+        const html = await dispatchQuery(search, overrides);
+        expect(html.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+        expect(html.body, search).toBe(stored.html);
+        const rsc = await dispatchQuery(search, { ...overrides, isRscRequest: true });
+        expect(rsc.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+        expect(rsc.body, search).toBe(storedRsc);
+      }
+      expect(renders).toEqual([true]);
+      expect(isrSet).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  // A client page that reads searchParams, built by the production element
+  // builder from the query the dispatcher hands it. An RSC-only render never
+  // runs SSR, so the builder is the only route for the query into the payload.
+  const ClientSearchPage = Object.assign(
+    function ClientSearchPage(props: Record<string, unknown>) {
+      const searchParams = props.searchParams as Promise<Record<string, string>>;
+      return React.createElement("p", null, `search:${JSON.stringify(React.use(searchParams))}`);
+    },
+    { $$typeof: Symbol.for("react.client.reference") },
+  );
+
+  const clientSearchPageOverrides = {
+    buildPageElement: ((_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: true,
+          mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request(`https://example.test/client?${searchParams}`),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          page: { default: ClientSearchPage },
+          pattern: "/client",
+          routeSegments: ["client"],
+        },
+        routePath: "/client",
+      }).then(toDispatchElementRecord)) satisfies DispatchOptions["buildPageElement"],
+    cleanPathname: "/client",
+    // A literal page without generateStaticParams, as the fixture exports none.
+    generateStaticParams: null,
+    // A literal route has no params.
+    params: {},
+    route: createRoute({ pattern: "/client", routeSegments: ["client"] }),
+  };
+
+  it("keeps a canary query out of an RSC-only miss's entry and serves it to every query", async () => {
+    const canary = crypto.randomUUID();
+    const { cache, isrGet, isrSet } = createCache();
+    const overrides = { ...clientSearchPageOverrides, isRscRequest: true, isrGet, isrSet };
+
+    const miss = await dispatchQuery(`?canary=${canary}`, overrides);
+
+    // A query-bearing RSC miss keeps its cache state provisional.
+    expect(miss.response.headers.get("x-vinext-cache")).toBeNull();
+    expect(miss.body).toContain("ClientPageRoot");
+    expect(miss.body).not.toContain(canary);
+    expect([...cache.keys()]).toEqual(["rsc:/client"]);
+    expectEntryFreeOf(cache.get("rsc:/client"), canary);
+    for (const search of ["", "?other=1"]) {
+      const hit = await dispatchQuery(search, overrides);
+      expect(hit.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+      expect(hit.body, search).toBe(miss.body);
+    }
+    expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
+  // An RSC-only miss resolves its status by rendering the document's shell
+  // from the completed payload. The payload can complete after the response
+  // has left and the request's context is cleared, so the shell pass must
+  // carry its own navigation context.
+  it.each([
+    { name: "a notFound() that rejects the shell with its status", status: 404, suspense: false },
+    { name: "a notFound() inside Suspense as a 200", status: 200, suspense: true },
+  ])("stores $name after the request context is cleared", async ({ status, suspense }) => {
+    const { cache, isrGet, isrSet } = createCache();
+    let navigation: NavigationContext | null = null;
+    let cleared = false;
+    const shellRenders: { cleared: boolean; pathname: string }[] = [];
+    function NotFoundPage(): React.ReactNode {
+      shellRenders.push({ cleared, pathname: usePathname() });
+      notFound();
+    }
+    const page = React.createElement(NotFoundPage);
+    let releasePayload!: () => void;
+    const payloadReleased = new Promise<void>((resolve) => {
+      releasePayload = resolve;
+    });
+
+    const { body, response } = await dispatchQuery(
+      "",
+      {
+        buildPageElement: async () =>
+          toDispatchElementRecord({
+            ...AppElementsWire.createMetadataEntries({
+              interceptionContext: null,
+              layoutIds: [],
+              rootLayoutTreePath: null,
+              routeId: ROUTE_ID,
+            }),
+            [ROUTE_ID]: suspense
+              ? React.createElement(
+                  React.Suspense,
+                  { fallback: React.createElement("p", null, "loading") },
+                  page,
+                )
+              : page,
+          }),
+        clearRequestContext() {
+          setHeadersContext(null);
+          navigation = null;
+        },
+        getNavigationContext: () => navigation,
+        isRscRequest: true,
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler([]),
+        renderToReadableStream(payload, { onError }) {
+          // The stand-in Flight render doesn't run components, so report the
+          // page's notFound() as Flight would.
+          try {
+            notFound();
+          } catch (error) {
+            onError(error, undefined, undefined);
+          }
+          return serializePayloadToStream(payload).pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({ flush: () => payloadReleased }),
+          );
+        },
+        setNavigationContext(next) {
+          navigation = next;
+        },
+      },
+      undefined,
+      () => {
+        // The response has left: clear the request's context before the
+        // payload completes.
+        setHeadersContext(null);
+        navigation = null;
+        cleared = true;
+        releasePayload();
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(body).not.toBe("");
+    // React renders a Suspense boundary's failed content again before
+    // falling back to the client.
+    expect(shellRenders.length).toBeGreaterThan(0);
+    expect(shellRenders).toEqual(
+      shellRenders.map(() => ({ cleared: true, pathname: "/posts/hello" })),
+    );
+    expect([...cache.keys()]).toEqual(["rsc:/posts/hello"]);
+    const stored = cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue;
+    expect(stored.status).toBe(status);
+    expect(new TextDecoder().decode(stored.rscData)).toBe(body);
+  });
+
+  // A dynamic-segment route without generateStaticParams is ƒ: it renders
+  // per request, so useSearchParams() inside Suspense server-renders the real
+  // query, and nothing is stored.
+  it("renders real useSearchParams() values inside Suspense on a route that isn't static", async () => {
+    const { isrGet, isrSet } = createCache();
+    const renders: (boolean | undefined)[] = [];
+    for (const revalidateSeconds of [null, 60]) {
+      // A dynamic route without generateStaticParams isn't static or SSG.
+      const { body, response } = await dispatchQuery("?q=secret", {
+        generateStaticParams: null,
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler(renders),
+        revalidateSeconds,
+      });
+
+      expect(body).toContain("search:q=secret");
+      expect(body).not.toContain("<p>search-fallback</p>");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    }
+    expect(renders).toEqual([false, false]);
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  // Row 7a residual: an RSC-only render never runs SSR, so a client page's
+  // use(searchParams) never runs and the render stays static. Core stores the
+  // RSC entry, which carries no query. Next.js prerenders the HTML first and
+  // marks such a page dynamic.
+  it("stores a query-free RSC entry for an RSC-only request to a client page that reads searchParams (row 7a residual)", async () => {
+    const { cache, isrGet, isrSet } = createCache();
+
+    const { body } = await dispatchQuery("?q=secret", {
+      ...clientSearchPageOverrides,
+      isRscRequest: true,
+      isrGet,
+      isrSet,
+    });
+
+    expect(body).toContain("ClientPageRoot");
+    expect(body).not.toContain("secret");
+    expect([...cache.keys()]).toEqual(["rsc:/client"]);
+    expectEntryFreeOf(cache.get("rsc:/client"), "secret");
+  });
+
+  // A Workers Cache runtime-check path keeps candidate mode, and its dispatch
+  // keeps the query, so each render sees the request's own query.
+  it("renders a runtime-check Workers Cache path in candidate mode with the request's query", async () => {
+    const manifest = parseCacheabilityManifest(
+      JSON.stringify({
+        buildId: "build-a",
+        routes: {
+          [cacheabilityManifestRouteKey("app-page", "/posts/[slug]")]: {
+            kind: "app-page",
+            pattern: "/posts/[slug]",
+            runtimePaths: ["/posts/hello"],
+            state: "runtime-check",
+          },
+        },
+        version: 1,
+      }),
+      "build-a",
+    );
+    const renders: (boolean | undefined)[] = [];
+    const pageQueries: (string | null)[] = [];
+    for (const q of ["1", "2"]) {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        admission: {
+          manifest,
+          policy: "manifest",
+          representation: "html",
+          routePathname: "/posts/hello",
+        },
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      await dispatchQuery(
+        `?q=${q}`,
+        {
+          async buildPageElement(_route, _params, _opts, searchParams) {
+            pageQueries.push(searchParams.get("q"));
+            return suspenseSearchPayload();
+          },
+          loadSsrHandler: createProductionSsrHandler(renders),
+          revalidateSeconds: 60,
+        },
+        context,
+      );
+    }
+
+    expect(renders).toEqual([true, true]);
+    expect(pageQueries).toEqual(["1", "2"]);
+  });
+
+  // A `[]` generateStaticParams route is SSG with the revalidate = false
+  // default, so one HTML miss stores both representations, as Next.js does.
+  it("writes rsc: alongside html: on an HTML miss of an empty generateStaticParams route", async () => {
+    const { cache, isrGet, isrSet } = createCache();
+
+    const { response } = await dispatchQuery("", {
+      generateStaticParams: async () => [],
+      isrGet,
+      isrSet,
+      loadSsrHandler: createProductionSsrHandler([]),
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(
+      Object.fromEntries(
+        isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl.revalidate]),
+      ),
+    ).toEqual({ "html:/posts/hello": Infinity, "rsc:/posts/hello": Infinity });
+    expect(cache.size).toBe(2);
+  });
+
+  // Next.js stores and sends min(route revalidate, cacheLife). A page with a
+  // cacheLife of 60 s under the revalidate = false default, on a literal route
+  // and on a `[]` generateStaticParams route (Next.js /uc-gsp).
+  describe("with cacheLife({ revalidate: 60 })", () => {
+    const routes = [
+      [
+        "a literal route",
+        "/about",
+        {
+          cleanPathname: "/about",
+          generateStaticParams: null,
+          params: {},
+          route: createRoute({ pattern: "/about", routeSegments: ["about"] }),
+        },
+      ],
+      [
+        "an empty generateStaticParams route",
+        "/posts/hello",
+        {
+          generateStaticParams: async () => [],
+          route: createRoute({ isDynamic: true, params: ["slug"] }),
+        },
+      ],
+    ] as const;
+
+    // Page code runs while Flight renders, so this stand-in calls cacheLife()
+    // after the RSC stream's first chunk, once dispatch has returned the
+    // response's headers, in the render's request context.
+    function createDeferredCacheLifeRender() {
+      const events: string[] = [];
+      let resolveHeaders!: () => void;
+      const headersSent = new Promise<void>((resolve) => {
+        resolveHeaders = resolve;
+      });
+      const renderToReadableStream: DispatchOptions["renderToReadableStream"] = (payload) => {
+        ssrFlight.payload = payload;
+        events.push("stream");
+        return new ReadableStream({
+          async start(controller) {
+            const json = JSON.stringify(await serializeFlightValue(payload, new WeakSet()));
+            controller.enqueue(new TextEncoder().encode(json));
+            await headersSent;
+            cacheLife({ revalidate: 60 });
+            events.push("cacheLife");
+            controller.close();
+          },
+        });
+      };
+      return {
+        events,
+        onResponse: () => {
+          events.push("headers");
+          resolveHeaders();
+        },
+        overrides: {
+          buildPageElement: async () => suspenseSearchPayload(),
+          renderToReadableStream,
+        },
+      };
+    }
+
+    for (const [label, pathname, routeOverrides] of routes) {
+      it(`sends s-maxage=60 on a core HIT (${label})`, async () => {
+        const { isrGet, isrSet } = createCache();
+        const render = createDeferredCacheLifeRender();
+        const overrides = {
+          ...routeOverrides,
+          ...render.overrides,
+          isrGet,
+          isrSet,
+          loadSsrHandler: createProductionSsrHandler([]),
+        };
+        const request = () => new Request(`https://example.test${pathname}`);
+
+        await dispatchQuery("", { ...overrides, request: request() }, undefined, render.onResponse);
+        expect(render.events).toEqual(["stream", "headers", "cacheLife"]);
+        expect(
+          Object.fromEntries(
+            isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl.revalidate]),
+          ),
+        ).toEqual({ [`html:${pathname}`]: 60, [`rsc:${pathname}`]: 60 });
+
+        for (const isRscRequest of [false, true]) {
+          const hit = await dispatchQuery("", { ...overrides, isRscRequest, request: request() });
+          expect(hit.response.headers.get("x-vinext-cache")).toBe("HIT");
+          expect(hit.response.headers.get("cache-control")).toMatch(/^s-maxage=60(,|$)/);
+        }
+      });
+
+      it(`sends Cloudflare-CDN-Cache-Control max-age=60 with browser max-age=0 from Workers Cache (${label})`, async () => {
+        setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+        try {
+          for (const isRscRequest of [false, true]) {
+            const request = new Request(`https://example.test${pathname}`, {
+              headers: isRscRequest
+                ? { Accept: "text/x-component", RSC: "1" }
+                : { Accept: "text/html" },
+            });
+            const context = createWorkerCacheabilityAdmissionContext(
+              { waitUntil() {} },
+              request,
+              null,
+              "build-a",
+              true,
+              undefined,
+              undefined,
+              undefined,
+              { applyCompletedResponsePolicy: true },
+            );
+            const render = createDeferredCacheLifeRender();
+            let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
+            const { options } = createDispatchOptions({
+              ...routeOverrides,
+              ...render.overrides,
+              getNavigationContext: () => navigationContext,
+              isProduction: true,
+              isRscRequest,
+              loadSsrHandler: createProductionSsrHandler([]),
+              request,
+              setNavigationContext(next) {
+                navigationContext = next;
+              },
+            });
+            const response = await runWithRequestContext(
+              createRequestContext({
+                executionContext: context,
+                headersContext: headersContextFromRequest(request),
+              }),
+              async () => {
+                const dispatched = await runWithExecutionContext(context, () =>
+                  dispatchAppPage(options),
+                );
+                render.onResponse();
+                return finalizeWorkerCacheabilityResponse(dispatched, context);
+              },
+            );
+            await response.text();
+
+            const representation = isRscRequest ? "RSC" : "HTML";
+            expect(render.events, representation).toEqual(["stream", "headers", "cacheLife"]);
+            expect(response.headers.get("cache-control"), representation).toBe(
+              "private, max-age=0, must-revalidate",
+            );
+            expect(response.headers.get("cloudflare-cdn-cache-control"), representation).toMatch(
+              /^public, max-age=60(,|$)/,
+            );
+          }
+        } finally {
+          setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+        }
+      });
+    }
   });
 });

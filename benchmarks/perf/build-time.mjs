@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { reportPerformanceSample } from "./report-sample.mjs";
@@ -44,12 +44,14 @@ async function cleanBuildOutput() {
 function buildCommand() {
   let command;
   if (framework === "vinext") {
-    const vpPath = profiling
-      ? join(projectDir, "node_modules/vite-plus/bin/vp")
-      : execFileSync("which", ["vp"], { encoding: "utf8" }).trim();
+    // Run the checkout's own vite-plus entry, the one a global `vp` delegates
+    // to, so the global CLI version is not an unrecorded input to every sample.
+    // bin/vp would also enable Node's compile cache, which the base and head
+    // benchmark users cannot share.
+    const vpPath = join(projectDir, "node_modules/vite-plus/dist/bin.js");
     command = {
-      command: profiling ? globalThis.process.execPath : vpPath,
-      args: profiling ? [vpPath, "build"] : ["build"],
+      command: globalThis.process.execPath,
+      args: [vpPath, "build"],
     };
   } else {
     command = {

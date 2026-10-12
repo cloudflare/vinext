@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   isBenignAssetImportError,
+  isCancelledRequestBodyEnqueueError,
   isSocketErrorBackstopInstalled,
   peerDisconnectCode,
 } from "../packages/vinext/src/server/socket-error-backstop.js";
@@ -107,6 +108,58 @@ describe("isBenignAssetImportError", () => {
     expect(isBenignAssetImportError(undefined)).toBe(false);
     expect(isBenignAssetImportError("ERR_UNKNOWN_FILE_EXTENSION")).toBe(false);
     expect(isBenignAssetImportError(42)).toBe(false);
+  });
+});
+
+describe("isCancelledRequestBodyEnqueueError", () => {
+  function invalidStateError(message: string, frame: string) {
+    const err = Object.assign(new TypeError(`Invalid state: ${message}`), {
+      code: "ERR_INVALID_STATE",
+    });
+    err.stack = [
+      `TypeError [ERR_INVALID_STATE]: Invalid state: ${message}`,
+      "    at ReadableStreamDefaultController.enqueue (node:internal/webstreams/readablestream:1102:13)",
+      frame,
+      "    at IncomingMessage.emit (node:events:509:28)",
+      "    at Readable.read (node:internal/streams/readable:784:10)",
+      "    at flow (node:internal/streams/readable:1290:53)",
+    ].join("\n");
+    return err;
+  }
+
+  it("matches the Readable.toWeb() adapter enqueueing after cancel", () => {
+    expect(
+      isCancelledRequestBodyEnqueueError(
+        invalidStateError(
+          "Controller is already closed",
+          "    at IncomingMessage.onData (node:internal/webstreams/adapters:513:16)",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("does NOT absorb closed-controller errors from other call sites", () => {
+    expect(
+      isCancelledRequestBodyEnqueueError(
+        invalidStateError(
+          "Controller is already closed",
+          "    at Object.onData (file:///app/server/stream.js:12:3)",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isCancelledRequestBodyEnqueueError(
+        invalidStateError(
+          "ReadableStream is locked",
+          "    at IncomingMessage.onData (node:internal/webstreams/adapters:513:16)",
+        ),
+      ),
+    ).toBe(false);
+    expect(isCancelledRequestBodyEnqueueError(new Error("Controller is already closed"))).toBe(
+      false,
+    );
+    expect(isCancelledRequestBodyEnqueueError(null)).toBe(false);
+    expect(isCancelledRequestBodyEnqueueError("ERR_INVALID_STATE")).toBe(false);
   });
 });
 

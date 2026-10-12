@@ -69,27 +69,22 @@ describe("createAppPrerenderStaticParamsResolver", () => {
     ]);
   });
 
-  it("surfaces malformed results during CDN warm path discovery", async () => {
-    const previous = process.env.__VINEXT_PRERENDER_PATH_DISCOVERY;
-    process.env.__VINEXT_PRERENDER_PATH_DISCOVERY = "1";
-    try {
-      const nonArray = createAppPrerenderStaticParamsResolver([() => null]);
-      await expect(nonArray!({ params: {} })).rejects.toThrow(
-        "generateStaticParams must return an array",
-      );
+  // Next.js rejects malformed output in every mode, not only during CDN warm
+  // path discovery (build/static-paths/app.ts callGenerateStaticParams).
+  it("surfaces malformed results", async () => {
+    const nonArray = createAppPrerenderStaticParamsResolver([() => null]);
+    await expect(nonArray!({ params: {} })).rejects.toThrow(
+      "generateStaticParams must return an array",
+    );
 
-      const nonObjectEntry = createAppPrerenderStaticParamsResolver([() => ["slug"]]);
-      await expect(nonObjectEntry!({ params: {} })).rejects.toThrow(
-        "generateStaticParams must return an array of objects",
-      );
+    const nonObjectEntry = createAppPrerenderStaticParamsResolver([() => ["slug"]]);
+    await expect(nonObjectEntry!({ params: {} })).rejects.toThrow(
+      "generateStaticParams must return an array of objects",
+    );
 
-      const nonPlainEntry = createAppPrerenderStaticParamsResolver([() => [new Date(0)]]);
-      await expect(nonPlainEntry!({ params: {} })).rejects.toThrow(
-        "generateStaticParams must return an array of objects",
-      );
-    } finally {
-      if (previous === undefined) delete process.env.__VINEXT_PRERENDER_PATH_DISCOVERY;
-      else process.env.__VINEXT_PRERENDER_PATH_DISCOVERY = previous;
-    }
+    const nonPlainEntry = createAppPrerenderStaticParamsResolver([() => [new Date(0)]]);
+    await expect(nonPlainEntry!({ params: {} })).rejects.toThrow(
+      "generateStaticParams must return an array of objects",
+    );
   });
 });

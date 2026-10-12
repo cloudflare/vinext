@@ -69,7 +69,7 @@ imported from \node_modules.pnpm\validator@13.15.26\node_modules\validator\es\li
 
 **Symptom:** Build succeeds but deploy fails with worker size errors.
 **Cause:** Bundle too large for Workers free tier (1 MB) or paid tier (10 MB).
-**Fix:** Check for large dependencies. Use `vinext build` + inspect output size. Consider code splitting or moving large deps to external services.
+**Fix:** Check for large dependencies. Use `npx vite build` and inspect output size. Consider code splitting or moving large deps to external services.
 
 **Symptom:** Image optimization returns 404 or broken images.
 **Cause:** Missing Cloudflare Images binding.
@@ -83,7 +83,7 @@ imported from \node_modules.pnpm\validator@13.15.26\node_modules\validator\es\li
 
 After migration, confirm:
 
-- [ ] `vinext dev` starts without errors
+- [ ] `npx vite dev` starts without errors
 - [ ] Home page renders correctly
 - [ ] Dynamic routes resolve (e.g., `/posts/[id]`)
 - [ ] API routes respond (Pages Router) or route handlers respond (App Router)

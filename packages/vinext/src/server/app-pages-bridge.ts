@@ -48,7 +48,6 @@ type RenderPagesFallbackDependencies = {
     requestHeaders: Headers,
     middlewareRequestHeaders: Headers,
   ) => Headers | null;
-  decodePathParams: (pathname: string) => string;
   applyRouteHandlerMiddlewareContext: (
     response: Response,
     middlewareContext: AppMiddlewareContext,
@@ -79,6 +78,7 @@ type RenderPagesFallbackOptions = {
   initialResponseHeaders?: Headers;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppMiddlewareContext;
+  /** Raw (still percent-encoded) Pages route URL; defaults to `url.pathname`. */
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
@@ -132,7 +132,6 @@ export async function renderPagesFallback(
   const {
     loadPagesEntry,
     buildRequestHeaders,
-    decodePathParams,
     applyRouteHandlerMiddlewareContext,
     getDraftModeCookieHeader,
   } = dependencies;
@@ -153,7 +152,11 @@ export async function renderPagesFallback(
   const queryIndex = pathname.indexOf("?");
   const pagesPathname = queryIndex === -1 ? pathname : pathname.slice(0, queryIndex);
   const pagesSearch = queryIndex === -1 ? url.search || "" : pathname.slice(queryIndex);
-  const pagesUrl = decodePathParams(pagesPathname) + pagesSearch;
+  // `pathname` is the raw Pages route identity, as in the Pages-only pipeline:
+  // the route trie decodes dynamic captures once. Decoding it here would let
+  // `/%66r/...` select the `fr` locale (and `/%61bout` select `/about`) after
+  // middleware matched the encoded spelling, and decode dynamic params twice.
+  const pagesUrl = pagesPathname + pagesSearch;
   if (pagesPathname.startsWith("/api/") || pagesPathname === "/api") {
     if (typeof pagesEntry.handleApiRoute !== "function") return null;
     const hasApiMatcher = typeof pagesEntry.matchApiRoute === "function";
@@ -171,11 +174,14 @@ export async function renderPagesFallback(
         return null;
       }
     }
+    if (apiMatch !== null) {
+      beginRouteCacheability("pages-api", apiMatch.route.pattern);
+    }
     const executionContext = getRequestExecutionContext();
     const apiArgs = [
       pagesRequest,
       pagesUrl,
-      undefined,
+      executionContext ?? undefined,
       executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
       executionContext?.hostRuntime ?? "node",
     ] as const;
@@ -216,7 +222,7 @@ export async function renderPagesFallback(
     renderRequest,
     pagesUrl,
     {},
-    undefined,
+    getRequestExecutionContext() ?? undefined,
     middlewareContext.requestHeaders,
   ] as const;
   const pagesRes = isDataRequest

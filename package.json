@@ -16,12 +16,12 @@
     "check:shim-types": "node scripts/check-shim-types.mjs",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
-    "lint": "vp lint",
+    "lint": "OXLINT_TSGOLINT_CHECKER_SCHEDULING=sorted vp lint",
     "test:e2e": "playwright test",
     "knip": "knip",
     "changeset": "changeset",
     "prepare": "vp config",
-    "postinstall": "vp run @cloudflare/workers-response-store#build && vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build && node scripts/typegen-workspaces.mjs"
+    "postinstall": "vp run @cloudflare/workers-response-store#build && vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build && node scripts/typegen-workspaces.mjs && vp run @apps/web#typegen"
   },
   "dependencies": {
     "@mdx-js/react": "catalog:",

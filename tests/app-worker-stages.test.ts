@@ -15,7 +15,9 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_PARAMS_HEADER,
   VINEXT_PRERENDER_READINESS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { setFrameworkRequestRoute } from "../packages/vinext/src/server/request-tracing.js";
@@ -111,6 +113,31 @@ describe("App Worker response stage", () => {
     );
   });
 
+  // Next.js restores the work store before regenerating a cache entry.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("replays a targeted cache function in the work store scope", async () => {
+    const { isInsideWorkStoreScope } =
+      await import("../packages/vinext/src/shims/internal/work-store-scope.js");
+    let inScope: boolean | undefined;
+    stages.invokeCacheFunction.mockImplementation(async () => {
+      inScope = isInsideWorkStoreScope();
+    });
+
+    await invokeCacheFunction(
+      {
+        encryptedArgs: "[]",
+        referenceId: "test#cached",
+        rootParams: {},
+        softTags: [],
+      },
+      undefined,
+      undefined,
+      async () => new Response(),
+    );
+
+    expect(inScope).toBe(true);
+  });
+
   it("validates readiness from inside the App response stage", async () => {
     const validateRequest = vi.fn(() => null);
     const adapter: CdnCacheAdapter = {
@@ -138,6 +165,7 @@ describe("App Worker response stage", () => {
         resolvedRoutePathname: "/__vinext/prerender/readiness",
       },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: true,
@@ -211,6 +239,57 @@ describe("App Worker response stage", () => {
     );
 
     expect(response.headers.get("x-vinext-app-stage-post-config-link")).toBe("1");
+  });
+
+  it("drops the request-scoped headers of a shared App page RSC response", async () => {
+    const pageStage = {
+      ...notFoundStage,
+      bypassInterceptionContextCache: false,
+      cachePathname: "/missing",
+      canUseCanonicalLoadingShell: false,
+      interceptionContext: null,
+      interceptionId: null,
+      kind: "app-page" as const,
+      matchKind: "request" as const,
+      params: {},
+      routePattern: "/missing",
+      routePathname: "/missing",
+    } satisfies AppWorkerResponseStageProps;
+    const rendered = () =>
+      new Response("rsc", {
+        headers: {
+          [VINEXT_PARAMS_HEADER]: encodeURIComponent("{}"),
+          [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/missing?q=1"),
+        },
+      });
+    const render = (props: AppWorkerResponseStageProps, cache: "bypass" | "shared") => {
+      stages.renderResponse.mockImplementationOnce(async () => rendered());
+      return handleResponseStage(
+        new Request("https://example.com/missing?q=1"),
+        undefined,
+        undefined,
+        props,
+        async () => new Response("request-stage"),
+        { cache },
+      );
+    };
+
+    const shared = await render({ ...pageStage, isRscRequest: true }, "shared");
+    expect(shared.headers.has(VINEXT_PARAMS_HEADER)).toBe(false);
+    expect(shared.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(false);
+    await expect(shared.text()).resolves.toBe("rsc");
+
+    // Bypassed responses reach no shared cache, and HTML responses and
+    // not-found renders are not recomposed by the request stage.
+    for (const response of [
+      await render({ ...pageStage, isRscRequest: true }, "bypass"),
+      await render(pageStage, "shared"),
+      await render({ ...notFoundStage, isRscRequest: true }, "shared"),
+    ]) {
+      expect(response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+        encodeURIComponent("/missing?q=1"),
+      );
+    }
   });
 
   it("rejects matched-stage payloads missing interception cache-safety fields", () => {
@@ -307,6 +386,7 @@ describe("App Worker response stage", () => {
       buildId: null,
       cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/" },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: false,
@@ -317,9 +397,11 @@ describe("App Worker response stage", () => {
       trustedPrerenderState: null,
     } satisfies AppWorkerResponseStageProps;
     const { staticFileSignalToken: _token, ...withoutToken } = fullStage;
+    const { headRequest: _headRequest, ...withoutHeadRequest } = fullStage;
 
     expect(isAppWorkerResponseStageProps(fullStage)).toBe(true);
     expect(isAppWorkerResponseStageProps(withoutToken)).toBe(false);
+    expect(isAppWorkerResponseStageProps(withoutHeadRequest)).toBe(false);
   });
 
   it("passes only authenticated prerender state into the full response graph", async () => {
@@ -335,6 +417,7 @@ describe("App Worker response stage", () => {
       buildId: null,
       cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/post/hello" },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: false,
@@ -368,6 +451,43 @@ describe("App Worker response stage", () => {
     );
   });
 
+  it("restores a full HEAD request dispatched as GET", async () => {
+    stages.renderFullRequest.mockImplementation(async () => new Response(null));
+    const props = {
+      buildId: null,
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/logo.svg" },
+      draftModeCookie: null,
+      headRequest: true,
+      kind: "app-full-request" as const,
+      middlewareCookieOverlay: null,
+      prerenderDiscovery: false,
+      protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestOrigin: "https://example.com",
+      scriptNonce: null,
+      staticFileSignalToken: "00000000-0000-4000-8000-000000000000",
+      trustedPrerenderState: null,
+    } satisfies AppWorkerResponseStageProps;
+
+    const request = new Request("https://example.com/logo.svg", {
+      headers: { "if-none-match": '"v1"' },
+    });
+    const cf = { country: "NZ" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
+    await handleResponseStage(
+      request,
+      undefined,
+      undefined,
+      props,
+      async () => new Response("request-stage"),
+      { cache: "bypass" },
+    );
+
+    const [renderedRequest] = stages.renderFullRequest.mock.calls[0];
+    expect(renderedRequest.method).toBe("HEAD");
+    expect(renderedRequest.headers.get("if-none-match")).toBe('"v1"');
+    expect(Reflect.get(renderedRequest, "cf")).toBe(cf);
+  });
+
   it("returns a captured route when the full response graph rejects", async () => {
     stages.renderFullRequest.mockImplementation(async () => {
       setFrameworkRequestRoute("/broken/[slug]");
@@ -378,6 +498,7 @@ describe("App Worker response stage", () => {
       buildId: null,
       cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/broken/test" },
       draftModeCookie: null,
+      headRequest: false,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
       prerenderDiscovery: false,

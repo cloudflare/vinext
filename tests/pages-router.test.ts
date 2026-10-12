@@ -15,7 +15,12 @@ import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
-import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import {
+  PAGES_FIXTURE_DIR,
+  buildPagesFixture,
+  expectRepeatedSlashRedirects,
+  startFixtureServer,
+} from "./helpers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 
@@ -699,6 +704,20 @@ describe("Pages Router integration", () => {
     await server?.close();
   });
 
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(baseUrl, { dev: true });
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${baseUrl}/mw-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The trailingSlash: false rule strips the redirect target to the root;
+    // it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
+  });
+
   it("renders the index page with correct HTML", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
@@ -1022,18 +1041,15 @@ describe("Pages Router integration", () => {
   it("sets the default Cache-Control header on getServerSideProps responses", async () => {
     const res = await fetch(`${baseUrl}/ssr`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 
-  // Regression for #1461: when getServerSideProps overrides Cache-Control via
-  // res.setHeader, the user-provided value must reach the final HTTP response
-  // instead of being clobbered by the default.
-  it("preserves res.setHeader Cache-Control overrides set in getServerSideProps", async () => {
+  // Next.js development always overrides authored cache lifetimes.
+  // Production preservation is covered in pages-router-prod/production.spec.ts.
+  it("uses the development Cache-Control even when getServerSideProps sets one", async () => {
     const res = await fetch(`${baseUrl}/ssr-cache-control`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe("public, max-age=42");
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 
   it("getServerSideProps calling res.end() short-circuits the response", async () => {
@@ -1989,6 +2005,216 @@ export default class CustomDocument extends Document {
     expect(html).toMatch(/html-proxy.*\.js/);
   });
 
+  it("refreshes the dev hydration matcher after middleware config changes", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-matcher-edit-"));
+    const middlewareFile = path.join(tmpRoot, "middleware.ts");
+    const previousSource = (matcher: string) => `import { NextResponse } from "next/server";
+export function middleware() { return NextResponse.next(); }
+export const config = { matcher: "${matcher}" };
+`;
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpRoot, "pages"));
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Home() { return <p>home</p>; }\n",
+      );
+      await fsp.writeFile(middlewareFile, previousSource("/a"));
+      const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
+      const wsSend = vi.spyOn(devServer.ws, "send");
+      try {
+        const readMatcher = async () => {
+          const html = await fetch(baseUrl).then((response) => response.text());
+          const nextData = html.match(
+            /<script id="__NEXT_DATA__" type="application\/json"[^>]*>([\s\S]*?)<\/script>/,
+          )?.[1];
+          expect(nextData).toBeDefined();
+          return JSON.parse(nextData!).__vinext.clientMiddlewareMatcher;
+        };
+        expect(await readMatcher()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ source: "/a" })]),
+        );
+        await fsp.writeFile(middlewareFile, previousSource("/b"));
+        devServer.watcher.emit("change", middlewareFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        expect(await readMatcher()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ source: "/b" })]),
+        );
+        // Atomic editor saves replace the file via unlink/add instead of change.
+        wsSend.mockClear();
+        await fsp.rm(middlewareFile);
+        devServer.watcher.emit("unlink", middlewareFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        wsSend.mockClear();
+        await fsp.writeFile(middlewareFile, previousSource("/c"));
+        devServer.watcher.emit("add", middlewareFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        expect(await readMatcher()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ source: "/c" })]),
+        );
+      } finally {
+        wsSend.mockRestore();
+        await devServer.close();
+      }
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes dev page data classifications after edits and replacements", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-data-hmr-"));
+    const pageFile = path.join(tmpRoot, "pages", "index.tsx");
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.dirname(pageFile));
+      await fsp.writeFile(
+        pageFile,
+        "export const getServerSideProps = () => ({ props: {} });\nexport default function Home() { return <p>home</p>; }\n",
+      );
+      const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
+      const wsSend = vi.spyOn(devServer.ws, "send");
+      const invalidateClientModule = vi.spyOn(
+        devServer.environments.client.moduleGraph,
+        "invalidateModule",
+      );
+      try {
+        const readDataPatterns = async () => {
+          const html = await fetch(baseUrl).then((response) => response.text());
+          const nextData = JSON.parse(
+            html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "{}",
+          );
+          const proxyPath = html.match(
+            /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
+          )?.[1];
+          expect(proxyPath).toBeDefined();
+          const script = await fetch(new URL(proxyPath!, baseUrl)).then((response) =>
+            response.text(),
+          );
+          return {
+            gsp: nextData.gsp === true,
+            gssp: nextData.gssp === true,
+            ssg: script.match(/window\.__VINEXT_PAGES_SSG_PATTERNS__ = (\[[^;]*\]);/)?.[1],
+            ssp: script.match(/window\.__VINEXT_PAGES_SSP_PATTERNS__ = (\[[^;]*\]);/)?.[1],
+          };
+        };
+        expect(await readDataPatterns()).toEqual({
+          gsp: false,
+          gssp: true,
+          ssg: "[]",
+          ssp: '["/"]',
+        });
+
+        await fsp.writeFile(pageFile, "export default function Home() { return <p>home</p>; }\n");
+        devServer.watcher.emit("change", pageFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        expect(
+          invalidateClientModule.mock.calls.some(([module]) =>
+            module.id?.includes("?html-proxy&index="),
+          ),
+        ).toBe(true);
+        await vi.waitFor(
+          async () => {
+            expect(await readDataPatterns()).toEqual({
+              gsp: false,
+              gssp: false,
+              ssg: "[]",
+              ssp: "[]",
+            });
+          },
+          { timeout: 5000 },
+        );
+
+        await fsp.writeFile(
+          pageFile,
+          "export const getStaticProps = () => ({ props: {} });\nexport default function Home() { return <p>home</p>; }\n",
+        );
+        devServer.watcher.emit("change", pageFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        await vi.waitFor(
+          async () => {
+            expect(await readDataPatterns()).toEqual({
+              gsp: true,
+              gssp: false,
+              ssg: '["/"]',
+              ssp: "[]",
+            });
+          },
+          { timeout: 5000 },
+        );
+
+        await fsp.rm(pageFile);
+        devServer.watcher.emit("unlink", pageFile);
+        await fsp.writeFile(pageFile, "export default function Home() { return <p>new</p>; }\n");
+        devServer.watcher.emit("add", pageFile);
+        await vi.waitFor(
+          async () => {
+            expect(await readDataPatterns()).toEqual({
+              gsp: false,
+              gssp: false,
+              ssg: "[]",
+              ssp: "[]",
+            });
+          },
+          { timeout: 5000 },
+        );
+      } finally {
+        invalidateClientModule.mockRestore();
+        wsSend.mockRestore();
+        await devServer.close();
+      }
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not link other pages into the initial hydration HMR proxy", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-hmr-deps-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpRoot, "pages"));
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Home() { return <p>home</p>; }\n",
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "neighbor.tsx"),
+        "export default function Neighbor() { return <p>neighbor</p>; }\n",
+      );
+      const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
+      try {
+        const html = await fetch(baseUrl).then((response) => response.text());
+        const proxyPath = html.match(
+          /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
+        )?.[1];
+        expect(proxyPath).toBeDefined();
+        await fetch(new URL(proxyPath!, baseUrl));
+        const proxyModule = [
+          ...devServer.environments.client.moduleGraph.idToModuleMap.values(),
+        ].find((module) => module.id?.includes("?html-proxy&index="));
+        expect(proxyModule).toBeDefined();
+        expect([...proxyModule!.importedModules].map((module) => module.url)).not.toContain(
+          "/pages/neighbor.tsx",
+        );
+      } finally {
+        await devServer.close();
+      }
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   // --- Catch-all Routes ---
 
   it("renders catch-all routes with multiple segments", async () => {
@@ -2199,6 +2425,17 @@ export default class CustomDocument extends Document {
     expect(JSON.parse(nextDataMatch![1]!)).not.toHaveProperty("notFoundSrcPage");
   });
 
+  it("marks middleware-backed error documents for initial history state", async () => {
+    const res = await fetch(`${baseUrl}/missing-middleware-error`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    const nextData = JSON.parse(
+      html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "{}",
+    );
+    expect(nextData.__vinext.hasMiddleware).toBe(true);
+    expect(nextData.__vinext.clientMiddlewareMatcher).toBeDefined();
+  });
+
   it("renders an empty optional catch-all path from getStaticPaths in dev", async () => {
     const res = await fetch(`${baseUrl}/catchall-optional`);
     expect(res.status).toBe(200);
@@ -2290,6 +2527,20 @@ export default class CustomDocument extends Document {
     // The heavy component should be rendered server-side (ssr: true by default)
     expect(html).toContain("Heavy Component");
     expect(html).toContain("Loaded dynamically");
+  });
+
+  // Issue #3718 only changes the App Router: a Pages dynamic() without a
+  // loading option keeps its Suspense boundary on the server, matching the
+  // boundary the hydrating client renders. This differs from Next.js on
+  // purpose until Pages parity lands: Next's Pages next/dynamic
+  // (react-loadable) preloads before SSR and renders no boundary.
+  it("keeps the Suspense boundary for dynamic() without loading during SSR", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-no-loading`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/<!--\$\??-->/);
+    expect(html).toContain("Loaded without loading option");
   });
 
   // --- Hydration ---
@@ -4120,6 +4371,10 @@ describe("Virtual server entry generation", () => {
   it("dev Pages custom error HTML includes _app and error page stylesheet links", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-error-"));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "_error.tsx"),
+      "export default function ErrorPage() { return <p>Custom error</p>; }\n",
+    );
     const testServer = await createServer({
       root: tmpDir,
       configFile: false,
@@ -4137,6 +4392,13 @@ describe("Virtual server entry generation", () => {
       const html = await res.text();
       expect(res.status).toBe(404);
       expect(html).toContain("Global CSS Error Test");
+      const scriptPath = html.match(/<script type="module" src="([^"]+html-proxy[^"]+)"/)?.[1];
+      expect(scriptPath).toBeTruthy();
+      const hydrationScript = await (
+        await fetch(`http://localhost:${addr.port}${scriptPath}`)
+      ).text();
+      expect(hydrationScript).toContain('"/_error": () => loadDevPage(');
+      expect(hydrationScript).toContain("_error.tsx");
       const stylesheetHrefs = getStylesheetHrefs(html);
       for (const href of fixture.errorDevStylesheetHrefs) {
         expect(stylesheetHrefs).toContain(href);
@@ -5543,7 +5805,7 @@ export const config = { matcher: ["/protected"] };
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
+      expect(entrySize).toBeLessThan(34 * 1024); // < 34 KB, including storage-policy, encoded-path and config query-param fixture rules
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -6642,7 +6904,7 @@ export default function CounterPage() {
       // metadata derived from getStaticProps must advance with the body rather
       // than remaining in the cached shell. Exercise vinext's natural stale
       // background path here: on-demand revalidation uses a different
-      // foreground-render path and would not cover renderPagesIsrHtml().
+      // foreground-render path and would not cover background regeneration.
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const staleRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(staleRes.status).toBe(200);
@@ -7116,6 +7378,20 @@ describe("Production server middleware (Pages Router)", () => {
     if (prodServer) {
       await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
+  });
+
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(prodUrl);
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${prodUrl}/mw-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The trailingSlash: false rule strips the redirect target to the root;
+    // it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
   });
 
   it("redirects /old-page to /about via middleware", async () => {
@@ -8373,6 +8649,25 @@ export default class CustomDocument extends Document {
     expectFragmentsInOrder(headContents, ['id="head-marker-content"', 'name="document-child"']);
   });
 
+  it("keeps collected head tags when a dev HTML transform drops the Head marker", async () => {
+    const transform = devServer.transformIndexHtml.bind(devServer);
+    const transformSpy = vi
+      .spyOn(devServer, "transformIndexHtml")
+      .mockImplementation(async (...args) =>
+        (await transform(...args)).replace(/ data-vinext-head-open="[^"]*"/, ""),
+      );
+    try {
+      const response = await fetch(`${devUrl}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+      expect(headContents).toContain('name="page-head"');
+      expect(html).not.toContain("VINEXT_SSR_HEAD");
+    } finally {
+      transformSpy.mockRestore();
+    }
+  });
+
   it.each(["dev", "prod"] as const)(
     "uses direct document html and styles without rendering the page in %s",
     async (mode) => {
@@ -8388,6 +8683,26 @@ export default class CustomDocument extends Document {
       expect(html).not.toContain('id="app-shell"');
     },
   );
+
+  it("does not watch the filesystem root for a root URL with a query in dev", async () => {
+    // Vite 8.3.3 maps transformIndexHtml("/?q") onto the project root and then
+    // watches `/` for each inline <style> proxy module, crawling the whole disk.
+    const watcher = devServer.watcher;
+    const add = watcher.add.bind(watcher);
+    const watchedPaths: unknown[] = [];
+    const addSpy = vi.spyOn(watcher, "add").mockImplementation((paths) => {
+      watchedPaths.push(paths);
+      return paths === "/" ? watcher : add(paths);
+    });
+    try {
+      const response = await fetch(`${devUrl}/?manualDocumentHtml=true`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("data-manual-document-style");
+    } finally {
+      addSpy.mockRestore();
+    }
+    expect(watchedPaths).not.toContain("/");
+  });
 
   it.each(["dev", "prod"] as const)(
     // Next.js builds a base context with req/res and passes `{ ...ctx, renderPage }`
@@ -8602,7 +8917,11 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(transferEncoding)).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    // The fixture holds its Suspense boundary for 600ms after render starts.
+    // Measure the shell against the response end rather than the request
+    // start, since a cold first request spends time loading modules before
+    // rendering begins. A buffering compressor would deliver both together.
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(response.rawBody.byteLength).toBeGreaterThan(0);
     expect(response.rawSnapshot.byteLength).toBeGreaterThan(0);
@@ -8630,7 +8949,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(partialHtml).toContain("Loading delayed chunk...");
     expect(partialHtml).not.toContain("Delayed stream content loaded");
@@ -8714,7 +9033,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(partialHtml).toContain("Loading delayed gSSP chunk...");
     expect(partialHtml).not.toContain("Delayed gSSP stream content loaded");
     expect(finalHtml).toContain("Streaming gSSP Content-Length Test");
@@ -9966,4 +10285,125 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(hitHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
     });
   }
+
+  // Next.js ignores a response App.getInitialProps sent for a getStaticProps
+  // page (`isResSent(res) && !isSSG`): the visitor gets the sent response, but
+  // the page is still rendered and stored.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+  it("stores a GSP page whose App.getInitialProps sent the response in prod", async () => {
+    const missResponse = await fetch(`${prodUrl}/gsp-sent-response`, { redirect: "manual" });
+    expect(missResponse.status).toBe(302);
+    expect(missResponse.headers.get("location")).toBe("/missing");
+    await missResponse.body?.cancel();
+
+    await vi.waitFor(async () => {
+      const hitResponse = await fetch(`${prodUrl}/gsp-sent-response`, { redirect: "manual" });
+      expect(hitResponse.status).toBe(200);
+      expect(hitResponse.headers.get("x-nextjs-cache")).toBe("HIT");
+      expect(await hitResponse.text()).toContain('<div id="page-content">gsp-sent-response</div>');
+    });
+  });
+});
+
+describe("Pages production asset manifest reuse", () => {
+  it.each([false, true])(
+    "avoids cold and repeated metadata scans (registered manifest: %s)",
+    async (registered) => {
+      const root = await fsp.realpath(
+        await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-manifest-reuse-")),
+      );
+      try {
+        await fsp.symlink(
+          path.resolve(import.meta.dirname, "../node_modules"),
+          path.join(root, "node_modules"),
+          "junction",
+        );
+        await fsp.mkdir(path.join(root, "pages"));
+        await fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+        await fsp.writeFile(path.join(root, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+        await fsp.writeFile(
+          path.join(root, "pages", "index.tsx"),
+          `
+import "./style.css";
+export const getServerSideProps = () => ({ props: {} });
+export default function Page() { return <p>manifest reuse</p>; }
+`,
+        );
+        await fsp.writeFile(path.join(root, "pages", "style.css"), "p { color: red }");
+        await fsp.copyFile(
+          path.join(root, "pages", "index.tsx"),
+          path.join(root, "pages", "other.tsx"),
+        );
+        const builder = await createBuilder({
+          root,
+          configFile: false,
+          plugins: [vinext({ disableAppRouter: true })],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+
+        const { default: assets } = await import(
+          pathToFileURL(path.join(root, "dist/vinext-client-assets.js")).href
+        );
+        const scans = { manifest: 0, cssGraph: 0, lazyChunks: 0 };
+        const frameworkFile = Object.values(assets.ssrManifest as Record<string, string[]>)
+          .flat()
+          .find((file) => file.includes("/framework-"))!;
+        // Model a large app without making the test compile thousands of pages.
+        for (let i = 0; i < 3000; i++) {
+          assets.ssrManifest[`components/unused-${i}.tsx`] = [frameworkFile];
+          assets.cssGraph[`components/unused-${i}.tsx`] = { css: [] };
+          assets.lazyChunks.push(`_next/static/chunks/lazy-${i}.js`);
+        }
+        const instrumentManifest = (manifest: Record<string, string[]>) =>
+          new Proxy(manifest, {
+            ownKeys(target) {
+              scans.manifest++;
+              return Reflect.ownKeys(target);
+            },
+          });
+        const callerManifest = registered
+          ? null
+          : instrumentManifest(structuredClone(assets.ssrManifest));
+        assets.ssrManifest = instrumentManifest(assets.ssrManifest);
+        assets.cssGraph = new Proxy(assets.cssGraph, {
+          ownKeys(target) {
+            scans.cssGraph++;
+            return Reflect.ownKeys(target);
+          },
+        });
+        assets.lazyChunks = new Proxy(assets.lazyChunks, {
+          get(target, key, receiver) {
+            if (key === Symbol.iterator) scans.lazyChunks++;
+            return Reflect.get(target, key, receiver);
+          },
+        });
+        const entry = await import(pathToFileURL(path.join(root, "dist/server/entry.js")).href);
+        const render = async (pathname = "/") => {
+          const response = await entry.renderPage(
+            new Request(`http://localhost${pathname}`),
+            pathname,
+            callerManifest,
+          );
+          expect(response.status).toBe(200);
+          return response.text();
+        };
+        const first = await render();
+        expect(first).toContain("manifest reuse");
+        expect(first).toContain('rel="stylesheet"');
+        expect(first).toContain(frameworkFile);
+        expect(first).not.toContain("lazy-2999.js");
+        const initialScans = { ...scans };
+        expect(initialScans.manifest).toBe(registered ? 0 : 2);
+        expect(initialScans.cssGraph).toBe(0);
+        expect(initialScans.lazyChunks).toBeGreaterThan(0);
+        for (let i = 0; i < 3; i++) expect(await render()).toBe(first);
+        expect(await render("/other")).toContain("manifest reuse");
+        expect(scans).toEqual(initialScans);
+      } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+      }
+    },
+    120000,
+  );
 });

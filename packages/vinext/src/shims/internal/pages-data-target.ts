@@ -7,7 +7,7 @@
  * module init time — link.tsx and router.ts must remain free of circular
  * imports and SSR-side router-init side effects.
  */
-import { removeTrailingSlash, stripBasePath } from "../../utils/base-path.js";
+import { stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import type { VinextNextData } from "../../client/vinext-next-data.js";
 import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
@@ -51,13 +51,14 @@ export type PagesDataTarget = {
 
 type PagesDataNavigationTargetOptions = {
   locale?: string | false;
+  /** Force page identity while deriving params and data URLs from browserUrl. */
+  routePattern?: string;
 };
 
 type ClientMiddlewareMatcherObject = {
-  source: string;
+  regexp: string;
+  flags?: string;
   locale?: false;
-  has?: unknown[];
-  missing?: unknown[];
 };
 
 function hasVinextMiddleware(nextData: unknown): boolean {
@@ -68,10 +69,9 @@ function hasVinextMiddleware(nextData: unknown): boolean {
 
 function isClientMiddlewareMatcherObject(value: unknown): value is ClientMiddlewareMatcherObject {
   if (!isUnknownRecord(value)) return false;
-  if (typeof value.source !== "string") return false;
+  if (typeof value.regexp !== "string") return false;
+  if (value.flags !== undefined && typeof value.flags !== "string") return false;
   if (value.locale !== undefined && value.locale !== false) return false;
-  if (value.has !== undefined && !Array.isArray(value.has)) return false;
-  if (value.missing !== undefined && !Array.isArray(value.missing)) return false;
   return true;
 }
 
@@ -83,50 +83,34 @@ function stripLocaleForMiddlewareMatcher(pathname: string): string {
   return "/" + pathname.split("/").slice(2).join("/");
 }
 
-function clientMiddlewareSourceMatches(pathname: string, source: string): boolean {
-  if (!/[\\():*+?]/.test(source)) {
-    return removeTrailingSlash(pathname) === removeTrailingSlash(source);
+function localeAwareMiddlewarePathname(pathname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  const defaultLocale = window.__VINEXT_DEFAULT_LOCALE__;
+  if (!locales?.includes(defaultLocale ?? "") || getLocalePathPrefix(pathname, locales)) {
+    return pathname;
   }
-
-  if (source.includes("(") || source.includes("\\")) return true;
-
-  const sourceParts = source.split("/").filter(Boolean);
-  const pathParts = pathname.split("/").filter(Boolean);
-  let pathIndex = 0;
-
-  for (const sourcePart of sourceParts) {
-    if (sourcePart.startsWith(":")) {
-      if (sourcePart.endsWith("*")) return true;
-      if (sourcePart.endsWith("+")) return pathIndex < pathParts.length;
-      if (pathIndex >= pathParts.length) return false;
-      pathIndex++;
-      continue;
-    }
-
-    if (pathParts[pathIndex] !== sourcePart) return false;
-    pathIndex++;
-  }
-
-  return pathIndex === pathParts.length;
+  // A locale:false object sees the default locale even when the browser URL omits it.
+  return `/${defaultLocale}${pathname === "/" ? "" : pathname}`;
 }
 
-function clientMiddlewareMatcherMatches(pathname: string, matcher: unknown): boolean {
+export function matchesPagesMiddlewarePath(pathname: string): boolean {
+  // Next.js tests the compiled pathname regexp in the browser; `has` and
+  // `missing` conditions require request data and are evaluated by the server.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  const matcher = window.__VINEXT_MIDDLEWARE_MATCHER__;
   if (matcher === undefined) return true;
-  if (typeof matcher === "string") {
-    return clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), matcher);
-  }
   if (!Array.isArray(matcher)) return true;
 
   for (const item of matcher) {
-    if (typeof item === "string") {
-      if (clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), item)) {
-        return true;
-      }
-      continue;
-    }
+    // An invalid or uncompiled matcher must not suppress a middleware probe.
     if (!isClientMiddlewareMatcherObject(item)) return true;
-    const candidate = item.locale === false ? pathname : stripLocaleForMiddlewareMatcher(pathname);
-    if (clientMiddlewareSourceMatches(candidate, item.source)) {
+    const candidate =
+      item.locale === false
+        ? localeAwareMiddlewarePathname(pathname)
+        : stripLocaleForMiddlewareMatcher(pathname);
+    try {
+      if (new RegExp(item.regexp, item.flags).test(candidate)) return true;
+    } catch {
       return true;
     }
   }
@@ -138,6 +122,7 @@ export function getPagesMiddlewareDataHref(
   browserUrl: string,
   basePath: string,
   options: PagesDataNavigationTargetOptions = {},
+  routeUrl = browserUrl,
 ): string | null {
   const nextData = window.__NEXT_DATA__;
   if (!nextData || !hasVinextMiddleware(nextData)) return null;
@@ -152,8 +137,19 @@ export function getPagesMiddlewareDataHref(
   }
   if (parsed.origin !== window.location.origin) return null;
 
+  // Next.js matches middleware against the visible `as` pathname, while its
+  // data URL uses the `href` query (page-loader.getDataHref({ href, asPath })).
+  let routeSearch = parsed.search;
+  if (routeUrl !== browserUrl) {
+    try {
+      routeSearch = new URL(routeUrl, window.location.href).search;
+    } catch {
+      return null;
+    }
+  }
+
   const pathname = stripBasePath(parsed.pathname, basePath);
-  if (!clientMiddlewareMatcherMatches(pathname, window.__VINEXT_MIDDLEWARE_MATCHER__)) {
+  if (!matchesPagesMiddlewarePath(pathname)) {
     return null;
   }
 
@@ -165,7 +161,7 @@ export function getPagesMiddlewareDataHref(
     pathnameLocale || !currentLocale || !window.__VINEXT_LOCALES__?.includes(currentLocale)
       ? pathname
       : `/${currentLocale}${pathname === "/" ? "" : pathname}`;
-  return buildPagesDataHref(basePath, buildId, dataPathname, parsed.search);
+  return buildPagesDataHref(basePath, buildId, dataPathname, routeSearch);
 }
 
 /**
@@ -219,7 +215,10 @@ export function resolvePagesDataNavigationTarget(
   // present (`/fr`) the remainder is empty, which normalises to `/` (root).
   const pathForMatch = locale ? pagePath.slice(locale.length + 1) || "/" : pagePath;
 
-  const match = matchPagesPattern(pathForMatch, patterns);
+  const match = matchPagesPattern(
+    pathForMatch,
+    options.routePattern ? [options.routePattern] : patterns,
+  );
   if (!match) return null;
 
   const loader = loaders[match.pattern];

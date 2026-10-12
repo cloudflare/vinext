@@ -106,10 +106,9 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     headers,
   });
   await expect(configPublicDynamicProbe.json()).resolves.toMatchObject({
-    cacheControl: "s-maxage=32",
     kind: "app-page",
     pattern: "/cacheability/config-public-dynamic",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });
@@ -129,10 +128,9 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     headers,
   });
   await expect(specialPatternProbe.json()).resolves.toMatchObject({
-    cacheControl: "s-maxage=33",
     kind: "app-page",
     pattern: "/cacheability/config-public-pattern/:slug",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });
@@ -141,10 +139,9 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     headers,
   });
   await expect(representationHtmlProbe.json()).resolves.toMatchObject({
-    cacheControl: "s-maxage=34",
     kind: "app-page",
     pattern: "/cacheability/config-public-representation",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });
@@ -198,9 +195,8 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
-  // A handler-owned public policy is an explicit cache opt-in even when the
-  // handler reads request data. Next.js preserves that policy rather than
-  // replacing it with the framework's dynamic default.
+  // An authored public browser policy does not make a request-dependent
+  // handler eligible for the framework cache in Next.js.
   const explicitDynamicRouteHandlerProbe = await request.get(
     "/cacheability/route-handler-explicit-dynamic",
     { headers: { ...headers, Accept: "*/*" } },
@@ -208,27 +204,28 @@ test("classifies completed App Page renders inside workerd", async ({ request })
   await expect(explicitDynamicRouteHandlerProbe.json()).resolves.toMatchObject({
     kind: "app-route",
     pattern: "/cacheability/route-handler-explicit-dynamic",
-    state: "static-candidate",
+    state: "dynamic",
     status: 200,
     version: 1,
   });
 
   // Next.js keeps middleware in front of page serving on every request. The
   // staged probe classifies only the reusable render below that boundary, so
-  // this route remains dynamic for its own missing cache policy, not merely
-  // because middleware matched:
+  // this static route keeps its default `revalidate = false` policy even
+  // though middleware matched:
   // test/e2e/middleware-static-files/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-static-files/index.test.ts
   const middlewareProbe = await request.get("/cacheability/middleware", { headers });
   expect(middlewareProbe.ok()).toBe(true);
-  await expect(middlewareProbe.json()).resolves.toMatchObject({
+  const middlewareProbeResult = await middlewareProbe.json();
+  expect(middlewareProbeResult).toMatchObject({
     kind: "app-page",
     pattern: "/cacheability/middleware",
-    reason: "render did not produce a cache policy",
-    state: "dynamic",
+    state: "static-candidate",
     status: 200,
     version: 1,
   });
+  expect(middlewareProbeResult).not.toHaveProperty("reason");
 
   // Next.js first matches the pathname regexp and only then evaluates
   // request-specific `has`/`missing` conditions:

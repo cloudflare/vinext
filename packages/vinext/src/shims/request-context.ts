@@ -55,6 +55,16 @@ export type ExecutionContextLike = {
   isInternalPagesRevalidation?: boolean;
   /** Marks a build-secret-authorized Worker request that may run prerender discovery hooks. */
   isPrerenderPathDiscovery?: boolean;
+  /**
+   * Installed only by the prerender server: records the page's special error
+   * that escaped the shell, with the headers to store, for the build.
+   */
+  recordPrerenderSpecialError?: (marker: PrerenderSpecialErrorMarker) => void;
+};
+
+export type PrerenderSpecialErrorMarker = {
+  headers: Record<string, string>;
+  status: number;
 };
 
 // ---------------------------------------------------------------------------

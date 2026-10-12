@@ -169,9 +169,16 @@ export function createOptimizedImportSourceMatcher(
     String.raw`(?:^|[;}\n\r])\s*import(?!\s*\()(?:(?!\bfrom\b)[\s\S])*?\bfrom\s*["'](?:${pattern})["']`,
     "m",
   );
+  // Cheap necessary condition for importFromPattern: an optimized package must
+  // appear as a quoted string. Rejects large modules (e.g. typescript.js) that
+  // contain "import" and "from" without running the backtracking-heavy scan.
+  const quotedSourcePattern = new RegExp(String.raw`["'](?:${pattern})["']`);
 
   return (code: string) =>
-    code.includes("import") && code.includes("from") && importFromPattern.test(code);
+    code.includes("import") &&
+    code.includes("from") &&
+    quotedSourcePattern.test(code) &&
+    importFromPattern.test(code);
 }
 
 /**

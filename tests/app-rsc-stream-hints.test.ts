@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
 import { normalizeReactFlightPreloadHints } from "../packages/vinext/src/server/rsc-stream-hints.js";
 
 const STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
@@ -164,5 +165,172 @@ describe("RSC stream hint helpers", () => {
         ),
       ),
     ).resolves.toBe(payload);
+  });
+
+  it("keeps upstream chunk boundaries instead of emitting one chunk per row", async () => {
+    // Every downstream consumer pays a per-chunk cost, so complete rows in a
+    // chunk must be forwarded together rather than split per Flight row.
+    const encoder = new TextEncoder();
+    const first = encoder.encode('0:D{"name":"page"}\n1:["$","div",null,{}]\n2:I["a",[],"b"]\n');
+    const second = encoder.encode('3:["$","span",null,{}]\n4:"text"\n');
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(first);
+        controller.enqueue(second);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+    }
+
+    expect(chunks).toHaveLength(2);
+    // Chunks without a stylesheet hint are forwarded without copying.
+    expect(chunks[0]).toBe(first);
+    expect(chunks[1]).toBe(second);
+  });
+
+  it("rewrites a hint row split across chunks and forwards the complete prefix", async () => {
+    const payload =
+      '0:D{"name":"page"}\n:HL["/assets/app.css","stylesheet"]\n1:["$","div",null,{}]\n';
+    const splitAt = payload.indexOf("stylesheet");
+    const reader = normalizeReactFlightPreloadHints(
+      streamFromChunks([payload.slice(0, splitAt), payload.slice(splitAt)]),
+    ).getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      '0:D{"name":"page"}\n',
+      normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n') + '1:["$","div",null,{}]\n',
+    ]);
+  });
+
+  it("forwards a long non-hint row chunk by chunk instead of carrying it to its newline", async () => {
+    // Carrying the row would concatenate and rescan it on every chunk:
+    // quadratic in its length. A page's client props arrive as one such row.
+    const encoder = new TextEncoder();
+    const inputs = [
+      encoder.encode('0:D{"name":"page"}\n1:{"items":["'),
+      ...Array.from({ length: 2000 }, () => encoder.encode("x".repeat(1024))),
+      encoder.encode('"]}\n2:"after"\n'),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+    }
+
+    expect(chunks).toHaveLength(inputs.length);
+    for (const [index, input] of inputs.entries()) expect(chunks[index]).toBe(input);
+  });
+
+  it("still carries a row that may be a stylesheet hint when a chunk ends at its tag", async () => {
+    const stream = normalizeReactFlightPreloadHints(
+      streamFromChunks(['0:D{"name":"page"}\n:H', 'L["/assets/app.css","stylesheet"]\n']),
+    );
+
+    await expect(readStream(stream)).resolves.toBe(
+      '0:D{"name":"page"}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n'),
+    );
+  });
+
+  it("rewrites a hint that follows a forwarded row's newline in the same chunk", async () => {
+    const inputs = [
+      '0:D{"name":"page"}\n1:{"items":["',
+      "x".repeat(64),
+      '"]}\n:HL["/assets/app.css","stylesheet"]\n2:"after"\n',
+    ];
+    const reader = normalizeReactFlightPreloadHints(streamFromChunks(inputs)).getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      inputs[0],
+      inputs[1],
+      '"]}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n') + '2:"after"\n',
+    ]);
+  });
+
+  it("forwards a plain row only up to its last complete UTF-8 character", async () => {
+    // The inline RSC embed decodes each chunk on its own, so a chunk ending
+    // mid-character would be embedded as base64 instead of text.
+    const encoder = new TextEncoder();
+    const row = encoder.encode('0:D{"name":"page"}\n1:{"t":"あい😀"}\n');
+    const hint = ':HL["/assets/app.css","stylesheet"]\n';
+    const firstSplit = row.indexOf(0x81) + 1; // inside あ
+    const secondSplit = row.indexOf(0x9f) + 1; // inside 😀
+    const inputs = [
+      row.slice(0, firstSplit),
+      row.slice(firstSplit, secondSplit),
+      new Uint8Array([...row.slice(secondSplit), ...encoder.encode(hint)]),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      '0:D{"name":"page"}\n1:{"t":"',
+      "あい",
+      '😀"}\n' + normalizedStyleHint(hint),
+    ]);
+  });
+
+  it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);
+    const suffix = encoder.encode('2:["done"]\n');
+    const payload = new Uint8Array(prefix.length + 1 + suffix.length);
+    payload.set(prefix);
+    payload[prefix.length] = 0xff;
+    payload.set(suffix, prefix.length + 1);
+
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload);
+        controller.close();
+      },
+    });
+    const embed = createRscEmbedTransform(normalizeReactFlightPreloadHints(source));
+    const scripts = await embed.finalize();
+
+    expect(scripts).toContain('.rsc.push([3,"/w=="])');
+    expect(new Uint8Array(await embed.getRawBuffer())).toEqual(payload);
   });
 });

@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 import React from "react";
 import { renderAppPageCacheArtifacts } from "../packages/vinext/src/server/app-page-cache-render.js";
+import { hasQueryInvariantRenderProof } from "../packages/vinext/src/server/cache-proof.js";
 import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
+import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
+import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type {
   FrameworkTracingBackendSpan,
@@ -168,5 +175,150 @@ describe("renderAppPageCacheArtifacts", () => {
 
     expect(result.cacheControl).toEqual({ revalidate: 1, expire: 60, stale: 30 });
     expect(result.html).toBe("<html>page</html>");
+  });
+
+  it("proves a static regeneration left the query unread, so core stores it", async () => {
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: true,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.sideStream && options.capturedRscDataRef) {
+            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+          }
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["flight-data"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(hasQueryInvariantRenderProof(result.htmlRenderObservation)).toBe(true);
+    expect(hasQueryInvariantRenderProof(result.rscRenderObservation)).toBe(true);
+    expect(result.usedDynamicApi).toBe(false);
+  });
+
+  it("returns a special error that rejects the shell as the regenerated page", async () => {
+    const redirectError = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: true,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.sideStream && options.capturedRscDataRef) {
+            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+          }
+          throw redirectError;
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      async renderShellSpecialError(error) {
+        return error === redirectError
+          ? { headers: { location: "/target" }, html: "", status: 307 }
+          : null;
+      },
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result).toMatchObject({
+      headers: { location: "/target" },
+      html: "",
+      status: 307,
+      usedDynamicApi: false,
+    });
+    expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
+  });
+
+  it("fails the regeneration with a shell error that is not a special error", async () => {
+    const failure = new Error("shell failed");
+    await expect(
+      renderAppPageCacheArtifacts({
+        captureRscData: false,
+        cleanPathname: "/posts/post",
+        element: React.createElement("div", null, "page"),
+        getFontLinks: () => [],
+        getFontPreloads: () => [],
+        getFontStyles: () => [],
+        getNavigationContext: () => null,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            throw failure;
+          },
+        }),
+        navigationParams: {},
+        onError: () => undefined,
+        renderShellSpecialError: async () => null,
+        renderToReadableStream: () => createStream(["flight-data"]),
+        route: { pattern: "/posts/[slug]", routeSegments: [] },
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it("reports a regeneration that used a dynamic API", async () => {
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: false,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          markDynamicUsage();
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["flight-data"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result.usedDynamicApi).toBe(true);
+  });
+
+  it("reports a dynamic API used in SSR's child scope, such as a client page reading searchParams", async () => {
+    // SSR runs in a child scope of the render, so its mark reaches the
+    // render's dynamic latch but not the render's own flag.
+    const result = await runWithRequestContext(createRequestContext(), () =>
+      renderAppPageCacheArtifacts({
+        captureRscData: false,
+        cleanPathname: "/posts/post",
+        element: React.createElement("div", null, "page"),
+        getFontLinks: () => [],
+        getFontPreloads: () => [],
+        getFontStyles: () => [],
+        getNavigationContext: () => null,
+        loadSsrHandler: async () => ({
+          handleSsr() {
+            return runWithNavigationContext(async () => {
+              markDynamicUsage();
+              return createStream(["<html>page</html>"]);
+            });
+          },
+        }),
+        navigationParams: {},
+        onError: () => undefined,
+        renderToReadableStream: () => createStream(["flight-data"]),
+        route: { pattern: "/posts/[slug]", routeSegments: [] },
+      }),
+    );
+
+    expect(result.usedDynamicApi).toBe(true);
   });
 });

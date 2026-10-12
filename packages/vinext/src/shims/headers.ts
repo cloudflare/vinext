@@ -15,18 +15,45 @@ import {
   NEXT_REQUEST_ID_HEADER,
 } from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
-import { getOrCreateAls } from "./internal/als-registry.js";
 import { serializeSetCookie, validateCookieName } from "./internal/cookie-serialize.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
+  ensureRenderDynamicLatch,
   isInsideUnifiedScope,
-  getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import type { CacheLifeConfig, CacheLifeSink } from "./cache-request-state.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
+import {
+  createRenderDynamicLatch,
+  getHeadersShimState as _getState,
+  headersShimAls as _als,
+  markDynamicUsage,
+  markRenderRequestApiUsage,
+  throwIfInsideCacheScope,
+  type ConnectionProbeResult,
+  type ConnectionProbeState,
+  type HeadersAccessPhase,
+  type VinextHeadersShimState,
+} from "./internal/headers-state.js";
+
+export {
+  createRenderDynamicLatch,
+  getHeadersAccessPhase,
+  isInsideAnyCacheScope,
+  isRenderDynamicLatched,
+  markDynamicUsage,
+  markRenderRequestApiUsage,
+  onRenderDynamicLatched,
+  throwIfInsideCacheScope,
+  throwIfStaticGenerationAccessError,
+  type HeadersAccessPhase,
+  type RenderDynamicLatch,
+  type VinextHeadersShimState,
+} from "./internal/headers-state.js";
 
 // ---------------------------------------------------------------------------
 // Request context
@@ -48,58 +75,6 @@ type HeadersContextFromRequestOptions = {
   draftModeSecret?: string;
 };
 
-export type HeadersAccessPhase = "render" | "action" | "route-handler";
-
-export type VinextHeadersShimState = {
-  headersContext: HeadersContext | null;
-  dynamicUsageDetected: boolean;
-  renderRequestApiUsage: Set<RenderRequestApiKind>;
-  connectionProbe: ConnectionProbeState | null;
-  /** Error recorded by throwIfInsideCacheScope for dev diagnostics, persists even if caught by user code. */
-  invalidDynamicUsageError: unknown;
-  pendingSetCookies: string[];
-  draftModeCookieHeader: string | null;
-  phase: HeadersAccessPhase;
-};
-
-type ConnectionProbeState = {
-  active: boolean;
-  dynamicUsageTarget: VinextHeadersShimState;
-  interrupted: boolean;
-  interrupt: () => void;
-  pending: Promise<never>;
-};
-
-type ConnectionProbeResult<T> =
-  | {
-      completed: true;
-      result: T;
-    }
-  | {
-      completed: false;
-    };
-
-// NOTE:
-// - This shim can be loaded under multiple module specifiers in Vite's
-//   multi-environment setup (RSC/SSR). Store the AsyncLocalStorage on
-//   globalThis so `connection()` (next/server) and `consumeDynamicUsage()`
-//   (next/headers) always share it.
-// - We use AsyncLocalStorage so concurrent requests don't stomp each other's
-//   headers/cookies/dynamic-usage state.
-const _FALLBACK_KEY = Symbol.for("vinext.nextHeadersShim.fallback");
-const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = getOrCreateAls<VinextHeadersShimState>("vinext.nextHeadersShim.als");
-
-const _fallbackState = (_g[_FALLBACK_KEY] ??= {
-  headersContext: null,
-  dynamicUsageDetected: false,
-  renderRequestApiUsage: new Set<RenderRequestApiKind>(),
-  connectionProbe: null,
-  invalidDynamicUsageError: null,
-  pendingSetCookies: [],
-  draftModeCookieHeader: null,
-  phase: "render",
-} satisfies VinextHeadersShimState) as VinextHeadersShimState;
 function splitMiddlewareSetCookieHeader(value: string): string[] {
   const cookies: string[] = [];
   let start = 0;
@@ -180,56 +155,6 @@ function mergeMiddlewareSetCookies(ctx: HeadersContext, rawHeader: string | null
   return merged;
 }
 
-function _getState(): VinextHeadersShimState {
-  if (isInsideUnifiedScope()) {
-    return getRequestContext();
-  }
-  return _als.getStore() ?? _fallbackState;
-}
-
-/**
- * Dynamic usage flag — set when a component calls connection(), cookies(),
- * headers(), or noStore() during rendering. When true, ISR caching is
- * bypassed and the response gets Cache-Control: no-store.
- */
-// (stored on _state)
-
-/**
- * Mark the current render as requiring dynamic (uncached) rendering.
- * Called by connection(), cookies(), headers(), and noStore().
- */
-export function markDynamicUsage(): void {
-  const state = _getState();
-  if (state.headersContext?.forceStatic) {
-    return;
-  }
-  state.dynamicUsageDetected = true;
-  forEachConnectionProbeTarget(state, (target) => {
-    target.dynamicUsageDetected = true;
-  });
-}
-
-function forEachConnectionProbeTarget(
-  state: VinextHeadersShimState,
-  visit: (target: VinextHeadersShimState) => void,
-): void {
-  let target = state.connectionProbe?.dynamicUsageTarget ?? null;
-  const seen = new Set<VinextHeadersShimState>([state]);
-  while (target && !seen.has(target)) {
-    seen.add(target);
-    visit(target);
-    target = target.connectionProbe?.dynamicUsageTarget ?? null;
-  }
-}
-
-function propagateInvalidDynamicUsageError(state: VinextHeadersShimState, error: unknown): void {
-  forEachConnectionProbeTarget(state, (target) => {
-    if (target.invalidDynamicUsageError == null) {
-      target.invalidDynamicUsageError = error;
-    }
-  });
-}
-
 /**
  * Measure dynamic usage in a child async scope without clearing the parent.
  * Concurrent work that already belongs to the request (such as deferred
@@ -260,22 +185,78 @@ export async function runWithIsolatedDynamicUsage<T>(
     );
   }
 
+  const parentState = _getState();
   const childState: VinextHeadersShimState = {
-    ..._getState(),
+    ...parentState,
+    // Share the parent's latch, creating it first on a stale fallback state.
+    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
     dynamicUsageDetected: false,
   };
   return await _als.run(childState, () => runInChildState(childState));
 }
 
-export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
-  _getState().renderRequestApiUsage.add(kind);
-}
+/**
+ * Run a pre-render probe without letting its dynamic API usage classify the
+ * request. Next.js has no probe: only the render decides whether a page is
+ * dynamic, and the render runs the probed layouts and page again. Returns the
+ * probe's own usage and cacheLife for a caller whose probe response replaces
+ * the render.
+ */
+export async function runWithDetachedDynamicUsage<T>(
+  fn: () => T | Promise<T>,
+): Promise<{ result: T; dynamicDetected: boolean; cacheLife: CacheLifeConfig | null }> {
+  const runInChildState = async (
+    childState: VinextHeadersShimState,
+    cacheLifeSink: CacheLifeSink | null,
+  ) => {
+    const result = await fn();
+    return {
+      result,
+      cacheLife: cacheLifeSink?.cacheLife ?? null,
+      // Nested isolated scopes latch without setting this scope's flag.
+      dynamicDetected: childState.dynamicUsageDetected || childState.renderDynamicLatch.dynamic,
+    };
+  };
 
-export function throwIfStaticGenerationAccessError(): void {
-  const accessError = _getState().headersContext?.accessError;
-  if (accessError) {
-    throw accessError;
+  if (isInsideUnifiedScope()) {
+    let childState: VinextHeadersShimState | null = null;
+    // Layout probes run in further isolated scopes that reset the slot.
+    const cacheLifeSink: CacheLifeSink = { cacheLife: null };
+    return await runWithUnifiedStateMutation(
+      (context) => {
+        context.cacheLifeSink = cacheLifeSink;
+        context.dynamicUsageDetected = false;
+        context.renderDynamicLatch = createRenderDynamicLatch();
+        context.renderRequestApiUsage = new Set();
+        // cacheForRequest() values would hand the probe's result to the render
+        // without the dynamic API calls that produced it.
+        context.requestCache = new WeakMap();
+        // The render records its own fetches, tags and cacheLife.
+        context.cacheableFetchUrls = new Set();
+        context.currentRequestTags = [];
+        context.dynamicFetchUrls = new Set();
+        context.requestScopedCacheLife = null;
+        context.unstableCacheObservations = new Map();
+        childState = context;
+      },
+      () => {
+        if (!childState) {
+          throw new Error("Dynamic usage scope was not initialized");
+        }
+        return runInChildState(childState, cacheLifeSink);
+      },
+    );
   }
+
+  const childState: VinextHeadersShimState = {
+    ..._getState(),
+    dynamicUsageDetected: false,
+    renderDynamicLatch: createRenderDynamicLatch(),
+    renderRequestApiUsage: new Set(),
+  };
+  // Outside the unified scope the probe's claims stay on the request's cache
+  // state, so no cacheLife is returned for the probe.
+  return await _als.run(childState, () => runInChildState(childState, null));
 }
 
 export async function runWithConnectionProbe<T>(
@@ -297,10 +278,6 @@ export async function runWithConnectionProbe<T>(
       probe.interrupted = true;
       interruptProbe();
     },
-    // `connection()` suspends forever inside speculative probes, matching
-    // Next.js's prerender/probe contract: code after `await connection()`
-    // must not run while classifying a route.
-    pending: new Promise<never>(() => {}),
   };
 
   const runInChildState = async (childState: VinextHeadersShimState) => {
@@ -311,11 +288,18 @@ export async function runWithConnectionProbe<T>(
       return await Promise.race([completed, interrupted]);
     } finally {
       probe.active = false;
-      // Async resources created inside this ALS scope retain `childState` after
-      // the probe returns. Restore the inherited probe when nested; otherwise
-      // retain this inactive probe so late dynamic usage can still propagate
-      // to its parent without suspending. Reading the parent at cleanup time
-      // preserves the right lifecycle if an outer probe completed separately.
+      // Async resources created inside this ALS scope retain `childState`, and
+      // through it this probe, after the probe returns. A completed probe would
+      // otherwise leave `interrupted` pending forever, holding Promise.race's
+      // reaction, which captured the caller's async context. workerd holds
+      // async context values through strong handles, so that cycle is never
+      // collected and retained every request's context. The race is already
+      // decided here, so settling `interrupted` only drops the reaction.
+      interruptProbe();
+      // Restore the inherited probe when nested; otherwise retain this inactive
+      // probe so late dynamic usage can still propagate to its parent without
+      // suspending. Reading the parent at cleanup time preserves the right
+      // lifecycle if an outer probe completed separately.
       childState.connectionProbe = parentState.connectionProbe ?? probe;
 
       // Dynamic usage discovered by a speculative probe still classifies the
@@ -353,6 +337,8 @@ export async function runWithConnectionProbe<T>(
 
   const childState: VinextHeadersShimState = {
     ...parentState,
+    // Share the parent's latch, creating it first on a stale fallback state.
+    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
     connectionProbe: probe,
   };
   return await _als.run(childState, () => runInChildState(childState));
@@ -363,7 +349,12 @@ export function suspendConnectionProbe(): Promise<never> | null {
   if (!probe?.active) return null;
 
   probe.interrupt();
-  return probe.pending;
+  // `connection()` suspends forever inside speculative probes, matching
+  // Next.js's prerender/probe contract: code after `await connection()` must
+  // not run while classifying a route. Each call gets its own promise that
+  // the probe does not keep, so the suspended code (and the async context its
+  // continuation captured) is collected with the request.
+  return new Promise<never>(() => {});
 }
 
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {
@@ -375,104 +366,6 @@ export function consumeRenderRequestApiUsage(): RenderRequestApiKind[] {
   const observed = [...state.renderRequestApiUsage].sort();
   state.renderRequestApiUsage = new Set<RenderRequestApiKind>();
   return observed;
-}
-
-// ---------------------------------------------------------------------------
-// Cache scope detection — checks whether we're inside "use cache" or
-// unstable_cache() by reading ALS instances stored on globalThis via Symbols.
-// This avoids circular imports between headers.ts, cache.ts, and cache-runtime.ts.
-// The ALS instances are registered by cache-runtime.ts and cache.ts respectively.
-// ---------------------------------------------------------------------------
-
-/** Symbol used by cache-runtime.ts to store the "use cache" ALS on globalThis */
-const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
-/** Symbol used by cache.ts to store the unstable_cache ALS on globalThis */
-const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
-
-type UseCacheGuardContext = {
-  variant?: unknown;
-  invalidDynamicUsageError?: unknown;
-};
-
-function _getGlobalCacheScopeStore(key: symbol): unknown {
-  const value = Reflect.get(globalThis, key);
-  if (!value || typeof value !== "object") return null;
-
-  const getStore = Reflect.get(value, "getStore");
-  if (typeof getStore !== "function") return null;
-
-  return getStore.call(value);
-}
-
-function _getUseCacheGuardContext(): UseCacheGuardContext | null {
-  const store = _getGlobalCacheScopeStore(_USE_CACHE_ALS_KEY);
-  if (!store || typeof store !== "object") return null;
-  return store;
-}
-
-function _isInsidePublicUseCache(): boolean {
-  const ctx = _getUseCacheGuardContext();
-  // Next.js models "use cache: private" as a private-cache work unit that
-  // carries request headers and cookies. Only public "use cache" scopes freeze
-  // request APIs into persisted cache entries and must reject these reads.
-  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/work-unit-async-storage.external.ts
-  return ctx !== null && ctx.variant !== "private";
-}
-
-function _isInsideUnstableCache(): boolean {
-  return _getGlobalCacheScopeStore(_UNSTABLE_CACHE_ALS_KEY) === true;
-}
-
-/** Whether work is executing inside a cache boundary that owns its reuse. */
-export function isInsideAnyCacheScope(): boolean {
-  return _getUseCacheGuardContext() !== null || _isInsideUnstableCache();
-}
-
-/**
- * Throw if the current execution is inside a "use cache" or unstable_cache()
- * scope. Called by dynamic request APIs (headers, cookies, connection) to
- * prevent request-specific data from being frozen into cached results.
- *
- * @param apiName - The name of the API being called (e.g. "connection()")
- */
-export function throwIfInsideCacheScope(apiName: string): void {
-  if (_isInsidePublicUseCache()) {
-    const error = new Error(
-      `\`${apiName}\` cannot be called inside "use cache". ` +
-        `If you need this data inside a cached function, call \`${apiName}\` ` +
-        "outside and pass the required data as an argument.",
-    );
-    // Record the error on the request context so it survives user try/catch
-    // and can be forwarded to the dev overlay on client-side navigations.
-    // Ported from Next.js: workStore.invalidDynamicUsageError assignment in
-    // packages/next/src/server/app-render/app-render.tsx
-    // https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
-    try {
-      const cacheCtx = _getUseCacheGuardContext();
-      if (cacheCtx) cacheCtx.invalidDynamicUsageError = error;
-      const ctx = getRequestContext();
-      if (ctx) ctx.invalidDynamicUsageError = error;
-      propagateInvalidDynamicUsageError(_getState(), error);
-    } catch {
-      // Ignore — best-effort recording for dev diagnostics
-    }
-    throw error;
-  }
-  if (_isInsideUnstableCache()) {
-    const error = new Error(
-      `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
-        `If you need this data inside a cached function, call \`${apiName}\` ` +
-        "outside and pass the required data as an argument.",
-    );
-    try {
-      const ctx = getRequestContext();
-      if (ctx) ctx.invalidDynamicUsageError = error;
-      propagateInvalidDynamicUsageError(_getState(), error);
-    } catch {
-      // Ignore
-    }
-    throw error;
-  }
 }
 
 /**
@@ -532,10 +425,6 @@ function _areCookiesMutableInCurrentPhase(): boolean {
 
 export function setHeadersAccessPhase(phase: HeadersAccessPhase): HeadersAccessPhase {
   return _setStatePhase(_getState(), phase);
-}
-
-export function getHeadersAccessPhase(): HeadersAccessPhase {
-  return _getState().phase;
 }
 
 /**
@@ -607,11 +496,17 @@ export function restoreDraftModeTransition(cookieHeader: string): void {
   state.draftModeCookieHeader = cookieHeader;
 }
 
+/** Replace request API inputs while retaining dynamic usage and pending mutations. */
+export function replaceHeadersContext(ctx: HeadersContext): void {
+  _getState().headersContext = ctx;
+}
+
 export function setHeadersContext(ctx: HeadersContext | null): void {
   const state = _getState();
   if (ctx !== null) {
     state.headersContext = ctx;
     state.dynamicUsageDetected = false;
+    state.renderDynamicLatch = createRenderDynamicLatch();
     state.renderRequestApiUsage = new Set();
     state.pendingSetCookies = [];
     state.draftModeCookieHeader = null;
@@ -645,6 +540,7 @@ export function runWithHeadersContext<T>(
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.headersContext = ctx;
       uCtx.dynamicUsageDetected = false;
+      uCtx.renderDynamicLatch = createRenderDynamicLatch();
       uCtx.renderRequestApiUsage = new Set();
       uCtx.connectionProbe = null;
       uCtx.pendingSetCookies = [];
@@ -656,6 +552,7 @@ export function runWithHeadersContext<T>(
   const state: VinextHeadersShimState = {
     headersContext: ctx,
     dynamicUsageDetected: false,
+    renderDynamicLatch: createRenderDynamicLatch(),
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
     invalidDynamicUsageError: null,
@@ -1117,6 +1014,11 @@ const DRAFT_MODE_COOKIE = "__prerender_bypass";
  * Get any Set-Cookie header generated by draftMode().enable()/disable().
  * Called by the framework after rendering to attach the header to the response.
  */
+/** Check a pending draft transition without consuming its outgoing cookie. */
+export function hasDraftModeCookieHeader(): boolean {
+  return _getState().draftModeCookieHeader !== null;
+}
+
 export function getDraftModeCookieHeader(): string | null {
   const state = _getState();
   const header = state.draftModeCookieHeader;

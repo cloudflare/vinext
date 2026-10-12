@@ -219,6 +219,38 @@ describe("tryAcquireLockfile", () => {
     result.lockfile.release();
   });
 
+  it("does not recreate the lock when update runs after release", () => {
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root }),
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    result.lockfile.release();
+    result.lockfile.update(baseInfo({ cwd: root, port: 4000 }));
+
+    expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
+  it("does not overwrite a lock that changed owners before update", () => {
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root }),
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const other = baseInfo({ cwd: root, pid: process.pid + 12345, port: 5000 });
+    fs.writeFileSync(getLockfilePath(root), JSON.stringify(other));
+    result.lockfile.update(baseInfo({ cwd: root, port: 4000 }));
+
+    expect(readLockfile(getLockfilePath(root))).toEqual(other);
+    result.lockfile.release();
+  });
+
   it("release() is idempotent", () => {
     const result = tryAcquireLockfile({
       root,

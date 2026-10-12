@@ -20,7 +20,7 @@ import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
 import type { InitialDevServerErrorPayload } from "./server/dev-initial-server-error";
 import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/navigation";
-import type { NextRedirect } from "./config/next-config";
+import type { ClientRedirect } from "./client/client-redirects";
 import type { ClientRewrites } from "./client/client-rewrites";
 
 // `window.next` is declared inline in `./client/window-next.ts` (mirroring
@@ -116,16 +116,16 @@ declare global {
     __VINEXT_PAGES_SSP_PATTERNS__: string[] | undefined;
 
     /** Resolved client-safe Pages Router redirects from next.config.js. */
-    __VINEXT_CLIENT_REDIRECTS__: NextRedirect[] | undefined;
+    __VINEXT_CLIENT_REDIRECTS__: ClientRedirect[] | undefined;
 
     /** Resolved client-safe rewrites from next.config.js. */
     __VINEXT_CLIENT_REWRITES__: ClientRewrites | undefined;
 
     /**
-     * Static `middleware/proxy` matcher config embedded for client-side Pages
-     * Router middleware-effect probes. `undefined` means "match all", matching
-     * Next.js's default when middleware has no matcher or the config was too
-     * dynamic to statically serialize.
+     * Precompiled `middleware/proxy` path matchers embedded for client-side
+     * Pages Router middleware-effect probes. `undefined` means "match all",
+     * matching Next.js's default when middleware has no matcher or the config
+     * was too dynamic to statically serialize.
      */
     __VINEXT_MIDDLEWARE_MATCHER__: unknown;
 
@@ -313,6 +313,14 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __vite_rsc_client_require__: ((id: string) => Promise<unknown>) | undefined;
+
+  /**
+   * Vite RSC's RSC-side server-reference module loader. Set by
+   * `@vitejs/plugin-rsc`; vinext wraps it so server-reference modules are
+   * evaluated outside the request that first names them.
+   */
+  // oxlint-disable-next-line no-var
+  var __vite_rsc_server_require__: ((id: string) => unknown) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +359,7 @@ declare global {
       __VINEXT_BUILD_ID?: string;
 
       /**
-       * Build-only coordination variable set by the `vinext build` CLI so that
+       * Build-only coordination variable set by the top-level Vite build lifecycle so that
        * every vinext() plugin instance in a single build (App Router buildApp +
        * the separate hybrid Pages Router vite.build) resolves the same build ID.
        * Distinct from `__VINEXT_BUILD_ID` (the runtime value baked via `define`)
@@ -362,7 +370,7 @@ declare global {
       /**
        * Public App Router RSC compatibility identity injected via Vite
        * `define`. Used by browser navigation code to reject RSC payloads from
-       * a different vinext build without exposing the raw build ID header.
+       * a different Vite build without exposing the raw build ID header.
        */
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 
@@ -373,7 +381,7 @@ declare global {
       __VINEXT_RSC_BUILD_IDENTITY?: string;
 
       /**
-       * Build-only coordination variable set by the `vinext build` CLI so that
+       * Build-only coordination variable set by the top-level Vite build lifecycle so that
        * every vinext() plugin instance in a single build resolves the same RSC
        * compatibility token (companion to `__VINEXT_SHARED_BUILD_ID`). Never read
        * by dev or standalone createRscCompatibilityId() resolution.
@@ -392,13 +400,13 @@ declare global {
        * per-process random secret would mismatch across isolates because
        * `res.revalidate()`'s loopback `fetch()` can land on a different isolate;
        * a build-baked constant is the same in all of them.
-       * `undefined` unless set during `vinext build` (so dev, and any non-CLI
+       * `undefined` unless set during the Vite build lifecycle (so dev, and any non-CLI
        * build, omit it — see `getRevalidateSecret`'s single-process fallback).
        */
       __VINEXT_REVALIDATE_SECRET?: string;
 
       /**
-       * Build-only coordination variable set by the `vinext build` CLI so that
+       * Build-only coordination variable set by the top-level Vite build lifecycle so that
        * every vinext() plugin instance in a single build (App Router buildApp +
        * the separate hybrid Pages Router vite.build) bakes the same revalidate
        * secret. Companion to `__VINEXT_SHARED_BUILD_ID`; never read by dev or

@@ -1,5 +1,6 @@
 {
   "name": "invalid-esm-package",
+  "private": true,
   "exports": {
     "./entry": {
       "browser": "./browser.js",

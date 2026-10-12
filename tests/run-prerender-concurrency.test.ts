@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import type { PrerenderResult } from "../packages/vinext/src/build/prerender.js";
 
 const {
@@ -184,6 +185,33 @@ describe("runPrerender concurrency", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["entry.js", "index.js"])(
+    "resolves Pages artifacts from the configured SSR output root (%s)",
+    async (entryFile) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-custom-pages-"));
+      const serverDir = path.join(root, "build", "pages");
+      fs.mkdirSync(path.join(root, "pages"));
+      fs.mkdirSync(serverDir, { recursive: true });
+      fs.writeFileSync(path.join(serverDir, entryFile), "export {};\n");
+      fs.writeFileSync(path.join(serverDir, "BUILD_ID"), "pages-build\n");
+
+      try {
+        const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+        await runPrerender({ root, routeRootConfig: { ssrOutDir: "build/pages" } });
+
+        expect(prerenderPagesMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pagesBundlePath: toSlash(path.join(serverDir, entryFile)),
+            outDir: toSlash(path.join(root, "dist", "server", "prerendered-routes")),
+            config: expect.objectContaining({ buildId: "pages-build" }),
+          }),
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("keeps custom RSC builds on the canonical export and manifest roots", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-roots-"));

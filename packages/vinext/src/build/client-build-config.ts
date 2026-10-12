@@ -9,6 +9,7 @@ type ClientAssetFileNameInfo = {
 };
 
 const ROUTE_OWNED_CLIENT_SHIMS = new Set([
+  "app-router-tree-context",
   "compat-router",
   "dynamic",
   "dynamic-preload-chunks",
@@ -339,7 +340,8 @@ export function createMultiStageCodeSplittingConfig(
 
 /**
  * Keep router stage chunks beside the server entry so their generated
- * `./vinext-client-assets.js` external continues to resolve. Other chunks keep
+ * `./vinext-client-assets.js` and deploy-filled cacheability externals continue
+ * to resolve. Other chunks keep
  * the host's existing output pattern (or vinext's server-assets default).
  */
 export function createMultiStageChunkFileNames(
@@ -359,6 +361,7 @@ export function createMultiStageChunkFileNames(
         "pages-request-stage-entry",
         "pages-response-stage-entry",
         "virtual_vinext-rsc-entry",
+        "virtual_vinext-request-stage",
         "virtual_vinext-response-stage",
       ].some((entryName) => name.includes(entryName))
     ) {

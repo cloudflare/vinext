@@ -562,9 +562,12 @@ describe("Pages Worker response stage", () => {
     expect(response.headers.get("Content-Length")).toBeNull();
   });
 
-  it("admits an explicitly public Pages API response", async () => {
+  it("preserves an explicitly public Pages API browser policy without storing it", async () => {
+    const buildResponseHeaders = vi.fn(({ cacheControl, browserCacheControl }) => ({
+      "Cache-Control": browserCacheControl ?? cacheControl,
+    }));
     const adapter: CdnCacheAdapter = {
-      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      buildResponseHeaders,
       ownsBackgroundRevalidation: false,
       requiresCompletedResponseAdmission: true,
       responseVary: "verbatim",
@@ -603,6 +606,10 @@ describe("Pages Worker response stage", () => {
     );
 
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    expect(buildResponseHeaders).toHaveBeenLastCalledWith({
+      cacheControl: "no-store, must-revalidate",
+      browserCacheControl: "public, s-maxage=60",
+    });
     await expect(response.text()).resolves.toBe("public api");
   });
 

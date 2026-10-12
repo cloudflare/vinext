@@ -145,6 +145,7 @@ export function __ensureInstrumentation() {
     filePath: ${JSON.stringify(middlewarePath)},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
+    isStaleDataRequest: options?.isStaleDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
@@ -163,6 +164,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath } from ${JSON.stringify(_pagesDataRoutePath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_revalidationRequestPath)};
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${instrumentationImportCode}
 
 ${instrumentationInitCode}
@@ -176,6 +178,7 @@ export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 export const hasRequestAwareDocument = ${JSON.stringify(hasRequestAwareDocument)};
 export const vinextConfig = ${vinextConfigJson};
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
+export const clientBuildFiles = new Set(__pagesClientAssets.clientBuildFiles ?? []);
 
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(
@@ -459,6 +462,7 @@ export async function runMiddleware(request, ctx, options) {
     filePath: ${JSON.stringify(middlewarePath)},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
+    isStaleDataRequest: options?.isStaleDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
@@ -483,16 +487,16 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
-import { _runWithCacheState } from "vinext/shims/cache-request-state";
+import "vinext/shims/cache-request-state";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
-import { runWithPrivateCache } from "vinext/cache-runtime";
-import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
+import "vinext/cache-runtime";
+import { ensureFetchPatch } from "vinext/fetch-cache";
 import "vinext/router-state";
-import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
-import { runWithHeadState } from "vinext/head-state";
+import "vinext/navigation-state";
+import "vinext/head-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
@@ -559,37 +563,6 @@ __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemoryS
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported
 // by _app are included in every page's <link rel="stylesheet"> set.
 const _appAssetPath = ${appAssetPathJson};
-
-async function _renderToStringAsync(element) {
-  const stream = await renderToReadableStream(element);
-  await stream.allReady;
-  return new Response(stream).text();
-}
-
-async function _renderIsrPassToStringAsync(element, onHeadReady) {
-  // The cache-fill render is a second render pass for the same request.
-  // Reset render-scoped state so it cannot leak from the streamed response
-  // render or affect async work that is still draining from that stream.
-  // Keep request identity state (pathname/query/locale/executionContext)
-  // intact: this second pass still belongs to the same request.
-  return await runWithServerInsertedHTMLState(() =>
-    runWithHeadState(() =>
-      _runWithCacheState(() =>
-        runWithPrivateCache(() =>
-          runWithFetchCache(async () => {
-            const html = await _renderToStringAsync(element);
-            // next/head tags are collected as a side effect of the render
-            // above and live in this ALS scope only, so a caller that wants
-            // the regenerated head has to read it here — after the render,
-            // before the scope unwinds.
-            await onHeadReady?.();
-            return html;
-          }),
-        ),
-      ),
-    ),
-  );
-}
 
 ${pageImports.join("\n")}
 ${apiImports.join("\n")}
@@ -724,7 +697,6 @@ function __createRenderPage() {
     } catch { return []; }
   },
   renderToReadableStream,
-  renderIsrPassToStringAsync: _renderIsrPassToStringAsync,
   safeJsonStringify,
   sanitizeDestination: sanitizeDestinationLocal,
   createPageElement(PageComponent, AppComponent, props) {

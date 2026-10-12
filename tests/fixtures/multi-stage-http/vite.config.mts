@@ -5,7 +5,7 @@ import { httpStageCacheAdapter } from "./http-stage-cache";
 export default defineConfig({
   build: { manifest: true },
   plugins: [
-    vinext({ cache: { cdn: httpStageCacheAdapter() } }),
+    vinext({ cache: { cdn: httpStageCacheAdapter() }, prerender: true }),
     { name: "independent-http-stage-host" },
   ],
 });

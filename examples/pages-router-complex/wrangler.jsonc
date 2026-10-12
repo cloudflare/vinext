@@ -15,15 +15,14 @@
     "binding": "ASSETS"
   },
   "cache": {
-    "enabled": true
+    "enabled": false
   },
   "images": {
     "binding": "IMAGES"
   },
   "kv_namespaces": [
     {
-      "binding": "VINEXT_KV_CACHE",
-      "id": "<your-kv-namespace-id>"
+      "binding": "VINEXT_KV_CACHE"
     }
   ]
 }

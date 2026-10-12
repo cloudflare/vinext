@@ -1,5 +1,6 @@
 {
   "name": "optimized-esm-package",
+  "private": true,
   "type": "module",
   "exports": {
     "./entry": {

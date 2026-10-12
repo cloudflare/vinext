@@ -66,7 +66,6 @@ type ResolveAppPageGenerateStaticParamsSourcesOptions = {
 
 type BuildAppPageElementOptions<TElement> = {
   buildPageElement: () => Promise<TElement>;
-  probePageSpecialError?: () => Promise<AppPageSpecialError | null>;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
   renderSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
@@ -797,9 +796,7 @@ export async function buildAppPageElement<TElement>(
       response: null,
     };
   } catch (error) {
-    const buildSpecialError = options.resolveSpecialError(error);
-    const pageSpecialError = buildSpecialError ? await options.probePageSpecialError?.() : null;
-    const specialError = pageSpecialError ?? buildSpecialError;
+    const specialError = options.resolveSpecialError(error);
     if (specialError) {
       return {
         element: null,

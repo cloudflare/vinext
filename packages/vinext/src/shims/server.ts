@@ -114,6 +114,64 @@ export type RequestInit = globalThis.RequestInit & {
   duplex?: "half";
 };
 
+/**
+ * Workers can hand a GET/HEAD a non-null body (e.g. a GET sent with
+ * Content-Length). Next.js nulls GET/HEAD bodies before user code runs, so a
+ * NextRequest never carries one either.
+ */
+function hasGetOrHeadBody(request: Request): boolean {
+  return (request.method === "GET" || request.method === "HEAD") && request.body !== null;
+}
+
+/**
+ * The Request constructor rejects such a body when it reads a Request init as
+ * a dictionary, as it does for the route handler's tracking Proxy, so rebuild
+ * the init without it. Every other standard field, plus workerd's `cf` and
+ * `fetcher`, is copied so a framed GET builds the same Request as an unframed
+ * one. (`duplex` only applies to a body.)
+ */
+function requestInitFromRequest(request: Request): RequestInit {
+  if (!hasGetOrHeadBody(request)) return request;
+  const cf: unknown = Reflect.get(request, "cf");
+  const fetcher: unknown = Reflect.get(request, "fetcher");
+  const init: RequestInit & { cf?: unknown; fetcher?: unknown } = {
+    method: request.method,
+    headers: request.headers,
+    // An absent body would inherit the input Request's body.
+    body: null,
+    cache: request.cache,
+    credentials: request.credentials,
+    integrity: request.integrity,
+    keepalive: request.keepalive,
+    mode: request.mode,
+    redirect: request.redirect,
+    referrer: request.referrer,
+    referrerPolicy: request.referrerPolicy,
+    signal: request.signal,
+    ...(cf !== undefined ? { cf } : {}),
+    ...(fetcher !== undefined ? { fetcher } : {}),
+  };
+  return init;
+}
+
+/**
+ * A Request input passes its body on unless the init replaces it, so drop a
+ * GET/HEAD input's body when the init keeps the input's method and body. This
+ * covers the requests vinext hands to middleware, route handlers and edge API
+ * routes.
+ */
+function initWithoutInputBody(input: Request, init: RequestInit): RequestInit {
+  if (
+    init instanceof Request ||
+    init.method !== undefined ||
+    init.body !== undefined ||
+    !hasGetOrHeadBody(input)
+  ) {
+    return init;
+  }
+  return { ...init, body: null };
+}
+
 export class NextRequest extends Request {
   private _nextUrl: NextURL;
   private _url: string;
@@ -130,14 +188,19 @@ export class NextRequest extends Request {
     validateURL(rawUrl);
     // Strip nextConfig before passing to super() — it's vinext-internal,
     // not a valid RequestInit property.
-    const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
+    const { nextConfig: _nextConfig, ...plainInit } = init ?? {};
+    // A Request passed as init (e.g. `new NextRequest(url, request)`) keeps its
+    // method, headers and body on Request.prototype, so the spread above copies
+    // none of them. Hand it to super() as-is, like Next.js does.
+    const requestInit: RequestInit =
+      init instanceof Request ? requestInitFromRequest(init) : plainInit;
     if (input instanceof Request) {
       // Transfer the body like Next.js does (`super(input, init)`). Cloning here
       // would tee the stream, and the branch left on `input` buffers the entire
       // body in memory because nothing reads or cancels it. Callers that need
       // the source request to stay readable must branch it themselves and
       // cancel the branch they do not consume.
-      super(input, requestInit);
+      super(input, initWithoutInputBody(input, requestInit));
       const cfDescriptor = Reflect.getOwnPropertyDescriptor(input, "cf");
       if (cfDescriptor) {
         Object.defineProperty(this, "cf", cfDescriptor);

@@ -99,15 +99,17 @@ test("manual refresh loops back into the user Worker without a reverse binding",
   assert.notEqual(response.headers.get("X-Revalidation-Version"), null);
 });
 
-test("service-bound SWR returns stale before its loopback regeneration finishes", async () => {
+test("service-bound Workers Cache SWR caches its first regenerated replacement", async () => {
   const path = `/${key("swr")}`;
   await put(path, "stale", {
-    cacheControl: "public, max-age=1, stale-while-revalidate=20",
+    cacheControl: "public, max-age=3, stale-while-revalidate=20",
     regeneratedBody: "fresh",
     delayMs: 1_000,
   });
-  await (await read(path)).arrayBuffer();
-  await new Promise((resolve) => setTimeout(resolve, 1_800));
+  const initial = await read(path);
+  assert.ok(initial.headers.get("ETag"));
+  await initial.arrayBuffer();
+  await new Promise((resolve) => setTimeout(resolve, 3_800));
 
   const startedAt = Date.now();
   const stale = await read(path);
@@ -115,13 +117,10 @@ test("service-bound SWR returns stale before its loopback regeneration finishes"
   assert.equal(stale.headers.get("CF-Cache-Status"), "UPDATING");
   assert.ok(Date.now() - startedAt < 700, "the stale response should not await regeneration");
 
-  const fresh = await eventually(async () => {
-    const response = await read(path);
-    const body = await response.clone().text();
-    return body === "fresh"
-      ? { ok: true, value: response }
-      : { ok: false, message: `SWR still returned ${JSON.stringify(body)}` };
-  });
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  const fresh = await read(path);
+  assert.equal(await fresh.text(), "fresh");
+  assert.equal(fresh.headers.get("CF-Cache-Status"), "HIT");
   assert.equal(fresh.headers.get("X-Revalidation-Reason"), "swr");
   assert.notEqual(fresh.headers.get("X-Revalidation-Version"), null);
 });

@@ -11,7 +11,7 @@ import {
 
 const ROOT = process.cwd();
 const FIXTURE_ROOT = path.join(ROOT, "tests/fixtures/multi-stage-http");
-const VINEXT_CLI = path.join(ROOT, "packages/vinext/dist/cli.js");
+const VP_CLI = path.join(ROOT, "node_modules/.bin/vp");
 const READY_PREFIX = "VINEXT_HTTP_STAGE_READY:";
 const STAGE_TOKEN = "multi-stage-http-test-token";
 
@@ -221,11 +221,7 @@ beforeAll(async () => {
     fs.symlinkSync(path.join(ROOT, "tests/fixtures/pages-basic/node_modules"), fixtureNodeModules);
     createdNodeModules = true;
   }
-  const buildOutput = await spawnAndWait(process.execPath, [
-    VINEXT_CLI,
-    "build",
-    "--prerender-all",
-  ]);
+  const buildOutput = await spawnAndWait(VP_CLI, ["build"]);
   const manifestPath = path.join(FIXTURE_ROOT, "dist/server/.vite/manifest.json");
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`HTTP stage build did not emit a server manifest\n${buildOutput}`);

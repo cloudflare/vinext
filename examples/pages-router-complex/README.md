@@ -80,9 +80,9 @@ behaviour and may fail under vinext today.
 ## Running
 
 ```bash
-pnpm dev          # vinext dev server (needs RELEASE_TAG for now, see below)
+pnpm dev          # Vite dev server (needs RELEASE_TAG for now, see below)
 pnpm dev:next     # real Next.js dev server (ground truth; --webpack, see below)
-pnpm build        # vinext build (RELEASE_TAG is required and set inline)
+pnpm build        # Vite build (RELEASE_TAG is required and set inline)
 pnpm build:next   # next build
 
 # The behaviour suite (server starts under vinext automatically):
@@ -98,7 +98,7 @@ PLAYWRIGHT_PROJECT=pages-router-complex pnpm run test:e2e
   degrades under it, so the `@atlas/*` alias is wired into both bundlers
   explicitly (webpack hook + Vite `resolve.alias`); tsconfig `paths` (without
   the removed `baseUrl`) stays authoritative for the type checker.
-- **vinext dev (Cloudflare plugin): 65/73 specs pass; the 8 known gaps are
+- **Vite dev (Cloudflare plugin): 65/73 specs pass; the 8 known gaps are
   marked `test.fixme` so the passing surface runs in CI.** Known gaps:
   `generateBuildId` is invoked at dev startup (Next.js only calls it at build
   time — the e2e server exports `RELEASE_TAG` to compensate), shallow routing

@@ -11,6 +11,7 @@ import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
 import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
+import { createAppRouteGraphInterceptionId } from "./app-route-ids.js";
 
 type InterceptingRoute = {
   /** Graph-owned identity for this interception edge. */
@@ -429,14 +430,6 @@ function createAppRouteGraphDefaultId(slotId: string): string {
 const SIBLING_INTERCEPT_SLOT_NAME = "__vinext_sibling_intercept";
 function createAppRouteGraphSiblingInterceptSlotId(sourcePattern: string): string {
   return createAppRouteGraphSlotId(SIBLING_INTERCEPT_SLOT_NAME, sourcePattern);
-}
-
-export function createAppRouteGraphInterceptionId(
-  slotId: string,
-  sourcePattern: string,
-  targetPattern: string,
-): string {
-  return `interception:${slotId}:${sourcePattern}->${targetPattern}`;
 }
 
 function createAppRouteGraphRootBoundaryId(treePath: string): RootBoundaryId {

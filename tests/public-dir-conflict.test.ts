@@ -281,6 +281,14 @@ describe("assertNoPublicDirAssetConflict", () => {
       const conflictResponse = await fetch(`${origin}/_next/static/private.txt`);
       expect(conflictResponse.status).not.toBe(200);
       expect(await conflictResponse.text()).not.toContain("test");
+
+      // Next.js redirects repeated slashes in resolveRoutes, before
+      // next-dev-server.ts checks public/_next.
+      const repeatedSlashResponse = await fetch(`${origin}/_next//static/private.txt`, {
+        redirect: "manual",
+      });
+      expect(repeatedSlashResponse.status).toBe(308);
+      expect(repeatedSlashResponse.headers.get("location")).toBe("/_next/static/private.txt");
     } finally {
       await new Promise<void>((resolve, reject) => {
         httpServer.close((error) => (error ? reject(error) : resolve()));

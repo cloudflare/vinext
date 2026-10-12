@@ -14,6 +14,7 @@
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  */
+import path from "pathslash";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 
@@ -79,12 +80,23 @@ export type CacheAdapterBuildOutput = {
     outDir: string;
     isPrimaryServerOutput: boolean;
   }) => Promise<void> | void;
+  /** Package locally prerendered artifacts after the prerender phase completes. */
+  finalizePrerenderOutput?: (output: {
+    root: string;
+    clientOutDir: string;
+  }) => Promise<void> | void;
 };
 
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
   /**
    * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
-   * default export is a cache adapter factory.
+   * default export creates the adapter from one `{ env, options }` argument:
+   * either a factory `({ env, options }) => adapter` or a class
+   * `new Adapter({ env, options })`. Class syntax is invoked with `new`; any
+   * other function is called. For a constructor that is not class syntax (an
+   * ES5-compiled, bound or Proxy-wrapped class), export
+   * `(args) => new Adapter(args)`. The result must be the adapter object
+   * itself, not a Promise.
    */
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
@@ -107,10 +119,41 @@ export function cacheWarmupStatusSource(
   cache?: VinextCacheConfig | null,
 ): "cloudflare" | "data-cache" | "vinext" {
   if (cache?.cdn?.capabilities?.warmup === "response-store") return "vinext";
+  if (cache?.cdn?.capabilities?.warmup === "data-cache") return "data-cache";
   if (!cache?.cdn?.adapter && cache?.data?.capabilities?.warmup === "data-cache") {
     return "data-cache";
   }
   return "cloudflare";
+}
+
+function prerenderOutputFinalizers(cache?: VinextCacheConfig | null) {
+  return [cache?.data?.output, cache?.cdn?.output]
+    .map((output) =>
+      output && "finalizePrerenderOutput" in output ? output.finalizePrerenderOutput : undefined,
+    )
+    .filter(
+      (finalize): finalize is NonNullable<CacheAdapterBuildOutput["finalizePrerenderOutput"]> =>
+        Boolean(finalize),
+    );
+}
+
+/** Whether a configured adapter consumes locally prerendered build artifacts. */
+export function hasCacheAdapterPrerenderOutput(cache?: VinextCacheConfig | null): boolean {
+  return prerenderOutputFinalizers(cache).length > 0;
+}
+
+/** Let configured adapters package locally prerendered build artifacts. */
+export async function finalizeCacheAdapterPrerenderOutput(
+  cache: VinextCacheConfig | null | undefined,
+  root: string,
+  output: { clientOutDir?: string } = {},
+): Promise<void> {
+  for (const finalize of new Set(prerenderOutputFinalizers(cache))) {
+    await finalize({
+      root,
+      clientOutDir: path.resolve(root, output.clientOutDir ?? "dist/client"),
+    });
+  }
 }
 
 export function hasUncachedRequestRouting(cache?: VinextCacheConfig | null): boolean {
@@ -233,6 +276,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   const lines: string[] = [
     "// vinext: generated from the `cache` option in your vinext() plugin config.",
+    `import { instantiateCacheAdapter } from "vinext/shims/cache-adapter-instantiate";`,
   ];
 
   if (data?.adapter) {
@@ -272,10 +316,10 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (data?.adapter) {
     lines.push(
       "  try {",
-      `    registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: ${inlineOptions(
+      `    registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, { env, options: ${inlineOptions(
         data.adapter,
         data.options,
-      )} }));`,
+      )} }, "data"));`,
     );
     if (dataProvidesBuildIdentity) {
       lines.push(
@@ -294,10 +338,10 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (cdn?.adapter) {
     lines.push(
       "  try {",
-      `    registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+      `    registerCdnCacheAdapter(() => instantiateCacheAdapter(__vinextCdnAdapterFactory, { env, options: ${inlineOptions(
         cdn.adapter,
         cdn.options,
-      )} }));`,
+      )} }, "cdn"));`,
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
         'using the default adapter.\\n" + __vinextFormatAdapterError(error));',

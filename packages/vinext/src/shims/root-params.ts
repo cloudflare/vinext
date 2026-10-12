@@ -1,5 +1,5 @@
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { _recordUseCacheRootParamRead } from "./cache-request-state.js";
+import { _recordUseCacheRootParamRead } from "./internal/cache-context-accessor.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,

@@ -1,22 +1,15 @@
 /**
  * CLI argument parser for the vinext CLI.
  *
- * Parses flags for `vinext dev`, `vinext start`, `vinext build`, etc.
- * Validates that value-taking flags (`--port`, `--hostname`, `--mode`) have actual values
- * rather than silently consuming the next flag or returning NaN/undefined.
+ * Parses the shared flags used by vinext's non-Vite commands.
+ * Validates that value-taking flags have actual values rather than silently
+ * consuming the next flag or returning NaN/undefined.
  */
 
 type ParsedArgs = {
   port?: number;
   hostname?: string;
-  mode?: string;
   help?: boolean;
-  verbose?: boolean;
-  turbopack?: boolean;
-  experimental?: boolean;
-  prerenderAll?: boolean;
-  prerenderConcurrency?: number;
-  precompress?: boolean;
   positionals?: string[];
 };
 
@@ -72,25 +65,13 @@ function parsePort(raw: string, flag: string): number {
   return parsed;
 }
 
-function parsePositiveIntegerArg(raw: string, flag: string): number {
-  if (raw === "") {
-    throw new Error(`${flag} requires a value, but none was provided.`);
-  }
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${flag} expects a positive integer, but got "${raw}".`);
-  }
-  return parsed;
-}
-
 /**
  * Parse CLI arguments into a structured object.
  *
  * Handles both `--flag value` and `--flag=value` forms for value-taking flags.
  *
- * Used by `vinext dev`, `build`, `start`, `lint`, `check`, and `init` commands.
- * The `deploy` command uses `parseDeployArgs` (a `node:util` wrapper) for its
- * own flag set including `--env`, `--skip-build`, etc.
+ * `vinext dev` and `vinext build` bypass this parser and delegate their
+ * arguments directly to Vite.
  */
 export function parseArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = {};
@@ -108,33 +89,6 @@ export function parseArgs(args: string[]): ParsedArgs {
         result.help = true;
         break;
 
-      case "--verbose":
-        result.verbose = true;
-        break;
-
-      case "--turbopack":
-        result.turbopack = true;
-        break;
-
-      case "--experimental-https":
-        result.experimental = true;
-        break;
-
-      case "--prerender-all":
-        result.prerenderAll = true;
-        break;
-
-      case "--prerender-concurrency": {
-        const raw = takeValue(arg, args, i);
-        i++;
-        result.prerenderConcurrency = parsePositiveIntegerArg(raw, arg);
-        break;
-      }
-
-      case "--precompress":
-        result.precompress = true;
-        break;
-
       case "--port":
       case "-p": {
         const raw = takeValue(arg, args, i);
@@ -146,12 +100,6 @@ export function parseArgs(args: string[]): ParsedArgs {
       case "--hostname":
       case "-H": {
         result.hostname = takeValue(arg, args, i);
-        i++;
-        break;
-      }
-
-      case "--mode": {
-        result.mode = takeValue(arg, args, i);
         i++;
         break;
       }
@@ -169,22 +117,6 @@ export function parseArgs(args: string[]): ParsedArgs {
             throw new Error(`--hostname requires a value, but none was provided.`);
           }
           result.hostname = hostRaw;
-          break;
-        }
-        const modeRaw = tryEqualsForm(arg, "mode");
-        if (modeRaw !== null) {
-          if (modeRaw === "") {
-            throw new Error(`--mode requires a value, but none was provided.`);
-          }
-          result.mode = modeRaw;
-          break;
-        }
-        const prerenderConcurrencyRaw = tryEqualsForm(arg, "prerender-concurrency");
-        if (prerenderConcurrencyRaw !== null) {
-          result.prerenderConcurrency = parsePositiveIntegerArg(
-            prerenderConcurrencyRaw,
-            "--prerender-concurrency",
-          );
           break;
         }
         if (!FLAG_PATTERN.test(arg)) {

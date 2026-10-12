@@ -1,6 +1,6 @@
 // Ported from Next.js:
 // test/e2e/app-dir/catch-error/catch-error.test.ts
-// https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/catch-error/catch-error.test.ts
+// https://github.com/vercel/next.js/blob/v16.3.6/test/e2e/app-dir/catch-error/catch-error.test.ts
 import { expect, test } from "@playwright/test";
 import { disableDevErrorOverlay, waitForAppRouterHydration, waitForHydration } from "../helpers";
 
@@ -8,7 +8,7 @@ const BASE = "http://localhost:4185";
 const SERVER_COMPONENT_PROD_ERROR_MESSAGE =
   "An error occurred in the Server Components render. The specific message is omitted in production builds to avoid leaking sensitive details. A digest property is included on this error instance which may provide additional details about the nature of the error.";
 
-test.describe("app-dir - unstable_catchError", () => {
+test.describe("app-dir - catchError", () => {
   test("should recover Client Component error after reset", async ({ page }) => {
     await page.goto(`${BASE}/client-component`);
     await waitForAppRouterHydration(page);
@@ -23,7 +23,7 @@ test.describe("app-dir - unstable_catchError", () => {
     }
   });
 
-  test("should recover Client Component error after unstable_retry", async ({ page }) => {
+  test("should recover Client Component error after retry", async ({ page }) => {
     await page.goto(`${BASE}/client-component`);
     await waitForAppRouterHydration(page);
 
@@ -37,7 +37,7 @@ test.describe("app-dir - unstable_catchError", () => {
     }
   });
 
-  test("should recover Server Component error after unstable_retry", async ({ page }) => {
+  test("should recover Server Component error after retry", async ({ page }) => {
     await page.goto(`${BASE}/server-component`);
     await waitForAppRouterHydration(page);
 

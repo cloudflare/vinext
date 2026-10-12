@@ -14,6 +14,6 @@ export function assertCdnVersionMetadataConfig({
     ? ` declares ${JSON.stringify(configuredBinding)} instead`
     : " does not declare version_metadata";
   throw new Error(
-    `[vinext] Cloudflare CDN warmup requires version metadata binding ${JSON.stringify(binding)}, but the effective Wrangler config${location}${found}. Deploy the generated Wrangler config finalized by cdnAdapter(), or add the binding to this effective config and align cdnAdapter({ versionMetadataBinding }) when using a custom name.`,
+    `[vinext] Cloudflare CDN warmup requires version metadata binding ${JSON.stringify(binding)}, but the effective Wrangler config${location}${found}. Deploy the generated Wrangler config finalized by workersCacheCdnAdapter(), or add the binding to this effective config and align workersCacheCdnAdapter({ versionMetadataBinding }) when using a custom name.`,
   );
 }

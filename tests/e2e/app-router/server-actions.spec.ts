@@ -1,5 +1,4 @@
 import { test, expect } from "@playwright/test";
-import { RSC_FORM_STATE_GLOBAL } from "../../../packages/vinext/src/server/app-browser-hydration";
 import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
@@ -380,6 +379,11 @@ test.describe("useActionState", () => {
       await page.click('button:has-text("Increment")');
 
       await expect(page.locator("#count")).toHaveText("Count: 1");
+      // A static import would load vinext source as CommonJS in this worker, and
+      // later ESM imports of the same modules in the worker would get that copy,
+      // with named exports Node only partially detects.
+      const { RSC_FORM_STATE_GLOBAL } =
+        await import("../../../packages/vinext/src/client/browser-globals.js");
       const html = await page.content();
       expect(html).toContain(RSC_FORM_STATE_GLOBAL);
     } finally {

@@ -6,6 +6,7 @@ import {
   cloneRequestWithUrl,
   createStaticFileSignal,
   filterInternalHeaders,
+  getRepeatedSlashRedirect,
   guardProtocolRelativeUrl,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
@@ -13,6 +14,7 @@ import {
   stripBasePath,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
+  sendRepeatedSlashRedirect,
   validateCsrfOrigin,
   validateServerActionPayload,
   processMiddlewareHeaders,
@@ -27,7 +29,9 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
@@ -43,6 +47,7 @@ import {
 import { withResponseStageVary } from "../packages/vinext/src/server/response-stage-policy.js";
 import {
   readStaticFileSignal,
+  readStaticFileSignalRequestHeaders,
   restoreStaticFileSignalFromTransport,
   serializeStaticFileSignalForTransport,
 } from "../packages/vinext/src/server/static-file-signal.js";
@@ -72,16 +77,26 @@ describe("canonicalizeRequestPathname", () => {
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
 
 describe("guardProtocolRelativeUrl", () => {
-  it("returns 404 for // protocol-relative paths", () => {
-    const res = guardProtocolRelativeUrl("//evil.com");
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(404);
+  // Next.js 308s literal `//` and `\` to the collapsed same-origin path
+  // (base-server.ts / resolve-routes.ts) instead of 404ing them.
+  it("308s // protocol-relative paths to the collapsed path", async () => {
+    const res = guardProtocolRelativeUrl("//evil.com", "?a=1");
+    expect(res?.status).toBe(308);
+    expect(res?.headers.get("location")).toBe("/evil.com?a=1");
+    expect(res?.headers.get("refresh")).toBe("0;url=/evil.com?a=1");
+    expect(await res?.text()).toBe("/evil.com?a=1");
   });
 
-  it("returns 404 for backslash protocol-relative paths", () => {
+  it("308s backslash protocol-relative paths to the collapsed path", () => {
     const res = guardProtocolRelativeUrl("/\\evil.com");
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(404);
+    expect(res?.status).toBe(308);
+    expect(res?.headers.get("location")).toBe("/evil.com");
+  });
+
+  it("308s a bare double slash to the root", () => {
+    const res = guardProtocolRelativeUrl("//");
+    expect(res?.status).toBe(308);
+    expect(res?.headers.get("location")).toBe("/");
   });
 
   // Regression for VULN-126915 / H1 #3576997: encoded backslash in the
@@ -141,6 +156,112 @@ describe("guardProtocolRelativeUrl", () => {
   });
 });
 
+// ── getRepeatedSlashRedirect ────────────────────────────────────────────
+
+describe("getRepeatedSlashRedirect", () => {
+  const locationOf = (rawUrl: string) => {
+    const redirect = getRepeatedSlashRedirect(rawUrl);
+    return redirect === null ? null : redirect.status === 404 ? 404 : redirect.location;
+  };
+
+  // Expected values observed against `next start` (Next.js 16.2.7).
+  it.each([
+    ["//", "/"],
+    ["//?a=1", "/?a=1"],
+    ["//?", "/"],
+    ["//??next=1", "/"],
+    ["//?a=1?b=2", "/?a=1?b=2"],
+    ["/a//?&x", "/a/?&x"],
+    ["///", "/"],
+    ["/\\", "/"],
+    ["//evil.com", "/evil.com"],
+    ["///evil.com", "/evil.com"],
+    ["/\\evil.com", "/evil.com"],
+    ["/\\\\evil.com", "/evil.com"],
+    ["/\\/evil.com", "/evil.com"],
+    ["/about//", "/about/"],
+    ["/about//?x=1//y", "/about/?x=1//y"],
+    ["/docs//", "/docs/"],
+    ["//docs/about", "/docs/about"],
+    ["/a/..//b", "/b"],
+    ["/safe/%2e%2e//admin", "/admin"],
+    ['/foo//?q="x"', "/foo/?q=%22x%22"],
+    ["/a//b#frag", "/a/b#frag"],
+    ["/..//evil.com", "/evil.com"],
+    ["/.//evil.com", "/evil.com"],
+    ["/_next//static/x.js", "/_next/static/x.js"],
+  ])("%s → 308 %s", (rawUrl, expected) => {
+    expect(getRepeatedSlashRedirect(rawUrl)).toEqual({ status: 308, location: expected });
+  });
+
+  // Next.js 308s these to a Location that starts with an encoded slash or
+  // backslash; vinext answers 404 directly instead of echoing or routing it.
+  it.each(["/%2F//evil.com", "//%2Fevil.com", "//%5Cevil.com", "/.//%2Fevil.com", "/a/..//%5C"])(
+    "%s → 404",
+    (rawUrl) => {
+      expect(getRepeatedSlashRedirect(rawUrl)).toEqual({ status: 404 });
+    },
+  );
+
+  it("never returns a protocol-relative or cross-origin Location", () => {
+    const prefixes = ["", "/", "//", "/\\", "\\/", "\\\\", "/./", "/.//", "/../", "/a/../"];
+    const middles = ["", "/", "\\", "//", "\\\\", "%2F", "%5C", "%2f", "%5c", "\t", "\n"];
+    for (const prefix of prefixes) {
+      for (const middle of middles) {
+        for (const suffix of ["evil.com", "/evil.com", "\\evil.com", "evil.com/?q=//x"]) {
+          const location = locationOf(`${prefix}${middle}${suffix}`);
+          if (location === null || location === 404) continue;
+          expect(location.startsWith("/")).toBe(true);
+          expect(isOpenRedirectShaped(location)).toBe(false);
+          expect(new URL(location, "https://victim.example").origin).toBe("https://victim.example");
+        }
+      }
+    }
+  });
+
+  it("leaves paths without literal repeated slashes or backslashes alone", () => {
+    expect(getRepeatedSlashRedirect("/")).toBeNull();
+    expect(getRepeatedSlashRedirect("/about/")).toBeNull();
+    expect(getRepeatedSlashRedirect("/about?next=//evil.com")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%2F")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%5C")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%2F/evil.com")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%5C%5Cevil.com")).toBeNull();
+  });
+
+  it("leaves absolute-form request targets to the 404 guard", () => {
+    expect(getRepeatedSlashRedirect("http://evil.com//x")).toBeNull();
+    expect(getRepeatedSlashRedirect("\\/evil.com")).toBeNull();
+  });
+
+  it("matches WHATWG URL parsing, which strips tabs and newlines first", () => {
+    // Node rejects raw tabs/newlines in the request target with a 400; Worker
+    // and Request-based entries see the URL after the parser has stripped them.
+    const url = new URL("http://victim.example//\tevil.com");
+    expect(url.pathname).toBe("//evil.com");
+    expect(locationOf(url.pathname)).toBe("/evil.com");
+  });
+
+  it("sends the same answers on a Node response", () => {
+    const sent: unknown[] = [];
+    const res = {
+      writeHead: (status: number, headers?: Record<string, string>) => sent.push(status, headers),
+      end: (body: string) => sent.push(body),
+    };
+    expect(sendRepeatedSlashRedirect("/about", res)).toBe(false);
+    expect(sendRepeatedSlashRedirect("//?a=1", res)).toBe(true);
+    expect(sendRepeatedSlashRedirect("/.//%2Fevil.com", res)).toBe(true);
+    expect(sent).toEqual([
+      308,
+      { Location: "/?a=1", Refresh: "0;url=/?a=1" },
+      "/?a=1",
+      404,
+      undefined,
+      "This page could not be found",
+    ]);
+  });
+});
+
 // ── isOpenRedirectShaped ────────────────────────────────────────────────
 
 describe("isOpenRedirectShaped", () => {
@@ -166,6 +287,14 @@ describe("isOpenRedirectShaped", () => {
     expect(isOpenRedirectShaped("/about")).toBe(false);
     expect(isOpenRedirectShaped("/api/users")).toBe(false);
     expect(isOpenRedirectShaped("/%61dmin")).toBe(false);
+  });
+
+  it("detects bare double-slash forms", () => {
+    // A same-origin `http://host//` must not be relativized to `Location: //`.
+    expect(isOpenRedirectShaped("//")).toBe(true);
+    expect(isOpenRedirectShaped("/\\")).toBe(true);
+    expect(isOpenRedirectShaped("/%2F")).toBe(true);
+    expect(isOpenRedirectShaped("/%5c")).toBe(true);
   });
 });
 
@@ -377,6 +506,100 @@ describe("resolvePublicFileRoute", () => {
     expect(response!.headers.get("x-from-middleware")).toBe("1");
   });
 
+  it("carries middleware's request header overrides through the stage transport", async () => {
+    const cookie = "session=" + "x".repeat(4096);
+    const request = new Request("https://example.com/video.mp4", {
+      headers: { accept: "*/*", cookie, "if-none-match": '"original"', range: "bytes=0-1" },
+    });
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/video.mp4",
+      middlewareContext: {
+        headers: new Headers({ "x-from-middleware": "1" }),
+        // NextResponse.next({ request: { headers } }) with Range deleted.
+        requestHeaders: new Headers({
+          "x-middleware-override-headers": "accept,cookie,if-none-match",
+          "x-middleware-request-accept": "video/*",
+          "x-middleware-request-cookie": cookie,
+          "x-middleware-request-if-none-match": '"replaced"',
+        }),
+        status: null,
+      },
+      pathname: "/video.mp4",
+      publicFiles: new Set(["/video.mp4"]),
+      request,
+    });
+
+    const expected = { accept: "video/*", cookie, "if-none-match": '"replaced"' };
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(response!)!)).toEqual(expected);
+    const serialized = serializeStaticFileSignalForTransport(response!, "token");
+    // The headers travel in the body, so the large cookie adds nothing to the
+    // transport's response headers.
+    expect([...serialized.headers].join("").length).toBeLessThan(200);
+    const restored = await restoreStaticFileSignalFromTransport(serialized, "token");
+    expect(readStaticFileSignal(restored)).toBe("%2Fvideo.mp4");
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(restored)!)).toEqual(expected);
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+    expect(restored.headers.get("x-from-middleware")).toBe("1");
+    expect(restored.body).toBeNull();
+  });
+
+  it("restores a null-body middleware status after transporting request headers", async () => {
+    const signal = createStaticFileSignal(
+      "/logo.svg",
+      { headers: null, status: 304 },
+      new Headers({ accept: "image/*" }),
+    );
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(signal, "token"),
+      "token",
+    );
+    expect(restored.status).toBe(304);
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(restored)!)).toEqual({
+      accept: "image/*",
+    });
+  });
+
+  it("ignores an application header under the reserved transport marker name", async () => {
+    const signal = createStaticFileSignal("/logo.svg", {
+      headers: new Headers({ "x-vinext-stage-static-file-request-headers": "app-value" }),
+      status: null,
+    });
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(signal, "token"),
+      "token",
+    );
+    expect(readStaticFileSignal(restored)).toBe("%2Flogo.svg");
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+  });
+
+  it("leaves the asset request headers alone when middleware overrides none", async () => {
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/logo.svg",
+      middlewareContext: { headers: null, requestHeaders: null, status: null },
+      pathname: "/logo.svg",
+      publicFiles: new Set(["/logo.svg"]),
+      request: new Request("https://example.com/logo.svg"),
+    });
+    expect(readStaticFileSignalRequestHeaders(response!)).toBeNull();
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(response!, "token"),
+      "token",
+    );
+    expect(readStaticFileSignalRequestHeaders(restored)).toBeNull();
+  });
+
+  it("rejects transported request headers without the stage token", async () => {
+    const forged = new Response("[]", {
+      headers: {
+        "x-vinext-stage-static-file": "token:%2Flogo.svg",
+        "x-vinext-stage-static-file-request-headers": "other:200",
+      },
+    });
+    const restored = await restoreStaticFileSignalFromTransport(forged, "token");
+    expect(readStaticFileSignal(restored)).toBeNull();
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+  });
+
   it("returns 405 for unsupported methods only after a public file match", async () => {
     const publicFiles = new Set(["/logo.svg", "/about.rsc"]);
     const middlewareContext = { headers: null, status: null };
@@ -419,12 +642,12 @@ describe("resolvePublicFileRoute", () => {
     ).toBeNull();
   });
 
-  it("matches decoded request variants against encoded public-file keys", () => {
+  it("matches decoded request pathnames against decoded public-file keys", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/hello copy.txt",
       middlewareContext: { headers: null, status: null },
       pathname: "/hello%20copy.txt",
-      publicFiles: new Set(["/hello copy.txt", "/hello%20copy.txt"]),
+      publicFiles: new Set(["/hello copy.txt"]),
       request: new Request("https://example.com/hello%20copy.txt", { method: "POST" }),
     });
 
@@ -464,14 +687,14 @@ describe("resolvePublicFileRoute", () => {
     expect(serialized.headers.get("content-type")).toBeNull();
     expect(serialized.headers.get("transfer-encoding")).toBeNull();
     const transported = new Response(serialized.body, serialized);
-    const restored = restoreStaticFileSignalFromTransport(transported, token);
+    const restored = await restoreStaticFileSignalFromTransport(transported, token);
 
     expect(restored.status).toBe(203);
     expect(restored.headers.get("x-from-middleware")).toBe("1");
     expect(restored.headers.get("x-vinext-stage-static-file")).toBeNull();
     expect(readStaticFileSignal(restored)).toBe("%2Fstage%20asset.txt");
 
-    const forged = restoreStaticFileSignalFromTransport(
+    const forged = await restoreStaticFileSignalFromTransport(
       new Response("route handler", {
         headers: { "x-vinext-stage-static-file": `${token}:subverted` },
       }),
@@ -976,7 +1199,9 @@ describe("filterInternalHeaders", () => {
       [VINEXT_CACHEABILITY_PROBE_HEADER]: "forged",
       [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: "forged",
       [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "expected-version",
+      [VINEXT_MW_CTX_HEADER]: "{}",
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
+      [VINEXT_PRERENDER_REWRITTEN_HEADER]: "0",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
       [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: "forged",
@@ -996,9 +1221,11 @@ describe("filterInternalHeaders", () => {
       VINEXT_CACHEABILITY_PROBE_HEADER.toLowerCase(),
       VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER.toLowerCase(),
       VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
+      VINEXT_MW_CTX_HEADER,
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+      VINEXT_PRERENDER_REWRITTEN_HEADER,
       VINEXT_REVALIDATE_HOST_HEADER,
       VINEXT_REVALIDATED_CACHE_TAG_HEADER,
       VINEXT_TRACE_ERROR_HEADER.toLowerCase(),
@@ -1012,7 +1239,9 @@ describe("filterInternalHeaders", () => {
     expect(result.has(VINEXT_CACHEABILITY_PROBE_HEADER)).toBe(false);
     expect(result.has(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER)).toBe(false);
     expect(result.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER)).toBe(false);
+    expect(result.has(VINEXT_MW_CTX_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_REWRITTEN_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe(false);

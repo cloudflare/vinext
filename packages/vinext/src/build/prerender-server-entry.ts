@@ -16,6 +16,7 @@
  */
 import { startProdServer } from "../server/prod-server.js";
 import { NoOpCacheHandler, setCacheHandler } from "vinext/shims/cache-handler";
+import { registerPrerenderCloudflareLoader } from "./prerender-cloudflare-loader.js";
 
 async function main(): Promise<void> {
   const outDir = process.env.VINEXT_PRERENDER_OUTDIR;
@@ -30,6 +31,7 @@ async function main(): Promise<void> {
   // makes this child render byte-identically to the in-process server — no ISR
   // / unstable_cache / fetch-cache reuse across routes within a worker.
   setCacheHandler(new NoOpCacheHandler());
+  registerPrerenderCloudflareLoader();
   const { port } = await startProdServer({
     port: 0,
     host: "127.0.0.1",

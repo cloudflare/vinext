@@ -5,9 +5,10 @@ const PORT = 4177;
 
 function getRawPath(
   path: string,
+  headers: Record<string, string> = {},
 ): Promise<{ body: string; headers: IncomingHttpHeaders; location?: string; status: number }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({ host: "localhost", path, port: PORT }, (res) => {
+    const req = httpRequest({ headers, host: "localhost", path, port: PORT }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (chunk) => (body += chunk));
@@ -71,4 +72,133 @@ test("decodes Pages dynamic params exactly once on Workers", async () => {
   const encodedSlash = await getRawPath("/posts/b%2Fc");
   expect(encodedSlash.status).toBe(200);
   expect(encodedSlash.body).toMatch(/ID: (?:<!-- -->)?b\/c/);
+});
+
+// Next.js 308s any raw path containing a backslash or a repeated slash to the
+// collapsed path (base-server.ts / resolve-routes.ts); encoded leading
+// delimiters stay a 404.
+test("redirects repeated slashes and backslashes like Next.js on Workers", async () => {
+  for (const [path, location] of [
+    ["//", "/"],
+    ["//?a=1", "/?a=1"],
+    ["//evil.com", "/evil.com"],
+    ["///evil.com", "/evil.com"],
+    ["/\\evil.com", "/evil.com"],
+    ["/about//", "/about/"],
+  ] as const) {
+    const response = await getRawPath(path);
+    expect({ path, status: response.status, location: response.location }).toEqual({
+      path,
+      status: 308,
+      location,
+    });
+  }
+  for (const path of ["/%2F", "/%5C", "/%2F/evil.com", "/.//%2Fevil.com"]) {
+    expect({ path, status: (await getRawPath(path)).status }).toEqual({ path, status: 404 });
+  }
+});
+
+// Next.js 16.2.7 matches `/encoded-isr/%6Eew` to `[slug]`, which answers from
+// the prerendered `getStaticProps` page cached under the decoded pathname.
+test("renders an encoded getStaticProps page beside its dynamic sibling on Workers", async () => {
+  // The encoded request renders the page first, for its literal pathname.
+  const encoded = await getRawPath("/encoded-isr/%6Eew");
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("static encoded-isr new at /encoded-isr/new");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-isr/new");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("static encoded-isr new at /encoded-isr/new");
+  }
+});
+
+test("renders an encoded request-time page instead of its static sibling on Workers", async () => {
+  // Without `getStaticProps`, Next.js has no cache entry to answer from, so
+  // the raw-matched `getServerSideProps` page renders.
+  const encoded = await getRawPath("/encoded-ssr/%6Eew");
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("request-time encoded-ssr new");
+
+  const literal = await getRawPath("/encoded-ssr/new");
+  expect(literal.status).toBe(200);
+  expect(literal.body).toContain("static encoded-ssr new");
+});
+
+test("renders an encoded preview request with its raw-matched page on Workers", async () => {
+  // Draft mode has no cache entry to answer from, so the raw-matched
+  // `getStaticProps` page renders, as in Next.js.
+  const enabled = await getRawPath("/api/encoded-isr-preview");
+  expect(enabled.status).toBe(200);
+  const setCookie = enabled.headers["set-cookie"];
+  const cookie = (Array.isArray(setCookie) ? setCookie : [setCookie])
+    .map((value) => String(value).split(";")[0])
+    .join("; ");
+  expect(cookie).toContain("__prerender_bypass=");
+
+  const encoded = await getRawPath("/encoded-isr/%6Eew", { cookie });
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("dynamic encoded-isr new");
+});
+
+test("keeps an encoded dynamic render out of its sibling's ISR entry on Workers", async () => {
+  // `[tab]` matches `/encoded-isr/bob/%73ettings` raw. Next.js 16.2.7 then
+  // stores that render under `/encoded-isr/bob/settings` and serves it to the
+  // literal `settings` page; vinext renders it without caching it.
+  const encoded = await getRawPath("/encoded-isr/bob/%73ettings");
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("tab settings for bob");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-isr/bob/settings");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("settings for bob");
+    expect(literal.body).not.toContain("tab settings");
+  }
+});
+
+test("shares a dynamic Pages ISR entry with its encoded spelling on Workers", async () => {
+  // A fresh slug, so the HIT can only come from the encoded request's render.
+  const slug = `b${Date.now().toString(36)}`;
+  const encoded = await getRawPath(`/encoded-isr/%62${slug.slice(1)}`);
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain(`dynamic encoded-isr ${slug}`);
+
+  const literal = await getRawPath(`/encoded-isr/${slug}`);
+  expect(literal.status).toBe(200);
+  expect(literal.body).toContain(`dynamic encoded-isr ${slug}`);
+  expect(literal.headers["x-vinext-cache"]).toBe("HIT");
+});
+
+// Next.js builds each catch-all element separately, so `["public", "item"]`
+// is `/public/item` and `["encoded/value"]` is `/encoded%2Fvalue`.
+test("admits only listed catch-all elements for fallback false paths on Workers", async () => {
+  const listed = await getRawPath("/static-catchall/public/item");
+  expect(listed.status).toBe(200);
+  expect(listed.body).toContain("static-catchall [&quot;public&quot;,&quot;item&quot;]");
+
+  const listedSlash = await getRawPath("/static-catchall/encoded%2Fvalue");
+  expect(listedSlash.status).toBe(200);
+  expect(listedSlash.body).toContain("static-catchall [&quot;encoded/value&quot;]");
+
+  for (const path of ["/static-catchall/public%2Fitem", "/static-catchall/encoded/value"]) {
+    const unlisted = await getRawPath(path);
+    expect({ path, status: unlisted.status }).toEqual({ path, status: 404 });
+    expect(unlisted.body).not.toContain("static-catchall [");
+  }
+
+  const buildId = listed.body.match(/"buildId":"([^"]+)"/)?.[1];
+  expect(buildId).toBeTruthy();
+  for (const path of ["public/item", "encoded%2Fvalue"]) {
+    const data = await getRawPath(`/_next/data/${buildId}/static-catchall/${path}.json`);
+    expect({ path, status: data.status }).toEqual({ path, status: 200 });
+  }
+  for (const path of ["public%2Fitem", "encoded/value"]) {
+    const data = await getRawPath(`/_next/data/${buildId}/static-catchall/${path}.json`);
+    expect({ path, status: data.status, body: data.body }).toEqual({
+      path,
+      status: 404,
+      body: '{"notFound":true}',
+    });
+  }
 });

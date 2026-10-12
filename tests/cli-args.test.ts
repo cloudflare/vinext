@@ -2,11 +2,11 @@
  * CLI argument parser tests.
  *
  * Tests the parseArgs function extracted from cli.ts, validating that:
- *  - Value-taking flags (`--port`, `--hostname`, `--mode`) error on missing values
+ *  - Value-taking flags (`--port`, `--hostname`) error on missing values
  *  - Value-taking flags error when the next arg is another flag
  *  - `--port` uses strict integer parsing (Number, not parseInt) and range checks
  *  - `--flag=value` forms work correctly
- *  - Boolean flags work as expected
+ *  - Help flags work as expected
  *  - Both long and short forms (`--port`/`-p`, `--hostname`/`-H`) are handled
  */
 import { describe, it, expect } from "vite-plus/test";
@@ -22,53 +22,9 @@ describe("boolean flags", () => {
   it("sets help for -h", () => {
     expect(parseArgs(["-h"])).toMatchObject({ help: true });
   });
-
-  it("sets verbose", () => {
-    expect(parseArgs(["--verbose"])).toMatchObject({ verbose: true });
-  });
-
-  it("sets turbopack", () => {
-    expect(parseArgs(["--turbopack"])).toMatchObject({ turbopack: true });
-  });
-
-  it("sets experimental for --experimental-https", () => {
-    expect(parseArgs(["--experimental-https"])).toMatchObject({ experimental: true });
-  });
-
-  it("sets prerenderAll for --prerender-all", () => {
-    expect(parseArgs(["--prerender-all"])).toMatchObject({ prerenderAll: true });
-  });
-
-  it("sets precompress for --precompress", () => {
-    expect(parseArgs(["--precompress"])).toMatchObject({ precompress: true });
-  });
 });
 
 // ─── --port flag ────────────────────────────────────────────────────────────
-
-describe("--mode", () => {
-  it("parses a build mode value", () => {
-    expect(parseArgs(["--mode", "staging"])).toMatchObject({ mode: "staging" });
-  });
-
-  it("parses --mode=value form", () => {
-    expect(parseArgs(["--mode=test"])).toMatchObject({ mode: "test" });
-  });
-
-  it("throws when --mode has no value", () => {
-    expect(() => parseArgs(["--mode"])).toThrow("--mode requires a value, but none was provided.");
-  });
-
-  it("throws when --mode value is another flag", () => {
-    expect(() => parseArgs(["--mode", "--verbose"])).toThrow(
-      '--mode requires a value, but got "--verbose" which looks like another flag.',
-    );
-  });
-
-  it("throws when --mode= has empty value", () => {
-    expect(() => parseArgs(["--mode="])).toThrow("--mode requires a value, but none was provided.");
-  });
-});
 
 describe("--port / -p", () => {
   it("parses a numeric port value", () => {
@@ -218,58 +174,6 @@ describe("--hostname / -H", () => {
   });
 });
 
-// ─── --prerender-concurrency flag ──────────────────────────────────────────
-
-describe("--prerender-concurrency", () => {
-  it("parses a positive integer value", () => {
-    expect(parseArgs(["--prerender-concurrency", "4"])).toMatchObject({
-      prerenderConcurrency: 4,
-    });
-  });
-
-  it("parses --prerender-concurrency=value form", () => {
-    expect(parseArgs(["--prerender-concurrency=4"])).toMatchObject({
-      prerenderConcurrency: 4,
-    });
-  });
-
-  it("throws when --prerender-concurrency has no value", () => {
-    expect(() => parseArgs(["--prerender-concurrency"])).toThrow(
-      "--prerender-concurrency requires a value, but none was provided.",
-    );
-  });
-
-  it("throws when --prerender-concurrency value is another flag", () => {
-    expect(() => parseArgs(["--prerender-concurrency", "--prerender-all"])).toThrow(
-      '--prerender-concurrency requires a value, but got "--prerender-all" which looks like another flag.',
-    );
-  });
-
-  it("throws for empty --prerender-concurrency value", () => {
-    expect(() => parseArgs(["--prerender-concurrency="])).toThrow(
-      "--prerender-concurrency requires a value, but none was provided.",
-    );
-  });
-
-  it("throws for non-integer --prerender-concurrency value", () => {
-    expect(() => parseArgs(["--prerender-concurrency", "4.5"])).toThrow(
-      '--prerender-concurrency expects a positive integer, but got "4.5".',
-    );
-  });
-
-  it("throws for zero --prerender-concurrency value", () => {
-    expect(() => parseArgs(["--prerender-concurrency", "0"])).toThrow(
-      '--prerender-concurrency expects a positive integer, but got "0".',
-    );
-  });
-
-  it("throws for negative --prerender-concurrency value", () => {
-    expect(() => parseArgs(["--prerender-concurrency=-1"])).toThrow(
-      '--prerender-concurrency expects a positive integer, but got "-1".',
-    );
-  });
-});
-
 // ─── Combined flags ─────────────────────────────────────────────────────────
 
 describe("combined flags", () => {
@@ -293,37 +197,13 @@ describe("combined flags", () => {
       hostname: "0.0.0.0",
     });
   });
-
-  it("parses boolean flags alongside value flags", () => {
-    expect(parseArgs(["--verbose", "--port", "4000", "--hostname", "localhost"])).toMatchObject({
-      verbose: true,
-      port: 4000,
-      hostname: "localhost",
-    });
-  });
 });
 
 // ─── Positional arguments ───────────────────────────────────────────────────
 
-describe("build flags", () => {
-  it("parses build mode alongside precompress", () => {
-    expect(parseArgs(["--mode", "staging", "--precompress"])).toMatchObject({
-      mode: "staging",
-      precompress: true,
-    });
-  });
-});
-
 describe("positional arguments", () => {
   it("keeps positional arguments for commands with directory targets", () => {
     expect(parseArgs(["apps/web"])).toMatchObject({ positionals: ["apps/web"] });
-  });
-
-  it("keeps positionals alongside flags", () => {
-    expect(parseArgs(["apps/web", "--verbose"])).toMatchObject({
-      positionals: ["apps/web"],
-      verbose: true,
-    });
   });
 
   it("does not treat values consumed by flags as positional arguments", () => {

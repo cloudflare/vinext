@@ -9,6 +9,7 @@ import {
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
 import { NextFetchEvent, NextRequest } from "vinext/shims/server";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { normalizePath } from "./normalize-path.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
@@ -32,6 +33,7 @@ import {
   stripBasePath,
 } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import { nextDataMiddlewareMatchPathname } from "./pages-data-route.js";
 import { reportRequestError } from "./instrumentation.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { frameworkTracer } from "./tracer.js";
@@ -85,6 +87,11 @@ type ExecuteMiddlewareOptions = {
    * must derive and forward this from trusted URL normalization.
    */
   isDataRequest?: boolean;
+  /**
+   * The data request names a buildId other than the current build. Adapters
+   * pass it raw to middleware only under `skipProxyUrlNormalize`.
+   */
+  isStaleDataRequest?: boolean;
   isProxy: boolean;
   module: MiddlewareModule;
   normalizedPathname?: string;
@@ -342,7 +349,12 @@ function releaseMiddlewareRequestBody(
   void Promise.allSettled(waitUntilPromises).then(cancel);
 }
 
-export async function executeMiddleware(
+export function executeMiddleware(options: ExecuteMiddlewareOptions): Promise<MiddlewareResult> {
+  // Next.js runs middleware with a work store, in Pages Router apps too.
+  return runInWorkStoreScope(() => executeMiddlewareModule(options));
+}
+
+async function executeMiddlewareModule(
   options: ExecuteMiddlewareOptions,
 ): Promise<MiddlewareResult> {
   const middlewareFn = resolveMiddlewareModuleHandler(options.module, {
@@ -409,7 +421,20 @@ export async function executeMiddleware(
     // not apply outside the basePath.
     return matcher === undefined ? candidate : null;
   };
-  const encodedMatchPathname = prepareMatcherPathname(encodedRequestPathname);
+  // With `skipProxyUrlNormalize`, a Pages data request reaches middleware with
+  // its raw `_next/data` URL. Next.js normalizes a current-build data URL to
+  // its page before matching, so a matcher guarding a page also guards its
+  // data. A stale buildId stays raw, and the matcher is compiled with Next.js's
+  // optional `_next/data/<buildId>` prefix instead.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  const isStaleDataRequest = options.isDataRequest === true && options.isStaleDataRequest === true;
+  const toPageMatcherPathname = (candidate: string | null): string | null =>
+    candidate !== null && options.isDataRequest && !isStaleDataRequest
+      ? (nextDataMiddlewareMatchPathname(candidate) ?? candidate)
+      : candidate;
+  const encodedMatchPathname = toPageMatcherPathname(
+    prepareMatcherPathname(encodedRequestPathname),
+  );
   let decodedMatchPathname = encodedMatchPathname;
   try {
     if (encodedMatchPathname !== null) {
@@ -418,14 +443,18 @@ export async function executeMiddleware(
       // Without i18n, Next.js can discover an encoded basePath on the decoded
       // matcher attempt. With i18n, default-locale insertion has already made
       // that path ineligible for the compiled basePath-prefixed matcher.
-      decodedMatchPathname = prepareMatcherPathname(decodeURIComponent(encodedRequestPathname));
+      decodedMatchPathname = toPageMatcherPathname(
+        prepareMatcherPathname(decodeURIComponent(encodedRequestPathname)),
+      );
     }
   } catch {
     // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
   }
 
   let localeContext: MiddlewareLocaleMatchContext | undefined;
-  if (options.i18nConfig && encodedMatchPathname !== null) {
+  if (isStaleDataRequest) {
+    localeContext = { kind: "next-data" };
+  } else if (options.i18nConfig && encodedMatchPathname !== null) {
     const hostname = normalizeHost(options.request.headers.get("host"), requestUrl.hostname);
     const firstSegment = encodedMatchPathname.split("/", 3)[1];
     const hasLiteralLocale =

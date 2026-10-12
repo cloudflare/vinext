@@ -258,7 +258,7 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   const serverDir = path.join(outDir, "server");
 
   if (!fs.existsSync(clientDir) || !fs.existsSync(serverDir)) {
-    throw new Error(`No build output found in ${outDir}. Run vinext build first.`);
+    throw new Error(`No build output found in ${outDir}. Run vite build first.`);
   }
 
   const standaloneDir = path.join(outDir, "standalone");

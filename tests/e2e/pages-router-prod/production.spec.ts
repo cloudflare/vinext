@@ -1,14 +1,41 @@
+import { testPagesStoragePolicies } from "../pages-storage-policy";
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
+import { waitForHydration } from "../helpers";
 
 /**
  * Production build E2E tests for Pages Router.
  *
- * These tests run against `vinext build` + `vinext start` output,
+ * These tests run against `vite build` + `vinext start` output,
  * NOT the dev server. The production server is started on port 4175
  * via the webServer config in playwright.config.ts.
  */
 const BASE = "http://localhost:4175";
+
+test("staged middleware cookies appear once in production HTML and data", async ({
+  baseURL,
+  request,
+}) => {
+  const base = baseURL ?? BASE;
+  const html = await request.get(`${base}/rewrite-with-cookie`);
+  expect(html.status()).toBe(200);
+  const content = await html.text();
+  const data = JSON.parse(
+    content.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)![1],
+  );
+  const json = await request.get(`${base}/_next/data/${data.buildId}/rewrite-with-cookie.json`);
+  expect(json.status()).toBe(200);
+  for (const response of [html, json]) {
+    const cookies = response
+      .headersArray()
+      .filter(
+        ({ name, value }) =>
+          name.toLowerCase() === "set-cookie" && value.startsWith("rewrite-cookie="),
+      );
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0].value).toBe("rewrite-cookie=visible; Path=/");
+  }
+});
 
 test.describe("Pages Router Production Build", () => {
   test("index page renders with correct content", async ({ page }) => {
@@ -88,6 +115,7 @@ test.describe("Pages Router Production Build", () => {
       // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/getserversideprops/test/index.test.ts
       await page.goto(`${BASE}/`);
+      await waitForHydration(page);
       await page.evaluate((target) => (window as any).next.router.push(target), href);
       await expect(page.getByTestId("error-title")).toBeVisible();
       expect(page.url()).toContain(href);
@@ -98,6 +126,7 @@ test.describe("Pages Router Production Build", () => {
     page,
   }) => {
     await page.goto(`${BASE}/`);
+    await waitForHydration(page);
     await page.evaluate(() =>
       (window as any).next.router.push("/gssp-not-found/first?hiding=true"),
     );
@@ -290,3 +319,5 @@ test.describe("Pages Router Production Build", () => {
 function decodeHtmlText(text: string): string {
   return text.replaceAll("&amp;", "&").replaceAll("&quot;", '"');
 }
+
+testPagesStoragePolicies(BASE);

@@ -5,7 +5,8 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
+import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 import vinext from "../packages/vinext/src/index.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
@@ -47,6 +48,7 @@ async function readStaticClosure(
 
 describe("Cloudflare CDN adapter build output", () => {
   let root: string;
+  let buildCompleted = false;
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-cdn-adapter-build-"));
@@ -90,15 +92,24 @@ describe("Cloudflare CDN adapter build output", () => {
       configFile: false,
       logLevel: "silent",
       plugins: [
-        vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
+        vinext({ appDir: root, cache: { cdn: workersCacheCdnAdapter() } }),
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
-    });
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
+        onComplete() {
+          buildCompleted = true;
+        },
+      },
+    } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
   }, 120_000);
 
   afterAll(async () => {
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("reports lifecycle completion without prerendering before deploy policy is known", () => {
+    expect(buildCompleted).toBe(true);
   });
 
   it("makes the emitted Wrangler config directly deployable without changing source config", async () => {
@@ -208,7 +219,10 @@ describe("Cloudflare CDN adapter build output", () => {
         root: pagesRoot,
         configFile: false,
         logLevel: "silent",
-        plugins: [vinext({ appDir: pagesRoot, cache: { cdn: cdnAdapter() } }), cloudflare()],
+        plugins: [
+          vinext({ appDir: pagesRoot, cache: { cdn: workersCacheCdnAdapter() } }),
+          cloudflare(),
+        ],
       });
       await builder.buildApp();
 
@@ -225,6 +239,10 @@ describe("Cloudflare CDN adapter build output", () => {
       const workerClosure = await readStaticClosure(serverDir, manifest, workerEntry!);
       expect(workerClosure).toContain("cloudflare-workers");
       expect(workerClosure).toContain("enterSpan");
+      const buildId = await fs.readFile(path.join(pagesRoot, "dist/server/BUILD_ID"), "utf8");
+      await expect(
+        fs.stat(path.join(pagesRoot, "dist/client/_next/static", buildId)),
+      ).resolves.toBeDefined();
       await expect(
         fs.readFile(path.join(pagesRoot, "dist/server/__vinext_pregenerated_concrete_paths.js")),
       ).rejects.toMatchObject({ code: "ENOENT" });

@@ -24,6 +24,8 @@ import {
   VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+  VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
@@ -344,7 +346,7 @@ describe("prefetch cache eviction", () => {
 
     prefetchRscResponse(
       fullUrl,
-      Promise.resolve(new Response("full")),
+      Promise.resolve(new Response("full", { headers: { "content-type": "text/x-component" } })),
       null,
       null,
       { onInvalidate: fullInvalidate },
@@ -352,7 +354,7 @@ describe("prefetch cache eviction", () => {
     );
     prefetchRscResponse(
       loadingUrl,
-      Promise.resolve(new Response("loading")),
+      Promise.resolve(new Response("loading", { headers: { "content-type": "text/x-component" } })),
       null,
       null,
       { onInvalidate: loadingInvalidate },
@@ -640,6 +642,29 @@ describe("prefetch cache eviction", () => {
     expect(restored.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
     expect(restored.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"id":"2"}'));
     await expect(restored.text()).resolves.toBe("flight");
+  });
+
+  it("carries streamed redirect headers through snapshot and replay (#3745)", async () => {
+    const response = new Response('0:E{"digest":"NEXT_REDIRECT;push;/about;307;"}', {
+      headers: {
+        "content-type": "text/x-component",
+        [VINEXT_RSC_REDIRECT_HEADER]: "/about",
+        [VINEXT_RSC_REDIRECT_TYPE_HEADER]: "push",
+      },
+    });
+
+    const snapshot = await snapshotRscResponse(response);
+    const restored = restoreRscResponse(snapshot, false);
+
+    expect(restored.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/about");
+    expect(restored.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER)).toBe("push");
+
+    const plain = await snapshotRscResponse(
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    expect(plain).not.toHaveProperty("redirectHeader");
+    expect(plain).not.toHaveProperty("redirectTypeHeader");
+    expect(restoreRscResponse(plain).headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBeNull();
   });
 
   it("carries the server-resolved cacheLife stale time through snapshot and replay", async () => {
@@ -2680,6 +2705,100 @@ describe("prefetch cache eviction", () => {
       preparedElements,
     );
   });
+
+  it("does not prepare elements from a prefetched redirect (#3745)", async () => {
+    const rscUrl = "/redirecting?_rsc=redirect";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RSC_REDIRECT_HEADER]: "/about",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).not.toHaveBeenCalled();
+    const consumed = consumePrefetchResponse("/redirecting", null, null);
+    expect(consumed?.redirectHeader).toBe("/about");
+    expect(consumed?.preparedElements).toBeUndefined();
+  });
+
+  // Ported from Next.js: fetchPrefetchResponse in
+  // packages/next/src/client/components/segment-cache/cache.ts treats a
+  // successful non-Flight response as a miss outside `output: "export"`.
+  it("never decodes or caches a successful non-Flight prefetch response", async () => {
+    const rscUrl = "/download?doc=note&_rsc=download";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+    const response = new Response(':HX"data:text/javascript,0"\n0:null\n', {
+      headers: {
+        "content-disposition": "attachment",
+        "content-type": "text/plain; charset=utf-8",
+      },
+    });
+    const cancelBody = vi.spyOn(response.body!, "cancel");
+    getPrefetchedUrls().add(rscUrl);
+
+    prefetchRscResponse(rscUrl, Promise.resolve(response), null, null, undefined, {
+      prepareSnapshot,
+    });
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).not.toHaveBeenCalled();
+    // The unread body would otherwise keep the request open.
+    expect(cancelBody).toHaveBeenCalledOnce();
+    expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
+    expect(consumePrefetchResponse("/download?doc=note", null, null)).toBeNull();
+  });
+
+  it("accepts a Flight content-type regardless of case", async () => {
+    const rscUrl = "/mixed-case?_rsc=mixed";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "Text/X-Component" } })),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+    expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+  });
+
+  it.each([["text/plain; charset=utf-8"], ["application/octet-stream"], [null]])(
+    "accepts any successful static export prefetch response (content-type %s)",
+    async (contentType) => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+      const rscUrl = "/exported.txt";
+      const prepareSnapshot = vi.fn(async () => ({}) as never);
+      const response = new Response(new TextEncoder().encode("flight"));
+      if (contentType === null) response.headers.delete("content-type");
+      else response.headers.set("content-type", contentType);
+
+      prefetchRscResponse(rscUrl, Promise.resolve(response), null, null, undefined, {
+        prepareSnapshot,
+      });
+      await getPrefetchCache().get(rscUrl)?.pending;
+
+      expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+      expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+    },
+  );
 
   it("preserves the original expiry when consuming a prefetched response", () => {
     const cache = getPrefetchCache();

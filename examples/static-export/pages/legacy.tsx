@@ -6,7 +6,7 @@ type Props = { message: string; source: string };
 
 export const getStaticProps = (() => ({
   props: {
-    message: "This value came from getStaticProps during vinext build.",
+    message: "This value came from getStaticProps during vite build.",
     source: "pages/legacy.tsx",
   },
 })) satisfies GetStaticProps<Props>;

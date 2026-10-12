@@ -30,6 +30,11 @@ import {
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
+import {
+  substituteDestinationParams,
+  substituteRedirectDestinationQuery,
+  type RedirectDestinationQueryPart,
+} from "./destination-params.js";
 
 export {
   normalizeHost,
@@ -80,15 +85,6 @@ const _compiledHeaderSourceCache = new Map<string, RegExp | null>();
  * value string was undefined (no regex needed — use exact string comparison).
  */
 const _compiledConditionCache = new Map<string, RegExp | null>();
-
-/**
- * Cache for destination substitution regexes in substituteDestinationParams.
- *
- * The regex depends only on the set of param keys captured from the matched
- * source pattern. Caching by sorted key list avoids recompiling a new RegExp
- * for repeated redirect/rewrite calls that use the same param shape.
- */
-const _compiledDestinationParamCache = new Map<string, RegExp>();
 
 /**
  * Generic helper for the regex compilation caches above.
@@ -472,6 +468,8 @@ export function applyMiddlewareRequestHeaders(
       method: request.method,
       headers: nextHeaders,
       body: request.body,
+      // Keep observing client disconnects after the header override.
+      signal: request.signal,
       // @ts-expect-error — duplex needed for streaming request bodies
       duplex: request.body ? "half" : undefined,
     });
@@ -796,6 +794,16 @@ export function matchConfigPattern(
 }
 
 /**
+ * A matched config redirect. `destinationQuery` holds the destination query's
+ * parts, split before params were substituted, for merging the request query.
+ */
+export type RedirectMatch = {
+  destination: string;
+  permanent: boolean;
+  destinationQuery: RedirectDestinationQueryPart[];
+};
+
+/**
  * Apply redirect rules from next.config.js.
  * Returns the redirect info if a redirect was matched, or null.
  *
@@ -836,7 +844,7 @@ export function matchRedirect(
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
   onRuleSourceMatch?: (rule: NextRedirect) => void,
-): { destination: string; permanent: boolean } | null {
+): RedirectMatch | null {
   if (redirects.length === 0) return null;
 
   // Strip trailing slash for the locale-static fast path (Map.get on the
@@ -860,7 +868,7 @@ export function matchRedirect(
   // second slash, which is O(n) on the path length but far cheaper than
   // running 63 compiled regexes.
 
-  let localeMatch: { destination: string; permanent: boolean } | null = null;
+  let localeMatch: RedirectMatch | null = null;
   let localeMatchIndex = Infinity;
 
   if (index.localeStatic.size > 0) {
@@ -883,11 +891,10 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        const dest = substituteAndSanitizeDestination(redirect.destination, {
+        localeMatch = resolveRedirectMatch(redirect, {
           [entry.paramName]: "",
           ...conditionParams,
         });
-        localeMatch = { destination: dest, permanent: redirect.permanent };
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
       }
@@ -914,11 +921,10 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          const dest = substituteAndSanitizeDestination(redirect.destination, {
+          localeMatch = resolveRedirectMatch(redirect, {
             [entry.paramName]: localePart,
             ...conditionParams,
           });
-          localeMatch = { destination: dest, permanent: redirect.permanent };
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
         }
@@ -945,12 +951,10 @@ export function matchRedirect(
           ? collectConditionParams(redirect.has, redirect.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      const dest = substituteAndSanitizeDestination(redirect.destination, {
+      return resolveRedirectMatch(redirect, {
         ...params,
         ...conditionParams,
       });
-      return { destination: dest, permanent: redirect.permanent };
     }
   }
 
@@ -996,10 +1000,26 @@ export function matchRewrite(
         ...conditionParams,
       };
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      return substituteAndSanitizeRewriteDestination(rewrite.destination, rewriteParams);
+      return substituteAndSanitizeRewriteDestination(
+        serializeRewriteDestinationTemplate(rewrite.destination),
+        rewriteParams,
+      );
     }
   }
   return null;
+}
+
+/**
+ * Next.js prepareDestination URL-parses the destination template before it
+ * substitutes params, so a literal `é` routes as `%C3%A9` while substituted
+ * values stay verbatim: a captured `../admin` is never resolved to `/admin`.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ */
+function serializeRewriteDestinationTemplate(destination: string): string {
+  if (!destination.startsWith("/") || destination.startsWith("//")) return destination;
+  const parsed = new URL(destination, "http://n");
+  return parsed.pathname + parsed.search + parsed.hash;
 }
 
 /**
@@ -1023,58 +1043,6 @@ export function matchesRewriteSource(
 }
 
 /**
- * Substitute all matched route params into a redirect/rewrite destination.
- *
- * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
- * (`:path*`, `:path+`) in a single pass. Unknown params are left intact.
- */
-function substituteDestinationParams(destination: string, params: Record<string, string>): string {
-  const keys = Object.keys(params);
-  if (keys.length === 0) return destination;
-
-  // Match only the concrete param keys captured from the source pattern.
-  // Sorting longest-first ensures hyphenated names like `auth-method`
-  // win over shorter prefixes like `auth`. The negative lookahead keeps
-  // alphanumeric/underscore suffixes attached, while allowing `-` to act
-  // as a literal delimiter in destinations like `:year-:month`.
-  const sortedKeys = [...keys].sort((a, b) => b.length - a.length);
-  const cacheKey = sortedKeys.join("\0");
-  let paramRe = _compiledDestinationParamCache.get(cacheKey);
-  if (!paramRe) {
-    const paramAlternation = sortedKeys
-      .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-      .join("|");
-    paramRe = new RegExp(`:(${paramAlternation})([+*])?(?![A-Za-z0-9_])`, "g");
-    _compiledDestinationParamCache.set(cacheKey, paramRe);
-  }
-
-  const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
-    value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
-
-  const hashIndex = destination.indexOf("#");
-  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
-  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
-  const queryIndex = beforeHash.indexOf("?");
-
-  if (queryIndex !== -1) {
-    const beforeQuery = beforeHash.slice(0, queryIndex);
-    const query = beforeHash.slice(queryIndex + 1);
-    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
-      query,
-      encodeDestinationQueryParamValue,
-    )}${replaceParams(hash, (value) => value)}`;
-  }
-
-  return replaceParams(destination, (value) => value);
-}
-
-function encodeDestinationQueryParamValue(value: string): string {
-  const params = new URLSearchParams();
-  params.set("", value);
-  return params.toString().slice(1);
-}
-
-/**
  * Substitute params into a redirect/rewrite destination and sanitize the
  * result. Used by every redirect/rewrite branch — the substitution can
  * introduce protocol-relative URLs (e.g. `//evil.com` from a decoded `%2F`
@@ -1083,8 +1051,21 @@ function encodeDestinationQueryParamValue(value: string): string {
 function substituteAndSanitizeDestination(
   destination: string,
   params: Record<string, string>,
+  kind: "redirect" | "rewrite",
 ): string {
-  return sanitizeDestination(substituteDestinationParams(destination, params));
+  return sanitizeDestination(substituteDestinationParams(destination, params, kind));
+}
+
+function resolveRedirectMatch(
+  redirect: NextRedirect,
+  params: Record<string, string>,
+): RedirectMatch {
+  return {
+    // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+    destination: substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
+    permanent: redirect.permanent,
+    destinationQuery: substituteRedirectDestinationQuery(redirect.destination, params),
+  };
 }
 
 /**
@@ -1098,7 +1079,7 @@ function substituteAndSanitizeRewriteDestination(
   destination: string,
   params: Record<string, string>,
 ): string {
-  const rewritten = substituteAndSanitizeDestination(destination, params);
+  const rewritten = substituteAndSanitizeDestination(destination, params, "rewrite");
   if (!shouldAppendRewriteParamsToQuery(destination, params)) return rewritten;
 
   const existingQueryKeys = getDestinationQueryKeys(destination);
@@ -1216,15 +1197,23 @@ export function sanitizeDestination(dest: string): string {
  * still treated as an RSC fetch. Dropping it breaks RSC fetch semantics
  * (issue #1529).
  *
- * Destination query params win — a request param is only carried over when
- * the destination does not already specify that key. Mirrors the merge
- * semantics in `proxyExternalRequest`. External destinations are returned
- * untouched (a config redirect to another origin should not leak the
- * original request's query).
+ * Ported from Next.js's `{ ...requestQuery, ...destinationQuery }` merge and
+ * `stringifyQuery`: request keys keep their order (integer-like keys first, as
+ * in a JS object), a destination key overrides the request value in place,
+ * and destination-only keys follow. Request keys and values are re-encoded;
+ * destination query text is emitted verbatim, except that, like Next.js,
+ * destination strings equal to a request key or value are re-encoded too.
+ * Pass the match's
+ * `destinationQuery` so substituted params keep their value boundaries;
+ * without it the destination's own query is split. External destinations are returned untouched (a config redirect to another
+ * origin should not leak the original request's query).
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
  */
 export function preserveRedirectDestinationQuery(
   destination: string,
   requestSearch: string,
+  destinationQuery?: RedirectDestinationQueryPart[],
 ): string {
   if (requestSearch === "" || requestSearch === "?" || isExternalUrl(destination)) {
     return destination;
@@ -1239,17 +1228,29 @@ export function preserveRedirectDestinationQuery(
 
   const queryIndex = beforeHash.indexOf("?");
   const pathPart = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-  const destQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
 
-  const merged = new URLSearchParams(destQuery);
-  const destKeys = new Set(merged.keys());
+  // Next.js's stringifyQuery re-encodes any string that came from the request
+  // query, including a destination string equal to one.
+  const requestStrings = new Set<string>();
+  const requestParts: Record<string, string[]> = Object.create(null);
   for (const [key, value] of requestParams) {
-    if (!destKeys.has(key)) {
-      merged.append(key, value);
-    }
+    requestStrings.add(key);
+    requestStrings.add(value);
+    (requestParts[key] ??= []).push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+  }
+  const encode = (text: string) => (requestStrings.has(text) ? encodeURIComponent(text) : text);
+
+  const destinationParts: Record<string, string[]> = Object.create(null);
+  for (const [key, keyText, valueText] of destinationQuery ??
+    substituteRedirectDestinationQuery(destination, {})) {
+    (destinationParts[key] ??= []).push(
+      valueText === null ? encode(keyText) : `${encode(keyText)}=${encode(valueText)}`,
+    );
   }
 
-  const mergedQuery = merged.toString();
+  const mergedQuery = Object.values({ ...requestParts, ...destinationParts })
+    .flat()
+    .join("&");
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
 }
 
@@ -1336,13 +1337,21 @@ export async function proxyExternalRequest(
   }
 
   // Enforce a timeout so slow/unresponsive upstreams don't hold connections
-  // open indefinitely (DoS amplification risk on Node.js dev/prod servers).
+  // open indefinitely (DoS amplification risk on Node.js dev/prod servers),
+  // and stop the upstream request when the client disconnects.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(targetUrl.href, { ...init, signal: controller.signal });
+    upstreamResponse = await fetch(targetUrl.href, {
+      ...init,
+      signal: AbortSignal.any([request.signal, controller.signal]),
+    });
   } catch (e) {
+    if (request.signal.aborted && !controller.signal.aborted) {
+      // The client is gone, so this response is never sent.
+      return new Response(null, { status: 499 });
+    }
     if (e instanceof Error && e.name === "AbortError") {
       console.error("[vinext] External rewrite proxy timeout:", targetUrl.href);
       return new Response("Gateway Timeout", { status: 504 });

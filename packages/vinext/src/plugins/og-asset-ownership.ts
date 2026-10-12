@@ -140,9 +140,15 @@ export class OgAssetOwnership {
   private readonly stringAliasesByFirstCharacter = new Map<string, IndexedAlias[]>();
   private regularExpressionAliases: IndexedAlias[] = [];
   private configuredAliases: IndexedAlias[] = [];
+  // Package root lookups (realpath + package.json walk) by specifier and
+  // resolved id. The same dependency import recurs across many importers, and
+  // the lookup only depends on that pair and the configuration. Cleared with
+  // the linked package roots on every reset and reconfigure.
+  private readonly resolvedImportPackageRoots = new Map<string, Promise<string | null>>();
 
   configure(projectRoot: string, aliases: readonly Alias[]): void {
     this.projectRoot = path.resolve(projectRoot);
+    this.resolvedImportPackageRoots.clear();
     this.dependencyPackageNames.clear();
     try {
       const manifest = JSON.parse(
@@ -182,6 +188,7 @@ export class OgAssetOwnership {
 
   reset(): void {
     this.linkedPackageRoots.clear();
+    this.resolvedImportPackageRoots.clear();
   }
 
   shouldTrackImport(source: string): boolean {
@@ -191,30 +198,14 @@ export class OgAssetOwnership {
   }
 
   async recordResolvedImport(source: string, resolvedId: string): Promise<void> {
-    const configuredAlias = this.findAlias(source);
-    const sourcePackageName = packageNameFromSpecifier(source);
-    const expectedPackageName = this.getExpectedPackageName(source);
-    if (configuredAlias === undefined && expectedPackageName === undefined) return;
-
-    let realResolvedPath: string;
-    try {
-      realResolvedPath = await realpathNative(path.resolve(stripViteModuleQuery(resolvedId)));
-    } catch {
-      return;
+    const key = `${source}\0${resolvedId}`;
+    let packageRoot = this.resolvedImportPackageRoots.get(key);
+    if (packageRoot === undefined) {
+      packageRoot = this.findResolvedImportPackageRoot(source, resolvedId);
+      this.resolvedImportPackageRoots.set(key, packageRoot);
     }
-
-    let packageRoot: string | null;
-    if (configuredAlias !== undefined) {
-      packageRoot = await this.resolveAliasPackageRoot(
-        configuredAlias,
-        source,
-        sourcePackageName,
-        realResolvedPath,
-      );
-    } else {
-      packageRoot = await findPackageRoot(path.dirname(realResolvedPath), expectedPackageName);
-    }
-    if (packageRoot !== null) this.linkedPackageRoots.add(packageRoot);
+    const root = await packageRoot;
+    if (root !== null) this.linkedPackageRoots.add(root);
   }
 
   async resolveModuleBoundary(moduleId: string): Promise<OgAssetModuleBoundary | null> {
@@ -303,6 +294,33 @@ export class OgAssetOwnership {
   private getExpectedPackageName(source: string): string | undefined {
     const packageName = packageNameFromSpecifier(source);
     return packageName === null ? undefined : this.dependencyPackageNames.get(packageName);
+  }
+
+  private async findResolvedImportPackageRoot(
+    source: string,
+    resolvedId: string,
+  ): Promise<string | null> {
+    const configuredAlias = this.findAlias(source);
+    const sourcePackageName = packageNameFromSpecifier(source);
+    const expectedPackageName = this.getExpectedPackageName(source);
+    if (configuredAlias === undefined && expectedPackageName === undefined) return null;
+
+    let realResolvedPath: string;
+    try {
+      realResolvedPath = await realpathNative(path.resolve(stripViteModuleQuery(resolvedId)));
+    } catch {
+      return null;
+    }
+
+    if (configuredAlias !== undefined) {
+      return this.resolveAliasPackageRoot(
+        configuredAlias,
+        source,
+        sourcePackageName,
+        realResolvedPath,
+      );
+    }
+    return findPackageRoot(path.dirname(realResolvedPath), expectedPackageName);
   }
 
   private async resolveAliasPackageRoot(

@@ -52,6 +52,12 @@ describe("safeJsonStringify", () => {
         .replace(/\\u0026/g, "&");
       expect(JSON.parse(unescaped)).toEqual(data);
     });
+
+    it("rejects top-level values without a JSON representation", () => {
+      for (const value of [undefined, () => {}, Symbol("missing"), { toJSON: () => undefined }]) {
+        expect(() => safeJsonStringify(value)).toThrow(TypeError);
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

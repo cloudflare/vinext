@@ -1,5 +1,6 @@
 {
   "name": "shared-condition-package",
+  "private": true,
   "type": "module",
   "exports": {
     ".": {

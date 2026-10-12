@@ -70,13 +70,13 @@ All of these resolve automatically to vinext shims. Do not rewrite imports in ap
 
 ## Route Segment Config
 
-| Config            | Supported |
-| ----------------- | --------- |
-| `revalidate`      | Yes       |
-| `dynamic`         | Yes       |
-| `dynamicParams`   | Yes       |
-| `runtime`         | Ignored   |
-| `preferredRegion` | Ignored   |
+| Config            | Supported                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| `revalidate`      | Yes                                                                                    |
+| `dynamic`         | Yes                                                                                    |
+| `dynamicParams`   | Yes                                                                                    |
+| `runtime`         | Partly: edge App Router pages skip ISR outside `cacheComponents`; placement is ignored |
+| `preferredRegion` | Ignored                                                                                |
 
 ## next.config.js Options
 

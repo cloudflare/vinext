@@ -1,12 +1,13 @@
 import { headers as nextHeaders } from "next/headers";
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { recordMiddlewareInvocation } from "./instrumentation-state";
+import { REQUEST_SIGNAL_OVERRIDE_HEADER } from "./lib/request-signal-probe";
 
 /**
  * App Router middleware that uses NextRequest-specific APIs.
  * This tests that the middleware receives a NextRequest (not a plain Request).
  *
- * Also covers OpenNext compat tests (ON-11):
+ * Also covers OpenNext compat tests:
  * - Redirect with cookie setting
  * - Rewrite (URL stays, content from another page)
  * - Rewrite with custom status code
@@ -17,11 +18,52 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Client-disconnect coverage: tests/node-request-cancellation.test.ts
+  if (pathname === "/api/request-signal") {
+    if (!request.nextUrl.searchParams.has("override")) return NextResponse.next();
+    const headers = new Headers(request.headers);
+    headers.set(REQUEST_SIGNAL_OVERRIDE_HEADER, "1");
+    return NextResponse.next({ request: { headers } });
+  }
+
   if (pathname === "/internal-header-secret.txt") {
     return new Response("blocked by middleware", {
       status: 403,
       headers: { "content-type": "text/plain" },
     });
+  }
+
+  // Matched by the decoded-form `/members only/:path*` source below.
+  // A `members=1` cookie admits direct requests; the image optimizer fetches
+  // its source without the caller's cookies, as Next.js does.
+  if (pathname.startsWith("/members%20only/") && request.cookies.get("members")?.value !== "1") {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
+  if (pathname === "/middleware-image-rewrite") {
+    return NextResponse.rewrite(new URL("/_next/image?url=%2Fheart.png&w=640&q=75", request.url));
+  }
+
+  // The image endpoint passes through middleware before it reads a source.
+  if (pathname === "/_next/image" || pathname === "/_vinext/image") {
+    const source = request.nextUrl.searchParams.get("url");
+    if (source === "/image-endpoint-guarded.png") {
+      return new Response("image endpoint blocked by middleware", {
+        status: 403,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    if (source === "/image-endpoint-replaced.png") {
+      const target = request.nextUrl.clone();
+      target.searchParams.set("url", "/heart.png");
+      return NextResponse.rewrite(target);
+    }
+    const response = NextResponse.next();
+    response.headers.set("x-mw-image-endpoint", "true");
+    return response;
   }
 
   if (pathname === "/static-file-header-collision.txt") {
@@ -114,6 +156,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
 
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
   // Ref: opennextjs-cloudflare middleware.ts — redirect with set-cookie header
+  // Same-origin redirect to a double-slash path. vinext must keep the
+  // Location absolute so it never becomes protocol-relative.
+  if (pathname === "/middleware-redirect-double-slash") {
+    return NextResponse.redirect(`${request.nextUrl.origin}//`);
+  }
+
   if (pathname === "/middleware-redirect") {
     return NextResponse.redirect(new URL("/about", request.url), {
       headers: { "set-cookie": "middleware-redirect=success; Path=/" },
@@ -449,9 +497,11 @@ export const config = {
   runtime: "nodejs",
   matcher: [
     "/about",
+    "/api/request-signal",
     "/exists-but-not-routed",
     "/pages-data-rewrite-source",
     "/middleware-redirect",
+    "/middleware-redirect-double-slash",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",
     "/middleware-external-rewrite",
@@ -461,6 +511,10 @@ export const config = {
     "/middleware-blocked",
     "/internal-header-secret.txt",
     "/static-file-header-collision.txt",
+    "/members only/:path*",
+    "/_next/image",
+    "/_vinext/image",
+    "/middleware-image-rewrite",
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",

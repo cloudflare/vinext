@@ -1,4 +1,5 @@
 import type { hydrateRoot, ReactFormState } from "react-dom/client";
+import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
 
 type HydrateRootOptions = NonNullable<Parameters<typeof hydrateRoot>[2]>;
 type HydrateRoot = typeof hydrateRoot;
@@ -9,8 +10,6 @@ type HydrateRootCaughtErrorHandler = NonNullable<HydrateRootOptions["onCaughtErr
 type HydrateRootUncaughtErrorHandler = NonNullable<HydrateRootOptions["onUncaughtError"]>;
 type HydrateRootRecoverableErrorHandler = NonNullable<HydrateRootOptions["onRecoverableError"]>;
 type StartTransition = (action: () => void) => void;
-
-export const RSC_FORM_STATE_GLOBAL = "__VINEXT_RSC_FORM_STATE__";
 
 type FormStateGlobal = {
   [RSC_FORM_STATE_GLOBAL]?: ReactFormState;
@@ -62,4 +61,24 @@ export function hydrateRootInTransition(options: {
   }
 
   return root;
+}
+
+/**
+ * The pathname and query to hydrate with when the initial Flight payload is
+ * fetched instead of embedded, matching what SSR rendered: the query the
+ * server rendered (`X-Vinext-Rendered-Path-And-Search`), which a rewrite may
+ * have changed, under the public pathname `usePathname()` exposes. The
+ * header's path is the rewrite target, so it is never the pathname.
+ */
+export function resolveFetchedHydrationLocation(
+  renderedPathAndSearch: string | null,
+  location: Pick<Location, "origin" | "pathname" | "search">,
+): { pathname: string; search: string } {
+  return {
+    pathname: location.pathname,
+    search:
+      renderedPathAndSearch === null
+        ? location.search
+        : new URL(renderedPathAndSearch, location.origin).search,
+  };
 }

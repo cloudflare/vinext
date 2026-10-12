@@ -11,6 +11,7 @@ import {
   setHeadersAccessPhase,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   executeAppRouteHandler,
@@ -281,7 +282,7 @@ describe("app route handler execution helpers", () => {
         },
       },
       getAndClearPendingCookies() {
-        return ["session=1; Path=/"];
+        return [];
       },
       getCollectedFetchTags() {
         return ["tag:demo"];
@@ -339,7 +340,7 @@ describe("app route handler execution helpers", () => {
     expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("x-middleware")).toBe("present");
-    expect(response.headers.getSetCookie?.()).toEqual(["session=1; Path=/"]);
+    expect(response.headers.getSetCookie?.()).toEqual([]);
     await expect(response.text()).resolves.toBe("ok");
     expect(isrSetCalls).toEqual([
       {
@@ -797,74 +798,78 @@ describe("app route handler execution helpers", () => {
     await expect(response.text()).resolves.toBe("reusable");
   });
 
-  it("preserves an explicit public policy after dynamic reads complete during admission", async () => {
-    const request = new Request("https://example.com/api/explicit-dynamic", {
-      headers: { "x-tenant": "tenant-a" },
-    });
-    const context = createWorkerCacheabilityAdmissionContext(
-      { waitUntil() {} },
-      request,
-      null,
-      "build-a",
-      true,
-    );
-    const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
-    state.route = { kind: "app-route", pattern: "/api/explicit-dynamic" };
-    const dynamicUsage = createDynamicUsageState();
-
-    const executed = await runWithExecutionContext(context, () =>
-      executeAppRouteHandler({
-        buildPageCacheTags() {
-          return [];
-        },
-        cleanPathname: "/api/explicit-dynamic",
-        clearRequestContext() {},
-        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
-        executionContext: null,
-        getAndClearPendingCookies() {
-          return [];
-        },
-        getCollectedFetchTags() {
-          return [];
-        },
-        getDraftModeCookieHeader() {
-          return null;
-        },
-        handler: { dynamic: "auto", revalidate: 60 },
-        handlerFn(trackedRequest) {
-          return Response.json(
-            { tenant: trackedRequest.headers.get("x-tenant") },
-            { headers: { "Cache-Control": "public, s-maxage=60" } },
-          );
-        },
-        isAutoHead: false,
-        isProduction: true,
-        isrRouteKey(pathname) {
-          return pathname;
-        },
-        async isrSet() {
-          throw new Error("dynamic response must not enter origin ISR");
-        },
-        markDynamicUsage: dynamicUsage.markDynamicUsage,
-        method: "GET",
-        middlewareContext: { headers: null, status: null },
-        params: null,
-        reportRequestError() {},
+  it.each(["public, s-maxage=60", "private, max-age=300"])(
+    "preserves explicit %s after dynamic reads during admission",
+    async (policy) => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      const request = new Request("https://example.com/api/explicit-dynamic", {
+        headers: { "x-tenant": "tenant-a" },
+      });
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
         request,
-        revalidateSeconds: 60,
-        routePattern: "/api/explicit-dynamic",
-        setHeadersAccessPhase() {
-          return "render";
-        },
-      }),
-    );
+        null,
+        "build-a",
+        true,
+      );
+      const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+      state.route = { kind: "app-route", pattern: "/api/explicit-dynamic" };
+      const dynamicUsage = createDynamicUsageState();
 
-    expect(state.explicitResponseCachePolicy).toBe(true);
-    expect(state.completedResponseBody).toBeUndefined();
-    const response = await finalizeWorkerCacheabilityResponse(executed, context);
-    expect(response.headers.get("cache-control")).toBe("public, s-maxage=60");
-    await expect(response.json()).resolves.toEqual({ tenant: "tenant-a" });
-  });
+      const executed = await runWithExecutionContext(context, () =>
+        executeAppRouteHandler({
+          buildPageCacheTags() {
+            return [];
+          },
+          cleanPathname: "/api/explicit-dynamic",
+          clearRequestContext() {},
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto", revalidate: 60 },
+          handlerFn(trackedRequest) {
+            return Response.json(
+              { tenant: trackedRequest.headers.get("x-tenant") },
+              { headers: { "Cache-Control": policy } },
+            );
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return pathname;
+          },
+          async isrSet() {
+            throw new Error("dynamic response must not enter origin ISR");
+          },
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: null,
+          reportRequestError() {},
+          request,
+          revalidateSeconds: 60,
+          routePattern: "/api/explicit-dynamic",
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        }),
+      );
+
+      expect(state.explicitResponseCachePolicy).toBe(true);
+      expect(state.completedResponseBody).toBeUndefined();
+      const response = await finalizeWorkerCacheabilityResponse(executed, context);
+      expect(response.headers.get("cache-control")).toBe(policy);
+      await expect(response.json()).resolves.toEqual({ tenant: "tenant-a" });
+    },
+  );
 
   it("records handler-owned public policy separately from framework revalidate policy", async () => {
     async function executeWithHeaders(headers?: HeadersInit) {
@@ -926,6 +931,162 @@ describe("app route handler execution helpers", () => {
     await expect(
       executeWithHeaders({ "Cache-Control": "public, s-maxage=60" }),
     ).resolves.toHaveProperty("explicitResponseCachePolicy", true);
+  });
+
+  // Initial errors are dynamic in Next; an existing ISR entry is handled by the
+  // separate regeneration path (covered in app-route-handler-cache.test.ts).
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/export/routes/app-route.ts
+  it.each([400, 500])("does not initially store a status %s route", async (status) => {
+    for (const revalidateSeconds of [2, Infinity]) {
+      const writes = vi.fn();
+      const request = new Request("https://example.com/api/mixed-methods");
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+        "build-a",
+        true,
+      );
+      const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+      state.route = { kind: "app-route", pattern: "/api/mixed-methods" };
+      const dynamicUsage = createDynamicUsageState();
+
+      await runWithExecutionContext(context, () =>
+        executeAppRouteHandler({
+          buildPageCacheTags() {
+            return [];
+          },
+          cleanPathname: "/api/mixed-methods",
+          clearRequestContext() {},
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: {
+            dynamic: "auto",
+            revalidate: revalidateSeconds === Infinity ? false : revalidateSeconds,
+          },
+          handlerFn() {
+            return new Response("initial error", {
+              status,
+              headers: { "Cache-Control": "private, max-age=300" },
+            });
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return pathname;
+          },
+          isrSet: writes,
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: null,
+          reportRequestError() {},
+          request,
+          revalidateSeconds,
+          routePattern: "/api/mixed-methods",
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        }),
+      );
+      expect(state.outcome?.cacheable).toBe(false);
+      expect(writes).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    [undefined, "private, max-age=300"],
+    ["public, max-age=1", "private, max-age=300"],
+    ["public, max-age=1", undefined],
+  ])("stores completed stream policy from %s to %s", async (initialPolicy, finalPolicy) => {
+    const revalidateSeconds = 60;
+    const writes = vi.fn();
+    const request = new Request("https://example.com/api/mixed-methods");
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+      "build-a",
+      true,
+    );
+    const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+    state.route = { kind: "app-route", pattern: "/api/mixed-methods" };
+    const dynamicUsage = createDynamicUsageState();
+
+    const response = await runWithExecutionContext(context, () =>
+      executeAppRouteHandler({
+        buildPageCacheTags() {
+          return [];
+        },
+        cleanPathname: "/api/mixed-methods",
+        clearRequestContext() {},
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: {
+          dynamic: "auto",
+          revalidate: revalidateSeconds,
+        },
+        handlerFn() {
+          const streamed = new Response(
+            new ReadableStream(
+              {
+                pull(controller) {
+                  if (finalPolicy) streamed.headers.set("Cache-Control", finalPolicy);
+                  else streamed.headers.delete("Cache-Control");
+                  controller.enqueue(new TextEncoder().encode("streamed"));
+                  controller.close();
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+            {
+              headers: initialPolicy ? { "Cache-Control": initialPolicy } : {},
+            },
+          );
+          return streamed;
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return pathname;
+        },
+        isrSet: writes,
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        reportRequestError() {},
+        request,
+        revalidateSeconds,
+        routePattern: "/api/mixed-methods",
+        setHeadersAccessPhase() {
+          return "render";
+        },
+      }),
+    );
+    if (finalPolicy) expect(response.headers.get("Cache-Control")).toBe(finalPolicy);
+    else expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    await expect.poll(() => writes.mock.calls.length).toBe(1);
+    expect(writes.mock.calls[0][1].headers["cache-control"]).toBe(finalPolicy);
+    expect(state.explicitResponseCachePolicy === true).toBe(finalPolicy !== undefined);
   });
 
   it("falls back to private streaming and defers cleanup when completion times out", async () => {

@@ -14,6 +14,8 @@ type RegexNode =
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
 
+// Symbol keys are namespaced by kind so a literal `\.` and the wildcard `.`
+// never share a prefix-trie edge and skip the overlap check.
 type RegexSymbol =
   | { kind: "literal"; key: string; value: string }
   | {
@@ -151,6 +153,7 @@ class RegexParser {
   constructor(
     private readonly pattern: string,
     private readonly ignoreCase: boolean,
+    private readonly namedGroups: boolean,
   ) {}
 
   parse(): RegexNode {
@@ -210,7 +213,7 @@ class RegexParser {
     if (character === ".") {
       return this.node({
         kind: "atom",
-        symbol: { kind: "opaque", key: ".", pattern: ".", ignoreCase: this.ignoreCase },
+        symbol: { kind: "opaque", key: "opaque:.", pattern: ".", ignoreCase: this.ignoreCase },
         fixedWidth: true,
       });
     }
@@ -290,7 +293,12 @@ class RegexParser {
       kind: "atom",
       symbol:
         simpleClassSymbol(raw, this.ignoreCase) ??
-        ({ kind: "opaque", key: raw, pattern: raw, ignoreCase: this.ignoreCase } as const),
+        ({
+          kind: "opaque",
+          key: `opaque:${raw}`,
+          pattern: raw,
+          ignoreCase: this.ignoreCase,
+        } as const),
       fixedWidth: true,
     });
   }
@@ -306,6 +314,14 @@ class RegexParser {
     const shorthand = shorthandClassSymbol(escaped, this.ignoreCase);
     if (shorthand) {
       return this.node({ kind: "atom", symbol: shorthand, fixedWidth: true });
+    }
+    // Numeric and named backreferences match whatever their group captured, so
+    // their language cannot be modelled from the pattern text. Without named
+    // groups, Annex B reads `\k` as a literal `k`.
+    if (escaped === "k" && this.namedGroups && this.pattern[this.index] === "<") {
+      const nameEnd = this.pattern.indexOf(">", this.index);
+      this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
+      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
     }
     if (/\d/.test(escaped)) {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
@@ -325,6 +341,17 @@ class RegexParser {
         Number.parseInt(this.pattern.slice(this.index, this.index + 4), 16),
       );
       this.index += 4;
+    } else if (escaped === "c") {
+      // Annex B: `\c` plus an ASCII letter is one control character. Without
+      // a letter, the backslash is literal and `c` starts the next atom.
+      const letter = this.pattern[this.index];
+      if (letter !== undefined && /[A-Za-z]/.test(letter)) {
+        literal = String.fromCharCode(letter.charCodeAt(0) % 32);
+        this.index++;
+      } else {
+        literal = "\\";
+        this.index--;
+      }
     } else if ("nrtvf0".includes(escaped)) {
       literal = ({ n: "\n", r: "\r", t: "\t", v: "\v", f: "\f", 0: "\0" } as const)[
         escaped as "n" | "r" | "t" | "v" | "f" | "0"
@@ -343,7 +370,7 @@ class RegexParser {
     const raw = `\\${escaped}`;
     return this.node({
       kind: "atom",
-      symbol: { kind: "opaque", key: raw, pattern: raw, ignoreCase: this.ignoreCase },
+      symbol: { kind: "opaque", key: `opaque:${raw}`, pattern: raw, ignoreCase: this.ignoreCase },
       fixedWidth: true,
     });
   }
@@ -495,11 +522,16 @@ function fixedWords(node: RegexNode, budget: WordBudget): RegexSymbol[][] | null
       return words;
     }
     case "repeat": {
-      if (node.min !== node.max || !Number.isFinite(node.max)) return null;
+      // A bounded repeat such as `woff2?` or `x{1,3}` still has a finite
+      // language: the child's words repeated min..max times. Every word is a
+      // separate match path, so `(?:a|aa?)` counts as three ambiguous paths.
+      // Out-of-order ranges such as `{2,1}` are invalid and fail closed.
+      if (!Number.isFinite(node.max) || node.min > node.max) return null;
       let words: RegexSymbol[][] = [[]];
       const childWords = fixedWords(node.child, budget);
       if (!childWords) return null;
-      for (let count = 0; count < node.min; count++) {
+      const repeated: RegexSymbol[][] = node.min === 0 ? [[]] : [];
+      for (let count = 1; count <= node.max; count++) {
         const next: RegexSymbol[][] = [];
         for (const prefix of words) {
           for (const suffix of childWords) {
@@ -517,8 +549,9 @@ function fixedWords(node: RegexNode, budget: WordBudget): RegexSymbol[][] | null
           }
         }
         words = next;
+        if (count >= node.min) repeated.push(...words);
       }
-      return words;
+      return repeated;
     }
   }
 }
@@ -582,28 +615,54 @@ function symbolsMayOverlap(left: RegexSymbol, right: RegexSymbol): boolean {
   return true;
 }
 
+// Whether `word` from `index` on can match a prefix of an existing word, or
+// an existing word can match a prefix of it. Exact-key edges are followed
+// directly. Other edges whose symbols may overlap are explored too, so `\.x`
+// and `.y` stay disjoint through their second symbol. Every step off the
+// exact path counts against the comparison budget.
+function wordMayCollide(
+  node: TrieNode,
+  word: RegexSymbol[],
+  index: number,
+  comparisons: { count: number },
+  branched: boolean,
+): boolean {
+  if (node.terminal) return true;
+  if (index === word.length) return node.edges.size > 0;
+  if (branched && ++comparisons.count > MAX_OPAQUE_COMPARISONS) return true;
+  const symbol = word[index];
+  const exact = node.edges.get(symbol.key);
+  if (exact && wordMayCollide(exact.node, word, index + 1, comparisons, branched)) return true;
+  const candidates = symbol.kind === "literal" ? node.complexEdges : node.edges.values();
+  for (const candidate of candidates) {
+    if (candidate === exact) continue;
+    if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return true;
+    if (
+      symbolsMayOverlap(candidate.symbol, symbol) &&
+      wordMayCollide(candidate.node, word, index + 1, comparisons, true)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function insertPrefixFreeWord(
   root: TrieNode,
   word: RegexSymbol[],
   comparisons: { count: number },
 ): boolean {
+  if (wordMayCollide(root, word, 0, comparisons, false)) return false;
   let node = root;
   for (const symbol of word) {
-    if (node.terminal) return false;
     let edge = node.edges.get(symbol.key);
     if (!edge) {
-      const candidates = symbol.kind === "literal" ? node.complexEdges : node.edges.values();
-      for (const candidate of candidates) {
-        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
-        if (symbolsMayOverlap(candidate.symbol, symbol)) return false;
-      }
       edge = { symbol, node: createTrieNode() };
       node.edges.set(symbol.key, edge);
       if (symbol.kind !== "literal") node.complexEdges.push(edge);
     }
     node = edge.node;
   }
-  if (node.terminal || node.edges.size > 0) return false;
   node.terminal = true;
   return true;
 }
@@ -652,6 +711,7 @@ function ambiguousExpansionFactor(node: RegexNode): number {
     case "repeat": {
       if (node.min !== node.max || !Number.isFinite(node.max)) return 1;
       const childFactor = ambiguousExpansionFactor(node.child);
+      if (childFactor === 1) return 1;
       let factor = 1;
       for (let count = 0; count < node.max; count++) {
         factor *= childFactor;
@@ -832,20 +892,54 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
   }
 }
 
+/**
+ * Whether a RegExp source declares a named group, which turns `\k<name>` into
+ * a backreference. Escaped characters and character classes cannot open one.
+ */
+export function mayHaveNamedGroups(pattern: string): boolean {
+  let inClass = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character === "\\") {
+      index++;
+    } else if (inClass) {
+      if (character === "]") inClass = false;
+    } else if (character === "[") {
+      inClass = true;
+    } else if (
+      character === "(" &&
+      pattern.startsWith("?<", index + 1) &&
+      pattern[index + 3] !== "=" &&
+      pattern[index + 3] !== "!"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * `namedGroups` must describe the whole compiled RegExp when `pattern` is only
+ * a fragment of it. It defaults to scanning `pattern` itself.
+ */
 export function analyzeRegexSafety(
   pattern: string,
-  options: { ignoreCase?: boolean } = {},
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
-  const parser = new RegexParser(pattern, options.ignoreCase === true);
+  const parser = new RegexParser(
+    pattern,
+    options.ignoreCase === true,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
   return findSafetyIssue(node);
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
-  const leftParser = new RegexParser(left, ignoreCase);
-  const rightParser = new RegexParser(right, ignoreCase);
+  const leftParser = new RegexParser(left, ignoreCase, true);
+  const rightParser = new RegexParser(right, ignoreCase, true);
   const leftNode = leftParser.parse();
   const rightNode = rightParser.parse();
   const leftWords = fixedWords(leftNode, { words: 0, symbols: 0, exceeded: false });

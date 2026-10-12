@@ -2,41 +2,16 @@ import { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { methodNotAllowedResponse } from "./http-error-responses.js";
 
-type AppPageMethodPolicyOptions = {
-  dynamicConfig?: string;
-  hasGenerateStaticParams: boolean;
-  isDynamicRoute: boolean;
-  revalidateSeconds: number | null;
-};
-
 type ResolveAppPageMethodResponseOptions = {
+  /** `isAppPageStaticEligible` for the route. */
+  isStaticEligible: boolean;
   middlewareHeaders?: Headers | null;
   request: Pick<Request, "headers" | "method">;
-} & AppPageMethodPolicyOptions;
+};
 
 function isNonGetOrHead(method: string): boolean {
   const normalizedMethod = method.toUpperCase();
   return normalizedMethod !== "GET" && normalizedMethod !== "HEAD";
-}
-
-export function isStaticOrSsgAppPageCandidate(options: AppPageMethodPolicyOptions): boolean {
-  if (options.dynamicConfig === "force-dynamic" || options.revalidateSeconds === 0) {
-    return false;
-  }
-
-  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
-    return true;
-  }
-
-  if (options.revalidateSeconds !== null && options.revalidateSeconds > 0) {
-    return true;
-  }
-
-  if (options.hasGenerateStaticParams) {
-    return true;
-  }
-
-  return !options.isDynamicRoute;
 }
 
 export function resolveAppPageMethodResponse(
@@ -50,7 +25,9 @@ export function resolveAppPageMethodResponse(
     return null;
   }
 
-  if (!isStaticOrSsgAppPageCandidate(options)) {
+  // Next.js answers non-GET/HEAD requests to static and SSG pages with 405.
+  // Dynamic pages render for every method.
+  if (!options.isStaticEligible) {
     return null;
   }
 

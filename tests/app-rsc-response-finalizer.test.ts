@@ -148,7 +148,8 @@ describe("finalizeAppRscResponse — config header application", () => {
       CACHEABILITY_REQUEST_STATE,
     ) as RouteCacheabilityState;
     expect([...state.frameworkResponseCachePolicy!]).toEqual([["cache-control", "no-store"]]);
-    expect(state.finalResponseVetoReason).toContain("next.config headers set a non-cacheable");
+    expect(state.finalResponseVetoReason).toBeUndefined();
+    expect(state.configCdnCachePolicy?.get("cache-control")).toBe("private, no-store");
   });
 
   it("applies a matching config header to a 200 response", async () => {

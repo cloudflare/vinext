@@ -80,10 +80,9 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
     const response = await request.get(pathname, { headers });
     expect(response.ok(), pathname).toBe(true);
     await expect(response.json(), pathname).resolves.toMatchObject({
-      cacheControl: "public, s-maxage=36",
       kind: "pages-page",
       pattern: "/cacheability-pages/gssp-public",
-      state: "static-candidate",
+      state: "dynamic",
       status: 200,
       version: 1,
     });
@@ -156,7 +155,8 @@ test("admits pattern-backed Pages Router responses after each completed render",
       headers: { Accept: pathname.includes("/_next/data/") ? "application/json" : "text/html" },
     });
     expect(response.status(), pathname).toBe(200);
-    expectGatewayRevalidation(response, pathname);
+    expect(response.headers()["cache-control"]).toBe("public, s-maxage=36");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
   }
 
   for (const pathname of [

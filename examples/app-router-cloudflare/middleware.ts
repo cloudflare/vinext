@@ -21,6 +21,9 @@ export function middleware(request: NextRequest) {
     );
   }
   response.headers.set("x-mw-ran", "true");
+  if (request.nextUrl.pathname.startsWith("/api/framed-get")) {
+    response.headers.set("x-mw-body-null", String(request.body === null));
+  }
   return response;
 }
 

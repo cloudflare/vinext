@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 /**
  * Static export E2E tests for the Pages Router.
  *
- * These tests run against a `vinext build` output served as static files.
+ * These tests run against a `vite build` output served as static files.
  * The fixture uses `output: "export"` with Pages Router pages that use
  * getStaticProps and getStaticPaths for pre-rendering.
  */

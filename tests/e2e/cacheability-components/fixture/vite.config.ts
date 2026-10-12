@@ -4,11 +4,11 @@
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import { cdnAdapter } from "../../../../packages/cloudflare/src/cache/cdn-adapter.js";
+import { workersCacheCdnAdapter } from "../../../../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
 
 export default defineConfig({
   plugins: [
-    vinext({ cache: { cdn: cdnAdapter() }, prerender: { routes: "*" } }),
+    vinext({ cache: { cdn: workersCacheCdnAdapter() }, prerender: { routes: "*" } }),
     cloudflare({
       viteEnvironment: {
         name: "rsc",

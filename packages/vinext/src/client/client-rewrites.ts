@@ -1,7 +1,7 @@
 import type { HasCondition, NextRewrite, ResolvedNextConfig } from "../config/next-config.js";
 import { isExternalUrl } from "../utils/external-url.js";
 
-type ClientHasCondition = Omit<HasCondition, "type"> & {
+export type ClientHasCondition = Omit<HasCondition, "type"> & {
   type: "host" | "query";
 };
 
@@ -33,7 +33,7 @@ export type ClientRewrites = {
   fallback: ClientRewrite[];
 };
 
-function isClientHasCondition(condition: HasCondition): condition is ClientHasCondition {
+export function isClientHasCondition(condition: HasCondition): condition is ClientHasCondition {
   switch (condition.type) {
     case "host":
     case "query":

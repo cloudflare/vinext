@@ -9,7 +9,6 @@ import {
 } from "vinext/internal/build/prerender-paths";
 import {
   getPrerenderedConcretePaths,
-  readPrerenderManifest,
   type PrerenderManifest,
   type PrerenderedPathSelectionOptions,
 } from "vinext/internal/server/prerender-manifest";
@@ -79,7 +78,6 @@ const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
-  includeFallbackShells?: boolean;
   /** Use the manifest build identity unless the configured adapter cannot expose it. */
   validateBuildIdentity?: boolean;
 };
@@ -112,6 +110,7 @@ export type PrerenderWarmPlan = {
   buildIdentity?: string;
   deploymentId?: string;
   fallbackRoutePatterns?: PrerenderRoutePattern[];
+  loadingBoundaryRoutePatterns?: string[];
   loadingShellPaths: string[];
   pagesDataPaths?: string[];
   pagesPaths?: string[];
@@ -213,11 +212,18 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                   (route.cacheabilityProbe.routeMayResolve === undefined ||
                     typeof route.cacheabilityProbe.routeMayResolve === "boolean") &&
                   (route.cacheabilityProbe.requestStageMayTerminate === undefined ||
-                    typeof route.cacheabilityProbe.requestStageMayTerminate === "boolean"))),
+                    typeof route.cacheabilityProbe.requestStageMayTerminate === "boolean") &&
+                  (route.cacheabilityProbe.unlisted === undefined ||
+                    typeof route.cacheabilityProbe.unlisted === "boolean"))),
           ))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||
           !manifest.loadingShellPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.loadingBoundaryRoutePatterns !== undefined &&
+        (!Array.isArray(manifest.loadingBoundaryRoutePatterns) ||
+          !manifest.loadingBoundaryRoutePatterns.every(
+            (pattern) => typeof pattern === "string" && pattern.startsWith("/"),
+          ))) ||
       (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
       (manifest.buildIdentity !== undefined && typeof manifest.buildIdentity !== "string") ||
       (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
@@ -236,7 +242,6 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
 
 type PrerenderWarmPlanOptions = {
   includeCanonicalRsc?: boolean;
-  includeFallbackShells?: boolean;
   strict?: boolean;
 };
 
@@ -292,30 +297,7 @@ export function createPrerenderWarmPlan(
         ]),
       )
     : undefined;
-  let htmlPaths = pathPlan.paths;
-  if (options?.includeFallbackShells === true) {
-    const prerenderManifest = readPrerenderManifest(
-      path.join(root, "dist", "server", "vinext-prerender.json"),
-    );
-    if (!prerenderManifest) {
-      console.warn(
-        "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
-      );
-    } else if (!prerenderManifest.buildId || prerenderManifest.buildId !== manifest.buildId) {
-      const message =
-        "[vinext] CDN warmup skipped: prerender manifest buildId does not match dist/server/BUILD_ID.";
-      if (options.strict) throw new Error(message);
-      console.warn(message);
-      htmlPaths = [];
-    } else {
-      htmlPaths = getPrerenderedConcretePaths(prerenderManifest, {
-        includeFallbackShells: true,
-      })
-        .filter((pathname) => pathname.startsWith("/"))
-        .filter((pathname) => !manifest.excludedWarmPaths?.includes(pathname))
-        .map(applyConfig);
-    }
-  }
+  const htmlPaths = pathPlan.paths;
   return {
     ...(manifest.appPaths ? { appPaths: manifest.appPaths.map(applyConfig) } : {}),
     buildId: manifest.buildId,
@@ -323,6 +305,9 @@ export function createPrerenderWarmPlan(
     ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
     ...(manifest.fallbackRoutePatterns
       ? { fallbackRoutePatterns: manifest.fallbackRoutePatterns }
+      : {}),
+    ...(manifest.loadingBoundaryRoutePatterns
+      ? { loadingBoundaryRoutePatterns: manifest.loadingBoundaryRoutePatterns }
       : {}),
     loadingShellPaths: supportsCanonicalRsc
       ? (manifest.loadingShellPaths ?? []).map(applyConfig)
@@ -354,10 +339,7 @@ export function readPrerenderWarmPlan(
   return createPrerenderWarmPlan(root, manifest, options);
 }
 
-export function readPrerenderWarmPaths(
-  root: string,
-  options?: { includeFallbackShells?: boolean; strict?: boolean },
-): string[] {
+export function readPrerenderWarmPaths(root: string, options?: { strict?: boolean }): string[] {
   return readPrerenderWarmPlan(root, options).paths;
 }
 
@@ -912,8 +894,10 @@ function validateBuildIdentity(
   return null;
 }
 
+// A page's notFound(), forbidden(), unauthorized() or redirect() is stored with
+// its status, so its response is a route's own, still subject to admission.
 function isExpectedTerminalStatus(status: number): boolean {
-  return (status >= 300 && status < 400) || status === 404;
+  return (status >= 300 && status < 400) || status === 401 || status === 403 || status === 404;
 }
 
 function validateRscWarmResponse(
@@ -1708,10 +1692,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 export async function warmCdnCacheFromPrerender(
   options: PrerenderCdnWarmOptions,
 ): Promise<CdnWarmResult> {
-  const plan = readPrerenderWarmPlan(options.root, {
-    includeFallbackShells: options.includeFallbackShells,
-    strict: options.strict,
-  });
+  const plan = readPrerenderWarmPlan(options.root, { strict: options.strict });
   const warmPlan = {
     deploymentId: plan.deploymentId,
     loadingShellPaths: plan.loadingShellPaths,

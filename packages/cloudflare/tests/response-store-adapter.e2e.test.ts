@@ -2,8 +2,16 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
-import { Miniflare, type MiniflareOptions } from "miniflare";
+import {
+  fetch as miniflareFetch,
+  Miniflare,
+  Response as MiniflareResponse,
+  type MiniflareOptions,
+  type Request as MiniflareRequest,
+} from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { createRscRequestUrl } from "vinext/internal/server/app-rsc-cache-busting";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "vinext/internal/server/headers";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const appOutput = path.join(root, "examples/response-store-demo/dist/server");
@@ -20,6 +28,7 @@ const responseStoreShards = 4;
 
 let miniflare: Miniflare;
 let workerVersionId: string;
+let upstreamRequests = 0;
 
 async function modules(directory: string, entry: string) {
   const files = (await readdir(directory, { recursive: true })).filter((file) =>
@@ -32,6 +41,33 @@ async function modules(directory: string, entry: string) {
       type: "ESModule" as const,
     })),
   );
+}
+
+// The application Worker with the Response Store in the same Worker.
+async function selfContainedWorker(): Promise<Miniflare> {
+  return new Miniflare({
+    unsafeEphemeralDurableObjects: true,
+    workers: [
+      {
+        bindings: {
+          CF_VERSION_METADATA: {
+            id: crypto.randomUUID(),
+            tag: "test",
+            timestamp: new Date().toISOString(),
+          },
+        },
+        compatibilityDate: "2026-04-08",
+        compatibilityFlags: ["nodejs_compat", "experimental"],
+        durableObjects: {
+          CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+        },
+        modules: await modules(selfContainedAppOutput, "index.js"),
+        name: "app",
+        r2Buckets: { CACHE_BODIES: crypto.randomUUID() },
+        serviceBindings: { ASSETS: async () => new Response(null, { status: 404 }) },
+      },
+    ],
+  } satisfies MiniflareOptions);
 }
 
 async function request(pathname: string, init?: Parameters<Miniflare["dispatchFetch"]>[1]) {
@@ -55,7 +91,7 @@ async function metadataEntries(): Promise<unknown[][]> {
   return Promise.all(
     Array.from({ length: responseStoreShards }, async (_, index) => {
       const metadata = namespace.getByName(
-        `${workerVersionId}:r2-v1:metadata-shard:${index}-of-${responseStoreShards}`,
+        `${workerVersionId}:r2-v2:metadata-shard:${index}-of-${responseStoreShards}`,
       );
       const inspect = Reflect.get(metadata, "inspect");
       assert.equal(typeof inspect, "function");
@@ -64,8 +100,70 @@ async function metadataEntries(): Promise<unknown[][]> {
   );
 }
 
+type StoredResponseEntry = {
+  activeRevision?: unknown;
+  cacheTags?: unknown;
+  freshUntil?: unknown;
+  objectKey?: unknown;
+  responseHeaders?: unknown;
+  revalidator?: { id?: unknown };
+};
+
+// The stored App page responses whose metadata names the path.
+async function responseEntries(pathname: string): Promise<StoredResponseEntry[]> {
+  return ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+    (entry) =>
+      entry.revalidator?.id === "vinext:response" && JSON.stringify(entry).includes(pathname),
+  );
+}
+
+// Every stored metadata entry that names the path, whatever its revalidator,
+// so an absence check also catches a malformed entry.
+async function storedEntriesNaming(pathname: string): Promise<unknown[]> {
+  return (await metadataEntries())
+    .flat()
+    .filter((entry) => JSON.stringify(entry).includes(pathname));
+}
+
+// Whether the R2 body backing each entry holds the entry's active revision.
+// The store publishes metadata before it uploads the body, and reads MISS
+// until the upload lands.
+async function bodiesStored(entries: StoredResponseEntry[]): Promise<boolean> {
+  const bucket = await miniflare.getR2Bucket("CACHE_BODIES", "cache");
+  const stored = await Promise.all(
+    entries.map(async (entry) => {
+      assert.equal(typeof entry.objectKey, "string", JSON.stringify(entry));
+      const object = await bucket.head(entry.objectKey as string);
+      return object?.customMetadata?.latestRevision === String(entry.activeRevision);
+    }),
+  );
+  return stored.every(Boolean);
+}
+
+// Writes run in waitUntil after the response returns, so poll for them, then
+// fail unless exactly `count` entries were published and each body is readable.
+async function waitForStoredEntries(
+  load: () => Promise<StoredResponseEntry[]>,
+  count: number,
+): Promise<void> {
+  let entries = await load();
+  let stored = entries.length >= count && (await bodiesStored(entries));
+  for (let attempt = 0; attempt < 50 && !stored; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    entries = await load();
+    stored = entries.length >= count && (await bodiesStored(entries));
+  }
+  assert.equal(entries.length, count, JSON.stringify(entries));
+  assert.ok(stored, `R2 bodies not stored for ${JSON.stringify(entries)}`);
+}
+
+async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
+  await waitForStoredEntries(() => responseEntries(pathname), count);
+}
+
 beforeEach(async () => {
   workerVersionId = crypto.randomUUID();
+  upstreamRequests = 0;
   const compatibility = {
     compatibilityDate: "2026-04-08",
     compatibilityFlags: ["nodejs_compat", "experimental"],
@@ -84,6 +182,12 @@ beforeEach(async () => {
         },
         modules: await modules(appOutput, "index.js"),
         name: "app",
+        // Answers the demo's https://upstream.test fetches and counts them.
+        outboundService: (outbound: MiniflareRequest) => {
+          if (new URL(outbound.url).hostname !== "upstream.test") return miniflareFetch(outbound);
+          upstreamRequests += 1;
+          return new MiniflareResponse(`upstream:${upstreamRequests}`);
+        },
         serviceBindings: {
           ASSETS: async () => new Response(null, { status: 404 }),
           RESPONSE_STORE: { entrypoint: "ResponseStoreService", name: "cache" },
@@ -107,6 +211,33 @@ afterEach(async () => {
 });
 
 describe("Cloudflare Workers Response Store adapter", () => {
+  test("stores an admitted metadata 404 as a response entry and replays its status", async () => {
+    const pathname = "/metadata-storage/status-404/opengraph-image";
+    const first = await request(pathname);
+    assert.equal(first.status, 404, await first.clone().text());
+    assert.equal(first.headers.get("cache-control"), "private, max-age=300");
+    assert.equal(first.headers.get("x-vinext-cache"), "MISS");
+    const renderId = first.headers.get("x-render-id");
+    await first.arrayBuffer();
+    // Require a real response entry and R2 body; an inner ISR hit is insufficient.
+    await waitForResponseEntries(pathname, 1);
+    const hit = await request(pathname);
+    assert.equal(hit.status, 404);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(hit.headers.get("cache-control"), "private, max-age=300");
+    assert.equal(hit.headers.get("x-render-id"), renderId);
+    await hit.arrayBuffer();
+    const head = await request(pathname, { method: "HEAD" });
+    assert.equal(head.status, 404);
+    assert.equal(await head.text(), "");
+    // Response Store keys GET and HEAD invocations separately.
+    await waitForResponseEntries(pathname, 2);
+    const headHit = await request(pathname, { method: "HEAD" });
+    assert.equal(headHit.status, 404);
+    assert.equal(headHit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await headHit.text(), "");
+  });
+
   test("builds both deployment modes with their configured metadata location hints", async () => {
     const serviceBinding = (await modules(appOutput, "index.js"))
       .map(({ contents }) => contents)
@@ -166,30 +297,458 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
-  test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
-    const inline = new Miniflare({
+  // Response Store failures are handled by the adapter, like storage read failures in
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/file-system-cache.ts
+  test.each([
+    ["response", "throw"],
+    ["response", "500"],
+    ["data", "throw"],
+    ["data", "503"],
+  ])("renders through a %s lookup outage (%s) and recovers", async (stage, failure) => {
+    const isolated = new Miniflare({
       unsafeEphemeralDurableObjects: true,
       workers: [
         {
-          bindings: {
-            CF_VERSION_METADATA: {
-              id: crypto.randomUUID(),
-              tag: "test",
-              timestamp: new Date().toISOString(),
-            },
-          },
           compatibilityDate: "2026-04-08",
           compatibilityFlags: ["nodejs_compat", "experimental"],
-          durableObjects: {
-            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
-          },
-          modules: await modules(selfContainedAppOutput, "index.js"),
+          bindings: { CF_VERSION_METADATA: { id: crypto.randomUUID() } },
+          modules: await modules(appOutput, "index.js"),
           name: "app",
+          serviceBindings: {
+            ASSETS: async () => new Response(null, { status: 404 }),
+            RESPONSE_STORE: { entrypoint: "FaultyResponseStore", name: "cache" },
+          },
+        },
+        {
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          durableObjects: { CACHE_METADATA: { className: "CacheMetadata", useSQLite: true } },
+          name: "cache",
           r2Buckets: { CACHE_BODIES: crypto.randomUUID() },
-          serviceBindings: { ASSETS: async () => new Response(null, { status: 404 }) },
+          modules: [
+            {
+              type: "ESModule",
+              path: "outage.js",
+              contents: `
+                import { ResponseStoreService, CacheMetadata, ResponseStoreBinding } from "./service.js";
+                export { CacheMetadata, ResponseStoreBinding };
+                let unavailable = true;
+                export class FaultyResponseStore extends ResponseStoreService {
+                  read(request, invocation) {
+                    const isData = new URL(request.url).hostname === "vinext-data-cache.invalid";
+                    if (unavailable && isData === ${stage === "data"}) {
+                      ${failure === "throw" ? 'throw new Error("Durable Object is overloaded. Requests queued for too long.");' : `return new Response("store unavailable", { status: ${failure} });`}
+                    }
+                    return super.read(request, invocation);
+                  }
+                  put(request, response, options, invocation) {
+                    if (unavailable && ${stage === "response"}) {
+                      throw new Error("Durable Object is overloaded. Requests queued for too long.");
+                    }
+                    return super.put(request, response, options, invocation);
+                  }
+                }
+                export default { fetch() { unavailable = false; return new Response("recovered"); } };
+              `,
+            },
+            ...(await modules(cacheOutput, "service.js")),
+          ],
         },
       ],
     } satisfies MiniflareOptions);
+
+    try {
+      const url = `https://app.test/${stage === "data" ? "use-cache" : "api/now"}`;
+      const first = await isolated.dispatchFetch(url);
+      const body = await first.text();
+      assert.equal(first.status, 200, body);
+      if (stage === "data") assert.ok(htmlValue(body, "use-cache-value"));
+      else {
+        assert.ok(JSON.parse(body).renderId);
+        assert.equal(first.headers.get("x-vinext-cache"), "MISS");
+      }
+
+      await (await isolated.getWorker("cache")).fetch("https://cache.test/recover");
+      const recovered = await isolated.dispatchFetch(url);
+      const recoveredBody = await recovered.text();
+      assert.equal(recovered.status, 200, recoveredBody);
+      if (stage === "data") {
+        assert.equal(
+          htmlValue(recoveredBody, "use-cache-value"),
+          htmlValue(body, "use-cache-value"),
+        );
+      } else {
+        assert.equal(recovered.headers.get("x-vinext-cache"), "MISS");
+        const hit = await isolated.dispatchFetch(url);
+        assert.equal(hit.status, 200);
+        assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+        assert.equal(await hit.text(), recoveredBody);
+      }
+    } finally {
+      await isolated.dispose();
+    }
+  });
+
+  test("stores a static page with no revalidate source until it is revalidated", async () => {
+    const first = await cacheStatus("/static-default");
+    const second = await cacheStatus("/static-default");
+    assert.equal(first.status, "MISS");
+    assert.equal(second.status, "HIT");
+    assert.equal(
+      htmlValue(second.body, "static-default-render-id"),
+      htmlValue(first.body, "static-default-render-id"),
+    );
+
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const firstRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    await firstRsc.arrayBuffer();
+    const secondRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    await secondRsc.arrayBuffer();
+    assert.equal(secondRsc.status, 200);
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+  });
+
+  test("never stores a dynamic-segment route without generateStaticParams", async () => {
+    const first = await request("/dynamic-segment/a");
+    const firstBody = await first.text();
+    const second = await request("/dynamic-segment/a");
+    const secondBody = await second.text();
+    const rsc = await request("/dynamic-segment/a.rsc?_rsc=", {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    await rsc.text();
+
+    for (const response of [first, second, rsc]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(
+        response.headers.get("cache-control"),
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    }
+    assert.notEqual(
+      htmlValue(firstBody, "dynamic-segment-render-id"),
+      htmlValue(secondBody, "dynamic-segment-render-id"),
+    );
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /dynamic-segment/);
+  });
+
+  test("shares one App page entry across queries and recomposes RSC params and path", async () => {
+    const pathname = "/cached/query-identity";
+    const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+    const first = await cacheStatus(`${pathname}?q=${firstQuery}`);
+    const second = await cacheStatus(`${pathname}?utm_source=${secondQuery}`);
+    assert.equal(first.status, "MISS");
+    assert.equal(second.status, "HIT");
+    assert.equal(htmlValue(second.body, "rendered-at"), htmlValue(first.body, "rendered-at"));
+    assert.doesNotMatch(second.body, new RegExp(firstQuery));
+
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const firstRsc = await request(`${pathname}?q=${firstQuery}&_rsc`, rscInit);
+    const firstRscBody = await firstRsc.text();
+    const secondRsc = await request(`${pathname}?q=${secondQuery}&_rsc`, rscInit);
+    assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await secondRsc.text(), firstRscBody);
+    const params = encodeURIComponent(JSON.stringify({ slug: "query-identity" }));
+    for (const [response, query] of [
+      [firstRsc, firstQuery],
+      [secondRsc, secondQuery],
+    ] as const) {
+      assert.equal(response.headers.get("x-vinext-params"), params);
+      assert.equal(
+        response.headers.get("x-vinext-rendered-path-and-search"),
+        encodeURIComponent(`${pathname}?q=${query}`),
+      );
+    }
+
+    const routeEntries = (await metadataEntries())
+      .flat()
+      .map((entry) => JSON.stringify(entry))
+      .filter((entry) => entry.includes('"vinext:response"') && entry.includes(pathname));
+    assert.equal(routeEntries.length, 2, JSON.stringify(routeEntries));
+    for (const entry of routeEntries) {
+      assert.doesNotMatch(entry, new RegExp(`${firstQuery}|${secondQuery}`));
+    }
+  });
+
+  // Next.js stores a page's notFound() with its 404 and answers a Link's
+  // segment prefetch of it with a 200, so the router renders the fallback
+  // without loading the document. The prefetch shares the navigation's entry.
+  test("sends a stored notFound() page's RSC entry to a Link's segment prefetch as a 200", async () => {
+    const pathname = "/special-error/not-found";
+    const navigationHeaders = { Accept: "text/x-component", RSC: "1" };
+    // A client navigation's URL, whose cache identity the prefetch shares.
+    const miss = await request(`${pathname}?_rsc`, { headers: navigationHeaders });
+    await miss.arrayBuffer();
+    await waitForResponseEntries(pathname, 1);
+
+    const navigation = await request(`${pathname}?_rsc`, { headers: navigationHeaders });
+    assert.equal(navigation.status, 404);
+    assert.equal(navigation.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(navigation.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER), null);
+    assert.match(await navigation.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
+
+    const prefetchHeaders = new Headers({
+      ...navigationHeaders,
+      "Next-Router-Prefetch": "1",
+      "Next-Router-Segment-Prefetch": "/__PAGE__",
+    });
+    const prefetch = await request(await createRscRequestUrl(pathname, prefetchHeaders), {
+      headers: Object.fromEntries(prefetchHeaders),
+    });
+    assert.equal(prefetch.status, 200);
+    assert.equal(prefetch.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(prefetch.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER), null);
+    assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
+  });
+
+  // An html-limited bot blocks on metadata, so generateMetadata()'s notFound()
+  // rejects the shell. As in Next.js, its 404 is stored and served to every
+  // user agent.
+  test("stores the 404 an html-limited bot gets from generateMetadata()'s notFound()", async () => {
+    const pathname = "/special-error/metadata-not-found";
+    const miss = await request(pathname, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+    });
+    assert.equal(miss.status, 404);
+    await miss.arrayBuffer();
+    await waitForResponseEntries(pathname, 1);
+
+    const hit = await request(pathname);
+    assert.equal(hit.status, 404);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    await hit.arrayBuffer();
+  });
+
+  test("serves a request without a query from the entries a canary query filled", async () => {
+    const pathname = "/static-default";
+    const canary = crypto.randomUUID();
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const html = await request(`${pathname}?canary=${canary}`);
+    await html.text();
+    const rsc = await request(`${pathname}.rsc?canary=${canary}&_rsc=`, rscInit);
+    await rsc.arrayBuffer();
+    assert.equal(html.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(rsc.status, 200);
+    await waitForResponseEntries(pathname, 2);
+
+    const queryless = await request(pathname);
+    const querylessBody = await queryless.text();
+    const querylessRsc = await request(`${pathname}.rsc?_rsc=`, rscInit);
+    const storedRscBody = await querylessRsc.text();
+    assert.equal(queryless.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(querylessRsc.headers.get("x-vinext-cache"), "HIT");
+    // Each request gets its own representation, not the other's stored entry.
+    assert.match(queryless.headers.get("content-type") ?? "", /^text\/html/);
+    assert.match(querylessRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+    assert.doesNotMatch(querylessBody, new RegExp(canary));
+    assert.doesNotMatch(storedRscBody, new RegExp(canary));
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), new RegExp(canary));
+  });
+
+  test("never stores an on-demand generateStaticParams path whose render reads cookies()", async () => {
+    // The listed path renders statically and is stored.
+    assert.equal((await cacheStatus("/generated-cookies/listed")).status, "MISS");
+    await waitForResponseEntries("/generated-cookies/listed", 1);
+    assert.equal((await cacheStatus("/generated-cookies/listed")).status, "HIT");
+    // An unlisted path that skips cookies() is stored too, so the bailout
+    // below comes from the cookie read, not from the path being unlisted.
+    const staticUnlisted = "/generated-cookies/static-unlisted";
+    const staticMiss = await cacheStatus(staticUnlisted);
+    assert.equal(staticMiss.status, "MISS");
+    await waitForResponseEntries(staticUnlisted, 1);
+    const staticHit = await cacheStatus(staticUnlisted);
+    assert.equal(staticHit.status, "HIT");
+    assert.equal(
+      htmlValue(staticHit.body, "generated-cookies-render-id"),
+      htmlValue(staticMiss.body, "generated-cookies-render-id"),
+    );
+
+    const pathname = "/generated-cookies/on-demand";
+    const first = await request(pathname);
+    const firstBody = await first.text();
+    const second = await request(pathname);
+    const secondBody = await second.text();
+    const rsc = await request(`${pathname}.rsc?_rsc=`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    await rsc.text();
+    // A Flight response, so this exercises the RSC render and its cache write.
+    assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
+
+    for (const response of [first, second, rsc]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    // The HTML shell waits for the page, so its cookies() read comes first.
+    for (const response of [first, second]) {
+      assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    }
+    // The RSC response streams before the page reads cookies(), so it carries
+    // the pending policy, which is no-store like Next.js's dynamic render.
+    assert.equal(rsc.headers.get("cache-control"), "no-store, must-revalidate");
+    // The dynamic page, rendered per request.
+    assert.notEqual(
+      htmlValue(firstBody, "generated-cookies-render-id"),
+      htmlValue(secondBody, "generated-cookies-render-id"),
+    );
+    // Writes run in waitUntil after the response returns, so hold the absence
+    // through the same window the other tests poll for a publication, checking
+    // after every delay, including the last.
+    assert.deepEqual(await storedEntriesNaming(pathname), []);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(await storedEntriesNaming(pathname), []);
+    }
+    // Two publication polls and the absence window, 2.5s each, plus requests.
+  }, 15_000);
+
+  test("keeps a page whose cacheLife revalidates after 60 seconds fresh for 60 seconds", async () => {
+    const pathname = "/cache-life";
+    const requestedAt = Date.now();
+    const first = await cacheStatus(pathname);
+    await waitForResponseEntries(pathname, 1);
+    const hit = await request(pathname);
+    const hitBody = await hit.text();
+    const [entry, ...otherEntries] = await responseEntries(pathname);
+    const checkedAt = Date.now();
+
+    assert.equal(first.status, "MISS");
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(
+      htmlValue(hitBody, "cache-life-render-id"),
+      htmlValue(first.body, "cache-life-render-id"),
+    );
+    // Browsers revalidate every reuse; the Response Store owns freshness.
+    assert.equal(hit.headers.get("cache-control"), "private, max-age=0, must-revalidate");
+    assert.ok(entry, "missing the stored /cache-life entry");
+    assert.equal(otherEntries.length, 0);
+    // The entry's policy is the page's s-maxage=60, scoped to the edge.
+    const headers = new Headers(entry.responseHeaders as [string, string][]);
+    assert.match(headers.get("cloudflare-cdn-cache-control") ?? "", /^public, max-age=60(,|$)/);
+    const freshUntil = Number(entry.freshUntil);
+    assert.ok(
+      freshUntil >= requestedAt + 59_000 && freshUntil <= checkedAt + 61_000,
+      `fresh for ${freshUntil - requestedAt}ms after the request`,
+    );
+  });
+
+  test("keeps the query out of a static page that reads useSearchParams() inside Suspense", async () => {
+    // One stored document serves every query, as Next.js prerenders it once.
+    const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+    const first = await request(`/search-params/suspense?q=${firstQuery}`);
+    const firstBody = await first.text();
+    const second = await request(`/search-params/suspense?q=${secondQuery}`);
+    const secondBody = await second.text();
+
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal(first.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(second.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(
+      htmlValue(secondBody, "search-suspense-render-id"),
+      htmlValue(firstBody, "search-suspense-render-id"),
+    );
+    for (const body of [firstBody, secondBody]) {
+      // The server renders the fallback, and the browser reads the query.
+      assert.equal(htmlValue(body, "search-fallback"), "loading");
+      assert.doesNotMatch(body, new RegExp(`${firstQuery}|${secondQuery}`));
+      assert.match(body, /searchParamsFromBrowser:true/);
+      assert.match(body, /"searchParams":\[\]/);
+    }
+  });
+
+  test("fails a static page that reads useSearchParams() outside Suspense", async () => {
+    const url = `/search-params/unwrapped/on-demand?q=${crypto.randomUUID()}`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await request(url);
+      await response.text();
+      assert.equal(response.status, 500);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /unwrapped/);
+  });
+
+  test("server-renders the real query on a page that turns dynamic", async () => {
+    const query = crypto.randomUUID();
+    const url = `/search-params/dynamic?q=${query}`;
+    const first = await request(url);
+    const firstBody = await first.text();
+    const second = await request(url);
+    const secondBody = await second.text();
+
+    for (const response of [first, second]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    assert.equal(htmlValue(firstBody, "search-value"), query);
+    // The render is dynamic before the head is written, so the payload keeps
+    // the server's query instead of deferring to the browser URL.
+    assert.doesNotMatch(firstBody, /searchParamsFromBrowser:true/);
+    assert.match(firstBody, new RegExp(`"searchParams":\\[\\["q","${query}"\\]\\]`));
+    assert.notEqual(
+      htmlValue(secondBody, "search-dynamic-render-id"),
+      htmlValue(firstBody, "search-dynamic-render-id"),
+    );
+  });
+
+  test("stores a static client page that doesn't read searchParams", async () => {
+    const query = crypto.randomUUID();
+    const url = `/client-search-params/ignores?q=${query}`;
+    const first = await cacheStatus(url);
+    const second = await cacheStatus(url);
+
+    assert.equal(first.status, "MISS");
+    assert.equal(second.status, "HIT");
+    assert.equal(
+      htmlValue(second.body, "client-search-render-id"),
+      htmlValue(first.body, "client-search-render-id"),
+    );
+    for (const { body } of [first, second]) {
+      assert.doesNotMatch(body, new RegExp(query));
+    }
+
+    // The page's searchParams no longer travel through Flight.
+    const rsc = await request(`/client-search-params/ignores.rsc?q=${query}&_rsc=`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    assert.equal(rsc.status, 200);
+    assert.doesNotMatch(await rsc.text(), new RegExp(query));
+  });
+
+  test("never stores a static client page that reads searchParams", async () => {
+    const query = crypto.randomUUID();
+    const url = `/client-search-params/reads?q=${query}`;
+    const first = await request(url);
+    const firstBody = await first.text();
+    const second = await request(url);
+    const secondBody = await second.text();
+    const queryless = await request("/client-search-params/reads");
+    const querylessBody = await queryless.text();
+    const querylessAgain = await request("/client-search-params/reads");
+    const querylessAgainBody = await querylessAgain.text();
+
+    for (const response of [first, second, queryless, querylessAgain]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    // The read makes the render dynamic, so SSR renders the real query.
+    assert.equal(htmlValue(firstBody, "client-search-value"), query);
+    assert.equal(htmlValue(querylessBody, "client-search-value"), "(none)");
+    assert.notEqual(
+      htmlValue(secondBody, "client-search-render-id"),
+      htmlValue(firstBody, "client-search-render-id"),
+    );
+    assert.notEqual(
+      htmlValue(querylessAgainBody, "client-search-render-id"),
+      htmlValue(querylessBody, "client-search-render-id"),
+    );
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /client-search-params/);
+  });
+
+  test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
+    const inline = await selfContainedWorker();
 
     try {
       const fetch = () => inline.dispatchFetch("https://app.test/api/now");
@@ -205,6 +764,51 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.equal(await stale.text(), firstBody);
       await new Promise((resolve) => setTimeout(resolve, 300));
       assert.notEqual(await (await fetch()).text(), firstBody);
+    } finally {
+      await inline.dispose();
+    }
+  });
+
+  // Next.js stores the page before it evaluates the ETag, so a crawler's
+  // conditional request that fills a cold entry gets a 304 while later
+  // visitors get the stored page.
+  test("stores a Pages page whole when a crawler's conditional request fills it in one Worker", async () => {
+    const inline = await selfContainedWorker();
+    const fetch = (headers?: Record<string, string>) =>
+      inline.dispatchFetch("https://app.test/pages-prewarm", { headers });
+
+    try {
+      const conditional = await fetch({
+        // Fetch adds Cache-Control: no-cache to a conditional request without
+        // one, and no-cache skips the 304.
+        "Cache-Control": "max-age=0",
+        "If-None-Match": "*",
+        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      });
+      assert.equal(conditional.status, 304);
+      assert.equal(conditional.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(await conditional.text(), "");
+      assert.ok(conditional.headers.get("etag"));
+
+      // Wait for the stored page itself, so a poll never fills the entry.
+      const bucket = await inline.getR2Bucket("CACHE_BODIES");
+      let statuses: (string | undefined)[] = [];
+      for (let attempt = 0; attempt < 50 && statuses.length === 0; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 50));
+        const { objects } = await bucket.list({ include: ["customMetadata"] });
+        statuses = objects
+          .filter((object) => object.customMetadata?.responseHeaders?.includes("text/html"))
+          .map((object) => object.customMetadata?.status);
+      }
+      assert.deepEqual(statuses, ["200"]);
+
+      for (const headers of [undefined, { "Cache-Control": "no-cache" }]) {
+        const visitor = await fetch(headers);
+        assert.equal(visitor.status, 200, JSON.stringify(headers));
+        assert.equal(visitor.headers.get("x-vinext-cache"), "HIT");
+        assert.equal(visitor.headers.get("etag"), conditional.headers.get("etag"));
+        assert.match(await visitor.text(), /Pages prewarm target/);
+      }
     } finally {
       await inline.dispose();
     }
@@ -251,7 +855,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("passes adapter sharding into the Response Store", async () => {
     await Promise.all(
       Array.from({ length: 16 }, async (_, index) => {
-        const response = await request(`/cached/local?shard=${index}`);
+        const response = await request(`/cached/shard-${index}`);
         assert.equal(response.status, 200);
         await response.arrayBuffer();
       }),
@@ -358,7 +962,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
     assert.ok((await rsc.arrayBuffer()).byteLength > 0);
 
-    const retryPath = `${pathname}?retry=1`;
+    const retryPath = "/cached/intro-retry";
     const storedHtml = await request(retryPath);
     assert.equal(storedHtml.headers.get("x-vinext-cache"), "MISS");
     await storedHtml.arrayBuffer();
@@ -369,11 +973,49 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(retriedWarmup.headers.get("x-vinext-cache"), "MISS");
     await retriedWarmup.arrayBuffer();
 
-    const repairedRsc = await request(`${retryPath}&_rsc`, {
+    const repairedRsc = await request(`${retryPath}?_rsc`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     assert.equal(repairedRsc.headers.get("x-vinext-cache"), "HIT");
     await repairedRsc.body?.cancel();
+  });
+
+  // Next.js renders a static page whole, so its streamed metadata is in <head>.
+  // vinext does so for a render no client waits on: a warm-up or regeneration.
+  test("puts generated metadata in <head> for a warm-up and a regeneration", async () => {
+    const titleIn = (html: string, id: string) => {
+      const index = html.indexOf(`<title>Metadata head ${id}</title>`);
+      assert.ok(index > -1, `missing the title for ${id}`);
+      return index < html.indexOf("</head>") ? "head" : "body";
+    };
+
+    const warmId = crypto.randomUUID();
+    const warmed = await request(`/metadata-head/${warmId}`, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    assert.equal(warmed.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(titleIn(await warmed.text(), warmId), "head");
+    const warmedHit = await cacheStatus(`/metadata-head/${warmId}`);
+    assert.equal(warmedHit.status, "HIT");
+    assert.equal(titleIn(warmedHit.body, warmId), "head");
+
+    const id = crypto.randomUUID();
+    const miss = await cacheStatus(`/metadata-head/${id}`);
+    assert.equal(miss.status, "MISS");
+    assert.equal(titleIn(miss.body, id), "body");
+    const storedTimestamp = htmlValue(miss.body, "timestamp");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await cacheStatus(`/metadata-head/${id}`);
+    assert.equal(htmlValue(stale.body, "timestamp"), storedTimestamp);
+    let regenerated = stale;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      regenerated = await cacheStatus(`/metadata-head/${id}`);
+      if (htmlValue(regenerated.body, "timestamp") !== storedTimestamp) break;
+    }
+    assert.notEqual(htmlValue(regenerated.body, "timestamp"), storedTimestamp);
+    assert.equal(titleIn(regenerated.body, id), "head");
   });
 
   test("publishes non-App-page warmups before returning", async () => {
@@ -389,6 +1031,117 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.equal(stored.headers.get("x-vinext-cache"), "HIT");
       await stored.body?.cancel();
     }
+  });
+
+  // A crawler revalidating with a matching If-None-Match gets a 304. Next.js
+  // stores the page before it evaluates the ETag, so the 304 never replaces
+  // the page later visitors receive, and it evaluates the ETag on a HIT too.
+  test("stores a Pages page whole when a crawler's conditional request fills it", async () => {
+    const crawler = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+    const conditionalRequest = {
+      headers: {
+        // Fetch adds Cache-Control: no-cache to a conditional request without
+        // one, and no-cache skips the 304.
+        "Cache-Control": "max-age=0",
+        "If-None-Match": "*",
+        "User-Agent": crawler,
+      },
+    };
+    const conditional = await request("/pages-prewarm", conditionalRequest);
+    assert.equal(conditional.status, 304);
+    assert.equal(conditional.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(conditional.headers.get("content-type"), null);
+    assert.equal(await conditional.text(), "");
+    await waitForResponseEntries("/pages-prewarm", 1);
+
+    const visitor = await request("/pages-prewarm");
+    assert.equal(visitor.status, 200);
+    assert.equal(visitor.headers.get("x-vinext-cache"), "HIT");
+    // A 304 updates the client's stored headers, so it carries the page's
+    // browser policy rather than the pending policy of an unadmitted render.
+    assert.equal(conditional.headers.get("cache-control"), visitor.headers.get("cache-control"));
+    assert.doesNotMatch(conditional.headers.get("cache-control") ?? "", /no-store/);
+    // The stored page carries the validator the crawler revalidated against.
+    assert.equal(visitor.headers.get("etag"), conditional.headers.get("etag"));
+    assert.match(await visitor.text(), /Pages prewarm target/);
+  });
+
+  test("answers a stored page's conditional request as Next.js does", async () => {
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const page = await request("/pages-prewarm");
+    const buildId = (await page.text()).match(/"buildId":"([^"]+)"/)?.[1];
+    assert.ok(buildId, "missing the Pages buildId");
+    const pages = [
+      { path: "/pages-prewarm", headers: {} },
+      { path: `/_next/data/${buildId}/pages-prewarm.json`, headers: {} },
+      { path: "/prewarm-target", headers: {} },
+      { path: "/prewarm-target", headers: rscHeaders },
+      // A stored notFound() keeps its status, and its 304 stays a 304.
+      { path: "/special-error/not-found?_rsc", headers: rscHeaders },
+    ];
+    for (const { path, headers } of [...pages, { path: "/api/now", headers: {} }]) {
+      await (await request(path, { headers })).arrayBuffer();
+    }
+    for (const path of [
+      "/pages-prewarm",
+      pages[1].path,
+      "/prewarm-target",
+      "/special-error/not-found",
+      "/api/now",
+    ]) {
+      await waitForStoredEntries(async () => (await responseEntries(path)).slice(0, 1), 1);
+    }
+
+    for (const { path, headers } of pages) {
+      const stored = await request(path, { headers });
+      assert.equal(stored.headers.get("x-vinext-cache"), "HIT", path);
+      const body = await stored.arrayBuffer();
+      const etag = stored.headers.get("etag");
+      assert.ok(etag, `missing the stored ETag for ${path}`);
+      // Fetch adds Cache-Control: no-cache to a conditional request without
+      // one, and no-cache sends the page.
+      const conditional = { ...headers, "Cache-Control": "max-age=0", "If-None-Match": etag };
+
+      const notModified = await request(path, { headers: conditional });
+      assert.equal(notModified.status, 304, path);
+      assert.equal(notModified.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(notModified.headers.get("etag"), etag);
+      assert.equal(notModified.headers.get("cache-control"), stored.headers.get("cache-control"));
+      for (const name of ["content-encoding", "content-length", "content-type"]) {
+        assert.equal(notModified.headers.get(name), null, `${path} ${name}`);
+      }
+      assert.equal(await notModified.text(), "");
+      // Next.js sets the 304 after a middleware's status.
+      if (!path.startsWith("/special-error/")) {
+        const behindMiddleware = await request(path, {
+          headers: { ...conditional, "x-test-middleware-status": "1" },
+        });
+        assert.equal(behindMiddleware.status, 304, `${path} behind middleware`);
+        assert.equal(await behindMiddleware.text(), "");
+      }
+
+      for (const full of [
+        { ...conditional, "Cache-Control": "no-cache" },
+        { ...conditional, "If-None-Match": '"other"' },
+        { ...conditional, "If-Modified-Since": new Date().toUTCString() },
+      ]) {
+        const response = await request(path, { headers: full });
+        assert.equal(response.status, stored.status, `${path} ${JSON.stringify(full)}`);
+        assert.equal((await response.arrayBuffer()).byteLength, body.byteLength);
+      }
+    }
+
+    // Next.js sends a route handler's cached response in full.
+    const route = await request("/api/now");
+    const etag = route.headers.get("etag");
+    await route.arrayBuffer();
+    assert.ok(etag);
+    const routeConditional = await request("/api/now", {
+      headers: { "Cache-Control": "max-age=0", "If-None-Match": etag },
+    });
+    assert.equal(routeConditional.status, 200);
+    assert.equal(routeConditional.headers.get("x-vinext-cache"), "HIT");
+    assert.ok(((await routeConditional.json()) as { renderId?: string }).renderId);
   });
 
   test("caches HEAD independently without storing a body", async () => {
@@ -448,12 +1201,79 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
   });
 
+  test.each(["authorization", "cookie", "proxy-authorization", "x-api-key"])(
+    "never stores a public Pages API response for a request carrying %s",
+    async (header) => {
+      const pathname = "/api/credential-echo";
+      const read = async (credential?: string) => {
+        const response = await request(
+          pathname,
+          credential === undefined ? undefined : { headers: { [header]: credential } },
+        );
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as {
+          credentials: Record<string, string | null>;
+          renderId: string;
+        };
+        return {
+          cache: response.headers.get("x-vinext-cache"),
+          credential: body.credentials[header],
+          renderId: body.renderId,
+        };
+      };
+
+      for (const credential of ["first-secret", "second-secret"]) {
+        const credentialed = await read(credential);
+        assert.equal(credentialed.credential, credential);
+        assert.notEqual(credentialed.cache, "HIT");
+      }
+
+      // The same route is stored for a request without credentials, so the
+      // credentialed requests above were rejected by the guardrail alone.
+      const anonymous = await read();
+      assert.equal(anonymous.credential, null);
+      assert.equal(anonymous.cache, "MISS");
+      await waitForResponseEntries(pathname, 1);
+      const hit = await read();
+      assert.equal(hit.cache, "HIT");
+      assert.equal(hit.credential, null);
+      assert.equal(hit.renderId, anonymous.renderId);
+    },
+  );
+
+  // A replay carries no credentials, so it cannot reproduce a credentialed render.
+  test.each(["none", "authorization", "cookie", "proxy-authorization", "x-api-key"])(
+    "replays the page for its data entries only without credentials (%s)",
+    async (credential) => {
+      const response = await request(
+        "/unstable-cache-siblings",
+        credential === "none" ? undefined : { headers: { [credential]: "secret" } },
+      );
+      assert.equal(response.status, 200);
+      await response.text();
+      const entries = async () => (await metadataEntries()).flat() as StoredResponseEntry[];
+      await waitForStoredEntries(entries, 2);
+      const replayed = (await entries()).filter((entry) => entry.revalidator?.id === "vinext:data");
+      assert.equal(replayed.length, credential === "none" ? 2 : 0);
+    },
+  );
+
   test("keeps concurrent cold renders successful", async () => {
     const responses = await Promise.all(
       Array.from({ length: 8 }, () => request("/cached/concurrent")),
     );
     assert.ok(responses.every((response) => response.status === 200));
     await Promise.all(responses.map((response) => response.arrayBuffer()));
+  });
+
+  test("sends Next.js's never-cache header for a render that is dynamic before headers", async () => {
+    // `connection()` at the top of the page.
+    const response = await request("/use-cache");
+    await response.text();
+    assert.equal(
+      response.headers.get("cache-control"),
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 
   test("keeps dynamic and unsupported Vary responses out of shared storage", async () => {
@@ -510,11 +1330,82 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(freshPageRenders, stalePageRenders + 1);
   });
 
+  test("regenerates a use-cache value keyed by promise params under its original key", async () => {
+    const pathname = "/use-cache-params/replayed";
+    const first = htmlValue((await cacheStatus(pathname)).body, "use-cache-params-value");
+    assert.match(first, /^replayed:/);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    // The stale read schedules a replay from the encrypted invocation. The
+    // replay decodes `params` as a Flight promise; it must still compute the
+    // key the original render wrote, or the regenerated value is discarded.
+    const stale = htmlValue((await cacheStatus(pathname)).body, "use-cache-params-value");
+    assert.equal(stale, first);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const fresh = htmlValue((await cacheStatus(pathname)).body, "use-cache-params-value");
+    assert.notEqual(fresh, first);
+    assert.match(fresh, /^replayed:/);
+  });
+
+  test("serves stale unstable_cache siblings while it refreshes them", async () => {
+    const pathname = "/unstable-cache-siblings";
+    const read = async () => {
+      // A replay that regenerates one sibling must not regenerate the other in
+      // the foreground, or each replays the page for the other without end.
+      const body = await Promise.race([
+        cacheStatus(pathname).then((result) => result.body),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`${pathname} did not respond within 4s`)), 4_000),
+        ),
+      ]);
+      return [htmlValue(body, "sibling-first"), htmlValue(body, "sibling-second")];
+    };
+    const first = await read();
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    // Like Next.js, unstable_cache without `expire` never hard-expires: past
+    // `revalidate` it serves the stale value and refreshes it in the background.
+    assert.deepEqual(await read(), first);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const fresh = await read();
+    assert.notEqual(fresh[0], first[0]);
+    assert.notEqual(fresh[1], first[1]);
+    assert.match(fresh[0], /^first:/);
+    assert.match(fresh[1], /^second:/);
+  }, 15_000);
+
+  test("refreshes a stale cached fetch once", async () => {
+    const pathname = "/fetch-cache-swr";
+    const read = async () => htmlValue((await cacheStatus(pathname)).body, "fetch-cache-value");
+    assert.equal(await read(), "upstream:1");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    // The stale read schedules the Store's page replay, which fetches upstream once.
+    // The fetch shim must not refresh the same entry a second time.
+    assert.equal(await read(), "upstream:1");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(await read(), "upstream:2");
+    assert.equal(upstreamRequests, 2);
+  });
+
   test("keeps the active response when background regeneration becomes non-cacheable", async () => {
     const pathname = `/api/revalidation-policy?key=${crypto.randomUUID()}`;
-    const seeded = await request(pathname, { headers: { "x-cacheability-seed": "1" } });
+    const prepared = await request(pathname, { method: "POST" });
+    assert.equal(prepared.status, 204);
+    const seeded = await request(pathname);
     const seededBody = await seeded.text();
     assert.equal(seeded.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(seeded.headers.get("cache-control"), "no-store");
+    const hit = await request(pathname);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await hit.text(), seededBody);
 
     await new Promise((resolve) => setTimeout(resolve, 1_100));
 
@@ -522,12 +1413,81 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(await stale.text(), seededBody);
 
     await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(await (await request(pathname)).text(), seededBody);
 
     const bucket = await miniflare.getR2Bucket("CACHE_BODIES", "cache");
     const objects = await bucket.list();
     assert.equal(objects.objects.length, 1);
-    assert.match(objects.objects[0].key, /\/r2-v1\/shards-4\/[0-9a-f]{64}\/active$/);
+    assert.match(objects.objects[0].key, /\/r2-v2\/shards-4\/[0-9a-f]{64}\/active$/);
   });
+
+  test("recomputes expired use-cache values whose getter arguments Flight replays", async () => {
+    const pathname = "/use-cache-getter-args";
+    const read = async () => {
+      const body = await Promise.race([
+        cacheStatus(pathname).then((result) => result.body),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`${pathname} did not respond within 4s`)), 4_000),
+        ),
+      ]);
+      return [htmlValue(body, "getter-args-first"), htmlValue(body, "getter-args-second")];
+    };
+    const first = await read();
+
+    // Flight encodes the getter's value, so both values are stored for a cache function
+    // call, not a page replay.
+    const replayEntries = async () =>
+      ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+        (entry) =>
+          entry.revalidator?.id === "vinext:cache-function" &&
+          JSON.stringify(entry).includes(`app${pathname}/page.tsx`),
+      );
+    for (let attempt = 0; attempt < 50 && (await replayEntries()).length < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal((await replayEntries()).length, 2);
+
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+
+    // Past `expire` the values are a miss, as in Next.js, and the render recomputes them.
+    const recomputed = await read();
+    assert.notEqual(recomputed[0], first[0]);
+    assert.notEqual(recomputed[1], first[1]);
+    assert.match(recomputed[0], /^first:getter-args:/);
+    assert.match(recomputed[1], /^second:getter-args:/);
+  }, 15_000);
+
+  test("revalidating a tag regenerates a getter-argument value on its next read", async () => {
+    const pathname = "/use-cache-getter-args-tagged";
+    const value = async () => htmlValue((await cacheStatus(pathname)).body, "getter-args-tagged");
+    const before = await value();
+    await waitForStoredEntries(
+      async () =>
+        ((await metadataEntries()).flat() as StoredResponseEntry[]).filter(
+          (entry) =>
+            entry.revalidator?.id === "vinext:cache-function" &&
+            JSON.stringify(entry).includes(`app${pathname}/page.tsx`),
+        ),
+      1,
+    );
+
+    // Like Next.js, revalidating the tag only marks the value stale: its next read still
+    // serves it, and the Store calls the cache function in the background to regenerate it.
+    const revalidate = await request("/api/revalidate-tag", {
+      body: JSON.stringify({ tag: "getter-args-tagged" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(revalidate.status, 200, await revalidate.text());
+    assert.equal(await value(), before);
+    let regenerated = before;
+    for (let attempt = 0; attempt < 40 && regenerated === before; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      regenerated = await value();
+    }
+    assert.notEqual(regenerated, before);
+    assert.match(regenerated, /^getter-args-tagged:/);
+  }, 15_000);
 
   test("never serves a hard-expired use-cache value", async () => {
     const first = htmlValue((await cacheStatus("/use-cache-expired")).body, "expired-cache-value");
@@ -560,14 +1520,21 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("revalidates tags and purges paths through the unified store", async () => {
     const firstTagged = await cacheStatus("/cached/tagged");
     const firstId = htmlValue(firstTagged.body, "rendered-at");
+    await waitForResponseEntries("/cached/tagged", 1);
     const revalidate = await request("/api/revalidate-tag", {
       body: JSON.stringify({ tag: "post:tagged" }),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
     assert.equal(revalidate.status, 200, await revalidate.text());
-    const refreshed = await cacheStatus("/cached/tagged");
-    assert.notEqual(htmlValue(refreshed.body, "rendered-at"), firstId);
+    // Like Next.js, the next read serves the stale page and regenerates it in the background.
+    assert.equal(htmlValue((await cacheStatus("/cached/tagged")).body, "rendered-at"), firstId);
+    let refreshedId = firstId;
+    for (let attempt = 0; attempt < 40 && refreshedId === firstId; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      refreshedId = htmlValue((await cacheStatus("/cached/tagged")).body, "rendered-at");
+    }
+    assert.notEqual(refreshedId, firstId);
 
     const firstPurged = await cacheStatus("/cached/purged");
     const purge = await request("/api/revalidate-path", {

@@ -84,6 +84,12 @@ function installFakeBrowserGlobals(
     dispatchEvent() {},
     __VINEXT_LINK_PREFETCH_ROUTES__: prefetchRoutes,
   };
+  fakeWindow.location.assign.mockImplementation((url: string) => {
+    fakeWindow.location.href = url;
+  });
+  fakeWindow.location.replace.mockImplementation((url: string) => {
+    fakeWindow.location.href = url;
+  });
   (globalThis as { window?: unknown }).window = fakeWindow;
   (globalThis as { document?: unknown }).document = {
     addEventListener() {},
@@ -178,11 +184,11 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     expect(Router.components["/about/"]).toBeUndefined();
   });
 
-  it("fast-paths to window.location.assign when the __appRouter marker is set", async () => {
+  it("fast-paths to a hard navigation when the __appRouter marker is set", async () => {
     // This pins the new performNavigation fast-path: after a prefetch that
-    // records the __appRouter marker, the next navigation must call
-    // window.location.assign (hard nav) rather than falling through to the
-    // Pages Router SPA fetch cycle.
+    // records the __appRouter marker, the next navigation must set
+    // window.location.href rather than falling through to the Pages Router
+    // SPA fetch cycle.
     const fakeWindow = installFakeBrowserGlobals([
       { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
     ]);
@@ -194,16 +200,29 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     await Router.prefetch("/about");
     expect(Router.components["/about"]).toEqual({ __appRouter: true });
 
-    // 2. Navigate — the fast-path must invoke window.location.assign.
+    // 2. Navigate — the fast-path must update window.location.href.
     //    We don't await the returned Promise because the fast-path returns a
     //    never-resolving Promise (matching Next.js's own "freeze" pattern).
     //    There is no `await` between performNavigation entry and the
-    //    fast-path return, so `assign` must have fired synchronously by the
+    //    fast-path return, so the href update must happen synchronously by the
     //    time `push()` returns — assert immediately to pin that synchronicity
     //    (the hard navigation must not lose a race against the SPA path).
     void Router.push("/about");
 
-    expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/about"));
+    expect(fakeWindow.location.href).toBe("/about");
+  });
+
+  it("replaces browser history when replacing a prefetched App Router route", async () => {
+    const fakeWindow = installFakeBrowserGlobals([
+      { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+    ]);
+    const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+    await Router.prefetch("/about");
+
+    void Router.replace("/about");
+
+    expect(fakeWindow.location.replace).toHaveBeenCalledWith("/about");
+    expect(fakeWindow.location.assign).not.toHaveBeenCalled();
   });
 
   it("hard-navigates to an App Router route even when prefetch has not completed", async () => {
@@ -225,7 +244,7 @@ describe("Pages Router records app routes as detected on prefetch", () => {
 
     void Router.push("/about");
 
-    expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/about"));
+    expect(fakeWindow.location.href).toBe("/about");
   });
 
   it("hard-navigates pure-Pages document-only routes", async () => {
@@ -243,7 +262,7 @@ describe("Pages Router records app routes as detected on prefetch", () => {
 
     void routerModule.default.push("/api/foo");
 
-    expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/api/foo"));
+    expect(fakeWindow.location.href).toBe("/api/foo");
   });
 
   it.each([

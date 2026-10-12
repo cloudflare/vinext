@@ -23,11 +23,12 @@ import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
-  isOpenRedirectShaped,
+  guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
+import { createStaticAssetRequest } from "./worker-utils.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
@@ -74,6 +75,7 @@ import {
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
+import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
@@ -144,6 +146,7 @@ const {
   matchPageRoute,
   normalizeDataRequest,
   publicFiles,
+  clientBuildFiles,
   runMiddleware,
   vinextConfig,
 } = pagesEntry;
@@ -171,6 +174,35 @@ const imageConfig: ImageConfig | undefined = vinextConfig?.images
       contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
     }
   : undefined;
+
+/**
+ * Whether the request stage serves this request as a client build file
+ * outside `_next/static`. Such responses resolve no route, so the Worker
+ * keeps their ASSETS cache policy out of route cacheability admission.
+ */
+export function isPagesClientBuildFileRequest(
+  request: Request,
+  env: PagesWorkerEnv | undefined,
+  ctx: PagesWorkerExecutionContext | undefined,
+): boolean {
+  return (
+    (request.method === "GET" || request.method === "HEAD") &&
+    resolveAssetFetcher(ctx?.assets, env, "worker") !== undefined &&
+    resolveClientBuildFile(new URL(request.url).pathname, basePath, clientBuildFiles) !== null
+  );
+}
+
+function resolveAssetFetcher(
+  assets: VinextAssetFetcher | undefined,
+  env: PagesWorkerEnv | undefined,
+  defaultHostRuntime: "node" | "worker",
+): VinextAssetFetcher | undefined {
+  return (
+    assets ??
+    getExplicitCdnCacheAdapter()?.assets ??
+    (defaultHostRuntime === "worker" ? env?.ASSETS : undefined)
+  );
+}
 
 /** Run the request-time stage with a host-owned response dispatcher. */
 export function handleRequestStage(
@@ -207,7 +239,7 @@ export function handleRequestStageLocally(
       dispatchResponseStage(stageRequest, stageEnv, stageCtx, props),
     true,
     "worker",
-    env?.ASSETS,
+    ctx?.assets,
   ).then((response) => applyCdnResponseIdentityHeaders(response, originalRequest));
 }
 
@@ -276,6 +308,7 @@ async function handleRequestImpl(
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  assets = resolveAssetFetcher(assets, env, defaultHostRuntime);
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -371,24 +404,29 @@ async function handleRequestImpl(
       );
     }
 
-    // Block protocol-relative URL open redirects in all shapes:
-    //   literal  //evil.com, /\\evil.com
-    //   encoded  /%5Cevil.com, /%2F/evil.com
-    // Browsers normalize backslash to forward slash, and percent-decode
-    // Location headers, so encoded variants must be rejected before any
-    // downstream redirect can echo them.
-    if (isOpenRedirectShaped(pathname)) {
-      return new Response("This page could not be found", { status: 404 });
-    }
+    // Redirect repeated slashes / backslashes like Next.js (//evil.com →
+    // /evil.com) and block encoded protocol-relative shapes (/%5Cevil.com,
+    // /%2F/evil.com) before any downstream redirect can echo them.
+    const protocolRelativeGuard = guardProtocolRelativeUrl(pathname, url.search);
+    if (protocolRelativeGuard) return protocolRelativeGuard;
     try {
       normalizePathnameForRouteMatchStrict(pathname);
     } catch {
       return new Response("Bad Request", { status: 400 });
     }
 
+    // Client build files outside `_next/static` are build output like the
+    // hashed assets, so serve them before middleware when the Worker runs first.
+    if (assets && (request.method === "GET" || request.method === "HEAD")) {
+      const clientBuildFile = resolveClientBuildFile(pathname, basePath, clientBuildFiles);
+      if (clientBuildFile) {
+        return await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
+      }
+    }
+
     // Valid assets are served by Cloudflare's ASSETS binding before the worker
     // is invoked. Missing asset-shaped requests still need to reach middleware
-    // so it can rewrite/respond; a final 404 is converted back below.
+    // so it can rewrite/respond before the pipeline classifies the miss.
     const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
 
     // Track basePath presence on the original request so matcher gating can
@@ -405,6 +443,9 @@ async function handleRequestImpl(
     }
 
     const middlewareRequest = request;
+    // The page sees the request URL before `_next/data` normalization as
+    // `req.url`, matching prod-server's `originalRenderUrl` and Next.js.
+    const originalRenderUrl = pathname + new URL(request.url).search;
     const dataNorm = normalizeDataRequest(request);
     if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
       return dataNorm.notFoundResponse;
@@ -431,6 +472,7 @@ async function handleRequestImpl(
     let speculativeRenderRequest: Request | null = null;
 
     const deps: PagesPipelineDeps = {
+      assetPrefix: vinextConfig?.assetPrefix,
       basePath,
       trailingSlash,
       i18nConfig,
@@ -493,7 +535,9 @@ async function handleRequestImpl(
           kind: "pages-page" as const,
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: new URL(req.url).host,
-          renderOptions: options ?? null,
+          renderOptions: isDataReq
+            ? { ...options, originalUrl: originalRenderUrl }
+            : (options ?? null),
           resolvedUrl,
           // Static/ISR pages cannot observe Node's response object. Keep their
           // request-specific middleware headers outside the shared artifact so
@@ -586,7 +630,13 @@ async function handleRequestImpl(
             })
           : dispatched;
       },
-      serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
+      serveFilesystemRoute: async (
+        requestPathname,
+        _stagedHeaders,
+        phase,
+        resolvedUrl,
+        filesystemRequest,
+      ) => {
         if (!assets) return false;
         if (isImageOptimizationPath(requestPathname)) {
           const imageUrl = new URL(resolvedUrl, request.url);
@@ -604,19 +654,21 @@ async function handleRequestImpl(
           );
         }
         return fetchWorkerFilesystemRoute(
-          request,
+          filesystemRequest,
           requestPathname,
           phase,
           (assetRequest) => Promise.resolve(assets.fetch(assetRequest)),
           publicFiles,
-          missingBuildAsset,
+          basePath,
+          assetPathPrefix,
+          hadBasePath,
         );
       },
     };
 
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
-      let response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      let response = result.response;
       if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
       }

@@ -1,8 +1,35 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  handleRequestSignalProbe,
+  REQUEST_SIGNAL_OVERRIDE_HEADER,
+} from "./lib/request-signal-probe";
 
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
+
+  // Client-disconnect coverage: tests/node-request-cancellation.test.ts
+  if (url.pathname === "/middleware-request-signal") {
+    return handleRequestSignalProbe(request);
+  }
+  if (url.pathname === "/middleware-truncated-body") {
+    // Ends early with the code Node also uses for a client disconnect.
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(
+            Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" }),
+          );
+        },
+      }),
+    );
+  }
+  if (url.pathname === "/api/edge-request-signal") {
+    if (!url.searchParams.has("override")) return NextResponse.next();
+    const headers = new Headers(request.headers);
+    headers.set(REQUEST_SIGNAL_OVERRIDE_HEADER, "1");
+    return NextResponse.next({ request: { headers } });
+  }
 
   if (
     url.pathname === "/revalidate-middleware-sentinel" &&
@@ -18,6 +45,12 @@ export function middleware(request: NextRequest) {
   // `/_next/data/<buildId>/<page>.json` is normalized to `/page` BEFORE
   // middleware runs (matching Next.js' `handleNextDataRequest` pipeline).
   response.headers.set("x-mw-pathname", url.pathname);
+
+  // Same-origin redirect to a double-slash path. vinext must keep the
+  // Location absolute so it never becomes protocol-relative.
+  if (url.pathname === "/mw-redirect-double-slash") {
+    return NextResponse.redirect(`${url.origin}//`);
+  }
 
   // Redirect /old-page to /about
   if (url.pathname === "/old-page") {
@@ -305,6 +338,7 @@ export function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     "/api/edge-search-params",
+    "/api/edge-request-signal",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
     {

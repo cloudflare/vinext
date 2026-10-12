@@ -73,6 +73,85 @@ async function startProdFixture(
   return { port: addr.port, server, tmpDir };
 }
 
+// Next.js keeps the resolved locale in its Pages ISR cache key:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+function testLocaleIsrIsolation(getPort: () => number, basePath = "", trailingSlash = "") {
+  const pagePath = (locale = "") =>
+    `${basePath}${locale ? `/${locale}` : ""}/isr-about${trailingSlash}`;
+  const request = (pathname: string, host = "example.com") =>
+    requestNodeServerWithHost(getPort(), pathname, host);
+  const renderedAt = (body: string) => body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1];
+
+  it("isolates locale-prefixed ISR HTML on each domain", async () => {
+    for (const [host, defaultLocale, otherLocale] of [
+      ["example.com", "en", "fr"],
+      ["example.fr", "fr", "en"],
+    ]) {
+      const other = await request(pagePath(otherLocale), host);
+      expect(other.status).toBe(200);
+      expect(other.body).toContain(`<p id="locale">${otherLocale}</p>`);
+      expect(other.body).toContain(`<p id="defaultLocale">${defaultLocale}</p>`);
+
+      for (const [prefix, locale] of [
+        ["", defaultLocale],
+        [defaultLocale, defaultLocale],
+        [otherLocale, otherLocale],
+      ]) {
+        const html = await request(pagePath(prefix), host);
+        expect(html.status).toBe(200);
+        expect(html.body).toContain(`<p id="locale">${locale}</p>`);
+        expect(html.body).toContain(`<p id="defaultLocale">${defaultLocale}</p>`);
+      }
+    }
+  });
+
+  it("isolates locale-prefixed ISR data on each domain", async () => {
+    for (const [host, defaultLocale, otherLocale] of [
+      ["example.com", "en", "fr"],
+      ["example.fr", "fr", "en"],
+    ]) {
+      const canonical = await request(pagePath(), host);
+      const buildId = JSON.parse(
+        canonical.body.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/)![1],
+      ).buildId;
+      for (const locale of [otherLocale, defaultLocale]) {
+        const data = await request(
+          `${basePath}/_next/data/${buildId}/${locale}/isr-about.json`,
+          host,
+        );
+        expect(data.status).toBe(200);
+        expect(JSON.parse(data.body).pageProps).toMatchObject({ locale, defaultLocale });
+        const html = await request(pagePath(locale), host);
+        expect(html.headers["x-vinext-cache"]).toBe("HIT");
+        expect(Number(renderedAt(html.body))).toBe(JSON.parse(data.body).pageProps.renderedAt);
+      }
+    }
+  });
+
+  it("revalidates only the selected locale on a domain", async () => {
+    const beforeFr = await request(pagePath("fr"));
+    const beforeEn = await request(pagePath("en"));
+    const beforeOtherDomain = await request(pagePath(), "example.fr");
+
+    const revalidate = await request(
+      `${basePath}/api/revalidate${trailingSlash}?path=${encodeURIComponent(pagePath("fr"))}&onlyGenerated=1`,
+    );
+    expect(revalidate.status).toBe(200);
+    expect(JSON.parse(revalidate.body)).toEqual({ revalidated: true });
+
+    const afterFr = await request(pagePath("fr"));
+    const afterEn = await request(pagePath("en"));
+    expect(renderedAt(afterEn.body)).toBe(renderedAt(beforeEn.body));
+    expect(afterEn.body).toContain('<p id="locale">en</p>');
+    expect(afterFr.headers["x-vinext-cache"]).toBe("HIT");
+    expect(afterFr.body).toContain('<p id="locale">fr</p>');
+    expect(renderedAt(afterFr.body)).not.toBe(renderedAt(beforeFr.body));
+    expect(afterEn.headers["x-vinext-cache"]).toBe("HIT");
+    const afterOtherDomain = await request(pagePath(), "example.fr");
+    expect(renderedAt(afterOtherDomain.body)).toBe(renderedAt(beforeOtherDomain.body));
+  });
+}
+
 describe("Pages i18n domain routing (production)", () => {
   let tmpDir: string;
   let prodServer: http.Server;
@@ -176,6 +255,8 @@ describe("Pages i18n domain routing (production)", () => {
     expect(enHit.headers["x-vinext-cache"]).toBe("HIT");
     expect(enHit.body).toContain('<p id="locale">en</p>');
   });
+
+  testLocaleIsrIsolation(() => prodPort);
 
   it("revalidates the ISR entry owned by the request domain", async () => {
     const before = await requestNodeServerWithHost(prodPort, "/isr-about", "example.fr");
@@ -305,6 +386,26 @@ describe("Pages i18n domain routing with basePath (production)", () => {
     expect(res.status).toBe(200);
     expect(res.body).toContain('href="http://example.fr/app/about" id="switch-locale"');
   });
+
+  // Next.js renders the shared getStaticProps /404 for "/404", keeping the
+  // request's trailing slash even when a locale prefix is stripped.
+  it("renders the shared /404 for its own path under a locale prefix", async () => {
+    // Each case renders a cold /404 in its own locale/domain cache variant:
+    // a locale-prefixed miss, a direct status request and a rewritten miss.
+    for (const [path, host, requestToken] of [
+      ["/app/en/missing-share-token/", "example.fr", "missing-share-token"],
+      ["/app/fr/404/", "example.com", "/fr/404"],
+      ["/app/missing-alias/", "example.com", "missing-alias"],
+    ]) {
+      const res = await requestNodeServerWithHost(prodPort, path, host);
+
+      expect({ path, status: res.status }).toEqual({ path, status: 404 });
+      expect(res.body).not.toContain(requestToken);
+      expect(res.body).toContain('<p id="as-path">/404/</p>');
+    }
+  });
+
+  testLocaleIsrIsolation(() => prodPort, "/app", "/");
 
   it("preserves domain identity for only-generated revalidation with basePath", async () => {
     const before = await requestNodeServerWithHost(prodPort, "/app/isr-about/", "example.fr");

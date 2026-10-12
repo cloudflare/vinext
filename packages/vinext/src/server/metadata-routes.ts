@@ -629,7 +629,7 @@ export function matchMetadataFileBaseName(metaType: string, baseName: string): s
 }
 
 // Cache the metadata-file scan per appDir. `scanMetadataFiles` runs once per
-// build pass that loads the RSC entry (measured: twice per `vinext build`), and
+// build pass that loads the RSC entry (measured: twice per Vite build), and
 // an app's metadata files don't change within a build, so memoizing the full
 // recursive scan avoids re-walking the whole app tree — mirroring app-router's
 // `cachedGraph`. In dev it is invalidated alongside the route graph when app

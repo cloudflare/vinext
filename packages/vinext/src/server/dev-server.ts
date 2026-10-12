@@ -31,9 +31,20 @@ import {
   stripDocumentAssetPropsProtectionMarkers,
   type DocumentAssetProps,
 } from "./pages-document-asset-props.js";
+import {
+  spliceDocumentHeadClose,
+  spliceDocumentHeadOpen,
+  spliceDocumentScripts,
+  splitDocumentAtMain,
+} from "./pages-document-splice.js";
+import {
+  createDocumentPlaceholderToken,
+  getDocumentHeadOpenMarker,
+} from "vinext/shims/document-placeholders";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
@@ -58,13 +69,17 @@ import {
   resolvePagesRedirect,
   resolvePagesRedirectLocation,
   resolvePagesRevalidateSeconds,
+  resolvePagesStatusPageRenderPath,
   type PagesRedirectResult,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
 import { sanitizeDestination } from "../config/config-matchers.js";
 import { collectPagesDevInitialStylesheetHeadHTML } from "./pages-dev-stylesheets.js";
 import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
-import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
+import {
+  createPagesDevHydrationScript,
+  type PagesDevHydrationOptions,
+} from "./pages-dev-hydration.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import {
@@ -249,12 +264,19 @@ function writeGsspRedirect(
   res.end(location);
 }
 
-/** Body placeholder used to split the document shell for streaming. */
-const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
-
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
   res.removeHeader("Transfer-Encoding");
+}
+
+/**
+ * Vite's `transformIndexHtml` treats its URL as the HTML document's path, so
+ * the request query carries no meaning there. Since Vite 8.3.3 it also maps
+ * `/?q` onto the project root directory and then watches the filesystem root
+ * for each inline `<style>` proxy module, so pass the bare path.
+ */
+function toHtmlTransformPath(url: string): string {
+  return stripViteModuleQuery(url);
 }
 
 /**
@@ -277,6 +299,7 @@ async function streamPageToResponseImpl(
   options: {
     url: string;
     server: ViteDevServer;
+    runner: ModuleImporter;
     fontHeadHTML: string;
     assetHeadHTML?: string;
     scripts: string;
@@ -323,6 +346,7 @@ async function streamPageToResponseImpl(
   const {
     url,
     server,
+    runner,
     fontHeadHTML,
     assetHeadHTML = "",
     scripts,
@@ -402,6 +426,9 @@ async function streamPageToResponseImpl(
   const ssrHeadMarkerId = randomUUID();
   const ssrHeadStartMarker = `<!--VINEXT_SSR_HEAD_START:${ssrHeadMarkerId}-->`;
   const ssrHeadEndMarker = `<!--VINEXT_SSR_HEAD_END:${ssrHeadMarkerId}-->`;
+  // Body placeholder used to split the transformed shell for streaming.
+  const streamBodyMarker = `<!--VINEXT_STREAM_BODY:${ssrHeadMarkerId}-->`;
+  const documentToken = createDocumentPlaceholderToken();
   let tailHeadHTML = getTailHeadHTML?.() ?? "";
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
     if (tailHeadHTML) tailHeadHTML += "\n  ";
@@ -436,7 +463,15 @@ async function streamPageToResponseImpl(
     const docElement = docProps
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
-    const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
+    // The Document and its `next/document` shims load through the module
+    // runner, so its placeholder context must come from the runner too.
+    const { withDocumentPlaceholders } = (await runner.import(
+      "vinext/document-placeholders",
+    )) as typeof import("vinext/shims/document-placeholders");
+    const renderedDocument = extractDocumentAssetProps(
+      await renderToStringAsync(withDocumentPlaceholders(docElement, documentToken)),
+      documentToken,
+    );
     documentAssetProps = renderedDocument.props;
     let docHtml = protectAssetTags(renderedDocument.html);
     const generatedScripts = applyGeneratedAssetProps(
@@ -449,22 +484,18 @@ async function streamPageToResponseImpl(
       renderedDocument.props,
       "next-script",
     );
-    // Replace __NEXT_MAIN__ with our stream marker
-    docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
-    if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
-      docHtml = docHtml.replace(
-        "</head>",
-        `${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}` +
-          `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
-          `  ${protectAssetTags(tailHeadHTML)}\n</head>`,
-      );
-    }
-    // Inject scripts: replace placeholder or append before </body>
-    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", generatedScripts);
-    if (!docHtml.includes("__NEXT_DATA__")) {
-      docHtml = docHtml.replace("</body>", `  ${generatedScripts}\n</body>`);
-    }
-    shellTemplate = docHtml;
+    docHtml = spliceDocumentHeadClose(
+      docHtml,
+      documentToken,
+      headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML
+        ? `${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}` +
+            `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
+            `  ${protectAssetTags(tailHeadHTML)}\n`
+        : "",
+    );
+    docHtml = spliceDocumentScripts(docHtml, documentToken, generatedScripts);
+    const main = splitDocumentAtMain(docHtml, documentToken);
+    shellTemplate = main.prefix + streamBodyMarker + main.suffix;
   } else {
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
@@ -473,14 +504,14 @@ async function streamPageToResponseImpl(
     const generatedAssetHeadHTML = applyGeneratedAssetProps(assetHeadHTML, {}, "next-script");
     shellTemplate = `<!DOCTYPE html>
 <html>
-<head>
+<head${getDocumentHeadOpenMarker(documentToken)}>
   ${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}
   ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
   ${protectAssetTags(tailHeadHTML)}
 </head>
 <body>
-  <div id="__next">${STREAM_BODY_MARKER}</div>
+  <div id="__next">${streamBodyMarker}</div>
   ${generatedScripts}
 </body>
 </html>`;
@@ -488,7 +519,7 @@ async function streamPageToResponseImpl(
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  let transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  let transformedShell = await server.transformIndexHtml(toHtmlTransformPath(url), shellTemplate);
   transformedShell = stripDocumentAssetPropsProtectionMarkers(
     applyDocumentAssetProps(transformedShell, documentAssetProps, {
       configuredCrossOrigin: crossOrigin,
@@ -505,22 +536,24 @@ async function streamPageToResponseImpl(
   // Next.js's canonical charset, viewport, and user-tag ordering.
   const ssrHeadStart = transformedShell.indexOf(ssrHeadStartMarker);
   const ssrHeadEnd = transformedShell.indexOf(ssrHeadEndMarker);
+  let transformedHeadHTML = "";
   if (ssrHeadStart !== -1 && ssrHeadEnd > ssrHeadStart) {
-    const transformedHeadHTML = transformedShell.slice(
+    const ssrHeadHTML = transformedShell.slice(
       ssrHeadStart + ssrHeadStartMarker.length,
       ssrHeadEnd,
     );
+    // If a transform dropped <Head>'s marker, keep the block where it is.
+    const moveToHeadOpen = transformedShell.includes(getDocumentHeadOpenMarker(documentToken));
+    if (moveToHeadOpen) transformedHeadHTML = ssrHeadHTML;
     transformedShell =
       transformedShell.slice(0, ssrHeadStart) +
+      (moveToHeadOpen ? "" : ssrHeadHTML) +
       transformedShell.slice(ssrHeadEnd + ssrHeadEndMarker.length);
-    transformedShell = transformedShell.replace(
-      /<head(?:\s[^>]*)?>/i,
-      (openingHead) => `${openingHead}${transformedHeadHTML}`,
-    );
   }
-  const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
+  transformedShell = spliceDocumentHeadOpen(transformedShell, documentToken, transformedHeadHTML);
+  const markerIdx = transformedShell.indexOf(streamBodyMarker);
   const prefix = transformedShell.slice(0, markerIdx);
-  const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
+  const suffix = transformedShell.slice(markerIdx + streamBodyMarker.length);
   const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
 
   // Send headers and start streaming.
@@ -637,6 +670,8 @@ export function createSSRHandler(
   crossOrigin?: string,
   /** Resolved Pages Router build ID shared with the dev data-route parser. */
   buildId = process.env.__VINEXT_BUILD_ID ?? "development",
+  clientMiddlewareMatcher?: unknown,
+  classifyPageRoute?: (route: Route) => "static" | "server" | "none",
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -648,6 +683,19 @@ export function createSSRHandler(
   // dev exactly as they do in production. Without this, dev would fall back
   // to `__NEXT_DATA__.page` only — a dev/prod parity gap.
   const pagePatterns = routes.map((r) => patternToNextFormat(r.pattern));
+  const pageLoaders = routes.map((route) => ({
+    pattern: patternToNextFormat(route.pattern),
+    moduleSource: createPagesDevModuleUrl(server.config.root, route.filePath, "/"),
+    dataKind: classifyPageRoute?.(route) ?? "none",
+  }));
+  const errorFile = findFileWithExts(pagesDir, "_error", matcher);
+  pageLoaders.push({
+    pattern: "/_error",
+    moduleSource: errorFile
+      ? createPagesDevModuleUrl(server.config.root, errorFile, "/")
+      : "next/error",
+    dataKind: "none",
+  });
 
   // Register ALS-backed accessors in the SSR module graph so head and
   // router state are per-request isolated under concurrent load.
@@ -730,10 +778,15 @@ export function createSSRHandler(
       basePath,
       buildId,
       clientTraceMetadata,
+      pageLoaders,
+      hasMiddleware,
+      clientMiddlewareMatcher,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
       defaultLocale: currentDefaultLocale,
       crossOrigin,
+      trailingSlash,
+      requestPathname: new URL(originalUrl, "http://vinext.local").pathname,
     };
 
     const match = matchRoute(localeStrippedUrl, routes);
@@ -869,7 +922,15 @@ export function createSSRHandler(
           // Match Next.js's Pages handler: getStaticProps renders receive only
           // route params and a resolved asPath without request search state.
           query = mergeRouteParamsIntoQuery({}, params);
-          requestAsPath = localeStrippedUrl.split("?")[0];
+          const routePattern = patternToNextFormat(route.pattern);
+          requestAsPath =
+            routePattern === "/404" || routePattern === "/500"
+              ? resolvePagesStatusPageRenderPath(
+                  routePattern,
+                  trailingSlash,
+                  errorPageContext.requestPathname,
+                )
+              : localeStrippedUrl.split("?")[0];
         }
         const supportsPreview =
           typeof pageModule.getStaticProps === "function" ||
@@ -977,7 +1038,7 @@ export function createSSRHandler(
         if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
           const pathsResult = await pageModule.getStaticPaths({
             locales: i18nConfig?.locales ?? [],
-            defaultLocale: currentDefaultLocale ?? "",
+            defaultLocale: i18nConfig?.defaultLocale ?? "",
           });
           const fallback = pathsResult?.fallback ?? false;
 
@@ -985,7 +1046,11 @@ export function createSSRHandler(
           const routePattern = patternToNextFormat(route.pattern);
           const routeParams = getPagesRouteParams(routePattern);
           const isValidPath = paths.some((pathEntry) =>
-            matchesPagesStaticPath(pathEntry, params, routeParams, url),
+            matchesPagesStaticPath(pathEntry, params, routeParams, localeStrippedUrl, {
+              locale,
+              locales: i18nConfig?.locales,
+              defaultLocale: i18nConfig?.defaultLocale,
+            }),
           );
 
           if (fallback === false && !isValidPath && requestPreviewData === false) {
@@ -1437,6 +1502,7 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          dataHeaders["Cache-Control"] = DEV_PAGES_CACHE_CONTROL;
           applyDevPagesPreviewHeaders(dataHeaders, requestPreview);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
@@ -1573,12 +1639,14 @@ export function createSSRHandler(
             appModuleUrl,
             hasMiddleware,
             routeUrl: requestAsPath,
+            clientMiddlewareMatcher,
           },
         };
 
         const hydrationScript = createPagesDevHydrationScript({
           appModuleSource,
           pageModuleSource,
+          pageLoaders,
           reactStrictMode: reactStrictMode === true,
           replaceFallbackRoute: true,
           scriptNonce,
@@ -1614,6 +1682,7 @@ export function createSSRHandler(
         // Pages development cache boundary and font preload headers.
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
+          "Cache-Control": DEV_PAGES_CACHE_CONTROL,
         };
         if (typeof pageModule.getStaticProps === "function") {
           // Next's Pages handler never persists route responses in dev. It may
@@ -1643,6 +1712,7 @@ export function createSSRHandler(
         await streamPageToResponse(route.pattern, res, withScriptNonce(element, scriptNonce), {
           url,
           server,
+          runner,
           fontHeadHTML,
           assetHeadHTML,
           scripts: allScripts,
@@ -1801,10 +1871,16 @@ async function renderErrorPage(
     basePath: string;
     buildId?: string;
     clientTraceMetadata?: readonly string[];
+    pageLoaders?: PagesDevHydrationOptions["pageLoaders"];
+    hasMiddleware?: boolean;
+    clientMiddlewareMatcher?: unknown;
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
     crossOrigin?: string;
+    trailingSlash?: boolean;
+    /** Pathname of the request before rewrites and locale stripping. */
+    requestPathname?: string;
     /** Original Pages route that produced this development-only notFound render. */
     notFoundSrcPage?: string;
   } = { basePath: "" },
@@ -1846,10 +1922,18 @@ async function renderErrorPage(
 
       const createElement = React.createElement;
       res.statusCode = statusCode;
+      const renderUrl =
+        errorPage !== "/_error" && typeof errorModule.getStaticProps === "function"
+          ? resolvePagesStatusPageRenderPath(
+              errorPage,
+              context.trailingSlash === true,
+              context.requestPathname ?? url.split("?")[0],
+            )
+          : url;
       const errorRouter = {
         pathname: errorPage,
-        query: parseQuery(url),
-        asPath: url,
+        query: parseQuery(renderUrl),
+        asPath: renderUrl,
       };
       try {
         errorRouterShim = await importModule(runner, "next/router");
@@ -1870,7 +1954,7 @@ async function renderErrorPage(
         err,
         pathname: errorPage,
         query: errorRouter.query,
-        asPath: url,
+        asPath: renderUrl,
       });
       if (res.headersSent || res.writableEnded) return;
       let errorProps: Record<string, unknown> = { ...initialErrorProps, statusCode };
@@ -1901,7 +1985,7 @@ async function renderErrorPage(
             {
               basePath: context.basePath,
               method: "getStaticProps",
-              routeUrl: url,
+              routeUrl: renderUrl,
             },
           );
           return;
@@ -1933,7 +2017,7 @@ async function renderErrorPage(
             err,
             pathname: errorPage,
             query: errorRouter.query,
-            asPath: url,
+            asPath: renderUrl,
           },
         });
         if (res.headersSent || res.writableEnded) return;
@@ -1996,13 +2080,18 @@ async function renderErrorPage(
         {
           props: renderProps,
           page: errorPage,
-          query: parseQuery(url),
+          query: parseQuery(renderUrl),
           buildId: context.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development",
           isFallback: false,
+          locale: context.locale,
+          locales: context.locales,
+          defaultLocale: context.defaultLocale,
           notFoundSrcPage: context.notFoundSrcPage,
           __vinext: {
             pageModuleUrl: errorModuleUrl ?? undefined,
             appModuleUrl: appModuleUrl ?? undefined,
+            hasMiddleware: context.hasMiddleware,
+            clientMiddlewareMatcher: context.clientMiddlewareMatcher,
           },
         },
       )}</script>`;
@@ -2011,6 +2100,7 @@ async function renderErrorPage(
         forceRouterReady: true,
         normalizePageProps: false,
         pageModuleSource: errorModuleSource,
+        pageLoaders: context.pageLoaders,
         reactStrictMode: reactStrictMode === true,
         scriptNonce,
         setPagePatternsFromNextData: true,
@@ -2021,6 +2111,7 @@ async function renderErrorPage(
         await streamPageToResponse(errorPage, res, element, {
           url,
           server,
+          runner,
           fontHeadHTML: "",
           assetHeadHTML,
           scripts: errorScripts,
@@ -2029,8 +2120,8 @@ async function renderErrorPage(
           documentContext: {
             err,
             pathname: errorPage,
-            query: parseQuery(url),
-            asPath: url,
+            query: parseQuery(renderUrl),
+            asPath: renderUrl,
             req,
             res,
           },
@@ -2085,7 +2176,7 @@ async function renderErrorPage(
 </html>`;
         const transformedHtml = stripDocumentAssetPropsProtectionMarkers(
           applyDocumentAssetProps(
-            await server.transformIndexHtml(url, html),
+            await server.transformIndexHtml(toHtmlTransformPath(url), html),
             {},
             {
               configuredCrossOrigin: context.crossOrigin,

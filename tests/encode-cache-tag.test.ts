@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { encodeCacheTag, encodeCacheTags } from "../packages/vinext/src/utils/encode-cache-tag.js";
 import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { buildAppPageCacheTags } from "../packages/vinext/src/server/app-page-cache.js";
@@ -52,6 +52,35 @@ describe("encodeCacheTag", () => {
 });
 
 describe("encodeCacheTags", () => {
+  it("warns and drops non-string tags without losing valid tags", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(encodeCacheTags(["posts", null, undefined, 123] as unknown as string[])).toEqual([
+        "posts",
+      ]);
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Next.js validates raw lengths before header encoding:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/patch-fetch.ts
+  it("warns and drops oversized raw tags while preserving valid encoded expansions", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const multibyte = `${"é".repeat(100)}:posts`;
+      expect(encodeCacheTags(["a".repeat(256), "a".repeat(257), multibyte])).toEqual([
+        "a".repeat(256),
+        encodeCacheTag(multibyte),
+      ]);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("256"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("encodes each tag in an array", () => {
     expect(encodeCacheTags(["posts", "שלום", "🎉"])).toEqual([
       "posts",

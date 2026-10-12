@@ -1,6 +1,7 @@
 import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 
-const frameworkLinkHeaders = new WeakSet<Headers>();
+// The Link value the App page renderer emitted on each marked response.
+const frameworkLinkHeaders = new WeakMap<Headers, string>();
 const edgeRouteHandlerLinkHeaders = new WeakSet<Headers>();
 
 const APP_RESPONSE_STAGE_LINK_PROVENANCE_HEADER = "x-vinext-app-stage-post-config-link";
@@ -10,14 +11,18 @@ export function markFrameworkLinkHeaders(
   headers: Headers,
   linkHeader: string | string[] | null | undefined,
 ): void {
-  if (linkHeader && (typeof linkHeader === "string" || linkHeader.length > 0)) {
-    frameworkLinkHeaders.add(headers);
-  }
+  const value = Array.isArray(linkHeader) ? linkHeader.join(", ") : linkHeader;
+  if (value) frameworkLinkHeaders.set(headers, value);
 }
 
 /** Whether the response carries renderer-owned Link values that config may prepend to. */
 export function hasFrameworkLinkHeaders(headers: Headers): boolean {
   return frameworkLinkHeaders.has(headers);
+}
+
+/** The renderer-owned part of the response's Link header, without middleware's. */
+export function getFrameworkLinkHeader(headers: Headers): string | null {
+  return frameworkLinkHeaders.get(headers) ?? null;
 }
 
 /** Mark Link values returned by an Edge route handler after config and middleware. */
@@ -37,7 +42,8 @@ export function hasPostConfigLinkHeaders(headers: Headers): boolean {
 
 /** Preserve Link provenance when a response wrapper reconstructs a Response. */
 export function copyLinkHeaderProvenance(source: Headers, target: Headers): void {
-  if (frameworkLinkHeaders.has(source)) frameworkLinkHeaders.add(target);
+  const frameworkLink = frameworkLinkHeaders.get(source);
+  if (frameworkLink !== undefined) frameworkLinkHeaders.set(target, frameworkLink);
   if (edgeRouteHandlerLinkHeaders.has(source)) edgeRouteHandlerLinkHeaders.add(target);
 }
 

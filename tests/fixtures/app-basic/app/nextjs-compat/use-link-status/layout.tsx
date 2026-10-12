@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+import DebugMode from "./debug-mode";
 import NavBar from "./nav-bar";
 
 export default function UseLinkStatusLayout({ children }: { children: React.ReactNode }) {
@@ -5,6 +7,9 @@ export default function UseLinkStatusLayout({ children }: { children: React.Reac
     <main>
       <NavBar />
       {children}
+      <Suspense>
+        <DebugMode />
+      </Suspense>
     </main>
   );
 }

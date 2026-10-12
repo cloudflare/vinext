@@ -11,7 +11,7 @@ import { waitForHydration } from "../helpers";
  * The companion dev-server spec lives at
  * tests/e2e/pages-router/javascript-urls.spec.ts and runs against `vp dev`.
  * The Next.js deploy suite, however, exercises these scenarios against a
- * PRODUCTION build (`vinext build` + `vinext start`), where the dev error
+ * PRODUCTION build (`vite build` + `vinext start`), where the dev error
  * overlay is absent and the client bundle is minified. This spec re-runs the
  * same four scenarios against the production server (port 4175, started by the
  * `pages-router-prod` webServer in playwright.config.ts) so a prod-only

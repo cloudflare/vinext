@@ -296,6 +296,18 @@ export function stripRscCacheBustingSearchParam(url: URL): void {
 }
 
 /**
+ * Reduce a URL's query to the one `_rsc` value that selects its representation.
+ * For RSC requests that is the value `resolveInvalidRscCacheBustingRequest`
+ * validated (the first pair), re-serialized; ignored duplicates and encodings
+ * are dropped. Other requests keep no `_rsc`, because it selects nothing there.
+ */
+export function keepOnlyValidatedRscCacheBustingSearchParam(url: URL, isRscRequest: boolean): void {
+  const hash = isRscRequest ? url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM) : null;
+  url.search = "";
+  if (hash !== null) setRscCacheBustingSearchParam(url, hash);
+}
+
+/**
  * Remove a trailing `.rsc` suffix from a pathname. Returns the pathname
  * unchanged when the suffix is absent.
  */

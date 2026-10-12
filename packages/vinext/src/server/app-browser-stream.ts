@@ -4,7 +4,7 @@ import {
   getNavigationRuntime,
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
-import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
 import { decodeRscEmbeddedChunk, type RscEmbeddedChunk } from "./app-rsc-embedded-chunks.js";
 
 type VinextBrowserGlobals = {

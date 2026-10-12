@@ -40,6 +40,7 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
+  cookies,
   getHeadersContext,
   headersContextFromRequest,
   setHeadersAccessPhase,
@@ -1725,6 +1726,26 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
   });
 
+  it("sends the path and query an action re-render rendered with", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/dashboard"));
+            return "revalidated";
+          });
+        },
+        // The query a rewrite resolved, not the one in the page URL.
+        searchParams: new URLSearchParams("q=rewritten value"),
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
+      encodeURIComponent("/dashboard?q=rewritten+value"),
+    );
+  });
+
   it("renders same-origin action redirects as a single-pass Flight response", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
@@ -1757,7 +1778,11 @@ describe("app server action execution helpers", () => {
   });
 
   it("passes empty request APIs to force-static action rerender targets", async () => {
-    const buildInputs: Array<{ query: string; header: string | null }> = [];
+    const buildInputs: Array<{
+      query: string;
+      header: string | null;
+      isForceStatic: boolean | undefined;
+    }> = [];
     const targetRoute: TestRoute = {
       id: "dashboard",
       page: {},
@@ -1766,10 +1791,11 @@ describe("app server action execution helpers", () => {
     };
     const response = await handleServerActionRscRequest(
       createRscOptions({
-        buildPageElement({ searchParams }) {
+        buildPageElement({ isForceStatic, searchParams }) {
           buildInputs.push({
             query: searchParams.toString(),
             header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            isForceStatic,
           });
           return "force-static-target";
         },
@@ -1791,7 +1817,8 @@ describe("app server action execution helpers", () => {
     );
 
     expect(response?.status).toBe(200);
-    expect(buildInputs).toEqual([{ query: "", header: null }]);
+    // Client pages also read an empty query in the browser.
+    expect(buildInputs).toEqual([{ query: "", header: null, isForceStatic: true }]);
   });
 
   it("observes searchParams access for dynamic-error action rerender targets", async () => {
@@ -3501,5 +3528,121 @@ describe("client recognition of unrecognized server actions", () => {
   it("does not throw for a recognized action response", () => {
     // A recognized action returns an ordinary response without the not-found header.
     expect(() => throwOnServerActionNotFound(new Response("ok"), "abc")).not.toThrow();
+  });
+});
+
+describe("server reference module loading", () => {
+  // Server reference modules are imported on the first request that names
+  // them. Whatever the loaders and decoders observe is what module-scope
+  // cookies()/headers() would capture — and cache for every later caller.
+  // Next.js evaluates action modules outside the request store, where those
+  // calls throw (https://nextjs.org/docs/messages/next-dynamic-api-wrong-context).
+  function readSessionCookie(): Promise<string> {
+    return cookies().then(
+      (jar) => jar.get("session")?.value ?? "none",
+      () => "no-request",
+    );
+  }
+
+  function runAsCaller<T>(request: Request, fn: () => Promise<T>): Promise<T> {
+    return runWithRequestContext(
+      createRequestContext({ headersContext: headersContextFromRequest(request) }),
+      fn,
+    );
+  }
+
+  it("loads and decodes fetch action references outside the caller's request", async () => {
+    const request = createFetchActionRequest({ cookie: "session=first-caller" });
+    const observed: Record<string, string> = {};
+
+    const response = await runAsCaller(request, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          request,
+          async loadServerAction() {
+            observed.loadServerAction = await readSessionCookie();
+            return async () => readSessionCookie();
+          },
+          decodeReply() {
+            // React's decodeReply() returns a lazy chunk that only resolves —
+            // and imports the server references it carries — once awaited.
+            const lazyReply: PromiseLike<unknown[]> = {
+              // oxlint-disable-next-line unicorn/no-thenable
+              then(onFulfilled, onRejected) {
+                return readSessionCookie()
+                  .then((session) => {
+                    observed.decodeReply = session;
+                    return [];
+                  })
+                  .then(onFulfilled, onRejected);
+              },
+            };
+            return lazyReply as Promise<unknown[]>;
+          },
+        }),
+      ),
+    );
+
+    expect(observed).toEqual({ loadServerAction: "no-request", decodeReply: "no-request" });
+    // The action itself still runs in the caller's request.
+    expect(JSON.parse(await response!.text()).returnValue).toEqual({
+      ok: true,
+      data: "first-caller",
+    });
+  });
+
+  it("loads multipart fetch action references outside the caller's request", async () => {
+    const request = createFetchActionRequest({ cookie: "session=first-caller" });
+    let observed: string | undefined;
+
+    await runAsCaller(request, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          contentType: "multipart/form-data; boundary=vinext",
+          request,
+          async loadServerAction() {
+            observed = await readSessionCookie();
+            return async () => "ok";
+          },
+        }),
+      ),
+    );
+
+    expect(observed).toBe("no-request");
+  });
+
+  it("decodes progressive action references outside the caller's request", async () => {
+    const request = createMultipartRequest({ cookie: "session=first-caller" });
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const observed: Record<string, string> = {};
+
+    await runAsCaller(request, () =>
+      handleProgressiveServerActionRequest(
+        createOptions({
+          request,
+          async decodeAction() {
+            observed.decodeAction = await readSessionCookie();
+            return async () => {
+              observed.action = await readSessionCookie();
+            };
+          },
+          async decodeFormState() {
+            observed.decodeFormState = await readSessionCookie();
+            return undefined;
+          },
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    expect(observed).toEqual({
+      decodeAction: "no-request",
+      // The action itself still runs in the caller's request.
+      action: "first-caller",
+      decodeFormState: "no-request",
+    });
   });
 });

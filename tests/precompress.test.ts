@@ -1,7 +1,7 @@
 /**
  * Tests for build-time precompression of hashed static assets.
  *
- * precompressAssets() runs after `vinext build` and generates .br (brotli) and
+ * precompressAssets() runs after `vite build` and generates .br (brotli) and
  * .gz (gzip) files alongside compressible hashed assets in dist/client/assets/.
  * This eliminates per-request compression overhead for immutable build output.
  */

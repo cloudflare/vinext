@@ -24,16 +24,21 @@ import {
   markDynamicUsage as _markDynamic,
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { fnv1a64 } from "../utils/hash.js";
+import { fnv1a64, sha256Hex } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
+import { isInsideWorkStoreScope } from "./internal/work-store-scope.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
-import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
+import {
+  addCollectedRequestTags,
+  getCurrentFetchSoftTags,
+  runWithDetachedFetchObservations,
+} from "./fetch-cache-state.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
@@ -45,6 +50,7 @@ import {
   getRegisteredCacheContext,
   markActionRevalidation,
   recordUnstableCacheObservation,
+  runWithDetachedCacheObservations,
   shouldServeStaleUnstableCacheEntry,
   type CacheLifeConfig,
 } from "./cache-request-state.js";
@@ -485,6 +491,13 @@ const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v2";
  * a direct import (avoiding circular dependencies).
  */
 const _unstableCacheAls = getOrCreateAls<boolean>("vinext.unstableCache.als");
+// The "use cache" scope registered by cache-runtime.ts, read without importing it.
+const _useCacheContextAls = getOrCreateAls<unknown>("vinext.cacheRuntime.contextAls");
+// The "use cache" scope an unstable_cache callback started in, so a call made
+// from it can tell that no "use cache" function sits between the two.
+const _unstableCacheCallbackAls = getOrCreateAls<{ useCacheContext: unknown }>(
+  "vinext.unstableCache.callbackAls",
+);
 
 /**
  * Wrapper used to serialize `unstable_cache` results so that `undefined` can
@@ -522,6 +535,23 @@ export function isInsideUnstableCacheScope(): boolean {
   return _unstableCacheAls.getStore() === true;
 }
 
+/**
+ * Whether an unstable_cache call is nested in another one's callback, as
+ * Next.js's `isNestedUnstableCache` decides: only where Next.js has a work
+ * store (not in Pages Router or outside a render), and only when the
+ * innermost cache scope is that callback rather than a "use cache" function
+ * it called.
+ * Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+ */
+function isNestedUnstableCacheCall(): boolean {
+  const callback = _unstableCacheCallbackAls.getStore();
+  return (
+    callback !== undefined &&
+    callback.useCacheContext === _useCacheContextAls.getStore() &&
+    isInsideWorkStoreScope()
+  );
+}
+
 type UnstableCacheOptions = {
   revalidate?: number | false;
   tags?: string[];
@@ -552,7 +582,12 @@ function scheduleUnstableCacheBackgroundRevalidation(
   const pending = getPendingUnstableCacheRevalidations();
   if (pending.has(cacheKey)) return;
 
-  const revalidation = refresh()
+  // As with a "use cache" regeneration (regenerateInBackground), the refresh
+  // feeds neither its cache life nor its tags back into the request, a layout
+  // probe, or an enclosing cache that served the stale value.
+  const revalidation = runWithDetachedCacheObservations(() =>
+    runWithDetachedFetchObservations(() => _useCacheContextAls.exit(refresh)),
+  )
     .then(() => undefined)
     .catch((err) => {
       console.error(`[vinext] unstable_cache background revalidation failed for ${cacheKey}:`, err);
@@ -574,7 +609,11 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   tags: string[],
   revalidateSeconds: number | false | undefined,
 ): Promise<Result> {
-  const result = await _unstableCacheAls.run(true, () => fn(...args));
+  const result = await _unstableCacheAls.run(true, () =>
+    _unstableCacheCallbackAls.run({ useCacheContext: _useCacheContextAls.getStore() }, () =>
+      fn(...args),
+    ),
+  );
 
   const cacheValue: CachedFetchValue = {
     kind: "FETCH",
@@ -603,8 +642,8 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
 /**
  * Wrap an async function with caching.
  *
- * Returns a new function that caches results. The cache key is derived
- * from keyParts + serialized arguments.
+ * Returns a new function that caches results. The cache key is a SHA-256
+ * digest of the callback source, keyParts and serialized arguments.
  */
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
@@ -612,22 +651,34 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   keyParts?: string[],
   options?: UnstableCacheOptions,
 ): T {
-  const baseKey = keyParts ? keyParts.join(":") : fnv1a64(fn.toString());
-  // Warning: fn.toString() as a cache key is minification-sensitive. In
-  // production builds where the function body is mangled, two logically
-  // different functions may hash to the same key, or the same function may
-  // hash differently across builds. Always pass explicit keyParts in
-  // production to get a stable, collision-free cache key.
+  // Like Next.js's browser build of next/cache, Client Components get a
+  // pass-through that only calls the callback, without server internals.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/cache.js
+  if (typeof window !== "undefined") {
+    return function cached(this: unknown, ...args: Parameters<T>) {
+      return fn.apply(this, args);
+    } as T;
+  }
+
+  // Like Next.js, the key covers the callback source as well as keyParts and
+  // arguments, and is a SHA-256 digest so its size stays fixed. Next.js joins
+  // keyParts with "," (a known TODO), so ["a,b", "c"] and ["a", "b,c"] share
+  // an entry there; encoding the tuple as JSON keeps them apart. The fixed
+  // part is a complete JSON array, so appending the arguments stays
+  // unambiguous. As in Next.js, it is captured here, so later changes to the
+  // keyParts array don't move the entry. The source is minification-sensitive,
+  // so the same callback may key differently across builds.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  const fixedKey = JSON.stringify([fn.toString(), keyParts ?? null]);
   const tags = encodeCacheTags(options?.tags ?? []);
   const revalidateSeconds = options?.revalidate;
 
   const cachedFn = async (...args: Parameters<T>) => {
-    const argsKey = JSON.stringify(args);
-    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${baseKey}:${argsKey}`;
+    const invocationKey = `${fixedKey}${JSON.stringify(args)}`;
     addCollectedRequestTags(tags);
     recordUnstableCacheObservation({
       kind: "unstable_cache",
-      keyHash: fnv1a64(cacheKey),
+      keyHash: fnv1a64(invocationKey),
       revalidate:
         typeof revalidateSeconds === "number"
           ? revalidateSeconds
@@ -637,9 +688,15 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       tagCount: tags.length,
       tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
     });
+    // Web Crypto, as Next.js uses on its edge runtime, so the shim pulls no
+    // Node.js builtin into the client graphs that import next/cache.
+    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${await sha256Hex(invocationKey)}`;
 
     const isDraftMode = isDraftModeEnabled();
-    if (!isDraftMode) {
+    // Like Next.js, an unstable_cache nested in another's callback skips the
+    // read and reruns, so regenerating the outer entry also refreshes what it
+    // calls. The fresh result is still stored.
+    if (!isDraftMode && !isNestedUnstableCacheCall()) {
       // Try to get from cache. Stale entries are usable in normal App Router
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.

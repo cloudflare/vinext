@@ -46,3 +46,24 @@ test.describe("Pages Router getStaticProps in development", () => {
     expect(Number(tsText)).toBeGreaterThan(0);
   });
 });
+
+// https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+for (const scenario of ["short-browser", "long-browser", "no-store", "gssp"]) {
+  test(`development browser cache policy: ${scenario}`, async ({ baseURL, request }) => {
+    const response = await request.get(`${baseURL}/storage-policy/${scenario}`);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["cache-control"]).toBe("no-cache, must-revalidate");
+    const html = await response.text();
+    const data = JSON.parse(
+      html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)![1],
+    );
+    const dataURL = `${baseURL}/_next/data/${data.buildId}/storage-policy/${scenario}.json`;
+    for (const url of [`${baseURL}/storage-policy/${scenario}`, dataURL]) {
+      for (const method of ["GET", "HEAD"]) {
+        const result = await request.fetch(url, { method });
+        expect(result.status()).toBe(200);
+        expect(result.headers()["cache-control"]).toBe("no-cache, must-revalidate");
+      }
+    }
+  });
+}

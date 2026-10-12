@@ -1,67 +1,16 @@
 import {
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
+  type PprFallbackShellState,
 } from "./ppr-fallback-shell.js";
+import {
+  isOwnPropertyCheck,
+  isWellKnownProperty,
+  type WellKnownProperty,
+} from "./internal/thenable-well-known-properties.js";
 
 function hasParamProperty<T extends Record<string, unknown>>(obj: T, prop: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(obj, prop);
-}
-
-// Properties that cannot be shadowed by param names because they need to
-// remain the true underlying value for Promises / React to work correctly.
-//
-// Next.js comments out `value` and `error` in reflect-utils.ts because they
-// use `Promise.resolve(underlyingParams)` directly in production, so React
-// mutations on the promise object are never shadowed. vinext uses a Proxy
-// that intercepts sync reads through a separate `plain` object, which means
-// a param named `value` or `error` would shadow React's `.status`/`.value`
-// attachments that React adds to resolved promises for `use()` caching.
-// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/utils/reflect-utils.ts
-const WELL_KNOWN_PROPERTIES = [
-  // Object prototype
-  "hasOwnProperty",
-  "isPrototypeOf",
-  "propertyIsEnumerable",
-  "toString",
-  "valueOf",
-  "toLocaleString",
-
-  // Promise prototype
-  "then",
-  "catch",
-  "finally",
-
-  // React Promise extension (status is explicitly reserved by Next.js;
-  // value/error are reserved here because our Proxy-based approach creates
-  // a shadowing risk that native Promise does not have)
-  "status",
-  "value",
-  "error",
-
-  // React introspection
-  "displayName",
-  "_debugInfo",
-
-  // Common tested properties
-  "toJSON",
-  "$$typeof",
-  "__esModule",
-
-  // Tested by flight when checking for iterables
-  "@@iterator",
-] as const;
-
-// The type-level set of well-known properties is derived directly from the
-// runtime array above, so they can never drift out of sync. These properties
-// are omitted from the synchronous intersection because the Proxy returns
-// Promise/React internals for them, not the param value. After awaiting, the
-// resolved object contains the actual param values for all keys.
-type WellKnownProperty = (typeof WELL_KNOWN_PROPERTIES)[number];
-
-const wellKnownProperties = new Set<PropertyKey>(WELL_KNOWN_PROPERTIES);
-
-function isWellKnownProperty(prop: PropertyKey): boolean {
-  return wellKnownProperties.has(prop);
 }
 
 export type ThenableParams<T extends Record<string, unknown>> = Promise<T> &
@@ -71,6 +20,36 @@ export type ThenableParamsObserver = Readonly<{
   observeParamAccess: (keys: readonly string[]) => void;
   observeReactPromiseStatus?: boolean;
 }>;
+
+const paramsState = new WeakMap<
+  object,
+  {
+    plain: Record<string, unknown>;
+    observer: ThenableParamsObserver | undefined;
+    fallbackShellState: PprFallbackShellState | null;
+  }
+>();
+
+function getParamsState(value: unknown) {
+  return value !== null && typeof value === "object" ? paramsState.get(value) : undefined;
+}
+
+/** Serialize backing values without reading a framework fallback-key proxy. */
+export function getFallbackParamsSnapshot(
+  value: unknown,
+): Promise<Record<string, unknown>> | undefined {
+  const state = getParamsState(value);
+  return state?.fallbackShellState ? Promise.resolve(state.plain) : undefined;
+}
+
+/** Reattach only framework metadata; argument values always come from the decoder. */
+export function restoreThenableParams<T extends Record<string, unknown>>(
+  decoded: T,
+  original: unknown,
+): ThenableParams<T> {
+  const state = getParamsState(original);
+  return createThenableParams(decoded, state?.observer, state?.fallbackShellState ?? null);
+}
 
 function observeParamKeys(
   observer: ThenableParamsObserver | undefined,
@@ -200,8 +179,15 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer?: ThenableParamsObserver,
 ): ThenableParams<T> {
+  return createThenableParams(obj, observer, getPprFallbackShellState());
+}
+
+function createThenableParams<T extends Record<string, unknown>>(
+  obj: T,
+  observer: ThenableParamsObserver | undefined,
+  fallbackShellState: PprFallbackShellState | null,
+): ThenableParams<T> {
   const plain = { ...obj };
-  const fallbackShellState = getPprFallbackShellState();
   const fallbackParamNames =
     fallbackShellState &&
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
@@ -288,7 +274,11 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       }
 
       const value = Reflect.get(target, prop, receiver);
-      return typeof value === "function" ? value.bind(target) : value;
+      if (typeof value !== "function") return value;
+      // Own-property checks answer through the traps below, so they see (and
+      // observe) the param keys, as `Object.prototype.hasOwnProperty.call`
+      // does.
+      return value.bind(isOwnPropertyCheck(prop) ? receiver : target);
     },
     getOwnPropertyDescriptor(target, prop) {
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
@@ -332,5 +322,11 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     },
   };
 
-  return createThenableParamsProxy(promise, handler);
+  const params = createThenableParamsProxy(promise, handler);
+  paramsState.set(params, {
+    plain,
+    observer,
+    fallbackShellState: fallbackParamNames ? fallbackShellState : null,
+  });
+  return params;
 }

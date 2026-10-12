@@ -7,8 +7,8 @@ import type {
   ModuleExportMeta,
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
-import { parseAstAsync, type Plugin } from "vite";
-import { isPathInside, NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
+import { parseAst, parseAstAsync, type Plugin } from "vite";
+import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
@@ -17,15 +17,13 @@ type Program = Awaited<ReturnType<typeof parseAstAsync>>;
 type Options = {
   projectRoot: string;
   cacheRuntime: string;
-  getAppDir: () => string | undefined;
-  matchesPageExtension: (fileName: string) => boolean;
   allowMissingRsc?: boolean;
 };
 
 type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
-  appPageDefaultExport?: boolean;
   argumentCount?: number;
+  captureCount?: number;
   serverReferenceId?: string;
 };
 
@@ -105,23 +103,6 @@ function acceptsSecondArgument(
   );
 }
 
-function isAppPageDefaultExport(
-  options: Options,
-  id: string,
-  name: string,
-  isModuleDirective: boolean,
-): boolean {
-  const appDir = options.getAppDir();
-  if (!isModuleDirective || name !== "default" || !appDir) return false;
-  const modulePath = stripViteModuleQuery(id);
-  const moduleFileName = path.basename(modulePath);
-  return (
-    isPathInside(appDir, modulePath) &&
-    path.parse(moduleFileName).name === "page" &&
-    options.matchesPageExtension(moduleFileName)
-  );
-}
-
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
   if (
     meta.isFunction === false &&
@@ -192,20 +173,46 @@ function getFunctionDirectiveExportNames(
 }
 
 function getCacheWrapperOptions(
-  options: Options,
-  id: string,
-  name: string,
-  isModuleDirective: boolean,
   meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
 ): CacheWrapperOptions {
   const argumentCount = getArgumentCount(meta);
   return {
     acceptsSecondArgument: acceptsSecondArgument(meta),
-    ...(isAppPageDefaultExport(options, id, name, isModuleDirective)
-      ? { appPageDefaultExport: true }
-      : {}),
     ...(argumentCount === undefined ? {} : { argumentCount }),
   };
+}
+
+// plugin-rsc passes an inline function's captures to `encode` only after its
+// `runtime` code is generated. Collect each function's capture count first.
+function getInlineCaptureCounts(
+  transforms: RscTransforms,
+  code: string,
+  ast: Program,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  let hoistedName: string | undefined;
+  transforms.transformHoistInlineDirective(code, ast, {
+    directive: USE_CACHE_DIRECTIVE_CANDIDATE,
+    hoistRuntime: true,
+    noExport: true,
+    runtime: (_value, name) => {
+      hoistedName = name;
+      return "";
+    },
+    encode: (value) => {
+      const statement = parseAst(`(${value});`).body[0];
+      if (
+        hoistedName === undefined ||
+        statement?.type !== "ExpressionStatement" ||
+        statement.expression.type !== "ArrayExpression"
+      ) {
+        throw new Error(`vinext: could not read inline "use cache" captures (${value}).`);
+      }
+      counts.set(hoistedName, statement.expression.elements.length);
+      return value;
+    },
+  });
+  return counts;
 }
 
 export async function createUseCacheCallablePlugin(options: Options): Promise<Plugin> {
@@ -336,19 +343,23 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           return magicStringTransformResult(result.output, { hires: "boundary", source: id });
         }
 
+        // Page semantics (omitting searchParams) are not decided here: like
+        // Next.js, the page and page metadata call sites pass `$$isPage` to a
+        // cache function, wherever it is defined (see cache-runtime.ts).
         const secureExports = new Set<string>();
         const wrap = (
           value: string,
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          isModuleDirective: boolean,
+          captureCount: number | undefined,
         ) => {
           const variant = directiveMatch[1] ?? "";
           const secureName = secureExportName(name);
           secureExports.add(secureName);
           const wrapperOptions = {
-            ...getCacheWrapperOptions(options, id, name, isModuleDirective, meta),
+            ...getCacheWrapperOptions(meta),
+            ...(captureCount === undefined ? {} : { captureCount }),
             serverReferenceId: `${reference.referenceKey}#${secureName}`,
           };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
@@ -359,14 +370,23 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          isModuleDirective: boolean,
+          captureCount?: number,
         ) => {
-          const cached = wrap(value, name, directiveMatch, meta, isModuleDirective);
+          const cached = wrap(value, name, directiveMatch, meta, captureCount);
           const secureName = secureExportName(name);
           needsReactServer = true;
           return `(${secureName} = $$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(secureName)}))`;
         };
 
+        // Like Next.js, a function that closes over values must receive exactly
+        // its encrypted captures, bound to its own reference, as the first
+        // argument (use-cache-wrapper.ts `boundArgsLength`, encryption.ts
+        // `actionId`). plugin-rsc calls `encode` right after the same
+        // function's `runtime`.
+        const captureCounts = moduleDirective
+          ? new Map<string, number>()
+          : getInlineCaptureCounts(transforms, code, ast);
+        let encodingName: string | undefined;
         const result = moduleDirective
           ? transforms.transformWrapExport(code, ast, {
               filter: (name, meta) => {
@@ -380,16 +400,34 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
                 return true;
               },
               runtime: (value, name, meta) =>
-                runtime(value, name, matchUseCacheDirective(moduleDirective), meta, true),
+                runtime(value, name, matchUseCacheDirective(moduleDirective), meta),
             })
           : transforms.transformHoistInlineDirective(code, ast, {
               directive: USE_CACHE_DIRECTIVE_CANDIDATE,
               rejectNonAsyncFunction: true,
               hoistRuntime: true,
               noExport: true,
-              runtime: (value, name, meta) =>
-                runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta, false),
-              encode: (value) => `$$cacheRuntime.encryptCacheCaptures(${value})`,
+              runtime: (value, name, meta) => {
+                encodingName = name;
+                return runtime(
+                  value,
+                  name,
+                  matchUseCacheDirective(meta.directiveMatch[0]),
+                  meta,
+                  captureCounts.get(name),
+                );
+              },
+              encode: (value) => {
+                const name = encodingName;
+                encodingName = undefined;
+                if (name === undefined || !captureCounts.has(name)) {
+                  throw new Error(
+                    `vinext: inline "use cache" captures were encoded before their function was registered (${id}).`,
+                  );
+                }
+                const referenceId = `${reference.referenceKey}#${secureExportName(name)}`;
+                return `$$cacheRuntime.encryptCacheCaptures(${JSON.stringify(referenceId)}, ${value})`;
+              },
               decode: (value) => value,
             });
         if (!result.output.hasChanged()) {

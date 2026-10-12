@@ -1,6 +1,7 @@
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
+import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "./browser-globals.js";
 
 type NavigationRuntimeSnapshot = {
   pathname: string;
@@ -16,6 +17,11 @@ export type NavigationRuntimeRscBootstrap = {
   searchParamsFromBrowser?: boolean;
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
+  /**
+   * The query SSR rendered client pages with, sent after the head when the
+   * render turned dynamic too late for `nav` to carry it.
+   */
+  renderedSearch?: string;
   rsc: NavigationRuntimeRscChunk[];
   /**
    * Client reuse bound in seconds resolved from the initial render's completed
@@ -86,6 +92,17 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
   ) => void;
+  /**
+   * Called after a raw (non-app-owned) history.pushState/replaceState with a
+   * URL so an App Router navigation that has not committed yet is discarded,
+   * matching Next.js' ACTION_RESTORE.
+   */
+  discardPendingNavigation?: () => void;
+  /**
+   * Called before any history.pushState/replaceState so a navigation React is
+   * committing writes its URL first, as Next.js does from an insertion effect.
+   */
+  flushCommittingNavigationUrl?: () => void;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -98,7 +115,6 @@ export type NavigationRuntime = {
   functions: NavigationRuntimeFunctions;
 };
 
-export const NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION = "vinext.navigationRuntime";
 export const NAVIGATION_RUNTIME_KEY = Symbol.for(NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION);
 
 const ROUTE_MANIFEST_SEGMENT_GRAPH_MAP_KEYS: readonly string[] = [
@@ -143,7 +159,9 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite"))
+    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "discardPendingNavigation")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "flushCommittingNavigationUrl"))
   );
 }
 
@@ -188,6 +206,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   const searchParamsFromBrowser = Reflect.get(value, "searchParamsFromBrowser");
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
+  const renderedSearch = Reflect.get(value, "renderedSearch");
   const rsc = Reflect.get(value, "rsc");
   const staleTimeSeconds = Reflect.get(value, "staleTimeSeconds");
   // getNavigationRuntime() runs at bootstrap/read boundaries, not per chunk.
@@ -202,6 +221,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
     (searchParamsFromBrowser === undefined || typeof searchParamsFromBrowser === "boolean") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
+    (renderedSearch === undefined || typeof renderedSearch === "string") &&
     Array.isArray(rsc) &&
     rsc.every(isNavigationRuntimeRscChunk) &&
     isOptionalStaleTimeSeconds(staleTimeSeconds)

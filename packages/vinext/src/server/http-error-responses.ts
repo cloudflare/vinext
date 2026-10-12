@@ -97,6 +97,7 @@ export function notFoundStaticAssetResponse(headers?: HeadersInit): Response {
   responseHeaders.delete("content-length");
   responseHeaders.delete("transfer-encoding");
   responseHeaders.set("Content-Type", "text/plain; charset=utf-8");
+  responseHeaders.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
   return new Response("Not Found", {
     status: 404,
     headers: responseHeaders,

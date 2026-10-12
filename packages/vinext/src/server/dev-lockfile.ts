@@ -43,7 +43,7 @@ export type DevServerInfo = {
   cwd: string;
 };
 
-export type DevLockfile = {
+type DevLockfile = {
   /** Update the lock file contents (e.g. once the port is known after listen). */
   update(info: DevServerInfo): void;
   /** Release the lock — deletes the file. Safe to call multiple times. */
@@ -153,7 +153,7 @@ export function formatAlreadyRunningError(opts: FormatErrorOptions): string {
       // this message reads the same everywhere — it's meant to be parsed by
       // AI agents and CLIs.
       `Stale lock file: ${path.relative(cwd, lockfilePath)}`,
-      "Remove it manually if no server is running, then re-run `vinext dev`.",
+      "Remove it manually if no server is running, then re-run `vite dev`.",
     ].join("\n");
   }
 
@@ -276,7 +276,10 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
   const lockfile: DevLockfile = {
     path: lockfilePath,
     update(next: DevServerInfo): void {
+      if (released) return;
       try {
+        const current = readLockfile(lockfilePath);
+        if (!current || current.pid !== ownerPid) return;
         writeLockfile(lockfilePath, next);
       } catch {
         // Best-effort; not fatal.

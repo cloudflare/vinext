@@ -2,7 +2,6 @@
  * ISR page with tagged fetch for revalidateTag testing.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/open-next/app/revalidate-tag/
- * Tests: ON-2 in TRACKING.md
  */
 
 export const revalidate = 3600; // Long TTL — only invalidated by revalidateTag

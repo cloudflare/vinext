@@ -1,6 +1,7 @@
 import { AppElementsWire } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
+import { isBfcacheSegmentId } from "./app-bfcache-id.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
@@ -66,6 +67,13 @@ export class HistoryStateSnapshotCache<TState> {
     const oldestIndex = this.#snapshots.keys().next().value;
     if (typeof oldestIndex === "number") {
       this.#snapshots.delete(oldestIndex);
+    }
+  }
+
+  /** Point every entry that remembered `previous` at `next` instead. */
+  replaceState(previous: TState, next: TState): void {
+    for (const snapshot of this.#snapshots.values()) {
+      if (snapshot.state === previous) snapshot.state = next;
     }
   }
 
@@ -158,6 +166,10 @@ export class RestorableClientStateController<TState> {
       historyIndex: options.historyIndex,
       state: options.state,
     });
+  }
+
+  replaceHistoryStateSnapshots(previous: TState, next: TState): void {
+    this.#snapshots.replaceState(previous, next);
   }
 
   resolveHistoryStateSnapshotRestore(
@@ -395,16 +407,6 @@ export function resolveActiveRoutePaths(
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
   const value = readHistoryStateRecord(state)?.[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
   return typeof value === "string" ? value : null;
-}
-
-export function isBfcacheSegmentId(id: string): boolean {
-  const parsed = AppElementsWire.parseElementKey(id);
-  return (
-    parsed?.kind === "layout" ||
-    parsed?.kind === "page" ||
-    parsed?.kind === "slot" ||
-    parsed?.kind === "template"
-  );
 }
 
 export function readHistoryStateBfcacheIds(state: unknown): BfcacheIdMap | null {

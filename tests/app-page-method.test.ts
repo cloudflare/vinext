@@ -1,16 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
-import {
-  isStaticOrSsgAppPageCandidate,
-  resolveAppPageMethodResponse,
-} from "../packages/vinext/src/server/app-page-method.js";
+import { resolveAppPageMethodResponse } from "../packages/vinext/src/server/app-page-method.js";
 
 describe("app page method policy", () => {
   it("returns 405 with Allow for non-action mutation requests to static candidates", async () => {
     const response = resolveAppPageMethodResponse({
-      hasGenerateStaticParams: false,
-      isDynamicRoute: false,
+      isStaticEligible: true,
       request: new Request("https://example.com/about", { method: "POST" }),
-      revalidateSeconds: null,
     });
 
     if (!response) {
@@ -23,13 +18,11 @@ describe("app page method policy", () => {
 
   it("preserves possible server action POSTs", () => {
     const response = resolveAppPageMethodResponse({
-      hasGenerateStaticParams: false,
-      isDynamicRoute: false,
+      isStaticEligible: true,
       request: new Request("https://example.com/about", {
         headers: { "next-action": "abc123" },
         method: "POST",
       }),
-      revalidateSeconds: null,
     });
 
     expect(response).toBeNull();
@@ -42,11 +35,9 @@ describe("app page method policy", () => {
     });
 
     const response = resolveAppPageMethodResponse({
-      hasGenerateStaticParams: false,
-      isDynamicRoute: false,
+      isStaticEligible: true,
       middlewareHeaders,
       request: new Request("https://example.com/about", { method: "PUT" }),
-      revalidateSeconds: null,
     });
 
     if (!response) {
@@ -56,42 +47,25 @@ describe("app page method policy", () => {
     expect(response.headers.get("x-from-middleware")).toBe("1");
   });
 
-  it("treats ISR and generateStaticParams routes as SSG candidates", () => {
+  it("does not guard pages that are not static or SSG", () => {
+    // force-dynamic, revalidate = 0, the edge runtime, and dynamic-segment
+    // routes without generateStaticParams all render per request in Next.js.
     expect(
-      isStaticOrSsgAppPageCandidate({
-        hasGenerateStaticParams: false,
-        isDynamicRoute: false,
-        revalidateSeconds: 60,
+      resolveAppPageMethodResponse({
+        isStaticEligible: false,
+        request: new Request("https://example.com/dynamic", { method: "PUT" }),
       }),
-    ).toBe(true);
-
-    expect(
-      isStaticOrSsgAppPageCandidate({
-        hasGenerateStaticParams: true,
-        isDynamicRoute: true,
-        revalidateSeconds: null,
-      }),
-    ).toBe(true);
+    ).toBeNull();
   });
 
-  it("does not guard force-dynamic or revalidate zero pages", () => {
-    expect(
-      resolveAppPageMethodResponse({
-        dynamicConfig: "force-dynamic",
-        hasGenerateStaticParams: false,
-        isDynamicRoute: false,
-        request: new Request("https://example.com/dynamic", { method: "PUT" }),
-        revalidateSeconds: null,
-      }),
-    ).toBeNull();
-
-    expect(
-      resolveAppPageMethodResponse({
-        hasGenerateStaticParams: false,
-        isDynamicRoute: false,
-        request: new Request("https://example.com/no-store", { method: "PUT" }),
-        revalidateSeconds: 0,
-      }),
-    ).toBeNull();
+  it("passes GET and HEAD through", () => {
+    for (const method of ["GET", "HEAD"]) {
+      expect(
+        resolveAppPageMethodResponse({
+          isStaticEligible: true,
+          request: new Request("https://example.com/about", { method }),
+        }),
+      ).toBeNull();
+    }
   });
 });

@@ -30,6 +30,57 @@ const nextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — source
+      // params substituted into a redirect destination query.
+      {
+        source: "/query-param-redirect/:next",
+        destination: "/about?next=/:next&safe=1",
+        permanent: false,
+      },
+      // Used by E2E: pages-router-prod/redirect-conditions.spec.ts — header and
+      // cookie condition values are server-only and must stay out of the
+      // public client bundle.
+      {
+        source: "/server-condition-redirect/header",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "header",
+            key: "x-redirect-capability",
+            value: "header-capability-5f0c2e",
+          },
+        ],
+      },
+      {
+        source: "/server-condition-redirect/shadowed",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "cookie",
+            key: "redirect-capability",
+            value: "cookie-capability-9a41d7",
+          },
+        ],
+      },
+      {
+        source: "/server-condition-redirect/shadowed",
+        destination: "/nav-test",
+        permanent: false,
+      },
+      {
+        source: "/server-condition-redirect/component-only",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "cookie",
+            key: "redirect-capability",
+            value: "cookie-capability-9a41d7",
+          },
+        ],
+      },
     ];
   },
   async rewrites() {
@@ -42,6 +93,20 @@ const nextConfig = {
         {
           source: "/repeat-rewrite/:id",
           destination: "/docs/:id/:id",
+        },
+        // Used by E2E: pages-router-prod/config-query-params.spec.ts — a source
+        // param substituted into a destination query value must stay one value
+        // on the server and in the client router's beforeFiles rewrite resolution.
+        {
+          source: "/query-param-rewrite/:term",
+          destination: "/ssr-query?q=:term&fixed=1",
+        },
+        // The `api` prefix keeps this source outside the fixture middleware
+        // matcher, so a soft navigation takes its query from the client
+        // router's own rewrite resolution instead of a middleware data probe.
+        {
+          source: "/api-query-param-rewrite/:term",
+          destination: "/rewrite-navigation/0/destination?q=:term&fixed=1",
         },
         {
           source: "/rewrite-navigation/:id",
@@ -101,6 +166,19 @@ const nextConfig = {
   },
   async headers() {
     return [
+      {
+        source: "/storage-policy/short-browser",
+        headers: [{ key: "Cache-Control", value: "public, max-age=1" }],
+      },
+      {
+        source: "/storage-policy/long-browser",
+        headers: [{ key: "Cache-Control", value: "private, max-age=300" }],
+      },
+      {
+        source: "/storage-policy/no-store",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+
       {
         source: "/api/(.*)",
         headers: [

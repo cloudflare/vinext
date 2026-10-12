@@ -155,7 +155,7 @@ describe("pregenerated concrete paths", () => {
   });
 
   describe("getPrerenderedConcretePaths", () => {
-    it("selects unique rendered App and Pages paths and skips fallback shells by default", () => {
+    it("selects unique rendered App and Pages paths and skips fallback shells", () => {
       expect(
         getPrerenderedConcretePaths({
           routes: [
@@ -183,6 +183,15 @@ describe("pregenerated concrete paths", () => {
               router: "pages",
               revalidate: false,
               fallback: false,
+            },
+            {
+              route: "/docs/:slug",
+              path: "/docs/missing",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              notFound: true,
+              responseStatus: 404,
             },
             {
               route: "/404",
@@ -250,26 +259,6 @@ describe("pregenerated concrete paths", () => {
           { includeErrorDocuments: true },
         ),
       ).toEqual(["/404", "/500", "/_error"]);
-    });
-
-    it("can include fallback-shell placeholder paths for explicit warmup requests", () => {
-      expect(
-        getPrerenderedConcretePaths(
-          {
-            routes: [
-              {
-                route: "/blog/:slug",
-                path: "/blog/[slug]",
-                status: "rendered",
-                router: "app",
-                revalidate: 60,
-                fallback: true,
-              },
-            ],
-          },
-          { includeFallbackShells: true },
-        ),
-      ).toEqual(["/blog/[slug]"]);
     });
   });
 });

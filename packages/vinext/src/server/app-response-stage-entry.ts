@@ -8,6 +8,7 @@ import rscHandler, {
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 // @ts-expect-error -- virtual module resolved by vinext
@@ -26,6 +27,7 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
+import { attachRequestCfMetadata } from "./request-pipeline.js";
 import { serializeResponseStageLinkProvenance } from "./app-response-header-provenance.js";
 import {
   attachFrameworkRequestError,
@@ -61,8 +63,10 @@ export async function invokeCacheFunction(
     executionContext,
     rootParams: invocation.rootParams,
   });
+  // Like Next.js, which restores the work store before regenerating a cache
+  // entry, the replay runs in the work store scope.
   await runWithRequestContext(context, () =>
-    invokeRegisteredCacheFunction(invocation, loadServerAction),
+    runInWorkStoreScope(() => invokeRegisteredCacheFunction(invocation, loadServerAction)),
   );
 }
 
@@ -76,6 +80,9 @@ export async function handleResponseStage(
 ): Promise<Response> {
   if (!isAppWorkerResponseStageProps(props)) {
     return new Response("Invalid vinext App response stage", { status: 400 });
+  }
+  if (props.kind === "app-full-request" && props.headRequest) {
+    request = attachRequestCfMetadata(new Request(request, { method: "HEAD" }), request);
   }
   if (props.requestOrigin !== new URL(request.url).origin) {
     return new Response("Invalid vinext App response stage", { status: 400 });
@@ -108,6 +115,7 @@ export async function handleResponseStage(
       policyHeaders: props.cacheability.policyHeaders,
       probeMode: props.cacheability.probeMode,
       rawManifest: __cacheabilityManifest,
+      recomposesRequestScopedHeaders: props.kind === "app-page" && props.isRscRequest,
       registerCacheAdapters: () => registerConfiguredCacheAdapters(env),
       request,
       representation: props.cacheability.representation,

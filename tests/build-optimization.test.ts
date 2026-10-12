@@ -10,9 +10,10 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { createBuilder, parseAst } from "vite";
+import { createBuilder, createLogger, mergeConfig, parseAst, resolveConfig } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
+  EXPORT_ALL_CANDIDATE_FILTER as _EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
   stripServerExports as _stripServerExportsImpl,
@@ -32,7 +33,10 @@ import {
   computeDynamicImportPreloads,
   computeLazyChunks,
 } from "../packages/vinext/src/utils/lazy-chunks.js";
-import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
+import {
+  createDynamicPreloadMetadataPlugin,
+  transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata,
+} from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
 import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
 import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
@@ -176,6 +180,7 @@ describe("clientManualChunks", () => {
   });
 
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
+    expect(appClientManualChunks("/vinext/shims/app-router-tree-context.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/compat-router.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
@@ -237,7 +242,233 @@ describe("createClientManualChunks (installed layout)", () => {
   });
 });
 
+describe.each([false, true])("generated .vinext files (bundled dev: %s)", (bundledDev) => {
+  it.each([undefined, "**/user-cache/**", [/user-cache/, "**/other-cache/**"]])(
+    "excludes generated files from watching and preserves user ignores (%j)",
+    async (ignored) => {
+      const { default: vinext } = await import("../packages/vinext/src/index.js");
+      const config = await resolveConfig(
+        {
+          root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
+          configFile: false,
+          plugins: [vinext()],
+          experimental: { bundledDev },
+          server: { watch: { ignored, exclude: ignored, usePolling: true } },
+        },
+        "serve",
+      );
+      expect(config.server.watch?.ignored).toEqual([
+        ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
+      ]);
+      expect(config.server.watch?.exclude).toEqual([
+        ...(ignored === undefined ? [] : Array.isArray(ignored) ? ignored : [ignored]),
+        /(?:^|[/\\])\.vinext(?:[/\\]|$)/,
+      ]);
+      expect(config.server.watch?.usePolling).toBe(true);
+    },
+  );
+
+  it("preserves an explicitly disabled watcher", async () => {
+    const { default: vinext } = await import("../packages/vinext/src/index.js");
+    const config = await resolveConfig(
+      {
+        root: path.resolve(import.meta.dirname, "fixtures/pages-basic"),
+        configFile: false,
+        plugins: [vinext()],
+        experimental: { bundledDev },
+        server: { watch: null },
+      },
+      "serve",
+    );
+    expect(config.server.watch).toBeNull();
+  });
+});
+
 // ─── optimizeDeps.exclude — prevents esbuild scanning virtual module imports ─
+
+describe("next-intl dependency optimization", () => {
+  const dependencies = [
+    "@formatjs/intl-localematcher",
+    "negotiator",
+    "@formatjs/fast-memoize",
+    "intl-messageformat",
+  ];
+  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react", "next/link"];
+  const legacyClientDependencies = [
+    "next-intl > use-intl/_IntlProvider",
+    "next-intl > use-intl/_useLocale",
+  ];
+
+  it.each([
+    { scenario: "Cloudflare dev", expected: dependencies, clientExpected: clientDependencies },
+    { scenario: "Node dev", cloudflare: false, expected: [], clientExpected: clientDependencies },
+    { scenario: "production", command: "build", expected: [], clientExpected: [] },
+    { scenario: "without next-intl", nextIntl: false, expected: [], clientExpected: [] },
+    {
+      scenario: "resolvable but undeclared next-intl without request config",
+      declared: false,
+      requestConfig: false,
+      expected: [],
+      clientExpected: [],
+    },
+    {
+      scenario: "without request config",
+      requestConfig: false,
+      expected: [],
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "request config without a direct declaration",
+      declared: false,
+      expected: dependencies,
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "next-intl 3.x exports",
+      legacy: true,
+      expected: dependencies,
+      clientExpected: [...clientDependencies, ...legacyClientDependencies],
+    },
+    {
+      scenario: "top-level noDiscovery",
+      topLevelNoDiscovery: true,
+      expected: [],
+      clientExpected: [],
+    },
+    {
+      scenario: "environment discovery overrides top-level noDiscovery",
+      topLevelNoDiscovery: true,
+      noDiscovery: false,
+      clientNoDiscovery: false,
+      expected: dependencies,
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "RSC noDiscovery",
+      noDiscovery: true,
+      expected: [],
+      clientExpected: clientDependencies,
+    },
+    {
+      scenario: "client noDiscovery",
+      clientNoDiscovery: true,
+      expected: dependencies,
+      clientExpected: [],
+    },
+    {
+      scenario: "client exclusions",
+      clientExcluded: true,
+      expected: dependencies,
+      clientExpected: ["next-intl > use-intl"],
+    },
+    {
+      scenario: "explicit exclusions",
+      excluded: true,
+      expected: ["@formatjs/intl-localematcher", "intl-messageformat"],
+      clientExpected: ["next/link"],
+    },
+    {
+      scenario: "dependencies unavailable from root",
+      missing: true,
+      expected: ["@formatjs/intl-localematcher", "negotiator"],
+      clientExpected: clientDependencies,
+    },
+  ])("preserves optimizer behavior for $scenario", async (options) => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-next-intl-optimizer-"));
+    try {
+      await fsp.mkdir(path.join(root, "app"));
+      await fsp.writeFile(path.join(root, "app/page.tsx"), "export default function Page() {}");
+      await fsp.writeFile(path.join(root, "next.config.mjs"), "export default {};");
+      await fsp.writeFile(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          dependencies:
+            options.nextIntl === false || options.declared === false ? {} : { "next-intl": "*" },
+        }),
+      );
+      await fsp.mkdir(path.join(root, "i18n"));
+      if (options.requestConfig !== false)
+        await fsp.writeFile(path.join(root, "i18n/request.ts"), "export default {};");
+      // Only config resolution runs here. Mock installed packages with actual
+      // files so missing/isolated dependencies exercise Node's resolver.
+      const installed = options.missing ? dependencies.slice(0, 2) : dependencies;
+      for (const name of [...installed, ...(options.nextIntl === false ? [] : ["next-intl"])]) {
+        const dir = path.join(root, "node_modules", name);
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(
+          path.join(dir, "package.json"),
+          JSON.stringify({ name, main: "index.js" }),
+        );
+        await fsp.writeFile(path.join(dir, "index.js"), "module.exports = {};");
+      }
+      if (options.nextIntl !== false) {
+        // use-intl is nested under next-intl, as with an isolated installation.
+        const dir = path.join(root, "node_modules/next-intl/node_modules/use-intl");
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(
+          path.join(dir, "package.json"),
+          JSON.stringify({
+            name: "use-intl",
+            exports: {
+              ".": "./index.js",
+              "./react": "./react.js",
+              ...(options.legacy
+                ? { "./_IntlProvider": "./index.js", "./_useLocale": "./react.js" }
+                : {}),
+            },
+          }),
+        );
+        for (const file of ["index.js", "react.js"])
+          await fsp.writeFile(path.join(dir, file), "module.exports = {};");
+      }
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const main = vinext({ rsc: false }).find((plugin: any) => plugin.name === "vinext:config");
+      const result = await (main as any).config(
+        {
+          root,
+          build: {},
+          plugins: options.cloudflare === false ? [] : [{ name: "vite-plugin-cloudflare" }],
+          optimizeDeps: {
+            noDiscovery: options.topLevelNoDiscovery,
+            include: ["user-selected"],
+            exclude: options.excluded ? ["negotiator", "use-intl"] : [],
+          },
+          environments: {
+            client: {
+              optimizeDeps: {
+                noDiscovery: options.clientNoDiscovery,
+                exclude: options.clientExcluded ? ["use-intl/react", "next/link"] : [],
+              },
+            },
+            rsc: {
+              optimizeDeps: {
+                noDiscovery: options.noDiscovery,
+                exclude: options.excluded ? ["@formatjs/fast-memoize"] : [],
+              },
+            },
+          },
+        },
+        { command: options.command ?? "serve" },
+      );
+      const includes = result.environments.rsc.optimizeDeps.include;
+      expect(includes).toContain("user-selected");
+      expect(dependencies.filter((id) => includes.includes(id))).toEqual(options.expected);
+      const clientIncludes = result.environments.client.optimizeDeps.include;
+      expect(
+        [...clientDependencies, ...legacyClientDependencies].filter((id) =>
+          clientIncludes.includes(id),
+        ),
+      ).toEqual(options.clientExpected);
+      for (const name of ["client", "ssr"]) {
+        const otherIncludes = result.environments[name].optimizeDeps.include ?? [];
+        expect(dependencies.filter((id) => otherIncludes.includes(id))).toEqual([]);
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("optimizeDeps.exclude for vinext", () => {
   const rscClientShimExcludes = [
@@ -284,7 +515,6 @@ describe("optimizeDeps.exclude for vinext", () => {
       const result = await (mainPlugin as any).config(mockConfig, {
         command: "build",
       });
-
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
       // Incoming excludes from other plugins must survive the merge
@@ -530,8 +760,28 @@ describe("optimizeDeps.exclude for vinext", () => {
       // applies top-level ssr.* as defaults for environments.ssr.*, so
       // setting noExternal: true here would force-bundle React despite
       // external: true and recreate the duplicate-React bug.
-      expect(result.ssr?.noExternal).toBeUndefined();
+      expect(result.ssr?.noExternal).not.toBe(true);
+      expect(result.ssr?.noExternal).not.toContain("react");
       expect(result.ssr?.external).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  // @vercel/og 1.x throws on native import; it only runs once
+  // vinext:og-harfbuzz has transformed it, so `ssr.external: true` must not
+  // externalize it in any Node server environment.
+  it("keeps @vercel/og in the transform pipeline when ssr.external: true", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-og-no-external-");
+
+    try {
+      const result = await fixture.config({ ssr: { external: true } });
+
+      expect(result.ssr.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.rsc.resolve.external).toBe(true);
+      expect(result.environments.rsc.resolve.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.ssr.resolve.external).toBe(true);
+      expect(result.environments.ssr.resolve.noExternal).toEqual(["@vercel/og"]);
     } finally {
       await fixture.cleanup();
     }
@@ -738,6 +988,14 @@ describe("optimizeDeps.exclude for vinext", () => {
         },
       };
       (mainPlugin as any).configEnvironment("worker", workerEnvConfig);
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: { worker: workerEnvConfig },
+        logger: createLogger("silent"),
+        plugins: [],
+      });
 
       expect(workerEnvConfig.optimizeDeps.entries).toContain("already-present.ts");
       expect(workerEnvConfig.optimizeDeps.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
@@ -822,78 +1080,280 @@ describe("optimizeDeps.exclude for vinext", () => {
     );
   }, 15000);
 
-  it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
-    const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext();
-    const mainPlugin = plugins.find(
-      (p: any) =>
-        p.name === "vinext:config" &&
-        typeof p.config === "function" &&
-        typeof p.configResolved === "function",
-    );
-    expect(mainPlugin).toBeDefined();
-
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optwarn-"));
-    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
-    await fsp.writeFile(
-      path.join(tmpDir, "pages", "index.tsx"),
-      `export default function Home() { return <h1>Home</h1>; }`,
-    );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
-
-    try {
-      await (mainPlugin as any).config(
-        {
-          root: tmpDir,
-          build: {},
-          plugins: [{ name: "vite-plugin-cloudflare" }],
-        },
-        { command: "serve" },
+  it.each([false, true])(
+    "scopes optional worker warnings (explicit include: %s)",
+    async (explicit) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const plugins = vinext();
+      const mainPlugin = plugins.find(
+        (p: any) =>
+          p.name === "vinext:config" &&
+          typeof p.config === "function" &&
+          typeof p.configResolved === "function",
       );
+      expect(mainPlugin).toBeDefined();
 
-      const warned: string[] = [];
-      const logger = {
-        hasWarned: false,
-        info() {},
-        warn(msg: string) {
-          warned.push(msg);
-        },
-        warnOnce(msg: string) {
-          warned.push(msg);
-        },
-        error() {},
-        clearScreen() {},
-        hasErrorLogged() {
-          return false;
-        },
-      };
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optwarn-"));
+      await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "index.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+      await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
-      await (mainPlugin as any).configResolved({
-        cacheDir: path.join(tmpDir, "node_modules", ".vite"),
-        command: "serve",
+      try {
+        await (mainPlugin as any).config(
+          {
+            root: tmpDir,
+            build: {},
+            plugins: [{ name: "vite-plugin-cloudflare" }],
+          },
+          { command: "serve" },
+        );
+
+        const workerConfig = {
+          optimizeDeps: {
+            include: explicit ? ["use-sync-external-store/with-selector"] : [],
+          },
+        };
+        (mainPlugin as any).configEnvironment("worker", workerConfig);
+        const warned: string[] = [];
+        const logger = {
+          hasWarned: false,
+          info() {},
+          warn(msg: string) {
+            warned.push(msg);
+          },
+          warnOnce(msg: string) {
+            warned.push(msg);
+          },
+          error() {},
+          clearScreen() {},
+          hasErrorLogged() {
+            return false;
+          },
+        };
+
+        const resolvedConfig = {
+          cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { worker: workerConfig },
+          logger,
+          plugins: [],
+        };
+        await (mainPlugin as any).configResolved(resolvedConfig);
+
+        const optionalWarnings = [
+          "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
+          "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
+        ];
+        const actionableWarnings = [
+          "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+          "Failed to resolve dependency: use-sync-external-store/with-selector, present in client 'optimizeDeps.include'",
+        ];
+        for (const warning of [...optionalWarnings, ...actionableWarnings])
+          resolvedConfig.logger.warn(warning);
+
+        expect(warned).toEqual([...(explicit ? optionalWarnings : []), ...actionableWarnings]);
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    15000,
+  );
+
+  it.each([
+    { name: "automatic entries", config: {}, visibleClientIds: [] },
+    {
+      name: "explicit top-level include",
+      config: { optimizeDeps: { include: ["use-sync-external-store/shim"] } },
+      visibleClientIds: ["use-sync-external-store/shim"],
+    },
+    {
+      name: "explicit client include",
+      config: {
+        environments: {
+          client: { optimizeDeps: { include: ["use-sync-external-store/shim"] } },
+        },
+      },
+      visibleClientIds: ["use-sync-external-store/shim"],
+    },
+    {
+      name: "disabled automatic entries",
+      config: {
+        optimizeDeps: { noDiscovery: true, include: ["use-sync-external-store/shim"] },
+      },
+      visibleClientIds: "all" as const,
+    },
+  ])(
+    "scopes optional client optimizer warnings: $name",
+    async (options) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const plugins = vinext();
+      const mainPlugin = plugins.find(
+        (p: any) =>
+          p.name === "vinext:config" &&
+          typeof p.config === "function" &&
+          typeof p.configResolved === "function",
+      );
+      expect(mainPlugin).toBeDefined();
+
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-app-dev-optwarn-"));
+      const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+      await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+      await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+      try {
+        const config = mergeConfig(
+          options.config,
+          await (mainPlugin as any).config(
+            { root: tmpDir, build: {}, plugins: [], ...options.config },
+            { command: "serve" },
+          ),
+        );
+        const clientConfig = mergeConfig(
+          { optimizeDeps: config.optimizeDeps },
+          config.environments.client,
+        );
+
+        const warned: string[] = [];
+        const logger = {
+          hasWarned: false,
+          info() {},
+          warn(msg: string) {
+            warned.push(msg);
+          },
+          warnOnce(msg: string) {
+            warned.push(msg);
+          },
+          error() {},
+          clearScreen() {},
+          hasErrorLogged() {
+            return false;
+          },
+        };
+
+        const resolvedConfig = {
+          cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { client: clientConfig },
+          logger,
+          plugins: [],
+        };
+        await (mainPlugin as any).configResolved(resolvedConfig);
+
+        const expectedWarnings: string[] = [];
+        for (const id of [
+          "use-sync-external-store/shim",
+          "use-sync-external-store/shim/index.js",
+          "use-sync-external-store/shim/with-selector",
+          "use-sync-external-store/shim/with-selector.js",
+          "use-sync-external-store/with-selector",
+          "use-sync-external-store/with-selector.js",
+        ]) {
+          for (const specifier of [id, `\x1b[36m${id}\x1b[39m`]) {
+            const warning = `Failed to resolve dependency: ${specifier}, present in client 'optimizeDeps.include'`;
+            resolvedConfig.logger.warn(warning);
+            if (
+              options.visibleClientIds === "all" ||
+              options.visibleClientIds.some((visible) => visible === id)
+            ) {
+              expectedWarnings.push(warning);
+            }
+          }
+        }
+
+        const actionableWarnings = [
+          "Failed to resolve dependency: use-sync-external-store/shim, present in ssr 'optimizeDeps.include'",
+          "Failed to resolve dependency: other-package, present in client 'optimizeDeps.include'",
+          "Failed to resolve dependency: use-sync-external-store/shim/unknown, present in client 'optimizeDeps.include'",
+          "Failed to resolve dependency: other-package > use-sync-external-store/shim, present in client 'optimizeDeps.include'",
+          "Cannot optimize dependency: use-sync-external-store/shim, present in client 'optimizeDeps.include'",
+        ];
+        for (const warning of actionableWarnings) resolvedConfig.logger.warn(warning);
+
+        expect(warned).toEqual([...expectedWarnings, ...actionableWarnings]);
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    15000,
+  );
+
+  it.each([
+    { name: "dev defaults", expected: true },
+    { name: "production", command: "build", expected: false },
+    { name: "top-level noDiscovery", topLevel: { noDiscovery: true }, expected: false },
+    { name: "client noDiscovery", client: { noDiscovery: true }, expected: false },
+    {
+      name: "client discovery override",
+      topLevel: { noDiscovery: true },
+      client: { noDiscovery: false },
+      expected: true,
+    },
+    {
+      name: "package exclusion",
+      topLevel: { exclude: ["use-sync-external-store"] },
+      expected: false,
+    },
+    {
+      name: "client package exclusion",
+      client: { exclude: ["use-sync-external-store"] },
+      expected: false,
+    },
+    {
+      name: "subpath exclusion",
+      client: { exclude: ["use-sync-external-store/shim"] },
+      expected: false,
+      selectorExpected: true,
+    },
+  ])("respects optional client optimizer settings: $name", async (options) => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((p: any) => p.name === "vinext:config") as any;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-store-optdeps-"));
+    await fsp.mkdir(path.join(root, "app"));
+    await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
+    try {
+      const nestedInclude = "example-lib > use-sync-external-store/shim";
+      const config = await plugin.config(
+        {
+          root,
+          build: {},
+          optimizeDeps: { ...options.topLevel, include: [nestedInclude] },
+          environments: { client: { optimizeDeps: options.client } },
+        },
+        { command: options.command ?? "serve" },
+      );
+      const clientConfig = mergeConfig(
+        { optimizeDeps: options.topLevel },
+        mergeConfig(config.environments.client, { optimizeDeps: options.client }),
+      );
+      await plugin.configResolved({
+        cacheDir: path.join(root, ".vite"),
+        command: options.command ?? "serve",
         configFile: false,
-        environments: {},
-        logger,
+        environments: { client: clientConfig },
+        logger: createLogger("silent"),
         plugins: [],
       });
-
-      logger.warn(
-        "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
+      const includes = clientConfig.optimizeDeps.include as string[];
+      expect(includes).toContain(nestedInclude);
+      expect(includes.includes("use-sync-external-store/shim")).toBe(options.expected);
+      expect(includes.includes("use-sync-external-store/shim/index.js")).toBe(options.expected);
+      expect(includes.includes("use-sync-external-store/with-selector")).toBe(
+        options.selectorExpected ?? options.expected,
       );
-      logger.warn(
-        "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
-      );
-      logger.warn(
-        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
-      );
-
-      expect(warned).toEqual([
-        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
-      ]);
     } finally {
-      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fsp.rm(root, { recursive: true, force: true });
     }
-  }, 15000);
+  });
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────
@@ -925,7 +1385,7 @@ describe("process.env.NODE_ENV define", () => {
     );
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
-    return { mainPlugin: mainPlugin as any, tmpDir, fsp };
+    return { mainPlugin: mainPlugin as any, plugins, tmpDir, fsp };
   }
 
   it("is injected as production for build", async () => {
@@ -2426,7 +2886,8 @@ describe("next/dynamic preload metadata transform", () => {
   it("normalises a symlinked resolved path to the real root-relative manifest key", async () => {
     // pnpm/Cloudflare resolve modules through symlinks; the resolved id may not
     // share the (possibly symlinked) root prefix. Without realpath normalisation
-    // the module is dropped and the preload silently disappears.
+    // it would get a `../` key that misses the manifest key, and the preload
+    // would silently disappear.
     const realRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-real-"));
     const linkParent = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-link-"));
     const linkRoot = path.join(linkParent, "root");
@@ -2453,6 +2914,87 @@ describe("next/dynamic preload metadata transform", () => {
       await fsp.rm(realRoot, { recursive: true, force: true });
       await fsp.rm(linkParent, { recursive: true, force: true });
     }
+  });
+
+  it("keys a module outside the root like Vite's manifest, with `../` segments", async () => {
+    // Monorepo workspace package (https://github.com/cloudflare/vinext/issues/3723):
+    // Vite keys the dynamic entry `path.relative(config.root, id)`, so dropping
+    // the escaping key would leave the boundary without preload/CSS links.
+    const workspaceRoot = path.resolve("/monorepo");
+    const appRoot = path.join(workspaceRoot, "apps/web");
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const HeroBanner = dynamic(() => import("@acme/ui/hero-banner"));`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      path.join(appRoot, "app/page.tsx"),
+      appRoot,
+      async () => path.join(workspaceRoot, "packages/ui/src/hero-banner.tsx?v=1"),
+    );
+
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["../../packages/ui/src/hero-banner.tsx"] }`,
+    );
+  });
+});
+
+describe("next/dynamic preload metadata plugin: node_modules call sites", () => {
+  const root = path.resolve("/repo");
+  const code = [
+    `import dynamic from "next/dynamic";`,
+    `const Widget = dynamic(() => import("./widget.js"));`,
+  ].join("\n");
+
+  async function transformAs(command: "build" | "serve", id: string) {
+    const plugin = createDynamicPreloadMetadataPlugin(() => ["transpiled-lib"]);
+    (plugin.configResolved as (config: { root: string; command: string }) => void)({
+      root,
+      command,
+    });
+    const { handler } = plugin.transform as {
+      handler: (this: unknown, code: string, id: string) => Promise<{ code: string } | null>;
+    };
+    return handler.call(
+      {
+        resolve: async (_specifier: string, importer: string) => ({
+          id: path.join(path.dirname(importer), "widget.js"),
+        }),
+      },
+      code,
+      id,
+    );
+  }
+
+  // Turbopack (Next.js 16's default bundler) treats node_modules as foreign code
+  // unless the package is in transpilePackages, and only runs its next/dynamic
+  // transform on non-foreign code: crates/next-core/src/util.rs
+  // (foreign_code_context_condition) and next_{client,server}/transforms.rs.
+  it("adds metadata to a call site in a transpilePackages dependency", async () => {
+    const result = await transformAs(
+      "build",
+      path.join(
+        root,
+        "node_modules/.pnpm/transpiled-lib@1.0.0/node_modules/transpiled-lib/host.js",
+      ),
+    );
+    expect(result?.code).toContain(
+      `loadableGenerated: { modules: ["node_modules/.pnpm/transpiled-lib@1.0.0/node_modules/transpiled-lib/widget.js"] }`,
+    );
+  });
+
+  it("leaves a call site in a foreign dependency untouched", async () => {
+    const result = await transformAs("build", path.join(root, "node_modules/foreign-lib/host.js"));
+    expect(result).toBeNull();
+  });
+
+  it("skips dependencies in dev, where the preload map does not exist", async () => {
+    const result = await transformAs(
+      "serve",
+      path.join(root, "node_modules/transpiled-lib/host.js"),
+    );
+    expect(result).toBeNull();
   });
 });
 
@@ -3021,12 +3563,24 @@ describe("stripServerExports", () => {
     expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
   });
 
-  it("cheaply identifies export-all syntax without matching multiplication", () => {
-    expect(_hasExportAllCandidate(`export * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export\n*\nfrom './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export /* comment */ * from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export // comment\n* from './other-page';`)).toBe(true);
-    expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
+  it("cheaply identifies export-all syntax without matching multiplication", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((p: any) => p.name === "vinext:validate-page-exports") as any;
+    const codeFilter = plugin?.transform?.filter?.code;
+    expect(codeFilter).toBe(_EXPORT_ALL_CANDIDATE_FILTER);
+
+    for (const code of [
+      `export * from './other-page';`,
+      `export\n*\nfrom './other-page';`,
+      `export /* comment */ * from './other-page';`,
+      `export // comment\n* from './other-page';`,
+    ]) {
+      expect(_hasExportAllCandidate(code)).toBe(true);
+      expect(codeFilter.test(code)).toBe(true);
+    }
+    const multiplication = `export const area = width * height;`;
+    expect(_hasExportAllCandidate(multiplication)).toBe(false);
+    expect(codeFilter.test(multiplication)).toBe(false);
   });
 
   it("rejects export-all declarations in page modules", () => {
@@ -3725,6 +4279,1201 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it("removes a data export assigned inside an if block", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+if (process.env.FEATURE) {
+  getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) {
+        ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a braceless if", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+if (process.env.FEATURE) getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+else getServerSideProps = undefined;
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) ;
+      else ;
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a try block", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+export let getStaticProps;
+try { getStaticProps = async () => ({ props: { key: SIGNING_KEY } }); } catch {}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      try { ; } catch {}
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a switch case", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+switch (process.env.MODE) {
+  case "private":
+    getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      switch (process.env.MODE) {
+        case "private":
+          ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a logical expression", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+process.env.FEATURE && (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }));
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      process.env.FEATURE && (void 0);
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a block-scoped var declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+if (process.env.FEATURE) {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      if (process.env.FEATURE) {
+        ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside both branches of an if/else", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+if (process.env.FEATURE) {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+} else {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY.slice(1) } });
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      if (process.env.FEATURE) {
+        ;
+      } else {
+        ;
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a block after a top-level var declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+export var getServerSideProps;
+if (process.env.FEATURE) {
+  var getServerSideProps = async () => ({ props: { key: SIGNING_KEY } });
+}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) {
+        ;
+      }
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a braceless loop body", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+for (const mode of ["private"]) var getServerSideProps = async () => ({ props: { key: SIGNING_KEY, mode } });
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      for (const mode of ["private"]) ;
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside an argument of a kept declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+const client = connect(SIGNING_KEY), registered = register((getServerSideProps = async () => ({ props: { key: client.key } })));
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      const registered = register((void 0));
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a for-loop head", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+for (var attempt = 0, getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }); attempt < 1; attempt++) {}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      for (var attempt = 0; attempt < 1; attempt++) {}
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a member target of a destructuring assignment", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps = async () => ({ props: {} });
+[getServerSideProps.config] = [SIGNING_KEY];
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a destructuring default", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps, visible;
+[getServerSideProps, visible = (getServerSideProps = async () => ({ props: { key: SIGNING_KEY } }))] = [];
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let visible;
+      [, visible = void 0] = [];
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a for…of head declaration", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+for (var getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]) {}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a bare for…of head", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getServerSideProps;
+if (process.env.FEATURE) for (getServerSideProps of [async () => ({ props: { key: SIGNING_KEY } })]);
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      if (process.env.FEATURE) ;
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned inside a for…in head pattern", () => {
+    const code = `import { SIGNING_KEY } from '../lib/server-config';
+let getStaticProps;
+for ([getStaticProps] in { [SIGNING_KEY]: true }) {}
+export { getStaticProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes nested assignments to helpers that become unused", () => {
+    const code = `
+import secret from './secret';
+let cache;
+function Page() { cache = 1; return null; }
+export function getStaticProps() {
+  if (!cache) { cache = secret; }
+  return { props: { cache } };
+}
+export default Page;
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      function Page() { ; return null; }
+
+      export default Page;
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the value of a dead helper assigned in expression position", () => {
+    // Matches Turbopack, which keeps the right-hand side of the assignment.
+    const code = `
+import { createStore } from './store';
+let store;
+function useStore() { return store ??= createStore(); }
+export function getServerSideProps() { return { props: { store: store ?? null } }; }
+export default function Page() { return useStore().value; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import { createStore } from './store';
+
+      function useStore() { return (createStore()); }
+
+      export default function Page() { return useStore().value; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps nested assignments to a var scoped by a class static block", () => {
+    const code = `
+import { secret } from './secret';
+class Store {
+  static {
+    var getServerSideProps;
+    getServerSideProps = createValue();
+    Store.value = getServerSideProps;
+  }
+}
+export async function getServerSideProps() { return { props: { secret } }; }
+export default function Page() { return Store.value; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+      class Store {
+        static {
+          var getServerSideProps;
+          getServerSideProps = createValue();
+          Store.value = getServerSideProps;
+        }
+      }
+
+      export default function Page() { return Store.value; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a data export assigned in a parameter default next to a body var", () => {
+    // A function body's `var` is not visible from its parameter defaults.
+    const code = `
+import { secret } from './secret';
+let getServerSideProps;
+function init(value = (getServerSideProps = async () => ({ props: { secret } }))) {
+  var getServerSideProps;
+  return value;
+}
+init();
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      function init(value = (void 0)) {
+        var getServerSideProps;
+        return value;
+      }
+      init();
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps loops whose heads write live bindings", () => {
+    const code = `
+import { items } from './items';
+export function getStaticProps() { return { props: {} }; }
+for (const item of items) console.log(item);
+for (var other of items) console.log(other);
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import { items } from './items';
+
+      for (const item of items) console.log(item);
+      for (var other of items) console.log(other);
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("prunes data exports from a loop head and redirects its dead helpers", () => {
+    const code = `
+let loader, visible;
+for ([loader, visible] of [[0, 1]]) console.log(visible);
+for (var [getStaticProps = loader, other] of [[0, 1]]) console.log(other);
+export { getStaticProps };
+export default function Page() { return visible + other; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let visible;
+      for ([({ x: 0 }).x, visible] of [[0, 1]]) console.log(visible);
+      for (var [, other] of [[0, 1]]) console.log(other);
+
+      export default function Page() { return visible + other; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("drops the dependencies of pruned destructuring defaults in an assignment", () => {
+    const code = `import secret from './secret';
+let getServerSideProps, visible;
+({ getServerSideProps = secret, visible } = source);
+export { getServerSideProps };
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let visible;
+      ({ visible } = source);
+
+      export default function Page() { return visible; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("drops the dependencies of pruned destructuring defaults in a declaration", () => {
+    const code = `import secret from './secret';
+export const { getStaticProps = secret, visible } = source;
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      export const { visible } = source;
+      export default function Page() { return visible; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps writes to a catch binding in a var redeclaration", () => {
+    const code = `var getStaticProps;
+try { throw []; } catch (getStaticProps) {
+  for (var getStaticProps of getStaticProps) {}
+}
+export { getStaticProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      try { throw []; } catch (getStaticProps) {
+        for (var getStaticProps of getStaticProps) {}
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps writes to a catch binding in a parameter default", () => {
+    const code = `export let getServerSideProps;
+try { throw {}; } catch ({ getServerSideProps, fallback = (getServerSideProps = 1) }) {
+  console.log(getServerSideProps, fallback);
+}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      try { throw {}; } catch ({ getServerSideProps, fallback = (getServerSideProps = 1) }) {
+        console.log(getServerSideProps, fallback);
+      }
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("prunes pattern targets in an assignment that die in a later pass", () => {
+    const code = `import secret from './secret';
+let getServerSideProps, helper, live;
+[getServerSideProps = helper, helper = secret, live] = [];
+export { getServerSideProps };
+export default function Page() { return live; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let live;
+      [, , live] = [];
+
+      export default function Page() { return live; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("prunes pattern targets in a loop head that die in a later pass", () => {
+    const code = `import secret from './secret';
+let getServerSideProps, helper, live;
+for ([getServerSideProps = helper, helper = secret, live] of [[]]);
+export { getServerSideProps };
+export default function Page() { return live; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let live;
+      for ([, , live] of [[]]);
+
+      export default function Page() { return live; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a binding read by a switch discriminant next to a case-scoped shadow", () => {
+    const code = `
+import secret from './secret';
+if (flag) var loader = secret;
+switch (consume(loader)) { case 0: let loader; }
+export { loader as getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import secret from './secret';
+      if (flag) var loader = secret;
+      switch (consume(loader)) { case 0: let loader; }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a destructuring initializer that a surviving target at the top level reads", () => {
+    const code = `import source from './source';
+var { getServerSideProps, visible } = source;
+export { getServerSideProps };
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import source from './source';
+      var { visible } = source;
+
+      export default function Page() { return visible; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a destructuring initializer that a surviving target in a block reads", () => {
+    const code = `import source from './source';
+if (flag) { var { getServerSideProps, visible } = source; }
+export { getServerSideProps };
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import source from './source';
+      if (flag) { var { visible } = source; }
+
+      export default function Page() { return visible; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the catch-bound target of a var declarator", () => {
+    const code = `
+import secret from './secret';
+var getServerSideProps, helper = secret;
+getServerSideProps = () => helper;
+try { throw 0; } catch (helper) {
+  var [getServerSideProps, helper] = [null, 42];
+  console.log(helper);
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      try { throw 0; } catch (helper) {
+        var [, helper] = [null, 42];
+        console.log(helper);
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps loops whose heads write only dead helpers running", () => {
+    const code = `
+let helper, count = 0;
+for (helper of [1, 2]) count++;
+for (var other in { a: 1 }) count++;
+export function getStaticProps() { return { props: { helper, other } }; }
+export default function Page() { return count; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let count = 0;
+      for (({ x: 0 }).x of [1, 2]) count++;
+      for (var other in { a: 1 }) count++;
+
+      export default function Page() { return count; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the destructuring reads of a helper-only loop head", () => {
+    const code = `
+let helper, reads = 0;
+const value = { get secret() { reads++; return 1; }, get other() { reads++; return 2; } };
+for ({ secret: helper, other: helper = reads } of [value]) {}
+for (var { secret: kept, other = reads } of [value]) {}
+for ({ helper } of [value]) {}
+export function getStaticProps() { return { props: { helper, kept, other } }; }
+export default function Page() { return reads; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let reads = 0;
+      const value = { get secret() { reads++; return 1; }, get other() { reads++; return 2; } };
+      for ({ secret: ({ x: 0 }).x, other: ({ x: 0 }).x = reads } of [value]) {}
+      for (var { secret: kept, other: other = reads } of [value]) {}
+      for ({ helper: ({ x: 0 }).x } of [value]) {}
+
+      export default function Page() { return reads; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the dependencies of helper defaults in a pruned var loop head", () => {
+    const code = `
+import secret from "./secret";
+for (var [getStaticProps = () => ({ props: { helper } }), helper = secret, live] of [[, , 1]]) {}
+export { getStaticProps };
+export default function Page() { return live; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import secret from "./secret";
+      for (var [, helper = secret, live] of [[, , 1]]) {}
+
+      export default function Page() { return live; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("rewrites a helper-only loop head without introducing a binding", () => {
+    // Direct eval can name any binding, so the throwaway target is a member of a
+    // fresh object rather than a generated identifier.
+    const code = `
+let helper, values = [];
+for (helper of [1, 2]) values.push(eval("__vinext_\\u0075nused"));
+export function getStaticProps() { return { props: { helper } }; }
+export default function Page() { return values; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let values = [];
+      for (({ x: 0 }).x of [1, 2]) values.push(eval("__vinext_\\u0075nused"));
+
+      export default function Page() { return values; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps helpers written through member targets in patterns and loop heads", () => {
+    // A member target can run a setter, so it reads its root.
+    const code = `
+let total = 0;
+const helper = { set value(v) { total += v; } };
+for (helper.value of [1, 2]) {}
+[helper.value] = [3];
+export function getStaticProps() { return { props: { helper } }; }
+export default function Page() { return total; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      let total = 0;
+      const helper = { set value(v) { total += v; } };
+      for (helper.value of [1, 2]) {}
+      [helper.value] = [3];
+
+      export default function Page() { return total; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("prunes the module targets of a var declarator that also writes a catch binding", () => {
+    const code = `
+import secret from './secret';
+var getServerSideProps;
+try { throw 0; } catch (error) {
+  var [getServerSideProps = secret, error] = [, 42];
+  console.log(error);
+}
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+      try { throw 0; } catch (error) {
+        var [, error] = [, 42];
+        console.log(error);
+      }
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes destructuring co-targets that only the data export reads", () => {
+    const code = `
+import secret from './secret';
+const [getServerSideProps, helper] = [() => ({ props: { helper } }), secret];
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+
+
+
+      export default function Page() { return null; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a catch clause", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  try { throw new Error("x"); } catch (label) { void label; }
+  return label(2);
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        try { throw new Error("x"); } catch (label) { void label; }
+        return label(2);
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a switch", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  switch (label(3)) {
+    case "a": const label = 0; return String(label);
+    default: return "b";
+  }
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        switch (label(3)) {
+          case "a": const label = 0; return String(label);
+          default: return "b";
+        }
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a class static block", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  class Widget { static { var label = 0; void label; } static value = label(5); }
+  return Widget.value;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        class Widget { static { var label = 0; void label; } static value = label(5); }
+        return Widget.value;
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a nested var", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  if (Math.random() > 2) { var label2 = label(6); }
+  function inner() { if (true) { var label = 1; } return label; }
+  return String(inner()) + label2;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        if (Math.random() > 2) { var label2 = label(6); }
+        function inner() { if (true) { var label = 1; } return label; }
+        return String(inner()) + label2;
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a loop", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  let out = "";
+  for (const label of [1]) out += label;
+  for (let i = 0; i < 1; i++) out += label(i);
+  return out;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        let out = "";
+        for (const label of [1]) out += label;
+        for (let i = 0; i < 1; i++) out += label(i);
+        return out;
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper shared with the client when the client use is in a parameter default", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let getServerSideProps;
+if (process.env.ENABLED) {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+}
+export { getServerSideProps };
+export default function Page() {
+  const read = (label = 1) => label;
+  return label(read());
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+
+      if (process.env.ENABLED) {
+        ;
+      }
+
+      export default function Page() {
+        const read = (label = 1) => label;
+        return label(read());
+      }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a try block that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+let getServerSideProps;
+try {
+  getServerSideProps = async () => ({ props: { value: label(1) } });
+  cache = label(2);
+} catch {}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      try {
+        ;
+        cache = label(2);
+      } catch {}
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a switch case that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+let getServerSideProps;
+switch (process.env.MODE) {
+  case "ssr":
+    getServerSideProps = async () => ({ props: { value: label(1) } });
+    cache = label(2);
+    break;
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      switch (process.env.MODE) {
+        case "ssr":
+          ;
+          cache = label(2);
+          break;
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a class static block that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+let getServerSideProps;
+class Init {
+  static {
+    getServerSideProps = async () => ({ props: { value: label(1) } });
+    cache = label(2);
+  }
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      class Init {
+        static {
+          ;
+          cache = label(2);
+        }
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a block with nested vars that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+if (process.env.ENABLED) {
+  var getServerSideProps = async () => ({ props: { value: label(1) } });
+  var nested = label(2);
+  cache = nested;
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+      if (process.env.ENABLED) {
+        ;
+        var nested = label(2);
+        cache = nested;
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps the client half of a loop body that also assigns the data export", () => {
+    const code = `import { format } from "./format";
+const label = (value) => format(value);
+let cache;
+let getServerSideProps;
+for (const mode of ["ssr"]) {
+  if (mode) getServerSideProps = async () => ({ props: { value: label(1) } });
+  cache = label(2);
+}
+export { getServerSideProps };
+export default function Page() { return cache; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "import { format } from "./format";
+      const label = (value) => format(value);
+      let cache;
+
+      for (const mode of ["ssr"]) {
+        if (mode) ;
+        cache = label(2);
+      }
+
+      export default function Page() { return cache; }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps nested assignments to shadowing locals", () => {
+    const code = `
+import { visible } from './visible';
+let getServerSideProps;
+function helper(getServerSideProps) {
+  getServerSideProps = visible;
+  return getServerSideProps;
+}
+export { getServerSideProps };
+export default function Page() { return helper(); }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toMatchInlineSnapshot(`
+      "
+      import { visible } from './visible';
+
+      function helper(getServerSideProps) {
+        getServerSideProps = visible;
+        return getServerSideProps;
+      }
+
+      export default function Page() { return helper(); }
+      "
+    `);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("removes Babel-style memoized helpers used only by data exports", () => {
     // Ported from Next.js:
     // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/support-babel-style-memoized-function
@@ -3954,6 +5703,12 @@ describe("createMultiStageChunkFileNames", () => {
     );
     expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-response-stage" } as never)).toBe(
       "vinext-stage-runtime~virtual_vinext-response-stage-[hash].js",
+    );
+    expect(fileName({ name: "_virtual_vinext-request-stage" } as never)).toBe(
+      "_virtual_vinext-request-stage-[hash].js",
+    );
+    expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-request-stage" } as never)).toBe(
+      "vinext-stage-runtime~virtual_vinext-request-stage-[hash].js",
     );
     expect(fileName({ name: "request-runtime" } as never)).toBe(
       "_next/static/request-runtime-[hash].js",
@@ -4296,12 +6051,14 @@ describe("createMultiStageChunkFileNames", () => {
           fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
         ).resolves.toContain("export default");
         const outputFiles = await fsp.readdir(outputDir, { recursive: true });
-        const responseStageFile = outputFiles.find((file) =>
+        // The browser `client` environment inherits top-level `build.ssr` in
+        // buildApp(); only the `ssr` environment may emit the stage entry.
+        const responseStageFiles = outputFiles.filter((file) =>
           /^vinext-response-stage-.+\.js$/.test(path.basename(file)),
         );
-        expect(responseStageFile).toBeDefined();
+        expect(responseStageFiles).toHaveLength(1);
         const responseStage = (await import(
-          `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
+          `${pathToFileURL(path.join(outputDir, responseStageFiles[0]!)).href}?output=${index}`
         )) as { load(): Promise<unknown> };
         await expect(responseStage.load()).resolves.toBeDefined();
       }
@@ -4429,7 +6186,7 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
-  it("applies stage isolation to every server output but not the App SSR renderer", async () => {
+  it("applies App stage isolation only to the RSC environment", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
     try {
@@ -4481,6 +6238,22 @@ describe("createMultiStageChunkFileNames", () => {
         }),
       ).toBeUndefined();
       expect(ssrEmit).not.toHaveBeenCalled();
+
+      const auxiliaryEmit = vi.fn();
+      const auxiliaryContext = {
+        emitFile: auxiliaryEmit,
+        environment: {
+          config: { build: { ssr: true }, consumer: "server" },
+          name: "response_store_service_binding",
+        },
+      };
+      await (outputPlugin as any).buildStart.call(auxiliaryContext);
+      expect(
+        await (outputPlugin as any).outputOptions.call(auxiliaryContext, {
+          chunkFileNames: "auxiliary/[name].js",
+        }),
+      ).toBeUndefined();
+      expect(auxiliaryEmit).not.toHaveBeenCalled();
 
       const customClientEmit = vi.fn();
       const customClientContext = {

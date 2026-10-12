@@ -82,7 +82,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       isEdgeRuntime: options.isEdgeRuntime,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
-      isrHtmlKey: options.isrHtmlKey,
+      isrFallbackShellHtmlKey: options.isrFallbackShellHtmlKey,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       revalidateSeconds: currentRevalidateSeconds ?? 0,

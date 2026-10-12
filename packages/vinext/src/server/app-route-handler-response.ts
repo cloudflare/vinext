@@ -1,3 +1,7 @@
+import {
+  recordRouteCacheability,
+  markRouteCacheabilityExplicitResponsePolicy,
+} from "vinext/shims/cacheability-classification";
 import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr, buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
@@ -16,7 +20,6 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
-import { markRouteCacheabilityExplicitConfigPolicy } from "vinext/shims/cacheability-classification";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -114,9 +117,19 @@ export function buildRouteHandlerCachedResponse(
     expireSeconds: options.expireSeconds,
     cacheControlMeta: options.cacheControl,
   });
-  applyCdnResponseHeaders(headers, { cacheControl });
+  recordRouteCacheability({ cacheable: true, cacheControl });
+  if (headers.has("Cache-Control")) markRouteCacheabilityExplicitResponsePolicy();
+  applyCdnResponseHeaders(headers, {
+    cacheControl,
+    browserCacheControl: headers.get("Cache-Control") ?? undefined,
+  });
 
-  return new Response(options.isHead ? null : cachedValue.body, {
+  const hasNoBody =
+    options.isHead ||
+    cachedValue.status === 204 ||
+    cachedValue.status === 205 ||
+    cachedValue.status === 304;
+  return new Response(hasNoBody ? null : cachedValue.body, {
     status: cachedValue.status,
     headers,
   });
@@ -128,7 +141,6 @@ export function applyRouteHandlerRevalidateHeader(
   expireSeconds?: number,
   tags?: readonly string[],
 ): void {
-  markRouteCacheabilityExplicitConfigPolicy();
   // Fresh (MISS) response: route through the CDN adapter so edge adapters emit
   // their provider-specific policy while the default emits Cache-Control.
   // Uses buildAppRouteMissIsrCacheControl so the revalidate=0→NEVER and
@@ -231,7 +243,10 @@ function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[])
   }
 }
 
-export async function buildAppRouteCacheValue(response: Response): Promise<CachedRouteValue> {
+export async function buildAppRouteCacheValue(
+  response: Response,
+  browserCacheControl?: string,
+): Promise<CachedRouteValue> {
   const body = await response.arrayBuffer();
   const headers: CachedRouteValue["headers"] = {};
 
@@ -255,6 +270,7 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
     }
     headers[key] = value;
   });
+  if (browserCacheControl !== undefined) headers["cache-control"] = browserCacheControl;
   const setCookies = response.headers.getSetCookie?.() ?? [];
   if (setCookies.length > 0) {
     headers["set-cookie"] = setCookies;

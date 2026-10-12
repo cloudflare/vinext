@@ -6,11 +6,12 @@ import {
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import {
+  markRouteCacheabilityConfigCdnCachePolicy,
   markRouteCacheabilityDynamic,
-  markRouteCacheabilityExplicitConfigPolicy,
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import { isCdnResponsePolicyHeader, isNonCacheableCdnResponsePolicy } from "./cache-control.js";
+import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "./headers.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
@@ -76,9 +77,13 @@ function markExplicitConfigResponseVeto(
       continue;
     }
     if (isCdnResponsePolicyHeader(name)) {
-      markRouteCacheabilityExplicitConfigPolicy();
+      markRouteCacheabilityConfigCdnCachePolicy(name, header.value);
     }
-    if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, header.value)) {
+    if (
+      name !== "cache-control" &&
+      isCdnResponsePolicyHeader(name) &&
+      isNonCacheableCdnResponsePolicy(name, header.value)
+    ) {
       markRouteCacheabilityFinalResponseUncacheable(
         `next.config headers set a non-cacheable ${header.key} policy`,
       );
@@ -175,6 +180,8 @@ export function applyConfigHeadersToResponse(
   if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
+    // vinext's own marker, which a config header can't forge.
+    if (lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER) continue;
     if (lowerName === "link") {
       if (options.middlewareHeaders?.get(lowerName)) continue;
 

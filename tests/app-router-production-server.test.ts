@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { createHash } from "node:crypto";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -10,7 +11,12 @@ import {
   getPagesClientAssets,
   setPagesClientAssets,
 } from "../packages/vinext/src/server/pages-client-assets.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  createIsolatedFixture,
+  expectRepeatedSlashRedirects,
+  testCacheDir,
+} from "./helpers.js";
 
 const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
@@ -90,6 +96,56 @@ async function rawHttpRequest(
           body: Buffer.concat(chunks),
         });
       });
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+// Reads a gzip response through a streaming decoder, recording when each
+// marker first appears in the decoded text.
+async function readGzipStreamTimeline(
+  url: URL,
+  headers: Record<string, string>,
+  markers: string[],
+): Promise<{
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  text: string;
+  markerTimes: Map<string, number>;
+}> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, { headers }, (response) => {
+      const markerTimes = new Map<string, number>();
+      let text = "";
+      const recordMarkers = () => {
+        const now = performance.now();
+        for (const marker of markers) {
+          if (!markerTimes.has(marker) && text.includes(marker)) markerTimes.set(marker, now);
+        }
+      };
+      const done = () =>
+        resolve({ status: response.statusCode ?? 0, headers: response.headers, text, markerTimes });
+      if (response.headers["content-encoding"] !== "gzip") {
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          text += chunk;
+          recordMarkers();
+        });
+        response.on("end", done);
+        response.on("error", reject);
+        return;
+      }
+      const gunzip = zlib.createGunzip();
+      gunzip.setEncoding("utf8");
+      gunzip.on("data", (chunk: string) => {
+        text += chunk;
+        recordMarkers();
+      });
+      gunzip.on("end", done);
+      gunzip.on("error", reject);
+      response.on("error", reject);
+      response.pipe(gunzip);
     });
     request.on("error", reject);
     request.end();
@@ -299,7 +355,33 @@ describe("App Router Production server (startProdServer)", () => {
         root: APP_FIXTURE_DIR,
         cacheDir: testCacheDir(APP_FIXTURE_DIR),
         configFile: false,
-        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        plugins: [
+          vinext({ appDir: APP_FIXTURE_DIR }),
+          {
+            // Emits a client file at the output root, as Module Federation
+            // does with `remoteEntry.js`.
+            name: "test:emit-client-build-file",
+            apply: "build",
+            generateBundle() {
+              if (this.environment.name !== "client") return;
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-client-build-file.js",
+                source: "export const remote = true;\n",
+              });
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-literal%name.js",
+                source: "export const literal = true;\n",
+              });
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-literal%2Fname.js",
+                source: "export const encodedDelimiter = true;\n",
+              });
+            },
+          },
+        ],
         logLevel: "silent",
       });
       await builder.buildApp();
@@ -344,6 +426,20 @@ describe("App Router Production server (startProdServer)", () => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(baseUrl);
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${baseUrl}/middleware-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The App Router's trailingSlash: false rule strips the redirect target
+    // to the root; it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
+  });
+
   it("serves the home page with SSR HTML", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
@@ -369,6 +465,18 @@ describe("App Router Production server (startProdServer)", () => {
     const res = await fetch(`${baseUrl}/char-code-require`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("loaded from a character-code require");
+  });
+
+  it("builds a project-local ESM bundle that inlines CommonJS", async () => {
+    const res = await fetch(`${baseUrl}/cjs/bundled-esm`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toMatch(/full(<!-- -->)?:(<!-- -->)?1\.0\.0/);
+  });
+
+  it("builds a project-local ESM module that calls require() and assigns exports.*", async () => {
+    const res = await fetch(`${baseUrl}/cjs/mixed-esm`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-testid="cjs-mixed-esm">esm</div>');
   });
 
   it("serves static asset byte ranges from the identity representation", async () => {
@@ -829,6 +937,106 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
+  // Both loader targets live in app-basic's `file:` test package, which pnpm
+  // installs in the workspace-root store, OUTSIDE the Vite root.
+  it.each([
+    {
+      // https://github.com/cloudflare/vinext/issues/3723: Vite keys an
+      // out-of-root dynamic entry root-relative with `../` segments, so the
+      // call site's loadableGenerated module ID must too.
+      label: "a loader target outside the Vite root",
+      route: "/nextjs-compat/dynamic/out-of-root-package",
+      moduleSuffix: "/fake-css-module-lib/dynamic-banner.js",
+      markerId: "out-of-root-dynamic-banner",
+    },
+    {
+      // A dynamic() call site in a `transpilePackages` dependency is app code to
+      // Next.js, so the library's own boundary gets its CSS linked too.
+      label: "a dynamic() call site inside node_modules",
+      route: "/nextjs-compat/dynamic/node-modules-call-site",
+      moduleSuffix: "/fake-css-module-lib/hosted-banner.js",
+      markerId: "node-modules-dynamic-banner",
+    },
+  ])("links next/dynamic CSS for $label", async ({ route, moduleSuffix, markerId }) => {
+    const clientManifest = JSON.parse(
+      fs.readFileSync(path.join(outDir, "client", ".vite", "manifest.json"), "utf8"),
+    ) as Record<string, { file: string; css?: string[]; isDynamicEntry?: boolean }>;
+    const bannerKey = Object.keys(clientManifest).find((key) => key.endsWith(moduleSuffix));
+    // Sanity: the banner really is an out-of-root dynamic entry with its own CSS.
+    expect(bannerKey).toMatch(/^\.\.\//);
+    const bannerEntry = clientManifest[bannerKey!];
+    expect(bannerEntry.isDynamicEntry).toBe(true);
+    expect(bannerEntry.css?.length).toBeGreaterThan(0);
+
+    const res = await fetch(`${baseUrl}${route}`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain(`id="${markerId}"`);
+
+    const linkTags = html.match(/<link\b[^>]*>/g) ?? [];
+    const hrefOf = (tag: string) => /\bhref="([^"]+)"/.exec(tag)?.[1];
+    const dynamicStylesheetHrefs = linkTags
+      .filter((tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag))
+      .map(hrefOf);
+    for (const cssFile of bannerEntry.css!) {
+      expect(dynamicStylesheetHrefs).toContain(`/${cssFile}`);
+    }
+    const dynamicScriptPreloadHrefs = linkTags
+      .filter((tag) => /\brel="modulepreload"/.test(tag) && /\bfetchpriority="low"/i.test(tag))
+      .map(hrefOf);
+    expect(dynamicScriptPreloadHrefs).toContain(`/${bannerEntry.file}`);
+  });
+
+  it.each([
+    // No `loading`: in the App Router the component has no boundary of its own.
+    ["rsc-imports-client", /<\/h1><p id="rsc-imports-client-widget">/],
+    // With `loading`: the component is inside its own (resolved) boundary.
+    ["rsc-imports-client-loading", /<\/h1><!--\$--><p id="rsc-imports-client-widget">/],
+  ])(
+    "renders a resolved next/dynamic component with CSS inline and keeps the stylesheet nonce (%s)",
+    async (page, expectedMarkup) => {
+      // A precedence stylesheet inside a Suspense boundary makes React outline it
+      // (a `<!--$?-->` placeholder, content in a hidden segment after the shell)
+      // even when the content is already resolved, so the dynamic stylesheet must
+      // render outside the boundary. It must also render ahead of the content,
+      // which links the same CSS without the nonce. Render twice so the lazy
+      // import is resolved.
+      const url = `${baseUrl}/nextjs-compat/dynamic/${page}?csp-nonce=1`;
+      await (await fetch(url)).text();
+      const res = await fetch(url);
+      expect(res.status).toBe(200);
+
+      const html = await res.text();
+      expect(html).toMatch(expectedMarkup);
+      const dynamicStylesheets = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag),
+      );
+      expect(dynamicStylesheets).toHaveLength(1);
+      expect(dynamicStylesheets[0]).toContain('nonce="vinext-test-nonce"');
+    },
+  );
+
+  it("leaves no text separator before a next/dynamic component without loading that follows text", async () => {
+    // Render twice so the lazy import is resolved.
+    await (await fetch(`${baseUrl}/nextjs-compat/dynamic/use-id`)).text();
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/use-id`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Text right before the component, whose chunk is JS-only. With no boundary
+    // of its own, its script preload links must not follow the text, or React
+    // leaves a `<!-- -->` separator in their place, which Next.js doesn't emit.
+    expect(html).toMatch(/<div>Index<p id="dynamic-use-id">/);
+    // The component's script preload is still rendered (and hoisted).
+    const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+      (tag) =>
+        /\brel="modulepreload"/.test(tag) &&
+        /\bfetchpriority="low"/i.test(tag) &&
+        /use-id-field[^"]*\.js"/.test(tag),
+    );
+    expect(dynamicScriptPreloads).toHaveLength(1);
+  });
+
   it("emits next/dynamic chunk preloads without a nonce when no CSP is set", async () => {
     // No ?csp-nonce → middleware applies no CSP header, so no nonce is threaded.
     // The preload optimization is independent of CSP: the links must still be
@@ -848,6 +1056,22 @@ describe("App Router Production server (startProdServer)", () => {
       expect(tag).not.toContain("nonce=");
     }
   });
+
+  // Issue #3718: a production build renders dynamic() without a loading option
+  // inline in the shell, with no Suspense boundary, for client and server
+  // component call sites.
+  it.each(["/nextjs-compat/dynamic/default", "/nextjs-compat/dynamic/default-server"])(
+    "renders next/dynamic without loading inline in the shell (%s)",
+    async (urlPath) => {
+      const res = await fetch(`${baseUrl}${urlPath}`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain(
+        '<div><div id="dynamic-component">This is a dynamically imported component</div></div>',
+      );
+      expect(html).not.toContain("<!--$?-->");
+    },
+  );
 
   it("does not emit a server preload for an ssr:false next/dynamic boundary", async () => {
     // Next.js parity (lazy-dynamic/loadable.tsx): <PreloadChunks> renders only on
@@ -1373,6 +1597,85 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(404);
   });
 
+  // Next.js skips the compression middleware entirely for `compress: false`
+  // (server/lib/router-server.ts).
+  it("does not compress responses when next.config sets compress: false", async () => {
+    const fixtureRoot = await createIsolatedFixture(
+      ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR,
+      "vinext-compress-false-",
+    );
+    fs.writeFileSync(
+      path.join(fixtureRoot, "next.config.mjs"),
+      "export default { compress: false };\n",
+    );
+    let compressServer: http.Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
+    const prodGlobalKeys = [
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+    ];
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        { exists: Reflect.has(globalThis, key), value: Reflect.get(globalThis, key) },
+      ]),
+    );
+
+    try {
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server: compressServer } = await startProdServer({
+        port: 0,
+        outDir: path.join(fixtureRoot, "dist"),
+        noCompression: false,
+      }));
+      const address = compressServer.address();
+      if (!address || typeof address === "string") {
+        throw new Error("compress: false fixture did not bind to a TCP port");
+      }
+      const compressBaseUrl = `http://127.0.0.1:${address.port}`;
+
+      for (const [pathname, headers] of [
+        ["/", {}],
+        ["/.rsc", { Accept: "text/x-component", RSC: "1" }],
+      ] as const) {
+        const res = await rawHttpRequest(new URL(`${compressBaseUrl}${pathname}`), {
+          headers: { ...headers, "Accept-Encoding": "gzip, br" },
+        });
+        expect(res.status).toBe(200);
+        expect(res.headers["content-encoding"]).toBeUndefined();
+        expect(res.headers.vary ?? "").not.toContain("Accept-Encoding");
+        expect(res.body.byteLength).toBeGreaterThan(0);
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        if (!compressServer) {
+          resolve();
+          return;
+        }
+        compressServer.close((error) => (error ? reject(error) : resolve()));
+      });
+      setPagesClientAssets(previousPagesClientAssets);
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   // Faithfully combines two Next.js contracts:
   // - route misses render the root not-found page inside the root layout:
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/not-found/basic/index.test.ts
@@ -1460,14 +1763,10 @@ describe("App Router Production server (startProdServer)", () => {
       expect(rscBody).toContain("NEXT_REDIRECT");
       expect(rscBody).toContain("/result");
 
-      // The RSC drain applies to matched-route HTTP-access fallbacks too, not
-      // only route misses. `/gated` is a matched route that calls notFound();
-      // its route-level not-found boundary (app/gated/not-found.tsx) redirects
-      // on its own header, so it renders during the fallback (not the layout
-      // probe) and its async redirect is caught by the boundary drain. With the
-      // trigger → 200 flight redirect; without it → a normal 404 flight
-      // (proving the buffering does not drop or corrupt the matched-route
-      // payload).
+      // `/gated` is a matched route whose page calls notFound(). As in Next.js,
+      // an RSC request renders the page, so the notFound() digest and the
+      // route's not-found boundary travel in the Flight payload, including a
+      // redirect() in that boundary.
       const matchedRedirectRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
         redirect: "manual",
         headers: {
@@ -1476,16 +1775,18 @@ describe("App Router Production server (startProdServer)", () => {
         },
       });
       expect(matchedRedirectRes.status).toBe(200);
-      expect(matchedRedirectRes.headers.get("x-vinext-rsc-redirect")).toBe("/result");
-      expect(await matchedRedirectRes.text()).toContain("NEXT_REDIRECT");
+      const matchedRedirectBody = await matchedRedirectRes.text();
+      expect(matchedRedirectBody).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+      expect(matchedRedirectBody).toContain("NEXT_REDIRECT");
 
       const matchedNotFoundRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
         redirect: "manual",
         headers: { Accept: "text/x-component" },
       });
-      expect(matchedNotFoundRes.status).toBe(404);
-      expect(matchedNotFoundRes.headers.get("x-vinext-rsc-redirect")).toBeNull();
-      expect(await matchedNotFoundRes.text()).toContain("Gated Not Found");
+      expect(matchedNotFoundRes.status).toBe(200);
+      const matchedNotFoundBody = await matchedNotFoundRes.text();
+      expect(matchedNotFoundBody).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
+      expect(matchedNotFoundBody).toContain("Gated Not Found");
     } finally {
       await new Promise<void>((resolve, reject) => {
         if (!redirectServer) {
@@ -1573,7 +1874,81 @@ describe("App Router Production server (startProdServer)", () => {
     expect(await res.text()).toBe("Method Not Allowed");
   });
 
-  it("serves public files under basePath and 404s without it", async () => {
+  it("serves client build files outside _next/ that are not public files", async () => {
+    const res = await fetch(`${baseUrl}/vinext-test-client-build-file.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(await res.text()).toBe("export const remote = true;\n");
+
+    const post = await fetch(`${baseUrl}/vinext-test-client-build-file.js`, { method: "POST" });
+    expect(post.status).not.toBe(200);
+    await post.arrayBuffer();
+
+    const literal = await fetch(`${baseUrl}/vinext-test-literal%25name.js`);
+    expect(literal.status).toBe(200);
+    expect(await literal.text()).toBe("export const literal = true;\n");
+
+    const encodedDelimiter = await fetch(`${baseUrl}/vinext-test-literal%252Fname.js`);
+    expect(encodedDelimiter.status).toBe(200);
+    expect(await encodedDelimiter.text()).toBe("export const encodedDelimiter = true;\n");
+  });
+
+  // Ported from Next.js: test/integration/image-optimizer/test/util.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
+  // vinext keeps no image cache, so it matches Next.js with the image cache
+  // disabled (`images.maximumDiskCacheSize: 0`): every 200 is a MISS.
+  it("labels every /_next/image response x-nextjs-cache and x-vinext-cache: MISS", async () => {
+    const imageUrl = `${baseUrl}/_next/image?url=%2Fheart.png&w=64&q=75`;
+
+    const first = await fetch(imageUrl, { headers: { Accept: "image/webp" } });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("content-type")).toContain("image/png");
+    expect(first.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+    await first.arrayBuffer();
+
+    const repeat = await fetch(imageUrl, { headers: { Accept: "image/webp" } });
+    expect(repeat.status).toBe(200);
+    expect(repeat.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(repeat.headers.get("x-vinext-cache")).toBe("MISS");
+    await repeat.arrayBuffer();
+
+    const head = await fetch(imageUrl, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(head.headers.get("x-vinext-cache")).toBe("MISS");
+  });
+
+  it("sends no x-nextjs-cache or x-vinext-cache on a 304 or an error from /_next/image", async () => {
+    const imageUrl = `${baseUrl}/_next/image?url=%2Fheart.png&w=64&q=75`;
+    const first = await fetch(imageUrl);
+    const etag = first.headers.get("etag");
+    expect(etag).toBeTruthy();
+    await first.arrayBuffer();
+
+    // fetch() adds `Cache-Control: no-cache` to conditional requests, which
+    // forces a full response, so revalidate over raw HTTP like a browser does.
+    const notModified = await rawHttpRequest(new URL(imageUrl), {
+      headers: { "If-None-Match": etag! },
+    });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["x-nextjs-cache"]).toBeUndefined();
+    expect(notModified.headers["x-vinext-cache"]).toBeUndefined();
+
+    for (const [query, status] of [
+      ["url=%2Fheart.png&w=65&q=75", 400],
+      ["url=%2Flogo%2Flogo.svg&w=64&q=75", 400],
+      ["url=%2Fmissing.png&w=64&q=75", 404],
+    ] as const) {
+      const res = await fetch(`${baseUrl}/_next/image?${query}`);
+      expect(res.status, query).toBe(status);
+      expect(res.headers.get("x-nextjs-cache"), query).toBeNull();
+      expect(res.headers.get("x-vinext-cache"), query).toBeNull();
+      await res.arrayBuffer();
+    }
+  });
+
+  it("serves public files under basePath, 404s without it, and gates its image endpoint", async () => {
     // Ported from Next.js: test/e2e/basepath/basepath.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/basepath.test.ts
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-public-basepath-"));
@@ -1625,6 +2000,26 @@ describe("App Router Production server (startProdServer)", () => {
 
       const withoutBasePathRes = await fetch(`${tmpBaseUrl}/logo/logo.svg`);
       expect(withoutBasePathRes.status).toBe(404);
+
+      // Middleware runs before the image endpoint reads a source, in both the
+      // Next.js form and the unprefixed form vinext's next/image emits.
+      for (const imagePath of [
+        "/app/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
+        "/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
+      ]) {
+        const imageRes = await fetch(`${tmpBaseUrl}${imagePath}`);
+        expect(imageRes.status, imagePath).toBe(403);
+        expect(await imageRes.text(), imagePath).toBe("image endpoint blocked by middleware");
+      }
+      const imageRes = await fetch(`${tmpBaseUrl}/_next/image?url=%2Fheart.png&w=640&q=75`);
+      expect(imageRes.status).toBe(200);
+      expect(imageRes.headers.get("content-type")).toBe("image/png");
+      await imageRes.arrayBuffer();
+      const protectedImageRes = await fetch(
+        `${tmpBaseUrl}/_next/image?url=%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
+      );
+      expect(protectedImageRes.status).toBe(404);
+      await protectedImageRes.arrayBuffer();
     } finally {
       basePathServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1648,6 +2043,57 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-encoding")).toBe("br");
   });
+
+  // Next.js compresses every response through the `compression` middleware in
+  // server/lib/router-server.ts, including RSC payloads (text/x-component).
+  it("compresses RSC responses (text/x-component)", async () => {
+    const res = await rawHttpRequest(new URL(`${baseUrl}/metadata-streaming-timing.rsc`), {
+      headers: { Accept: "text/x-component", RSC: "1", "Accept-Encoding": "gzip" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/x-component");
+    expect(res.headers["content-encoding"]).toBe("gzip");
+    expect(res.headers["content-length"]).toBeUndefined();
+    expect(res.headers.vary).toContain("Accept-Encoding");
+    expect(zlib.gunzipSync(res.body).toString("utf8")).toContain("metadata-streaming-shell");
+  });
+
+  it("does not compress RSC responses for HEAD requests", async () => {
+    const res = await rawHttpRequest(new URL(`${baseUrl}/metadata-streaming-timing.rsc`), {
+      method: "HEAD",
+      headers: { Accept: "text/x-component", RSC: "1", "Accept-Encoding": "gzip" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers["content-encoding"]).toBeUndefined();
+    expect(res.headers.vary).toContain("Accept-Encoding");
+    expect(res.body.byteLength).toBe(0);
+  });
+
+  for (const { label, pathname, headers } of [
+    { label: "HTML", pathname: "/metadata-streaming-timing", headers: {} },
+    {
+      label: "RSC",
+      pathname: "/metadata-streaming-timing.rsc",
+      headers: { Accept: "text/x-component", RSC: "1" },
+    },
+  ]) {
+    it(`streams compressed ${label} incrementally`, async () => {
+      // The shell flushes before generateMetadata's 1.2s delay resolves; the
+      // compressor must flush it rather than buffer until the stream ends.
+      const result = await readGzipStreamTimeline(
+        new URL(`${baseUrl}${pathname}`),
+        { ...headers, "Accept-Encoding": "gzip", "user-agent": "HeadlessChrome" },
+        ["metadata-streaming-shell", "Delayed streaming metadata"],
+      );
+      expect(result.status).toBe(200);
+      expect(result.headers["content-encoding"]).toBe("gzip");
+      const shellTime = result.markerTimes.get("metadata-streaming-shell");
+      const metadataTime = result.markerTimes.get("Delayed streaming metadata");
+      expect(shellTime).toBeDefined();
+      expect(metadataTime).toBeDefined();
+      expect(metadataTime! - shellTime!).toBeGreaterThan(600);
+    });
+  }
 
   it("streams HTML (response is a ReadableStream)", async () => {
     const res = await fetch(`${baseUrl}/`);
@@ -2326,9 +2772,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).not.toContain(capturedScopeValue);
     const encryptedBoundArgs = [
       ...new Set(
-        [...html.matchAll(/rsc\.push\("[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map(
-          (match) => match[1],
-        ),
+        [...html.matchAll(/[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map((match) => match[1]),
       ),
     ];
     expect(encryptedBoundArgs).toHaveLength(2);

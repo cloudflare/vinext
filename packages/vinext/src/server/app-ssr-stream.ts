@@ -10,7 +10,7 @@ import {
   RSC_EMBEDDED_BINARY_CHUNK,
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
-import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
+import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
 
 type RscEmbedTransform = {
   flush(): string;
@@ -20,7 +20,12 @@ type RscEmbedTransform = {
 };
 
 type RscEmbedTransformOptions = {
-  mirrorNextFlight?: boolean;
+  /**
+   * Mirror inline Flight chunks into Next.js's `self.__next_f` transport. A
+   * function is checked at each flush; once it returns true, the chunks
+   * already embedded are mirrored first.
+   */
+  mirrorNextFlight?: boolean | (() => boolean);
   scriptNonce?: string;
   getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
 };
@@ -40,6 +45,8 @@ type InlineCssRewriteResult = {
   html: string;
   consumedPrependCss: boolean;
 };
+
+const RSC_EMBED_TEXT_BATCH_MAX_LENGTH = 64 * 1024;
 
 // React's edge renderer schedules render continuations on timer tasks. Dynamic
 // SSR must let one such task run before the first stream pull, or fast Suspense
@@ -75,6 +82,20 @@ export function createNavigationRuntimeRscMetadataScript(
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +
+    "})"
+  );
+}
+
+/**
+ * The query a client page read during SSR, for a render that turned dynamic
+ * after its head told the browser to read the query from its own URL.
+ */
+export function createNavigationRuntimeRenderedSearchScript(search: string): string {
+  return (
+    "Object.assign(" +
+    navigationRuntimeRscBootstrapExpression() +
+    ",{renderedSearch:" +
+    safeJsonStringify(search) +
     "})"
   );
 }
@@ -132,8 +153,48 @@ export function createRscEmbedTransform(
   const reader = embedStream.getReader();
   let pendingChunks: RscEmbeddedChunk[] = [];
   const rawChunks: Uint8Array[] = [];
+  // How many of rawChunks have been embedded, to replay them into a mirror
+  // that starts mid-stream.
+  let embeddedRawChunkCount = 0;
+  let rawBufferTaken = false;
+  let finalized = false;
   let reading = false;
   let mirroredNextFlightBootstrap = false;
+  const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+  function decodeChunk(bytes: Uint8Array): RscEmbeddedChunk {
+    try {
+      return textDecoder.decode(bytes);
+    } catch {
+      return [RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(bytes)];
+    }
+  }
+
+  // getRawBuffer() keeps its own copy, but a mirror that may still start
+  // replays rawChunks, so they're released only once it can't.
+  function releaseRawChunks(): void {
+    const mayStartMirror =
+      typeof options.mirrorNextFlight === "function" && !mirroredNextFlightBootstrap && !finalized;
+    if (rawBufferTaken && !mayStartMirror) rawChunks.length = 0;
+  }
+
+  function startNextFlightMirror(): string {
+    if (mirroredNextFlightBootstrap) return "";
+    const mirror = options.mirrorNextFlight;
+    if (mirror !== true && (typeof mirror !== "function" || !mirror())) return "";
+    mirroredNextFlightBootstrap = true;
+    let scripts =
+      createInlineScriptTag(createNextFlightBootstrapScript(), options.scriptNonce) +
+      createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
+    for (let index = 0; index < embeddedRawChunkCount; index++) {
+      scripts += createInlineScriptTag(
+        createNextFlightChunkScript(decodeChunk(rawChunks[index])),
+        options.scriptNonce,
+      );
+    }
+    releaseRawChunks();
+    return scripts;
+  }
 
   async function pumpReader(): Promise<void> {
     if (reading) return;
@@ -143,13 +204,7 @@ export function createRscEmbedTransform(
         const result = await reader.read();
         if (result.done) break;
         rawChunks.push(result.value);
-        try {
-          const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-          const text = decoder.decode(result.value);
-          pendingChunks.push(text);
-        } catch {
-          pendingChunks.push([RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(result.value)]);
-        }
+        pendingChunks.push(decodeChunk(result.value));
       }
     } catch (error) {
       if (process.env.NODE_ENV !== "production") {
@@ -167,24 +222,48 @@ export function createRscEmbedTransform(
     flush(): string {
       if (pendingChunks.length === 0) return "";
 
+      const mirrorScripts = startNextFlightMirror();
       const chunks = pendingChunks;
       pendingChunks = [];
+      embeddedRawChunkCount += chunks.length;
 
-      let scripts = "";
+      // React commonly emits one small Flight row per byte chunk. Embedding
+      // each row in its own script makes large trees pay for thousands of
+      // script wrappers, JSON serializations, and browser script executions.
+      // Coalesce adjacent text here while preserving binary chunk boundaries.
+      const embeddedChunks: RscEmbeddedChunk[] = [];
+      let textChunks: string[] = [];
+      let textLength = 0;
+      const flushTextChunks = (): void => {
+        if (textChunks.length === 0) return;
+        embeddedChunks.push(textChunks.join(""));
+        textChunks = [];
+        textLength = 0;
+      };
       for (const chunk of chunks) {
+        if (typeof chunk === "string") {
+          // Flush only between React chunks so a single unusually large chunk
+          // is never split at an unsafe UTF-16 boundary. Such a chunk is no
+          // larger than the script vinext emitted before batching.
+          if (textLength > 0 && textLength + chunk.length > RSC_EMBED_TEXT_BATCH_MAX_LENGTH) {
+            flushTextChunks();
+          }
+          textChunks.push(chunk);
+          textLength += chunk.length;
+        } else {
+          flushTextChunks();
+          embeddedChunks.push(chunk);
+        }
+      }
+      flushTextChunks();
+
+      let scripts = mirrorScripts;
+      for (const chunk of embeddedChunks) {
         scripts += createInlineScriptTag(
           createNavigationRuntimeRscChunkScript(chunk),
           options.scriptNonce,
         );
-        if (options.mirrorNextFlight) {
-          if (!mirroredNextFlightBootstrap) {
-            scripts += createInlineScriptTag(
-              createNextFlightBootstrapScript(),
-              options.scriptNonce,
-            );
-            scripts += createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
-            mirroredNextFlightBootstrap = true;
-          }
+        if (mirroredNextFlightBootstrap) {
           scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
         }
       }
@@ -194,6 +273,9 @@ export function createRscEmbedTransform(
     async finalize(): Promise<string> {
       await pumpPromise;
       let scripts = this.flush();
+      scripts += startNextFlightMirror();
+      finalized = true;
+      releaseRawChunks();
       scripts += createInlineScriptTag(
         createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
         options.scriptNonce,
@@ -204,7 +286,8 @@ export function createRscEmbedTransform(
     async getRawBuffer(): Promise<ArrayBuffer> {
       await pumpPromise;
       const buffer = concatUint8Arrays(rawChunks);
-      rawChunks.length = 0;
+      rawBufferTaken = true;
+      releaseRawChunks();
       return buffer.buffer;
     },
   };

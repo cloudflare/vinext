@@ -5,18 +5,60 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
-import { createBuilder, parseAst } from "vite";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { createBuilder, parseAst, type ESTree } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { forEachAstChild } from "../packages/vinext/src/plugins/ast-utils.js";
 import {
   consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
+  mayFoldChangeScannedImports,
   replaceConsumerEnvironmentConditions,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
-import { supportsNativeTypeofWindowFolding } from "../packages/vinext/src/utils/vite-version.js";
+import {
+  assertSupportedViteVersion,
+  supportsNativeTypeofWindowFolding,
+} from "../packages/vinext/src/utils/vite-version.js";
+
+vi.mock("../packages/vinext/src/utils/vite-version.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../packages/vinext/src/utils/vite-version.js")>();
+  return { ...actual, assertSupportedViteVersion: vi.fn(actual.assertSupportedViteVersion) };
+});
 
 const temporaryDirectories: string[] = [];
+
+// Models plugin-rsc's scan-strip, which reduces a module to its static imports,
+// dynamic imports with a static specifier, and import.meta.glob calls.
+function scannedImports(code: string): string[] {
+  const specifiers: string[] = [];
+  function visit(node: ESTree.Node): void {
+    if (
+      node.type === "ImportDeclaration" ||
+      node.type === "ExportAllDeclaration" ||
+      (node.type === "ExportNamedDeclaration" && node.source)
+    ) {
+      specifiers.push(String(node.source?.value));
+    } else if (node.type === "ImportExpression") {
+      if (node.source.type === "Literal") specifiers.push(String(node.source.value));
+      if (node.source.type === "TemplateLiteral" && node.source.expressions.length === 0) {
+        specifiers.push(String(node.source.quasis[0].value.cooked));
+      }
+    } else if (
+      node.type === "CallExpression" &&
+      node.callee.type === "MemberExpression" &&
+      node.callee.object.type === "MetaProperty" &&
+      node.callee.property.type === "Identifier" &&
+      node.callee.property.name === "glob"
+    ) {
+      specifiers.push(code.slice(node.start, node.end));
+    }
+    forEachAstChild(node, visit);
+  }
+  visit(parseAst(code));
+  return specifiers;
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -174,6 +216,95 @@ describe("typeof window compilation", () => {
     ).not.toBe(cachedServerResult);
   });
 
+  it.each([true, false])(
+    "skips the scan fold for modules without dynamic imports or import.meta only with native folding (%s)",
+    async (nativeFolding) => {
+      vi.mocked(assertSupportedViteVersion).mockReturnValueOnce({
+        supportsNativeTypeofWindowFolding: nativeFolding,
+      });
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-scan-gate-"));
+      temporaryDirectories.push(root);
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext({ react: false, rsc: false })],
+      });
+      const plugin = builder.config.plugins.find(
+        (candidate) => candidate.name === "vinext:typeof-window-scan",
+      );
+      if (!plugin?.transform || typeof plugin.transform === "function") {
+        throw new Error("vinext:typeof-window-scan transform hook not found");
+      }
+
+      const transform = plugin.transform.handler;
+      const environmentConfig = {
+        build: { write: false },
+        cacheDir: path.join(root, ".vite"),
+        consumer: "server",
+        isBundled: true,
+      };
+      const context = { environment: { config: environmentConfig } };
+      const appPageId = path.join(root, "app/page.js");
+
+      expect(
+        await transform.call(
+          context as never,
+          `import helper from "helper"; if (typeof window !== "undefined") helper()`,
+          appPageId,
+        ),
+      ).toEqual(
+        nativeFolding
+          ? null
+          : expect.objectContaining({ code: expect.not.stringContaining("helper()") }),
+      );
+      expect(
+        await transform.call(
+          context as never,
+          `if (process.browser) console.log(import.meta.url)`,
+          appPageId,
+        ),
+      ).toEqual(
+        nativeFolding
+          ? null
+          : expect.objectContaining({ code: expect.not.stringContaining("console") }),
+      );
+      expect(
+        await transform.call(
+          context as never,
+          `if (process.browser) import.meta.glob("./browser/*.js")`,
+          appPageId,
+        ),
+      ).toMatchObject({ code: expect.not.stringContaining("import.meta.glob") });
+      expect(
+        await transform.call(
+          context as never,
+          `if (typeof window !== "undefined") import.source("./browser.wasm")`,
+          appPageId,
+        ),
+      ).toMatchObject({ code: expect.not.stringContaining("browser.wasm") });
+
+      // Vite's define transform skips unbundled client environments, and a
+      // gated result cached by a bundled client must not be reused there.
+      const clientConfig = { ...environmentConfig, consumer: "client" };
+      const bundledClientContext = { environment: { config: clientConfig } };
+      const unbundledClientContext = {
+        environment: { config: { ...clientConfig, isBundled: false } },
+      };
+      const serverOnlySource = `if (!process.browser) { serverOnly(); console.log(import.meta.url) }`;
+      expect(
+        await transform.call(bundledClientContext as never, serverOnlySource, appPageId),
+      ).toEqual(
+        nativeFolding
+          ? null
+          : expect.objectContaining({ code: expect.not.stringContaining("serverOnly") }),
+      );
+      expect(
+        await transform.call(unbundledClientContext as never, serverOnlySource, appPageId),
+      ).toMatchObject({ code: expect.not.stringContaining("serverOnly") });
+    },
+  );
+
   it("only folds references to the global window binding", () => {
     const source = `
 if (typeof window !== "undefined") globalBrowserOnly()
@@ -270,6 +401,80 @@ const truthy = value || typeof window === "undefined";`;
         "example.js",
       ),
     ).toBeNull();
+  });
+
+  it("skips the import-scan fold when it cannot change scanned imports", () => {
+    const scan = {
+      typeofWindow: "undefined",
+      processBrowser: false,
+      pruneUnreachableImports: true,
+    } as const;
+    const unobservable = [
+      `if (typeof window !== "undefined") browserOnly()`,
+      `import helper from "helper"; if (process.browser) helper()`,
+      `if (typeof window !== "undefined") console.log(import.meta.url, import.meta.env.MODE)`,
+      `const label = "héllo 😀"; if (process.browser) console.log(label, import.meta.url)`,
+    ];
+    for (const source of unobservable) {
+      const folded = replaceConsumerEnvironmentConditions(source, scan);
+      expect(folded).not.toBeNull();
+      expect(scannedImports(folded!.code)).toEqual(scannedImports(source));
+      expect(
+        replaceConsumerEnvironmentConditions(source, { ...scan, onlyIfScannedImportsChange: true }),
+      ).toBeNull();
+    }
+
+    const observable = [
+      `if (typeof window !== "undefined") import("double-quoted")`,
+      `if (typeof window !== "undefined") import('single-quoted')`,
+      "if (typeof window !== 'undefined') import(`template`)",
+      `if (process.browser) import(/* chunk */ "commented")`,
+      `if (typeof window !== "undefined") import.meta.glob("./browser/*.js")`,
+      `console.log(import.meta.url); if (process.browser) import.meta.glob("./browser/*.js")`,
+      `const label = "héllo 😀"; if (typeof window !== "undefined") import("after-unicode")`,
+      `if (typeof window !== "undefined") import.source("./browser.wasm")`,
+      `if (process.browser) import.defer("./browser.js")`,
+      `if (typeof window !== "undefined") import./* phase */ source("./browser.wasm")`,
+      `import(typeof window)`,
+      `import.source(typeof window)`,
+      `if (typeof window === "undefined") import(typeof/* comment */window)`,
+    ];
+    for (const source of observable) {
+      const folded = replaceConsumerEnvironmentConditions(source, scan);
+      expect(scannedImports(folded!.code)).not.toEqual(scannedImports(source));
+      expect(
+        replaceConsumerEnvironmentConditions(source, { ...scan, onlyIfScannedImportsChange: true }),
+      ).toEqual(folded);
+    }
+
+    // Unstripped TypeScript import types are absent from the module record but
+    // visible to plugin-rsc's scan lexer.
+    const typeImport = `if (process.browser) { type T = import("browser-only").T }`;
+    const foldedTypeImport = replaceConsumerEnvironmentConditions(typeImport, scan, "file.cts");
+    expect(foldedTypeImport?.code).not.toContain("browser-only");
+    expect(
+      replaceConsumerEnvironmentConditions(
+        typeImport,
+        { ...scan, onlyIfScannedImportsChange: true },
+        "file.cts",
+      ),
+    ).toEqual(foldedTypeImport);
+  });
+
+  it("prefilters import-scan folds to dynamic, phase import and import.meta syntax", () => {
+    expect(mayFoldChangeScannedImports(`import("browser-only")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import /* chunk */ ("browser-only")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import.meta.glob("./*.js")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import . meta . glob("./*.js")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import.source("./module.wasm")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import . defer("./module.js")`)).toBe(true);
+    expect(mayFoldChangeScannedImports(`import./**/source("./module.wasm")`)).toBe(true);
+    expect(
+      mayFoldChangeScannedImports(
+        `import helper from "helper"; export * from "shared"; if (typeof window !== "undefined") helper()`,
+      ),
+    ).toBe(false);
+    expect(mayFoldChangeScannedImports(`const important = typeof window`)).toBe(false);
   });
 
   it("preserves locally bound process.browser references", () => {

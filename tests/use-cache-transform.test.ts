@@ -86,6 +86,17 @@ async function transformRsc(source: string): Promise<string> {
   return result!.code;
 }
 
+/** Map each registered cache function's name to its wrapper options. */
+function getCacheWrapperOptionsByName(code: string): Record<string, Record<string, unknown>> {
+  const options: Record<string, Record<string, unknown>> = {};
+  for (const match of code.matchAll(
+    /registerCachedFunction\(.*?, "[^"]*:([^":]+)", "[^"]*", (\{[^}]*\})\)/g,
+  )) {
+    options[match[1]!] = JSON.parse(match[2]!);
+  }
+  return options;
+}
+
 describe("plugin-rsc inline use-cache references", () => {
   it("supports an explicitly registered RSC plugin", async () => {
     const plugins = await getPlugins({ manualRsc: true });
@@ -354,16 +365,79 @@ describe("plugin-rsc inline use-cache references", () => {
       moduleId,
     );
     expect(result).not.toBeNull();
-    expect(result!.code).toMatch(
-      /\.bind\(null,\s*\$\$cacheRuntime\.encryptCacheCaptures\(\[capturedSecret\]\)\)/,
-    );
-    expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
-    expect(result!.code).toContain("const [capturedSecret] = $$hoist_encoded");
     const boundRegistration = result!.code.match(
       /registerCachedFunction\(\$\$hoist_[^,]+_getMessage\$\$impl,[^)]*\)/,
     )?.[0];
     expect(boundRegistration).toBeDefined();
     expect(boundRegistration).toContain('"argumentCount":0');
+    // The wrapper must require the encrypted captures, bound to this reference.
+    expect(boundRegistration).toContain('"captureCount":1');
+    const referenceId = boundRegistration!.match(/"serverReferenceId":("[^"]+")/)?.[1];
+    expect(referenceId).toBeDefined();
+    expect(result!.code).toContain(
+      `.bind(null, $$cacheRuntime.encryptCacheCaptures(${referenceId}, [capturedSecret]))`,
+    );
+    expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
+    expect(result!.code).toContain("const [capturedSecret] = $$hoist_encoded");
+    // The enclosing cached component has no captures.
+    const outerRegistration = result!.code.match(
+      /registerCachedFunction\(\$\$hoist_[^,]+_CachedSection\$\$impl,[^)]*\)/,
+    )?.[0];
+    expect(outerRegistration).toBeDefined();
+    expect(outerRegistration).not.toContain("captureCount");
+  });
+
+  it("binds each inline function's exact captures to its own reference", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const transform = unwrapHook(plugin.transform)!;
+    const code = [
+      `export async function Page({ tenant, label }) {`,
+      `  async function getOrders() {`,
+      `    "use cache";`,
+      `    return [tenant.id, tenant.region, label];`,
+      `  }`,
+      `  async function getStatic() {`,
+      `    "use cache";`,
+      `    return 1;`,
+      `  }`,
+      `  async function getLabel() {`,
+      `    "use cache";`,
+      `    return label;`,
+      `  }`,
+      `  return [getOrders, getStatic, getLabel];`,
+      `}`,
+    ].join("\n");
+
+    const result = await transform.call(
+      { environment: { name: "rsc", mode: "build" } },
+      code,
+      moduleId,
+    );
+    const referenceIdOf = (name: string) =>
+      result!.code
+        .match(
+          new RegExp(`registerCachedFunction\\(\\$\\$hoist_\\d+_${name}\\$\\$impl,[^)]*\\)`),
+        )?.[0]
+        .match(/"serverReferenceId":("[^"]+")/)?.[1];
+    const orders = referenceIdOf("getOrders");
+    const label = referenceIdOf("getLabel");
+    expect(orders).toBeDefined();
+    expect(label).toBeDefined();
+    expect(orders).not.toBe(label);
+    // A partially captured object is one capture.
+    const ordersCall = result!.code.slice(
+      result!.code.indexOf(`encryptCacheCaptures(${orders}, [`),
+    );
+    expect(ordersCall).toMatch(/^encryptCacheCaptures\("[^"]+", \[\{[^\]]*\}, label\]\)/);
+    expect(result!.code).toContain(`encryptCacheCaptures(${label}, [label])`);
+    const captureCounts = [...result!.code.matchAll(/"captureCount":(\d+)/g)].map(
+      (match) => match[1],
+    );
+    expect(captureCounts).toEqual(["2", "1"]);
   });
 
   it.each(["ssr", "client"])(
@@ -754,27 +828,99 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("$$VinextReactServer.registerServerReference");
     expect(result!.code).toContain("registerCachedFunction");
     expect(result!.code).toContain('"use cache";');
-    expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual([
-      expect.stringMatching(SECURE_CACHE_EXPORT_RE),
-    ]);
+    const claim = manager.serverReferences.metaMap.get(moduleId)!;
+    expect(claim.exportNames).toEqual([expect.stringMatching(SECURE_CACHE_EXPORT_RE)]);
+
+    // The runtime recognizes cache functions, including bound ones, by this
+    // server reference id (`registerServerReference` sets `$$id`).
+    const { isUseCacheFunctionReference } =
+      await import("../packages/vinext/src/shims/internal/app-page-props-cache-key.js");
+    const reference = Object.assign(async () => null, {
+      $$typeof: Symbol.for("react.server.reference"),
+      $$id: `${claim.referenceKey}#${claim.exportNames[0]}`,
+    });
+    expect(isUseCacheFunctionReference(reference)).toBe(true);
   });
 
-  it("marks file-level App Page default exports after Vinext resolves the app directory", async () => {
-    const plugins = await getPlugins();
-    await configureVinext(plugins);
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const pageId = path.join(APP_FIXTURE_DIR, "app", "page.tsx");
-    const result = await unwrapHook(plugin.transform)!.call(
-      { environment: { name: "rsc", mode: "build" } },
-      [`"use cache";`, `export default async function Page() { return null; }`].join("\n"),
-      pageId,
-    );
+  // Like Next.js (use-cache-wrapper.ts `isPageSegmentFunction`), page
+  // semantics come only from the `$$isPage` invocation marker. A cache function
+  // defined in a page module but called directly, without the marker, is an
+  // ordinary cache call: its key and Response Store replay args keep
+  // searchParams, so different queries do not collide.
+  it.each([
+    [
+      "file-level",
+      [
+        `"use cache";`,
+        `export async function generateMetadata(props) { return {}; }`,
+        `export default async function Page(props) { return null; }`,
+      ].join("\n"),
+      ["default", "generateMetadata"],
+    ],
+    [
+      "inline",
+      [
+        `export async function generateMetadata(props) { "use cache"; return {}; }`,
+        `export default async function Page(props) { "use cache"; return null; }`,
+      ].join("\n"),
+      ["$$hoist_0_generateMetadata", "$$hoist_1_Page"],
+    ],
+  ])(
+    "keeps searchParams for unmarked direct calls of %s page module cache functions",
+    async (_label, code, expectedNames) => {
+      const plugins = await getPlugins();
+      await configureVinext(plugins);
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const pageId = path.join(APP_FIXTURE_DIR, "app", "direct-call", "page.tsx");
+      const result = await unwrapHook(plugin.transform)!.call(
+        { environment: { name: "rsc", mode: "build" } },
+        code,
+        pageId,
+      );
 
-    expect(result?.code).toContain('"appPageDefaultExport":true');
-  });
+      // The transform emits no page-specific wrapper metadata.
+      const wrapperOptions = getCacheWrapperOptionsByName(result!.code);
+      expect(Object.keys(wrapperOptions).sort()).toEqual(expectedNames);
+      for (const options of Object.values(wrapperOptions)) {
+        expect(Object.keys(options).sort()).toEqual([
+          "acceptsSecondArgument",
+          "argumentCount",
+          "serverReferenceId",
+        ]);
+      }
+
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { makeThenableParams } =
+        await import("../packages/vinext/src/shims/thenable-params.js");
+      setCacheHandler(new MemoryCacheHandler());
+      for (const [name, options] of Object.entries(wrapperOptions)) {
+        let calls = 0;
+        const cached = registerCachedFunction(
+          async (props: { searchParams: Promise<Record<string, string>> }) => {
+            calls++;
+            return (await props.searchParams).q;
+          },
+          `${pageId}:${name}`,
+          "",
+          options,
+        );
+        const pageProps = (q: string) => ({
+          params: makeThenableParams({}),
+          searchParams: makeThenableParams({ q }),
+        });
+
+        await expect(cached(pageProps("first"))).resolves.toBe("first");
+        await expect(cached(pageProps("second"))).resolves.toBe("second");
+        expect(calls).toBe(2);
+      }
+    },
+  );
 
   it.each(["ssr", "client"])(
     "emits server-reference proxies for file-level cache exports in the %s graph",

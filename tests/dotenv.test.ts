@@ -56,6 +56,51 @@ describe("getDotenvFiles", () => {
 });
 
 describe("loadDotenv", () => {
+  it.each(["development", "production", "test"])(
+    "preserves double-quoted JSON in %s mode",
+    (mode) => {
+      writeFile(`.env.${mode}`, 'MY_CONFIG="{"a":"b"}"\n');
+      const env: Record<string, string | undefined> = {};
+
+      const result = loadDotenv({ root: tmpDir, mode, processEnv: env });
+
+      expect(env.MY_CONFIG).toBe('{"a":"b"}');
+      expect(JSON.parse(env.MY_CONFIG!)).toEqual({ a: "b" });
+      expect(result.loadedEnv.MY_CONFIG).toBe(env.MY_CONFIG);
+    },
+  );
+
+  // Quoting cases from the dotenv parser used by @next/env:
+  // https://github.com/motdotla/dotenv/blob/v16.3.1/tests/test-parse.js
+  it.each([
+    ['{"foo": "bar"}', '{"foo": "bar"}'],
+    [`'{"foo": "bar"}'`, '{"foo": "bar"}'],
+    ['`{"foo": "bar\'s"}`', '{"foo": "bar\'s"}'],
+    [String.raw`"say \"hello\""`, String.raw`say \"hello\"`],
+    [String.raw`"line1\nline2\rline3"`, "line1\nline2\rline3"],
+    [String.raw`'line1\nline2'`, String.raw`line1\nline2`],
+    [String.raw`line1\nline2`, String.raw`line1\nline2`],
+    ['"  value # inside  " # outside', "  value # inside  "],
+    ["value#comment", "value"],
+    ['""', ""],
+  ])("parses dotenv value %s", (input, expected) => {
+    writeFile(".env", `VALUE=${input}\nAFTER=value\n`);
+    const env: Record<string, string | undefined> = {};
+
+    loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
+
+    expect(env).toEqual({ VALUE: expected, AFTER: "value" });
+  });
+
+  it.each(["\n", "\r\n", "\r"])("supports %j line endings", (newline) => {
+    writeFile(".env", `export CONFIG="{"a":"b"}"${newline}AFTER=value${newline}`);
+    const env: Record<string, string | undefined> = {};
+
+    loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
+
+    expect(env).toEqual({ CONFIG: '{"a":"b"}', AFTER: "value" });
+  });
+
   it("applies Next.js precedence for development mode", () => {
     writeFile(".env", "ORDER=env\nSECOND=env\n");
     writeFile(".env.development", "ORDER=mode\nSECOND=mode\n");

@@ -5,6 +5,12 @@ import { headers } from "next/headers";
 // exercises the client-header-preservation path as well as ordinary ISR.
 export const revalidate = false;
 
+// Next.js only ISR-caches a dynamic-segment route that exports
+// generateStaticParams (an empty list opts every path into on-demand ISR).
+export function generateStaticParams() {
+  return [];
+}
+
 async function LateDynamicContent({ slug }: { slug: string }) {
   // Ensure the response stream has started before dynamic request state is
   // accessed. The completed response must not be promoted to a shared cache.

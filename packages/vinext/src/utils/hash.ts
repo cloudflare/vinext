@@ -63,3 +63,14 @@ export function fnv1a52(str: string): number {
 
   return (v3 & 15) * 281474976710656 + v2 * 4294967296 + v1 * 65536 + (v0 ^ (v3 >> 4));
 }
+
+/**
+ * Hex-encoded SHA-256 digest of a string's UTF-8 bytes, via Web Crypto so it
+ * runs unchanged in Node.js, Workers and browsers. Used for cache keys built
+ * from inputs a request can influence, where crafted inputs could collide
+ * under a non-cryptographic hash like `fnv1a64`.
+ */
+export async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}

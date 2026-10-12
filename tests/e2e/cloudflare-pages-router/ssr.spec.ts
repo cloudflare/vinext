@@ -35,6 +35,29 @@ test.describe("Pages Router SSR on Cloudflare Workers", () => {
     expect(content).toContain("Generated at:");
   });
 
+  // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+  // ("should have original req.url for /_next/data request with query")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+  test("getServerSideProps sees the original /_next/data URL as req.url", async ({
+    page,
+    request,
+  }) => {
+    await page.goto(BASE + "/request-url?hello=world");
+    await expect(page.getByTestId("req-url")).toHaveText("/request-url?hello=world");
+    await expect(page.getByTestId("resolved-url")).toHaveText("/request-url?hello=world");
+    const buildId = await page.evaluate(() => (window as any).__NEXT_DATA__.buildId);
+    expect(buildId).toBeTruthy();
+
+    const dataUrl = `/_next/data/${buildId}/request-url.json?hello=world`;
+    const res = await request.get(BASE + dataUrl);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(data.pageProps).toEqual({
+      url: dataUrl,
+      resolvedUrl: "/request-url?hello=world",
+    });
+  });
+
   test("returns 404 for non-existent routes", async ({ page }) => {
     const res = await page.goto(BASE + "/nonexistent");
     expect(res!.status()).toBe(404);

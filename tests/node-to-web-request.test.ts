@@ -30,6 +30,40 @@ describe("nodeToWebRequest", () => {
     readNodeStream = mod.readNodeStream;
   });
 
+  it("preserves the supplied response lifetime signal", () => {
+    const controller = new AbortController();
+    const request = nodeToWebRequest(
+      mockReq(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      controller.signal,
+    );
+    controller.abort();
+    expect(request.signal.aborted).toBe(true);
+  });
+
+  // Next.js NextRequestAdapter.fromNodeNextRequest omits the body when the
+  // response signal is already aborted.
+  it("omits the body when the response signal is already aborted", () => {
+    const readable = Readable.from([Buffer.from("payload")]) as unknown as IncomingMessage;
+    readable.headers = { host: "localhost:3000", "content-type": "text/plain" };
+    readable.url = "/api/submit";
+    readable.method = "POST";
+
+    const request = nodeToWebRequest(
+      readable,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      AbortSignal.abort(),
+    );
+    expect(request.signal.aborted).toBe(true);
+    expect(request.body).toBeNull();
+  });
+
   it("uses req.url when no urlOverride is provided", () => {
     const req = mockReq({ url: "/test/page?q=1" });
 

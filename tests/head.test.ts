@@ -625,6 +625,24 @@ describe("Head default tags (charset/viewport ordering, issue #1569)", () => {
     expect(userIdx).toBeGreaterThan(viewportIdx);
   });
 
+  // Ported from Next.js: test/e2e/next-head/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/next-head/index.test.ts
+  it("serializes default and user head tags consecutively without whitespace nodes", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", { name: "test-head-1", content: "hello" }),
+      ),
+    );
+
+    expect(getSSRHeadHTML()).toBe(
+      '<meta charset="utf-8" data-next-head="" />' +
+        '<meta name="viewport" content="width=device-width" data-next-head="" />' +
+        '<meta name="test-head-1" content="hello" data-next-head="" />',
+    );
+  });
+
   it("default tags carry data-next-head attribute", () => {
     const html = getSSRHeadHTML();
     // Match the segment from the charset tag through the next "/>"

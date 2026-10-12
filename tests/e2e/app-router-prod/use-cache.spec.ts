@@ -1,48 +1,163 @@
 import { createHash } from "node:crypto";
-import { expect, test } from "@playwright/test";
+import { type APIRequestContext, expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
+// plugin-rsc's production reference key is a public function of the module
+// path, so these are the identities an attacker can derive offline.
+function derivedReferenceKey(modulePath: string): string {
+  return createHash("sha256").update(modulePath).digest("hex").slice(0, 12);
+}
+
+const recordsKey = derivedReferenceKey("app/use-cache-hidden-reference/records.ts");
+const inlineRecordsKey = derivedReferenceKey("app/use-cache-hidden-reference/inline-records.ts");
+
+const HIDDEN_CACHE_HELPERS = [
+  { actionId: `${recordsKey}#readRecord`, secret: "VICTIM_PRIVATE_RECORD" },
+  { actionId: `${recordsKey}#default`, secret: "VICTIM_DEFAULT_PRIVATE_RECORD" },
+  {
+    actionId: `${inlineRecordsKey}#readInlineRecord`,
+    secret: "VICTIM_INLINE_PRIVATE_RECORD",
+  },
+  {
+    actionId: `${inlineRecordsKey}#$$hoist_0_readInlineRecord`,
+    secret: "VICTIM_INLINE_PRIVATE_RECORD",
+  },
+] as const;
+
 test.describe('production "use cache" server function references', () => {
-  test("does not expose server-only cache helpers through derived source identities", async ({
+  // Next.js only makes a "use cache" function remotely callable through a
+  // build-salted server-reference id that never reaches a client unless the
+  // function itself does. A server-only cache helper must not be callable
+  // through an id derived from its source path and export name, whichever
+  // way the action request is sent.
+  // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/src/transforms/server_actions.rs
+  test("serves server-only cache helpers only through the page's authorization check", async ({
     request,
   }) => {
     const anonymous = await request.get("/use-cache-hidden-reference?record=victim");
     expect(anonymous.status()).toBe(200);
-    expect(await anonymous.text()).toContain("FORBIDDEN");
+    const anonymousHtml = await anonymous.text();
+    expect(anonymousHtml).toContain("FORBIDDEN");
+    expect(anonymousHtml).not.toMatch(/VICTIM_\w*PRIVATE_RECORD/);
 
-    const victim = await request.get("/use-cache-hidden-reference?record=victim", {
-      headers: { Authorization: "Bearer fixture-victim-session" },
-    });
-    expect(victim.status()).toBe(200);
-    expect(await victim.text()).toContain("VICTIM_PRIVATE_RECORD");
-
-    const defaultVictim = await request.get(
-      "/use-cache-hidden-reference?record=victim&source=default",
-      { headers: { Authorization: "Bearer fixture-victim-session" } },
-    );
-    expect(defaultVictim.status()).toBe(200);
-    expect(await defaultVictim.text()).toContain("VICTIM_DEFAULT_PRIVATE_RECORD");
-
-    const predictableReferenceKey = createHash("sha256")
-      .update("app/use-cache-hidden-reference/records.ts")
-      .digest("hex")
-      .slice(0, 12);
-    for (const [exportName, secret] of [
-      ["readRecord", "VICTIM_PRIVATE_RECORD"],
+    for (const [source, secret] of [
+      ["named", "VICTIM_PRIVATE_RECORD"],
       ["default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+      ["inline", "VICTIM_INLINE_PRIVATE_RECORD"],
     ] as const) {
-      const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+      const victim = await request.get(
+        `/use-cache-hidden-reference?record=victim&source=${source}`,
+        {
+          headers: { Authorization: "Bearer fixture-victim-session" },
+        },
+      );
+      expect(victim.status()).toBe(200);
+      expect(await victim.text()).toContain(secret);
+    }
+  });
+
+  for (const { actionId, secret } of HIDDEN_CACHE_HELPERS) {
+    test(`rejects a Next-Action request for derived id ${actionId}`, async ({ request }) => {
+      const exploit = await request.post("/use-cache-hidden-reference", {
         data: JSON.stringify(["victim"]),
         headers: {
-          "Content-Type": "text/plain",
-          "x-rsc-action": `${predictableReferenceKey}#${exportName}`,
+          Accept: "text/x-component",
+          "Content-Type": "text/plain;charset=UTF-8",
+          "Next-Action": actionId,
         },
       });
 
       expect(exploit.status()).toBe(404);
       expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
       expect(await exploit.text()).not.toContain(secret);
+    });
+
+    test(`rejects an RSC action request for derived id ${actionId}`, async ({ request }) => {
+      const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+        data: JSON.stringify(["victim"]),
+        headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
+      });
+
+      expect(exploit.status()).toBe(404);
+      expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
+      expect(await exploit.text()).not.toContain(secret);
+    });
+
+    test(`rejects a progressive form action for derived id ${actionId}`, async ({ request }) => {
+      const exploit = await request.post("/use-cache-hidden-reference", {
+        // Playwright drops empty multipart fields; the action id is read only
+        // from the field name.
+        multipart: { [`$ACTION_ID_${actionId}`]: "1", id: "victim" },
+      });
+
+      expect(exploit.status()).toBe(404);
+      expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
+      expect(await exploit.text()).not.toContain(secret);
+    });
+  }
+
+  // Like Next.js, closure values reach the client only as captures encrypted
+  // for that function (use-cache-wrapper.ts `boundArgsLength`, encryption.ts
+  // `actionId`). The reference id is public in the page payload, so invoking
+  // it with forged, missing or another function's captures must not run it.
+  test("rejects forged captures for inline cache functions passed to Client Components", async ({
+    baseURL,
+    page,
+    request,
+  }) => {
+    const captureAction = async (button: string) => {
+      const [action] = await Promise.all([
+        page.waitForRequest(
+          (candidate) => candidate.method() === "POST" && !!candidate.headers()["x-rsc-action"],
+        ),
+        page.locator(button).click(),
+      ]);
+      return {
+        id: action.headers()["x-rsc-action"]!,
+        contentType: action.headers()["content-type"]!,
+        body: action.postDataBuffer()!,
+      };
+    };
+
+    await page.context().addCookies([{ name: "tenant", value: "acme", url: baseURL! }]);
+    await page.goto("/use-cache-capture-integrity");
+    await expect(page.locator("#tenant")).toHaveText("acme");
+    await waitForAppRouterHydration(page);
+    const getOrders = await captureAction("#load-orders");
+    await expect(page.locator("#orders")).toHaveText("ACME_PRIVATE_ORDER");
+
+    // Any visitor can obtain captures holding a value they chose.
+    await page.context().clearCookies();
+    await page.goto("/use-cache-capture-integrity?label=acme");
+    await expect(page.locator("#tenant")).toHaveText("anonymous");
+    await waitForAppRouterHydration(page);
+    const echoLabel = await captureAction("#echo-label");
+    await expect(page.locator("#label")).toHaveText("acme");
+    expect(echoLabel.id).not.toBe(getOrders.id);
+
+    // No session cookie: the request context is separate from the page's.
+    const invokeGetOrders = (data: string | Buffer, contentType = "text/plain;charset=UTF-8") =>
+      request.post("/use-cache-capture-integrity", {
+        data,
+        headers: {
+          Accept: "text/x-component",
+          "Content-Type": contentType,
+          "x-rsc-action": getOrders.id,
+        },
+      });
+    for (const forged of [
+      await invokeGetOrders(JSON.stringify([["acme"], ""])),
+      await invokeGetOrders(JSON.stringify([])),
+      await invokeGetOrders(echoLabel.body, echoLabel.contentType),
+    ]) {
+      expect(forged.status()).toBe(500);
+      expect(await forged.text()).not.toContain("ACME_PRIVATE_ORDER");
     }
+
+    // Control: the genuine encrypted captures still decrypt for this function.
+    const genuine = await invokeGetOrders(getOrders.body, getOrders.contentType);
+    expect(genuine.status()).toBe(200);
+    expect(await genuine.text()).toContain("ACME_PRIVATE_ORDER");
   });
 
   test("invokes default-exported server actions from cached modules", async ({ page }) => {
@@ -174,4 +289,112 @@ test.describe('production "use cache" server function references', () => {
     await page.locator("#submit-button-message-other").click();
     await expect(page.locator("#message-other")).toHaveText(otherMessage!);
   });
+
+  // Next.js passes a cached component's children as temporary references: the
+  // entry stores a reference, and a hit renders the current request's children.
+  test.describe("cached wrapper with request-specific children", () => {
+    const SECRETS = ["ALICE_PRIVATE_SECRET", "BOB_PRIVATE_SECRET", "PUBLIC_GUEST"];
+    const visit = async (request: APIRequestContext, partition: string, session?: string) => {
+      const response = await request.get(
+        `/use-cache-passthrough-children?partition=${partition}`,
+        session ? { headers: { Cookie: `session=${session}` } } : {},
+      );
+      expect(response.status()).toBe(200);
+      const html = await response.text();
+      const text = (id: string) => html.match(new RegExp(`id="${id}">([^<]*)<`))?.[1];
+      const result = {
+        viewer: text("viewer"),
+        secret: text("secret"),
+        wrapper: text("wrapper-generated"),
+      };
+      expect(result.wrapper).toMatch(/^[0-9.e+-]+$/);
+      // Covers the inline Flight payload as well as the HTML.
+      for (const secret of SECRETS) {
+        if (secret !== result.secret) expect(html).not.toContain(secret);
+      }
+      return result;
+    };
+
+    test("does not replay an authenticated visitor's children to later visitors", async ({
+      request,
+    }) => {
+      const partition = `alice-first-${Date.now()}`;
+      const alice = await visit(request, partition, "alice");
+      expect(alice).toMatchObject({ viewer: "alice", secret: "ALICE_PRIVATE_SECRET" });
+
+      expect(await visit(request, partition)).toEqual({
+        viewer: "guest",
+        secret: "PUBLIC_GUEST",
+        wrapper: alice.wrapper,
+      });
+      expect(await visit(request, partition, "bob")).toEqual({
+        viewer: "bob",
+        secret: "BOB_PRIVATE_SECRET",
+        wrapper: alice.wrapper,
+      });
+    });
+
+    test("does not replay a guest's children to a later authenticated visitor", async ({
+      request,
+    }) => {
+      const partition = `guest-first-${Date.now()}`;
+      const guest = await visit(request, partition);
+      expect(guest).toMatchObject({ viewer: "guest", secret: "PUBLIC_GUEST" });
+
+      expect(await visit(request, partition, "alice")).toEqual({
+        viewer: "alice",
+        secret: "ALICE_PRIVATE_SECRET",
+        wrapper: guest.wrapper,
+      });
+    });
+  });
+});
+
+test.describe('production "use cache" FormData arguments', () => {
+  // Like Next.js (use-cache-wrapper.ts `encodeFormData`), entry order is part
+  // of a FormData argument's cache key: get() and getAll() both observe it.
+  for (const victimFirst of [true, false]) {
+    test(`keeps reordered repeated fields apart when the ${victimFirst ? "victim" : "public caller"} primes the entry`, async ({
+      request,
+    }) => {
+      const run = `${victimFirst}-${Date.now()}-${Math.random()}`;
+      const post = (scopes: string[], authorization?: string) =>
+        request.post("/api/use-cache-form-scope", {
+          data: new URLSearchParams([
+            ["run", run],
+            ...scopes.map((scope) => ["scope", scope]),
+          ]).toString(),
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            ...(authorization ? { Authorization: authorization } : {}),
+          },
+        });
+      const victim = () => post(["private", "public"], "Bearer fixture-victim-session");
+      const publicCaller = () => post(["public", "private"]);
+
+      // Control: the route authorizes on the first scope value.
+      const forbidden = await post(["private", "public"]);
+      expect(forbidden.status()).toBe(403);
+
+      const [first, second] = victimFirst
+        ? [await victim(), await publicCaller()]
+        : [await publicCaller(), await victim()];
+      expect(first.status()).toBe(200);
+      expect(second.status()).toBe(200);
+      const [victimResult, publicResult] = victimFirst
+        ? [await first.json(), await second.json()]
+        : [await second.json(), await first.json()];
+
+      expect(victimResult.record).toEqual({
+        owner: "victim",
+        secret: "VICTIM_FORM_PRIVATE_RECORD",
+      });
+      expect(publicResult.record).toEqual({ owner: "public", secret: "PUBLIC_FORM_RECORD" });
+      expect(publicResult.execution).not.toBe(victimResult.execution);
+
+      // Each order still hits its own entry.
+      expect(await (await victim()).json()).toEqual(victimResult);
+      expect(await (await publicCaller()).json()).toEqual(publicResult);
+    });
+  }
 });

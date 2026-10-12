@@ -4,6 +4,24 @@ import { waitForHydration } from "../helpers";
 const BASE = "http://localhost:4173";
 
 test.describe("Middleware (Pages Router)", () => {
+  test("stamps a middleware-backed 404 with its visible URL", async ({ page }) => {
+    const response = await page.goto(`${BASE}/missing-middleware-error`);
+    expect(response?.status()).toBe(404);
+    await waitForHydration(page);
+    expect(
+      await page.evaluate(() => ({
+        url: history.state?.url,
+        as: history.state?.as,
+        hasMiddleware: JSON.parse(document.getElementById("__NEXT_DATA__")!.textContent!).__vinext
+          .hasMiddleware,
+      })),
+    ).toEqual({
+      url: "/missing-middleware-error",
+      as: "/missing-middleware-error",
+      hasMiddleware: true,
+    });
+  });
+
   test("redirects /old-page to /about", async ({ page }) => {
     const response = await page.goto(`${BASE}/old-page`);
 

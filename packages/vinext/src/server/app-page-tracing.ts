@@ -1,6 +1,7 @@
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { recordFrameworkSpanError, type FrameworkSpan } from "./framework-tracer.js";
-import { getDigestForWellKnownError, isAppRenderAbortError } from "./app-rsc-errors.js";
+import { isAppRenderAbortError } from "./app-render-abort-error.js";
+import { getDigestForWellKnownError } from "./app-rsc-errors.js";
 import { frameworkTracer } from "./tracer.js";
 
 export function traceAppPageRender<T>(

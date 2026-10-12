@@ -99,7 +99,6 @@ test.describe("headers() and cookies() in Server Components", () => {
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/middleware.cookies.test.ts
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
- * Tests: ON-6 and ON-8 in TRACKING.md
  *
  * OpenNext verifies that internal middleware headers (x-middleware-set-cookie,
  * x-middleware-next) are NOT exposed in the response, and that middleware-set

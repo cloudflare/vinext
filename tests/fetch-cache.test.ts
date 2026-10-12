@@ -64,6 +64,8 @@ const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
 const { registerFrameworkTracingIntegration } =
   await import("../packages/vinext/src/server/tracer.js");
+const { _peekRequestScopedCacheLife } =
+  await import("../packages/vinext/src/shims/cache-request-state.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -821,6 +823,22 @@ describe("fetch cache shim", () => {
 
   // ── Tag-based invalidation ──────────────────────────────────────────
 
+  it.each([
+    { label: "oversized tags only", tags: ["a".repeat(257)], cached: false },
+    { label: "non-string tags only", tags: [null, undefined], cached: false },
+    { label: "mixed valid and invalid tags", tags: ["posts", "a".repeat(257)], cached: true },
+  ])("uses valid tags to decide cacheability for $label", async ({ tags, cached }) => {
+    const init = { next: { tags: tags as unknown as string[] } };
+    const first = await fetch("https://api.example.com/validated-tags-only", init);
+    expect((await first.json()).count).toBe(1);
+    expect(getCollectedFetchTags()).toEqual(cached ? ["posts"] : []);
+
+    startNewFetchCacheScope();
+    const second = await fetch("https://api.example.com/validated-tags-only", init);
+    expect((await second.json()).count).toBe(cached ? 1 : 2);
+    expect(fetchMock).toHaveBeenCalledTimes(cached ? 1 : 2);
+  });
+
   it("tags-only fetch inherits the active route revalidate", async () => {
     setCurrentFetchRevalidate(60);
 
@@ -931,6 +949,64 @@ describe("fetch cache shim", () => {
     expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([
       31_536_000, 31_536_000,
     ]);
+  });
+
+  // Next.js only lowers the page's revalidate for a fetch whose own
+  // `next.revalidate` is a number below it (server/lib/patch-fetch.ts). A
+  // cached fetch without one is stored for a year but leaves a
+  // `revalidate = false` page indefinite.
+  it.each<{ name: string; init?: RequestInit; fetchCacheMode?: "default-cache" | "force-cache" }>([
+    { name: "force-cache", init: { cache: "force-cache" } },
+    { name: "revalidate: false", init: { next: { revalidate: false } } },
+    { name: "tags only", init: { next: { tags: ["tags-only"] } } },
+    { name: "fetchCache = force-cache", fetchCacheMode: "force-cache" },
+    { name: "fetchCache = default-cache", fetchCacheMode: "default-cache" },
+  ])(
+    "a cached fetch with $name leaves an indefinite page lifetime unset",
+    async ({ init, fetchCacheMode }) => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        setCurrentFetchRevalidate(Infinity);
+        if (fetchCacheMode) setCurrentFetchCacheMode(fetchCacheMode);
+
+        await fetch("https://api.example.com/indefinite-page-lifetime", init);
+
+        const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+        const store = (handler as any).store as Map<string, any>;
+        expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([31_536_000]);
+        expect(_peekRequestScopedCacheLife()).toBeNull();
+      });
+    },
+  );
+
+  it("a tags-only fetch leaves the page lifetime to the route revalidate it inherits", async () => {
+    await runWithRequestContext(createRequestContext(), async () => {
+      setCurrentFetchRevalidate(60);
+
+      await fetch("https://api.example.com/tags-only-route-lifetime", {
+        next: { tags: ["tags-only-route-lifetime"] },
+      });
+
+      const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+      const store = (handler as any).store as Map<string, any>;
+      expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([60]);
+      expect(_peekRequestScopedCacheLife()).toBeNull();
+    });
+  });
+
+  it.each<{ name: string; init: RequestInit }>([
+    { name: "next.revalidate", init: { next: { revalidate: 60 } } },
+    {
+      name: "force-cache and next.revalidate",
+      init: { cache: "force-cache", next: { revalidate: 60 } },
+    },
+  ])("a cached fetch with $name sets the page lifetime", async ({ init }) => {
+    await runWithRequestContext(createRequestContext(), async () => {
+      setCurrentFetchRevalidate(Infinity);
+
+      await fetch("https://api.example.com/finite-page-lifetime", init);
+
+      expect(_peekRequestScopedCacheLife()).toEqual({ revalidate: 60 });
+    });
   });
 
   it("resets the active route revalidate between fetch-cache scopes", async () => {
@@ -2585,9 +2661,9 @@ describe("fetch cache shim", () => {
         next: { tags: ["user-data"] },
       });
 
-      // The fetch itself is bypassed (not cached), but the per-user response
-      // must still downgrade the page output to fresh render so auth-keyed
-      // data is never statically cached and served across users.
+      // The fetch itself is bypassed (not cached) and recorded as a dynamic
+      // fetch observation. Like Next.js's `autoNoCache`, it doesn't make the
+      // page dynamic, so a static page that makes it is still stored.
       expect(peekDynamicFetchObservations()).toEqual([
         "https://api.example.com/auth-bypass-page-output",
       ]);
@@ -2604,8 +2680,8 @@ describe("fetch cache shim", () => {
 
       // An explicit `no-store` is an explicit uncached-fetch decision, so it
       // hits the no-store branch (full markDynamicUsage) before the softer
-      // auth-safety bypass: the page is fully marked dynamic, not merely
-      // downgraded via a dynamic fetch observation.
+      // auth-safety bypass: the page is marked dynamic, not merely recorded
+      // as a dynamic fetch observation.
       expect(peekDynamicFetchObservations()).toEqual([
         "https://api.example.com/nostore-auth-dynamic",
       ]);
@@ -3298,6 +3374,116 @@ describe("fetch cache shim", () => {
     });
   });
 
+  // ── Workers cf.resolveOverride ──────────────────────────────────────
+
+  describe("cf.resolveOverride in cache keys", () => {
+    type WorkersInit = RequestInit & { cf?: Record<string, unknown> };
+
+    // Node's Request drops `cf`; workerd's Request carries it.
+    function requestWithCf(url: string, cf: Record<string, unknown>): Request {
+      const request = new Request(url);
+      Object.defineProperty(request, "cf", { value: cf, configurable: true });
+      return request;
+    }
+
+    function readOrigin(input: string | URL | Request, init?: RequestInit): unknown {
+      const initCf = (init as WorkersInit | undefined)?.cf;
+      if (initCf !== undefined) return initCf.resolveOverride ?? null;
+      return (input as { cf?: { resolveOverride?: unknown } }).cf?.resolveOverride ?? null;
+    }
+
+    beforeEach(() => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        return new Response(
+          JSON.stringify({ origin: readOrigin(input, init), count: requestCount }),
+        );
+      });
+    });
+
+    async function cachedFetch(cf: Record<string, unknown>) {
+      const init: WorkersInit = { cf, next: { revalidate: 60 } };
+      return (await fetch("https://api.example.com/tenant-data", init)).json();
+    }
+
+    it("keeps different origins in separate persistent entries", async () => {
+      expect(await cachedFetch({ resolveOverride: "origin-a.example.com" })).toEqual({
+        origin: "origin-a.example.com",
+        count: 1,
+      });
+
+      startNewFetchCacheScope();
+      expect(await cachedFetch({ resolveOverride: "origin-b.example.com" })).toEqual({
+        origin: "origin-b.example.com",
+        count: 2,
+      });
+
+      startNewFetchCacheScope();
+      expect(await cachedFetch({ resolveOverride: "origin-a.example.com" })).toEqual({
+        origin: "origin-a.example.com",
+        count: 1,
+      });
+      expect(await cachedFetch({ resolveOverride: "origin-b.example.com" })).toEqual({
+        origin: "origin-b.example.com",
+        count: 2,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores cf properties that do not select the origin", async () => {
+      await cachedFetch({ resolveOverride: "origin-a.example.com", cacheTtl: 5 });
+
+      startNewFetchCacheScope();
+      const cached = await cachedFetch({
+        resolveOverride: "origin-a.example.com",
+        cacheTtlByStatus: { "100-599": -1 },
+        cacheTags: ["tenant-a"],
+      });
+      expect(cached).toEqual({ origin: "origin-a.example.com", count: 1 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("keys a Request input's resolveOverride, replaced by a RequestInit cf", async () => {
+      const request = requestWithCf("https://api.example.com/request-cf", {
+        resolveOverride: "origin-a.example.com",
+      });
+
+      const inherited = await fetch(request, { next: { revalidate: 60 } });
+      expect(await inherited.json()).toEqual({ origin: "origin-a.example.com", count: 1 });
+
+      startNewFetchCacheScope();
+      const overrideInit: WorkersInit = {
+        cf: { resolveOverride: "origin-b.example.com" },
+        next: { revalidate: 60 },
+      };
+      const overridden = await fetch(request, overrideInit);
+      expect(await overridden.json()).toEqual({ origin: "origin-b.example.com", count: 2 });
+
+      startNewFetchCacheScope();
+      const plain = await fetch("https://api.example.com/request-cf", { next: { revalidate: 60 } });
+      expect(await plain.json()).toEqual({ origin: null, count: 3 });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("dedupes render fetches only within the same origin", async () => {
+      const fetchOrigin = (cf: Record<string, unknown>) => {
+        const init: WorkersInit = { cf, cache: "no-store" };
+        return fetch("https://api.example.com/tenant-dedupe", init).then((res) => res.json());
+      };
+
+      const [a1, b, a2] = await Promise.all([
+        fetchOrigin({ resolveOverride: "origin-a.example.com" }),
+        fetchOrigin({ resolveOverride: "origin-b.example.com" }),
+        fetchOrigin({ resolveOverride: "origin-a.example.com", cacheTtl: 5 }),
+      ]);
+
+      expect(a1).toEqual({ origin: "origin-a.example.com", count: 1 });
+      expect(b).toEqual({ origin: "origin-b.example.com", count: 2 });
+      expect(a2).toEqual(a1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   // ── Body restoration after cache key generation ───────────────────
 
   describe("body restoration (_ogBody)", () => {
@@ -3523,8 +3709,8 @@ describe("fetch cache shim", () => {
 
       // The developer opted into caching; failing to build a cache key is an
       // internal vinext limitation, not an explicit uncached-fetch decision.
-      // The observation downgrades the page output to fresh render, but the
-      // page is not marked dynamic.
+      // The fetch is recorded as a dynamic fetch observation, but the page is
+      // not marked dynamic.
       expect(consumeDynamicUsage()).toBe(false);
       expect(peekDynamicFetchObservations()).toContain(
         "https://api.example.com/large-body-page-output",

@@ -1,5 +1,6 @@
 {
   "name": "app-cjs-esm-package",
+  "private": true,
   "exports": {
     "./entry": {
       "browser": "./browser.js",

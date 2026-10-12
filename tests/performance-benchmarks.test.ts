@@ -20,6 +20,17 @@ import {
 import { DEFAULT_PAIRED_ROUNDS, pairedRevisionOrder } from "../benchmarks/perf/pairing.mts";
 
 describe("paired performance benchmarks", () => {
+  it("profiles the project Vite CLI through native Node on macOS", () => {
+    const script = readFileSync(
+      join(import.meta.dirname, "../scripts/profile-vinext-dev-macos.sh"),
+      "utf8",
+    );
+
+    expect(script).toContain('local vite_cli="${cwd}/node_modules/vite/bin/vite.js"');
+    expect(script).toContain('command_args=("node" "${vite_cli}" "dev" "${dev_args[@]}")');
+    expect(script).not.toContain('command_args=("${cwd}/node_modules/.bin/vite"');
+  });
+
   it("pins the TypeScript dependencies required by the standalone Next.js benchmark", () => {
     const packageJson = JSON.parse(
       readFileSync(join(import.meta.dirname, "../benchmarks/nextjs/package.json"), "utf8"),
@@ -154,7 +165,9 @@ describe("paired performance benchmarks", () => {
     expect(runner).toContain("await runUntrusted(\n    profiler[0]");
     expect(coldStart).toContain('name.startsWith("VINEXT_PERF_")');
     expect(coldStart).toContain('const profiling = process.env.VINEXT_PERF_PROFILE === "true"');
-    expect(coldStart).toContain('join(projectDir, "node_modules/vite-plus/bin/vp")');
+    expect(coldStart).toContain('join(projectDir, "node_modules/vite-plus/dist/bin.js")');
+    expect(coldStart).not.toContain('execFileSync("which", ["vp"]');
+    expect(coldStart).toContain('VINEXT_NO_DEV_LOCK: "1"');
     expect(coldStart).toContain("detached: true");
     expect(coldStart).toContain("return targetUser && !profiling");
     expect(coldStart).toContain("await Promise.all(paths.map(clearDirectory))");
@@ -162,7 +175,8 @@ describe("paired performance benchmarks", () => {
     expect(buildTime).toContain('name.startsWith("VINEXT_PERF_")');
     expect(buildTime).toContain("const entries = await readdir(outputDirectory)");
     expect(buildTime).toContain('const profiling = process.env.VINEXT_PERF_PROFILE === "true"');
-    expect(buildTime).toContain('join(projectDir, "node_modules/vite-plus/bin/vp")');
+    expect(buildTime).toContain('join(projectDir, "node_modules/vite-plus/dist/bin.js")');
+    expect(buildTime).not.toContain('execFileSync("which", ["vp"]');
     expect(buildTime).toContain(
       "globalThis.process.execve(command, [command, ...args], targetEnvironment())",
     );

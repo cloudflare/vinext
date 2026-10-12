@@ -1,5 +1,5 @@
 /**
- * Build report — prints a Next.js-style route table after `vinext build`.
+ * Build report — prints a Next.js-style route table after `vite build`.
  *
  * Classifies every discovered route as:
  *   ○  Static   — confirmed static: force-static or revalidate=Infinity
@@ -160,6 +160,15 @@ export function hasExportedName(code: string, name: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Whether the module's runtime value exports include the given name. Type-only
+ * exports and re-export aliases under another name don't count.
+ */
+export function hasRuntimeExportedName(code: string, name: string): boolean {
+  const program = parseRouteModule(code);
+  return program !== null && hasRuntimeExportedNameInProgram(program, name);
 }
 
 function hasNamedExportInProgram(program: Program, name: string): boolean {

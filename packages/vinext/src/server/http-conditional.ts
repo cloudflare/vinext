@@ -41,6 +41,23 @@ export function matchesIfNoneMatch(ifNoneMatch: string | undefined, etag: string
   return sawTag && matched;
 }
 
+/**
+ * Whether a page answers its request with a 304, as Next.js's
+ * `sendEtagResponse` does with `fresh(req.headers, { etag })`. Next.js gives a
+ * page no Last-Modified, so a request with If-Modified-Since gets the page, and
+ * a request `Cache-Control: no-cache` always does.
+ */
+export function isPageNotModified(
+  request: { cacheControl?: string; ifModifiedSince?: string; ifNoneMatch?: string },
+  etag: string,
+): boolean {
+  return (
+    !request.ifModifiedSince &&
+    !/(?:^|,)\s*no-cache\s*(?:,|$)/.test(request.cacheControl ?? "") &&
+    matchesIfNoneMatch(request.ifNoneMatch, etag)
+  );
+}
+
 /** Test an If-Match field using Next.js's weak/strong-equivalent comparison. */
 export function matchesIfMatch(ifMatch: string | undefined, etag: string | undefined): boolean {
   if (!ifMatch) return false;

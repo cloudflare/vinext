@@ -1,5 +1,6 @@
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { isAppRenderAbortError } from "./app-render-abort-error.js";
 
 type DigestError = Error & { digest?: string };
 const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
@@ -38,12 +39,6 @@ export function hasDigest(error: unknown): error is { digest: unknown } {
 
 const BAILOUT_TO_CSR_DIGEST = "BAILOUT_TO_CLIENT_SIDE_RENDERING";
 const DYNAMIC_SERVER_USAGE_DIGEST = "DYNAMIC_SERVER_USAGE";
-
-export function isAppRenderAbortError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const name = Reflect.get(error, "name");
-  return name === "AbortError" || name === "ResponseAborted";
-}
 
 /**
  * vinext's mirror of Next.js's `getDigestForWellKnownError`: returns the digest
@@ -118,12 +113,18 @@ export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NOD
 export function createRscOnErrorHandler(
   options: CreateRscOnErrorHandlerOptions,
 ): (error: unknown) => string | undefined {
+  let loggedPrerenderErrors: Set<unknown> | undefined;
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
+    const reportableError =
+      error && typeof error === "object" && ORIGINAL_SERVER_ERROR in error
+        ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
+        : error;
 
     // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
-    // Expected response/HMR cancellations are not render failures.
-    if (isAppRenderAbortError(error)) {
+    // Expected response/HMR cancellations are not render failures, including
+    // originals wrapped by production error sanitization.
+    if (isAppRenderAbortError(error) || isAppRenderAbortError(reportableError)) {
       return undefined;
     }
 
@@ -131,7 +132,8 @@ export function createRscOnErrorHandler(
     // dynamic-server) carry a recognized digest and are not real failures:
     // return the digest and skip reporting, exactly like Next.js. A digest on
     // its own is NOT a signal — those errors fall through to reporting below.
-    const wellKnownDigest = getDigestForWellKnownError(error);
+    const wellKnownDigest =
+      getDigestForWellKnownError(error) ?? getDigestForWellKnownError(reportableError);
     if (wellKnownDigest !== undefined) {
       return wellKnownDigest;
     }
@@ -163,26 +165,25 @@ export function createRscOnErrorHandler(
     }
 
     if (options.requestInfo && options.errorContext && error) {
-      const reportableError =
-        typeof error === "object" && ORIGINAL_SERVER_ERROR in error
-          ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
-          : error;
       options.reportRequestError(reportableError, options.requestInfo, options.errorContext);
     }
 
-    // Surface the error on the dev-server terminal. In Next.js the instrumentation
-    // wrapper (`onInstrumentationRequestError`) logs render errors in development
-    // regardless of user instrumentation; vinext's `reportRequestError` above is a
-    // no-op when no `onRequestError` hook is registered, so without this a server
-    // render error would be swallowed silently in the dev server. The `!hasDigest`
-    // guard intentionally suppresses every digest-bearing error, including repeat
-    // RSC callbacks after this handler stamps the error with a digest below.
-    if (nodeEnv !== "production" && error && !hasDigest(error)) {
-      const loggableError =
-        typeof error === "object" && ORIGINAL_SERVER_ERROR in error
-          ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
-          : error;
-      console.error("[vinext] Server render error:", loggableError);
+    // Prerender uses production bundles, but failures must reach the build
+    // terminal even when speculative rendering skips the route. Instrumentation
+    // alone is a no-op without a user hook. A digest may come from sanitization
+    // or user code, so deduplicate by the original error, not digest presence.
+    if (process.env.VINEXT_PRERENDER === "1" && error) {
+      if (!loggedPrerenderErrors?.has(reportableError)) {
+        (loggedPrerenderErrors ??= new Set()).add(reportableError);
+        const route = options.requestInfo?.path ?? options.errorContext?.routePath ?? "<unknown>";
+        console.error(
+          `[vinext] Error prerendering route ${JSON.stringify(route)}:`,
+          reportableError,
+        );
+      }
+    } else if (nodeEnv !== "production" && error && !hasDigest(error)) {
+      // Preserve dev logging, where a digest suppresses repeat RSC/SSR callbacks.
+      console.error("[vinext] Server render error:", reportableError);
     }
 
     // A non-signal error that already carries a digest keeps it as-is (matching

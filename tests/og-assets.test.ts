@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { copyMissingOgWasm } from "../packages/vinext/src/plugins/og-assets.js";
+import { resolveHarfbuzzWasmPath } from "../packages/vinext/src/plugins/og-harfbuzz.js";
 import type { Plugin } from "vite-plus";
 import fsp from "node:fs/promises";
 import fs from "node:fs";
 import os from "node:os";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -22,6 +24,8 @@ function createOgAssetsPlugin(): Plugin {
 
 // A `this` context that mimics the rsc environment so the hooks run.
 const rscCtx = { environment: { name: "rsc" } };
+const require = createRequire(path.join(import.meta.dirname, "../packages/vinext/package.json"));
+const harfbuzzWasm = fs.readFileSync(resolveHarfbuzzWasmPath(require.resolve("@vercel/og")));
 
 /** Build a fake output bundle (chunk + optional emitted wasm assets). */
 function makeBundle(opts: {
@@ -68,6 +72,49 @@ describe("vinext:og-assets plugin", () => {
   });
 
   describe("dedup: emitted asset present", () => {
+    it("does not mistake a HarfBuzz callback adapter for hb.wasm", () => {
+      const plugin = createOgAssetsPlugin();
+      const generateBundle = unwrapHook(plugin.generateBundle);
+      const bundle = makeBundle({ chunkCode: 'new URL("./hb.wasm", import.meta.url)' });
+      bundle["_next/static/harfbuzz-callback-vi-ABC.wasm"] = {
+        type: "asset",
+        fileName: "_next/static/harfbuzz-callback-vi-ABC.wasm",
+      };
+      bundle["_next/static/hb-ABC.wasm"] = {
+        type: "asset",
+        fileName: "_next/static/hb-ABC.wasm",
+        source: harfbuzzWasm,
+      };
+
+      generateBundle.call(rscCtx, {}, bundle);
+
+      expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
+        'new URL("./hb-ABC.wasm", import.meta.url)',
+      );
+    });
+
+    it("copies the real HarfBuzz binary when an unrelated hb-prefixed asset is emitted", async () => {
+      const plugin = createOgAssetsPlugin();
+      const generateBundle = unwrapHook(plugin.generateBundle);
+      const writeBundle = unwrapHook(plugin.writeBundle);
+      const bundle = makeBundle({ chunkCode: 'new URL("./hb.wasm", import.meta.url)' });
+      bundle["_next/static/hb-font-ABC.wasm"] = {
+        type: "asset",
+        fileName: "_next/static/hb-font-ABC.wasm",
+        source: Buffer.from([0, 1, 2]),
+      };
+      const outDir = path.join(tmpDir, "unrelated-hb");
+      await fsp.mkdir(outDir, { recursive: true });
+
+      generateBundle.call(rscCtx, {}, bundle);
+      await writeBundle.call(rscCtx, { dir: outDir }, bundle);
+
+      expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
+        'new URL("../../hb.wasm", import.meta.url)',
+      );
+      expect(fs.readFileSync(path.join(outDir, "hb.wasm"))).toEqual(harfbuzzWasm);
+    });
+
     it("rewrites the Node fallback new URL(...) to the emitted resvg/yoga asset", () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);
@@ -183,6 +230,22 @@ describe("vinext:og-assets plugin", () => {
   });
 
   describe("fallback: no emitted asset (copyMissingOgWasm helper)", () => {
+    it.each(["rsc", "ssr"])("points a nested %s chunk at the root copy", (environment) => {
+      const plugin = createOgAssetsPlugin();
+      const generateBundle = unwrapHook(plugin.generateBundle);
+      const chunk = {
+        type: "chunk",
+        fileName: "_next/static/index.node.js",
+        code: 'new URL("./hb.wasm", import.meta.url)',
+        map: null,
+      };
+      const bundle = { [chunk.fileName]: chunk };
+
+      generateBundle.call({ environment: { name: environment } }, {}, bundle);
+
+      expect(chunk.code).toContain('new URL("../../hb.wasm", import.meta.url)');
+    });
+
     // Tested via the pure helper with an injected source dir so the assertion
     // is hermetic — it does not depend on the real @vercel/og install (whose
     // yoga.wasm only exists as a side effect of the og-font-patch transform).
@@ -219,16 +282,16 @@ describe("vinext:og-assets plugin", () => {
   });
 
   describe("guards", () => {
-    it("ignores non-rsc environments", () => {
+    it("ignores client environments", () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);
 
       const chunkCode = "new URL(`./resvg.wasm`,import.meta.url);";
       const bundle = makeBundle({ chunkCode, resvgAsset: "_next/static/resvg-BBB.wasm" });
 
-      generateBundle.call({ environment: { name: "ssr" } }, {}, bundle);
+      generateBundle.call({ environment: { name: "client" } }, {}, bundle);
 
-      // Untouched: the ssr environment is not handled.
+      // Untouched: the client environment is not handled.
       expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
         "new URL(`./resvg.wasm`,import.meta.url)",
       );

@@ -66,7 +66,10 @@ function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): s
   return files;
 }
 
-export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
+export function DynamicPreloadChunks(props: {
+  moduleIds?: readonly string[];
+  assets: "styles" | "scripts";
+}) {
   const nonce = useScriptNonce();
   const initialStylesheetHrefs = useInitialStylesheetHrefs();
   // Defensive guard matching Next.js's <PreloadChunks> `typeof window` check:
@@ -84,6 +87,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   for (const file of files) {
     const assetHref = dynamicPreloadHref(file);
     if (assetHref.endsWith(".css")) {
+      if (props.assets !== "styles") continue;
       const href = appendAssetDeploymentIdQuery(assetHref);
       if (initialStylesheetHrefs?.has(href)) continue;
       preloadLinks.push(
@@ -100,6 +104,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
     }
 
     if (assetHref.endsWith(".js")) {
+      if (props.assets !== "scripts") continue;
       // Unlike Next.js's webpack chunks, Vite's client chunks are ES modules and
       // are already hinted with modulepreload. Render the resource directly so
       // React hoists it into <head> while preserving the CSP nonce and low

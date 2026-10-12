@@ -1,0 +1,683 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createBuilder } from "vite";
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
+
+const CLI_PATH = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
+const VP_PATH = path.resolve(import.meta.dirname, "../node_modules/.bin/vp");
+const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("vite"))), "cli.js");
+const VINEXT_ENTRY_URL = pathToFileURL(
+  path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
+).href;
+const temporaryProjects: string[] = [];
+
+function write(root: string, file: string, contents: string): void {
+  const destination = path.join(root, file);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, contents);
+}
+
+function createHybridProject(configFile = "vite.config.ts"): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-command-contract-"));
+  temporaryProjects.push(root);
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(root, "node_modules"),
+    "junction",
+  );
+  write(root, "package.json", '{"type":"module"}\n');
+  write(
+    root,
+    configFile,
+    `import fs from "node:fs";
+import path from "node:path";
+import { defineConfig } from "vite";
+import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+
+if (process.env.FROM_DOTENV !== "config-time-dotenv") {
+  throw new Error("dotenv unavailable in Vite config: " + process.env.FROM_DOTENV);
+}
+if (process.env.EXPECT_CONFIG_NODE_ENV && process.env.NODE_ENV !== process.env.EXPECT_CONFIG_NODE_ENV) {
+  throw new Error("vite.config saw NODE_ENV=" + process.env.NODE_ENV);
+}
+
+export default defineConfig({
+  build: { manifest: true, target: "es2020" },
+  environments: {
+    ssr: {
+      build: {
+        target: "es2022",
+        rolldownOptions: { output: [{ chunkFileNames: "chunks/[name].js" }] },
+      },
+    },
+  },
+  resolve: {
+    alias: { "virtual:contract-value": path.join(import.meta.dirname, "contract-value.ts") },
+  },
+  define: { __TOP_LEVEL_MARKER__: JSON.stringify("top-level-config-ran") },
+  plugins: [
+    {
+      name: "contract:config-only",
+      config() {
+        return { define: { __CONFIG_ONLY_MARKER__: JSON.stringify("config-only-plugin-ran") } };
+      },
+    },
+    {
+      name: "contract:config-resolved-output",
+      configResolved(config) {
+        fs.mkdirSync(path.join(config.root, "dist"), { recursive: true });
+        fs.writeFileSync(path.join(config.root, "dist/config-resolved-plugin-ran"), "ok");
+        fs.writeFileSync(
+          path.join(config.root, "dist/config-resolved-node-env"),
+          process.env.NODE_ENV ?? "",
+        );
+      },
+    },
+    {
+      name: "contract:ssr-only",
+      apply(_config, env) {
+        return env.isSsrBuild;
+      },
+      transform(code, id) {
+        if (!id.endsWith("/pages/legacy.tsx")) return;
+        return code.replace("__SSR_ONLY_MARKER__", JSON.stringify("ssr-only-plugin-ran"));
+      },
+    },
+    Promise.resolve([[{
+      name: "contract:async-nested",
+      transform(code, id) {
+        if (id.endsWith("/pages/legacy.tsx")) {
+          return code.replace("__ASYNC_PLUGIN_MARKER__", JSON.stringify("async-plugin-ran"));
+        }
+      },
+    }]]),
+    {
+      name: "contract:ssr-environment",
+      configEnvironment(name) {
+        if (name === "ssr") {
+          return { define: { __SSR_ENV_MARKER__: JSON.stringify("ssr-environment-ran") } };
+        }
+      },
+    },
+    {
+      name: "contract:output-only",
+      writeBundle() {
+        const outDir = this.environment.config.build.outDir;
+        if (outDir.endsWith("dist/server")) {
+          const countPath = path.join(outDir, "output-only-plugin-count");
+          const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, "utf-8")) : 0;
+          fs.writeFileSync(
+            path.join(outDir, "output-only-plugin-ran"),
+            this.environment.name + ":" + this.environment.config.build.target,
+          );
+          fs.writeFileSync(countPath, String(count + 1));
+        }
+      },
+    },
+    vinext({
+      rscOutDir: "custom/server",
+      ssrOutDir: "custom/server/ssr",
+    }),
+    {
+      name: "contract:post-build-app",
+      enforce: "post",
+      buildApp: {
+        order: "post",
+        handler() {
+          console.log("contract:user-build-app");
+        },
+      },
+    },
+  ],
+});
+`,
+  );
+  write(
+    root,
+    "next.config.mjs",
+    `if (process.env.EXPECT_CONFIG_NODE_ENV && process.env.NODE_ENV !== process.env.EXPECT_CONFIG_NODE_ENV) {
+  throw new Error("next.config saw NODE_ENV=" + process.env.NODE_ENV);
+}
+export default {};
+`,
+  );
+  write(root, ".env", "FROM_DOTENV=config-time-dotenv\n");
+  write(root, "contract-value.ts", 'export const aliasMarker = "top-level-alias-ran";\n');
+  write(
+    root,
+    "app/layout.tsx",
+    `export default function Layout({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+  );
+  write(
+    root,
+    "app/page.tsx",
+    `declare const __CONFIG_ONLY_MARKER__: string;
+export default function Page() {
+  return <p>{[__CONFIG_ONLY_MARKER__, process.env.NODE_ENV === "production" ? "vinext-production-marker" : "vinext-development-marker"].join(":")}</p>;
+}
+`,
+  );
+  write(
+    root,
+    "pages/legacy.tsx",
+    `import { aliasMarker } from "virtual:contract-value";
+declare const __CONFIG_ONLY_MARKER__: string;
+declare const __TOP_LEVEL_MARKER__: string;
+declare const __SSR_ONLY_MARKER__: string;
+declare const __SSR_ENV_MARKER__: string;
+declare const __ASYNC_PLUGIN_MARKER__: string;
+export default function LegacyPage() {
+  return <p>{[aliasMarker, __CONFIG_ONLY_MARKER__, __TOP_LEVEL_MARKER__, __SSR_ONLY_MARKER__, __SSR_ENV_MARKER__, __ASYNC_PLUGIN_MARKER__, process.env.NODE_ENV === "production" ? "vinext-pages-production-marker" : "vinext-pages-development-marker"].join(":")}</p>;
+}
+`,
+  );
+  return root;
+}
+
+function createPagesProject(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-pages-contract-"));
+  temporaryProjects.push(root);
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(root, "node_modules"),
+    "junction",
+  );
+  write(root, "package.json", '{"type":"module"}\n');
+  write(
+    root,
+    "vite.config.ts",
+    `import fs from "node:fs";
+import { defineConfig } from "vite";
+import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+export default defineConfig({
+  plugins: [
+    vinext({ nextConfig: { generateBuildId: async () => null }, prerender: true }),
+    {
+      name: "record-builder-config",
+      configResolved(config) {
+        fs.writeFileSync(config.root + "/builder.json", JSON.stringify(config.builder ?? null));
+      },
+    },
+  ],
+});
+`,
+  );
+  write(root, "pages/index.tsx", "export default function Page() { return <p>pages</p>; }\n");
+  return root;
+}
+
+function createAppProject(appDir?: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-app-contract-"));
+  temporaryProjects.push(root);
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(root, "node_modules"),
+    "junction",
+  );
+  write(root, "package.json", '{"type":"module"}\n');
+  write(
+    root,
+    "vite.config.ts",
+    `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+export default { plugins: [vinext(${appDir === undefined ? "" : JSON.stringify({ appDir })})] };
+`,
+  );
+  write(
+    root,
+    "app/layout.tsx",
+    "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+  );
+  write(root, "app/page.tsx", "export default function Page() { return <p>app</p>; }\n");
+  return root;
+}
+
+afterEach(() => {
+  for (const project of temporaryProjects.splice(0)) {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+describe("configured vinext build contract", () => {
+  // npm uses file symlinks on POSIX and command shims on Windows.
+  it.skipIf(process.platform === "win32")(
+    "runs static export through an npm script with a symlinked Vite entry",
+    () => {
+      const root = createAppProject();
+      write(root, "next.config.mjs", 'export default { output: "export", trailingSlash: true };\n');
+      // Keep the npm launcher separate from the fixture's shared node_modules.
+      const launcher = path.join(root, "npm-launcher");
+      write(
+        launcher,
+        "package.json",
+        JSON.stringify({ type: "module", scripts: { build: "vite build .." } }),
+      );
+      const viteBin = path.join(launcher, "node_modules/vite/bin/vite.js");
+      // The workspace's Vite+ CLI has no shebang; use Vite's bin entry shape.
+      write(
+        launcher,
+        "node_modules/vite/bin/vite.js",
+        `#!/usr/bin/env node
+console.log("contract:cli-entry=" + process.argv[1]);
+await import(${JSON.stringify(pathToFileURL(VITE_CLI_PATH).href)});
+`,
+      );
+      fs.chmodSync(viteBin, 0o755);
+      const binDir = path.join(launcher, "node_modules/.bin");
+      fs.mkdirSync(binDir, { recursive: true });
+      const linkedBin = path.join(binDir, "vite");
+      fs.symlinkSync("../vite/bin/vite.js", linkedBin);
+
+      const output = execFileSync("npm", ["run", "build"], {
+        cwd: launcher,
+        encoding: "utf-8",
+        timeout: 120_000,
+      });
+
+      const invokedEntry = output.match(/^contract:cli-entry=(.+)$/m)?.[1];
+      expect(invokedEntry).toMatch(/\/node_modules\/\.bin\/vite$/);
+      expect(fs.realpathSync.native(invokedEntry!)).toBe(fs.realpathSync.native(viteBin));
+      expect(output.match(/Pre-rendering all routes/g)).toHaveLength(1);
+      // Ported from Next.js: test/e2e/app-dir-export/test/utils.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir-export/test/utils.ts
+      const clientDir = path.join(root, "dist/client");
+      expect(fs.readFileSync(path.join(clientDir, "index.html"), "utf-8")).toContain("<p>app</p>");
+      expect(fs.readFileSync(path.join(clientDir, "index.txt"), "utf-8")).not.toBe("");
+      expect(fs.existsSync(path.join(clientDir, "404.html"))).toBe(true);
+      expect(fs.existsSync(path.join(clientDir, "404/index.html"))).toBe(true);
+    },
+    120_000,
+  );
+
+  function expectConfiguredBuild(root: string): void {
+    expect(fs.existsSync(path.join(root, "custom/server/index.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "custom/server/ssr/index.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/client"))).toBe(true);
+    expect(fs.readFileSync(path.join(root, "dist/config-resolved-plugin-ran"), "utf-8")).toBe("ok");
+    expect(fs.readFileSync(path.join(root, "dist/config-resolved-node-env"), "utf-8")).toBe(
+      "production",
+    );
+
+    const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
+    const pagesClientAssets = fs.readFileSync(
+      path.join(root, "dist/vinext-client-assets.js"),
+      "utf-8",
+    );
+    expect(pagesClientAssets).toContain('"clientEntry"');
+    expect(pagesClientAssets).not.toBe("export default {};\n");
+    expect(pagesEntry).toContain("top-level-alias-ran");
+    expect(pagesEntry).toContain("config-only-plugin-ran");
+    expect(pagesEntry).toContain("vinext-pages-production-marker");
+    expect(pagesEntry).not.toContain("vinext-pages-development-marker");
+    expect(pagesEntry).toContain("top-level-config-ran");
+    expect(pagesEntry).toContain("ssr-only-plugin-ran");
+    expect(pagesEntry).toContain("ssr-environment-ran");
+    expect(pagesEntry).toContain("async-plugin-ran");
+    expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
+    expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
+      "ssr:es2022",
+    );
+    expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-count"), "utf-8")).toBe(
+      "1",
+    );
+    const serverManifest = JSON.parse(
+      fs.readFileSync(path.join(root, "custom/server/.vite/manifest.json"), "utf-8"),
+    ) as Record<string, { isEntry?: boolean }>;
+    expect(serverManifest["virtual:vinext-rsc-entry"]?.isEntry).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/.vite/manifest.json"))).toBe(false);
+
+    const appOutput = fs
+      .globSync("**/*.js", { cwd: path.join(root, "custom/server") })
+      .map((file) => fs.readFileSync(path.join(root, "custom/server", file), "utf-8"))
+      .join("\n");
+    expect(appOutput).toContain("config-only-plugin-ran");
+    expect(appOutput).toContain("vinext-production-marker");
+    expect(appOutput).not.toContain("vinext-development-marker");
+    expect(appOutput).not.toContain("__CONFIG_ONLY_MARKER__");
+  }
+
+  it("keeps hybrid config plugins, custom output roots, and production semantics", () => {
+    const root = createHybridProject();
+
+    const output = execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
+      cwd: root,
+      env: { ...process.env, NODE_ENV: "development" },
+      encoding: "utf-8",
+      timeout: 120_000,
+    });
+
+    expectConfiguredBuild(root);
+    expect(output.match(/contract:user-build-app/g)).toHaveLength(1);
+    expect(output.indexOf("contract:user-build-app")).toBeLessThan(
+      output.indexOf("Build complete."),
+    );
+  }, 120_000);
+
+  it("detects the App Router from a positional project root", () => {
+    const root = createAppProject(".");
+
+    execFileSync(process.execPath, [VITE_CLI_PATH, "build", root], {
+      cwd: path.dirname(root),
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.existsSync(path.join(root, "dist/server/index.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/ssr/index.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/client"))).toBe(true);
+  }, 120_000);
+
+  it.each<[string, string[], "test" | "development", "test" | undefined]>([
+    ["default mode with NODE_ENV=test", [], "test", "test"],
+    ["test mode with NODE_ENV=test", ["--mode", "test"], "test", "test"],
+    ["default mode with NODE_ENV=development", [], "development", undefined],
+  ])(
+    "provides the same lifecycle for %s",
+    (_, modeArgs, nodeEnv, expectedConfigNodeEnv) => {
+      // Next.js preserves an explicit NODE_ENV while loading config, but still
+      // compiles production branches during build.
+      // Ported from Next.js: test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
+      const root = createHybridProject("vite.prod.ts");
+      write(root, "vite.config.ts", 'throw new Error("loaded the wrong Vite config");\n');
+
+      execFileSync(
+        process.execPath,
+        [VITE_CLI_PATH, "build", root, ...modeArgs, "--config", "vite.prod.ts"],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            ...(expectedConfigNodeEnv ? { EXPECT_CONFIG_NODE_ENV: expectedConfigNodeEnv } : {}),
+            NODE_ENV: nodeEnv,
+          },
+          stdio: "pipe",
+          timeout: 120_000,
+        },
+      );
+
+      expectConfiguredBuild(root);
+    },
+    120_000,
+  );
+
+  it("preserves an explicit NODE_ENV during initial Vite build config evaluation", () => {
+    const root = createPagesProject();
+    write(
+      root,
+      "vite.config.ts",
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+if (process.env.NODE_ENV !== "development") {
+  throw new Error("vite.config saw NODE_ENV=" + process.env.NODE_ENV);
+}
+export default { plugins: [vinext()] };
+`,
+    );
+
+    execFileSync(process.execPath, [VITE_CLI_PATH, "build", root], {
+      cwd: root,
+      env: { ...process.env, NODE_ENV: "development" },
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+  }, 120_000);
+
+  it("builds only the known client and server environments for plain Pages projects", () => {
+    const root = createPagesProject();
+
+    execFileSync(VP_PATH, ["build"], { cwd: root, stdio: "pipe" });
+
+    expect(fs.existsSync(path.join(root, "dist/client/.vite/manifest.json"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes/index.html"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(root, "builder.json"), "utf-8"))).toMatchObject({
+      sharedConfigBuild: true,
+    });
+    const buildId = fs.readFileSync(path.join(root, "dist/server/BUILD_ID"), "utf-8");
+    expect(buildId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fs.existsSync(path.join(root, "dist/client/_next/static", buildId))).toBe(true);
+    const serverEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
+    expect(serverEntry).toContain(buildId);
+    expect(serverEntry).not.toContain("process.env.__VINEXT_REVALIDATE_SECRET");
+  }, 120_000);
+
+  it("lets following config hooks customize the plain Pages SSR environment", () => {
+    const root = createPagesProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs.readFileSync(configPath, "utf-8").replace(
+        'name: "record-builder-config",',
+        `name: "record-builder-config",
+      config(config) {
+        if (!config.environments?.ssr) throw new Error("missing SSR environment in config hook");
+        return { environments: { ssr: { define: { __FOLLOWING_PLUGIN__: JSON.stringify("visible") } } } };
+      },`,
+      ),
+    );
+    write(
+      root,
+      "pages/index.tsx",
+      "declare const __FOLLOWING_PLUGIN__: string; export default function Page() { return <p>{__FOLLOWING_PLUGIN__}</p>; }\n",
+    );
+
+    execFileSync(VP_PATH, ["build"], { cwd: root, stdio: "pipe", timeout: 120_000 });
+
+    expect(
+      fs.readFileSync(path.join(root, "dist/server/prerendered-routes/index.html"), "utf-8"),
+    ).toContain("visible");
+  }, 120_000);
+
+  it("keeps raw emptyOutDir false as the cleanup escape hatch", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          'build: { manifest: true, target: "es2020" },',
+          'build: { emptyOutDir: false, manifest: true, target: "es2020" },',
+        )
+        .replace(
+          "plugins: [",
+          `plugins: [{
+    name: "override-empty-out-dir",
+    config() { return { build: { emptyOutDir: true } }; },
+  },`,
+        ),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    execFileSync(process.execPath, [CLI_PATH, "build"], {
+      cwd: root,
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+  }, 120_000);
+
+  it("honors emptyOutDir false returned by a later config hook", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs.readFileSync(configPath, "utf-8").replace(
+        "plugins: [",
+        `plugins: [{
+    name: "disable-output-cleanup",
+    config: {
+      order: "post",
+      handler() { return { build: { emptyOutDir: false } }; },
+    },
+  },`,
+      ),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
+      cwd: root,
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+  }, 120_000);
+
+  it("keeps the vinext build report when Vite logging is silent", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "export default defineConfig({",
+          'export default defineConfig({ logLevel: "silent",',
+        ),
+    );
+
+    const output = execFileSync(process.execPath, [CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+
+    expect(output).toContain("Build complete.");
+  }, 120_000);
+
+  it("leaves explicitly targeted Vite builds outside the application lifecycle", () => {
+    const root = createPagesProject();
+    write(root, "entry.ts", 'console.log("targeted-build");\n');
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs.readFileSync(configPath, "utf-8").replace(
+        "plugins: [",
+        `plugins: [{
+    name: "late-targeted-build",
+    config: {
+      order: "post",
+      handler() { return { build: { rolldownOptions: { input: "entry.ts" } } }; },
+    },
+  },`,
+      ),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    const output = execFileSync(VP_PATH, ["build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+
+    expect(output).not.toContain("Build complete.");
+    expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "dist/keep.txt"))).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(root, "dist/_next/static/chunks"))
+        .some((file) =>
+          fs
+            .readFileSync(path.join(root, "dist/_next/static/chunks", file), "utf-8")
+            .includes("targeted-build"),
+        ),
+    ).toBe(true);
+  }, 120_000);
+
+  it("does not clean or finalize a non-emitting Vite build", () => {
+    const root = createPagesProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace("plugins: [", "build: { write: false }, plugins: ["),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    const output = execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(output).not.toContain("Build complete.");
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(false);
+  }, 120_000);
+
+  it("leaves Vite library builds outside the application lifecycle", () => {
+    const root = createPagesProject();
+    write(root, "entry.ts", 'export const greeting = "library-build";\n');
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "plugins: [",
+          'build: { lib: { entry: "entry.ts", formats: ["es"], fileName: "library" } }, plugins: [',
+        ),
+    );
+
+    const output = execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(output).not.toContain("Build complete.");
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(root, "dist/_next/static/chunks"))
+        .some((file) =>
+          fs
+            .readFileSync(path.join(root, "dist/_next/static/chunks", file), "utf-8")
+            .includes("library-build"),
+        ),
+    ).toBe(true);
+  }, 120_000);
+
+  it("lets Cloudflare-style programmatic builds opt in without running prerender early", async () => {
+    const root = createPagesProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf8")
+        .replace(
+          "nextConfig: { generateBuildId",
+          'nextConfig: { output: "standalone", generateBuildId',
+        ),
+    );
+    let completed = false;
+    const builder = await createBuilder({
+      root,
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
+        onComplete() {
+          completed = true;
+        },
+      },
+    } as Parameters<typeof createBuilder>[0]);
+
+    await builder.buildApp();
+
+    expect(completed).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes/index.html"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "dist/standalone"))).toBe(false);
+  }, 120_000);
+});

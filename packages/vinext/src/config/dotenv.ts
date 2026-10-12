@@ -1,6 +1,26 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { parseEnv } from "node:util";
+
+// Adapted from dotenv 16.3.1, the parser used by @next/env.
+// https://github.com/motdotla/dotenv/blob/v16.3.1/lib/main.js
+// Copyright (c) 2015, Scott Motte. BSD-2-Clause; see THIRD_PARTY_LICENSES.md.
+const DOTENV_LINE =
+  /^\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?$/gm;
+
+function parseDotenv(content: string): Record<string, string> {
+  const parsed: Record<string, string> = {};
+  const lines = content.replace(/\r\n?/g, "\n");
+  for (const match of lines.matchAll(DOTENV_LINE)) {
+    let value = (match[2] ?? "").trim();
+    const quote = value[0];
+    value = value.replace(/^(['"`])([\s\S]*)\1$/gm, "$2");
+    if (quote === '"') {
+      value = value.replace(/\\n/g, "\n").replace(/\\r/g, "\r");
+    }
+    parsed[match[1]] = value;
+  }
+  return parsed;
+}
 
 /**
  * Environment-variable bag accepted by {@link loadDotenv}.
@@ -68,7 +88,7 @@ export function loadDotenv({
     if (!fs.existsSync(filePath)) continue;
 
     const fileContent = fs.readFileSync(filePath, "utf-8");
-    const parsed = parseEnv(fileContent) as Record<string, string>;
+    const parsed = parseDotenv(fileContent);
     const expanded = expandEnv(parsed, processEnv);
 
     for (const [key, value] of Object.entries(expanded)) {

@@ -4,11 +4,15 @@ export type PagesClientAssets = {
   clientEntry?: string;
   appBootstrapPreinitModules?: string[];
   ssrManifest?: Record<string, string[]>;
+  /** Build-time shared file list, valid only for this ssrManifest object. */
+  sharedChunks?: string[];
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
   /** next.config crossOrigin, defaulting to anonymous for Vite's CORS-fetched assets. */
   crossOrigin?: AssetCrossOrigin;
+  /** Client bundle files outside `_next/static`, as URL pathnames. */
+  clientBuildFiles?: string[];
 };
 
 let pagesClientAssets: PagesClientAssets = {};

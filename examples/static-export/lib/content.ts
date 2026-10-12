@@ -39,7 +39,7 @@ export const docs = {
     title: "Read the artifact",
     summary: "Everything a static host needs is emitted into dist/client.",
     steps: [
-      "Run vinext build, which detects output: export.",
+      "Run vite build, which detects output: export.",
       "Inspect the HTML, RSC payloads, scripts, styles, and public files.",
       "Upload dist/client without a Node.js or Workers runtime.",
     ],

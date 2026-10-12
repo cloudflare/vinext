@@ -263,6 +263,41 @@ test.describe("Client-side navigation", () => {
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
   });
 
+  test("router.push formats an object-form as URL", async ({ page }) => {
+    // Next.js formats both object arguments in prepareUrlAs before navigating:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+    await page.goto(`${BASE}/nav-test`);
+    await waitForHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    await page.click('[data-testid="push-object-as"]');
+
+    await expect(page).toHaveURL(`${BASE}/nav-test?mode=compact&tag=a&tag=b`);
+    expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
+  });
+
+  test("Router.replace formats an object-form as URL without adding history", async ({ page }) => {
+    await page.goto(`${BASE}/nav-test?keep=1`);
+    await waitForHydration(page);
+    const historyLength = await page.evaluate(() => window.history.length);
+
+    await page.click('[data-testid="replace-object-as"]');
+
+    await expect(page).toHaveURL(`${BASE}/nav-test#result`);
+    expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+  });
+
+  test("router.push treats an empty as URL as omitted", async ({ page }) => {
+    await page.goto(`${BASE}/nav-test`);
+    await waitForHydration(page);
+
+    await page.click('[data-testid="push-empty-as"]');
+
+    await expect(page).toHaveURL(`${BASE}/about`);
+  });
+
   test("browser back/forward buttons work after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");

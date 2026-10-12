@@ -10,7 +10,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import {
   isrCacheKey,
+  pagesIsrCacheKey,
   appIsrCacheKey,
+  appIsrFallbackShellKey,
   appIsrHtmlKey,
   appIsrRscKey,
   appIsrRouteKey,
@@ -94,9 +96,19 @@ describe("revalidation secret", () => {
 
 // Cache keys
 describe("isrCacheKey", () => {
-  it("fnv1a64 uses fixed-width unambiguous output", () => {
-    const hash = fnv1a64("/" + "a".repeat(250));
-    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+  it("keeps long pathnames whose fnv1a64 digests collide in separate entries", () => {
+    // Found by a collision search: the two segments leave fnv1a64 in the same
+    // state, so any shared tail collides too. A crafted request path must not
+    // share another long path's entry.
+    const tail = `-${"x".repeat(200)}`;
+    const first = `/articles/801726145630c3c4${tail}`;
+    const second = `/articles/fb1316807b9cbf78${tail}`;
+    expect(fnv1a64(first)).toBe(fnv1a64(second));
+
+    const key = isrCacheKey("pages", first);
+    expect(key).toMatch(/^pages:__hash:[0-9a-f]{64}$/);
+    expect(key).not.toBe(isrCacheKey("pages", second));
+    expect(appIsrHtmlKey(first)).not.toBe(appIsrHtmlKey(second));
   });
 
   it("generates pages: prefix for Pages Router", () => {
@@ -206,6 +218,32 @@ describe("App Router ISR cache key primitives", () => {
     );
   });
 
+  it("keeps fallback shell keys apart from the page keys of the same pathname", () => {
+    // A request for `/en/%5Bslug%5D` decodes to the shell's own pathname.
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).toBe(
+      "app-fallback-shell:v1:build-42:/en/[slug]:html",
+    );
+    // No build ID can spell a shell key as a page key.
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "release")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "html", "release:fallback-shell"),
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "html")).toMatch(/^app-fallback-shell:/);
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "html", "build-42"),
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "rsc", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "rsc", "build-42"),
+    );
+
+    const longPathname = `/en/${"x".repeat(220)}/[slug]`;
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).toMatch(
+      /^app-fallback-shell:v1:build-42:__hash:[a-f0-9]{64}:html$/,
+    );
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).not.toBe(
+      appIsrCacheKey(longPathname, "html", "build-42"),
+    );
+  });
+
   it("does not read pre-v2 App entries when the build id stays stable", async () => {
     process.env.__VINEXT_BUILD_ID = "stable-build";
     setCacheHandler(new MemoryCacheHandler());
@@ -230,7 +268,7 @@ describe("App Router ISR cache key primitives", () => {
 
     const key = appIsrRscKey("/" + "a".repeat(250));
 
-    expect(key).toMatch(/^app:v2:__hash:[a-z0-9]+:rsc$/);
+    expect(key).toMatch(/^app:v2:__hash:[0-9a-f]{64}:rsc$/);
   });
 
   it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
@@ -240,7 +278,7 @@ describe("App Router ISR cache key primitives", () => {
     const second = appIsrRscKey("/feed", "slot:sidebar:/ slot:modal:/");
 
     expect(first).toBe(second);
-    expect(first).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+$/);
+    expect(first).toMatch(/^app:v2:\/feed:rsc:slots:[0-9a-f]{64}$/);
   });
 
   it("bounds RSC cache-key cardinality against attacker-supplied mounted-slot values", () => {
@@ -285,7 +323,7 @@ describe("App Router ISR cache key primitives", () => {
 
     expect(fromFeed).not.toBe(fromGallery);
     expect(fromFeed).not.toBe(direct);
-    expect(fromFeed).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
+    expect(fromFeed).toMatch(/^app:v2:\/photos\/42:rsc:source:[0-9a-f]{64}:slots:[0-9a-f]{64}$/);
   });
 
   it("keys supplemental RSC variants by their verified interception id", () => {
@@ -307,18 +345,19 @@ describe("App Router ISR cache key primitives", () => {
     );
 
     expect(modal).not.toBe(drawer);
-    expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
+    expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[0-9a-f]{64}:selector:[0-9a-f]{64}$/);
   });
 
-  it("normalizes source context before keying intercepted RSC variants", () => {
+  // The source is matched on its raw segments, so `/%66eed` does not reach a
+  // static `/feed` source and the two can render different source trees.
+  it("keys intercepted RSC variants by the raw source context", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    const encoded = appIsrRscKey("/photos/café", "modal", undefined, "/caf%C3%A9");
-    const decoded = appIsrRscKey("/photos/café", "modal", undefined, "/café");
-    const duplicateSlash = appIsrRscKey("/photos/café", "modal", undefined, "/café//");
+    const encoded = appIsrRscKey("/photos/1", "modal", undefined, "/%66eed");
+    const plain = appIsrRscKey("/photos/1", "modal", undefined, "/feed");
 
-    expect(encoded).toBe(decoded);
-    expect(duplicateSlash).toBe(decoded);
+    expect(encoded).not.toBe(plain);
+    expect(appIsrRscKey("/photos/1", "modal", undefined, "/feed")).toBe(plain);
   });
 
   it("ignores invalid source context before keying intercepted RSC variants", () => {
@@ -338,7 +377,7 @@ describe("App Router ISR cache key primitives", () => {
     );
     expect(
       appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
-    ).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
+    ).toMatch(/^app:v2:\/feed:rsc:slots:[0-9a-f]{64}:prefetch-loading-shell$/);
   });
 });
 
@@ -968,5 +1007,59 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/about")).toBeNull();
     // /about/team should remain — only the exact path was invalidated
     expect(await handler.get("entry:/about/team")).not.toBeNull();
+  });
+});
+
+// Next.js decodes each segment before looking up the prerender/response cache.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/route-module.ts
+describe("Pages cache pathname identity", () => {
+  it("does not reinterpret persisted legacy keys when the build ID stays the same", async () => {
+    const cache = new MemoryCacheHandler();
+    const oldKey = isrCacheKey("pages", "/posts/%66irst", "stable");
+    const newKey = pagesIsrCacheKey("/posts/%2566irst", "stable");
+    await cache.set(
+      oldKey,
+      buildPagesCacheValue("<p>first</p>", { pageProps: { slug: "first" } }),
+      {},
+    );
+    expect(await cache.get(oldKey)).not.toBeNull();
+    expect(await cache.get(newKey)).toBeNull();
+  });
+
+  it.each([null, "locale:en", "locale:fr", JSON.stringify(["fr.example", "fr"])])(
+    "shares equivalent encodings and trailing slashes within variant %s",
+    (variant) => {
+      for (const [left, right] of [
+        ["/posts/first", "/posts/%66irst/"],
+        ["/posts/caf%C3%A9", "/posts/caf%c3%a9/"],
+        ["/posts/a%2Fb", "/posts/a%2fb/"],
+      ]) {
+        expect(pagesIsrCacheKey(left, "build-a", variant)).toBe(
+          pagesIsrCacheKey(right, "build-a", variant),
+        );
+      }
+    },
+  );
+
+  it("keeps escaped delimiters, literal escapes, locale and domain variants distinct", () => {
+    const paths = [
+      "/a/b",
+      "/a%2Fb",
+      "/a%252Fb",
+      "/a%252fb",
+      "/a%3Fb",
+      "/a%253Fb",
+      "/a%23b",
+      "/a%2523b",
+      "/a%5Cb",
+      "/a%255Cb",
+      "/first",
+      "/%2566irst",
+    ];
+    const variants = [null, "locale:en", "locale:fr", JSON.stringify(["en.example", "en"])];
+    const keys = paths.flatMap((pathname) =>
+      variants.map((variant) => pagesIsrCacheKey(pathname, "build-a", variant)),
+    );
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

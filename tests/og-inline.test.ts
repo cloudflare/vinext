@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { matchReadFileSyncAssetUrls } from "../packages/vinext/src/plugins/og-assets.js";
 import { build, type Plugin } from "vite-plus";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { toSlash } from "pathslash";
@@ -209,6 +211,29 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
     expect(result.code).not.toContain("readFileSync");
+  });
+
+  it("inlines every readFileSync asset read in a module", async () => {
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const read = (quote: string) =>
+      `fs.readFileSync(fileURLToPath(new URL(${quote}./noto-sans.ttf${quote}, import.meta.url)))`;
+    const code = [
+      `const a = ${read('"')}${read("'")};`,
+      `const b = fs.readFileSync("./other.ttf");`,
+      `const c = node_fs.readFileSync(url.fileURLToPath(new URL("./noto-sans.ttf", import.meta.url)));`,
+    ].join("\n");
+    const moduleId = path.join(tmpDir, "og.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    const inlined = `Buffer.from(${JSON.stringify(fontBase64)},"base64")`;
+    expect(result.code).toBe(
+      [
+        `const a = ${inlined}${inlined};`,
+        `const b = fs.readFileSync("./other.ttf");`,
+        `const c = ${inlined};`,
+      ].join("\n"),
+    );
   });
 
   // ── Asset boundaries ───────────────────────────────────────
@@ -1105,5 +1130,115 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const secondResult = await transform.call(plugin, code, moduleId);
     expect(secondResult.code).toContain(updatedFontBase64);
     expect(secondResult.code).not.toContain(initialFontBase64);
+  });
+});
+
+// The original single-regex matcher, kept as the reference the linear matcher
+// must agree with.
+const READ_FILE_SYNC_ASSET_URL_RE =
+  /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
+
+function referenceReadFileSyncAssetUrls(code: string) {
+  return [...code.matchAll(READ_FILE_SYNC_ASSET_URL_RE)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    relPath: match[2],
+  }));
+}
+
+describe("matchReadFileSyncAssetUrls", () => {
+  const read = (identifier: string, relPath = "./font.ttf") =>
+    `${identifier}.readFileSync(fileURLToPath(new URL("${relPath}", import.meta.url)))`;
+
+  it("finds the identifier, span and relative path of each read", () => {
+    const code = `const a = ${read("fs")};\nconst b = ${read("node_fs", "../b.bin")};`;
+    const first = code.indexOf("fs.");
+    const second = code.indexOf("node_fs.");
+
+    expect(matchReadFileSyncAssetUrls(code)).toEqual([
+      { start: first, end: first + read("fs").length, relPath: "./font.ttf" },
+      { start: second, end: second + read("node_fs", "../b.bin").length, relPath: "../b.bin" },
+    ]);
+  });
+
+  it.each([
+    ["a plain read", read("fs")],
+    [
+      "a namespaced fileURLToPath",
+      `fs.readFileSync(url.fileURLToPath(new URL('./a.bin', import.meta.url)))`,
+    ],
+    [
+      "whitespace inside the call",
+      `fs.readFileSync( fileURLToPath(\n  new URL( "./a", import.meta.url ) ) )`,
+    ],
+    ["adjacent reads", read("fs") + read("fs") + read("$") + read("_")],
+    ["leading digits before the identifier", `9${read("fs")} 12${read("a9")} ${read("123")}`],
+    ["an identifier after the previous read", `${read("fs")}abc${read("fs")}`],
+    ["a non-ASCII identifier prefix", read("éfs")],
+    ["a read with no identifier", `(${read("")}) ${read(" ")}`],
+    ["a read of a string path", `fs.readFileSync("./a.ttf"); ${read("fs")}`],
+    ["a relative path containing .readFileSync(", read("fs", "./x.readFileSync(y")],
+    ["a string containing the call", `"a.readFileSync(" + ${read("fs")} + 'b.readFileSync('`],
+    ["an unterminated read", `fs.readFileSync(fileURLToPath(new URL("./a", import.meta.url))`],
+    ["mismatched quotes", `fs.readFileSync(fileURLToPath(new URL("./a', import.meta.url)))`],
+    ["a non-relative path", read("fs", "/abs/font.ttf")],
+  ])("matches the original regex for %s", (_label, code) => {
+    expect(matchReadFileSyncAssetUrls(code)).toEqual(referenceReadFileSyncAssetUrls(code));
+  });
+
+  it("matches the original regex on the @vercel/og Node build", () => {
+    const require = createRequire(
+      path.join(import.meta.dirname, "../packages/vinext/package.json"),
+    );
+    const code = fs.readFileSync(require.resolve("@vercel/og"), "utf8");
+
+    const matches = matchReadFileSyncAssetUrls(code);
+    expect(matches.map((match) => match.relPath)).toEqual(["./Geist-Regular.ttf", "./resvg.wasm"]);
+    expect(matches).toEqual(referenceReadFileSyncAssetUrls(code));
+  });
+
+  it("matches the original regex on generated modules", () => {
+    const pieces = [
+      "fs",
+      "9",
+      "a9",
+      "$",
+      "_x",
+      "é",
+      ".",
+      " ",
+      "\n",
+      ".readFileSync(",
+      "readFileSync",
+      "fileURLToPath(",
+      "url.",
+      "new URL(",
+      "'./a.bin'",
+      '"./b.ttf"',
+      "'./c.readFileSync(",
+      ",",
+      "import.meta.url",
+      ")",
+      "'",
+      '"',
+      read("x", "./f.wasm"),
+    ];
+    // Deterministic LCG so a failure reproduces.
+    let seed = 1;
+    const random = (limit: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % limit;
+    };
+    let matched = 0;
+    for (let i = 0; i < 20_000; i++) {
+      let code = "";
+      const length = 1 + random(14);
+      for (let j = 0; j < length; j++) code += pieces[random(pieces.length)];
+      const expected = referenceReadFileSyncAssetUrls(code);
+      if (expected.length > 0) matched++;
+      expect(matchReadFileSyncAssetUrls(code), code).toEqual(expected);
+    }
+    // Guard against a generator that never produces a match.
+    expect(matched).toBeGreaterThan(1000);
   });
 });

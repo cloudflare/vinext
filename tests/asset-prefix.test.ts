@@ -213,7 +213,11 @@ describe("renderVinextBuiltUrl", () => {
       const names = workerConfig.plugins.map((plugin) => plugin.name);
       expect(names.filter((name) => name === "user-worker-plugin")).toHaveLength(1);
       expect(names.filter((name) => name === "vinext:worker-image-imports")).toHaveLength(1);
+      expect(
+        names.filter((name) => name === "vinext:worker-validate-server-only-imports"),
+      ).toHaveLength(1);
     },
+    30_000,
   );
 
   it("installs isolated worker filenames for an empty output array", async () => {

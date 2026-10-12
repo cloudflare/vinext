@@ -139,12 +139,15 @@ export default function Client() {
   );
 
   // Local error.tsx routes: the shell fallback must not swallow local
-  // boundary semantics. Local boundaries for shell errors materialize
-  // client-side from the flight payload (Next.js parity):
-  // - /boundary-ssr-only: the SSR render error remains represented in the
-  //   initial tree, so the local boundary handles it after client rendering.
+  // boundary semantics. React's SSR (Fizz) never runs error boundaries, so a
+  // local error.tsx only takes part once the browser re-renders the real tree
+  // from the flight payload:
+  // - /boundary-ssr-only: the browser re-render doesn't throw, so the real
+  //   tree recovers and the local boundary stays unused.
   // - /boundary-always: the browser re-render throws again and React catches
   //   it in the local error.tsx delivered in the flight payload.
+  // Both read cookies(), so they are dynamic and never prerendered: the
+  // runtime SSR pass serves them, as it does /page.
   const boundarySsrOnlyDir = path.join(appDir, "boundary-ssr-only");
   const boundaryAlwaysDir = path.join(appDir, "boundary-always");
   await fs.mkdir(boundarySsrOnlyDir, { recursive: true });
@@ -332,11 +335,14 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
       await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
       await expect(page.locator("style[data-vinext-error-shell-style]")).toHaveCount(0);
 
-      // SSR-only throw with a local error.tsx: the error remains represented
-      // in the initial tree and the local boundary provides the visible UX.
+      // SSR-only throw with a local error.tsx: the default __next_error__
+      // shell is served, the browser re-render succeeds, and the local
+      // boundary never catches anything.
       await page.goto(`${app.baseUrl}/boundary-ssr-only`, { waitUntil: "load" });
-      await expect(page.locator("#local-error-boundary")).toHaveText("Local boundary caught it");
-      await expect(page.locator("#boundary-ssr-only-content")).toHaveCount(0);
+      await expect(page.locator("#boundary-ssr-only-content")).toHaveText(
+        "Recovered client render",
+      );
+      await expect(page.locator("#local-error-boundary")).toHaveCount(0);
 
       // Unconditional client throw: the browser re-render throws again and the
       // local error.tsx from the flight payload catches it.

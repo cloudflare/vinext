@@ -3,6 +3,8 @@ import path from "node:path";
 import { Buffer } from "node:buffer";
 import {
   CACHEABILITY_MANIFEST_MODULE,
+  CACHEABILITY_REQUEST_PROJECTION_MODULE,
+  projectCacheabilityManifestForRequestStage,
   type CacheabilityManifest,
 } from "vinext/internal/server/cacheability-manifest";
 import {
@@ -13,6 +15,14 @@ import {
 type JavaScriptToken = {
   kind: "identifier" | "punctuator" | "string";
   value: string;
+};
+
+export type CloudflareDeploymentTool = "cf" | "wrangler";
+
+type GeneratedWorkerArtifact = {
+  configPath: string;
+  main: string;
+  serverDirectory: string;
 };
 
 function tokenizeStaticImports(source: string): JavaScriptToken[] {
@@ -141,7 +151,10 @@ function hasStaticModuleSpecifier(source: string, expected: string): boolean {
   return false;
 }
 
-function resolveGeneratedServerConfig(root: string, configuredPath: string | undefined): string {
+function resolveGeneratedWranglerArtifact(
+  root: string,
+  configuredPath: string | undefined,
+): GeneratedWorkerArtifact {
   const distDirectory = path.join(root, "dist");
   const configPath = path.resolve(root, configuredPath ?? "dist/server/wrangler.json");
   const relativeConfigPath = path.relative(distDirectory, configPath);
@@ -155,11 +168,6 @@ function resolveGeneratedServerConfig(root: string, configuredPath: string | und
       `Two-stage CDN warming requires the generated Wrangler config at ${path.relative(root, configPath)}. Rebuild the app before deploying.`,
     );
   }
-  return configPath;
-}
-
-function assertManifestModuleReachable(configPath: string): void {
-  const serverDirectory = path.dirname(configPath);
   let config: unknown;
   try {
     config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -175,9 +183,53 @@ function assertManifestModuleReachable(configPath: string): void {
   if (typeof main !== "string" || main.length === 0) {
     throw new Error("Two-stage CDN warming requires a generated Wrangler main module.");
   }
+  return { configPath, main, serverDirectory: path.dirname(configPath) };
+}
+
+function resolveBuildOutputArtifact(root: string): GeneratedWorkerArtifact {
+  const outputDirectory = path.join(root, ".cloudflare", "output");
+  const configPaths = fs.existsSync(outputDirectory)
+    ? fs
+        .readdirSync(outputDirectory, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) =>
+          path.join(outputDirectory, entry.name, "workers", "default", "worker.config.json"),
+        )
+        .filter((candidate) => fs.existsSync(candidate) && fs.lstatSync(candidate).isFile())
+    : [];
+  if (configPaths.length !== 1) {
+    throw new Error(
+      "Two-stage CDN warming requires one default Worker Build Output config under .cloudflare/output/. Rebuild the app before deploying.",
+    );
+  }
+  const configPath = configPaths[0]!;
+  let config: unknown;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (cause) {
+    throw new Error("Two-stage CDN warming could not parse the generated Build Output config.", {
+      cause,
+    });
+  }
+  const manifest =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? (config as Record<string, unknown>).manifest
+      : undefined;
+  const main =
+    manifest && typeof manifest === "object" && !Array.isArray(manifest)
+      ? (manifest as Record<string, unknown>).mainModule
+      : undefined;
+  if (typeof main !== "string" || main.length === 0) {
+    throw new Error("Two-stage CDN warming requires a generated Build Output main module.");
+  }
+  return { configPath, main, serverDirectory: path.join(path.dirname(configPath), "bundle") };
+}
+
+function assertModuleReachable(artifact: GeneratedWorkerArtifact, moduleName: string): void {
+  const { main, serverDirectory } = artifact;
   const mainPath = path.resolve(serverDirectory, main);
   if (!fs.existsSync(mainPath) || !fs.lstatSync(mainPath).isFile()) {
-    throw new Error("Two-stage CDN warming could not find the generated Wrangler main module.");
+    throw new Error("Two-stage CDN warming could not find the generated Worker main module.");
   }
   const viteManifestPath = path.join(serverDirectory, ".vite", "manifest.json");
   let viteManifest: Record<string, { dynamicImports?: unknown; file?: unknown; imports?: unknown }>;
@@ -203,16 +255,11 @@ function assertManifestModuleReachable(configPath: string): void {
     if (!entry || typeof entry.file !== "string") continue;
     const modulePath = path.resolve(serverDirectory, entry.file);
     if (fs.existsSync(modulePath) && fs.lstatSync(modulePath).isFile()) {
-      const relativeManifest = path
-        .relative(
-          path.dirname(modulePath),
-          path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE),
-        )
+      const relativeModule = path
+        .relative(path.dirname(modulePath), path.join(serverDirectory, moduleName))
         .split(path.sep)
         .join("/");
-      const specifier = relativeManifest.startsWith(".")
-        ? relativeManifest
-        : `./${relativeManifest}`;
+      const specifier = relativeModule.startsWith(".") ? relativeModule : `./${relativeModule}`;
       reachable = hasStaticModuleSpecifier(fs.readFileSync(modulePath, "utf8"), specifier);
     }
     for (const references of [entry.imports, entry.dynamicImports]) {
@@ -223,8 +270,19 @@ function assertManifestModuleReachable(configPath: string): void {
   }
   if (!reachable) {
     throw new Error(
-      `Two-stage CDN warming requires the generated Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}.`,
+      `Two-stage CDN warming requires the generated Worker graph to statically import ${moduleName}.`,
     );
+  }
+}
+
+function writeStringModule(modulePath: string, value: string): void {
+  const source = `export default ${JSON.stringify(value)};\n`;
+  const pendingPath = `${modulePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(pendingPath, source, "utf8");
+    fs.renameSync(pendingPath, modulePath);
+  } finally {
+    if (fs.existsSync(pendingPath)) fs.unlinkSync(pendingPath);
   }
 }
 
@@ -232,15 +290,24 @@ function assertManifestModuleReachable(configPath: string): void {
  * Write the version-specific manifest into the built Worker artifact.
  * The application build already imports this stable module asset, so the
  * completed dist directory remains the exact input to the final upload.
+ *
+ * App Router builds also emit the request stage's projection module. It
+ * carries the App page routes that can admit a query-free entry, so the
+ * request stage can strip the query from those dispatches without loading the
+ * full manifest.
  */
 export function writeCacheabilityManifestArtifact(
   root: string,
   configuredPath: string | undefined,
   manifest: CacheabilityManifest,
+  deploymentTool: CloudflareDeploymentTool = "wrangler",
 ): string {
-  const configPath = resolveGeneratedServerConfig(root, configuredPath);
-  assertManifestModuleReachable(configPath);
-  const serverDirectory = path.dirname(configPath);
+  const artifact =
+    deploymentTool === "cf"
+      ? resolveBuildOutputArtifact(root)
+      : resolveGeneratedWranglerArtifact(root, configuredPath);
+  assertModuleReachable(artifact, CACHEABILITY_MANIFEST_MODULE);
+  const { configPath, serverDirectory } = artifact;
   const manifestPath = path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE);
   if (!fs.existsSync(manifestPath) || !fs.lstatSync(manifestPath).isFile()) {
     throw new Error(
@@ -253,13 +320,26 @@ export function writeCacheabilityManifestArtifact(
     throw cacheabilityManifestByteLimitError(manifestBytes);
   }
 
-  const manifestSource = `export default ${JSON.stringify(serializedManifest)};\n`;
-  const pendingManifestPath = `${manifestPath}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(pendingManifestPath, manifestSource, "utf8");
-    fs.renameSync(pendingManifestPath, manifestPath);
-  } finally {
-    if (fs.existsSync(pendingManifestPath)) fs.unlinkSync(pendingManifestPath);
+  const projectionPath = path.join(serverDirectory, CACHEABILITY_REQUEST_PROJECTION_MODULE);
+  const hasProjectionModule =
+    fs.existsSync(projectionPath) && fs.lstatSync(projectionPath).isFile();
+  // Without the projection, the request stage would never drop the query for
+  // the App page paths this manifest certifies.
+  if (Object.values(manifest.routes).some((route) => route.kind === "app-page")) {
+    if (!hasProjectionModule) {
+      throw new Error(
+        `Two-stage CDN warming requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact. Rebuild the app before deploying.`,
+      );
+    }
+    assertModuleReachable(artifact, CACHEABILITY_REQUEST_PROJECTION_MODULE);
+  }
+
+  writeStringModule(manifestPath, serializedManifest);
+  if (hasProjectionModule) {
+    writeStringModule(
+      projectionPath,
+      JSON.stringify(projectCacheabilityManifestForRequestStage(manifest)),
+    );
   }
   return path.relative(root, configPath);
 }

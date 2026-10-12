@@ -88,8 +88,8 @@ declare module "next/og" {
 }
 
 declare module "next/error" {
-  export * from "@vinext/types/next/upstream/error";
-  export { default } from "@vinext/types/next/upstream/error";
+  export * from "@vinext/types/next/vinext/error";
+  export { default } from "@vinext/types/next/vinext/error";
 }
 
 declare module "next/constants" {

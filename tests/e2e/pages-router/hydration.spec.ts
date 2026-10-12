@@ -1,7 +1,7 @@
 import { test, expect } from "../fixtures";
 import { waitForHydration } from "../helpers";
 
-const BASE = "http://localhost:4173";
+const BASE = process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4173";
 
 test.describe("Hydration", () => {
   // The consoleErrors fixture automatically fails tests if any console errors occur.
@@ -74,6 +74,42 @@ test.describe("Hydration", () => {
     await expect(page.locator("h1")).toHaveText("Counter Page");
 
     void consoleErrors;
+  });
+
+  test("returning to the initial page reuses its hydrated module", async ({ page }) => {
+    await page.goto(`${BASE}/module-evaluation`);
+    await waitForHydration(page);
+    const initialEvaluations = await page.evaluate(
+      () => (window as any).__VINEXT_PAGE_EVALUATIONS__ as number,
+    );
+    expect(initialEvaluations).toBeGreaterThan(0);
+    expect(
+      await page.evaluate(() =>
+        (window as any).__VINEXT_PAGE_LOADERS__["/module-evaluation"].toString(),
+      ),
+    ).not.toContain("?import");
+    await page.evaluate(() => ((window as any).__VINEXT_SPA_TEST_TOKEN__ = true));
+
+    await page.click('a[href="/about"]');
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(await page.evaluate(() => (window as any).__VINEXT_SPA_TEST_TOKEN__)).toBe(true);
+    await page.goBack();
+    await expect(page.locator("h1")).toHaveText("Module Evaluation");
+    expect(await page.evaluate(() => (window as any).__VINEXT_SPA_TEST_TOKEN__)).toBe(true);
+    expect(await page.evaluate(() => (window as any).__VINEXT_PAGE_EVALUATIONS__)).toBe(
+      initialEvaluations,
+    );
+  });
+
+  test("lazy dev page loaders can import MDX routes", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await waitForHydration(page);
+    expect(
+      await page.evaluate(async () => {
+        const module = await (window as any).__VINEXT_PAGE_LOADERS__["/hmr-mdx"]();
+        return typeof module.default;
+      }),
+    ).toBe("function");
   });
 
   test("__NEXT_DATA__ is present in the page and contains route info", async ({

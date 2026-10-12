@@ -52,7 +52,7 @@ export function configureCdnVersionMetadata(
 
   if (!options.bindingIsExplicit) {
     throw new Error(
-      `[vinext] cdnAdapter() uses the default version metadata binding ${JSON.stringify(options.binding)}, but the generated Wrangler config already declares ${JSON.stringify(existingBinding)}. Align the Wrangler binding or configure cdnAdapter({ versionMetadataBinding: ${JSON.stringify(existingBinding)} }).`,
+      `[vinext] workersCacheCdnAdapter() uses the default version metadata binding ${JSON.stringify(options.binding)}, but the generated Wrangler config already declares ${JSON.stringify(existingBinding)}. Align the Wrangler binding or configure workersCacheCdnAdapter({ versionMetadataBinding: ${JSON.stringify(existingBinding)} }).`,
     );
   }
 
@@ -67,7 +67,7 @@ export function configureWorkersCacheEntrypoints(
   const compatibilityFlags = config.compatibility_flags ?? [];
   if (compatibilityFlags.includes("disable_ctx_exports")) {
     throw new Error(
-      "[vinext] cdnAdapter() requires ctx.exports, but the generated Wrangler config explicitly disables it with disable_ctx_exports.",
+      "[vinext] workersCacheCdnAdapter() requires ctx.exports, but the generated Wrangler config explicitly disables it with disable_ctx_exports.",
     );
   }
 
@@ -83,7 +83,7 @@ export function configureWorkersCacheEntrypoints(
     const existing = configuredExports[name];
     if (existing?.type !== undefined && existing.type !== "worker") {
       throw new Error(
-        `[vinext] cdnAdapter() cannot configure the reserved Worker export ${JSON.stringify(name)} because it is already declared as ${JSON.stringify(existing.type)}.`,
+        `[vinext] workersCacheCdnAdapter() cannot configure the reserved Worker export ${JSON.stringify(name)} because it is already declared as ${JSON.stringify(existing.type)}.`,
       );
     }
   }
@@ -144,13 +144,26 @@ async function writeGeneratedConfig(
   await fs.writeFile(generatedConfigPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+async function usesCloudflareBuildOutput(root: string): Promise<boolean> {
+  try {
+    return (await fs.stat(path.resolve(root, "cloudflare.config.ts"))).isFile();
+  } catch (cause) {
+    if (cause !== null && typeof cause === "object" && "code" in cause && cause.code === "ENOENT") {
+      return false;
+    }
+    throw cause;
+  }
+}
+
 /** Apply the complete CDN adapter policy to the primary generated config. */
 export async function finalizeCdnAdapterBuildOutput({
+  root,
   outDir,
   isPrimaryServerOutput,
   binding,
   bindingIsExplicit,
 }: {
+  root: string;
   outDir: string;
   isPrimaryServerOutput: boolean;
   binding: string;
@@ -159,7 +172,10 @@ export async function finalizeCdnAdapterBuildOutput({
   if (!isPrimaryServerOutput) return;
 
   const generatedConfigPath = path.resolve(outDir, "wrangler.json");
-  const generatedConfig = await readGeneratedConfig(generatedConfigPath, false);
+  const generatedConfig = await readGeneratedConfig(
+    generatedConfigPath,
+    await usesCloudflareBuildOutput(root),
+  );
   if (!generatedConfig) return;
   const withVersionMetadata = configureCdnVersionMetadata(generatedConfig, {
     binding,

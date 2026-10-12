@@ -1,3 +1,11 @@
+import { keepOnlyValidatedRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-vary.js";
+import {
+  cacheabilityManifestPageState,
+  cacheabilityRequestIdentity,
+  cacheabilityRoutePathname,
+  type CacheabilityManifest,
+} from "./cacheability-manifest.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type {
   VinextResponseStageCacheability,
@@ -6,7 +14,7 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 10;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 11;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -26,6 +34,11 @@ type AppWorkerResponseStageEnvelope = {
 
 type AppFullRequestWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "app-full-request";
+  /**
+   * The public request is HEAD. It is dispatched as GET so a transport that
+   * applies HEAD semantics cannot drop the static-file signal's body.
+   */
+  headRequest: boolean;
   prerenderDiscovery: boolean;
   staticFileSignalToken: string;
   trustedPrerenderState: TrustedPrerenderState | null;
@@ -43,7 +56,7 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   interceptionContext: string | null;
   interceptionId: string | null;
   isRscRequest: boolean;
-  matchKind: "interception" | "request" | "resolved";
+  matchKind: "interception" | "raw-request" | "request" | "resolved";
   mountedSlotsHeader: string | null;
   params: AppPageParams;
   resolvedUrl: string;
@@ -117,6 +130,75 @@ export function prepareSharedAppPageDispatch(
     : request;
 }
 
+/**
+ * Build the query-free cache identity of a shared App page dispatch. The user
+ * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, an RSC
+ * request's validated `_rsc`, and the render mode stay because they select the
+ * representation. HTML identities also drop the RSC selector headers.
+ */
+export function createSharedAppPageCacheIdentity(
+  request: Request,
+  props: AppMatchedWorkerResponseStageProps,
+): NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]> {
+  const queryFree = withoutAppPageDispatchQuery(request.url, props);
+  const headers = new Headers(request.headers);
+  if (!props.isRscRequest) {
+    // HTML dispatch reads none of the RSC selectors: its render mode is fixed
+    // to navigation, and every other selector is RSC-gated or already in the
+    // props. Transports key these Vary fields, so keep them out of the key.
+    for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
+  }
+  return {
+    props: queryFree.props,
+    request: new Request(queryFree.url, { headers, method: request.method }),
+  };
+}
+
+/**
+ * Drop the user query from an App page dispatch URL and its `resolvedUrl`,
+ * keeping an RSC request's validated `_rsc`, the rule the query-free cache
+ * identity uses.
+ */
+export function withoutAppPageDispatchQuery(
+  requestUrl: string,
+  props: AppMatchedWorkerResponseStageProps,
+): { props: AppMatchedWorkerResponseStageProps; url: string } {
+  const url = new URL(requestUrl);
+  keepOnlyValidatedRscCacheBustingSearchParam(url, props.isRscRequest);
+  const searchIndex = props.resolvedUrl.indexOf("?");
+  return {
+    props: {
+      ...props,
+      resolvedUrl: searchIndex === -1 ? props.resolvedUrl : props.resolvedUrl.slice(0, searchIndex),
+    },
+    url: url.toString(),
+  };
+}
+
+/**
+ * Whether the Workers Cache request-stage projection gives a shared App page
+ * dispatch the `static-candidate` state, so its dispatch drops the user query.
+ * It is decided from the inputs completed-response admission uses: the
+ * header-canonicalized request's representation, the pathname after rewrites
+ * and the matched route pattern.
+ */
+export function isStaticCandidateAppPageDispatch(
+  projection: CacheabilityManifest,
+  request: Request,
+  props: AppMatchedWorkerResponseStageProps,
+): boolean {
+  const identity = cacheabilityRequestIdentity(request, props.cacheability.representation);
+  if (!identity) return false;
+  return (
+    cacheabilityManifestPageState(
+      projection,
+      { kind: "app-page", pattern: props.routePattern },
+      identity.representation,
+      cacheabilityRoutePathname(props.cacheability.resolvedRoutePathname, identity.representation),
+    ) === "static-candidate"
+  );
+}
+
 function isAppPageParams(value: unknown): value is AppPageParams {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   for (const param of Object.values(value)) {
@@ -154,6 +236,7 @@ export function isAppWorkerResponseStageProps(
   }
   if (props.kind === "app-full-request") {
     return (
+      typeof props.headRequest === "boolean" &&
       typeof props.prerenderDiscovery === "boolean" &&
       typeof props.staticFileSignalToken === "string" &&
       STATIC_FILE_SIGNAL_TOKEN_RE.test(props.staticFileSignalToken) &&
@@ -220,6 +303,7 @@ export function isAppWorkerResponseStageProps(
     (props.interceptionId === null || typeof props.interceptionId === "string") &&
     typeof props.isRscRequest === "boolean" &&
     (props.matchKind === "interception" ||
+      props.matchKind === "raw-request" ||
       props.matchKind === "request" ||
       props.matchKind === "resolved") &&
     (props.mountedSlotsHeader === null || typeof props.mountedSlotsHeader === "string") &&

@@ -140,6 +140,128 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("answers an encoded static page pathname beside a dynamic sibling with the static page", () => {
+    // Next.js 16.2.7 production: `/%61` and `/caf%C3%A9` beside `/[slug]`
+    // render the prerendered `/a` and `/café`; a force-dynamic page has no
+    // prerender, so `/[slug]` renders; without a dynamic sibling the raw path
+    // stays a 404; a Route Handler sibling keeps the request.
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/a", ["a"]),
+        route("/café", ["café"]),
+        route("/live", ["live"]),
+        route("/:slug", [":slug"]),
+        route("/blog/new", ["blog", "new"]),
+        route("/blog/:slug", ["blog", ":slug"]),
+        route("/members/:user/settings", ["members", ":user", "settings"]),
+        route("/members/:user/:tab", ["members", ":user", ":tab"]),
+        route("/solo/only", ["solo", "only"]),
+        route("/files/new", ["files", "new"]),
+        { ...route("/files/:name", ["files", ":name"]), routeHandler: {} },
+      ],
+      ["/a", "/café", "/blog/new", "/solo/only", "/files/new"],
+    );
+    const pattern = (pathname: string) => matcher.matchRequestRoute(pathname)?.route.pattern;
+
+    expect(matcher.matchRequestRoute("/%61")).toEqual({
+      route: expect.objectContaining({ pattern: "/a" }),
+      params: {},
+    });
+    expect(pattern("/caf%C3%A9")).toBe("/café");
+    expect(pattern("/caf%c3%a9")).toBe("/café");
+    expect(pattern("/%63af%C3%A9/")).toBe("/café");
+    expect(pattern("/blog/%6Eew")).toBe("/blog/new");
+    // An exact static raw match keeps its route.
+    expect(
+      createAppRscRouteMatcher(
+        [route("/%61", ["%61"]), route("/a", ["a"])],
+        ["/a"],
+      ).matchRequestRoute("/%61")?.route.pattern,
+    ).toBe("/%61");
+    // Draft mode and server actions render the raw match instead.
+    expect(matcher.matchRawRequestRoute("/%61")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "a" },
+    });
+
+    expect(matcher.matchRequestRoute("/%6Cive")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "live" },
+    });
+    expect(matcher.matchRequestRoute("/%2561")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "%2561" },
+    });
+    expect(matcher.matchRequestRoute("/blog%2Fnew")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "blog%2Fnew" },
+    });
+    // Static segments below a dynamic parent compare against the raw path.
+    expect(matcher.matchRequestRoute("/members/bob/%73ettings")).toMatchObject({
+      route: { pattern: "/members/:user/:tab" },
+      params: { user: "bob", tab: "settings" },
+    });
+    expect(matcher.matchRequestRoute("/solo/%6Fnly")).toBeNull();
+    expect(matcher.matchRequestRoute("/files/%6Eew")).toMatchObject({
+      route: { pattern: "/files/:name" },
+      params: { name: "new" },
+    });
+  });
+
+  it("keeps a static interception source gate raw when a direct request decodes", () => {
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/admin", ["admin"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/admin",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["modal-layout"],
+                page: "photo-page",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+        route("/:slug", [":slug"]),
+      ],
+      ["/admin"],
+    );
+
+    expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.findIntercept("/photos/1", "/admin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).toBeNull();
+  });
+
+  it("keeps a dynamic interception source owner for an encoded static alias", () => {
+    // Next.js tests the raw Next-Url against the owner's pattern, so
+    // `/%61dmin` is a `/:slug` source even though a direct request to it
+    // renders the static `/admin`, which doesn't own the intercept.
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/admin", ["admin"]),
+        route("/:slug", [":slug"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/:slug",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["modal-layout"],
+                page: "photo-page",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+      ],
+      ["/admin"],
+    );
+
+    expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).toMatchObject({ sourceRouteIndex: 1 });
+  });
+
   it("preserves encoded interception target identity and canonicalizes target params", () => {
     const matcher = createAppRscRouteMatcher([
       route("/feed/:slug", ["feed", ":slug"], {
@@ -157,14 +279,14 @@ describe("App RSC route matching", () => {
     ]);
 
     expect(matcher.findIntercept("/photos/a%2562", "/feed/a%2561")).toMatchObject({
-      matchedParams: { slug: "a%61", id: "a%2562" },
+      matchedParams: { slug: "a%2561", id: "a%2562" },
     });
     expect(matcher.findIntercept("/photos/a%2Fb", "/feed/a%2561")).toMatchObject({
-      matchedParams: { slug: "a%61", id: "a%2Fb" },
+      matchedParams: { slug: "a%2561", id: "a%2Fb" },
     });
     expect(matcher.findIntercept("/ph%6Ftos/a", "/feed/a%2561")).toBeNull();
     expect(matcher.findIntercept("/photos/%e2%9c%93", "/feed/a%2561")).toMatchObject({
-      matchedParams: { slug: "a%61", id: "%E2%9C%93" },
+      matchedParams: { slug: "a%2561", id: "%E2%9C%93" },
     });
   });
 
@@ -451,7 +573,7 @@ describe("App RSC route matching", () => {
     expect(matcher.findIntercept("/photos/42", "/gallery")).toBeNull();
   });
 
-  it("normalizes source path parts separately from encoded interception targets", () => {
+  it("matches static source segments on the raw path, like a direct request", () => {
     const matcher = createAppRscRouteMatcher([
       route("/_sites/:tenant", ["_sites", ":tenant"], {
         modal: {
@@ -467,13 +589,16 @@ describe("App RSC route matching", () => {
       }),
     ]);
 
-    expect(matcher.findIntercept("/photos/a%2Fb", "/%5Fsites/acme")).toMatchObject({
+    expect(matcher.findIntercept("/photos/a%2Fb", "/_sites/acme")).toMatchObject({
       targetPattern: "/photos/:id",
       matchedParams: { tenant: "acme", id: "a%2Fb" },
     });
+    // A direct request to `/%5Fsites/acme` does not reach `/_sites/:tenant`.
+    expect(matcher.matchRequestRoute("/%5Fsites/acme")).toBeNull();
+    expect(matcher.findIntercept("/photos/a%2Fb", "/%5Fsites/acme")).toBeNull();
   });
 
-  it("decodes an interception source exactly once", () => {
+  it("does not decode a static interception source", () => {
     const matcher = createAppRscRouteMatcher([
       route("/admin", ["admin"], {
         modal: {
@@ -490,9 +615,39 @@ describe("App RSC route matching", () => {
       }),
     ]);
 
-    expect(matcher.findIntercept("/photos/1", "/%61dmin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/admin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).toBeNull();
     expect(matcher.findIntercept("/photos/1", "/%2561dmin")).toBeNull();
   });
+
+  it.each(["caf%C3%A9", "caf%c3%a9", "a%2Fb", "%2561", "%252561", "100%25", "plain"])(
+    "gives source %s the params a direct request to it gets",
+    (tag) => {
+      const matcher = createAppRscRouteMatcher([
+        route("/tags/:tag", ["tags", ":tag"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/tags/:tag",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["modal-layout"],
+                page: "photo-page",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+      ]);
+      const source = `/tags/${tag}`;
+
+      const intercept = matcher.findIntercept("/photos/1", source);
+
+      expect(intercept?.sourceRouteIsConcrete).toBe(true);
+      expect({ ...intercept?.sourceMatchedParams }).toEqual({
+        ...matcher.matchRequestRoute(source)?.params,
+      });
+    },
+  );
 
   it("renders a root-slot interception from the concrete matched source route", () => {
     const matcher = createAppRscRouteMatcher([

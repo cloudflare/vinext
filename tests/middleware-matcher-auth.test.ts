@@ -211,6 +211,36 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
   }
 }
 
+async function assertStaticAssetExclusionAuthGuard(baseUrl: string): Promise<void> {
+  const headers = { "x-static-asset-auth": "1" };
+  // `js(?!on)` excludes `.js` but not `.json`, and `.cs` is not `.css`/`.csv`.
+  const guardedPaths = ["/public", "/public.json", "/public.cs"];
+  const excludedPaths = [
+    "/public.htm",
+    "/public.html",
+    "/public.js",
+    "/public.jpg",
+    "/public.jpeg",
+    "/public.woff",
+    "/public.woff2",
+    "/public.docx",
+  ];
+
+  for (const pathname of guardedPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+  for (const pathname of excludedPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    await response.body?.cancel();
+    expect(response.status, pathname).not.toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+  }
+}
+
 async function closeHttpServer(server: http.Server | undefined): Promise<void> {
   if (!server) return;
   await new Promise<void>((resolve, reject) => {
@@ -265,6 +295,10 @@ describe("valid middleware matcher auth guards", () => {
     it("matches decoded path delimiters with constrained matcher parity", async () => {
       await assertEncodedDelimiterAuthGuard(baseUrl);
     }, 30_000);
+
+    it("skips extensions excluded by bounded optional matcher branches", async () => {
+      await assertStaticAssetExclusionAuthGuard(baseUrl);
+    }, 30_000);
   });
 
   describe("built Node production server", () => {
@@ -316,6 +350,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("matches decoded path delimiters with constrained matcher parity", async () => {
       await assertEncodedDelimiterAuthGuard(baseUrl);
+    });
+
+    it("skips extensions excluded by bounded optional matcher branches", async () => {
+      await assertStaticAssetExclusionAuthGuard(baseUrl);
     });
   });
 
@@ -394,6 +432,10 @@ describe("valid middleware matcher auth guards", () => {
     it("matches decoded path delimiters with constrained matcher parity", async () => {
       await assertEncodedDelimiterAuthGuard(baseUrl);
     });
+
+    it("skips extensions excluded by bounded optional matcher branches", async () => {
+      await assertStaticAssetExclusionAuthGuard(baseUrl);
+    });
   });
 });
 
@@ -418,6 +460,14 @@ describe("unsafe middleware matcher rejection", () => {
     [`/:path(${"(?:a+)".repeat(9)})`, /contains overlapping sequential repetition/],
     [`/:path(${"(?:a+)".repeat(10)})`, /contains overlapping sequential repetition/],
     [`/:path(${"(?:a|aa)".repeat(26)})`, /contains ambiguous sequence expansion/],
+    [`/:path(${"(?:a|aa?)".repeat(26)})`, /contains ambiguous sequence expansion/],
+    [`/:path(${"(?:a?|b)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
+    [`/:path(${"(?:a*|b)".repeat(8)}c)`, /contains ambiguous sequence expansion/],
+    ["/:path((?:\\.x|.y|ay)+)", /contains ambiguous alternatives under repetition/],
+    [`/:path(${"(?:\\.x|.y|ay|b?z)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
+    [`/:path(${"(?:\\cA?x|\\x01x)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
+    ["/:path((?:\\c|\\\\c)+)", /contains ambiguous alternatives under repetition/],
+    ["/:a((?<z>a))/:b((?:\\k<z>x|ax)+c)", /contains ambiguous alternatives under repetition/],
     ["/:path(a+.*a+)", /contains overlapping sequential repetition/],
     ["/:path(a+(?:b*)a+)", /contains overlapping sequential repetition/],
   ] as const)(

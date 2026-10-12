@@ -66,6 +66,11 @@ function App(props: any) {
 }
 
 App.getInitialProps = async ({ Component, ctx }: any) => {
+  if (ctx.pathname === "/gsp-sent-response" && ctx.res) {
+    ctx.res.writeHead(302, { Location: "/missing" });
+    ctx.res.end();
+    return { appExtra: "custom-extra" };
+  }
   if (ctx.pathname === "/missing" || ctx.pathname === "/missing-two") {
     return { appExtra: "custom-extra" };
   }

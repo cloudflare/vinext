@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * `changeset version` + a grouped, conventional-commits changelog with a bottom
- * `## Contributors` list. Used as the `version:` command for `changesets/action`
- * (see .github/workflows/release.yml).
+ * Apply the Changesets release plan + a grouped, conventional-commits changelog
+ * with a bottom `## Contributors` list. Used as the `version:` command for
+ * `changesets/action` (see .github/workflows/release.yml).
  *
  * Changesets' default changelog groups by bump level (Minor/Patch Changes), not
- * by commit type, and has no end-of-release contributor hook. So after running
- * `changeset version` we rewrite each bumped package's newest CHANGELOG section:
+ * by commit type, and has no end-of-release contributor hook. After applying the
+ * release plan we rewrite each bumped package's newest CHANGELOG section:
  * the release commits are regrouped into `### Features` / `### Bug Fixes` / etc.
  * and a deduped, bot-filtered `## Contributors` list is appended. The pure
  * builders (groupedChangelogBody, rewriteReleaseSection, dedupeSortLogins) are
@@ -18,6 +18,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -232,19 +233,61 @@ function resolveContributors(from: string, repository: string, commits: Commit[]
   }
 }
 
-function main(): void {
+/** Apply only eligible releases, while retaining dependency-only updates. */
+export async function versionPackages(root: string): Promise<void> {
+  // Use the APIs from the pinned CLI's dependency tree, without a second toolchain.
+  const require = createRequire(import.meta.resolve("@changesets/cli/package.json"));
+  const { getPackages } = require("@manypkg/get-packages");
+  const { parse: parseConfig } = require("@changesets/config");
+  const { default: getReleasePlan } = require("@changesets/get-release-plan");
+  const { default: applyReleasePlan } = require("@changesets/apply-release-plan");
+  const { shouldSkipPackage } = require("@changesets/should-skip-package");
+  const packages = await getPackages(root);
+  const writtenConfig = JSON.parse(
+    readFileSync(join(packages.root.dir, ".changeset/config.json"), "utf8"),
+  );
+  const config = parseConfig(writtenConfig, packages);
+  // Match the CLI's second dependency-policy validation after expanding ignore globs.
+  parseConfig({ ...writtenConfig, ignore: config.ignore }, packages);
+  const plan = await getReleasePlan(root, undefined, config);
+  const skippedNames = new Set<string>();
+  for (const pkg of packages.packages) {
+    if (
+      shouldSkipPackage(pkg, {
+        ignore: config.ignore,
+        allowPrivatePackages: config.privatePackages.version,
+      })
+    ) {
+      skippedNames.add(pkg.packageJson.name);
+    }
+  }
+  // Prerelease exit can reintroduce skipped packages as patch releases:
+  // https://github.com/changesets/changesets/issues/2024
+  plan.releases = plan.releases.filter(
+    (release: { name: string; type: string }) =>
+      release.type === "none" || !skippedNames.has(release.name),
+  );
+  await applyReleasePlan(
+    plan,
+    packages,
+    config,
+    undefined,
+    dirname(require.resolve("@changesets/cli")),
+  );
+}
+
+async function main(): Promise<void> {
   const repository = process.env.GITHUB_REPOSITORY || "";
   const packages = discoverPublishablePackages();
   // Load the same SHA-named changeset overrides the generator uses, so a commit
   // reclassified there (e.g. feat → fix) lands in the matching changelog section.
-  // Must happen BEFORE `changeset version` below, which consumes and deletes the
+  // Must happen BEFORE applying the plan below, which consumes and deletes the
   // `.changeset/<sha>.md` files; the grouping later reads this in-memory copy.
   const overrides = loadOverrides();
   const before = readVersions(packages);
 
-  console.log("[version] Running `changeset version`...");
-  // `vp exec` runs the pinned, installed @changesets/cli — not a floating `dlx` fetch.
-  execFileSync("vp", ["exec", "changeset", "version"], { cwd: REPO_ROOT, stdio: "inherit" });
+  console.log("[version] Applying the Changesets release plan...");
+  await versionPackages(REPO_ROOT);
 
   const after = readVersions(packages);
 
@@ -274,4 +317,4 @@ function main(): void {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (import.meta.url === `file://${process.argv[1]}`) await main();
