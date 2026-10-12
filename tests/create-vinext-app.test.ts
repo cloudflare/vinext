@@ -161,6 +161,26 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, "cloudflare.config.ts")).toContain('name: "storefront"');
   });
 
+  it("rejects an invalid programmatic Worker name before writing the template", async () => {
+    const appPath = path.join(tmpDir, "invalid-name-app");
+
+    await expect(
+      withQuietConsole(() =>
+        createVinextApp({
+          appPath,
+          packageManager: "npm",
+          install: false,
+          git: false,
+          initOptions: {
+            ...noCacheCloudflareInitOptions,
+            cloudflare: { ...noCacheCloudflareInitOptions.cloudflare!, name: "Storefront" },
+          },
+        }),
+      ),
+    ).rejects.toThrow('Invalid --name value "Storefront"');
+    expect(fs.existsSync(appPath)).toBe(false);
+  });
+
   it("creates a fixed App Router TypeScript Tailwind template and applies Cloudflare init", async () => {
     const appPath = path.join(tmpDir, "fresh-app");
 
