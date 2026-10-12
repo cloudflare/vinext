@@ -163,6 +163,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath } from ${JSON.stringify(_pagesDataRoutePath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_revalidationRequestPath)};
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${instrumentationImportCode}
 
 ${instrumentationInitCode}
@@ -176,6 +177,7 @@ export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 export const hasRequestAwareDocument = ${JSON.stringify(hasRequestAwareDocument)};
 export const vinextConfig = ${vinextConfigJson};
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
+export const clientBuildFiles = new Set(__pagesClientAssets.clientBuildFiles ?? []);
 
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(

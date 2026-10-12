@@ -448,6 +448,26 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(second.body).toContain("middleware-cookie:visitor-b");
   });
 
+  // Next.js keeps a next.config public policy and `Vary: Cookie` on a page
+  // that reads cookies(). Miniflare does not emulate the Worker-front cache, so
+  // the deployed cache-prewarm spec proves no session's page is stored.
+  test("renders each session under a next.config Vary: Cookie public policy", async ({
+    request,
+  }) => {
+    const slug = `vary-cookie-${Date.now()}`;
+    for (const session of ["alice", "bob", undefined]) {
+      const response = await request.get(`${BASE_URL}/cdn-stage-vary-cookie/${slug}`, {
+        headers: session ? { cookie: `session=${session}` } : {},
+      });
+      expect(response.status()).toBe(200);
+      expect(response.headers()["cache-control"]).toBe("public, s-maxage=300");
+      expect(response.headers().vary?.toLowerCase().split(/,\s*/)).toContain("cookie");
+      expect(await response.text()).toContain(
+        `vary-cookie-session:${session ?? "anonymous"}; slug:${slug}`,
+      );
+    }
+  });
+
   test("bypasses the shared response stage for middleware request-header overrides", async ({
     request,
   }) => {

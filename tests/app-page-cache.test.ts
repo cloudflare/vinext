@@ -1195,7 +1195,7 @@ describe("app page cache helpers", () => {
       isrDebug(event, detail) {
         debugCalls.push([event, detail]);
       },
-      isrHtmlKey(pathname) {
+      isrFallbackShellHtmlKey(pathname) {
         return "html:" + pathname;
       },
       fallbackPathname: "/en/blog/[slug]",
@@ -1226,7 +1226,7 @@ describe("app page cache helpers", () => {
           isExpired: true,
         };
       },
-      isrHtmlKey(pathname) {
+      isrFallbackShellHtmlKey(pathname) {
         return `html:${pathname}`;
       },
       fallbackPathname: "/en/blog/[slug]",
@@ -1259,7 +1259,7 @@ describe("app page cache helpers", () => {
       isrDebug(event, detail) {
         debugCalls.push([event, detail]);
       },
-      isrHtmlKey(pathname) {
+      isrFallbackShellHtmlKey(pathname) {
         return "html:" + pathname;
       },
       fallbackPathname: "/en/blog/[slug]",

@@ -614,6 +614,41 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe(`<head>${tracedHtml}</head><main>dynamic</main>`);
   });
 
+  it("never stores a cookie-reading App Page under a public config policy with Vary: Cookie", async () => {
+    // The request stage applies the config Vary above the response stage, so
+    // the shared entry has no cookie variance. Storing it would serve one
+    // session's page to every other session.
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/page", { headers: { cookie: "session=alice" } }),
+      null,
+      "build-a",
+      true,
+      undefined,
+      undefined,
+      undefined,
+      { applyCompletedResponsePolicy: true },
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
+    state.completion = Promise.resolve({ cacheable: false, dynamicUsage: true });
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      applyResponseStageCachePolicy(
+        new Response("<main>session=alice</main>", { headers: { "Cache-Control": "no-store" } }),
+        context,
+        [["Cache-Control", "public, s-maxage=300"]],
+      ),
+      context,
+    );
+
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=300");
+    await expect(response.text()).resolves.toBe("<main>session=alice</main>");
+  });
+
   it("probes a dynamic App Page with a final public config policy as dynamic", async () => {
     const context = createWorkerCacheabilityContext(
       { waitUntil() {} },

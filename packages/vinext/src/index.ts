@@ -269,6 +269,7 @@ import {
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
+  collectClientBuildFiles,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { readPrerenderSecret, readServerRuntimeOutputDirs } from "./build/server-manifest.js";
@@ -1737,6 +1738,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       ? path.dirname(outputDir)
       : outputDir;
   let pagesClientAssetsModule: string | null = internalOptions.__pagesClientAssetsModule ?? null;
+  let clientBuildFiles: string[] = [];
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
   // so request handling can use O(1) membership checks without filesystem I/O.
   // Production builds leave it null and scan the configured public directory
@@ -8246,6 +8248,10 @@ export const loadServerActionClient = ${
       enforce: "post",
       // See vinext:pages-client-assets-resolver above.
       sharedDuringBuild: true,
+      writeBundle(_options, bundle) {
+        if (this.environment.name !== "client") return;
+        clientBuildFiles = collectClientBuildFiles(Object.keys(bundle));
+      },
       closeBundle: {
         sequential: true,
         order: "post",
@@ -8279,6 +8285,7 @@ export const loadServerActionClient = ${
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
               crossOrigin: nextConfig.crossOrigin ?? "",
+              clientBuildFiles: clientBuildFiles.length > 0 ? clientBuildFiles : undefined,
             });
           }
 
@@ -8336,6 +8343,36 @@ export const loadServerActionClient = ${
             if (injectInlineCssManifestGlobal(path.join(rscOutDir, entryFile), manifest)) break;
           }
         },
+      },
+    },
+    // `vite preview` for plain Node Pages Router builds. App Router builds use
+    // @vitejs/plugin-rsc's preview handler, and Cloudflare and Nitro builds
+    // their own plugins. Like plugin-rsc's, this handler runs after Vite's
+    // preview middleware (proxy, compression, `base`, static files), so it
+    // only handles the requests Vite doesn't serve.
+    {
+      name: "vinext:preview-server",
+      async configurePreviewServer(server) {
+        if (hasAppDir || hasCloudflarePlugin || hasNitroPlugin) return;
+        if (nextConfig?.output === "export") return;
+        const { createPagesPreviewHandler } = await import("./server/prod-server.js");
+        const { environments, preview, root } = server.config;
+        const handler = await createPagesPreviewHandler({
+          clientDir: path.resolve(root, environments.client?.build.outDir ?? "dist/client"),
+          serverDir: path.resolve(root, environments.ssr?.build.outDir ?? "dist/server"),
+          host: typeof preview.host === "string" ? preview.host : "localhost",
+          port: preview.port ?? 4173,
+        });
+        if (!handler) return;
+        return () => {
+          server.middlewares.use((req, res) => {
+            // Vite's `base` middleware strips `basePath` (vinext sets `base` to
+            // it), and the Pages handler routes below it. `req.url` may also
+            // carry a `preview.proxy` bypass rewrite.
+            if (nextConfig?.basePath) req.url = nextConfig.basePath + (req.url ?? "/");
+            handler(req, res);
+          });
+        };
       },
     },
     // Cloudflare Workers production build integration. Generate immutable

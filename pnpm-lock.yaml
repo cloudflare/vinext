@@ -2070,6 +2070,9 @@ importers:
 
   tests/fixtures/module-federation-host:
     dependencies:
+      '@cloudflare/vite-plugin':
+        specifier: 'catalog:'
+        version: 1.50.0(@voidzero-dev/vite-plus-core@1.1.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(wrangler@4.118.0(@cloudflare/workers-types@5.20261004.1))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.34(@voidzero-dev/vite-plus-core@1.1.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
@@ -2088,6 +2091,9 @@ importers:
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@1.1.0
         version: '@voidzero-dev/vite-plus-core@1.1.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.118.0(@cloudflare/workers-types@5.20261004.1)
     devDependencies:
       '@module-federation/vinext':
         specifier: ^0.2.0

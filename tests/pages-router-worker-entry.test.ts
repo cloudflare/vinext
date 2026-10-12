@@ -27,6 +27,7 @@ export function __ensureInstrumentation() {
   instrumentationCalls++;
 }
 export const publicFiles = new Set();
+export const clientBuildFiles = new Set(["/remoteEntry.js"]);
 export const runMiddleware = null;
 export const vinextConfig = {};
 `,
@@ -196,6 +197,16 @@ describe("Pages Router production Worker readiness", () => {
       );
       expect(dynamic.headers.get("cache-control")).toContain("no-store");
       await expect(dynamic.text()).resolves.toBe("page");
+
+      // Without an ASSETS binding a client build file falls through to
+      // routing, so its response still passes through admission.
+      const unservedClientBuildFile = await entry.default.fetch(
+        new Request("https://example.com/remoteEntry.js", { headers: { Accept: "text/html" } }),
+        undefined,
+        { waitUntil() {} },
+      );
+      expect(unservedClientBuildFile.headers.get("cache-control")).toBe("s-maxage=60");
+      await expect(unservedClientBuildFile.text()).resolves.toBe("page");
     } finally {
       await server.close();
     }

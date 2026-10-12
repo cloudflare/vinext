@@ -480,6 +480,9 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
     isrGet,
+    isrFallbackShellHtmlKey(pathname: string) {
+      return `shell:${pathname}`;
+    },
     isrHtmlKey(pathname: string) {
       return `html:${pathname}`;
     },
@@ -575,7 +578,7 @@ function createPprBlogDispatchOptions(overrides: CreateDispatchOptionsOverrides 
 
 function createPprBlogFallbackShellGetter(stale: boolean) {
   return vi.fn(async (key: string) => {
-    if (key === "html:/en/blog/[slug]") {
+    if (key === "shell:/en/blog/[slug]") {
       return buildISRCacheEntry(
         buildCachedAppPageValue("<html><head></head><body>Locale: en</body></html>"),
         stale,
@@ -4898,7 +4901,7 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(404);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 
@@ -4914,7 +4917,7 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "html:/en/blog/[slug]",
+      "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toContain("Locale: en");
@@ -4935,7 +4938,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     await expect(response.text()).resolves.toContain("fresh render");
     expect(buildPageElement).toHaveBeenCalled();
@@ -4953,7 +4956,7 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "html:/en/blog/[slug]",
+      "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("STALE");
     await expect(response.text()).resolves.toContain("Locale: en");
@@ -4964,7 +4967,7 @@ describe("app page dispatch", () => {
   it("falls through to a fresh render when the cached fallback shell requires resume", async () => {
     const buildPageElement = createParamTextPageElement("fresh");
     const isrGet = vi.fn(async (key: string) => {
-      if (key === "html:/en/blog/[slug]") {
+      if (key === "shell:/en/blog/[slug]") {
         return buildISRCacheEntry(
           buildCachedAppPageValue(
             markAppPprDynamicFallbackShellHtml(
@@ -5005,7 +5008,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/known-post"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
@@ -5027,7 +5030,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/hello world"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
@@ -5059,7 +5062,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/worker-known"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
