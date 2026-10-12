@@ -58,7 +58,7 @@ export type { FetchCacheMode, FetchCacheState } from "./fetch-cache-state.js";
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v5";
+const CACHE_KEY_PREFIX = "v6";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -261,6 +261,9 @@ async function readRequestBodyChunksWithinLimit(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // A runtime may pass other chunk types through (Workers does for
+      // iterable bodies), and those are not keyed.
+      if (!(value instanceof Uint8Array)) throw new SkipCacheKeyGenerationError();
 
       totalBodyBytes += value.byteLength;
       if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
@@ -275,6 +278,19 @@ async function readRequestBodyChunksWithinLimit(
   }
 
   return { chunks, contentType };
+}
+
+/** Whether serializeBody keys this init body type itself. */
+function isKeyableInitBody(body: BodyInit): boolean {
+  return (
+    typeof body === "string" ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body) ||
+    body instanceof URLSearchParams ||
+    typeof (body as { getReader?: unknown }).getReader === "function" ||
+    typeof (body as { keys?: unknown }).keys === "function" ||
+    typeof (body as { arrayBuffer?: unknown }).arrayBuffer === "function"
+  );
 }
 
 /**
@@ -1205,6 +1221,14 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     const softTags = _getState().currentFetchSoftTags;
     let fetchInit = stripNextFromInit(init, cacheDirective);
+    const initBody = fetchInit?.body;
+    if (initBody !== undefined && initBody !== null && !isKeyableInitBody(initBody)) {
+      // Any other body (an async iterable, or an object the runtime converts
+      // to a string) is built into a Request as fetch itself would, and that
+      // Request's bytes are keyed and it is sent.
+      input = new Request(input, fetchInit);
+      fetchInit = undefined;
+    }
     let cacheKey: string;
     try {
       cacheKey = await buildFetchCacheKey(input, fetchInit);

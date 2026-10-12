@@ -89,4 +89,38 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
       hidesCfAfterLock: true,
     });
   });
+
+  // Workers sends async iterable fetch bodies, so cached POSTs that differ only
+  // in that body must not share a data cache entry.
+  test("keys cached fetches by their async iterable bodies", async ({ request }) => {
+    type CachedOrigin = {
+      body: { caseId: string; visibility: string };
+      originRequestId: string;
+    };
+    const caseId = crypto.randomUUID();
+    const readCase = async (visibility: string): Promise<CachedOrigin> => {
+      const response = await request.get(
+        `${BASE_URL}/api/fetch-cache-iterable-body?case=${caseId}&visibility=${visibility}`,
+      );
+      expect(response.status()).toBe(200);
+      return (await response.json()) as CachedOrigin;
+    };
+
+    // Read until the private response is served from the data cache, so the
+    // public read below would find it if both bodies shared a key.
+    let privateEntry: CachedOrigin | undefined;
+    await expect
+      .poll(async () => {
+        const read = await readCase("private");
+        expect(read.body).toEqual({ caseId, visibility: "private" });
+        const servedFromCache = read.originRequestId === privateEntry?.originRequestId;
+        privateEntry = read;
+        return servedFromCache;
+      })
+      .toBe(true);
+
+    const publicRead = await readCase("public");
+    expect(publicRead.body).toEqual({ caseId, visibility: "public" });
+    expect(publicRead.originRequestId).not.toBe(privateEntry?.originRequestId);
+  });
 });

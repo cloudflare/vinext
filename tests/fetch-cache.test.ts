@@ -3251,6 +3251,73 @@ describe("fetch cache shim", () => {
       expect((await res2.json()).count).toBe(2);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
+
+    // Bodies such as async iterables are built into a Request as fetch would,
+    // and keyed by that Request's bytes.
+    describe("bodies built into a Request", () => {
+      const read = async (body: unknown, init: RequestInit = {}) => {
+        startNewFetchCacheScope();
+        const res = await fetch("https://api.example.com/body-built-request", {
+          method: "POST",
+          body: body as BodyInit,
+          duplex: "half",
+          next: { revalidate: 60 },
+          ...init,
+        } as RequestInit);
+        return (await res.json()).count as number;
+      };
+      const sent = (callIndex: number) => fetchMock.mock.calls[callIndex][0] as Request;
+      async function* iterable(...chunks: string[]) {
+        for (const chunk of chunks) yield new TextEncoder().encode(chunk);
+      }
+
+      it("keys async iterable bodies by their bytes and sends each body", async () => {
+        expect(await read(iterable('{"user":', '"a"}'))).toBe(1);
+        expect(await read(iterable('{"user":', '"b"}'))).toBe(2);
+        expect(await read(iterable('{"user":"a"}'))).toBe(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(await sent(0).text()).toBe('{"user":"a"}');
+        expect(await sent(1).text()).toBe('{"user":"b"}');
+      });
+
+      it("keys bodies the runtime converts to strings by that string", async () => {
+        expect(await read({ toString: () => "a" })).toBe(1);
+        expect(await read({ toString: () => "b" })).toBe(2);
+        expect(await read({ toString: () => "a" })).toBe(1);
+        expect(sent(0).headers.get("content-type")).toBe("text/plain;charset=UTF-8");
+        expect(await sent(1).text()).toBe("b");
+      });
+
+      it("rejects a body fetch would reject before reading it", async () => {
+        let pulls = 0;
+        async function* body() {
+          pulls++;
+          yield new TextEncoder().encode("a");
+        }
+        await expect(read(body(), { method: "GET" })).rejects.toThrow(TypeError);
+        expect(pulls).toBe(0);
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("fetches a Request body with chunks other than Uint8Array uncached", async () => {
+        const request = () =>
+          new Request("https://api.example.com/body-request-string-chunks", {
+            method: "POST",
+            body: new ReadableStream({
+              start(controller) {
+                controller.enqueue("a");
+                controller.close();
+              },
+            }),
+            duplex: "half",
+          } as RequestInit);
+        startNewFetchCacheScope();
+        await fetch(request(), { next: { revalidate: 60 } });
+        startNewFetchCacheScope();
+        await fetch(request(), { next: { revalidate: 60 } });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 
   // ── Cache key: header inclusion (all headers minus blocklist) ──────
