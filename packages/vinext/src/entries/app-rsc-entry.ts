@@ -909,6 +909,8 @@ import {
   SIBLING_PAGE_INTERCEPT_SLOT_KEY as __SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
+  appIsrFallbackShellHtmlKey as __isrFallbackShellHtmlKey,
+  appIsrFallbackShellKey as __isrFallbackShellKey,
   appIsrHtmlKey as __isrHtmlKey,
   appIsrRscKey as __isrRscKey,
   appIsrRouteKey as __isrRouteKey,
@@ -1302,6 +1304,9 @@ export async function seedMemoryCacheFromPrerender(serverDir) {
     buildAppPageHtmlKey(pathname) {
       return __isrHtmlKey(pathname);
     },
+    buildAppPageFallbackShellKey(pathname, suffix) {
+      return __isrFallbackShellKey(pathname, suffix);
+    },
     buildAppPageRscKey(pathname) {
       return __isrRscKey(pathname);
     },
@@ -1493,6 +1498,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isRscRequest,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
+      isrFallbackShellHtmlKey: __isrFallbackShellHtmlKey,
       isrHtmlKey(pathname) {
         return __isrHtmlKey(pathname === cleanPathname ? cachePathname : pathname);
       },

@@ -12,6 +12,7 @@ import {
   isrCacheKey,
   pagesIsrCacheKey,
   appIsrCacheKey,
+  appIsrFallbackShellKey,
   appIsrHtmlKey,
   appIsrRscKey,
   appIsrRouteKey,
@@ -214,6 +215,27 @@ describe("App Router ISR cache key primitives", () => {
   it("supports explicit build ids when deriving suffixed app keys", () => {
     expect(appIsrCacheKey("/dashboard", "html", "build-42")).toBe(
       "app:v2:build-42:/dashboard:html",
+    );
+  });
+
+  it("keeps fallback shell keys apart from the page keys of the same pathname", () => {
+    // A request for `/en/%5Bslug%5D` decodes to the shell's own pathname.
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).toBe(
+      "app:v2:build-42:fallback-shell:/en/[slug]:html",
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "html", "build-42"),
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "rsc", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "rsc", "build-42"),
+    );
+
+    const longPathname = `/en/${"x".repeat(220)}/[slug]`;
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).toMatch(
+      /^app:v2:build-42:fallback-shell:__hash:[a-f0-9]{64}:html$/,
+    );
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).not.toBe(
+      appIsrCacheKey(longPathname, "html", "build-42"),
     );
   });
 

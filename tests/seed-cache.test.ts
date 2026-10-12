@@ -18,7 +18,7 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
-import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { appIsrCacheKey, appIsrFallbackShellKey } from "../packages/vinext/src/server/isr-cache.js";
 import { getRenderedConcreteUrlPathsForRoute } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
@@ -990,6 +990,8 @@ describe("seedMemoryCacheFromPrerender", () => {
       {
         "en/blog/known-post.html": "<html>known post</html>",
         "en/blog/known-post.rsc": "flight-data",
+        "en/blog/[slug].html": "<html>shell</html>",
+        "en/blog/[slug].rsc": "shell-flight-data",
       },
     );
     await seedMemoryCacheFromPrerender(serverDir);
@@ -999,6 +1001,23 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(paths!.has("/en/blog/known-post")).toBe(true);
     expect(paths!.has("/en/blog/[slug]")).toBe(false);
     expect(paths!.size).toBe(1);
+
+    // The shell is seeded apart from the page a literal `/en/blog/%5Bslug%5D`
+    // request renders, which decodes to the same pathname.
+    const shellEntry = await getCacheHandler().get(
+      appIsrFallbackShellKey("/en/blog/[slug]", "html", buildId),
+    );
+    expect(shellEntry?.value).toMatchObject({ kind: "APP_PAGE", html: "<html>shell</html>" });
+    const shellRscEntry = await getCacheHandler().get(
+      appIsrFallbackShellKey("/en/blog/[slug]", "rsc", buildId),
+    );
+    expect(shellRscEntry?.value).toMatchObject({ kind: "APP_PAGE" });
+    await expect(
+      getCacheHandler().get(appIsrCacheKey("/en/blog/[slug]", "html", buildId)),
+    ).resolves.toBeNull();
+    await expect(
+      getCacheHandler().get(appIsrCacheKey("/en/blog/[slug]", "rsc", buildId)),
+    ).resolves.toBeNull();
   });
 
   it("retains empty static-param route markers without seeding an artifact", async () => {

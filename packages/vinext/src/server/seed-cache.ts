@@ -34,6 +34,7 @@ import path from "pathslash";
 import type { CachedAppPageValue, CachedRouteValue } from "vinext/shims/cache-handler";
 import {
   appIsrCacheKey,
+  appIsrFallbackShellKey,
   isrSet,
   isrSetPrerenderedAppPage,
   type IsrWritePolicy,
@@ -71,6 +72,7 @@ type PrerenderCacheSeedMetadata = {
 
 type PrerenderCacheSeedOptions = {
   buildAppPageHtmlKey?: (pathname: string) => string;
+  buildAppPageFallbackShellKey?: (pathname: string, suffix: "html" | "rsc") => string;
   buildAppPageRscKey?: (pathname: string) => string;
   buildAppRouteKey?: (pathname: string) => string;
   writeAppPageEntry?: (
@@ -129,7 +131,8 @@ export async function seedMemoryCacheFromPrerender(
 
   for (const route of appRoutes) {
     const concretePathname = route.path ?? route.route;
-    if (!isFallbackShellArtifactPath(concretePathname, route)) {
+    const isFallbackShell = isFallbackShellArtifactPath(concretePathname, route);
+    if (!isFallbackShell) {
       addPregeneratedConcretePath(route.route, concretePathname);
     }
 
@@ -138,11 +141,16 @@ export async function seedMemoryCacheFromPrerender(
     // Fallback keys support older generated entries that do not export their
     // runtime key builders. Current App Router entries inject buildAppPage*Key
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
-    const htmlKey =
-      options?.buildAppPageHtmlKey?.(cachePathname) ??
-      appIsrCacheKey(cachePathname, "html", buildId);
-    const rscKey =
-      options?.buildAppPageRscKey?.(cachePathname) ?? appIsrCacheKey(cachePathname, "rsc", buildId);
+    const htmlKey = isFallbackShell
+      ? (options?.buildAppPageFallbackShellKey?.(cachePathname, "html") ??
+        appIsrFallbackShellKey(cachePathname, "html", buildId))
+      : (options?.buildAppPageHtmlKey?.(cachePathname) ??
+        appIsrCacheKey(cachePathname, "html", buildId));
+    const rscKey = isFallbackShell
+      ? (options?.buildAppPageFallbackShellKey?.(cachePathname, "rsc") ??
+        appIsrFallbackShellKey(cachePathname, "rsc", buildId))
+      : (options?.buildAppPageRscKey?.(cachePathname) ??
+        appIsrCacheKey(cachePathname, "rsc", buildId));
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
     const staleSeconds =
