@@ -115,9 +115,10 @@ test.describe("Pages i18n locale: false rewrites (production)", () => {
   }
 });
 
-// The server matches each later rule in a rewrite chain against the
-// default-locale-prefixed destination; client navigation must resolve the
-// chain the same way rather than render a different page.
+// Like Next.js, later rules in a rewrite chain match the previous destination
+// as-is: the default locale is inserted into the request pathname only, so the
+// ordinary `/chain-middle` rule (matched as `/:locale/chain-middle`) does not
+// continue the chain. Document requests and client navigation agree.
 test.describe("Pages i18n rewrite chains (production)", () => {
   let app: ProductionApp;
 
@@ -135,8 +136,7 @@ test.describe("Pages i18n rewrite chains (production)", () => {
     request,
   }) => {
     const html = await (await request.get(`${app.baseUrl}/chain-start`)).text();
-    const serverHeading = html.match(/<h1>([^<]*)<\/h1>/)?.[1];
-    expect(serverHeading).toBeTruthy();
+    expect(html.match(/<h1>([^<]*)<\/h1>/)?.[1]).toBe("chain middle page");
 
     await page.goto(`${app.baseUrl}/`);
     await waitForHydration(page);
@@ -145,7 +145,7 @@ test.describe("Pages i18n rewrite chains (production)", () => {
     });
 
     await page.evaluate(() => (window as any).next.router.push("/chain-start"));
-    await expect(page.locator("h1")).toHaveText(serverHeading!);
+    await expect(page.locator("h1")).toHaveText("chain middle page");
     expect(new URL(page.url()).pathname).toBe("/chain-start");
     expect(await page.evaluate(() => (window as any).__LOCALE_NAV_MARKER__)).toBe(true);
   });

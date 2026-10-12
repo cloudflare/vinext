@@ -1534,33 +1534,47 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // itself continues to use the un-prefixed `cleanPathname` because App
   // Router files live under `app/...` with no locale segment. See issue
   // #1336 item 4 / pages-i18n.normalizeDefaultLocalePathname.
+  //
+  // Next.js inserts the default locale into the request pathname (and
+  // NextURL's forceLocale into middleware rewrite targets), but later rules
+  // match a config rewrite's destination as-is (resolve-routes.ts). The
+  // unprefixed fallback copies stand in for that insertion, so they do not
+  // apply to a config rewrite's destination either.
+  let configRewriteFired = false;
+  const configRewritePathname = (pathname: string): string =>
+    configRewriteFired ? pathname : matchPathname(pathname);
+  const applyConfigRewrite = (rewrite: NextRewrite): Promise<Response | string | null> =>
+    configRewriteFired && rewrite.localeFallback
+      ? Promise.resolve(null)
+      : applyRewrite(
+          {
+            basePathState,
+            clearRequestContext: options.clearRequestContext,
+            // External RSC rewrites must forward the validated `_rsc` token so the
+            // destination server can validate the request without the original URL.
+            request: normalizedUserlandRequest,
+            requestContext: requestContextForResolvedUrl(
+              postMiddlewareRequestContext,
+              resolvedUrl,
+              url,
+            ),
+            paramsPathname: configRewritePathname(
+              cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+            ),
+            rewrites: [rewrite],
+            validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+          },
+          configRewritePathname(cleanPathname),
+          dispatchResponseStage === undefined,
+        );
   for (const rewrite of options.configRewrites.beforeFiles) {
-    const beforeFilesRewrite = await applyRewrite(
-      {
-        basePathState,
-        clearRequestContext: options.clearRequestContext,
-        // External RSC rewrites must forward the validated `_rsc` token so the
-        // destination server can validate the request without the original URL.
-        request: normalizedUserlandRequest,
-        requestContext: requestContextForResolvedUrl(
-          postMiddlewareRequestContext,
-          resolvedUrl,
-          url,
-        ),
-        paramsPathname: matchPathname(
-          cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
-        ),
-        rewrites: [rewrite],
-        validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-      },
-      matchPathname(cleanPathname),
-      dispatchResponseStage === undefined,
-    );
+    const beforeFilesRewrite = await applyConfigRewrite(rewrite);
     if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
     if (beforeFilesRewrite) {
       resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      configRewriteFired = true;
       filesystemRouteEligible = true;
     }
   }
@@ -1578,60 +1592,26 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (!filesystemRouteEligible && (actionId || isProgressiveActionRequest)) {
     let actionMatch: ReturnType<typeof options.matchRoute> = null;
     for (const rewrite of options.configRewrites.afterFiles) {
-      const rewritten = await applyRewrite(
-        {
-          basePathState,
-          clearRequestContext: options.clearRequestContext,
-          request: normalizedUserlandRequest,
-          requestContext: requestContextForResolvedUrl(
-            postMiddlewareRequestContext,
-            resolvedUrl,
-            url,
-          ),
-          paramsPathname: matchPathname(
-            cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
-          ),
-          rewrites: [rewrite],
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-        },
-        matchPathname(cleanPathname),
-        dispatchResponseStage === undefined,
-      );
+      const rewritten = await applyConfigRewrite(rewrite);
       if (rewritten instanceof Response) return rewritten;
       if (!rewritten) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      configRewriteFired = true;
       filesystemRouteEligible = true;
       actionMatch = matchCleanPathname();
       if (actionMatch) break;
     }
     if (!actionMatch) {
       for (const rewrite of options.configRewrites.fallback) {
-        const rewritten = await applyRewrite(
-          {
-            basePathState,
-            clearRequestContext: options.clearRequestContext,
-            request: normalizedUserlandRequest,
-            requestContext: requestContextForResolvedUrl(
-              postMiddlewareRequestContext,
-              resolvedUrl,
-              url,
-            ),
-            paramsPathname: matchPathname(
-              cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
-            ),
-            rewrites: [rewrite],
-            validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-          },
-          matchPathname(cleanPathname),
-          dispatchResponseStage === undefined,
-        );
+        const rewritten = await applyConfigRewrite(rewrite);
         if (rewritten instanceof Response) return rewritten;
         if (!rewritten) continue;
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         cleanPathname = pathnameForResolvedUrl(resolvedUrl);
         cleanPathnameIsRequestPathname = false;
+        configRewriteFired = true;
         filesystemRouteEligible = true;
         actionMatch = matchCleanPathname();
         if (actionMatch) break;
@@ -1997,12 +1977,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
       let didRewriteSource = false;
       for (const rewrite of options.configRewrites.beforeFiles) {
+        // Later rules match a destination as-is, like `applyConfigRewrite`.
+        if (didRewriteSource && rewrite.localeFallback) continue;
+        const sourcePathname = didRewriteSource
+          ? sourceRulesPathname
+          : matchPathname(sourceRulesPathname);
         const destination = matchRewrite(
-          matchPathname(sourceRulesPathname),
+          sourcePathname,
           [rewrite],
           sourceRewriteContext,
           basePathState,
-          matchPathname(sourceRulesPathname),
+          sourcePathname,
           dispatchResponseStage === undefined ? markConditionalRewriteCacheability : undefined,
         );
         if (!destination) continue;
@@ -2341,26 +2326,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   if (!isInterceptionMatch && !resolvedLateRewritesForAction && (!match || match.route.isDynamic)) {
     for (const rewrite of options.configRewrites.afterFiles) {
-      const afterFilesRewrite = await applyRewrite(
-        {
-          basePathState,
-          clearRequestContext: options.clearRequestContext,
-          // External RSC rewrites must forward the validated `_rsc` token.
-          request: normalizedUserlandRequest,
-          requestContext: requestContextForResolvedUrl(
-            postMiddlewareRequestContext,
-            resolvedUrl,
-            url,
-          ),
-          paramsPathname: matchPathname(
-            cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
-          ),
-          rewrites: [rewrite],
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-        },
-        matchPathname(cleanPathname),
-        dispatchResponseStage === undefined,
-      );
+      const afterFilesRewrite = await applyConfigRewrite(rewrite);
       if (afterFilesRewrite instanceof Response) {
         invalidateInterceptionCacheProof();
         return afterFilesRewrite;
@@ -2369,6 +2335,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      configRewriteFired = true;
       invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
@@ -2400,26 +2367,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (!resolvedLateRewritesForAction && !match) {
     for (const rewrite of options.configRewrites.fallback) {
-      const fallbackRewrite = await applyRewrite(
-        {
-          basePathState,
-          clearRequestContext: options.clearRequestContext,
-          // External RSC rewrites must forward the validated `_rsc` token.
-          request: normalizedUserlandRequest,
-          requestContext: requestContextForResolvedUrl(
-            postMiddlewareRequestContext,
-            resolvedUrl,
-            url,
-          ),
-          paramsPathname: matchPathname(
-            cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
-          ),
-          rewrites: [rewrite],
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-        },
-        matchPathname(cleanPathname),
-        dispatchResponseStage === undefined,
-      );
+      const fallbackRewrite = await applyConfigRewrite(rewrite);
       if (fallbackRewrite instanceof Response) {
         invalidateInterceptionCacheProof();
         return fallbackRewrite;
@@ -2428,6 +2376,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      configRewriteFired = true;
       invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();

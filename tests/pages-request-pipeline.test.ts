@@ -6,6 +6,7 @@ import {
   type MiddlewareResult,
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
+import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
@@ -1431,6 +1432,112 @@ describe("beforeFiles rewrites", () => {
 
     expect(matchPageRoute).toHaveBeenCalledWith("/to", expect.any(Request));
     expect(matchPageRoute).not.toHaveBeenCalledWith("/to#section", expect.any(Request));
+  });
+
+  // Next.js inserts the default locale into the request pathname only; later
+  // rules match a config rewrite's destination as-is (resolve-routes.ts).
+  describe("i18n rewrite chains", () => {
+    const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+    const localized = (rewrites: NextRewrite[]) =>
+      applyLocaleToRoutes<NextRewrite>(rewrites, i18nConfig, "rewrite");
+
+    async function renderedUrlFor(
+      pathname: string,
+      configRewrites: PagesPipelineDeps["configRewrites"],
+      overrides?: Partial<PagesPipelineDeps>,
+    ) {
+      const renderPage = makeRenderPage(200);
+      await runPagesRequest(
+        makeRequest(pathname),
+        baseDeps({ i18nConfig, configRewrites, renderPage, ...overrides }),
+      );
+      return renderPage.mock.calls[0]?.[1];
+    }
+
+    it.each([
+      ["beforeFiles", "beforeFiles"],
+      ["beforeFiles", "afterFiles"],
+      ["afterFiles", "afterFiles"],
+    ] as const)(
+      "does not continue a %s locale:false destination through a later %s ordinary rule",
+      async (firstPhase, secondPhase) => {
+        const configRewrites: PagesPipelineDeps["configRewrites"] = {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [],
+        };
+        configRewrites[firstPhase].push({
+          source: "/en/start",
+          destination: "/middle",
+          locale: false,
+        });
+        configRewrites[secondPhase].push(
+          ...localized([{ source: "/middle", destination: "/final" }]),
+        );
+
+        expect(await renderedUrlFor("/start", configRewrites)).toBe("/middle");
+      },
+    );
+
+    it("does not continue a fallback locale:false destination through a later ordinary rule", async () => {
+      expect(
+        await renderedUrlFor(
+          "/start",
+          {
+            beforeFiles: [],
+            afterFiles: [],
+            fallback: [
+              { source: "/en/start", destination: "/middle", locale: false },
+              ...localized([{ source: "/middle", destination: "/final" }]),
+            ],
+          },
+          { isDataReq: true, isDataRequest: true },
+        ),
+      ).toBe("/middle");
+    });
+
+    it("continues a locale:false chain through the unprefixed destination", async () => {
+      expect(
+        await renderedUrlFor("/start", {
+          beforeFiles: [
+            { source: "/en/start", destination: "/middle", locale: false },
+            { source: "/middle", destination: "/final", locale: false },
+          ],
+          afterFiles: [],
+          fallback: [],
+        }),
+      ).toBe("/final");
+    });
+
+    it("continues a chain through locale-prefixed destinations", async () => {
+      expect(
+        await renderedUrlFor("/start", {
+          beforeFiles: localized([
+            { source: "/start", destination: "/middle" },
+            { source: "/middle", destination: "/final" },
+          ]),
+          afterFiles: [],
+          fallback: [],
+        }),
+      ).toBe("/en/final");
+    });
+
+    it("still inserts the default locale into a middleware rewrite target", async () => {
+      expect(
+        await renderedUrlFor(
+          "/start",
+          {
+            beforeFiles: localized([{ source: "/middle", destination: "/final" }]),
+            afterFiles: [],
+            fallback: [],
+          },
+          {
+            hasMiddleware: true,
+            runMiddleware: makeMiddleware({ continue: true, rewriteUrl: "/middle" }),
+          },
+        ),
+      ).toBe("/en/final");
+    });
   });
 });
 

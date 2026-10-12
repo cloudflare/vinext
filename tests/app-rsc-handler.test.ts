@@ -36,6 +36,7 @@ import {
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import {
   handleMetadataRouteRequest,
   isMetadataRouteRequestPath,
@@ -289,6 +290,105 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  // Next.js inserts the default locale into the request pathname only; later
+  // rules match a config rewrite's destination as-is (resolve-routes.ts).
+  describe("i18n rewrite chains", () => {
+    const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+    const routes = new Map(
+      ["/middle", "/final"].map((pattern) => [
+        pattern,
+        createPageRoute({ pattern, routeSegments: [pattern.slice(1)] }),
+      ]),
+    );
+
+    async function renderedPatternFor(
+      configRewrites: HandlerOptions["configRewrites"],
+      init?: RequestInit,
+      url = "https://example.test/docs/start",
+    ) {
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites,
+        dispatchMatchedPage: async (options) => new Response(options.route.pattern),
+        i18nConfig,
+        matchRoute: (pathname: string) => {
+          const route = routes.get(pathname);
+          return route ? { params: {}, route } : null;
+        },
+      });
+      const response = await handler(new Request(url, init), null);
+      return response.status === 200 ? await response.text() : response.status;
+    }
+
+    const localized = (rewrites: NextRewrite[]) =>
+      applyLocaleToRoutes<NextRewrite>(rewrites, i18nConfig, "rewrite");
+
+    it("does not continue a locale:false destination through a later ordinary rule", async () => {
+      expect(
+        await renderedPatternFor({
+          afterFiles: [],
+          beforeFiles: [
+            { source: "/en/start", destination: "/middle", locale: false },
+            ...localized([{ source: "/middle", destination: "/final" }]),
+          ],
+          fallback: [],
+        }),
+      ).toBe("/middle");
+    });
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "continues a %s locale:false chain through the unprefixed destination",
+      async (phase) => {
+        const configRewrites: HandlerOptions["configRewrites"] = {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [],
+        };
+        configRewrites[phase].push(
+          { source: "/en/start", destination: "/missing", locale: false },
+          { source: "/missing", destination: "/final", locale: false },
+        );
+        expect(await renderedPatternFor(configRewrites)).toBe("/final");
+      },
+    );
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "continues a %s locale:false chain for a server action outside basePath",
+      async (phase) => {
+        // Actions outside basePath resolve late rewrites before routing.
+        const configRewrites: HandlerOptions["configRewrites"] = {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [],
+        };
+        configRewrites[phase].push(
+          { source: "/en/start", destination: "/missing", locale: false, basePath: false },
+          { source: "/missing", destination: "/final", locale: false, basePath: false },
+        );
+        expect(
+          await renderedPatternFor(
+            configRewrites,
+            { method: "POST", headers: { "next-action": "action-id" } },
+            "https://example.test/start",
+          ),
+        ).toBe("/final");
+      },
+    );
+
+    it("continues a locale:false chain through the unprefixed destination", async () => {
+      expect(
+        await renderedPatternFor({
+          afterFiles: [],
+          beforeFiles: [
+            { source: "/en/start", destination: "/middle", locale: false },
+            { source: "/middle", destination: "/final", locale: false },
+          ],
+          fallback: [],
+        }),
+      ).toBe("/final");
+    });
+  });
+
   it.each([
     [false, "/docs/other/"],
     [true, null],

@@ -643,10 +643,29 @@ export async function runPagesRequest(
           rootTrailingSlash,
         })
       : p;
+  // Next.js inserts the default locale into the request pathname (and
+  // NextURL's forceLocale into middleware rewrite targets), but later rules
+  // match a config rewrite's destination as-is (resolve-routes.ts).
+  let configRewriteFired = false;
   const configSourcePathname = (): string =>
     resolvedPathnameIsRequestPathname
       ? requestConfigMatchPathname
-      : matchResolvedPathname(resolvedPathname);
+      : configRewriteFired
+        ? resolvedPathname
+        : matchResolvedPathname(resolvedPathname);
+  // The unprefixed fallback copies stand in for the default-locale insertion,
+  // so they do not apply to a config rewrite's destination either.
+  const matchConfigRewrite = (rewrite: NextRewrite): string | null =>
+    configRewriteFired && rewrite.localeFallback
+      ? null
+      : matchRewrite(
+          configSourcePathname(),
+          [rewrite],
+          rewriteRequestContext(),
+          basePathState,
+          configSourcePathname(),
+          conditionalRewriteCacheability,
+        );
   const matchedPathnameForRoute = (routePattern: string | undefined): string => {
     const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
     if (!i18nConfig) return matchedPathname;
@@ -714,16 +733,8 @@ export async function runPagesRequest(
   // Step 9: beforeFiles rewrites
   // Next.js server-utils.ts applies every beforeFiles rule in sequence and
   // continues afterFiles/fallback rules until a destination resolves.
-  let configRewriteFired = false;
   for (const rewrite of configRewrites.beforeFiles ?? []) {
-    const rewritten = matchRewrite(
-      configSourcePathname(),
-      [rewrite],
-      rewriteRequestContext(),
-      basePathState,
-      configSourcePathname(),
-      conditionalRewriteCacheability,
-    );
+    const rewritten = matchConfigRewrite(rewrite);
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
@@ -829,14 +840,7 @@ export async function runPagesRequest(
   let resolvedPathnameChanged = false;
   if (!pageMatch || pageMatch.route.isDynamic) {
     for (const rewrite of configRewrites.afterFiles ?? []) {
-      const rewritten = matchRewrite(
-        configSourcePathname(),
-        [rewrite],
-        rewriteRequestContext(),
-        basePathState,
-        configSourcePathname(),
-        conditionalRewriteCacheability,
-      );
+      const rewritten = matchConfigRewrite(rewrite);
       if (rewritten) {
         if (isExternalUrl(rewritten)) {
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
@@ -883,14 +887,7 @@ export async function runPagesRequest(
       configRewrites.fallback?.length
     ) {
       for (const rewrite of configRewrites.fallback) {
-        const fallbackRewrite = matchRewrite(
-          configSourcePathname(),
-          [rewrite],
-          rewriteRequestContext(),
-          basePathState,
-          configSourcePathname(),
-          conditionalRewriteCacheability,
-        );
+        const fallbackRewrite = matchConfigRewrite(rewrite);
         if (!fallbackRewrite) continue;
         if (isExternalUrl(fallbackRewrite)) {
           return {
@@ -940,14 +937,7 @@ export async function runPagesRequest(
     let matchedFallbackRewrite = false;
     if (response.status === 404 && shouldDeferErrorPageOnMiss && configRewrites.fallback?.length) {
       for (const rewrite of configRewrites.fallback) {
-        const fallbackRewrite = matchRewrite(
-          configSourcePathname(),
-          [rewrite],
-          rewriteRequestContext(),
-          basePathState,
-          configSourcePathname(),
-          conditionalRewriteCacheability,
-        );
+        const fallbackRewrite = matchConfigRewrite(rewrite);
         if (!fallbackRewrite) continue;
         if (isExternalUrl(fallbackRewrite)) {
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
@@ -1053,14 +1043,7 @@ export async function runPagesRequest(
       : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
     for (const rewrite of configRewrites.fallback) {
-      const fallbackRewrite = matchRewrite(
-        configSourcePathname(),
-        [rewrite],
-        rewriteRequestContext(),
-        basePathState,
-        configSourcePathname(),
-        conditionalRewriteCacheability,
-      );
+      const fallbackRewrite = matchConfigRewrite(rewrite);
       if (!fallbackRewrite) continue;
       if (isExternalUrl(fallbackRewrite)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
