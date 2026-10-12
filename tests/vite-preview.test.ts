@@ -79,6 +79,17 @@ describe("vite preview (Pages Router, Node)", () => {
     await missing.arrayBuffer();
   });
 
+  it("renders pages below a Vite base without a basePath", async () => {
+    const { server: baseServer, port } = await startPreview(tmpDir, { base: "/custom/" });
+    try {
+      const page = await fetch(`http://127.0.0.1:${port}/custom/about`);
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain("<title");
+    } finally {
+      await baseServer.close();
+    }
+  });
+
   it("keeps Vite's preview.proxy ahead of the Pages handler", async () => {
     const target = http.createServer((_req, res) => res.end("proxied"));
     await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));

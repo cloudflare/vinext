@@ -8356,7 +8356,7 @@ export const loadServerActionClient = ${
         if (hasAppDir || hasCloudflarePlugin || hasNitroPlugin) return;
         if (nextConfig?.output === "export") return;
         const { createPagesPreviewHandler } = await import("./server/prod-server.js");
-        const { base, environments, preview, root } = server.config;
+        const { environments, preview, root } = server.config;
         const handler = await createPagesPreviewHandler({
           clientDir: path.resolve(root, environments.client?.build.outDir ?? "dist/client"),
           serverDir: path.resolve(root, environments.ssr?.build.outDir ?? "dist/server"),
@@ -8366,9 +8366,10 @@ export const loadServerActionClient = ${
         if (!handler) return;
         return () => {
           server.middlewares.use((req, res) => {
-            // Vite's `base` middleware strips the base path; routing needs it.
-            // `req.url` may also carry a `preview.proxy` bypass rewrite.
-            if (base !== "/") req.url = base.slice(0, -1) + (req.url ?? "/");
+            // Vite's `base` middleware strips `basePath` (vinext sets `base` to
+            // it), and the Pages handler routes below it. `req.url` may also
+            // carry a `preview.proxy` bypass rewrite.
+            if (nextConfig?.basePath) req.url = nextConfig.basePath + (req.url ?? "/");
             handler(req, res);
           });
         };
