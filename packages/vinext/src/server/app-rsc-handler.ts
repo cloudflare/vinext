@@ -2101,7 +2101,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     filesystemRouteEligible &&
     isPostRequest &&
     contentType.startsWith("multipart/form-data") &&
-    !actionId
+    !actionId &&
+    !renderedPreActionMatch?.route.__loadRouteHandler
   ) {
     if (options.handleProgressiveActionRequest) {
       progressiveActionResult = await options.handleProgressiveActionRequest({

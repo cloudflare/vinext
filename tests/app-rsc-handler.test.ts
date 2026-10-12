@@ -9,6 +9,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-combined-handler.js";
+import { readActionFormDataWithLimit } from "../packages/vinext/src/server/app-server-action-execution.js";
 import {
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   type AppWorkerResponseStageProps,
@@ -6718,6 +6719,81 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("location")).toBeNull();
     expect(await response.text()).toBe("icon bytes");
+  });
+
+  describe.each([true, false])("multipart Route Handlers (isDev=%s)", (isDev) => {
+    it.each(["text", "file"] as const)(
+      "receives a complete %s payload larger than the Server Actions body limit",
+      async (kind) => {
+        const maxActionBodySize = 1024 * 1024;
+        const payload = "x".repeat(maxActionBodySize + 1);
+        const formData = new FormData();
+        if (kind === "text") {
+          formData.set("message", payload);
+        } else {
+          formData.set("image", new Blob([payload], { type: "image/bmp" }), "image.bmp");
+        }
+        const request = new Request("https://example.test/docs/upload", {
+          method: "POST",
+          body: formData,
+        });
+        expect(request.headers.has("content-length")).toBe(false);
+
+        const route = createPageRoute({
+          __loadPage: undefined,
+          __loadRouteHandler() {},
+          page: null,
+          pattern: "/upload",
+          routeHandler: { GET: () => new Response("route") },
+          routeSegments: ["upload"],
+        });
+        const handleProgressiveActionRequest = vi.fn<
+          NonNullable<HandlerOptions["handleProgressiveActionRequest"]>
+        >(async ({ request }) => {
+          try {
+            await readActionFormDataWithLimit(request.clone(), maxActionBodySize);
+            return null;
+          } catch (error) {
+            if (!(error instanceof Error) || error.message !== "Request body too large") {
+              throw error;
+            }
+            return new Response("Payload Too Large", { status: 413 });
+          }
+        });
+        const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+          async ({ request }) => {
+            expect(request.bodyUsed).toBe(false);
+            const body = await request.formData();
+            if (kind === "text") {
+              expect(body.get("message")).toBe(payload);
+            } else {
+              const image = body.get("image");
+              expect(image).toBeInstanceOf(File);
+              if (!(image instanceof File)) throw new Error("Expected uploaded file");
+              expect(image.name).toBe("image.bmp");
+              expect(image.type).toBe("image/bmp");
+              expect(image.size).toBe(payload.length);
+              expect(await image.text()).toBe(payload);
+            }
+            return new Response("uploaded", { status: 200 });
+          },
+        );
+        const handler = createHandler({
+          configHeaders: [],
+          isDev,
+          handleProgressiveActionRequest,
+          dispatchMatchedRouteHandler,
+          matchRoute: (pathname) => (pathname === "/upload" ? { route, params: {} } : null),
+        });
+
+        const response = await handler(request, null);
+
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe("uploaded");
+        expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+        expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it("marks progressive action page renders even when decoded form state is null", async () => {
