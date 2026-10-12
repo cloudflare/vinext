@@ -4507,11 +4507,776 @@ describe("app page route wiring helpers", () => {
     const parentBoundary = findSuspenseWithFallback(routeEntry, "ParentLoading");
     const leafBoundary = findSuspenseWithFallback(routeEntry, "LeafLoading");
 
-    expect(parentBoundary?.key).toBe("slow");
+    expect(parentBoundary?.key).toBe(JSON.stringify(["parent", "slow"]));
     expect(leafBoundary?.key).toBe(JSON.stringify(["parent", "slow"]));
     expect(findSuspenseWithFallback(parentBoundary?.props.children, "LeafLoading")).not.toBeNull();
     expect(findSlotById(parentBoundary?.props.children, "layout:/parent/slow")).not.toBeNull();
     expect(countSuspenseWithFallback(routeEntry, "LeafLoading")).toBe(1);
+  });
+
+  // cloudflare/vinext#3725: app/dashboard/loading.tsx above
+  // app/dashboard/(protected)/layout.tsx must wrap that layout, like Next.js's
+  // LoadingBoundary around each child segment, and stay mounted while the
+  // pages inside the group change.
+  it("keeps an ancestor loading boundary around a shared group layout instead of the page", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    const buildElements = (
+      routeSegments: string[],
+      routePath: string,
+      withPageRenderDependency = true,
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        // The page render dependency is what lets the page entry carry a leaf
+        // loading boundary; without it, the route entry is not gated and stays
+        // inspectable.
+        pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 2],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    const overview = buildElements(["dashboard", "(protected)"], "/dashboard");
+    const settings = buildElements(["dashboard", "(protected)", "settings"], "/dashboard/settings");
+    expect(overview["page:/dashboard"]).toBeDefined();
+    expect(settings["page:/dashboard/settings"]).toBeDefined();
+    expect(countSuspenseWithFallback(overview["page:/dashboard"], "DashboardLoading")).toBe(0);
+    expect(
+      countSuspenseWithFallback(settings["page:/dashboard/settings"], "DashboardLoading"),
+    ).toBe(0);
+
+    const stableKey = JSON.stringify(["dashboard", "(protected)"]);
+    for (const routeEntry of [
+      buildElements(["dashboard", "(protected)"], "/dashboard", false)["route:/dashboard"],
+      buildElements(["dashboard", "(protected)", "settings"], "/dashboard/settings", false)[
+        "route:/dashboard/settings"
+      ],
+    ]) {
+      const boundary = findSuspenseWithFallback(routeEntry, "DashboardLoading");
+      expect(boundary?.key).toBe(stableKey);
+      expect(
+        findSlotById(boundary?.props.children, "layout:/dashboard/(protected)"),
+      ).not.toBeNull();
+    }
+  });
+
+  it("keys slot-owner ancestor loading boundaries by the group and keeps them off templates", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    function GroupTemplate(props: Record<string, unknown>): ReactElement {
+      return createElement("div", null, props.children as ReactNode);
+    }
+
+    // No layouts, so the template and slot entries are not gated on layout
+    // render dependencies and stay inspectable. The slot then has no target
+    // layout and keeps its own boundary; Next.js would not render a named slot
+    // of a layout-less segment at all, so only its key is pinned here.
+    const buildElements = (
+      routeSegments: string[],
+      routePath: string,
+      templates: { default: typeof GroupTemplate }[],
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [],
+          routeSegments,
+          slots: {
+            panel: {
+              default: null,
+              error: null,
+              layout: null,
+              layoutIndex: -1,
+              loading: null,
+              name: "panel",
+              ownerTreePosition: 2,
+              page: { default: SlotPage },
+              routeSegments: [],
+            },
+          },
+          templateTreePositions: templates.length > 0 ? [2] : [],
+          templates,
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    const stableKey = JSON.stringify(["dashboard", "(protected)"]);
+    const slotId = AppElementsWire.encodeSlotId("panel", "/");
+    const templateId = "template:/dashboard/(protected)";
+    for (const [routeSegments, routePath] of [
+      [["dashboard", "(protected)"], "/dashboard"],
+      [["dashboard", "(protected)", "settings"], "/dashboard/settings"],
+    ] as const) {
+      const withoutTemplate = buildElements([...routeSegments], routePath, []);
+      expect(findSuspenseWithFallback(withoutTemplate[slotId], "DashboardLoading")?.key).toBe(
+        stableKey,
+      );
+
+      // The route entry renders the template in a Slot keyed by its child
+      // segment, so the template entry must not carry the boundary; the route
+      // entry's per-segment boundary outside that Slot does, with a stable key.
+      const withTemplate = buildElements([...routeSegments], routePath, [
+        { default: GroupTemplate },
+      ]);
+      expect(withTemplate[templateId]).toBeDefined();
+      expect(countSuspenseWithFallback(withTemplate[templateId], "DashboardLoading")).toBe(0);
+      expect(findSuspenseWithFallback(withTemplate[slotId], "DashboardLoading")?.key).toBe(
+        stableKey,
+      );
+      const routeBoundary = findSuspenseWithFallback(
+        withTemplate[`route:${routePath}`],
+        "DashboardLoading",
+      );
+      expect(routeBoundary?.key).toBe(stableKey);
+      expect(findSlotById(routeBoundary?.props.children, templateId)).not.toBeNull();
+    }
+  });
+
+  // A layout at the group segment (position 2) owns a slow @panel slot.
+  async function renderSlotOwnerDocument(
+    loadingTreePosition: number,
+  ): Promise<{ html: string; shell: string }> {
+    function DashboardLoading() {
+      return createElement("p", { "data-loading": "dashboard" }, "Loading dashboard");
+    }
+
+    function PanelLayout(props: Record<string, unknown>) {
+      return createElement(
+        "section",
+        { "data-layout": "panel-owner" },
+        createElement("aside", null, readChildren(props.panel)),
+        readChildren(props.children),
+      );
+    }
+
+    let releasePanel!: () => void;
+    const panelReady = new Promise<void>((resolve) => {
+      releasePanel = resolve;
+    });
+    async function SlowPanelPage() {
+      await panelReady;
+      return createElement("p", { "data-slot-page": "panel" }, "Panel");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [2],
+        layouts: [{ default: PanelLayout }],
+        loading: null,
+        loadings: [{ default: DashboardLoading }],
+        loadingTreePositions: [loadingTreePosition],
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "(protected)"],
+        slots: {
+          panel: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "panel",
+            ownerTreePosition: 2,
+            page: { default: SlowPanelPage },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    // The panel stays pending until the first chunk is read, so the nearest
+    // boundary around it emits its fallback.
+    const { renderToReadableStream } = await import("react-dom/server.edge");
+    const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+    const stream = await withTimeout(
+      renderToReadableStream(
+        createElement(
+          "html",
+          null,
+          createElement("head"),
+          createElement(
+            "body",
+            null,
+            createElement(
+              ElementsContext.Provider,
+              { value: elements },
+              createElement(Slot, { id: "route:/dashboard" }),
+            ),
+          ),
+        ),
+        { onError: throwRenderError },
+      ),
+      2_000,
+    );
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    const first = await withTimeout(reader.read(), 2_000);
+    const shell = first.value ? decoder.decode(first.value, { stream: true }) : "";
+    let html = shell;
+    releasePanel();
+    for (;;) {
+      const { done, value } = await withTimeout(reader.read(), 5_000);
+      if (done) break;
+      html += decoder.decode(value, { stream: true });
+    }
+    return { html: html + decoder.decode(), shell };
+  }
+
+  it("leaves an ancestor loading boundary off a slot owned by the loading's child layout", async () => {
+    // The layout entry's boundary sits outside the owner layout, so a
+    // suspending slot falls back above the layout instead of inside it.
+    const { html, shell } = await renderSlotOwnerDocument(1);
+    expect(shell).toContain('data-loading="dashboard"');
+    expect(shell).not.toContain('data-layout="panel-owner"');
+    const layoutStart = html.indexOf('<section data-layout="panel-owner"');
+    const layoutEnd = html.indexOf("</section>", layoutStart);
+    expect(layoutStart).toBeGreaterThan(-1);
+    expect(html.slice(layoutStart, layoutEnd)).not.toContain('data-loading="dashboard"');
+    expect(html.split('data-loading="dashboard"')).toHaveLength(2);
+    expect(html.indexOf('data-loading="dashboard"')).toBeLessThan(layoutStart);
+    expect(html).toContain('data-slot-page="panel"');
+  });
+
+  it("keeps the owner segment's loading boundary on its slot inside the owner layout", async () => {
+    // Within one segment the layout wraps the loading, so the owner's own
+    // loading falls back inside the layout, around the suspending slot.
+    const { html, shell } = await renderSlotOwnerDocument(2);
+    const shellPanelStart = shell.indexOf('<section data-layout="panel-owner"><aside>');
+    expect(shellPanelStart).toBeGreaterThan(-1);
+    expect(shell.slice(shellPanelStart, shell.indexOf("</aside>", shellPanelStart))).toContain(
+      'data-loading="dashboard"',
+    );
+    const layoutStart = html.indexOf('<section data-layout="panel-owner"');
+    const layoutEnd = html.indexOf("</section>", layoutStart);
+    expect(layoutStart).toBeGreaterThan(-1);
+    const panelStart = html.indexOf("<aside>", layoutStart);
+    const panelEnd = html.indexOf("</aside>", panelStart);
+    expect(panelStart).toBeGreaterThan(layoutStart);
+    expect(panelEnd).toBeLessThan(layoutEnd);
+    expect(html.slice(panelStart, panelEnd)).toContain('data-loading="dashboard"');
+    expect(html.split('data-loading="dashboard"')).toHaveLength(2);
+    expect(html).toContain('data-slot-page="panel"');
+  });
+
+  it("keys a shared group layout entry's ancestor loading boundary by the group", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    // The group layout is the only layout, so its entry is not gated on an
+    // earlier layout's render dependency and stays inspectable.
+    const buildElements = (routeSegments: string[], routePath: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [2],
+          layouts: [{ default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    const layoutId = "layout:/dashboard/(protected)";
+    for (const [routeSegments, routePath] of [
+      [["dashboard", "(protected)"], "/dashboard"],
+      [["dashboard", "(protected)", "settings"], "/dashboard/settings"],
+    ] as const) {
+      const elements = buildElements([...routeSegments], routePath);
+      expect(findSuspenseWithFallback(elements[layoutId], "DashboardLoading")?.key).toBe(
+        JSON.stringify(["dashboard", "(protected)"]),
+      );
+    }
+  });
+
+  it("leaves an ancestor loading boundary off a layout below a layout-less segment", () => {
+    function SectionLoading() {
+      return createElement("p", null, "Loading section");
+    }
+
+    // The leaf layout is the only layout, so its entry is not gated on an
+    // earlier layout's render dependency and stays inspectable.
+    const buildElements = (routeSegments: string[], routePath: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [3],
+          layouts: [{ default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: SectionLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    // The browser keys each layout entry's Slot by its layout, so a boundary on
+    // the entry would remount between /section/plain/three and .../four. The
+    // route entry's per-segment boundary, keyed by "plain", carries it.
+    for (const leaf of ["three", "four"]) {
+      const routePath = `/section/plain/${leaf}`;
+      const elements = buildElements(["section", "plain", leaf], routePath);
+      const layoutId = `layout:${routePath}`;
+      expect(elements[layoutId]).toBeDefined();
+      expect(countSuspenseWithFallback(elements[layoutId], "SectionLoading")).toBe(0);
+      const routeBoundary = findSuspenseWithFallback(
+        elements[`route:${routePath}`],
+        "SectionLoading",
+      );
+      expect(routeBoundary?.key).toBe(JSON.stringify(["section", "plain"]));
+      expect(findSlotById(routeBoundary?.props.children, layoutId)).not.toBeNull();
+    }
+  });
+
+  it("leaves an ancestor loading boundary above a template to the route entry", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    function GroupTemplate(props: Record<string, unknown>) {
+      return createElement("div", null, props.children as ReactNode);
+    }
+
+    const buildElements = (withPageRenderDependency: boolean) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        // With a page render dependency the page entry may carry its own
+        // boundary; without one the template and route entries are not gated.
+        pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [],
+          routeSegments: ["dashboard", "(protected)", "settings"],
+          slots: {},
+          templateTreePositions: [2],
+          templates: [{ default: GroupTemplate }],
+        },
+        routePath: "/dashboard/settings",
+        rootNotFoundModule: null,
+      });
+
+    const withDependency = buildElements(true);
+    expect(withDependency["page:/dashboard/settings"]).toBeDefined();
+    expect(
+      countSuspenseWithFallback(withDependency["page:/dashboard/settings"], "DashboardLoading"),
+    ).toBe(0);
+    const withoutDependency = buildElements(false);
+    const templateId = "template:/dashboard/(protected)";
+    expect(withoutDependency[templateId]).toBeDefined();
+    expect(countSuspenseWithFallback(withoutDependency[templateId], "DashboardLoading")).toBe(0);
+    const routeBoundary = findSuspenseWithFallback(
+      withoutDependency["route:/dashboard/settings"],
+      "DashboardLoading",
+    );
+    expect(routeBoundary?.key).toBe(JSON.stringify(["dashboard", "(protected)"]));
+    expect(findSlotById(routeBoundary?.props.children, templateId)).not.toBeNull();
+  });
+
+  it("keeps the route-derived key for a loading at the slot owner's own segment", () => {
+    function DashboardLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    const buildElements = (routeSegments: string[], routePath: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: DashboardLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [],
+          routeSegments,
+          slots: {
+            panel: {
+              default: null,
+              error: null,
+              layout: null,
+              layoutIndex: -1,
+              loading: null,
+              name: "panel",
+              ownerTreePosition: 1,
+              page: { default: SlotPage },
+              routeSegments: [],
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    // The boundary wraps the slot's own child segment here, so the children
+    // route's group key must not pin it across slot navigations.
+    const slotId = AppElementsWire.encodeSlotId("panel", "/");
+    const overviewKey = findSuspenseWithFallback(
+      buildElements(["dashboard", "(overview)"], "/dashboard")[slotId],
+      "DashboardLoading",
+    )?.key;
+    const settingsKey = findSuspenseWithFallback(
+      buildElements(["dashboard", "(overview)", "settings"], "/dashboard/settings")[slotId],
+      "DashboardLoading",
+    )?.key;
+    // The pre-existing key: the first visible children segment, else the
+    // slot's own reset key (empty for a slot with no route segments). Next.js
+    // keys this boundary by the slot's own child segment, not modelled here.
+    expect(overviewKey).toBe("");
+    expect(settingsKey).toBe("settings");
+  });
+
+  it("leaves an ancestor loading boundary off the page entry even with nothing in between", () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading root");
+    }
+
+    const buildElements = (
+      routeSegments: string[],
+      routePath: string,
+      withPageRenderDependency = true,
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        pageRenderDependency: withPageRenderDependency ? createAppPageRenderDependency() : null,
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          loadings: [{ default: RootLoading }],
+          loadingTreePositions: [0],
+          notFound: null,
+          notFounds: [],
+          routeSegments,
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+    // The browser keys the page's Slot by the page, so a boundary on the page
+    // entry would remount between sibling pages. The route entry's
+    // per-segment boundary, keyed by the loading segment's child, carries it.
+    for (const [routeSegments, routePath] of [
+      [["reports", "a"], "/reports/a"],
+      [["reports", "b"], "/reports/b"],
+    ] as const) {
+      const pageId = `page:${routePath}`;
+      const withDependency = buildElements([...routeSegments], routePath);
+      expect(withDependency[pageId]).toBeDefined();
+      expect(countSuspenseWithFallback(withDependency[pageId], "RootLoading")).toBe(0);
+      const routeBoundary = findSuspenseWithFallback(
+        buildElements([...routeSegments], routePath, false)[`route:${routePath}`],
+        "RootLoading",
+      );
+      expect(routeBoundary?.key).toBe(JSON.stringify(["reports"]));
+      expect(findSlotById(routeBoundary?.props.children, pageId)).not.toBeNull();
+    }
+  });
+
+  it("keeps only the leaf loading boundary on the page entry", () => {
+    function AncestorLoading() {
+      return createElement("p", null, "Loading dashboard");
+    }
+
+    function LeafLoading() {
+      return createElement("p", null, "Loading page");
+    }
+
+    const buildPageEntry = (
+      loading: { default: typeof LeafLoading } | null,
+      loadings: { default: typeof LeafLoading }[],
+      loadingTreePositions: number[],
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        pageRenderDependency: createAppPageRenderDependency(),
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading,
+          loadings,
+          loadingTreePositions,
+          notFound: null,
+          notFounds: [],
+          routeSegments: ["dashboard", "(protected)"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+      })["page:/dashboard"];
+
+    for (const pageEntry of [
+      buildPageEntry(null, [{ default: AncestorLoading }, { default: LeafLoading }], [1, 2]),
+      // The legacy route-level loading field is the leaf loading.
+      buildPageEntry({ default: LeafLoading }, [], []),
+    ]) {
+      expect(countSuspenseWithFallback(pageEntry, "LeafLoading")).toBe(1);
+      expect(countSuspenseWithFallback(pageEntry, "AncestorLoading")).toBe(0);
+    }
+  });
+
+  it("keeps the nearest ancestor loading on included layouts of a loading-shell prefetch", () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading root");
+    }
+
+    function SettingsLoading() {
+      return createElement("p", null, "Loading settings");
+    }
+
+    // The only layout, so its entry is not gated on another layout's render
+    // dependency and stays inspectable.
+    const buildLayoutEntry = (renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [2],
+          layouts: [{ default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: RootLoading }, { default: SettingsLoading }],
+          loadingTreePositions: [0, 3],
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard", "(protected)", "settings"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard/settings",
+        rootNotFoundModule: null,
+        renderMode,
+      })["layout:/dashboard/(protected)"];
+
+    // A loading shell renders no per-segment boundaries in the route entry, so
+    // an included layout keeps its nearest ancestor loading even when the
+    // layout is deeper than that loading's child segment.
+    const shellBoundary = findSuspenseWithFallback(
+      buildLayoutEntry(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
+      "RootLoading",
+    );
+    expect(shellBoundary?.key).toBe(JSON.stringify(["dashboard"]));
+
+    // A full render leaves that loading to the route entry's per-segment
+    // boundary: the entry is the bare layout element the shell wraps.
+    const layoutEntry = buildLayoutEntry();
+    const shellLayoutElement = shellBoundary?.props.children;
+    expect(isValidElement(shellLayoutElement)).toBe(true);
+    expect(isValidElement(layoutEntry) && getElementTypeName(layoutEntry.type)).toBe(
+      isValidElement(shellLayoutElement) && getElementTypeName(shellLayoutElement.type),
+    );
+    expect(countSuspenseWithFallback(layoutEntry, "RootLoading")).toBe(0);
+  });
+
+  it("keeps an ancestor loading boundary off template entries of a loading-shell prefetch", () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading root");
+    }
+
+    function SettingsLoading() {
+      return createElement("p", null, "Loading settings");
+    }
+
+    function GroupTemplate(props: Record<string, unknown>): ReactElement {
+      return createElement("div", null, props.children as ReactNode);
+    }
+
+    // The shell cuts off at the settings loading, so it includes the template
+    // at position 2 below the root loading.
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        loadings: [{ default: RootLoading }, { default: SettingsLoading }],
+        loadingTreePositions: [0, 3],
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["dashboard", "(protected)", "settings"],
+        slots: {},
+        templateTreePositions: [2],
+        templates: [{ default: GroupTemplate }],
+      },
+      routePath: "/dashboard/settings",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    const templateEntry = elements["template:/dashboard/(protected)"];
+    expect(templateEntry).toBeDefined();
+    expect(countSuspenseWithFallback(templateEntry, "RootLoading")).toBe(0);
+  });
+
+  it("keys ancestor loading boundaries by the dynamic child segment's params", () => {
+    function ProductsLoading() {
+      return createElement("p", null, "Loading products");
+    }
+
+    // The [id] layout is the only layout, so its entry is not gated on another
+    // layout's render dependency and stays inspectable.
+    const buildElements = (id: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { id },
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [2],
+          layouts: [{ default: GroupLayout }],
+          loading: null,
+          loadings: [{ default: ProductsLoading }],
+          loadingTreePositions: [1],
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["products", "[id]"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/products/[id]",
+        rootNotFoundModule: null,
+      });
+
+    // Next.js keys the boundary by its child segment, so a param change there
+    // remounts it and shows the fallback.
+    const keys = ["1", "2"].map((id) => {
+      const elements = buildElements(id);
+      const layoutKey = findSuspenseWithFallback(
+        elements["layout:/products/[id]"],
+        "ProductsLoading",
+      )?.key;
+      const routeKey = findSuspenseWithFallback(
+        elements["route:/products/[id]"],
+        "ProductsLoading",
+      )?.key;
+      expect(layoutKey).toBe(routeKey);
+      return layoutKey;
+    });
+    expect(keys[0]).toBe(JSON.stringify(["products", "id|1|d"]));
+    expect(keys[1]).toBe(JSON.stringify(["products", "id|2|d"]));
   });
 
   it("threads route state reset keys into loading, error, and not-found boundaries", () => {
