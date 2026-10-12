@@ -129,6 +129,7 @@ import {
   reconcileCdnResponseHeadersAfterOuterPolicy,
 } from "./cache-control.js";
 import {
+  basePathRootRedirect,
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
@@ -2910,6 +2911,21 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // and filterInternalHeaders drops the copy still present in rawHeaders.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
     const pagesDataUrl = new URL(rawRequest.url);
+    // Before data normalization and the basePath 404: a hybrid root data
+    // request is rebuilt as the bare basePath, and Next.js redirects other
+    // spellings of the basePath root too.
+    const basePathRootResponse = basePathRootRedirect(
+      pagesDataUrl.pathname,
+      options.basePath,
+      options.trailingSlash,
+      pagesDataUrl.search,
+      {
+        i18n: options.i18nConfig,
+        hostname: pagesDataUrl.hostname,
+        skipProxyUrlNormalize: options.skipProxyUrlNormalize,
+      },
+    );
+    if (basePathRootResponse) return basePathRootResponse;
     const pagesDataInScope =
       !options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath);
     if (pagesDataInScope) {

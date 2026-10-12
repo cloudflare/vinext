@@ -40,6 +40,7 @@ import {
 const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
   configHeaders: [] as Array<Record<string, unknown>>,
+  configOverrides: {} as { basePath?: string; trailingSlash?: boolean },
   ensureInstrumentation: vi.fn(),
   ensureResponseInstrumentation: vi.fn(),
   matchApiRoute: vi.fn((url: string) =>
@@ -107,6 +108,12 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   vinextConfig: {
     headers: mocks.configHeaders,
     i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+    get basePath() {
+      return mocks.configOverrides.basePath;
+    },
+    get trailingSlash() {
+      return mocks.configOverrides.trailingSlash;
+    },
   },
 }));
 
@@ -185,6 +192,32 @@ describe("Pages Worker request stage", () => {
     expect(mocks.registerAllCacheAdapters).toHaveBeenCalledOnce();
     expect(get).toHaveBeenCalledWith("middleware-key", undefined);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("redirects the bare basePath to its trailing-slash root before routing", async () => {
+    // The stage reads its config at module load.
+    Object.assign(mocks.configOverrides, { basePath: "/docs", trailingSlash: true });
+    vi.resetModules();
+    try {
+      const stage = await import("../packages/vinext/src/server/pages-request-stage-entry.js");
+      const dispatch = vi.fn<DispatchWorkerResponseStage>();
+
+      const response = await stage.handleRequestStage(
+        new Request("https://example.com/docs?q=1"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(response.status).toBe(308);
+      expect(response.headers.get("location")).toBe("/docs/?q=1");
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(mocks.runMiddleware).not.toHaveBeenCalled();
+    } finally {
+      delete mocks.configOverrides.basePath;
+      delete mocks.configOverrides.trailingSlash;
+      vi.resetModules();
+    }
   });
 
   it("dispatches an ordinary page with a versioned build envelope", async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vite-plus/test";
 import {
+  basePathRootRedirect,
   canonicalizeRequestPathname,
   canonicalizeRequestUrlPathname,
   cloneRequestWithHeaders,
@@ -707,6 +708,85 @@ describe("resolvePublicFileRoute", () => {
 });
 
 // ── normalizeTrailingSlash ──────────────────────────────────────────────
+
+describe("basePathRootRedirect", () => {
+  // Observed against real Next.js 16.2.7 (`next start`).
+  it("redirects the bare basePath to its trailing-slash root under trailingSlash", () => {
+    for (const [pathname, search, location] of [
+      ["/docs", "", "/docs/"],
+      ["/docs", "?q=1", "/docs/?q=1"],
+      ["/DOCS", "", "/docs/"],
+    ]) {
+      const res = basePathRootRedirect(pathname, "/docs", true, search);
+      expect(res?.status, pathname + search).toBe(308);
+      expect(res?.headers.get("Location"), pathname + search).toBe(location);
+    }
+    expect(basePathRootRedirect("/docs/", "/docs", true, "")).toBeNull();
+    expect(basePathRootRedirect("/docs/about", "/docs", true, "")).toBeNull();
+  });
+
+  it("redirects the basePath root slash away without trailingSlash", () => {
+    for (const [pathname, search, location] of [
+      ["/docs/", "", "/docs"],
+      ["/docs/", "?q=1", "/docs?q=1"],
+      ["/DOCS/", "", "/docs"],
+    ]) {
+      const res = basePathRootRedirect(pathname, "/docs", false, search);
+      expect(res?.status, pathname + search).toBe(308);
+      expect(res?.headers.get("Location"), pathname + search).toBe(location);
+    }
+    expect(basePathRootRedirect("/docs", "/docs", false, "")).toBeNull();
+  });
+
+  it("does nothing without a basePath", () => {
+    expect(basePathRootRedirect("/", "", true, "")).toBeNull();
+    expect(basePathRootRedirect("/", "", false, "")).toBeNull();
+  });
+
+  it("matches the root after default-locale insertion and stripping with i18n", () => {
+    // resolve-routes.ts `handleRoute` for internal routes; observed against
+    // real Next.js 16.2.7 for the non-domain cases.
+    const i18n = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.fr", defaultLocale: "fr" }],
+    };
+    const redirect = (pathname: string, trailingSlash: boolean, hostname = "example.com") =>
+      basePathRootRedirect(pathname, "/docs", trailingSlash, "", { i18n, hostname })?.headers.get(
+        "Location",
+      ) ?? null;
+
+    // trailingSlash: the bare basePath and its default-locale root redirect.
+    expect(redirect("/docs", true)).toBe("/docs/");
+    expect(redirect("/docs/en", true)).toBe("/docs/");
+    expect(redirect("/docs/EN", true)).toBe("/docs/");
+    expect(redirect("/docs/fr", true)).toBeNull();
+    expect(redirect("/docs/fr", true, "example.fr")).toBe("/docs/");
+    expect(redirect("/docs/en", true, "example.fr")).toBeNull();
+    expect(redirect("/DOCS/en", true)).toBeNull();
+    // No trailingSlash: only a basePath spelled in another case still matches.
+    expect(redirect("/docs/", false)).toBeNull();
+    expect(redirect("/DOCS/", false)).toBe("/docs");
+  });
+
+  it("also matches the trailing default-locale root under skipProxyUrlNormalize", () => {
+    // resolve-routes.ts `maybeAddTrailingSlash` does not restore the slash, so
+    // real Next.js 16.2.7 redirects `/docs/en/` too.
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    const redirect = (pathname: string, skipProxyUrlNormalize: boolean) =>
+      basePathRootRedirect(pathname, "/docs", true, "?q=1", {
+        i18n,
+        skipProxyUrlNormalize,
+      })?.headers.get("Location") ?? null;
+
+    expect(redirect("/docs/en/", true)).toBe("/docs/?q=1");
+    expect(redirect("/docs/en", true)).toBe("/docs/?q=1");
+    expect(redirect("/docs/fr/", true)).toBeNull();
+    expect(redirect("/docs/en/", false)).toBeNull();
+    // Next.js also matches `/docs/` here, redirecting it to itself forever.
+    expect(redirect("/docs/", true)).toBeNull();
+  });
+});
 
 describe("normalizeTrailingSlash", () => {
   it("redirects /about → /about/ when trailingSlash is true", () => {

@@ -380,6 +380,23 @@ describe("Pages i18n domain routing with basePath (production)", () => {
     expect(res.headers.location).toBe("http://example.fr/app/?utm=campaign");
   });
 
+  it("redirects the bare basePath to its trailing-slash root before root rules", async () => {
+    // Next.js's priority basePath root redirect (load-custom-routes.ts) runs
+    // before custom routes, so the root rewrite never sees `/app`.
+    for (const [pathname, host, location] of [
+      ["/app?root-rewrite=1", "example.com", "/app/?root-rewrite=1"],
+      ["/APP", "example.com", "/app/"],
+      // The domain's default-locale root matches too (resolve-routes.ts
+      // strips the default locale before internal routes).
+      ["/app/en", "example.com", "/app/"],
+      ["/app/fr", "example.fr", "/app/"],
+    ]) {
+      const res = await requestNodeServerWithHost(prodPort, pathname, host);
+      expect(res.status, `${host}${pathname}`).toBe(308);
+      expect(res.headers.location, `${host}${pathname}`).toBe(location);
+    }
+  });
+
   it("redirects each domain's default locale to that domain", async () => {
     // Matches real Next.js 16.2.7: the locale in the path picks the variant
     // (the host only supplies the default when the path has none), and the

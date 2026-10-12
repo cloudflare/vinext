@@ -1,5 +1,17 @@
 import { expect, test } from "@playwright/test";
 
+test("redirects the basePath root slash away and serves the bare basePath", async ({ request }) => {
+  // Next.js's priority `basePath/` → `basePath` redirect (load-custom-routes.ts),
+  // which must run before Vite's base middleware.
+  const redirect = await request.get("/docs/?q=1", { maxRedirects: 0 });
+  expect(redirect.status()).toBe(308);
+  expect(redirect.headers()["location"]).toBe("/docs?q=1");
+
+  const root = await request.get("/docs?q=1", { maxRedirects: 0 });
+  expect(root.status()).toBe(200);
+  expect(await root.text()).toContain("<h1>Home</h1>");
+});
+
 // Ported from Next.js: test/e2e/basepath/router-events.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/router-events.test.ts
 test("loads the target page module through the dev server basePath", async ({ page }) => {

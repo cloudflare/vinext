@@ -747,7 +747,7 @@ export default async function OpenGraphImage() {
       expect(rscModule.__hasPagesDir).toBe(true);
 
       // Verify the RSC handler can serve the App route under basePath
-      const appResponse = await rscModule.default(new Request("http://localhost/app/"));
+      const appResponse = await rscModule.default(new Request("http://localhost/app"));
       expect(appResponse.status).toBe(200);
       const appHtml = await appResponse.text();
       expect(appHtml).toContain("App Router");

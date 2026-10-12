@@ -39,6 +39,18 @@ test.describe("basePath + trailingSlash", () => {
     expect(alias.body).not.toContain("Hello");
   });
 
+  test("redirects the bare basePath to its trailing-slash root", async () => {
+    // Next.js's priority `basePath` → `basePath/` redirect (load-custom-routes.ts).
+    for (const [path, location] of [
+      ["/docs", "/docs/"],
+      ["/docs?query=true", "/docs/?query=true"],
+    ]) {
+      const redirect = await getRawPath(path);
+      expect(redirect.status, path).toBe(308);
+      expect(redirect.location, path).toBe(location);
+    }
+  });
+
   test("canonicalizes dot segments before basePath and trailing-slash handling", async () => {
     const redirect = await getRawPath("/docs/x/%2e%2e/hello");
     expect(redirect.status).toBe(308);
