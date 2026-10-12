@@ -19,6 +19,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import Head from "./head.js";
 import { isNextRouterError } from "./navigation.js";
 import { useUntrackedPathname } from "./internal/navigation-untracked.js";
+import { trackSegmentFallback } from "./internal/shown-segment-fallbacks.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { RouterContext } from "./internal/router-context.js";
 
@@ -236,6 +237,18 @@ class _CatchError<P extends _UserProps> extends React.Component<
       error: state.error,
       previousPathname: props.pathname,
     };
+  }
+
+  componentDidMount(): void {
+    trackSegmentFallback(this, this.state.error !== null);
+  }
+
+  componentDidUpdate(): void {
+    trackSegmentFallback(this, this.state.error !== null);
+  }
+
+  componentWillUnmount(): void {
+    trackSegmentFallback(this, false);
   }
 
   reset = (): void => {

@@ -14,6 +14,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   AppElementsWire,
@@ -1364,6 +1365,8 @@ describe("app page route wiring helpers", () => {
 
     expect(elements["page:/dashboard"]).toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    // A leaf loading's position equals the route's segment count.
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(1);
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
     expect(html).toContain("Route loading");
@@ -1397,6 +1400,39 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(0);
+    const html = await renderRouteEntry(elements, "route:/dashboard/slow");
+    expect(html).toContain("Route loading");
+    expect(html).not.toContain("Page");
+  });
+
+  it("marks a leaf loading-shell boundary at its loading entry's tree position", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: RouteLoadingProbe },
+        loadings: [{ default: RouteLoadingProbe }],
+        loadingTreePositions: [2],
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "slow"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/slow",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(2);
     const html = await renderRouteEntry(elements, "route:/dashboard/slow");
     expect(html).toContain("Route loading");
     expect(html).not.toContain("Page");
@@ -1440,6 +1476,7 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements["layout:/parent/slow"]).toBeUndefined();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBe(1);
     const html = await renderRouteEntry(elements, "route:/parent/slow");
     expect(html).toContain("Parent loading");
     expect(html).not.toContain("Leaf loading");
@@ -1730,6 +1767,7 @@ describe("app page route wiring helpers", () => {
               paramNames: [],
               pattern: "/dashboard",
               patternParts: ["dashboard"],
+              treeSegments: ["dashboard"],
               rootBoundaryId: null,
               rootParamNames: [],
               routeHandlerId: null,
@@ -1776,6 +1814,7 @@ describe("app page route wiring helpers", () => {
         currentLayoutIds: AppElementsWire.readMetadata(currentElements).layoutIds,
         currentParams: {},
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: {},
         targetUrlParts: ["dashboard"],
         template,
@@ -2001,6 +2040,7 @@ describe("app page route wiring helpers", () => {
     const html = await renderRouteEntry(elements, "route:/dashboard");
     expect(html).toContain("Slot loading");
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    expect(elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]).toBeUndefined();
     expect(Object.hasOwn(elements, "__vinext_streaming_metadata_body:route:/dashboard")).toBe(true);
   });
 

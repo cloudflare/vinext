@@ -3,6 +3,7 @@ import { createElement, Suspense } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
@@ -22,6 +23,7 @@ import type {
   RouteManifestRoute,
   RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+import { createAppPageSourcePage } from "../packages/vinext/src/server/app-page-segment-state.js";
 import {
   createNestedBfcacheSlotSegmentId,
   deriveBfcacheSegmentIdentity,
@@ -34,6 +36,7 @@ function route(input: {
   pattern: string;
   patternParts: readonly string[];
   slotIds?: readonly string[];
+  treeSegments?: readonly string[];
 }): RouteManifestRoute {
   return {
     id: input.id,
@@ -48,7 +51,15 @@ function route(input: {
     routeHandlerId: null,
     slotIds: [...(input.slotIds ?? [])],
     templateIds: [],
+    treeSegments: [...(input.treeSegments ?? input.patternParts.map(toTreeSegment))],
   };
+}
+
+function toTreeSegment(part: string): string {
+  if (!part.startsWith(":")) return part;
+  if (part.endsWith("*")) return `[[...${part.slice(1, -1)}]]`;
+  if (part.endsWith("+")) return `[...${part.slice(1, -1)}]`;
+  return `[${part.slice(1)}]`;
 }
 
 function manifest(
@@ -610,6 +621,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId, sharedLayoutId],
         currentParams: { projectId: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { projectId: "alpha" },
         targetUrlParts: ["projects", "alpha", "activity"],
         template,
@@ -621,6 +633,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId, sharedLayoutId],
         currentParams: { projectId: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { projectId: "beta" },
         targetUrlParts: ["projects", "beta", "activity"],
         template,
@@ -660,12 +673,370 @@ describe("App Router optimistic routing", () => {
             currentLayoutIds: [rootLayoutId, sharedLayoutId],
             currentParams: { projectId },
             routeManifest,
+            segmentFallbackShown: false,
             targetRouteParams: encodedPayload.routeParams,
             targetUrlParts: encodedPayload.urlParts,
             template: encodedPayload.template,
           }),
       ).toBe(false);
     }
+  });
+
+  // Next.js keys a loading boundary by its child segment, so it stays mounted
+  // while that child is shared, even with no layout in between.
+  it("decides whether a loading shell's boundary is already mounted", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/s/one",
+        isDynamic: false,
+        pattern: "/s/one",
+        patternParts: ["s", "one"],
+        treeSegments: ["s", "plain", "one"],
+      }),
+      route({
+        id: "route:/s/two",
+        isDynamic: false,
+        pattern: "/s/two",
+        patternParts: ["s", "two"],
+        treeSegments: ["s", "plain", "two"],
+      }),
+      route({
+        id: "route:/s/alpha",
+        isDynamic: false,
+        pattern: "/s/alpha",
+        patternParts: ["s", "alpha"],
+        treeSegments: ["s", "(g)", "alpha"],
+      }),
+      route({
+        id: "route:/s/beta",
+        isDynamic: false,
+        pattern: "/s/beta",
+        patternParts: ["s", "beta"],
+        treeSegments: ["s", "(g)", "beta"],
+      }),
+      route({
+        id: "route:/s/other",
+        isDynamic: false,
+        pattern: "/s/other",
+        patternParts: ["s", "other"],
+        treeSegments: ["s", "other"],
+      }),
+      route({
+        id: "route:/p/:id/a",
+        isDynamic: true,
+        paramNames: ["id"],
+        pattern: "/p/:id/a",
+        patternParts: ["p", ":id", "a"],
+      }),
+      route({
+        id: "route:/p/:id/b",
+        isDynamic: true,
+        paramNames: ["id"],
+        pattern: "/p/:id/b",
+        patternParts: ["p", ":id", "b"],
+      }),
+      route({
+        id: "route:/api/users/me",
+        isDynamic: false,
+        pattern: "/api/users/me",
+        patternParts: ["api", "users", "me"],
+      }),
+      route({
+        id: "route:/api/:resource/:id",
+        isDynamic: true,
+        paramNames: ["resource", "id"],
+        pattern: "/api/:resource/:id",
+        patternParts: ["api", ":resource", ":id"],
+      }),
+    ]);
+    // Real payloads name their source page, built from the route's tree
+    // segments.
+    const sourcePageFor = (routeId: string): string | null => {
+      const treeSegments = routeManifest.segmentGraph.routes.get(routeId)?.treeSegments;
+      return treeSegments ? createAppPageSourcePage(treeSegments) : null;
+    };
+    const metadataFor = (routeId: string, sourcePage = sourcePageFor(routeId)): AppElements =>
+      AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [],
+        rootLayoutTreePath: "/",
+        routeId,
+        sourcePage,
+      });
+    const currentElementsFor = (
+      routeId: string,
+      sourcePage = sourcePageFor(routeId),
+    ): AppElements => ({
+      ...metadataFor(routeId, sourcePage),
+      [`page:${routeId.slice("route:".length)}`]: null,
+    });
+    const createShellTemplate = (href: string, loadingTreePosition: number | null) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: {
+          ...metadataFor(`route:${href}`),
+          [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+          ...(loadingTreePosition === null
+            ? {}
+            : { [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: loadingTreePosition }),
+          [`page:${href}`]: null,
+          [`route:${href}`]: createElement("p", null, "Loading"),
+        },
+        href,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const canCommit = (
+      template: ReturnType<typeof createShellTemplate>,
+      currentRouteId: string,
+      currentParams: Record<string, string> = {},
+      targetRouteParams: Record<string, string> = {},
+      currentSourcePage = sourcePageFor(currentRouteId),
+    ) =>
+      canCommitOptimisticRouteTemplate({
+        currentElements: currentElementsFor(currentRouteId, currentSourcePage),
+        currentLayoutIds: [],
+        currentParams,
+        routeManifest,
+        segmentFallbackShown: false,
+        targetRouteParams,
+        targetUrlParts: [],
+        template,
+      });
+
+    // A loading at app/s wraps its child segment: `plain` is shared, while the
+    // `(g)` group and `other` are different children.
+    const twoShell = createShellTemplate("/s/two", 1);
+    expect(twoShell.loadingTreePosition).toBe(1);
+    expect(canCommit(twoShell, "route:/s/one")).toBe(false);
+    expect(canCommit(twoShell, "route:/s/alpha")).toBe(true);
+    expect(canCommit(twoShell, "route:/s/other")).toBe(true);
+    // Route groups are part of the key, so pages under the same group share
+    // the child segment.
+    const betaShell = createShellTemplate("/s/beta", 1);
+    expect(canCommit(betaShell, "route:/s/alpha")).toBe(false);
+    expect(canCommit(betaShell, "route:/s/one")).toBe(true);
+    // A shell without a children loading position (slot loading only) is
+    // never compared.
+    const slotOnlyShell = createShellTemplate("/s/two", null);
+    expect(slotOnlyShell.loadingTreePosition).toBeNull();
+    expect(canCommit(slotOnlyShell, "route:/s/one")).toBe(true);
+    // A route outside the manifest keeps the shell.
+    expect(canCommit(twoShell, "route:/missing")).toBe(true);
+    // So does a current page showing an error or HTTP access fallback, whose
+    // owner may sit above the loading boundary.
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: currentElementsFor("route:/s/one"),
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        segmentFallbackShown: true,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
+    // A not-found or error boundary payload has no page tree.
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: {
+          ...metadataFor("route:/s/one"),
+          "route:/s/one": createElement("p", null, "Not found"),
+        },
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        segmentFallbackShown: false,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
+    // So does an intercepted current page, whose params may belong to the
+    // intercepted route.
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: {
+          ...AppElementsWire.createMetadataEntries({
+            interception: {
+              sourceMatchedUrl: "/s/one",
+              sourceRouteId: AppElementsWire.encodeRouteId("/s/one", null),
+              slotId: AppElementsWire.encodeSlotId("modal", "/s/one"),
+              targetMatchedUrl: "/s/other",
+              targetRouteId: AppElementsWire.encodeRouteId("/s/other", null),
+            },
+            interceptionContext: null,
+            layoutIds: [],
+            rootLayoutTreePath: "/",
+            routeId: "route:/s/one",
+          }),
+          "page:/s/one": null,
+        },
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        segmentFallbackShown: false,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements: {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: "/s/one",
+            layoutIds: [],
+            rootLayoutTreePath: "/",
+            routeId: "route:/s/one",
+          }),
+          "page:/s/one": null,
+        },
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        segmentFallbackShown: false,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template: twoShell,
+      }),
+    ).toBe(true);
+
+    // A leaf loading wraps the page, so the same route keeps it mounted. The
+    // page's key ignores search params, which the guard never sees.
+    const leafShell = createShellTemplate("/s/two", 3);
+    expect(canCommit(leafShell, "route:/s/one")).toBe(true);
+    expect(canCommit(leafShell, "route:/s/two")).toBe(false);
+    // Payload route ids carry the concrete matched pathname, so a dynamic
+    // current route is found by its source page.
+    const dynamicLeafShell = createShellTemplate("/p/1/a", 3);
+    const pageA = "/p/[id]/a/page";
+    expect(canCommit(dynamicLeafShell, "route:/p/1/a", { id: "1" }, { id: "1" }, pageA)).toBe(
+      false,
+    );
+    expect(canCommit(dynamicLeafShell, "route:/p/2/a", { id: "2" }, { id: "1" }, pageA)).toBe(true);
+
+    // The child segment's params are part of its key.
+    const dynamicShell = createShellTemplate("/p/1/a", 1);
+    const pageB = "/p/[id]/b/page";
+    expect(canCommit(dynamicShell, "route:/p/1/b", { id: "1" }, { id: "1" }, pageB)).toBe(false);
+    expect(canCommit(dynamicShell, "route:/p/2/b", { id: "2" }, { id: "1" }, pageB)).toBe(true);
+
+    // A dynamic route sharing a prefix with a static one is still found, even
+    // though the optimistic matcher does not backtrack out of `users`.
+    const rootShell = createShellTemplate("/api/posts/5", 0);
+    expect(
+      canCommit(
+        rootShell,
+        "route:/api/users/123",
+        { id: "123", resource: "users" },
+        { id: "5", resource: "posts" },
+        "/api/[resource]/[id]/page",
+      ),
+    ).toBe(false);
+    // The dynamic `[resource]` segment keys differently from a static `users`.
+    const staticShell = createShellTemplate("/api/users/me", 1);
+    expect(
+      canCommit(
+        staticShell,
+        "route:/api/users/123",
+        { id: "123", resource: "users" },
+        {},
+        "/api/[resource]/[id]/page",
+      ),
+    ).toBe(true);
+  });
+
+  it("treats a page in an active implicit children slot as a mounted page tree", () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/f");
+    const childrenBinding = (
+      routeId: string,
+      state: RouteManifestSlotBinding["state"],
+    ): RouteManifestSlotBinding => ({
+      defaultId: null,
+      id: `${routeId}::${childrenSlotId}`,
+      ownerLayoutId: null,
+      routeId,
+      routeSegments: null,
+      slotId: childrenSlotId,
+      state,
+    });
+    const routeManifest = manifest(
+      ["one", "two", "fallback", "empty"].map((name) =>
+        route({
+          id: `route:/f/${name}`,
+          isDynamic: false,
+          pattern: `/f/${name}`,
+          patternParts: ["f", name],
+          slotIds: [childrenSlotId],
+        }),
+      ),
+      [
+        childrenBinding("route:/f/one", "active"),
+        childrenBinding("route:/f/two", "active"),
+        childrenBinding("route:/f/fallback", "default"),
+        childrenBinding("route:/f/empty", "unmatched"),
+      ],
+    );
+    const metadataFor = (routeId: string): AppElements =>
+      AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [],
+        rootLayoutTreePath: "/",
+        routeId,
+      });
+    const createShellTemplate = (href: string) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: {
+          ...metadataFor(`route:${href}`),
+          [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+          [APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY]: 0,
+          [childrenSlotId]: null,
+          [`route:${href}`]: createElement("p", null, "Loading"),
+        },
+        href,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const canCommit = (currentElements: AppElements, template = createShellTemplate("/f/two")) =>
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [],
+        currentParams: {},
+        routeManifest,
+        segmentFallbackShown: false,
+        targetRouteParams: {},
+        targetUrlParts: [],
+        template,
+      });
+
+    // A loading at app/ wraps the shared `f` child segment.
+    const activeCurrent = { ...metadataFor("route:/f/one"), [childrenSlotId]: createElement("p") };
+    expect(canCommit(activeCurrent)).toBe(false);
+    // A synthetic route's default or unmatched children slot keeps the shell,
+    // as does a payload without the children slot entry.
+    expect(
+      canCommit({ ...metadataFor("route:/f/fallback"), [childrenSlotId]: createElement("p") }),
+    ).toBe(true);
+    expect(
+      canCommit({ ...metadataFor("route:/f/empty"), [childrenSlotId]: createElement("p") }),
+    ).toBe(true);
+    expect(canCommit(metadataFor("route:/f/one"))).toBe(true);
+    // So does a target whose children slot renders its default or nothing.
+    expect(canCommit(activeCurrent, createShellTemplate("/f/fallback"))).toBe(true);
+    expect(canCommit(activeCurrent, createShellTemplate("/f/empty"))).toBe(true);
   });
 
   it("preserves raw encoded catch-all params in optimistic payloads", () => {
@@ -827,6 +1198,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId],
         currentParams: { slug: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { slug: "alpha" },
         targetUrlParts: ["alpha"],
         template: retainedTemplate,
@@ -839,6 +1211,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId],
         currentParams: { slug: "alpha" },
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: { slug: "gamma" },
         targetUrlParts: ["gamma"],
         template: retainedTemplate,
@@ -928,6 +1301,7 @@ describe("App Router optimistic routing", () => {
         currentLayoutIds: [rootLayoutId],
         currentParams: {},
         routeManifest,
+        segmentFallbackShown: false,
         targetRouteParams: {},
         targetUrlParts: ["dashboard"],
         template,

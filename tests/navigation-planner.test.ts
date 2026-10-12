@@ -135,6 +135,12 @@ function createTestRouteManifest(routes: readonly TestManifestRoute[]): RouteMan
       routeHandlerId: null,
       slotIds,
       templateIds: [],
+      treeSegments: patternParts.map((part) => {
+        if (!part.startsWith(":")) return part;
+        if (part.endsWith("*")) return `[[...${part.slice(1, -1)}]]`;
+        if (part.endsWith("+")) return `[...${part.slice(1, -1)}]`;
+        return `[${part.slice(1)}]`;
+      }),
     });
 
     for (const binding of routeSlotBindings) {

@@ -2,7 +2,11 @@ import { createElement, isValidElement, Suspense } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
-import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
+import type {
+  RouteManifest,
+  RouteManifestRoute,
+  RouteManifestSlotBinding,
+} from "../routing/app-route-graph.js";
 import { extractRawRoutePatternParams, matchRoutePattern } from "../routing/route-pattern.js";
 import {
   createNestedBfcacheSlotSegmentId,
@@ -13,13 +17,16 @@ import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
 import {
   canonicalizeAppPageParams,
+  createAppPageSourcePage,
   resolveAppPagePatternStateKey,
   resolveAppPageSemanticSegmentStateKey,
+  resolveAppPageTemplateStateKey,
 } from "./app-page-segment-state.js";
 
 type OptimisticRouteTrieNode = {
@@ -37,6 +44,12 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
+  /**
+   * Tree position of the children loading boundary a loading shell stops at,
+   * or null when the template is not a loading shell or the shell stops only
+   * at a slot's loading.
+   */
+  loadingTreePosition: number | null;
   mountedSlotsHeader: string | null;
   omittedBfcacheSegmentIds: readonly string[];
   omittedLayoutIds: readonly string[];
@@ -496,17 +509,18 @@ export function createOptimisticRouteTemplate(options: {
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
 
+  const isLoadingShell =
+    options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary";
+  const loadingTreePosition = options.elements[APP_PREFETCH_LOADING_SHELL_TREE_POSITION_KEY];
   return {
     elements: options.elements,
+    loadingTreePosition:
+      isLoadingShell && typeof loadingTreePosition === "number" ? loadingTreePosition : null,
     mountedSlotsHeader: options.mountedSlotsHeader,
-    omittedBfcacheSegmentIds:
-      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
-        ? getOmittedBfcacheSegmentIds(options.elements)
-        : [],
-    omittedLayoutIds:
-      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
-        ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
-        : [],
+    omittedBfcacheSegmentIds: isLoadingShell ? getOmittedBfcacheSegmentIds(options.elements) : [],
+    omittedLayoutIds: isLoadingShell
+      ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
+      : [],
     pageElementIds,
     routeId: match.route.id,
   };
@@ -521,22 +535,168 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
 }
 
 /**
+ * Payload route ids carry the concrete matched pathname, so a dynamic route is
+ * found by the source page the payload names, which is built from the route's
+ * tree segments. Matching the pathname instead would miss a dynamic route that
+ * shares a prefix with a static one, since the optimistic matcher does not
+ * backtrack.
+ */
+function resolveCurrentRoute(
+  metadata: { routeId: string; sourcePage: string | null },
+  routes: ReadonlyMap<string, RouteManifestRoute>,
+): RouteManifestRoute | undefined {
+  const route = routes.get(metadata.routeId);
+  if (route !== undefined || metadata.sourcePage === null) return route;
+  for (const candidate of routes.values()) {
+    if (createAppPageSourcePage(candidate.treeSegments) === metadata.sourcePage) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function isChildrenSlotId(slotId: string): boolean {
+  const parsed = AppElementsWire.parseElementKey(slotId);
+  return parsed?.kind === "slot" && parsed.name === "children";
+}
+
+function readChildrenSlotState(
+  route: RouteManifestRoute,
+  slotId: string,
+  routeManifest: RouteManifest,
+): RouteManifestSlotBinding["state"] | undefined {
+  return routeManifest.segmentGraph.slotBindings.get(`${route.id}::${slotId}`)?.state;
+}
+
+/**
+ * A not-found or error boundary payload renders its fallback in place of the
+ * route's tree, so none of the route's loading boundaries is mounted. A page
+ * rendered through an active implicit children slot is a page tree too, while
+ * a synthetic route's default or unmatched children slot is not, for the same
+ * reason as {@link hasInactiveChildrenSlot}.
+ */
+function hasCurrentPageTree(
+  elements: AppElements,
+  route: RouteManifestRoute,
+  routeManifest: RouteManifest,
+): boolean {
+  if (Object.keys(elements).some((key) => AppElementsWire.parseElementKey(key)?.kind === "page")) {
+    return true;
+  }
+  return route.slotIds.some(
+    (slotId) =>
+      isChildrenSlotId(slotId) &&
+      Object.hasOwn(elements, slotId) &&
+      readChildrenSlotState(route, slotId, routeManifest) === "active",
+  );
+}
+
+/**
+ * A synthetic route's default or unmatched children slot takes the place of the
+ * children segment Next.js keys the boundary by, while the route's tree
+ * segments name the slot's sub-path. So a target with one keeps the shell, even
+ * where Next.js would keep a loading above the slot's owner mounted.
+ */
+function hasInactiveChildrenSlot(route: RouteManifestRoute, routeManifest: RouteManifest): boolean {
+  return route.slotIds.some((slotId) => {
+    if (!isChildrenSlotId(slotId)) return false;
+    const state = readChildrenSlotState(route, slotId, routeManifest);
+    return state === "default" || state === "unmatched";
+  });
+}
+
+/**
+ * Next.js keys a segment's loading boundary by its immediate child segment
+ * (layout-router.tsx's TemplateContext.Provider), so the boundary stays mounted,
+ * and its fallback stays hidden, while the current and target routes share the
+ * path through that child, route groups and params included. The shell would
+ * commit the fallback instead. A leaf loading is keyed by the page segment
+ * without search params, so a search-only navigation keeps it mounted too.
+ *
+ * Known limitation: the shell always stops at the shallowest nested loading.
+ * When that boundary is mounted, a deeper loading the navigation newly mounts
+ * waits for the real response, while Next.js prefetches from where the trees
+ * diverge and shows it at once.
+ */
+function isShellLoadingBoundaryMounted(options: {
+  currentElements: AppElements;
+  currentParams: Readonly<Record<string, string | string[]>>;
+  routeManifest: RouteManifest;
+  segmentFallbackShown: boolean;
+  targetRouteParams: Readonly<Record<string, string | string[]>>;
+  template: OptimisticRouteTemplate;
+}): boolean {
+  const loadingTreePosition = options.template.loadingTreePosition;
+  if (loadingTreePosition === null) return false;
+  // vinext renders a page's not-found, forbidden, unauthorized or error fallback
+  // inside the ancestor loading boundaries, while Next.js renders it from the
+  // segment that owns the fallback file: an error.tsx outside that segment's
+  // loading, an HTTP access fallback inside it. When the fallback sits outside
+  // the loading, Next.js has unmounted the loading boundary, and it mounts fresh
+  // on navigation. A catchError boundary wrapping the loading does the same.
+  // The fallback's placement is not tracked, so any fallback on screen, a
+  // parallel slot's or any catchError boundary's included, keeps the shell.
+  // Known limitation: when the fallback sits inside the loading, or elsewhere
+  // in the tree, the loading shows where Next.js would keep the current page.
+  if (options.segmentFallbackShown) return false;
+  const routes = options.routeManifest.segmentGraph.routes;
+  const targetRoute = routes.get(options.template.routeId);
+  if (
+    targetRoute === undefined ||
+    loadingTreePosition > targetRoute.treeSegments.length ||
+    hasInactiveChildrenSlot(targetRoute, options.routeManifest)
+  ) {
+    return false;
+  }
+  const currentMetadata = AppElementsWire.readMetadata(options.currentElements);
+  // An intercepted tree's params may belong to the intercepted route rather
+  // than the one its route id names, so it keeps the shell.
+  if (currentMetadata.interception !== null || currentMetadata.interceptionContext !== null) {
+    return false;
+  }
+  const currentRoute = resolveCurrentRoute(currentMetadata, routes);
+  if (currentRoute === undefined || loadingTreePosition > currentRoute.treeSegments.length) {
+    return false;
+  }
+  if (!hasCurrentPageTree(options.currentElements, currentRoute, options.routeManifest)) {
+    return false;
+  }
+  return (
+    resolveAppPageTemplateStateKey(
+      currentRoute.treeSegments,
+      loadingTreePosition,
+      options.currentParams,
+    ) ===
+    resolveAppPageTemplateStateKey(
+      targetRoute.treeSegments,
+      loadingTreePosition,
+      options.targetRouteParams,
+    )
+  );
+}
+
+/**
  * A loading-shell prefetch stops at the first loading boundary, so layouts
  * below that boundary are present in the route metadata but absent from the
  * rendered shell. Do not commit that ancestor fallback when one of those
  * omitted layouts is already mounted with the same semantic identity. Next.js
  * keeps the shared segment active in this case, which also means the ancestor
- * loading boundary does not re-trigger.
+ * loading boundary does not re-trigger. The shell is also refused when the
+ * boundary it stops at is itself already mounted under the same key.
  */
 export function canCommitOptimisticRouteTemplate(options: {
   currentElements: AppElements;
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
   routeManifest: RouteManifest;
+  /** Whether an error, catchError or HTTP access fallback is on screen. */
+  segmentFallbackShown: boolean;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;
 }): boolean {
+  if (isShellLoadingBoundaryMounted(options)) return false;
+
   if (
     options.template.omittedLayoutIds.length === 0 &&
     options.template.omittedBfcacheSegmentIds.length === 0
