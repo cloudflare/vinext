@@ -136,6 +136,14 @@ const nextConfig = {
           has: [{ type: "cookie", key: "mw-before-user" }],
           destination: "/about",
         },
+        // Used by E2E: pages-router-prod/image-middleware.spec.ts — the image
+        // optimizer resolves its source through rewrites, without a Host header.
+        { source: "/image-avatar", destination: "/open-image.png" },
+        {
+          source: "/image-host-avatar",
+          has: [{ type: "host", value: "localhost" }],
+          destination: "/open-image.png",
+        },
       ],
       afterFiles: [
         {

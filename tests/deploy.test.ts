@@ -1758,11 +1758,11 @@ describe("readPagesRouterEntrySource", () => {
     const content = readPagesRouterEntrySource();
     expect(content).toContain("basePath");
     expect(content).toContain('from "../utils/base-path.js"');
-    expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
+    expect(content).toContain("const pathname = stripBasePath(url.pathname, basePath);");
     // After stripping, clone with the stripped URL so runPagesRequest receives
     // a clean basePath-free request without dropping Worker metadata.
-    expect(content).toContain("strippedUrl.pathname = stripped");
-    expect(content).toContain("cloneRequestWithUrl(request, strippedUrl.toString())");
+    expect(content).toContain("url.pathname = pathname;");
+    expect(content).toContain("request = cloneRequestWithUrl(request, url.toString());");
   });
 
   it("handles trailing slash normalization", () => {
@@ -1787,7 +1787,7 @@ describe("readPagesRouterEntrySource", () => {
 
   it("preserves request metadata when stripping Pages Router basePath", () => {
     const content = readPagesRouterEntrySource();
-    expect(content).toContain("cloneRequestWithUrl(request, strippedUrl.toString())");
+    expect(content).toContain("request = cloneRequestWithUrl(request, url.toString());");
   });
 
   it("includes error handling", () => {
@@ -1814,7 +1814,7 @@ describe("readPagesRouterEntrySource", () => {
     const content = readPagesRouterEntrySource();
     expect(content).toContain("guardProtocolRelativeUrl");
     expect(content).toContain('from "./request-pipeline.js"');
-    expect(content).toContain("guardProtocolRelativeUrl(pathname, url.search)");
+    expect(content).toContain("guardProtocolRelativeUrl(url.pathname, url.search)");
   });
 
   it("delegates image transforms to the configured adapter", () => {
@@ -2225,9 +2225,10 @@ describe("readPagesRouterEntrySource", () => {
 
   it("dispatches image optimization through the post-middleware filesystem phase", () => {
     const content = readPagesRouterEntrySource();
-    const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
-    const filesystemPos = content.indexOf("serveFilesystemRoute: async");
-    const imagePos = content.indexOf("isImageOptimizationPath(requestPathname)");
+    // The request's own basePath stripping precedes its filesystem phase.
+    const basePathPos = content.indexOf("resolvePagesWorkerRequestUrl(request);");
+    const filesystemPos = content.indexOf("serveFilesystemRoute: async", basePathPos);
+    const imagePos = content.indexOf("isImageOptimizationPath(requestPathname)", filesystemPos);
     expect(basePathPos).toBeGreaterThan(-1);
     expect(filesystemPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);

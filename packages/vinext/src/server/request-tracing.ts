@@ -146,6 +146,11 @@ export function consumeFrameworkRequestRoute(response: Response): Response {
   return fullyBuffered ? markFullyBufferedBody(cleaned) : cleaned;
 }
 
+/** Run an in-process lookup without labelling the active request's route. */
+export function runOutsideFrameworkRequestTrace<T>(callback: () => T): T {
+  return activeRequestTrace.exit(callback);
+}
+
 export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T> {
   if (activeRequestTrace.getStore() && !input.detached) return input.callback();
 

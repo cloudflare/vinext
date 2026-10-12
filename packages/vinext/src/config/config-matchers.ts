@@ -538,6 +538,9 @@ function matchSingleCondition(
       return _matchConditionValue(queryValues[queryValues.length - 1], condition.value);
     }
     case "host": {
+      // Next.js matchHas reads the Host header, so a request without one
+      // matches no host condition.
+      if (!ctx.host) return null;
       if (condition.value !== undefined) return _matchConditionValue(ctx.host, condition.value);
       return ctx.host === condition.key ? _emptyParams() : null;
     }

@@ -31,6 +31,15 @@ export function middleware(request: NextRequest) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // A `members=1` cookie admits direct requests; the image optimizer fetches
+  // its source without the caller's cookies, as Next.js does.
+  if (url.pathname.startsWith("/protected/") && request.cookies.get("members")?.value !== "1") {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
   if (
     url.pathname === "/revalidate-middleware-sentinel" &&
     request.headers.has("x-prerender-revalidate")

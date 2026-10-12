@@ -25,6 +25,18 @@ export function middleware(request: NextRequest) {
     return new Response("middleware response", { status: 418 });
   }
 
+  // A `members=1` cookie admits direct requests; the image optimizer fetches
+  // its source without the caller's cookies, as Next.js does.
+  if (
+    request.nextUrl.pathname.startsWith("/protected/") &&
+    request.cookies.get("members")?.value !== "1"
+  ) {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
   const response = NextResponse.next();
   response.headers.set("x-mw-ran", "true");
   response.headers.set("x-mw-pathname", request.nextUrl.pathname);
@@ -40,5 +52,6 @@ export const config = {
     "/redirect-before-middleware-rewrite",
     "/redirect-before-middleware-response",
     "/_next/static/middleware-rewrite.js",
+    "/protected/:path*",
   ],
 };

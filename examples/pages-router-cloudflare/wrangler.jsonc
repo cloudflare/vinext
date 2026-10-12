@@ -8,6 +8,8 @@
   "assets": {
     "directory": "dist/client",
     "not_found_handling": "none",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    // Public files under /protected/ reach the Worker so middleware gates them.
+    "run_worker_first": ["/protected/*"]
   }
 }

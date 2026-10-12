@@ -29,7 +29,16 @@ export default {
 
   async rewrites() {
     return {
-      beforeFiles: [],
+      // The image optimizer resolves its source through rewrites, without a
+      // Host header.
+      beforeFiles: [
+        { source: "/image-avatar", destination: "/open-image.png" },
+        {
+          source: "/image-host-avatar",
+          has: [{ type: "host", value: "localhost" }],
+          destination: "/open-image.png",
+        },
+      ],
       afterFiles: [
         { source: "/nav-test", destination: "/about" },
         { source: "/rewrite-about", destination: "/about" },

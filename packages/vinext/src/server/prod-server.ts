@@ -45,13 +45,17 @@ import { registerPrerenderCloudflareLoader } from "../build/prerender-cloudflare
 import {
   canonicalizeRequestPathname,
   filterInternalHeaders,
+  getRepeatedSlashRedirect,
   isOpenRedirectShaped,
   sendRepeatedSlashRedirect,
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
+  imageSourceOrigin,
+  imageSourceUnderBasePath,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
+  type FilesystemRoutePhase,
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
@@ -119,7 +123,7 @@ import { parseHttpDate } from "./http-date.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 import { readStaticFileSignal } from "./static-file-signal.js";
-import { traceFrameworkRequest } from "./request-tracing.js";
+import { runOutsideFrameworkRequestTrace, traceFrameworkRequest } from "./request-tracing.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -697,6 +701,26 @@ function sendCompressed(
  * only on responses that carry the file's bytes (200 and 206), never on a 304,
  * 412, 416 or 405.
  */
+/** The static file cache key for a request pathname, or null when never served. */
+function staticFileLookupPath(pathname: string): string | null {
+  // Decode only when needed (hashed /assets/ URLs never have %)
+  let lookupPath: string;
+  if (pathname.includes("%")) {
+    try {
+      lookupPath = decodeURIComponent(pathname);
+    } catch {
+      return null;
+    }
+    // Block encoded .vite/ access (e.g. /%2Evite/manifest.json)
+    if (lookupPath.startsWith("/.vite/") || lookupPath === "/.vite") return null;
+  } else {
+    // Fast: skip decode entirely for clean URLs
+    if (pathname.startsWith("/.vite/") || pathname === "/.vite") return null;
+    lookupPath = pathname;
+  }
+  return lookupPath;
+}
+
 async function tryServeStatic(
   req: IncomingMessage,
   res: ServerResponse,
@@ -722,21 +746,8 @@ async function tryServeStatic(
   // When a cache is provided, all path validation happened at startup.
   // The only per-request work: Map.get(), string compare, pipe.
   if (cache) {
-    // Decode only when needed (hashed /assets/ URLs never have %)
-    let lookupPath: string;
-    if (pathname.includes("%")) {
-      try {
-        lookupPath = decodeURIComponent(pathname);
-      } catch {
-        return false;
-      }
-      // Block encoded .vite/ access (e.g. /%2Evite/manifest.json)
-      if (lookupPath.startsWith("/.vite/") || lookupPath === "/.vite") return false;
-    } else {
-      // Fast: skip decode entirely for clean URLs
-      if (pathname.startsWith("/.vite/") || pathname === "/.vite") return false;
-      lookupPath = pathname;
-    }
+    const lookupPath = staticFileLookupPath(pathname);
+    if (lookupPath === null) return false;
 
     const entry = cache.lookup(lookupPath);
     if (!entry) return false;
@@ -2186,6 +2197,29 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
 // ─── Pages Router Production Server ───────────────────────────────────────────
 
+/**
+ * Whether the Pages filesystem phase may serve `requestPathname` as a public
+ * file. Build assets were already served before middleware.
+ */
+function isPublicFileRoute(requestPathname: string, phase: FilesystemRoutePhase): boolean {
+  return !(
+    requestPathname === "/" ||
+    requestPathname === "/api" ||
+    requestPathname.startsWith("/api/") ||
+    (phase === "direct" && requestPathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`))
+  );
+}
+
+/** A Pages request URL after the adapter-owned normalization, before the pipeline. */
+type PagesRequestTarget = {
+  configMatchPathname: string;
+  hadBasePath: boolean;
+  rawQs: string;
+  /** Encoded, basePath-stripped pathname that route matching decodes once. */
+  requestPathname: string;
+  url: string;
+};
+
 type PagesRouterServerOptions = {
   port: number;
   host: string;
@@ -2349,6 +2383,134 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     });
   };
 
+  const hasStaticFile = (pathname: string): boolean => {
+    const lookupPath = staticFileLookupPath(pathname);
+    return lookupPath !== null && staticCache.lookup(lookupPath) !== undefined;
+  };
+
+  // Like Next.js' fetchInternalImage, resolve an image source through the
+  // Pages pipeline as a GET without the caller's headers, so middleware,
+  // redirects and rewrites admit it as they would an anonymous direct request.
+  // The lookup renders and proxies nothing: it returns the file lookup path of
+  // a public file the pipeline selects, or of a build asset, else null.
+  const resolveImageSourcePath = async (
+    imageUrl: string,
+    request: Request,
+    deps: PagesPipelineDeps,
+  ): Promise<string | null> => {
+    const sourceUrl = new URL(
+      deps.hadBasePath
+        ? imageUrl
+        : imageSourceUnderBasePath(imageUrl, basePath, pagesAssetPathPrefix),
+      request.url,
+    );
+    const sourceRawUrl = sourceUrl.pathname + sourceUrl.search;
+    if (getRepeatedSlashRedirect(sourceRawUrl) || isOpenRedirectShaped(sourceUrl.pathname)) {
+      return null;
+    }
+    const resolved = resolvePagesRequestUrl(sourceRawUrl);
+    if (!resolved) return null;
+    // Build assets bypass middleware for direct requests too.
+    const assetLookup = resolveAppRouterAssetPath(
+      resolved.assetPathname,
+      pagesAssetPathPrefix,
+      assetPrefix,
+    );
+    if (assetLookup && hasStaticFile(assetLookup)) return assetLookup;
+    const { target } = resolved;
+    if (!target || isNextDataPathname(target.requestPathname)) return null;
+
+    let sourcePath: string | null = null;
+    const result = await runOutsideFrameworkRequestTrace(() =>
+      runPagesRequest(
+        new Request(new URL(target.url, imageSourceOrigin(request.url)), {
+          signal: request.signal,
+        }),
+        {
+          ...deps,
+          configMatchPathname: target.configMatchPathname,
+          dataNotFoundResponse: null,
+          hadBasePath: target.hadBasePath,
+          handleApi: null,
+          hostless: true,
+          isDataReq: false,
+          isDataRequest: false,
+          middlewareRequest: undefined,
+          proxyExternal: () => Promise.resolve(new Response(null, { status: 404 })),
+          rawSearch: target.rawQs,
+          recordCacheability: false,
+          renderPage: null,
+          runMiddleware:
+            typeof runMiddleware === "function"
+              ? wrapMiddlewareWithBasePath(runMiddleware, basePath, target.hadBasePath)
+              : null,
+          serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
+            if (
+              !isPublicFileRoute(requestPathname, phase) ||
+              isImageOptimizationPath(requestPathname) ||
+              !hasStaticFile(requestPathname)
+            ) {
+              return false;
+            }
+            sourcePath = requestPathname;
+            return true;
+          },
+        },
+      ),
+    );
+    if (result.type === "response") cancelResponseBody(result.response);
+    return result.type === "handled" ? sourcePath : null;
+  };
+
+  // Normalize a request URL for the Pages pipeline. Returns null for malformed
+  // percent-encoding. `assetPathname` is the decoded pathname before basePath
+  // stripping; `target` is null when URL parsing would move the pathname into
+  // the internal Pages data namespace.
+  const resolvePagesRequestUrl = (
+    rawUrl: string,
+  ): { assetPathname: string; target: PagesRequestTarget | null } | null => {
+    // Normalize backslashes (browsers treat /\ as //), then validate and
+    // normalize the decoded path for adapter-owned asset/internal checks.
+    // Request routing keeps a separate raw encoded pathname: static filesystem
+    // identity is compared before decoding, while dynamic captures decode once.
+    const rawPagesPathname = canonicalizeRequestPathname(
+      rawUrl.split("?")[0].replaceAll("\\", "/"),
+    );
+    const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
+    const unstrippedRequestPathname = normalizePath(rawPagesPathname);
+    let assetPathname: string;
+    try {
+      assetPathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPagesPathname));
+    } catch {
+      return null;
+    }
+    // Track whether the original request was under basePath. This drives
+    // the basePath gating of rewrites/redirects/headers — Next.js only
+    // applies default rules to requests inside basePath, and only applies
+    // `basePath: false` rules to requests outside it.
+    const hadBasePath = !basePath || hasBasePath(unstrippedRequestPathname, basePath);
+    const pathname = stripBasePath(assetPathname, basePath);
+    // WHATWG URL parsing removes TAB, LF, and CR. Do not let that transform
+    // an otherwise ordinary path into the internal Pages data namespace.
+    if (urlParserCreatesPagesDataPath(pathname)) return { assetPathname, target: null };
+    // Preserve parser-ignored bytes until route param decoding. Keep using
+    // the raw request pathname here so unrelated escapes retain their route
+    // identity and dynamic captures are decoded exactly once.
+    const requestPathname = encodeUrlParserIgnoredCharacters(
+      stripBasePath(unstrippedRequestPathname, basePath),
+    );
+    return {
+      assetPathname,
+      target: {
+        configMatchPathname: stripBasePath(unstrippedRequestPathname, basePath),
+        hadBasePath,
+        rawQs,
+        requestPathname,
+        url: requestPathname + rawQs,
+      },
+    };
+  };
+
   const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPagesPathnameBeforeNormalize = rawUrl.split("?")[0];
@@ -2365,29 +2527,18 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       return;
     }
 
-    // Normalize backslashes (browsers treat /\ as //), then validate and
-    // normalize the decoded path for adapter-owned asset/internal checks.
-    // Request routing keeps a separate raw encoded pathname: static filesystem
-    // identity is compared before decoding, while dynamic captures decode once.
-    const rawPagesPathname = canonicalizeRequestPathname(
-      rawPagesPathnameBeforeNormalize.replaceAll("\\", "/"),
-    );
-    const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
-    let requestPathname = normalizePath(rawPagesPathname);
-    let pathname: string;
-    try {
-      pathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPagesPathname));
-    } catch {
+    const resolvedRequestUrl = resolvePagesRequestUrl(rawUrl);
+    if (!resolvedRequestUrl) {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
       res.writeHead(400);
       res.end("Bad Request");
       return;
     }
-    let url = requestPathname + rawQs;
+    const { assetPathname, target: requestTarget } = resolvedRequestUrl;
 
     // Internal prerender endpoint — only reachable with the correct build-time secret.
     // Used by the prerender phase to fetch getStaticPaths results via HTTP.
-    if (pathname === "/__vinext/prerender/pages-static-paths") {
+    if (assetPathname === "/__vinext/prerender/pages-static-paths") {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
         res.writeHead(403);
@@ -2430,7 +2581,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // (see `resolveAppRouterAssetPath` for the full table).
     //
     // Match the App Router's behaviour (above) and use the UN-stripped
-    // `pathname` here, not `staticLookupPath`. Emitted asset URLs already
+    // `assetPathname` here, not `staticLookupPath`. Emitted asset URLs already
     // carry the assetPrefix verbatim (which equals `basePath` when the
     // Next.js parity fallback fires — packages/next/src/server/config.ts:528-531),
     // so stripping `basePath` first would make `resolveAppRouterAssetPath`'s
@@ -2438,7 +2589,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // Existing build assets bypass middleware. Missing asset-shaped requests
     // must still reach middleware so it can rewrite or respond. The shared
     // router classifies unmatched static paths after resolving rewrites.
-    const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
+    const pagesAssetLookup = resolveAppRouterAssetPath(
+      assetPathname,
+      pagesAssetPathPrefix,
+      assetPrefix,
+    );
     if (pagesAssetLookup) {
       if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
         return;
@@ -2446,37 +2601,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
 
     try {
-      // ── 2. Strip basePath ─────────────────────────────────────────
-      // Track whether the original request was under basePath. This drives
-      // the basePath gating of rewrites/redirects/headers below — Next.js
-      // only applies default rules to requests inside basePath, and only
-      // applies `basePath: false` rules to requests outside it.
-      const hadBasePath = !basePath || hasBasePath(requestPathname, basePath);
-      let configMatchPathname = stripBasePath(requestPathname, basePath);
-      {
-        const strippedPathname = stripBasePath(pathname, basePath);
-        const strippedRequestPathname = stripBasePath(requestPathname, basePath);
-        pathname = strippedPathname;
-        if (strippedRequestPathname !== requestPathname) {
-          requestPathname = strippedRequestPathname;
-          url = requestPathname + rawQs;
-        }
-      }
-      // WHATWG URL parsing removes TAB, LF, and CR. Do not let that transform
-      // an otherwise ordinary path into the internal Pages data namespace.
-      if (urlParserCreatesPagesDataPath(pathname)) {
+      // ── 2. Strip basePath (resolvePagesRequestUrl) ─────────────────
+      if (!requestTarget) {
         res.writeHead(404);
         res.end("This page could not be found");
         return;
       }
-      // Preserve parser-ignored bytes until route param decoding. Keep using
-      // the raw request pathname here so unrelated escapes retain their route
-      // identity and dynamic captures are decoded exactly once.
-      requestPathname = encodeUrlParserIgnoredCharacters(requestPathname);
-      {
-        const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        url = requestPathname + qs;
-      }
+      const { hadBasePath, rawQs } = requestTarget;
+      let { configMatchPathname, requestPathname, url } = requestTarget;
       // ── 3b. `_next/data` normalization ────────────────────────────
       // Pages Router client-side navigations fetch
       // `/_next/data/<buildId>/<page>.json`. Route matching uses the normalized
@@ -2512,7 +2644,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           );
           url = pagePathname + qs;
           requestPathname = pagePathname;
-          pathname = pagePathname;
           configMatchPathname = pagePathname;
         }
       }
@@ -2642,12 +2773,22 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               res.end("Bad Request");
               return true;
             }
-            const ct = contentTypeForPath(params.imageUrl);
-            if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
+            // Check the type of the file actually served, not the `url` text,
+            // whose query or hash could carry an image extension.
+            const isSafeSourcePath = (sourcePath: string) =>
+              isSafeImageContentType(
+                contentTypeForPath(sourcePath),
+                pagesImageConfig?.dangerouslyAllowSVG,
+              );
+            // Rewrites can map an extensionless source to an image, so the
+            // source resolves before its type is checked.
+            const sourcePath = await resolveImageSourcePath(params.imageUrl, webRequest, deps);
+            if (sourcePath && !isSafeSourcePath(sourcePath)) {
               res.writeHead(400);
               res.end("The requested resource is not an allowed image type");
               return true;
             }
+            if (webRequest.signal.aborted) return true;
             const imageSecurityHeaders: Record<string, string> = {
               "Content-Security-Policy":
                 pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
@@ -2656,17 +2797,18 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
             };
             if (
-              await tryServeStatic(
+              sourcePath &&
+              (await tryServeStatic(
                 req,
                 res,
                 clientDir,
-                params.imageUrl,
+                sourcePath,
                 false,
                 staticCache,
                 imageSecurityHeaders,
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
-              )
+              ))
             ) {
               return true;
             }
@@ -2674,14 +2816,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             res.end("Image not found");
             return true;
           }
-          if (
-            requestPathname === "/" ||
-            requestPathname === "/api" ||
-            requestPathname.startsWith("/api/") ||
-            (phase === "direct" && requestPathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`))
-          ) {
-            return false;
-          }
+          if (!isPublicFileRoute(requestPathname, phase)) return false;
           return tryServeStatic(
             req,
             res,
