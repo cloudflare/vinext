@@ -74,8 +74,10 @@ import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-p
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import {
   addLocalePrefix,
+  detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
+  localeRootHasTrailingSlash,
   type DomainLocale,
 } from "../utils/domain-locale.js";
 import {
@@ -107,6 +109,7 @@ import type { ClientRewrite } from "../client/client-rewrites.js";
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
+const __skipProxyUrlNormalize: boolean = process.env.__VINEXT_SKIP_PROXY_URL_NORMALIZE === "true";
 /** experimental.scrollRestoration from next.config.js, injected by the plugin at build time */
 const __scrollRestoration: boolean = process.env.__NEXT_SCROLL_RESTORATION === "true";
 
@@ -1837,9 +1840,37 @@ function getClientConfigRouteContext(href: string): {
       host: parsed.hostname,
       query: parsed.searchParams,
     },
-    pathname,
+    pathname: normalizeClientConfigLocalePathname(pathname, parsed.hostname),
     search: parsed.search,
   };
+}
+
+/**
+ * Match config rules against the locale-prefixed pathname, as the server does
+ * (`normalizeDefaultLocalePathname`) and as Next.js's client router does before
+ * resolving rewrites (`addLocale(asPath, locale)`). Without this, a
+ * default-locale URL such as `/about` misses `locale: false` rules written
+ * against `/:locale/about` and matches unprefixed `locale: false` rules the
+ * server never applies to it.
+ */
+function normalizeClientConfigLocalePathname(pathname: string, hostname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales?.length) return pathname;
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
+  if (getLocalePathPrefix(pathname, locales)) return pathname;
+
+  const defaultLocale =
+    detectDomainLocale(getDomainLocales(), hostname)?.defaultLocale ??
+    window.__VINEXT_DEFAULT_LOCALE__;
+  if (!defaultLocale) return pathname;
+  if (pathname === "/") {
+    const rootTrailingSlash = localeRootHasTrailingSlash({
+      trailingSlash: __trailingSlash,
+      skipProxyUrlNormalize: __skipProxyUrlNormalize,
+    });
+    return rootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  }
+  return `/${defaultLocale}${pathname}`;
 }
 
 async function resolveClientConfigRedirect(href: string): Promise<string | null> {
@@ -1879,6 +1910,8 @@ async function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
+  // Each destination in a rewrite chain is re-normalized, as the server does
+  // through `configSourcePathname()`.
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
@@ -1960,9 +1993,19 @@ function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
+/**
+ * With i18n, rules match the locale-prefixed pathname, which reaches source
+ * shapes the simple matcher does not handle exactly as matchConfigPattern
+ * does. Leave those navigations to the full matcher.
+ */
+function usesFullClientConfigMatcher(): boolean {
+  return Boolean(window.__VINEXT_LOCALES__?.length);
+}
+
 function clientConfigRedirectCouldMatch(href: string): boolean {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return false;
+  if (usesFullClientConfigMatcher()) return true;
 
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return false;
@@ -1984,6 +2027,7 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
 function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
   if (!rewrites) return null;
+  if (usesFullClientConfigMatcher()) return undefined;
 
   let currentHref = href;
   let matched = false;
@@ -2061,6 +2105,7 @@ async function resolveClientConfigRewrite(
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
+    if (rewrite.localeFallback) continue;
     const result = await applyClientConfigRewrite(currentHref, rewrite);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;

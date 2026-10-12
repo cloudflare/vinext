@@ -2389,6 +2389,42 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
   });
 
+  it("matches the i18n root against trailing-slash root rules", async () => {
+    // With trailingSlash, applyLocaleToRoutes emits a root rule as
+    // `/:nextInternalLocale(en|fr)/`, so the default-locale root must be
+    // matched as `/en/` (Next.js resolve-routes.ts `maybeAddTrailingSlash`).
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        trailingSlash: true,
+        i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+        rewrites: () => ({
+          beforeFiles: [{ source: "/", destination: "/other/" }],
+          afterFiles: [],
+          fallback: [],
+        }),
+      },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual([]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/"]);
+  });
+
   it("excludes Pages-owned hybrid paths from App warm discovery", async () => {
     // Next.js resolves matching Pages and App routes by cross-router specificity:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-params/use-params.test.ts

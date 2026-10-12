@@ -1,7 +1,10 @@
 import type { NextRedirect, ResolvedNextConfig } from "../config/next-config.js";
 import { isClientHasCondition, type ClientHasCondition } from "./client-rewrites.js";
 
-type ClientRedirectFields = Pick<NextRedirect, "basePath" | "locale" | "source"> & {
+type ClientRedirectFields = Pick<
+  NextRedirect,
+  "basePath" | "locale" | "localeFallback" | "source"
+> & {
   has?: ClientHasCondition[];
   missing?: ClientHasCondition[];
 };
@@ -38,6 +41,7 @@ function toClientRedirect(redirect: NextRedirect): ClientRedirect {
     has: clientHas?.length ? clientHas : undefined,
     missing: clientMissing?.length ? clientMissing : undefined,
     locale: redirect.locale,
+    localeFallback: redirect.localeFallback,
     basePath: redirect.basePath,
   };
 
