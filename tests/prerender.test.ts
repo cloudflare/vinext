@@ -152,6 +152,30 @@ describe("getOutputPath", () => {
   });
 });
 
+// Ported from Next.js normalizePagePath, which export/worker.ts applies to every
+// prerendered path: `/index` must not share the files of `/`.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/page-path/normalize-page-path.ts
+describe("prerender output paths for /index", () => {
+  it("keeps /index and /index/... apart from / and from each other", () => {
+    expect(getOutputPath("/", false)).toBe("index.html");
+    expect(getOutputPath("/index", false)).toBe("index/index.html");
+    expect(getOutputPath("/index", true)).toBe("index/index/index.html");
+    expect(getOutputPath("/index/index", false)).toBe("index/index/index.html");
+    expect(getOutputPath("/index/foo", false)).toBe("index/index/foo.html");
+    expect(getOutputPath("/index", false, "/docs")).toBe("docs/index/index.html");
+    expect(getOutputPath("/indexed", false)).toBe("indexed.html");
+    expect(getOutputPath("/blog/index", false)).toBe("blog/index.html");
+
+    expect(getRscOutputPath("/")).toBe("index.rsc");
+    expect(getRscOutputPath("/index")).toBe("index/index.rsc");
+    expect(getRscOutputPath("/index", { mode: "export", trailingSlash: false })).toBe(
+      "index/index.txt",
+    );
+    expect(getAppRouteOutputPath("/")).toBe("index.route");
+    expect(getAppRouteOutputPath("/index")).toBe("index/index.route");
+  });
+});
+
 describe("extractRscPayloadFromPrerenderedHtml", () => {
   function decodeExtractedPayload(html: string): string | null {
     const payload = extractRscPayloadFromPrerenderedHtml(html);
