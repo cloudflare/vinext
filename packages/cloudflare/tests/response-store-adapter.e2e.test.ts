@@ -125,6 +125,17 @@ async function storedEntriesNaming(pathname: string): Promise<unknown[]> {
     .filter((entry) => JSON.stringify(entry).includes(pathname));
 }
 
+// Writes run in waitUntil after the response returns, so hold the absence
+// through the window waitForStoredEntries polls for a publication, checking
+// after every delay, including the last.
+async function assertNeverStored(pathname: string): Promise<void> {
+  assert.deepEqual(await storedEntriesNaming(pathname), []);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(await storedEntriesNaming(pathname), []);
+  }
+}
+
 // Whether the R2 body backing each entry holds the entry's active revision.
 // The store publishes metadata before it uploads the body, and reads MISS
 // until the upload lands.
@@ -479,8 +490,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
       assert.equal(((await response.json()) as { host: string }).host, host);
     }
-    assert.deepEqual(await storedEntriesNaming("/api/host-echo"), []);
-  });
+    await assertNeverStored("/api/host-echo");
+  }, 15_000);
 
   test("never shares a page that read the host under a public config policy", async () => {
     const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
@@ -491,8 +502,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
       assert.ok(htmlValue(body, "host"));
     }
-    assert.deepEqual(await storedEntriesNaming("/config-policy-host"), []);
-  });
+    await assertNeverStored("/config-policy-host");
+  }, 15_000);
 
   test("never shares a route handler redirect that read the host", async () => {
     const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
@@ -505,8 +516,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
       assert.equal(response.headers.get("location"), `/static-default?from=${host}`);
     }
-    assert.deepEqual(await storedEntriesNaming("/api/redirect-to-host"), []);
-  });
+    await assertNeverStored("/api/redirect-to-host");
+  }, 15_000);
 
   test("never stores a dynamic-segment route without generateStaticParams", async () => {
     const first = await request("/dynamic-segment/a");
