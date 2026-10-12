@@ -2,6 +2,8 @@
 
 import "./server-globals.js";
 import requestRscHandler, {
+  __assetPrefix,
+  __basePath,
   __ensureHybridPagesApplication,
   __ensureInstrumentation,
   __imageAllowedWidths,
@@ -19,9 +21,11 @@ import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters"
 import type { DispatchAppWorkerResponseStage } from "./app-worker-stages.js";
 import {
   getImageOptimizer,
-  handleConfiguredImageOptimization,
   isImageOptimizationPath,
+  readImageOptimizationSignal,
 } from "./image-optimization.js";
+import { handleWorkerImageOptimization } from "./worker-image-optimization.js";
+import { assetPrefixPathname } from "../utils/asset-prefix.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
@@ -50,6 +54,8 @@ import type {
 } from "./multi-stage.js";
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 import { consumeFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
+
+const assetPathPrefix = assetPrefixPathname(__assetPrefix);
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
@@ -95,6 +101,7 @@ async function handleRequest(
         "node",
       );
 
+  const requestCtx = ctx;
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
   // Adapters can resolve their own asset binding. The revalidation context's
   // closure reads this parameter at call time, so it sees the fallback too.
@@ -142,13 +149,17 @@ async function handleRequest(
   }
 
   const url = new URL(request.url);
-  if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
-    return handleConfiguredImageOptimization(
-      request,
-      (assetPath) => Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
-      __imageAllowedWidths,
-      __imageConfig,
-    );
+  // With an image optimizer, serve the image endpoint after the request
+  // handler admitted it through middleware and rewrites.
+  const imageAssets = assets && getImageOptimizer() ? assets : null;
+  // vinext's next/image emits the image endpoint without the basePath, where
+  // Next.js prefixes it. Admit that form as the basePath endpoint and resolve
+  // its unprefixed sources under the basePath.
+  const imageEndpointBasePath =
+    imageAssets && __basePath && isImageOptimizationPath(url.pathname) ? __basePath : "";
+  if (imageEndpointBasePath) {
+    url.pathname = imageEndpointBasePath + url.pathname;
+    request = new Request(url, request);
   }
   const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
   if (protocolRelativeGuard) return protocolRelativeGuard;
@@ -201,6 +212,21 @@ async function handleRequest(
       trustedPrerenderState,
     );
   const result = await runWithExecutionContext(ctx, handle);
+  const imageSignal = imageAssets ? readImageOptimizationSignal(result) : null;
+  if (imageAssets && imageSignal) {
+    return handleWorkerImageOptimization(request, imageSignal, {
+      allowedWidths: __imageAllowedWidths,
+      assetPathPrefix,
+      basePath: __basePath,
+      fetchAsset: (assetRequest) => Promise.resolve(imageAssets.fetch(assetRequest)),
+      imageConfig: __imageConfig,
+      resolveSource: (sourceRequest) =>
+        runWithExecutionContext(requestCtx, () =>
+          requestRscHandler(sourceRequest, requestCtx, dispatchResponseStage),
+        ),
+      sourceBasePath: imageEndpointBasePath,
+    });
+  }
   let response = result;
   if (assets) {
     const assetResponse = await resolveStaticAssetSignal(response, {

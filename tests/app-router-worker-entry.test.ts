@@ -15,6 +15,7 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
 import { registerDataCacheHandler } from "../packages/vinext/src/shims/cache-handler.js";
+import { setImageOptimizer } from "../packages/vinext/src/server/image-optimization.js";
 
 const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
 const CAPTURE_PRERENDER_STATE = "__vinextCaptureWorkerPrerenderState";
@@ -23,6 +24,10 @@ const REGISTER_ALL_CACHE_ADAPTERS = "__vinextRegisterAllWorkerCacheAdapters";
 const STATIC_FILE_SIGNAL_MODULE = path.resolve(
   import.meta.dirname,
   "../packages/vinext/src/server/static-file-signal.ts",
+);
+const IMAGE_OPTIMIZATION_MODULE = path.resolve(
+  import.meta.dirname,
+  "../packages/vinext/src/server/image-optimization.ts",
 );
 
 function workerEntryVirtualModules(): Plugin {
@@ -35,10 +40,31 @@ export const __basePath = "";
 export let hybridInitializationCalls = 0;
 export function __ensureHybridPagesApplication() { hybridInitializationCalls++; }
 export function __ensureInstrumentation() {}
-export const __imageAllowedWidths = [];
+export const __imageAllowedWidths = [64];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
 export default async function rscHandler(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/_next/image") {
+    // Middleware or a rewrite selected this query and set these headers.
+    const { markImageOptimizationSignal } = await import(${JSON.stringify(IMAGE_OPTIMIZATION_MODULE)});
+    const middlewareHeaders = new Headers({ "x-mw": "1", "content-type": "text/plain" });
+    middlewareHeaders.append("set-cookie", "mw=1");
+    return markImageOptimizationSignal(Response.redirect("https://example.com/source", 302), {
+      middlewareHeaders,
+      search: "?url=" + encodeURIComponent(url.searchParams.get("source")) + "&w=64&q=75",
+    });
+  }
+  if (url.pathname === "/open.png") {
+    const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
+    return createStaticFileSignal("/open.png", {});
+  }
+  if (url.pathname === "/protected/private.png") {
+    // Middleware admits the source only with a cookie.
+    if (request.headers.get("cookie") !== "members=1") return new Response("blocked", { status: 403 });
+    const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
+    return createStaticFileSignal("/protected/private.png", {});
+  }
   globalThis.${CAPTURE_RSC_REQUEST}(request);
   return new Response("ok");
 }
@@ -770,6 +796,72 @@ export default {
       errorSpy.mockRestore();
       exitSpy.mockRestore();
       fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves an image only for a source the handler admits as an anonymous request", async () => {
+    // Next.js' fetchInternalImage runs a local source through the router without
+    // the caller's cookies (packages/next/src/server/image-optimizer.ts), and
+    // sends middleware's response headers with the image.
+    setImageOptimizer({
+      transformImage: async (body) =>
+        new Response(body, { headers: { "content-type": "image/webp" } }),
+    });
+    const fetchedAssets: string[] = [];
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
+      )) as {
+        default: {
+          fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
+        };
+      };
+      const env = {
+        ASSETS: {
+          fetch(request: Request) {
+            const { pathname } = new URL(request.url);
+            fetchedAssets.push(pathname);
+            return new Response(pathname, { headers: { "content-type": "image/png" } });
+          },
+        },
+      };
+      const get = (source: string) =>
+        entry.default.fetch(
+          new Request(`https://example.com/_next/image?source=${encodeURIComponent(source)}`, {
+            headers: { cookie: "members=1" },
+          }),
+          env,
+          { waitUntil() {} },
+        );
+
+      const image = await get("/open.png");
+      expect(image.status).toBe(200);
+      expect(image.headers.get("content-type")).toBe("image/webp");
+      expect(image.headers.get("x-mw")).toBe("1");
+      expect(image.headers.getSetCookie()).toEqual(["mw=1"]);
+      await expect(image.text()).resolves.toBe("/open.png");
+
+      const denied = await get("/protected/private.png");
+      expect(denied.status).toBe(404);
+      expect(denied.headers.get("x-mw")).toBe("1");
+      await expect(denied.text()).resolves.toBe("Image not found");
+      expect(fetchedAssets).toEqual(["/open.png"]);
+    } finally {
+      setImageOptimizer(null);
+      await server?.close();
     }
   });
 });

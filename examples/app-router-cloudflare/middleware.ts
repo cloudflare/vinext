@@ -7,6 +7,34 @@ export function middleware(request: NextRequest) {
   if (request.nextUrl.pathname === "/admin") {
     return new Response("Blocked by middleware", { status: 403 });
   }
+  // A `members=1` cookie admits direct requests; the image optimizer fetches
+  // its source without the caller's cookies, as Next.js does.
+  if (
+    request.nextUrl.pathname.startsWith("/protected/") &&
+    request.cookies.get("members")?.value !== "1"
+  ) {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+  // The image endpoint passes through middleware before it reads a source.
+  if (request.nextUrl.pathname === "/_next/image" || request.nextUrl.pathname === "/_vinext/image") {
+    if (request.nextUrl.searchParams.has("deny")) {
+      return new Response("image endpoint blocked by middleware", {
+        status: 403,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    if (request.nextUrl.searchParams.get("url") === "/image-endpoint-replaced.png") {
+      const target = request.nextUrl.clone();
+      target.searchParams.set("url", "/vinext-image.png");
+      return NextResponse.rewrite(target);
+    }
+    const response = NextResponse.next();
+    response.headers.set("x-mw-image-endpoint", "true");
+    return response;
+  }
   if (request.nextUrl.pathname === "/_next/static/middleware-rewrite.js") {
     return new Response("rewritten missing asset", {
       headers: { "content-type": "text/plain" },
@@ -28,5 +56,13 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/", "/admin", "/_next/static/middleware-rewrite.js"],
+  matcher: [
+    "/api/:path*",
+    "/",
+    "/admin",
+    "/_next/static/middleware-rewrite.js",
+    "/protected/:path*",
+    "/_next/image",
+    "/_vinext/image",
+  ],
 };

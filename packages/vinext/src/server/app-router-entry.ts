@@ -42,9 +42,10 @@ import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-con
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import {
   getImageOptimizer,
-  handleConfiguredImageOptimization,
   isImageOptimizationPath,
+  readImageOptimizationSignal,
 } from "./image-optimization.js";
+import { handleWorkerImageOptimization } from "./worker-image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
@@ -207,13 +208,19 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
-    return handleConfiguredImageOptimization(
-      request,
-      (assetPath) => Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
-      __rscImageAllowedWidths,
-      __rscImageConfig,
-    );
+  // With an image optimizer, serve the image endpoint after the RSC handler
+  // admitted it through middleware and rewrites.
+  const imageAssets = assets && getImageOptimizer() ? assets : null;
+  // vinext's next/image emits the image endpoint without the basePath, where
+  // Next.js prefixes it. Admit that form as the basePath endpoint and resolve
+  // its unprefixed sources under the basePath.
+  const imageEndpointBasePath =
+    imageAssets && __workerBasePath && isImageOptimizationPath(url.pathname)
+      ? __workerBasePath
+      : "";
+  if (imageEndpointBasePath) {
+    url.pathname = imageEndpointBasePath + url.pathname;
+    request = new Request(url, request);
   }
 
   // Redirect repeated slashes / backslashes like Next.js (//evil.com/ →
@@ -281,6 +288,19 @@ async function handleRequest(
   const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
   if (result instanceof Response) {
+    const imageSignal = imageAssets ? readImageOptimizationSignal(result) : null;
+    if (imageAssets && imageSignal) {
+      return handleWorkerImageOptimization(request, imageSignal, {
+        allowedWidths: __rscImageAllowedWidths,
+        assetPathPrefix: __workerAssetPathPrefix,
+        basePath: __workerBasePath,
+        fetchAsset: (assetRequest) => Promise.resolve(imageAssets.fetch(assetRequest)),
+        imageConfig: __rscImageConfig,
+        resolveSource: (sourceRequest) =>
+          runWithExecutionContext(requestCtx, () => rscHandler(sourceRequest, requestCtx)),
+        sourceBasePath: imageEndpointBasePath,
+      });
+    }
     let response = result;
     if (assets) {
       const assetResponse = await resolveStaticAssetSignal(response, {
