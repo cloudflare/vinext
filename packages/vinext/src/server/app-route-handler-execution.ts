@@ -634,6 +634,11 @@ async function executeAppRouteHandlerImpl(
     const specialError = resolveAppRouteHandlerSpecialError(error, {
       isAction: isPossibleAppRouteActionRequest(options.request),
     });
+    // A request read before redirect() or notFound() makes the response
+    // depend on the request, so no provider policy may share it.
+    if (specialError && options.consumeDynamicUsage()) {
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+    }
     options.clearRequestContext();
 
     if (specialError) {

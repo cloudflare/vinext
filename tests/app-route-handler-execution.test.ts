@@ -1089,6 +1089,71 @@ describe("app route handler execution helpers", () => {
     expect(state.explicitResponseCachePolicy === true).toBe(finalPolicy !== undefined);
   });
 
+  it.each([false, true])(
+    "records a redirect after a request read as dynamic (read: %s)",
+    async (readRequest) => {
+      const request = new Request("https://example.com/api/redirect");
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+        "build-a",
+        true,
+      );
+      const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+      state.route = { kind: "app-route", pattern: "/api/redirect" };
+      const dynamicUsage = createDynamicUsageState();
+
+      const response = await runWithExecutionContext(context, () =>
+        executeAppRouteHandler({
+          buildPageCacheTags() {
+            return [];
+          },
+          cleanPathname: "/api/redirect",
+          clearRequestContext() {},
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto", revalidate: 60 },
+          handlerFn() {
+            if (readRequest) dynamicUsage.markDynamicUsage();
+            throw { digest: "NEXT_REDIRECT;replace;/target;307;" };
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return pathname;
+          },
+          async isrSet() {},
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: null,
+          reportRequestError() {},
+          request,
+          revalidateSeconds: 60,
+          routePattern: "/api/redirect",
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        }),
+      );
+
+      expect(response.status).toBe(307);
+      expect(state.outcome).toEqual(
+        readRequest ? { cacheable: false, dynamicUsage: true } : undefined,
+      );
+    },
+  );
+
   it("falls back to private streaming and defers cleanup when completion times out", async () => {
     const request = new Request("https://example.com/api/large", {
       headers: { Accept: "*/*" },

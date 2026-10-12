@@ -482,6 +482,32 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.deepEqual(await storedEntriesNaming("/api/host-echo"), []);
   });
 
+  test("never shares a page that read the host under a public config policy", async () => {
+    const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
+    for (const host of hosts) {
+      const response = await miniflare.dispatchFetch(`https://${host}/config-policy-host`);
+      const body = await response.text();
+      assert.equal(response.status, 200, body);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
+      assert.ok(htmlValue(body, "host"));
+    }
+    assert.deepEqual(await storedEntriesNaming("/config-policy-host"), []);
+  });
+
+  test("never shares a route handler redirect that read the host", async () => {
+    const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
+    for (const host of hosts) {
+      const response = await miniflare.dispatchFetch(`https://${host}/api/redirect-to-host`, {
+        redirect: "manual",
+      });
+      await response.arrayBuffer();
+      assert.equal(response.status, 307);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
+      assert.equal(response.headers.get("location"), `/static-default?from=${host}`);
+    }
+    assert.deepEqual(await storedEntriesNaming("/api/redirect-to-host"), []);
+  });
+
   test("never stores a dynamic-segment route without generateStaticParams", async () => {
     const first = await request("/dynamic-segment/a");
     const firstBody = await first.text();
