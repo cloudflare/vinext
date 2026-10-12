@@ -1598,7 +1598,7 @@ describe("app route handler execution helpers", () => {
     });
 
     expect(redirectResponse.status).toBe(308);
-    expect(redirectResponse.headers.get("location")).toBe("https://example.com/target");
+    expect(redirectResponse.headers.get("location")).toBe("/target");
     expect(redirectResponse.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );

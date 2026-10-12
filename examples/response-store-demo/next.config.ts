@@ -17,6 +17,7 @@ export default {
         { key: "Vary", value: "Cookie" },
       ],
     },
+    { source: "/api/host-redirect", headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=60" }] },
     ...personalizedPaths.flatMap((source) =>
       personalizedVisitors.map((visitor) => ({
         source,

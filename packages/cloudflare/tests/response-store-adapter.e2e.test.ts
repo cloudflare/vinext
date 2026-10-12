@@ -452,6 +452,25 @@ describe("Cloudflare Workers Response Store adapter", () => {
     );
   });
 
+  // Next.js sends the target a route handler's redirect() received, so the
+  // entry every host shares stores no host.
+  test("stores a route handler redirect with the target it received", async () => {
+    const before = (await responseEntries("/api/host-redirect")).length;
+    const fill = await miniflare.dispatchFetch("https://tenant-a.test/api/host-redirect", {
+      redirect: "manual",
+    });
+    await fill.arrayBuffer();
+    assert.equal(fill.status, 307);
+    assert.equal(fill.headers.get("location"), "/static-default");
+    await waitForStoredEntries(() => responseEntries("/api/host-redirect"), before + 1);
+    const [entry] = (await responseEntries("/api/host-redirect")).slice(-1);
+    assert.ok(entry);
+    assert.deepEqual(
+      (entry.responseHeaders as Array<[string, string]>).find(([name]) => name === "location"),
+      ["location", "/static-default"],
+    );
+  });
+
   test("never shares a route handler response that read the host", async () => {
     const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
     for (const host of hosts) {
