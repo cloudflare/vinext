@@ -2,6 +2,8 @@
  * Map a prerendered URL to the file path its artifacts are written under, as
  * Next.js's `normalizePagePath` does. `/index` becomes `/index/index` (and
  * `/index/foo` becomes `/index/index/foo`) so it never shares `/`'s files.
+ * Unlike Next.js, dynamic fallback-shell paths such as `/index/[slug]` are
+ * also prefixed; build and seed both use this mapping, so they stay in step.
  * Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/page-path/normalize-page-path.ts
  */
 function toOutputUrlPath(urlPath: string): string {

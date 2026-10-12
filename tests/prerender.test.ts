@@ -171,6 +171,15 @@ describe("prerender output paths for /index", () => {
     expect(getRscOutputPath("/index", { mode: "export", trailingSlash: false })).toBe(
       "index/index.txt",
     );
+    expect(getRscOutputPath("/index", { mode: "export", trailingSlash: true })).toBe(
+      "index/index/index.txt",
+    );
+    expect(getRscOutputPath("/", { mode: "export", trailingSlash: false, basePath: "/docs" })).toBe(
+      "docs/index.txt",
+    );
+    expect(
+      getRscOutputPath("/index", { mode: "export", trailingSlash: false, basePath: "/docs" }),
+    ).toBe("docs/index/index.txt");
     expect(getAppRouteOutputPath("/")).toBe("index.route");
     expect(getAppRouteOutputPath("/index")).toBe("index/index.route");
   });
