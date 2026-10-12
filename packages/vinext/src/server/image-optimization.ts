@@ -122,6 +122,8 @@ const IMAGE_OPTIMIZATION_SIGNAL = Symbol.for("vinext.image-optimization-signal")
 export type ImageOptimizationSignal = {
   /** Middleware response headers to send with the image. */
   middlewareHeaders: Headers;
+  /** The request headers after middleware's overrides, when it set any. */
+  requestHeaders: Headers | null;
   /** The image query after middleware and rewrites. */
   search: string;
 };
@@ -145,9 +147,11 @@ export function markImageOptimizationSignal(
 export function readImageOptimizationSignal(response: Response): ImageOptimizationSignal | null {
   const signal: unknown = Reflect.get(response, IMAGE_OPTIMIZATION_SIGNAL);
   if (typeof signal !== "object" || signal === null) return null;
-  const { middlewareHeaders, search } = signal as Partial<ImageOptimizationSignal>;
-  return middlewareHeaders instanceof Headers && typeof search === "string"
-    ? { middlewareHeaders, search }
+  const { middlewareHeaders, requestHeaders, search } = signal as Partial<ImageOptimizationSignal>;
+  return middlewareHeaders instanceof Headers &&
+    (requestHeaders === null || requestHeaders instanceof Headers) &&
+    typeof search === "string"
+    ? { middlewareHeaders, requestHeaders, search }
     : null;
 }
 

@@ -10,7 +10,8 @@ import {
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
 import { VINEXT_PRERENDER_SPECIAL_ERROR_HEADER } from "./headers.js";
-import { readStaticFileSignal } from "./static-file-signal.js";
+import { attachRequestCfMetadata } from "./request-pipeline.js";
+import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 import { mergeHeaders } from "./worker-utils.js";
 
 // Middleware headers never sent with the image: its own representation
@@ -22,6 +23,10 @@ const OMIT_MIDDLEWARE_HEADERS = new Set([
   "content-type",
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
+
+// Next.js' fetchInternalImage dispatches the source as a relative URL without
+// headers, so the caller's host selects no host condition or middleware branch.
+const IMAGE_SOURCE_ORIGIN = "http://vinext.invalid";
 
 export type WorkerImageOptimizationOptions = {
   allowedWidths: number[];
@@ -64,7 +69,11 @@ async function fetchImageSource(
   const sourceUrl = new URL(
     options.sourceBasePath &&
       !hasBasePath(sourcePath, options.sourceBasePath) &&
-      !(options.assetPathPrefix && hasBasePath(sourcePath, options.assetPathPrefix))
+      !(
+        options.assetPathPrefix &&
+        hasBasePath(sourcePath, options.assetPathPrefix) &&
+        isNextStaticPath(sourcePath.split(/[?#]/, 1)[0], "", options.assetPathPrefix)
+      )
       ? options.sourceBasePath + sourcePath
       : sourcePath,
     request.url,
@@ -78,12 +87,21 @@ async function fetchImageSource(
   }
   // Any other source goes through the application as a GET without the
   // caller's headers, like Next.js' fetchInternalImage, so middleware admits
-  // it. Without a Host header, host conditions never match. Only a public
-  // file that the application selects is served.
+  // it. It keeps the caller's edge metadata, as a direct request would. Only
+  // a public file that the application selects is served.
   const sourceResponse = await options.resolveSource(
-    new Request(sourceUrl, { headers: { host: "" }, signal: request.signal }),
+    attachRequestCfMetadata(
+      new Request(new URL(sourceUrl.pathname + sourceUrl.search, IMAGE_SOURCE_ORIGIN), {
+        signal: request.signal,
+      }),
+      request,
+    ),
   );
   const staticFile = sourceResponse.ok ? readStaticFileSignal(sourceResponse) : null;
+  // Middleware's request header overrides for the source reach the asset fetch.
+  const assetHeaders = sourceResponse.ok
+    ? readStaticFileSignalRequestHeaders(sourceResponse)
+    : null;
   cancelResponseBody(sourceResponse);
   if (staticFile === null || request.signal.aborted) {
     return new Response("Image not found", { status: 404 });
@@ -95,7 +113,10 @@ async function fetchImageSource(
     // Fetch the encoded form, as the static-file signal branch does.
   }
   return options.fetchAsset(
-    new Request(new URL(assetPath, request.url), { signal: request.signal }),
+    new Request(new URL(assetPath, request.url), {
+      headers: assetHeaders ?? undefined,
+      signal: request.signal,
+    }),
   );
 }
 
@@ -111,8 +132,12 @@ export async function handleWorkerImageOptimization(
 ): Promise<Response> {
   const imageUrl = new URL(request.url);
   imageUrl.search = signal.search;
+  // Format negotiation reads the request headers after middleware's overrides.
+  const imageRequest = new Request(imageUrl, request);
   const image = await handleConfiguredImageOptimization(
-    new Request(imageUrl, request),
+    signal.requestHeaders
+      ? new Request(imageRequest, { headers: signal.requestHeaders })
+      : imageRequest,
     (sourcePath) => fetchImageSource(sourcePath, request, options),
     options.allowedWidths,
     options.imageConfig,

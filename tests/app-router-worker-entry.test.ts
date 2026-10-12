@@ -52,14 +52,18 @@ export default async function rscHandler(request) {
     middlewareHeaders.append("set-cookie", "mw=1");
     return markImageOptimizationSignal(Response.redirect("https://example.com/source", 302), {
       middlewareHeaders,
+      // Middleware overrode the request's Accept header.
+      requestHeaders: new Headers({ accept: "image/avif" }),
       search: "?url=" + encodeURIComponent(url.searchParams.get("source")) + "&w=64&q=75",
     });
   }
   if (url.pathname === "/open.png") {
+    // Middleware set a request header for the asset fetch.
     const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
-    return createStaticFileSignal("/open.png", {});
+    return createStaticFileSignal("/open.png", {}, new Headers({ "x-asset-auth": "1" }));
   }
   if (url.pathname === "/host-avatar") {
+    globalThis.${CAPTURE_RSC_REQUEST}(request);
     // A rewrite conditioned on the request host, read like requestContextFromRequest.
     if ((request.headers.get("host") ?? url.hostname) !== "example.com") return new Response(null, { status: 404 });
     const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
@@ -810,10 +814,15 @@ export default {
     // the caller's cookies (packages/next/src/server/image-optimizer.ts), and
     // sends middleware's response headers with the image.
     setImageOptimizer({
-      transformImage: async (body) =>
-        new Response(body, { headers: { "content-type": "image/webp" } }),
+      transformImage: async (body, { format }) =>
+        new Response(body, { headers: { "content-type": format } }),
     });
     const fetchedAssets: string[] = [];
+    const fetchedAssetHeaders: (string | null)[] = [];
+    const capturedRequests: Request[] = [];
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
+      capturedRequests.push(request);
+    });
     let server: Awaited<ReturnType<typeof createServer>> | undefined;
     try {
       server = await createServer({
@@ -840,6 +849,7 @@ export default {
           fetch(request: Request) {
             const { pathname } = new URL(request.url);
             fetchedAssets.push(pathname);
+            fetchedAssetHeaders.push(request.headers.get("x-asset-auth"));
             return new Response(pathname, { headers: { "content-type": "image/png" } });
           },
         },
@@ -847,7 +857,7 @@ export default {
       const get = (source: string) =>
         entry.default.fetch(
           new Request(`https://example.com/_next/image?source=${encodeURIComponent(source)}`, {
-            headers: { cookie: "members=1" },
+            headers: { accept: "image/webp", cookie: "members=1", host: "example.com" },
           }),
           env,
           { waitUntil() {} },
@@ -855,7 +865,9 @@ export default {
 
       const image = await get("/open.png");
       expect(image.status).toBe(200);
-      expect(image.headers.get("content-type")).toBe("image/webp");
+      // Format negotiation reads the request headers after middleware.
+      expect(image.headers.get("content-type")).toBe("image/avif");
+      expect(fetchedAssetHeaders).toEqual(["1"]);
       expect(image.headers.get("x-mw")).toBe("1");
       expect(image.headers.getSetCookie()).toEqual(["mw=1"]);
       await expect(image.text()).resolves.toBe("/open.png");
@@ -868,6 +880,7 @@ export default {
       // Next.js' internal image request has no Host header, so a host-conditioned
       // rewrite does not match it.
       expect((await get("/host-avatar")).status).toBe(404);
+      expect(capturedRequests.map((request) => request.headers.has("host"))).toEqual([false]);
       expect(fetchedAssets).toEqual(["/open.png"]);
     } finally {
       setImageOptimizer(null);

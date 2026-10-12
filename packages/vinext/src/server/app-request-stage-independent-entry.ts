@@ -29,6 +29,7 @@ import { assetPrefixPathname } from "../utils/asset-prefix.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -159,7 +160,7 @@ async function handleRequest(
     imageAssets && __basePath && isImageOptimizationPath(url.pathname) ? __basePath : "";
   if (imageEndpointBasePath) {
     url.pathname = imageEndpointBasePath + url.pathname;
-    request = new Request(url, request);
+    request = cloneRequestWithUrl(request, url.toString());
   }
   const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
   if (protocolRelativeGuard) return protocolRelativeGuard;

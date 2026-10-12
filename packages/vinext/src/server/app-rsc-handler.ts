@@ -62,7 +62,10 @@ import {
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
-import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request-headers.js";
+import {
+  buildRequestHeadersFromMiddlewareResponse,
+  hasMiddlewareRequestHeaderOverrides,
+} from "../utils/middleware-request-headers.js";
 import { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
@@ -1648,9 +1651,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         headers: middlewareHeaders,
       });
     }
+    const overrideHeaders = middlewareContext.requestHeaders ?? middlewareContext.headers;
     return markImageOptimizationSignal(
       Response.redirect(new URL(imageRedirect, url.origin).href, 302),
-      { middlewareHeaders, search: imageUrl.search },
+      {
+        middlewareHeaders,
+        // The context holds middleware's encoded overrides, not request headers.
+        requestHeaders: overrideHeaders
+          ? buildRequestHeadersFromMiddlewareResponse(request.headers, overrideHeaders)
+          : null,
+        search: imageUrl.search,
+      },
     );
   }
 

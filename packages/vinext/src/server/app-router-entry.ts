@@ -49,6 +49,7 @@ import { handleWorkerImageOptimization } from "./worker-image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -220,7 +221,7 @@ async function handleRequest(
       : "";
   if (imageEndpointBasePath) {
     url.pathname = imageEndpointBasePath + url.pathname;
-    request = new Request(url, request);
+    request = cloneRequestWithUrl(request, url.toString());
   }
 
   // Redirect repeated slashes / backslashes like Next.js (//evil.com/ →
