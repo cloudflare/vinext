@@ -405,26 +405,26 @@ export function appIsrCacheKey(
   suffix: string,
   buildId = process.env.__VINEXT_BUILD_ID,
 ): string {
-  return buildCacheKey(appIsrKeyPrefix(buildId), pathname, suffix);
-}
-
-function appIsrKeyPrefix(buildId: string | undefined): string {
   // Keep incompatible App cache identities unreachable even when generateBuildId is stable.
-  return buildId ? `app:v2:${buildId}` : "app:v2";
+  const prefix = buildId ? `app:v2:${buildId}` : "app:v2";
+  return buildCacheKey(prefix, pathname, suffix);
 }
 
 /**
  * Compute the ISR key for a PPR fallback shell artifact, such as the HTML for
  * `/en/[slug]`. Shells get their own namespace: a request for the literal path
  * `/en/%5Bslug%5D` decodes to the same pathname, and its render must not be
- * stored where every unknown `[slug]` reads its shell.
+ * stored where every unknown `[slug]` reads its shell. The namespace is a
+ * prefix of its own rather than a part after the build ID, which can contain
+ * `:` and so could spell it.
  */
 export function appIsrFallbackShellKey(
   pathname: string,
   suffix: "html" | "rsc",
   buildId = process.env.__VINEXT_BUILD_ID,
 ): string {
-  return buildCacheKey(`${appIsrKeyPrefix(buildId)}:fallback-shell`, pathname, suffix);
+  const prefix = buildId ? `app-fallback-shell:v1:${buildId}` : "app-fallback-shell:v1";
+  return buildCacheKey(prefix, pathname, suffix);
 }
 
 export function appIsrHtmlKey(pathname: string): string {
