@@ -1287,6 +1287,30 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     },
   );
 
+  it("does not name the Response Store deploy script after --name when cloudflare.config.ts exists", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "cloudflare.config.ts",
+      `export const responseStoreServiceBinding = { name: "existing-response-store" };\nexport default { name: "existing" };\n`,
+    );
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        responseStoreMode: "service-binding",
+        imageOptimization: "none",
+        name: "storefront-production",
+      },
+    });
+
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:response-store"]).toBe(
+      "cf deploy --prebuilt --mode production --worker test-project-response-store",
+    );
+  });
+
   it.each(["", "Storefront", "store front", "-storefront", "a".repeat(64)])(
     "rejects the invalid programmatic Worker name %j before changing files",
     async (name) => {

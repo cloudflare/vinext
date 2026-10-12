@@ -811,7 +811,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
     warmCdnCache: options.cloudflare?.warmCdnCache ?? false,
     legacyWrangler: options.cloudflare?.legacyWrangler,
     scriptNames: options.scriptNames,
-    workerName: options.cloudflare?.name,
+    // An existing config keeps its own Worker names, so --name isn't applied here either.
+    workerName: configKeepingWorkerName ? undefined : options.cloudflare?.name,
   });
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────
