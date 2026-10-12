@@ -44,8 +44,7 @@ function toVisibleAppHref(href: string, origin: string): string {
   return `${stripRscSuffix(url.pathname)}${url.search}${url.hash}`;
 }
 
-function toStreamedRedirectVisibleAppHref(href: string, origin: string): string {
-  const url = new URL(href, origin);
+function toStreamedRedirectVisibleAppHref(url: URL): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
@@ -122,15 +121,15 @@ export function resolveStreamedRscRedirectLifecycleHop(options: {
   requestPreviousNextUrl: string | null;
   streamedRedirectTarget: string;
 }): RscRedirectLifecycleDecision {
-  const streamedRedirectUrl = new URL(options.streamedRedirectTarget, options.origin);
+  // The target is a URL reference from the page being fetched, so a
+  // scheme-relative one such as `https:foo` resolves against that page's path.
+  const requestedUrl = new URL(options.currentHref, options.origin);
+  const streamedRedirectUrl = new URL(options.streamedRedirectTarget, requestedUrl);
   // Streamed headers are semantic redirect targets, so preserve their target
   // path/search/hash while the shared same-target guard normalizes currentHref.
   return resolveRedirectLifecycleHopFromTarget({
     ...options,
-    redirectedHref: toStreamedRedirectVisibleAppHref(
-      options.streamedRedirectTarget,
-      options.origin,
-    ),
+    redirectedHref: toStreamedRedirectVisibleAppHref(streamedRedirectUrl),
     targetUrl: streamedRedirectUrl,
   });
 }

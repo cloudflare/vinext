@@ -504,7 +504,7 @@ function toHeaderSafeUrlReference(location: string): string {
  * received it, as in Next.js's digest, so every host that shares the cache
  * entry is sent to the same place; the header carries the same reference made
  * header-safe, so a protocol-relative or scheme-relative target still resolves
- * against each client's own origin. A relative target resolves against the
+ * against the page each client fetched. A relative target resolves against the
  * request's path to a path-only form, which the client resolves against its
  * own origin. Resolving against two placeholder origins tells these apart the
  * way the URL parser does, never depends on the request's origin, and cannot
