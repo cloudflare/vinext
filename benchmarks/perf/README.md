@@ -35,7 +35,11 @@ No workflow, database, API, normalizer, or dashboard changes are required.
 The full benchmark ID is generated as `<implementation id>-<scenario id>`.
 Profiling is configured per implementation. Set `profile: true` only for the
 implementation whose subprocess tree should be sampled; the current scenarios
-capture vinext traces and never profile Next.js.
+capture vinext traces and never profile Next.js. `validate-profile-traces.mjs`
+requires every captured profile to contain vinext, Vite, and Rolldown frames,
+so only implementations that run Vite (the dev server and the build) can be
+profiled. The production server cold start serves prebuilt output and sets
+`profile: false`.
 
 Set `compareBase: true` for implementations that should be measured at both the
 pull request base and head. PR CI prepares both revisions on one runner and uses
