@@ -22,6 +22,13 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        source: "/cdn-stage-vary-cookie/:slug",
+        headers: [
+          { key: "Cache-Control", value: "public, s-maxage=300" },
+          { key: "Vary", value: "Cookie" },
+        ],
+      },
+      {
         source: "/about",
         headers: [{ key: "X-Page-Header", value: "about-page" }],
       },

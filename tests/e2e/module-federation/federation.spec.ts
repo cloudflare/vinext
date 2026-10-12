@@ -28,6 +28,14 @@ test("host renders a federated remote component that shares the host React", asy
   void consoleErrors;
 });
 
+test("serves the host's own remoteEntry.js", async ({ request }) => {
+  // The host loads its own federation runtime from the client build output
+  // root, outside `_next/static`.
+  const response = await request.get("/remoteEntry.js");
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toContain("javascript");
+});
+
 test("the remote component is not server-rendered", async ({ request }) => {
   const html = await (await request.get("/")).text();
   expect(html).toContain("Module Federation host");

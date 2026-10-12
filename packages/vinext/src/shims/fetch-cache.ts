@@ -58,7 +58,7 @@ export type { FetchCacheMode, FetchCacheState } from "./fetch-cache-state.js";
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v5";
+const CACHE_KEY_PREFIX = "v6";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -122,6 +122,25 @@ const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
 function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): boolean {
   const headers = collectHeaders(input, init);
   return AUTH_HEADERS.some((name) => name in headers);
+}
+
+/**
+ * Workers' `cf.resolveOverride` sends the request to a different origin
+ * without changing the URL or headers, so it must be part of the fetch cache
+ * and dedupe keys. Other `cf` properties only tune Cloudflare's edge cache or
+ * optimize the same resource, so they stay out of the keys. Next.js has no
+ * equivalent because it never runs on Workers.
+ */
+function getResolveOverride(input: string | URL | Request, init: RequestInit | undefined): unknown {
+  // A RequestInit `cf` replaces a Request input's, like the Request constructor.
+  const initCf = (init as { cf?: { resolveOverride?: unknown } } | undefined)?.cf;
+  const cf =
+    initCf !== undefined
+      ? initCf
+      : input instanceof Request
+        ? (input as { cf?: { resolveOverride?: unknown } }).cf
+        : undefined;
+  return cf?.resolveOverride ?? null;
 }
 
 const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"));
@@ -491,6 +510,7 @@ async function buildFetchCacheKey(
     init?.cache ?? inputRequest?.cache ?? "default",
     bodyChunks,
     bodyMetadata,
+    getResolveOverride(input, init),
   ]);
 
   return sha256Hex(cacheString);
@@ -841,7 +861,7 @@ function getFetchCacheDirective(
   return input.cache;
 }
 
-function buildFetchDedupeKey(request: Request): string {
+function buildFetchDedupeKey(request: Request, resolveOverride: unknown): string {
   const filteredHeaders = Array.from(request.headers.entries()).filter(
     ([key]) => !HEADER_BLOCKLIST.includes(key.toLowerCase()),
   );
@@ -855,6 +875,7 @@ function buildFetchDedupeKey(request: Request): string {
     request.referrer,
     request.referrerPolicy,
     request.integrity,
+    resolveOverride,
   ]);
 }
 
@@ -886,7 +907,7 @@ function createFetchDedupeCandidate(
 
   return {
     url: request.url,
-    key: buildFetchDedupeKey(request),
+    key: buildFetchDedupeKey(request, getResolveOverride(input, init)),
   };
 }
 

@@ -3374,6 +3374,116 @@ describe("fetch cache shim", () => {
     });
   });
 
+  // ── Workers cf.resolveOverride ──────────────────────────────────────
+
+  describe("cf.resolveOverride in cache keys", () => {
+    type WorkersInit = RequestInit & { cf?: Record<string, unknown> };
+
+    // Node's Request drops `cf`; workerd's Request carries it.
+    function requestWithCf(url: string, cf: Record<string, unknown>): Request {
+      const request = new Request(url);
+      Object.defineProperty(request, "cf", { value: cf, configurable: true });
+      return request;
+    }
+
+    function readOrigin(input: string | URL | Request, init?: RequestInit): unknown {
+      const initCf = (init as WorkersInit | undefined)?.cf;
+      if (initCf !== undefined) return initCf.resolveOverride ?? null;
+      return (input as { cf?: { resolveOverride?: unknown } }).cf?.resolveOverride ?? null;
+    }
+
+    beforeEach(() => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        return new Response(
+          JSON.stringify({ origin: readOrigin(input, init), count: requestCount }),
+        );
+      });
+    });
+
+    async function cachedFetch(cf: Record<string, unknown>) {
+      const init: WorkersInit = { cf, next: { revalidate: 60 } };
+      return (await fetch("https://api.example.com/tenant-data", init)).json();
+    }
+
+    it("keeps different origins in separate persistent entries", async () => {
+      expect(await cachedFetch({ resolveOverride: "origin-a.example.com" })).toEqual({
+        origin: "origin-a.example.com",
+        count: 1,
+      });
+
+      startNewFetchCacheScope();
+      expect(await cachedFetch({ resolveOverride: "origin-b.example.com" })).toEqual({
+        origin: "origin-b.example.com",
+        count: 2,
+      });
+
+      startNewFetchCacheScope();
+      expect(await cachedFetch({ resolveOverride: "origin-a.example.com" })).toEqual({
+        origin: "origin-a.example.com",
+        count: 1,
+      });
+      expect(await cachedFetch({ resolveOverride: "origin-b.example.com" })).toEqual({
+        origin: "origin-b.example.com",
+        count: 2,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores cf properties that do not select the origin", async () => {
+      await cachedFetch({ resolveOverride: "origin-a.example.com", cacheTtl: 5 });
+
+      startNewFetchCacheScope();
+      const cached = await cachedFetch({
+        resolveOverride: "origin-a.example.com",
+        cacheTtlByStatus: { "100-599": -1 },
+        cacheTags: ["tenant-a"],
+      });
+      expect(cached).toEqual({ origin: "origin-a.example.com", count: 1 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("keys a Request input's resolveOverride, replaced by a RequestInit cf", async () => {
+      const request = requestWithCf("https://api.example.com/request-cf", {
+        resolveOverride: "origin-a.example.com",
+      });
+
+      const inherited = await fetch(request, { next: { revalidate: 60 } });
+      expect(await inherited.json()).toEqual({ origin: "origin-a.example.com", count: 1 });
+
+      startNewFetchCacheScope();
+      const overrideInit: WorkersInit = {
+        cf: { resolveOverride: "origin-b.example.com" },
+        next: { revalidate: 60 },
+      };
+      const overridden = await fetch(request, overrideInit);
+      expect(await overridden.json()).toEqual({ origin: "origin-b.example.com", count: 2 });
+
+      startNewFetchCacheScope();
+      const plain = await fetch("https://api.example.com/request-cf", { next: { revalidate: 60 } });
+      expect(await plain.json()).toEqual({ origin: null, count: 3 });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("dedupes render fetches only within the same origin", async () => {
+      const fetchOrigin = (cf: Record<string, unknown>) => {
+        const init: WorkersInit = { cf, cache: "no-store" };
+        return fetch("https://api.example.com/tenant-dedupe", init).then((res) => res.json());
+      };
+
+      const [a1, b, a2] = await Promise.all([
+        fetchOrigin({ resolveOverride: "origin-a.example.com" }),
+        fetchOrigin({ resolveOverride: "origin-b.example.com" }),
+        fetchOrigin({ resolveOverride: "origin-a.example.com", cacheTtl: 5 }),
+      ]);
+
+      expect(a1).toEqual({ origin: "origin-a.example.com", count: 1 });
+      expect(b).toEqual({ origin: "origin-b.example.com", count: 2 });
+      expect(a2).toEqual(a1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   // ── Body restoration after cache key generation ───────────────────
 
   describe("body restoration (_ogBody)", () => {

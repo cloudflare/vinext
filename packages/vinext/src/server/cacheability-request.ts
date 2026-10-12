@@ -5,6 +5,7 @@ import {
   type RouteCacheabilityOutcome,
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
+import { hasSharedCacheCredentials } from "vinext/shims/cdn-cache";
 import {
   applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
@@ -196,10 +197,7 @@ export function createWorkerCacheabilityAdmissionContext(
   options?: { applyCompletedResponsePolicy?: boolean },
 ): ExecutionContextLike {
   const identity = cacheabilityRequestIdentity(request, trustedRepresentation);
-  const credentialedRequest =
-    request.headers.has("authorization") ||
-    request.headers.has("cookie") ||
-    request.headers.has("proxy-authorization");
+  const credentialedRequest = hasSharedCacheCredentials(request.headers);
   const routePathname = identity
     ? cacheabilityRoutePathname(
         resolvedRoutePathname ?? new URL(request.url).pathname,

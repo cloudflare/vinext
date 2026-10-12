@@ -80,6 +80,7 @@ import {
   isRouteCacheabilityProbe,
   recordRouteCacheability,
   markRouteCacheabilityExplicitResponsePolicy,
+  markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import {
@@ -760,7 +761,43 @@ export function createPagesPageHandler(
       executionContext: getRequestExecutionContext(),
     });
 
-    const response = await runWithRequestContext(uCtx, async () => {
+    // The req/res `_app`, the page data and `_document` share for this render.
+    let pageReqRes: ReturnType<typeof createPagesReqRes> | null = null;
+    const pageResponseSent = (): boolean => pageReqRes?.res.headersSent === true;
+    // Next.js keeps rendering and storing a getStaticProps page whose `_app` or
+    // `_document` sent the response, but the sent response is already on its
+    // way. An on-demand revalidation waits for the entry instead.
+    const sendsEarly =
+      isStaticPropsRoute &&
+      !isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER));
+    let resolveSentResponse: (response: Response) => void = () => {};
+    const sentResponse = new Promise<Response>((resolve) => {
+      resolveSentResponse = resolve;
+    });
+    const reportSsrError = async (e: unknown) => {
+      console.error("[vinext] SSR error:", e);
+      await reportRequestError(
+        e,
+        {
+          path: url,
+          method: request.method,
+          headers: Object.fromEntries(request.headers.entries()),
+        },
+        {
+          routerKind: "Pages Router",
+          routePath: route.pattern,
+          routeType: "render",
+          revalidateReason: isOnDemandRevalidateRequest(
+            request.headers.get(PRERENDER_REVALIDATE_HEADER),
+          )
+            ? "on-demand"
+            : typeof pageModule.getStaticProps === "function"
+              ? "stale"
+              : undefined,
+        },
+      );
+    };
+    const rendering = runWithRequestContext(uCtx, async () => {
       ensureFetchPatch();
       try {
         setFrameworkRequestRoute(routePattern);
@@ -948,6 +985,14 @@ export function createPagesPageHandler(
           }
           return reqRes;
         };
+        // This request's own req/res; a response user code sends on it is the
+        // one the visitor gets. Regeneration renders on a separate one.
+        const createForegroundReqRes = () => {
+          const reqRes = createPageReqRes();
+          pageReqRes = reqRes;
+          if (sendsEarly) void reqRes.responsePromise.then(resolveSentResponse);
+          return reqRes;
+        };
 
         type PageRenderInput = Pick<
           Parameters<typeof renderPagesPageResponse>[0],
@@ -1069,7 +1114,8 @@ export function createPagesPageHandler(
           basePath: vinextConfig.basePath,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
           htmlLimitedBots: vinextConfig.htmlLimitedBots,
-          createGsspReqRes: createPageReqRes,
+          createGsspReqRes: createForegroundReqRes,
+          createRegenerationReqRes: createPageReqRes,
           createAppTree(appTreeProps) {
             const el = createPageElement(PageComponent, AppComponent, appTreeProps);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
@@ -1130,9 +1176,6 @@ export function createPagesPageHandler(
               renderDocumentToString: (element) =>
                 renderAllReady(element).then((stream) => new Response(stream).text()),
               renderToReadableStream: renderAllReady,
-              // Next.js never stores a status `_document` set on its res for a
-              // Pages entry; keep the route's own status in the regenerated one.
-              statusCode: renderStatusCode ?? 200,
             });
             // The entry is written; nobody reads this response.
             await response.body?.cancel();
@@ -1208,6 +1251,8 @@ export function createPagesPageHandler(
           return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }
         if (pageDataResult.kind === "response") {
+          // The visitor already has the response user code sent; leave it as is.
+          if (sendsEarly && pageResponseSent()) return pageDataResult.response;
           let response =
             isOnDemandRevalidate && pageDataResult.onDemandRevalidateSuccess !== false
               ? withPagesCacheState(pageDataResult.response, "REVALIDATED", isrCachePathname)
@@ -1233,7 +1278,7 @@ export function createPagesPageHandler(
         const documentReqRes =
           serializedPagesNextData.autoExport === true && !options?.__notFoundSourceHeaders
             ? null
-            : (pageDataResult.documentReqRes ?? createPageReqRes());
+            : (pageDataResult.documentReqRes ?? createForegroundReqRes());
         // The error page keeps its own ISR policy and cache identity. A source
         // getStaticProps `notFound` lifetime only controls the outgoing 404
         // response and must not shorten `/404`'s internal cache lifetime.
@@ -1344,6 +1389,8 @@ export function createPagesPageHandler(
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         };
         let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);
+        // The visitor already has the response user code sent; leave it as is.
+        if (sendsEarly && pageResponseSent()) return pageResponse;
         if (shouldApplyErrorResponsePolicy) {
           pageResponse = applyPagesErrorCachePolicy(
             pageResponse,
@@ -1354,27 +1401,11 @@ export function createPagesPageHandler(
         }
         return finalizePagesPreviewResponse(withBrowserPolicy(pageResponse), preview);
       } catch (e) {
-        console.error("[vinext] SSR error:", e);
-        await reportRequestError(
-          e,
-          {
-            path: url,
-            method: request.method,
-            headers: Object.fromEntries(request.headers.entries()),
-          },
-          {
-            routerKind: "Pages Router",
-            routePath: route.pattern,
-            routeType: "render",
-            revalidateReason: isOnDemandRevalidateRequest(
-              request.headers.get(PRERENDER_REVALIDATE_HEADER),
-            )
-              ? "on-demand"
-              : typeof pageModule.getStaticProps === "function"
-                ? "stale"
-                : undefined,
-          },
-        );
+        await reportSsrError(e);
+
+        // Next.js keeps a response `_app` or `_document` already sent for a
+        // getStaticProps page and only reports the error.
+        if (sendsEarly && pageResponseSent()) return sentResponse;
 
         // Data requests can't render HTML; avoid recursion if already rendering
         // the error page. Mirrors Next.js base-server.ts: render /500 or _error
@@ -1416,7 +1447,30 @@ export function createPagesPageHandler(
         return new Response("Internal Server Error", { status: 500 });
       }
     });
-    return closeAfterResponseWithBody(response, uCtx);
+    if (!sendsEarly) return closeAfterResponseWithBody(await rendering, uCtx);
+
+    const settled = await Promise.race([
+      rendering.then((response) => ({ response, rendered: true })),
+      sentResponse.then((response) => ({ response, rendered: false })),
+    ]);
+    if (pageResponseSent()) {
+      // The ISR entry is stored separately; the sent response itself is
+      // request-specific and must not become the shared page response.
+      markRouteCacheabilityFinalResponseUncacheable(
+        "_app or _document sent the response of a getStaticProps page",
+      );
+    }
+    if (!settled.rendered) {
+      // The render settles into this same sent response; let it finish
+      // storing the entry without holding the visitor's response.
+      getRequestExecutionContext()?.waitUntil(
+        rendering.then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+    }
+    return closeAfterResponseWithBody(settled.response, uCtx);
   }
 
   return renderPage;

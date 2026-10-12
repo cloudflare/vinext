@@ -13,6 +13,7 @@
  * because it only uses the standard get/set interface.
  */
 
+import { createHash } from "node:crypto";
 import {
   type CacheControlMetadata,
   type CacheHandlerValue,
@@ -21,7 +22,6 @@ import {
   type CachedAppPageValue,
 } from "vinext/shims/cache-handler";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
-import { fnv1a64 } from "../utils/hash.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
@@ -353,12 +353,20 @@ function normalizeCachePathname(pathname: string): string {
   return pathname === "/" ? "/" : pathname.replace(/\/$/, "");
 }
 
+/**
+ * Digest a request-controlled key part. It must be collision resistant: a
+ * crafted value that shared a weaker hash with another would share its entry.
+ */
+function digestKeyPart(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function buildCacheKey(prefix: string, pathname: string, suffix?: string): string {
   const normalized = normalizeCachePathname(pathname);
   const suffixPart = suffix ? `:${suffix}` : "";
   const key = `${prefix}:${normalized}${suffixPart}`;
   if (key.length <= 200) return key;
-  return `${prefix}:__hash:${fnv1a64(normalized)}${suffixPart}`;
+  return `${prefix}:__hash:${digestKeyPart(normalized)}${suffixPart}`;
 }
 
 /**
@@ -402,8 +410,29 @@ export function appIsrCacheKey(
   return buildCacheKey(prefix, pathname, suffix);
 }
 
+/**
+ * Compute the ISR key for a PPR fallback shell artifact, such as the HTML for
+ * `/en/[slug]`. Shells get their own namespace: a request for the literal path
+ * `/en/%5Bslug%5D` decodes to the same pathname, and its render must not be
+ * stored where every unknown `[slug]` reads its shell. The namespace is a
+ * prefix of its own rather than a part after the build ID, which can contain
+ * `:` and so could spell it.
+ */
+export function appIsrFallbackShellKey(
+  pathname: string,
+  suffix: "html" | "rsc",
+  buildId = process.env.__VINEXT_BUILD_ID,
+): string {
+  const prefix = buildId ? `app-fallback-shell:v1:${buildId}` : "app-fallback-shell:v1";
+  return buildCacheKey(prefix, pathname, suffix);
+}
+
 export function appIsrHtmlKey(pathname: string): string {
   return appIsrCacheKey(pathname, "html");
+}
+
+export function appIsrFallbackShellHtmlKey(pathname: string): string {
+  return appIsrFallbackShellKey(pathname, "html");
 }
 
 function normalizeInterceptionContextForCacheKey(interceptionContext: string): string | null {
@@ -437,9 +466,9 @@ export function appIsrRscKey(
       ? null
       : normalizeInterceptionContextForCacheKey(interceptionContext);
   const variant = [
-    sourceVariant ? `source:${fnv1a64(sourceVariant)}` : null,
-    interceptionId ? `selector:${fnv1a64(interceptionId)}` : null,
-    normalizedMountedSlotsHeader ? `slots:${fnv1a64(normalizedMountedSlotsHeader)}` : null,
+    sourceVariant ? `source:${digestKeyPart(sourceVariant)}` : null,
+    interceptionId ? `selector:${digestKeyPart(interceptionId)}` : null,
+    normalizedMountedSlotsHeader ? `slots:${digestKeyPart(normalizedMountedSlotsHeader)}` : null,
     getRscRenderModeCacheVariant(renderMode),
   ]
     .filter((part) => part !== null)

@@ -1209,6 +1209,129 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     },
   );
 
+  it.each([false, true])(
+    "uses the --name Worker name in generated config (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
+      setupProject(tmpDir, { router: "app" });
+      await runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+          name: "storefront-production",
+        },
+      });
+      const config = readFile(tmpDir, legacyWrangler ? "wrangler.jsonc" : "cloudflare.config.ts");
+      if (legacyWrangler) {
+        expect(JSON.parse(config).name).toBe("storefront-production");
+      } else {
+        expect(config).toContain('name: "storefront-production"');
+      }
+      expect(config).not.toContain("test-project");
+    },
+  );
+
+  it("names the Response Store Worker and its deploy script after --name", async () => {
+    setupProject(tmpDir, { router: "app" });
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        responseStoreMode: "service-binding",
+        imageOptimization: "none",
+        name: "storefront-production",
+      },
+    });
+    const config = readFile(tmpDir, "cloudflare.config.ts");
+    expect(config).toContain('name: "storefront-production-response-store"');
+    expect(config).not.toContain("test-project");
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:response-store"]).toBe(
+      "cf deploy --prebuilt --mode production --worker storefront-production-response-store",
+    );
+  });
+
+  it.each([
+    [false, "cloudflare.config.ts"],
+    [true, "wrangler.jsonc"],
+  ])(
+    "warns that --name is not applied to an existing config (legacy Wrangler: %s, existing %s)",
+    async (legacyWrangler, existingConfig) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(
+        tmpDir,
+        existingConfig,
+        legacyWrangler ? `{ "name": "existing" }\n` : `export default { name: "existing" };\n`,
+      );
+
+      const { output } = await runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+          name: "storefront-production",
+        },
+      });
+
+      expect(output).toContain(
+        `Kept the Worker name in the existing ${existingConfig}; --name was not applied, so update it there if it should be "storefront-production"`,
+      );
+      const config = readFile(tmpDir, existingConfig);
+      if (legacyWrangler) {
+        expect(JSON.parse(config).name).toBe("existing");
+      } else {
+        expect(config).toBe(`export default { name: "existing" };\n`);
+      }
+    },
+  );
+
+  it("does not name the Response Store deploy script after --name when cloudflare.config.ts exists", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "cloudflare.config.ts",
+      `export const responseStoreServiceBinding = { name: "existing-response-store" };\nexport default { name: "existing" };\n`,
+    );
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        responseStoreMode: "service-binding",
+        imageOptimization: "none",
+        name: "storefront-production",
+      },
+    });
+
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:response-store"]).toBe(
+      "cf deploy --prebuilt --mode production --worker test-project-response-store",
+    );
+  });
+
+  it.each(["", "Storefront", "store front", "-storefront", "a".repeat(64)])(
+    "rejects the invalid programmatic Worker name %j before changing files",
+    async (name) => {
+      setupProject(tmpDir, { router: "app" });
+      const before = snapshotProject(tmpDir);
+
+      await expect(
+        runInit(tmpDir, {
+          cloudflare: {
+            dataCache: "none",
+            cdnCache: "none",
+            imageOptimization: "none",
+            name,
+          },
+        }),
+      ).rejects.toThrow("Invalid --name value");
+
+      expect(snapshotProject(tmpDir)).toBe(before);
+    },
+  );
+
   it("omits KV setup steps when Wrangler already has a namespace ID", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(

@@ -349,3 +349,52 @@ test.describe('production "use cache" server function references', () => {
     });
   });
 });
+
+test.describe('production "use cache" FormData arguments', () => {
+  // Like Next.js (use-cache-wrapper.ts `encodeFormData`), entry order is part
+  // of a FormData argument's cache key: get() and getAll() both observe it.
+  for (const victimFirst of [true, false]) {
+    test(`keeps reordered repeated fields apart when the ${victimFirst ? "victim" : "public caller"} primes the entry`, async ({
+      request,
+    }) => {
+      const run = `${victimFirst}-${Date.now()}-${Math.random()}`;
+      const post = (scopes: string[], authorization?: string) =>
+        request.post("/api/use-cache-form-scope", {
+          data: new URLSearchParams([
+            ["run", run],
+            ...scopes.map((scope) => ["scope", scope]),
+          ]).toString(),
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            ...(authorization ? { Authorization: authorization } : {}),
+          },
+        });
+      const victim = () => post(["private", "public"], "Bearer fixture-victim-session");
+      const publicCaller = () => post(["public", "private"]);
+
+      // Control: the route authorizes on the first scope value.
+      const forbidden = await post(["private", "public"]);
+      expect(forbidden.status()).toBe(403);
+
+      const [first, second] = victimFirst
+        ? [await victim(), await publicCaller()]
+        : [await publicCaller(), await victim()];
+      expect(first.status()).toBe(200);
+      expect(second.status()).toBe(200);
+      const [victimResult, publicResult] = victimFirst
+        ? [await first.json(), await second.json()]
+        : [await second.json(), await first.json()];
+
+      expect(victimResult.record).toEqual({
+        owner: "victim",
+        secret: "VICTIM_FORM_PRIVATE_RECORD",
+      });
+      expect(publicResult.record).toEqual({ owner: "public", secret: "PUBLIC_FORM_RECORD" });
+      expect(publicResult.execution).not.toBe(victimResult.execution);
+
+      // Each order still hits its own entry.
+      expect(await (await victim()).json()).toEqual(victimResult);
+      expect(await (await publicCaller()).json()).toEqual(publicResult);
+    });
+  }
+});

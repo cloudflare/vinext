@@ -1000,10 +1000,26 @@ export function matchRewrite(
         ...conditionParams,
       };
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      return substituteAndSanitizeRewriteDestination(rewrite.destination, rewriteParams);
+      return substituteAndSanitizeRewriteDestination(
+        serializeRewriteDestinationTemplate(rewrite.destination),
+        rewriteParams,
+      );
     }
   }
   return null;
+}
+
+/**
+ * Next.js prepareDestination URL-parses the destination template before it
+ * substitutes params, so a literal `é` routes as `%C3%A9` while substituted
+ * values stay verbatim: a captured `../admin` is never resolved to `/admin`.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ */
+function serializeRewriteDestinationTemplate(destination: string): string {
+  if (!destination.startsWith("/") || destination.startsWith("//")) return destination;
+  const parsed = new URL(destination, "http://n");
+  return parsed.pathname + parsed.search + parsed.hash;
 }
 
 /**

@@ -112,6 +112,7 @@ import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   isImageOptimizationPath,
+  markImageOptimizationSignal,
   resolveDevImageRedirect,
   type ImageConfig,
 } from "./image-optimization.js";
@@ -790,6 +791,25 @@ function pathnameForResolvedUrl(resolvedUrl: string): string {
   return resolvedUrl.split("#", 1)[0].split("?", 1)[0];
 }
 
+/**
+ * Percent-encode the code points the URL parser encodes in a path (so `é`
+ * becomes `%C3%A9`) without resolving dot segments or `\`: Next.js only parses
+ * a rewrite destination's template, so a captured `../admin` stays verbatim.
+ */
+function serializeResolvedUrl(resolvedUrl: string, base: URL): string {
+  const resolved = new URL(resolvedUrl, base);
+  stripRscCacheBustingSearchParam(resolved);
+  const pathname = pathnameForResolvedUrl(resolvedUrl).replace(
+    /[\0-\x20"<>`{}^\x7F]|[^\0-\x7F]/gu,
+    // A lone surrogate serializes as U+FFFD, as in the URL parser.
+    (char) =>
+      char.length === 1 && char >= "\uD800" && char <= "\uDFFF"
+        ? "%EF%BF%BD"
+        : encodeURIComponent(char),
+  );
+  return pathname + resolved.search + resolved.hash;
+}
+
 async function applyConfigHeadersToMiddlewareRedirect(
   response: Response,
   options: {
@@ -973,7 +993,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
   let resolvedUrl = cleanPathname + url.search;
-  const originalResolvedUrl = resolvedUrl;
+  // Compared with `resolvedUrl` only after it is serialized below, so keep the
+  // same form: an unrewritten `/blog/café` must not look rewritten.
+  const originalResolvedUrl = serializeResolvedUrl(resolvedUrl, url);
   const getResolvedSearchParams = () => new URL(resolvedUrl, url).searchParams;
   // Canonical (external) pathname the user requested. Middleware rewrites and
   // next.config.js rewrites mutate `cleanPathname` so internal route matching
@@ -1628,8 +1650,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (lateActionRscCacheBustingRedirect) return lateActionRscCacheBustingRedirect;
 
   if (filesystemRouteEligible && isImageOptimizationPath(cleanPathname)) {
+    // Rewrites to or of the endpoint replace the query in `resolvedUrl`.
+    const imageUrl = new URL(resolvedUrl, url);
     const imageRedirect = resolveDevImageRedirect(
-      url,
+      imageUrl,
       [
         ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
@@ -1637,9 +1661,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       options.imageConfig?.qualities,
       { isDev: options.isDev },
     );
-    if (!imageRedirect)
-      return new Response("Invalid image optimization parameters", { status: 400 });
-    return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
+    const middlewareHeaders = new Headers();
+    mergeMiddlewareResponseHeaders(middlewareHeaders, middlewareContext.headers);
+    if (!imageRedirect) {
+      return new Response("Invalid image optimization parameters", {
+        status: 400,
+        headers: middlewareHeaders,
+      });
+    }
+    return markImageOptimizationSignal(
+      Response.redirect(new URL(imageRedirect, url.origin).href, 302),
+      { middlewareHeaders, search: imageUrl.search },
+    );
   }
 
   const metadataRouteResponse = await renderMetadataRouteIfMatched();
@@ -1666,9 +1699,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   stripRscCacheBustingSearchParam(url);
-  const resolved = new URL(resolvedUrl, url);
-  stripRscCacheBustingSearchParam(resolved);
-  resolvedUrl = resolved.pathname + resolved.search + resolved.hash;
+  resolvedUrl = serializeResolvedUrl(resolvedUrl, url);
 
   options.setNavigationContext({
     pathname: canonicalPathname,

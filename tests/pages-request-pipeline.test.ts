@@ -423,6 +423,11 @@ describe("middleware", () => {
       }),
     );
 
+    // Next.js matches a stale data URL raw, so the runtime needs to know.
+    expect(runMiddleware.mock.calls[0]?.[2]).toEqual({
+      isDataRequest: true,
+      isStaleDataRequest: true,
+    });
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
@@ -857,6 +862,7 @@ describe("middleware", () => {
 
     expect(runMiddleware).toHaveBeenCalledWith(expect.any(Request), null, {
       isDataRequest: false,
+      isStaleDataRequest: false,
     });
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
@@ -2165,6 +2171,39 @@ describe("afterFiles rewrites", () => {
       undefined,
       expect.any(Headers),
     );
+  });
+
+  it("serializes rewrite destinations in every rewrite phase", async () => {
+    // Next.js parses every rewrite destination as a URL, so a literal `é`
+    // reaches route matching as `%C3%A9`, the same as the raw request pathname.
+    for (const phase of ["beforeFiles", "afterFiles", "fallback"] as const) {
+      const renderPage = vi.fn(
+        async (_req: Request, url: string, _opts?: PagesRenderOptions) =>
+          new Response("page", { status: url.startsWith("/source") ? 404 : 200 }),
+      );
+      const matchPageRoute = vi.fn((pathname: string) =>
+        pathname === "/caf%C3%A9" ? { route: { isDynamic: false } } : null,
+      );
+      await runPagesRequest(
+        makeRequest("/source?q=1"),
+        baseDeps({
+          matchPageRoute,
+          configRewrites: {
+            beforeFiles: [],
+            afterFiles: [],
+            fallback: [],
+            [phase]: [{ source: "/source", destination: "/café" }],
+          },
+          renderPage,
+        }),
+      );
+      expect(renderPage, phase).toHaveBeenLastCalledWith(
+        expect.any(Request),
+        "/caf%C3%A9?q=1",
+        undefined,
+        expect.any(Headers),
+      );
+    }
   });
 
   it("continues afterFiles rewrites until a Pages destination resolves", async () => {

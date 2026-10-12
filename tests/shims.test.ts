@@ -8863,6 +8863,19 @@ describe("Flight transport deterministic hashing", () => {
     expect(key1).not.toBe(key2);
   });
 
+  it("preserves the order of repeated field values", async () => {
+    // get() returns the first value, so these select different records.
+    const fd1 = new FormData();
+    fd1.append("scope", "private");
+    fd1.append("scope", "public");
+
+    const fd2 = new FormData();
+    fd2.append("scope", "public");
+    fd2.append("scope", "private");
+
+    expect(await replyToCacheKey(fd1)).not.toBe(await replyToCacheKey(fd2));
+  });
+
   it("produces stable hash for FormData with Blob entries", async () => {
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "application/octet-stream" });
 
@@ -14880,6 +14893,27 @@ describe("matchRewrite with external URLs", () => {
     const result = matchRewrite("/posts/hello", rewrites, emptyCtx);
     expect(result).toBe("/blog/hello");
     expect(isExternalUrl(result!)).toBe(false);
+  });
+
+  it("URL-parses only the destination template, not substituted params", async () => {
+    // Next.js prepareDestination parses the template before compiling params,
+    // so a literal `é` is encoded while a captured `..` or `\\` stays verbatim.
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/source",
+        has: [{ type: "query" as const, key: "n", value: "(?<n>.*)" }],
+        destination: "/café/:n?q=a b",
+      },
+    ];
+    for (const [n, expected] of [
+      ["../admin", "/caf%C3%A9/../admin?q=a%20b"],
+      ["..\\admin", "/caf%C3%A9/..\\admin?q=a%20b"],
+      ["thé", "/caf%C3%A9/thé?q=a%20b"],
+    ]) {
+      const ctx = { ...emptyCtx, query: new URLSearchParams({ n }) };
+      expect(matchRewrite("/source", rewrites, ctx), n).toBe(expected);
+    }
   });
 
   it("appends unused rewrite source params to the destination query", async () => {

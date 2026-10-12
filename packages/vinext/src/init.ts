@@ -31,6 +31,7 @@ import {
 import {
   cssModulesConfigSource,
   compactResourceName,
+  findConfigKeepingWorkerName,
   setupCloudflarePlatform,
   updateViteConfigForCssModules,
   usesCommonJsViteConfig,
@@ -205,6 +206,7 @@ export function addScripts(
     warmCdnCache?: boolean;
     legacyWrangler?: boolean;
     scriptNames?: "namespaced" | "standard";
+    workerName?: string;
   } = {},
 ): string[] {
   const pkgPath = path.join(root, "package.json");
@@ -273,7 +275,7 @@ export function addScripts(
       );
       if (options.deployResponseStore && !pkg.scripts["deploy:response-store"]) {
         pkg.scripts["deploy:response-store"] = !options.legacyWrangler
-          ? `cf deploy --prebuilt --mode production --worker ${compactResourceName(detectProject(root).projectName, "-response-store", 63)}`
+          ? `cf deploy --prebuilt --mode production --worker ${compactResourceName(options.workerName ?? detectProject(root).projectName, "-response-store", 63)}`
           : "wrangler deploy --config wrangler.response-store.jsonc";
         added.push("deploy:response-store");
       }
@@ -767,6 +769,10 @@ export async function init(options: InitOptions): Promise<InitResult> {
     );
   }
 
+  // Checked before setup, which generates cloudflare.config.ts when it is missing.
+  const configKeepingWorkerName =
+    platform === "cloudflare" ? findConfigKeepingWorkerName(root, cloudflareOptions!) : undefined;
+
   // ── Step 1: Compatibility check ────────────────────────────────────────
 
   if (!options.skipCheck) {
@@ -805,6 +811,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
     warmCdnCache: options.cloudflare?.warmCdnCache ?? false,
     legacyWrangler: options.cloudflare?.legacyWrangler,
     scriptNames: options.scriptNames,
+    // An existing config keeps its own Worker names, so --name isn't applied here either.
+    workerName: configKeepingWorkerName ? undefined : options.cloudflare?.name,
   });
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────
@@ -971,6 +979,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   if (hasCssModules) {
     console.log(`    ${terminalStyle.green("\u2713")} Configured vite-css-modules for CSS Modules`);
+  }
+  if (configKeepingWorkerName) {
+    console.log(
+      `    ${terminalStyle.yellow("!")} Kept the Worker name in the existing ${configKeepingWorkerName}; --name was not applied, so update it there if it should be "${cloudflareOptions!.name}"`,
+    );
   }
   if (platformSetup.preservedExistingGenerateScopedName) {
     console.log(

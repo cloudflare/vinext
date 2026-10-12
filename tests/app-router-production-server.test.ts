@@ -355,7 +355,33 @@ describe("App Router Production server (startProdServer)", () => {
         root: APP_FIXTURE_DIR,
         cacheDir: testCacheDir(APP_FIXTURE_DIR),
         configFile: false,
-        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        plugins: [
+          vinext({ appDir: APP_FIXTURE_DIR }),
+          {
+            // Emits a client file at the output root, as Module Federation
+            // does with `remoteEntry.js`.
+            name: "test:emit-client-build-file",
+            apply: "build",
+            generateBundle() {
+              if (this.environment.name !== "client") return;
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-client-build-file.js",
+                source: "export const remote = true;\n",
+              });
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-literal%name.js",
+                source: "export const literal = true;\n",
+              });
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-literal%2Fname.js",
+                source: "export const encodedDelimiter = true;\n",
+              });
+            },
+          },
+        ],
         logLevel: "silent",
       });
       await builder.buildApp();
@@ -1848,6 +1874,25 @@ describe("App Router Production server (startProdServer)", () => {
     expect(await res.text()).toBe("Method Not Allowed");
   });
 
+  it("serves client build files outside _next/ that are not public files", async () => {
+    const res = await fetch(`${baseUrl}/vinext-test-client-build-file.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(await res.text()).toBe("export const remote = true;\n");
+
+    const post = await fetch(`${baseUrl}/vinext-test-client-build-file.js`, { method: "POST" });
+    expect(post.status).not.toBe(200);
+    await post.arrayBuffer();
+
+    const literal = await fetch(`${baseUrl}/vinext-test-literal%25name.js`);
+    expect(literal.status).toBe(200);
+    expect(await literal.text()).toBe("export const literal = true;\n");
+
+    const encodedDelimiter = await fetch(`${baseUrl}/vinext-test-literal%252Fname.js`);
+    expect(encodedDelimiter.status).toBe(200);
+    expect(await encodedDelimiter.text()).toBe("export const encodedDelimiter = true;\n");
+  });
+
   // Ported from Next.js: test/integration/image-optimizer/test/util.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
   // vinext keeps no image cache, so it matches Next.js with the image cache
@@ -1903,7 +1948,7 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
-  it("serves public files under basePath and 404s without it", async () => {
+  it("serves public files under basePath, 404s without it, and gates its image endpoint", async () => {
     // Ported from Next.js: test/e2e/basepath/basepath.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/basepath.test.ts
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-public-basepath-"));
@@ -1955,6 +2000,26 @@ describe("App Router Production server (startProdServer)", () => {
 
       const withoutBasePathRes = await fetch(`${tmpBaseUrl}/logo/logo.svg`);
       expect(withoutBasePathRes.status).toBe(404);
+
+      // Middleware runs before the image endpoint reads a source, in both the
+      // Next.js form and the unprefixed form vinext's next/image emits.
+      for (const imagePath of [
+        "/app/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
+        "/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
+      ]) {
+        const imageRes = await fetch(`${tmpBaseUrl}${imagePath}`);
+        expect(imageRes.status, imagePath).toBe(403);
+        expect(await imageRes.text(), imagePath).toBe("image endpoint blocked by middleware");
+      }
+      const imageRes = await fetch(`${tmpBaseUrl}/_next/image?url=%2Fheart.png&w=640&q=75`);
+      expect(imageRes.status).toBe(200);
+      expect(imageRes.headers.get("content-type")).toBe("image/png");
+      await imageRes.arrayBuffer();
+      const protectedImageRes = await fetch(
+        `${tmpBaseUrl}/_next/image?url=%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
+      );
+      expect(protectedImageRes.status).toBe(404);
+      await protectedImageRes.arrayBuffer();
     } finally {
       basePathServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

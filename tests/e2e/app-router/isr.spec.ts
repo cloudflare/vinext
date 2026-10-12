@@ -291,6 +291,28 @@ test.describe("App Router ISR", () => {
     });
   }
 
+  // Next.js keys each ISR entry by its full pathname. These two segments leave
+  // the fnv1a64 digest that once shortened long ISR keys in the same state, so
+  // a request could plant its render in the other path's entry.
+  test("keeps long ISR paths with colliding fnv1a64 digests apart", async ({ request }) => {
+    // A fresh tail per run, so neither path has an entry from an earlier attempt.
+    const tail = `-${Date.now().toString(36)}${"x".repeat(200)}`;
+    const attacker = await waitForCacheHit(
+      request,
+      `/route-cache-identity/211eb618a29231c0${tail}`,
+    );
+    expect(await attacker.text()).toMatch(
+      /CACHE_IDENTITY_CATCH_ALL:(?:<!-- -->)?211eb618a29231c0-/,
+    );
+
+    const victim = await request.get(`${baseUrl()}/route-cache-identity/213912085a2b1a20${tail}`);
+    expect(victim.status()).toBe(200);
+    expect(victim.headers()["x-vinext-cache"]).toBe("MISS");
+    const html = await victim.text();
+    expect(html).toMatch(/CACHE_IDENTITY_CATCH_ALL:(?:<!-- -->)?213912085a2b1a20-/);
+    expect(html).not.toContain("211eb618a29231c0");
+  });
+
   test("does not let an encoded catch-all request poison a static route handler", async ({
     request,
   }) => {

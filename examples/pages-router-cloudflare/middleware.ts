@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// With skipProxyUrlNormalize, the page's data request reaches middleware with
+// its raw `/_next/data/<buildId>/members.json` URL.
+const MEMBERS_DATA_PATH = /^\/_next\/data\/[^/]+\/members\.json$/;
+
 /**
  * Middleware for pages-router-cloudflare example.
  *
@@ -7,6 +11,16 @@ import { NextRequest, NextResponse } from "next/server";
  * that middleware actually ran (and didn't crash with the outsideEmitter bug).
  */
 export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  if (pathname === "/members" || MEMBERS_DATA_PATH.test(pathname)) {
+    if (request.cookies.get("members-session")?.value !== "valid") {
+      return new Response("members only", {
+        status: 403,
+        headers: { "x-mw-pathname": pathname },
+      });
+    }
+  }
+
   if (request.nextUrl.pathname === "/_next/static/middleware-rewrite.js") {
     return new Response("rewritten missing asset", {
       headers: { "content-type": "text/plain" },
@@ -35,6 +49,7 @@ export const config = {
   matcher: [
     "/api/:path*",
     "/about",
+    "/members",
     "/ssr",
     "/headers-before-middleware-rewrite",
     "/redirect-before-middleware-rewrite",

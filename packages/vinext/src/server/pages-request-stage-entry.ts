@@ -27,6 +27,8 @@ import {
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
+import { createStaticAssetRequest } from "./worker-utils.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
@@ -144,6 +146,7 @@ const {
   matchPageRoute,
   normalizeDataRequest,
   publicFiles,
+  clientBuildFiles,
   runMiddleware,
   vinextConfig,
 } = pagesEntry;
@@ -171,6 +174,35 @@ const imageConfig: ImageConfig | undefined = vinextConfig?.images
       contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
     }
   : undefined;
+
+/**
+ * Whether the request stage serves this request as a client build file
+ * outside `_next/static`. Such responses resolve no route, so the Worker
+ * keeps their ASSETS cache policy out of route cacheability admission.
+ */
+export function isPagesClientBuildFileRequest(
+  request: Request,
+  env: PagesWorkerEnv | undefined,
+  ctx: PagesWorkerExecutionContext | undefined,
+): boolean {
+  return (
+    (request.method === "GET" || request.method === "HEAD") &&
+    resolveAssetFetcher(ctx?.assets, env, "worker") !== undefined &&
+    resolveClientBuildFile(new URL(request.url).pathname, basePath, clientBuildFiles) !== null
+  );
+}
+
+function resolveAssetFetcher(
+  assets: VinextAssetFetcher | undefined,
+  env: PagesWorkerEnv | undefined,
+  defaultHostRuntime: "node" | "worker",
+): VinextAssetFetcher | undefined {
+  return (
+    assets ??
+    getExplicitCdnCacheAdapter()?.assets ??
+    (defaultHostRuntime === "worker" ? env?.ASSETS : undefined)
+  );
+}
 
 /** Run the request-time stage with a host-owned response dispatcher. */
 export function handleRequestStage(
@@ -276,9 +308,7 @@ async function handleRequestImpl(
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
   configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
-  assets ??=
-    getExplicitCdnCacheAdapter()?.assets ??
-    (defaultHostRuntime === "worker" ? env?.ASSETS : undefined);
+  assets = resolveAssetFetcher(assets, env, defaultHostRuntime);
   if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -383,6 +413,15 @@ async function handleRequestImpl(
       normalizePathnameForRouteMatchStrict(pathname);
     } catch {
       return new Response("Bad Request", { status: 400 });
+    }
+
+    // Client build files outside `_next/static` are build output like the
+    // hashed assets, so serve them before middleware when the Worker runs first.
+    if (assets && (request.method === "GET" || request.method === "HEAD")) {
+      const clientBuildFile = resolveClientBuildFile(pathname, basePath, clientBuildFiles);
+      if (clientBuildFile) {
+        return await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
+      }
     }
 
     // Valid assets are served by Cloudflare's ASSETS binding before the worker

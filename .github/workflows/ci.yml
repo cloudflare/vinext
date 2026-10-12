@@ -594,6 +594,10 @@ jobs:
             label: ppr-impact-demo
             shardIndex: 1
             shardTotal: 1
+          - project: cacheability-components
+            label: cacheability-components
+            shardIndex: 1
+            shardTotal: 1
           - project: app-front-redirect-issue
             label: app-front-redirect-issue
             shardIndex: 1
@@ -612,6 +616,10 @@ jobs:
             shardTotal: 1
           - project: module-federation
             label: module-federation
+            shardIndex: 1
+            shardTotal: 1
+          - project: module-federation-cloudflare
+            label: module-federation-cloudflare
             shardIndex: 1
             shardTotal: 1
     steps:
