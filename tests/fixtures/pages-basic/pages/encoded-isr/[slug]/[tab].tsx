@@ -3,6 +3,8 @@ export default function EncodedIsrTabPage({ slug, tab }: { slug: string; tab: st
 }
 
 export function getStaticProps({ params }: { params: { slug: string; tab: string } }) {
+  // The literal `archive` page owns this pathname.
+  if (params.tab === "archive") return { notFound: true, revalidate: 60 };
   return { props: { slug: params.slug, tab: params.tab }, revalidate: 60 };
 }
 

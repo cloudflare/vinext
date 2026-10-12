@@ -157,6 +157,40 @@ test("keeps an encoded dynamic render out of its sibling's ISR entry on Workers"
   }
 });
 
+// Next.js 16.2.7 answers `/encoded-isr/%74arget` from the `target` prerender,
+// so `[slug]`'s `notFound` for that slug never reaches the shared entry.
+test("keeps an encoded dynamic 404 out of its static sibling's ISR entry on Workers", async () => {
+  const encoded = await getRawPath("/encoded-isr/%74arget");
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("static encoded-isr target");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-isr/target");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("static encoded-isr target");
+  }
+
+  // The encoded spelling then answers from the literal page's entry.
+  const cached = await getRawPath("/encoded-isr/%74arget");
+  expect(cached.status).toBe(200);
+  expect(cached.body).toContain("static encoded-isr target");
+  expect(cached.headers["x-vinext-cache"]).toBe("HIT");
+});
+
+test("keeps an encoded dynamic 404 out of a dynamic sibling's ISR entry on Workers", async () => {
+  // `[tab]` matches `/encoded-isr/bob/%61rchive` raw and returns `notFound`.
+  // Next.js 16.2.7 stores that 404 under `/encoded-isr/bob/archive` and serves
+  // it to the literal `archive` page; vinext renders it without caching it.
+  const encoded = await getRawPath("/encoded-isr/bob/%61rchive");
+  expect(encoded.status).toBe(404);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-isr/bob/archive");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("archive for bob");
+  }
+});
+
 test("shares a dynamic Pages ISR entry with its encoded spelling on Workers", async () => {
   // A fresh slug, so the HIT can only come from the encoded request's render.
   const slug = `b${Date.now().toString(36)}`;
