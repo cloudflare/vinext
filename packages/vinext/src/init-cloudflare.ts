@@ -72,19 +72,8 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
-  if (cloudflare.name !== undefined) {
-    // Programmatic callers skip parseNameArg, so validate the name here too.
-    validateWorkerName(cloudflare.name);
-    // Existing config is kept as-is, so --name would otherwise be silently ignored.
-    const existingConfig = (
-      cloudflare.legacyWrangler ? ["wrangler.jsonc", "wrangler.json"] : ["cloudflare.config.ts"]
-    ).find((name) => fs.existsSync(path.join(context.root, name)));
-    if (existingConfig) {
-      throw new Error(
-        `--name cannot rename the Worker in the existing ${existingConfig}. Set the name in that file instead.`,
-      );
-    }
-  }
+  // Programmatic callers skip parseNameArg, so validate the name here too.
+  if (cloudflare.name !== undefined) validateWorkerName(cloudflare.name);
   if (!cloudflare.legacyWrangler) {
     const existingWrangler = [
       "wrangler.toml",
@@ -357,6 +346,20 @@ export function setupCloudflarePlatform(
     nextSteps,
     preservedExistingGenerateScopedName,
   };
+}
+
+/**
+ * The existing config that keeps its own Worker name, if `--name` was given.
+ * Init doesn't rename the Worker in an existing config, so callers warn instead.
+ */
+export function findConfigKeepingWorkerName(
+  root: string,
+  cloudflare: CloudflareInitOptions,
+): string | undefined {
+  if (cloudflare.name === undefined) return undefined;
+  return (
+    cloudflare.legacyWrangler ? ["wrangler.jsonc", "wrangler.json"] : ["cloudflare.config.ts"]
+  ).find((name) => fs.existsSync(path.join(root, name)));
 }
 
 function detectCloudflareProject(root: string, cloudflare: CloudflareInitOptions) {

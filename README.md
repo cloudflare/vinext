@@ -148,7 +148,8 @@ Cloudflare init uses `cf` and `cloudflare.config.ts` by default. Both `vinext in
 and `create-vinext-app` accept `--legacy-wrangler-cloudflare-init` to retain the
 legacy Wrangler setup. Existing Wrangler configs are not automatically migrated.
 `vinext init --name <name>` sets the Worker name in the generated config instead of
-deriving it from `package.json`; it cannot rename the Worker in an existing config.
+deriving it from `package.json`. An existing config keeps its own Worker name, and init
+prints a warning.
 
 If your `next.config.*` sets `output: "standalone"`, `vite build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
 

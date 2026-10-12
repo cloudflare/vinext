@@ -1256,29 +1256,34 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     [false, "cloudflare.config.ts"],
     [true, "wrangler.jsonc"],
   ])(
-    "rejects --name instead of ignoring it (legacy Wrangler: %s, existing %s)",
+    "warns that --name is not applied to an existing config (legacy Wrangler: %s, existing %s)",
     async (legacyWrangler, existingConfig) => {
       setupProject(tmpDir, { router: "app" });
       writeFile(
         tmpDir,
         existingConfig,
-        legacyWrangler ? `{ "name": "existing" }\n` : "export default {};\n",
+        legacyWrangler ? `{ "name": "existing" }\n` : `export default { name: "existing" };\n`,
       );
-      const before = snapshotProject(tmpDir);
 
-      await expect(
-        runInit(tmpDir, {
-          cloudflare: {
-            dataCache: "none",
-            cdnCache: "none",
-            imageOptimization: "none",
-            legacyWrangler,
-            name: "storefront-production",
-          },
-        }),
-      ).rejects.toThrow(`--name cannot rename the Worker in the existing ${existingConfig}`);
+      const { output } = await runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+          name: "storefront-production",
+        },
+      });
 
-      expect(snapshotProject(tmpDir)).toBe(before);
+      expect(output).toContain(
+        `Kept the Worker name in the existing ${existingConfig}; --name was not applied, so update it there if it should be "storefront-production"`,
+      );
+      const config = readFile(tmpDir, existingConfig);
+      if (legacyWrangler) {
+        expect(JSON.parse(config).name).toBe("existing");
+      } else {
+        expect(config).toBe(`export default { name: "existing" };\n`);
+      }
     },
   );
 

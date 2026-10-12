@@ -31,6 +31,7 @@ import {
 import {
   cssModulesConfigSource,
   compactResourceName,
+  findConfigKeepingWorkerName,
   setupCloudflarePlatform,
   updateViteConfigForCssModules,
   usesCommonJsViteConfig,
@@ -768,6 +769,10 @@ export async function init(options: InitOptions): Promise<InitResult> {
     );
   }
 
+  // Checked before setup, which generates cloudflare.config.ts when it is missing.
+  const configKeepingWorkerName =
+    platform === "cloudflare" ? findConfigKeepingWorkerName(root, cloudflareOptions!) : undefined;
+
   // ── Step 1: Compatibility check ────────────────────────────────────────
 
   if (!options.skipCheck) {
@@ -973,6 +978,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   if (hasCssModules) {
     console.log(`    ${terminalStyle.green("\u2713")} Configured vite-css-modules for CSS Modules`);
+  }
+  if (configKeepingWorkerName) {
+    console.log(
+      `    ${terminalStyle.yellow("!")} Kept the Worker name in the existing ${configKeepingWorkerName}; --name was not applied, so update it there if it should be "${cloudflareOptions!.name}"`,
+    );
   }
   if (platformSetup.preservedExistingGenerateScopedName) {
     console.log(
