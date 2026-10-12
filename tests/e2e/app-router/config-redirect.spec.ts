@@ -265,6 +265,19 @@ test.describe("Config destination query params", () => {
     }
   });
 
+  test("a trailing :path* after another param also matches without its slash", async ({
+    request,
+  }) => {
+    for (const pathname of [
+      "/catch-all-redirect/docs/files",
+      "/catch-all-redirect/docs/files/a/b",
+    ]) {
+      const res = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
+      expect(res.status()).toBe(307);
+      expect(res.headers()["location"]).toBe("/about?section=docs");
+    }
+  });
+
   test("redirect query value reaches the destination page as one param", async ({ page }) => {
     await page.goto(`${BASE}/query-param-redirect/foo%26next%3Devil.example`);
     await page.waitForURL(/\/about\?/);

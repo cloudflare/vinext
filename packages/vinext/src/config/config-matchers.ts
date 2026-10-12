@@ -62,7 +62,10 @@ export { isExternalUrl } from "../utils/external-url.js";
  * Value is `null` when safeRegExp rejected the pattern (ReDoS risk), so we
  * skip it on subsequent requests too without re-running the scanner.
  */
-const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[] } | null>();
+const _compiledPatternCache = new Map<
+  string,
+  { re: RegExp; paramNames: string[]; paramIndexes: number[] } | null
+>();
 
 /**
  * Cache for compiled header source regexes in matchHeaders.
@@ -664,6 +667,32 @@ function configPathStartsWith(pathname: string, prefix: string): boolean {
   return pathname.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
 }
 
+/**
+ * Count the capturing groups in a RegExp source, so param captures can be read
+ * by position when the source also has its own groups (e.g. `/(en|fr)/:path*`).
+ */
+function countCapturingGroups(source: string): number {
+  let count = 0;
+  let inClass = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "\\") {
+      i++;
+    } else if (inClass) {
+      if (ch === "]") inClass = false;
+    } else if (ch === "[") {
+      inClass = true;
+    } else if (
+      ch === "(" &&
+      (source[i + 1] !== "?" ||
+        (source[i + 2] === "<" && source[i + 3] !== "=" && source[i + 3] !== "!"))
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
+
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
@@ -710,6 +739,12 @@ export function matchConfigPattern(
         // Cache miss — compile the pattern now and store the result.
         // Param names may contain hyphens (e.g. :auth-method, :sign-in).
         const paramNames: string[] = [];
+        const paramIndexes: number[] = [];
+        // Record a param whose capture group opens right after `before`.
+        const addParam = (name: string, before: string) => {
+          paramNames.push(name);
+          paramIndexes.push(countCapturingGroups(before) + 1);
+        };
         // Single-pass conversion with procedural suffix handling. The tokenizer
         // matches only simple, non-overlapping tokens; quantifier/constraint
         // suffixes after :param are consumed procedurally to avoid polynomial
@@ -726,16 +761,27 @@ export function matchConfigPattern(
               const quantifier = rest[0];
               tokenRe.lastIndex += 1;
               const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
               if (constraint !== null) {
+                addParam(name, regexStr);
                 regexStr += `(${constraint})`;
+              } else if (
+                quantifier === "*" &&
+                regexStr.endsWith("/") &&
+                tokenRe.lastIndex === pattern.length
+              ) {
+                // Like path-to-regexp, a trailing `/:param*` makes its slash
+                // optional too, so `/:locale/files/:path*` matches `/en/files`.
+                regexStr = regexStr.slice(0, -1);
+                addParam(name, regexStr);
+                regexStr += "(?:/(.*))?";
               } else {
+                addParam(name, regexStr);
                 regexStr += quantifier === "*" ? "(.*)" : "(.+)";
               }
             } else {
               // Check for inline constraint without quantifier
               const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
+              addParam(name, regexStr);
               regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
             }
           } else if (tok[0] === ".") {
@@ -745,14 +791,14 @@ export function matchConfigPattern(
           }
         }
         const re = safeRegExp("^" + regexStr + "$", "i");
-        return re ? { re, paramNames } : null;
+        return re ? { re, paramNames, paramIndexes } : null;
       });
       if (!compiled) return null;
       const match = compiled.re.exec(pathname);
       if (!match) return null;
       const params: Record<string, string> = Object.create(null);
       for (let i = 0; i < compiled.paramNames.length; i++) {
-        params[compiled.paramNames[i]] = match[i + 1] ?? "";
+        params[compiled.paramNames[i]] = match[compiled.paramIndexes[i]] ?? "";
       }
       return params;
     } catch {

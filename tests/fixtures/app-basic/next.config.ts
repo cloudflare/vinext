@@ -102,6 +102,13 @@ const nextConfig: NextConfig = {
         destination: "/about?next=/:next&safe=1",
         permanent: false,
       },
+      // Used by E2E: config-redirect.spec.ts — the slash before a trailing
+      // `:path*` after another param is optional, as in path-to-regexp.
+      {
+        source: "/catch-all-redirect/:section/files/:path*",
+        destination: "/about?section=:section",
+        permanent: false,
+      },
       // Ported from Next.js v16.2.6:
       // test/e2e/app-dir/rsc-query-routing/next.config.js
       {
