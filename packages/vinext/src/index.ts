@@ -8345,6 +8345,35 @@ export const loadServerActionClient = ${
         },
       },
     },
+    // `vite preview` for plain Node Pages Router builds. App Router builds use
+    // @vitejs/plugin-rsc's preview handler, and Cloudflare and Nitro builds
+    // their own plugins. Like plugin-rsc's, this handler runs after Vite's
+    // preview middleware (proxy, compression, `base`, static files), so it
+    // only handles the requests Vite doesn't serve.
+    {
+      name: "vinext:preview-server",
+      async configurePreviewServer(server) {
+        if (hasAppDir || hasCloudflarePlugin || hasNitroPlugin) return;
+        if (nextConfig?.output === "export") return;
+        const { createPagesPreviewHandler } = await import("./server/prod-server.js");
+        const { base, environments, preview, root } = server.config;
+        const handler = await createPagesPreviewHandler({
+          clientDir: path.resolve(root, environments.client?.build.outDir ?? "dist/client"),
+          serverDir: path.resolve(root, environments.ssr?.build.outDir ?? "dist/server"),
+          host: typeof preview.host === "string" ? preview.host : "localhost",
+          port: preview.port ?? 4173,
+        });
+        if (!handler) return;
+        return () => {
+          server.middlewares.use((req, res) => {
+            // Vite's `base` middleware strips the base path; routing needs it.
+            // `req.url` may also carry a `preview.proxy` bypass rewrite.
+            if (base !== "/") req.url = base.slice(0, -1) + (req.url ?? "/");
+            handler(req, res);
+          });
+        };
+      },
+    },
     // Cloudflare Workers production build integration. Generate immutable
     // asset headers after the client environment builds.
     {
