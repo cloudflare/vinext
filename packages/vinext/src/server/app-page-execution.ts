@@ -459,6 +459,23 @@ export function resolveAppPageSpecialErrorStoredHeaders(
   return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
+/**
+ * The redirect target embedded in the flight digest and its streamed
+ * side-channel header. An absolute target stays as `redirect()` received it,
+ * as in Next.js's digest, so every host that shares the cache entry is sent to
+ * the same place. A relative target resolves against the request's path to a
+ * path-only form, which the client resolves against its own origin.
+ */
+function redirectDigestUrl(location: string, requestUrl: string): string {
+  if (/^[a-z][a-z\d+.-]*:/i.test(location) || location.startsWith("//")) return location;
+  try {
+    const resolved = new URL(location, requestUrl);
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+  } catch {
+    return location;
+  }
+}
+
 function buildMetadataRedirectHtmlResponse(options: {
   digest: string;
   getAndClearPendingCookies?: () => string[];
@@ -499,9 +516,7 @@ export async function buildAppPageSpecialErrorResponse(
       options.specialError.location,
       options.basePath,
     );
-    // Next.js's digest keeps the target `redirect()` received, so the payload
-    // is the same on every host that shares its cache entry.
-    const digestUrl = prefixedLocation;
+    const digestUrl = redirectDigestUrl(prefixedLocation, options.request.url);
     const digest = formatNextRedirectDigest({
       type: options.specialError.type ?? "replace",
       url: digestUrl,

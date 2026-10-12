@@ -768,6 +768,26 @@ describe("app page execution helpers", () => {
     expect(payloads[1]).toEqual(payloads[0]);
   });
 
+  it.each([
+    ["./subpage", "/docs/subpage"],
+    ["?tab=1", "/docs/page?tab=1"],
+    ["#section", "/docs/page#section"],
+  ])(
+    "resolves a relative RSC redirect target %s against the request path",
+    async (location, url) => {
+      const response = await buildAppPageSpecialErrorResponse({
+        buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+        clearRequestContext: vi.fn(),
+        isRscRequest: true,
+        request: new Request("https://example.com/docs/page"),
+        specialError: { kind: "redirect", location, statusCode: 307, type: "replace" },
+      });
+
+      expect(response.headers.get("x-vinext-rsc-redirect")).toBe(url);
+      await expect(response.text()).resolves.toBe(`NEXT_REDIRECT;replace;${url};307;`);
+    },
+  );
+
   it("preserves explicit push semantics in RSC redirect flights", async () => {
     const buildRscRedirectFlightStream = vi.fn(
       ({ digest }: { digest: string }) =>
