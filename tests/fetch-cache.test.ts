@@ -3298,6 +3298,13 @@ describe("fetch cache shim", () => {
         expect(await sent(2).text()).toBe("[object Response]");
       });
 
+      it("keys a form body's bytes as sent", async () => {
+        const form = { headers: { "content-type": "application/x-www-form-urlencoded" } };
+        expect(await read({ toString: () => "a=%41" }, form)).toBe(1);
+        expect(await read({ toString: () => "a=A" }, form)).toBe(2);
+        expect(await read({ toString: () => "a=%41" }, form)).toBe(1);
+      });
+
       it("rejects a body fetch would reject before reading it", async () => {
         let pulls = 0;
         async function* body() {

@@ -280,6 +280,10 @@ async function readRequestBodyChunksWithinLimit(
   return { chunks, contentType };
 }
 
+// Requests the patched fetch builds for bodies serializeBody doesn't key. They
+// are never FormData, so their bytes are keyed as sent, without form parsing.
+const builtBodyRequests = new WeakSet<Request>();
+
 /**
  * Whether serializeBody keys this init body type itself. Only genuine
  * instances count, so an array (which has keys()) or a Response (which has
@@ -430,7 +434,9 @@ async function serializeBody(
       }
       throw new SkipCacheKeyGenerationError();
     }
-    const formContentType = getParsedFormContentType(contentType);
+    const formContentType = builtBodyRequests.has(input)
+      ? undefined
+      : getParsedFormContentType(contentType);
 
     if (formContentType) {
       try {
@@ -1231,6 +1237,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // to a string) is built into a Request as fetch itself would, and that
       // Request's bytes are keyed and it is sent.
       input = new Request(input, fetchInit);
+      builtBodyRequests.add(input);
       fetchInit = undefined;
     }
     let cacheKey: string;
