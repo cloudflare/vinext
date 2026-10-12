@@ -788,6 +788,26 @@ describe("app page execution helpers", () => {
     },
   );
 
+  it.each([
+    [" https://other.test/out", "https://other.test/out"],
+    ["https://other.test/😀", "https://other.test/%F0%9F%98%80"],
+    ["//other.test/out", "https://other.test/out"],
+  ])(
+    "keeps the absolute RSC redirect target %s in the digest and parses it for the header",
+    async (location, header) => {
+      const response = await buildAppPageSpecialErrorResponse({
+        buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+        clearRequestContext: vi.fn(),
+        isRscRequest: true,
+        request: new Request("https://example.com/docs/page"),
+        specialError: { kind: "redirect", location, statusCode: 307, type: "replace" },
+      });
+
+      expect(response.headers.get("x-vinext-rsc-redirect")).toBe(header);
+      await expect(response.text()).resolves.toBe(`NEXT_REDIRECT;replace;${location};307;`);
+    },
+  );
+
   it("preserves explicit push semantics in RSC redirect flights", async () => {
     const buildRscRedirectFlightStream = vi.fn(
       ({ digest }: { digest: string }) =>

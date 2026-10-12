@@ -459,20 +459,34 @@ export function resolveAppPageSpecialErrorStoredHeaders(
   return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
+const REDIRECT_BASE_HOST = "redirect-base.vinext.invalid";
+
 /**
  * The redirect target embedded in the flight digest and its streamed
- * side-channel header. An absolute target stays as `redirect()` received it,
- * as in Next.js's digest, so every host that shares the cache entry is sent to
- * the same place. A relative target resolves against the request's path to a
- * path-only form, which the client resolves against its own origin.
+ * side-channel header. An absolute target stays in the digest as `redirect()`
+ * received it, as in Next.js's digest, so every host that shares the cache
+ * entry is sent to the same place; the header carries its parsed URL, which is
+ * always a valid header value. A relative target resolves against the
+ * request's path to a path-only form, which the client resolves against its
+ * own origin. Resolving against a placeholder host tells the two apart the way
+ * the URL parser does, so it never depends on the request's host.
  */
-function redirectDigestUrl(location: string, requestUrl: string): string {
-  if (/^[a-z][a-z\d+.-]*:/i.test(location) || location.startsWith("//")) return location;
+function resolveRedirectTargets(
+  location: string,
+  requestUrl: string,
+): { digestUrl: string; headerUrl: string } {
   try {
-    const resolved = new URL(location, requestUrl);
-    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    const base = new URL(requestUrl);
+    base.host = REDIRECT_BASE_HOST;
+    base.port = "";
+    const resolved = new URL(location, base);
+    if (resolved.origin !== base.origin) {
+      return { digestUrl: location, headerUrl: resolved.href };
+    }
+    const path = `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    return { digestUrl: path, headerUrl: path };
   } catch {
-    return location;
+    return { digestUrl: location, headerUrl: location };
   }
 }
 
@@ -516,7 +530,7 @@ export async function buildAppPageSpecialErrorResponse(
       options.specialError.location,
       options.basePath,
     );
-    const digestUrl = redirectDigestUrl(prefixedLocation, options.request.url);
+    const { digestUrl, headerUrl } = resolveRedirectTargets(prefixedLocation, options.request.url);
     const digest = formatNextRedirectDigest({
       type: options.specialError.type ?? "replace",
       url: digestUrl,
@@ -567,7 +581,7 @@ export async function buildAppPageSpecialErrorResponse(
       // Framework-owned redirect semantics must win over middleware headers.
       // The Flight digest remains authoritative; these headers are only the
       // early client side-channel for following it without decoding first.
-      headers.set(VINEXT_RSC_REDIRECT_HEADER, digestUrl);
+      headers.set(VINEXT_RSC_REDIRECT_HEADER, headerUrl);
       headers.set(VINEXT_RSC_REDIRECT_TYPE_HEADER, options.specialError.type ?? "replace");
       const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
       for (const cookie of pendingCookies) {
