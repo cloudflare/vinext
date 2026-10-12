@@ -459,11 +459,19 @@ export function resolveAppPageSpecialErrorStoredHeaders(
   return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
-const REDIRECT_BASE_HOSTS = ["a.redirect-base.vinext.invalid", "b.redirect-base.vinext.invalid"];
+const REDIRECT_BASES = [
+  { host: "a.redirect-base.vinext.invalid", protocol: "https:" },
+  { host: "b.redirect-base.vinext.invalid", protocol: "http:" },
+];
 
-function resolveAgainstPlaceholderHost(location: string, requestUrl: string, host: string) {
+function resolveAgainstPlaceholder(
+  location: string,
+  requestUrl: string,
+  placeholder: (typeof REDIRECT_BASES)[number],
+) {
   const base = new URL(requestUrl);
-  base.host = host;
+  base.protocol = placeholder.protocol;
+  base.host = placeholder.host;
   base.port = "";
   const resolved = new URL(location, base);
   return { relative: resolved.origin === base.origin, resolved };
@@ -474,24 +482,27 @@ function resolveAgainstPlaceholderHost(location: string, requestUrl: string, hos
  * side-channel header. An absolute target stays in the digest as `redirect()`
  * received it, as in Next.js's digest, so every host that shares the cache
  * entry is sent to the same place; the header carries its parsed URL, which is
- * always a valid header value. A relative target resolves against the
- * request's path to a path-only form, which the client resolves against its
- * own origin. Resolving against two placeholder hosts tells the two apart the
- * way the URL parser does, never depends on the request's host, and cannot
- * mistake an absolute target naming one placeholder for a relative one.
+ * always a valid header value, and stays protocol-relative when the target
+ * is, so each client keeps its own scheme. A relative target resolves against
+ * the request's path to a path-only form, which the client resolves against
+ * its own origin. Resolving against two placeholder origins tells these apart
+ * the way the URL parser does, never depends on the request's origin, and
+ * cannot mistake an absolute target naming one placeholder for a relative one.
  */
 function resolveRedirectTargets(
   location: string,
   requestUrl: string,
 ): { digestUrl: string; headerUrl: string } {
   try {
-    const [first, second] = REDIRECT_BASE_HOSTS.map((host) =>
-      resolveAgainstPlaceholderHost(location, requestUrl, host),
+    const [first, second] = REDIRECT_BASES.map((placeholder) =>
+      resolveAgainstPlaceholder(location, requestUrl, placeholder),
     );
     if (!first.relative || !second.relative) {
+      const { resolved } = first.relative ? second : first;
+      const inheritsScheme = first.resolved.protocol !== second.resolved.protocol;
       return {
         digestUrl: location,
-        headerUrl: (first.relative ? second : first).resolved.href,
+        headerUrl: inheritsScheme ? resolved.href.slice(resolved.protocol.length) : resolved.href,
       };
     }
     const { pathname, search, hash } = first.resolved;
