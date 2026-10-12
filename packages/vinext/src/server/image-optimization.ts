@@ -117,6 +117,40 @@ export function resolveDevImageRedirect(
   return resolved.pathname + resolved.search;
 }
 
+const IMAGE_OPTIMIZATION_SIGNAL = Symbol.for("vinext.image-optimization-signal");
+
+export type ImageOptimizationSignal = {
+  /** Middleware response headers to send with the image. */
+  middlewareHeaders: Headers;
+  /** The image query after middleware and rewrites. */
+  search: string;
+};
+
+/**
+ * Mark the App Router's image endpoint response once the request has passed
+ * middleware and rewrites. A host that serves images itself (the Node
+ * production server) replaces the response with the image; other hosts send
+ * the response unchanged. The symbol carries the signal across the built RSC
+ * module boundary, so response headers cannot forge it.
+ */
+export function markImageOptimizationSignal(
+  response: Response,
+  signal: ImageOptimizationSignal,
+): Response {
+  Object.defineProperty(response, IMAGE_OPTIMIZATION_SIGNAL, { value: signal });
+  return response;
+}
+
+/** Return the signal of a framework-created image endpoint response. */
+export function readImageOptimizationSignal(response: Response): ImageOptimizationSignal | null {
+  const signal: unknown = Reflect.get(response, IMAGE_OPTIMIZATION_SIGNAL);
+  if (typeof signal !== "object" || signal === null) return null;
+  const { middlewareHeaders, search } = signal as Partial<ImageOptimizationSignal>;
+  return middlewareHeaders instanceof Headers && typeof search === "string"
+    ? { middlewareHeaders, search }
+    : null;
+}
+
 /**
  * Parse and validate image optimization query parameters.
  * Returns null if the request is malformed.

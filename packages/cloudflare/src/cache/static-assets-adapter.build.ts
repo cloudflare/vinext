@@ -1,9 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { appIsrCacheKey, pagesIsrCacheKey } from "vinext/internal/server/isr-cache";
+import {
+  appIsrCacheKey,
+  appIsrFallbackShellKey,
+  pagesIsrCacheKey,
+} from "vinext/internal/server/isr-cache";
 import { extractVinextNextDataJson } from "vinext/internal/client/vinext-next-data";
 import {
+  isFallbackShellArtifactPath,
   readPrerenderManifest,
   type PrerenderManifestRoute,
 } from "vinext/internal/server/prerender-manifest";
@@ -107,11 +112,14 @@ export function finalizeStaticAssetsPrerenderOutput(
     const pathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(pathname);
     if (route.router === "app") {
+      const appKey = isFallbackShellArtifactPath(pathname, route)
+        ? appIsrFallbackShellKey
+        : appIsrCacheKey;
       count += Number(
         writeCacheAsset(
           outputDir,
           index,
-          appIsrCacheKey(cachePathname, "html", manifest.buildId),
+          appKey(cachePathname, "html", manifest.buildId),
           "html",
           path.join(prerenderDir, getOutputPath(pathname, manifest.trailingSlash ?? false)),
           route,
@@ -121,7 +129,7 @@ export function finalizeStaticAssetsPrerenderOutput(
         writeCacheAsset(
           outputDir,
           index,
-          appIsrCacheKey(cachePathname, "rsc", manifest.buildId),
+          appKey(cachePathname, "rsc", manifest.buildId),
           "rsc",
           path.join(prerenderDir, getRscOutputPath(pathname)),
           route,

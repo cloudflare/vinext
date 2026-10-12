@@ -35,6 +35,11 @@ import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
 import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -1436,6 +1441,265 @@ describe("createPagesPageHandler — stale ISR regeneration", () => {
       consoleError.mockRestore();
     }
   });
+});
+
+describe("createPagesPageHandler — getStaticProps page whose response was sent", () => {
+  // Next.js ignores a sent response for getStaticProps pages (`isResSent(res)
+  // && !isSSG` in render.tsx): it still renders and stores the entry, and the
+  // visitor gets the sent response.
+  function serveEntry(cacheState: "miss" | "stale") {
+    const adapter = new DefaultCdnCacheAdapter();
+    vi.spyOn(adapter, "get").mockResolvedValue(
+      cacheState === "miss"
+        ? null
+        : {
+            lastModified: 0,
+            cacheState: "stale",
+            cacheControl: { revalidate: 1 },
+            value: {
+              kind: "PAGES",
+              html: '<html><head></head><body><div id="__next"><p>stale</p></div></body></html>',
+              pageData: { pageProps: { value: "stale" } },
+              status: 200,
+              headers: undefined,
+            },
+          },
+    );
+    const set = vi.spyOn(adapter, "set").mockResolvedValue();
+    setCdnCacheAdapter(adapter);
+    return () => set.mock.calls.filter(([key]) => key === pagesIsrCacheKey("/", "test-build-id"));
+  }
+
+  type SendingContext = {
+    res: { writeHead: (status: number, headers: Record<string, string>) => void; end: () => void };
+  };
+  function sendLoginRedirect(res: SendingContext["res"]) {
+    res.writeHead(302, { Location: "/login" });
+    res.end();
+  }
+
+  function makeHandler(
+    sender: "_app" | "_document",
+    overrides: Partial<Pick<CreatePagesPageHandlerOptions, "renderToReadableStream">> & {
+      getStaticProps?: () => Promise<Record<string, unknown>>;
+    } = {},
+  ) {
+    const page = (props: Record<string, unknown>) =>
+      React.createElement("p", null, String((props.pageProps as { value: string }).value));
+    return createPagesPageHandler({
+      ...makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getStaticProps:
+                overrides.getStaticProps ??
+                (async () => ({ props: { value: "fresh" }, revalidate: 1 })),
+            }),
+          ),
+        ],
+        renderToReadableStream: overrides.renderToReadableStream ?? renderToReadableStream,
+        createPageElement: (_Page, _App, props) => page(props),
+        enhancePageElement: (_Page, _App, props) => page(props),
+      }),
+      AppComponent: Object.assign(() => null, {
+        async getInitialProps({ ctx }: { ctx: SendingContext }) {
+          if (sender === "_app") sendLoginRedirect(ctx.res);
+          return { pageProps: {} };
+        },
+      }) as unknown as CreatePagesPageHandlerOptions["AppComponent"],
+      DocumentComponent: Object.assign(
+        () =>
+          React.createElement(
+            "html",
+            null,
+            React.createElement("body", null, React.createElement(Main)),
+          ),
+        {
+          async getInitialProps(
+            ctx: SendingContext & {
+              defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+            },
+          ) {
+            const props = await ctx.defaultGetInitialProps(ctx);
+            if (sender === "_document") sendLoginRedirect(ctx.res);
+            return props;
+          },
+        },
+      ) as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+    });
+  }
+
+  it.each(["_app", "_document"] as const)(
+    "stores a MISS render and returns the response %s sent",
+    async (sender) => {
+      const pageWrites = serveEntry("miss");
+
+      const response = await makeHandler(sender)(makeRequest(), "/", null, null, null);
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/login");
+
+      await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+      const [, entry] = pageWrites()[0] ?? [];
+      if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+      expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+      // Next.js stores no status for a Pages entry, so the sent 302 never
+      // replays from the cache.
+      expect(entry.status).toBe(200);
+    },
+  );
+
+  it("returns the sent response without waiting for the rest of the render", async () => {
+    const pageWrites = serveEntry("miss");
+    let releaseBody: (() => void) | undefined;
+    let renders = 0;
+    const handler = makeHandler("_app", {
+      async renderToReadableStream(element) {
+        const stream = await renderToReadableStream(element);
+        renders += 1;
+        // Hold the page body open; the `_document` shell renders normally.
+        if (renders > 1) return stream;
+        const held = new Promise<void>((resolve) => {
+          releaseBody = resolve;
+        });
+        return stream.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            async flush() {
+              await held;
+            },
+          }),
+        );
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.status).toBe(302);
+    await vi.waitFor(() => expect(releaseBody).toBeDefined());
+    expect(pageWrites()).toHaveLength(0);
+
+    releaseBody?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("returns the sent response while getStaticProps is still running", async () => {
+    const pageWrites = serveEntry("miss");
+    let releaseProps: (() => void) | undefined;
+    const handler = makeHandler("_app", {
+      async getStaticProps() {
+        await new Promise<void>((resolve) => {
+          releaseProps = resolve;
+        });
+        return { props: { value: "fresh" }, revalidate: 1 };
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/login");
+    expect(pageWrites()).toHaveLength(0);
+
+    releaseProps?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("runs after() callbacks once the sent response closes", async () => {
+    const pageWrites = serveEntry("miss");
+    let callbackRan = false;
+    let releaseProps: (() => void) | undefined;
+    const handler = makeHandler("_app", {
+      async getStaticProps() {
+        after(() => {
+          callbackRan = true;
+        });
+        await new Promise<void>((resolve) => {
+          releaseProps = resolve;
+        });
+        return { props: { value: "fresh" }, revalidate: 1 };
+      },
+    });
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(response.status).toBe(302);
+    expect(callbackRan).toBe(false);
+
+    // `getStaticProps` is still pending, but the visitor's response is done.
+    await response.text();
+    await vi.waitFor(() => expect(callbackRan).toBe(true));
+    releaseProps?.();
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("keeps the sent response out of the shared response cache", async () => {
+    const pageWrites = serveEntry("miss");
+    const state: RouteCacheabilityState = { captureDeadlineAt: Date.now() + 1_000, mode: "admit" };
+    const background: Promise<unknown>[] = [];
+    const context = {
+      waitUntil(promise: Promise<unknown>) {
+        background.push(promise);
+      },
+    };
+    Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+
+    const response = await runWithExecutionContext(context, () =>
+      makeHandler("_app")(makeRequest(), "/", null, null, null),
+    );
+    expect(response.status).toBe(302);
+    expect(state.finalResponseVetoReason).toBeDefined();
+
+    // The ISR entry itself is still stored.
+    await Promise.all(background);
+    await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+  });
+
+  it("reports an on-demand revalidation as regenerated", async () => {
+    const pageWrites = serveEntry("miss");
+    const request = new Request("http://localhost/", {
+      headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+    });
+
+    const response = await makeHandler("_app")(request, "/", null, null, null);
+    expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe("_N_T_/");
+    expect(pageWrites()).toHaveLength(1);
+  });
+
+  it("keeps the sent response when the page fails afterwards", async () => {
+    serveEntry("miss");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await makeHandler("_app", {
+        async getStaticProps() {
+          throw new Error("getStaticProps failed");
+        },
+      })(makeRequest(), "/", null, null, null);
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/login");
+      await vi.waitFor(() =>
+        expect(consoleError).toHaveBeenCalledWith(
+          "[vinext] SSR error:",
+          expect.objectContaining({ message: "getStaticProps failed" }),
+        ),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it.each(["_app", "_document"] as const)(
+    "stores a stale regeneration when %s sends the response",
+    async (sender) => {
+      const pageWrites = serveEntry("stale");
+
+      const response = await makeHandler(sender)(makeRequest(), "/", null, null, null);
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      expect(await response.text()).toContain("<p>stale</p>");
+
+      await vi.waitFor(() => expect(pageWrites()).toHaveLength(1));
+      const [, entry] = pageWrites()[0] ?? [];
+      if (entry?.kind !== "PAGES") throw new Error("expected a PAGES entry");
+      expect(entry.html).toContain('<div id="__next"><p>fresh</p></div>');
+    },
+  );
 });
 
 describe("createPagesPageHandler — i18n ISR identity", () => {

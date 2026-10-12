@@ -1115,3 +1115,126 @@ describe("middleware nextUrl basePath", () => {
     expect(captured.request?.nextUrl.pathname).toBe("/%61bout");
   });
 });
+
+// With `skipProxyUrlNormalize`, Pages adapters hand middleware the raw
+// `/_next/data/<buildId>/<page>.json` URL. Next.js compiles every matcher with
+// an optional `_next/data/<buildId>` prefix and `.json` suffix, so a matcher
+// guarding a page also guards its data URL, including one with a stale buildId.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
+describe("middleware matching for raw data requests", () => {
+  async function observedPathname(
+    pathname: string,
+    matcher: string,
+    options: {
+      basePath?: string;
+      i18nConfig?: { defaultLocale: string; locales: string[] };
+      isDataRequest?: boolean;
+      isStaleDataRequest?: boolean;
+      matcherConfig?: unknown;
+      headers?: HeadersInit;
+    } = {},
+  ): Promise<string | undefined> {
+    let observed: string | undefined;
+    await executeMiddleware({
+      basePath: options.basePath,
+      i18nConfig: options.i18nConfig,
+      isDataRequest: options.isDataRequest ?? true,
+      isStaleDataRequest: options.isStaleDataRequest,
+      isProxy: false,
+      module: {
+        config: { matcher: options.matcherConfig ?? matcher },
+        default(request: NextRequest) {
+          observed = request.nextUrl.pathname;
+          return new Response("forbidden", { status: 403 });
+        },
+      },
+      request: new Request(`http://localhost:3000${pathname}`, { headers: options.headers }),
+    });
+    return observed;
+  }
+
+  it.each([
+    ["the current build", "/_next/data/build-id/admin.json", "/admin"],
+    ["a stale build", "/_next/data/stale-build/admin.json", "/admin"],
+    ["the index page", "/_next/data/build-id/index.json", "/"],
+    // vinext routes this URL to the `/admin` page, so its guard must apply.
+    ["a nested index page", "/_next/data/build-id/admin/index.json", "/admin"],
+    ["an encoded page path", "/_next/data/build-id/adm%69n.json", "/admin"],
+  ])("applies a page matcher to the data URL of %s", async (_label, pathname, matcher) => {
+    // Middleware still observes the raw URL it was given.
+    await expect(observedPathname(pathname, matcher)).resolves.toBe(pathname);
+  });
+
+  it("applies a page matcher to a data URL inside basePath", async () => {
+    await expect(
+      observedPathname("/docs/_next/data/build-id/admin.json", "/admin", { basePath: "/docs" }),
+    ).resolves.toBe("/_next/data/build-id/admin.json");
+  });
+
+  it.each(["/_next/data/build-id/fr/admin.json", "/_next/data/build-id/admin.json"])(
+    "applies a page matcher to the locale data URL %s",
+    async (pathname) => {
+      const i18nConfig = { defaultLocale: "en", locales: ["en", "fr"] };
+      await expect(observedPathname(pathname, "/admin", { i18nConfig })).resolves.toBe(pathname);
+    },
+  );
+
+  it.each([
+    ["a different page", "/_next/data/build-id/admin/settings.json"],
+    ["a sibling page", "/_next/data/build-id/administrator.json"],
+  ])("does not widen an exact matcher to %s", async (_label, pathname) => {
+    await expect(observedPathname(pathname, "/admin")).resolves.toBeUndefined();
+  });
+
+  it("applies has conditions to a page matcher on its data URL", async () => {
+    const matcherConfig = [{ source: "/admin", missing: [{ type: "cookie", key: "session" }] }];
+    const pathname = "/_next/data/build-id/admin.json";
+    await expect(observedPathname(pathname, "/admin", { matcherConfig })).resolves.toBe(pathname);
+    await expect(
+      observedPathname(pathname, "/admin", { matcherConfig, headers: { cookie: "session=1" } }),
+    ).resolves.toBeUndefined();
+  });
+
+  // Next.js normalizes only a current-build data URL. A stale one is matched
+  // raw against the compiled matcher: optional `_next/data/<buildId>` prefix,
+  // internal locale segment under i18n, optional `.json` suffix. Every row was
+  // observed on Next.js 16.2.7 with `skipProxyUrlNormalize`.
+  it.each([
+    ["/admin", "/_next/data/stale/admin.json", true, true],
+    ["/admin", "/_next/data/stale/other.json", true, false],
+    ["/admin", "/_next/data/stale/admin/index.json", true, false],
+    ["/", "/_next/data/stale/index.json", true, true],
+    ["/_next/data/:path*", "/_next/data/stale/admin.json", true, true],
+    ["/_next/data/:path*", "/_next/data/build-id/admin.json", false, false],
+    ["/report.json", "/_next/data/stale/report.json", true, true],
+    ["/report.json", "/_next/data/stale/report.json.json", true, true],
+    ["/report.json", "/_next/data/build-id/report.json", false, false],
+  ])("matches %s against %s like Next.js", async (matcher, pathname, stale, invoked) => {
+    const observed = await observedPathname(pathname, matcher, { isStaleDataRequest: stale });
+    expect(observed).toBe(invoked ? pathname : undefined);
+  });
+
+  it.each([
+    ["/admin", "/_next/data/stale/admin.json", true, false],
+    ["/admin", "/_next/data/stale/fr/admin.json", true, true],
+    ["/admin", "/_next/data/stale/zz/admin.json", true, true],
+    ["/admin", "/_next/data/build-id/admin.json", false, true],
+    ["/admin", "/_next/data/build-id/fr/admin.json", false, true],
+    [{ source: "/admin", locale: false }, "/_next/data/stale/admin.json", true, true],
+    [{ source: "/admin", locale: false }, "/_next/data/stale/fr/admin.json", true, false],
+    [{ source: "/admin", locale: false }, "/_next/data/build-id/en/admin.json", false, false],
+  ])("matches %j against %s with i18n like Next.js", async (matcher, pathname, stale, invoked) => {
+    const observed = await observedPathname(pathname, "", {
+      i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+      isStaleDataRequest: stale,
+      matcherConfig: [matcher],
+    });
+    expect(observed).toBe(invoked ? pathname : undefined);
+  });
+
+  it("leaves ordinary requests matched against their own pathname", async () => {
+    await expect(
+      observedPathname("/_next/data/build-id/admin.json", "/admin", { isDataRequest: false }),
+    ).resolves.toBeUndefined();
+  });
+});

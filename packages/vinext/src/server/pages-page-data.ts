@@ -252,6 +252,8 @@ export type ResolvePagesPageDataOptions = {
   isDataReq?: boolean;
   err?: unknown;
   createGsspReqRes: () => PagesGsspContextResponse;
+  /** The req/res for a stale regeneration's render; defaults to `createGsspReqRes`. */
+  createRegenerationReqRes?: () => PagesGsspContextResponse;
   createAppTree?: (props: Record<string, unknown>) => ReactNode;
   createPageElement: (props: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
@@ -707,7 +709,9 @@ async function loadPagesAppInitialRenderProps(
     },
   });
 
-  if (isResponseSent(res)) {
+  // Next.js keeps resolving a getStaticProps page whose `_app` sent the
+  // response, so its entry is still stored.
+  if (isResponseSent(res) && typeof options.pageModule.getStaticProps !== "function") {
     return { kind: "response", response: responsePromise };
   }
 
@@ -1282,6 +1286,16 @@ export async function resolvePagesPageData(
   let renderProps: PagesRenderProps = { pageProps };
   if (previewData !== false) renderProps.__N_PREVIEW = true;
 
+  // A getStaticProps page whose `_app` or `_document` sent the response is
+  // still resolved and stored, but the visitor gets the sent response. An
+  // on-demand revalidation reports the regenerated entry instead.
+  async function takeSentResponse(): Promise<ResolvePagesPageDataResponseResult | null> {
+    if (options.isOnDemandRevalidate || !sharedReqRes || !isResponseSent(sharedReqRes.res)) {
+      return null;
+    }
+    return { kind: "response", response: await sharedReqRes.responsePromise };
+  }
+
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
     const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
     if (result.kind === "response") {
@@ -1415,7 +1429,7 @@ export async function resolvePagesPageData(
             options.applyRequestContexts();
             // `_app.getInitialProps` and `_document` share one req/res, as in the
             // foreground render.
-            const reqRes = options.createGsspReqRes();
+            const reqRes = (options.createRegenerationReqRes ?? options.createGsspReqRes)();
             const freshAppResult = await loadPagesAppInitialRenderProps(options, () => reqRes);
             if (freshAppResult.kind === "response") return;
 
@@ -1710,10 +1724,12 @@ export async function resolvePagesPageData(
         );
         applyPagesTerminalMissHeaders(response, revalidateSeconds, pathname, expireSeconds);
       }
-      return {
-        kind: "response",
-        response,
-      };
+      return (
+        (await takeSentResponse()) ?? {
+          kind: "response",
+          response,
+        }
+      );
     }
 
     if (result?.notFound) {
@@ -1738,7 +1754,7 @@ export async function resolvePagesPageData(
           expireSeconds,
         );
       }
-      return notFoundResult;
+      return (await takeSentResponse()) ?? notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
@@ -1828,6 +1844,12 @@ export async function resolvePagesPageData(
       pageProps = { ...pageProps, ...initialProps };
       renderProps = { ...renderProps, pageProps };
     }
+  }
+
+  // The HTML render stores the entry and returns the sent response itself.
+  if (options.isDataReq) {
+    const sentResponse = await takeSentResponse();
+    if (sentResponse) return sentResponse;
   }
 
   return {

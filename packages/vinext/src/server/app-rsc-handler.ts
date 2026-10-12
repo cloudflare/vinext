@@ -112,6 +112,7 @@ import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   isImageOptimizationPath,
+  markImageOptimizationSignal,
   resolveDevImageRedirect,
   type ImageConfig,
 } from "./image-optimization.js";
@@ -1628,8 +1629,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (lateActionRscCacheBustingRedirect) return lateActionRscCacheBustingRedirect;
 
   if (filesystemRouteEligible && isImageOptimizationPath(cleanPathname)) {
+    // Rewrites to or of the endpoint replace the query in `resolvedUrl`.
+    const imageUrl = new URL(resolvedUrl, url);
     const imageRedirect = resolveDevImageRedirect(
-      url,
+      imageUrl,
       [
         ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
@@ -1637,9 +1640,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       options.imageConfig?.qualities,
       { isDev: options.isDev },
     );
-    if (!imageRedirect)
-      return new Response("Invalid image optimization parameters", { status: 400 });
-    return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
+    const middlewareHeaders = new Headers();
+    mergeMiddlewareResponseHeaders(middlewareHeaders, middlewareContext.headers);
+    if (!imageRedirect) {
+      return new Response("Invalid image optimization parameters", {
+        status: 400,
+        headers: middlewareHeaders,
+      });
+    }
+    return markImageOptimizationSignal(
+      Response.redirect(new URL(imageRedirect, url.origin).href, 302),
+      { middlewareHeaders, search: imageUrl.search },
+    );
   }
 
   const metadataRouteResponse = await renderMetadataRouteIfMatched();

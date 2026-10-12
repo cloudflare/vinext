@@ -146,6 +146,28 @@ test("shares a dynamic Pages ISR entry with its encoded spelling in production",
   expect(literal.headers["x-vinext-cache"]).toBe("HIT");
 });
 
+// Next.js keys each ISR entry by its full pathname. These two ids leave the
+// fnv1a64 digest that once shortened long ISR keys in the same state, so a
+// request could plant its render in the other path's entry.
+test("keeps long Pages ISR paths with colliding fnv1a64 digests apart in production", async () => {
+  // A fresh tail per run, so neither path has an entry from an earlier attempt.
+  const tail = `-${Date.now().toString(36)}${"x".repeat(200)}`;
+  const attackerPath = `/articles/801726145630c3c4${tail}`;
+  const attacker = await getRawPath(attackerPath);
+  expect(attacker.status).toBe(200);
+  expect(attacker.body).toMatch(/Article ID: (?:<!-- -->)?801726145630c3c4-/);
+  // Wait for the render to land in the cache before requesting the other path.
+  await expect
+    .poll(async () => (await getRawPath(attackerPath)).headers["x-vinext-cache"])
+    .toBe("HIT");
+
+  const victim = await getRawPath(`/articles/fb1316807b9cbf78${tail}`);
+  expect(victim.status).toBe(200);
+  expect(victim.headers["x-vinext-cache"]).toBe("MISS");
+  expect(victim.body).toMatch(/Article ID: (?:<!-- -->)?fb1316807b9cbf78-/);
+  expect(victim.body).not.toContain("801726145630c3c4");
+});
+
 // Next.js builds each catch-all element separately, so `["value", "nested"]`
 // is `/value/nested` and `["encoded/value"]` is `/encoded%2Fvalue`.
 test("admits only listed catch-all elements for fallback false paths in production", async () => {

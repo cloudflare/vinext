@@ -423,6 +423,11 @@ describe("middleware", () => {
       }),
     );
 
+    // Next.js matches a stale data URL raw, so the runtime needs to know.
+    expect(runMiddleware.mock.calls[0]?.[2]).toEqual({
+      isDataRequest: true,
+      isStaleDataRequest: true,
+    });
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
@@ -857,6 +862,7 @@ describe("middleware", () => {
 
     expect(runMiddleware).toHaveBeenCalledWith(expect.any(Request), null, {
       isDataRequest: false,
+      isStaleDataRequest: false,
     });
     expect(result.type).toBe("response");
     if (result.type !== "response") return;

@@ -115,6 +115,12 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        // Used by E2E: app-router-prod/image-middleware.spec.ts — a config
+        // rewrite to the image endpoint serves the destination's query.
+        {
+          source: "/config-image-rewrite",
+          destination: "/_next/image?url=%2Fheart.png&w=640&q=75",
+        },
         // Used by E2E: config-redirect.spec.ts — a source param substituted
         // into a destination query value must stay one value.
         {

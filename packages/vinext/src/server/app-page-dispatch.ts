@@ -379,6 +379,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
+  isrFallbackShellHtmlKey: (pathname: string) => string;
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (
     pathname: string,

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import type { ESTree } from "vite";
-import type { CloudflareInitOptions } from "./init-platform.js";
+import { validateWorkerName, type CloudflareInitOptions } from "./init-platform.js";
 import { detectProject } from "./utils/project.js";
 import { isUnknownRecord } from "./utils/record.js";
 
@@ -72,6 +72,8 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
+  // Programmatic callers skip parseNameArg, so validate the name here too.
+  if (cloudflare.name !== undefined) validateWorkerName(cloudflare.name);
   if (!cloudflare.legacyWrangler) {
     const existingWrangler = [
       "wrangler.toml",
@@ -196,7 +198,7 @@ export function setupCloudflarePlatform(
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
   if (!cloudflare.legacyWrangler) return setupCfPlatform(context, cloudflare);
-  const projectInfo = detectProject(context.root);
+  const projectInfo = detectCloudflareProject(context.root, cloudflare);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
@@ -346,11 +348,30 @@ export function setupCloudflarePlatform(
   };
 }
 
+/**
+ * The existing config that keeps its own Worker name, if `--name` was given.
+ * Init doesn't rename the Worker in an existing config, so callers warn instead.
+ */
+export function findConfigKeepingWorkerName(
+  root: string,
+  cloudflare: CloudflareInitOptions,
+): string | undefined {
+  if (cloudflare.name === undefined) return undefined;
+  return (
+    cloudflare.legacyWrangler ? ["wrangler.jsonc", "wrangler.json"] : ["cloudflare.config.ts"]
+  ).find((name) => fs.existsSync(path.join(root, name)));
+}
+
+function detectCloudflareProject(root: string, cloudflare: CloudflareInitOptions) {
+  const projectInfo = detectProject(root);
+  return cloudflare.name ? { ...projectInfo, projectName: cloudflare.name } : projectInfo;
+}
+
 function setupCfPlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
-  const projectInfo = detectProject(context.root);
+  const projectInfo = detectCloudflareProject(context.root, cloudflare);
   const serviceBinding =
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding";

@@ -17,6 +17,7 @@ import {
   MemoryCacheHandler,
 } from "../packages/vinext/src/shims/cache.js";
 import { buildAppPageCacheTags } from "../packages/vinext/src/server/app-page-cache.js";
+import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import {
   _drainPendingRevalidations,
   _runWithCacheState,
@@ -240,11 +241,31 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{16}$/);
+      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{64}$/);
 
       kv.get.mockClear();
       expect(await prefixedHandler.get(logicalKey)).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(storedKey);
+    });
+
+    it("keeps oversized logical keys whose fnv1a64 digests collide in separate entries", async () => {
+      // Found by a collision search: the two root param values leave fnv1a64
+      // in the same state, so the full keys collide too. A request choosing
+      // one value must not read the entry cached for the other.
+      const key = (tenant: string) =>
+        `use-cache:build:e2e:fn-id:args:root-params:[["tenant","${tenant}${"x".repeat(500)}"]]`;
+      const privateKey = key("9321894c994f7f38");
+      const publicKey = key("573a3dc6dd8b8674");
+      expect(fnv1a64(privateKey)).toBe(fnv1a64(publicKey));
+
+      await handler.set(privateKey, { ...pageValue, html: "<html>private</html>" });
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{64}$/);
+      expect(await handler.get(publicKey)).toBeNull();
+      expect(await handler.get(privateKey)).toMatchObject({
+        value: { html: "<html>private</html>" },
+      });
     });
 
     it("measures multibyte logical keys by UTF-8 byte length", async () => {
@@ -254,7 +275,7 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{16}$/);
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{64}$/);
       expect(await handler.get(logicalKey)).not.toBeNull();
     });
 
@@ -292,6 +313,19 @@ describe("KVCacheHandler", () => {
 
       expect(await freshHandler.get("tagged-with-long-tag")).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(tagKey);
+    });
+
+    it("honors tag markers stored before oversized entry keys moved to SHA-256", async () => {
+      // Markers are permanent and outlive entries with short keys, so a tag
+      // revalidated before an upgrade must still invalidate those entries.
+      const tag = "posts:all";
+      store.set(`__tag:__hash:${fnv1a64(tag)}`, String(Date.now()));
+      store.set(
+        "cache:invalidated-before-upgrade",
+        validEntry(pageValue, { tags: [tag], lastModified: Date.now() - 1_000 }),
+      );
+
+      expect(await handler.get("invalidated-before-upgrade")).toBeNull();
     });
   });
 

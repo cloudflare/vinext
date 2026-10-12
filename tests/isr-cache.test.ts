@@ -12,6 +12,7 @@ import {
   isrCacheKey,
   pagesIsrCacheKey,
   appIsrCacheKey,
+  appIsrFallbackShellKey,
   appIsrHtmlKey,
   appIsrRscKey,
   appIsrRouteKey,
@@ -95,9 +96,19 @@ describe("revalidation secret", () => {
 
 // Cache keys
 describe("isrCacheKey", () => {
-  it("fnv1a64 uses fixed-width unambiguous output", () => {
-    const hash = fnv1a64("/" + "a".repeat(250));
-    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+  it("keeps long pathnames whose fnv1a64 digests collide in separate entries", () => {
+    // Found by a collision search: the two segments leave fnv1a64 in the same
+    // state, so any shared tail collides too. A crafted request path must not
+    // share another long path's entry.
+    const tail = `-${"x".repeat(200)}`;
+    const first = `/articles/801726145630c3c4${tail}`;
+    const second = `/articles/fb1316807b9cbf78${tail}`;
+    expect(fnv1a64(first)).toBe(fnv1a64(second));
+
+    const key = isrCacheKey("pages", first);
+    expect(key).toMatch(/^pages:__hash:[0-9a-f]{64}$/);
+    expect(key).not.toBe(isrCacheKey("pages", second));
+    expect(appIsrHtmlKey(first)).not.toBe(appIsrHtmlKey(second));
   });
 
   it("generates pages: prefix for Pages Router", () => {
@@ -207,6 +218,32 @@ describe("App Router ISR cache key primitives", () => {
     );
   });
 
+  it("keeps fallback shell keys apart from the page keys of the same pathname", () => {
+    // A request for `/en/%5Bslug%5D` decodes to the shell's own pathname.
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).toBe(
+      "app-fallback-shell:v1:build-42:/en/[slug]:html",
+    );
+    // No build ID can spell a shell key as a page key.
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "release")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "html", "release:fallback-shell"),
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "html")).toMatch(/^app-fallback-shell:/);
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "html", "build-42"),
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "rsc", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "rsc", "build-42"),
+    );
+
+    const longPathname = `/en/${"x".repeat(220)}/[slug]`;
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).toMatch(
+      /^app-fallback-shell:v1:build-42:__hash:[a-f0-9]{64}:html$/,
+    );
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).not.toBe(
+      appIsrCacheKey(longPathname, "html", "build-42"),
+    );
+  });
+
   it("does not read pre-v2 App entries when the build id stays stable", async () => {
     process.env.__VINEXT_BUILD_ID = "stable-build";
     setCacheHandler(new MemoryCacheHandler());
@@ -231,7 +268,7 @@ describe("App Router ISR cache key primitives", () => {
 
     const key = appIsrRscKey("/" + "a".repeat(250));
 
-    expect(key).toMatch(/^app:v2:__hash:[a-z0-9]+:rsc$/);
+    expect(key).toMatch(/^app:v2:__hash:[0-9a-f]{64}:rsc$/);
   });
 
   it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
@@ -241,7 +278,7 @@ describe("App Router ISR cache key primitives", () => {
     const second = appIsrRscKey("/feed", "slot:sidebar:/ slot:modal:/");
 
     expect(first).toBe(second);
-    expect(first).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+$/);
+    expect(first).toMatch(/^app:v2:\/feed:rsc:slots:[0-9a-f]{64}$/);
   });
 
   it("bounds RSC cache-key cardinality against attacker-supplied mounted-slot values", () => {
@@ -286,7 +323,7 @@ describe("App Router ISR cache key primitives", () => {
 
     expect(fromFeed).not.toBe(fromGallery);
     expect(fromFeed).not.toBe(direct);
-    expect(fromFeed).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
+    expect(fromFeed).toMatch(/^app:v2:\/photos\/42:rsc:source:[0-9a-f]{64}:slots:[0-9a-f]{64}$/);
   });
 
   it("keys supplemental RSC variants by their verified interception id", () => {
@@ -308,7 +345,7 @@ describe("App Router ISR cache key primitives", () => {
     );
 
     expect(modal).not.toBe(drawer);
-    expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
+    expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[0-9a-f]{64}:selector:[0-9a-f]{64}$/);
   });
 
   // The source is matched on its raw segments, so `/%66eed` does not reach a
@@ -340,7 +377,7 @@ describe("App Router ISR cache key primitives", () => {
     );
     expect(
       appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
-    ).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
+    ).toMatch(/^app:v2:\/feed:rsc:slots:[0-9a-f]{64}:prefetch-loading-shell$/);
   });
 });
 
