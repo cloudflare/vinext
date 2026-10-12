@@ -1328,6 +1328,7 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
 const _serverDir = path.resolve(__dirname, "server");
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
+const _dynamicPreloadChunksShimPath = resolveShimModulePath(_shimsDir, "dynamic-preload-chunks");
 const _appBrowserServerActionClientPath = resolveShimModulePath(
   _serverDir,
   "app-browser-server-action-client",
@@ -8611,7 +8612,13 @@ export const loadServerActionClient = ${
   }
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
-    plugins.push(createRscClientReferenceLoadersPlugin());
+    plugins.push(
+      createRscClientReferenceLoadersPlugin({
+        dynamicPreloadChunksShimId: toSlash(
+          tryRealpathSync(_dynamicPreloadChunksShimPath) ?? _dynamicPreloadChunksShimPath,
+        ),
+      }),
+    );
   } else if (manualUseCachePluginPromise) {
     plugins.push(cacheFlightCodecPlugin(), manualUseCachePluginPromise);
   }

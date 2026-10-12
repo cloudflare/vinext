@@ -64,6 +64,53 @@ describe("App Router production SSR with cold client references", () => {
     expect((globalThis as ClientEvaluationMarker).__vinextUnrelatedClientEvaluated).toBeUndefined();
   });
 
+  it("links a next/dynamic stylesheet with the dynamic precedence and nonce on a first request", async () => {
+    const response = await fetch(`${baseUrl}/dynamic`);
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('data-testid="dynamic-widget"');
+    const stylesheets = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter((tag) =>
+      /\/widget[^"]*\.css/.test(tag),
+    );
+    // plugin-rsc links the same CSS (no nonce) when the widget's module loads;
+    // Fizz keeps the first registration of an href, so the nonce-bearing
+    // next/dynamic link has to come first.
+    expect(stylesheets).toHaveLength(1);
+    expect(stylesheets[0]).toContain('data-precedence="dynamic"');
+    expect(stylesheets[0]).toContain('nonce="vinext-test-nonce"');
+  });
+
+  async function expectFallbackBeforeContent(pathname: string, contentMarker: string) {
+    const response = await fetch(`${baseUrl}${pathname}`);
+    expect(response.status).toBe(200);
+    const body = response.body;
+    if (body === null) throw new Error("response has no body");
+
+    const chunks: string[] = [];
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value, { stream: true }));
+    }
+    // The shell flushes with the fallback while the module is still loading;
+    // the content follows in a later chunk.
+    const fallbackChunk = chunks.findIndex((chunk) => chunk.includes('data-testid="fallback"'));
+    const contentChunk = chunks.findIndex((chunk) => chunk.includes(contentMarker));
+    expect(fallbackChunk).toBeGreaterThanOrEqual(0);
+    expect(contentChunk).toBeGreaterThan(fallbackChunk);
+  }
+
+  it("streams a boundary's fallback before its client module has loaded on a first request", async () => {
+    await expectFallbackBeforeContent("/suspense", 'data-testid="slow-boundary"');
+  });
+
+  it("streams the fallback for a user component that shares the preload helper's export name", async () => {
+    await expectFallbackBeforeContent("/collision", 'data-testid="user-preload-chunks"');
+  });
+
   it("renders a second route's client component on its own first request", async () => {
     const response = await fetch(`${baseUrl}/other`);
 

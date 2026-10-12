@@ -66,6 +66,8 @@ function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): s
   return files;
 }
 
+// The SSR entry matches this export name in the Flight stream to load the
+// module before React reaches a boundary (app-client-reference-preloader.ts).
 export function DynamicPreloadChunks(props: {
   moduleIds?: readonly string[];
   assets: "styles" | "scripts";

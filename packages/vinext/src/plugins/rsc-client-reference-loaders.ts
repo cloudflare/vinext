@@ -1,10 +1,22 @@
 import type { Plugin } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
+import { toSlash } from "pathslash";
+import { tryRealpathSync } from "../build/ssr-manifest.js";
 
 const CLIENT_REFERENCES_ID = "\0virtual:vite-rsc/client-references";
 const RESOLVED_ID_PROXY_PREFIX = "virtual:vite-rsc/resolved-id/";
 
 type RscClientReferenceMeta = PluginApi["manager"]["clientReferenceMetaMap"][string];
+
+type RscClientReferenceLoadersOptions = {
+  /** vinext's preload-hint shim (shims/dynamic-preload-chunks), as a canonical module id. */
+  dynamicPreloadChunksShimId: string;
+};
+
+// Rolldown keys modules by canonical path: realpath, forward slashes.
+function canonicalModuleId(id: string): string {
+  return toSlash(tryRealpathSync(id) ?? id);
+}
 
 type RscPluginWithApi = Plugin & {
   api?: PluginApi;
@@ -28,6 +40,23 @@ function generateClientReferenceObject(meta: RscClientReferenceMeta): string {
   return exports ? `{\n${exports}\n    }` : "{}";
 }
 
+/**
+ * Reference key of vinext's preload-hint shim, which the SSR entry loads before
+ * React can reach a next/dynamic boundary. Matched by module id, so a user
+ * module at another `shims/dynamic-preload-chunks` path is never picked.
+ */
+export function selectDynamicPreloadChunksReferenceKey(
+  metaEntries: readonly (readonly [string, { referenceKey: string }])[],
+  dynamicPreloadChunksShimId: string,
+): string | undefined {
+  return metaEntries.find(([id]) => canonicalModuleId(id) === dynamicPreloadChunksShimId)?.[1]
+    .referenceKey;
+}
+
+function generateDynamicPreloadChunksReferenceKey(key: string | undefined): string {
+  return `export const dynamicPreloadChunksReferenceKey = ${key === undefined ? "undefined" : JSON.stringify(key)};\n`;
+}
+
 function generateDirectClientReferenceLoaders(metas: RscClientReferenceMeta[]): string {
   const entries = metas
     .slice()
@@ -46,7 +75,9 @@ function generateDirectClientReferenceLoaders(metas: RscClientReferenceMeta[]): 
   return `export default {\n${entries}\n};\n`;
 }
 
-export function createRscClientReferenceLoadersPlugin(): Plugin {
+export function createRscClientReferenceLoadersPlugin(
+  options: RscClientReferenceLoadersOptions,
+): Plugin {
   let rscApi: PluginApi | undefined;
 
   return {
@@ -84,7 +115,11 @@ export function createRscClientReferenceLoadersPlugin(): Plugin {
       }
 
       return {
-        code: generateDirectClientReferenceLoaders(metas),
+        code:
+          generateDirectClientReferenceLoaders(metas) +
+          generateDynamicPreloadChunksReferenceKey(
+            selectDynamicPreloadChunksReferenceKey(metaEntries, options.dynamicPreloadChunksShimId),
+          ),
         map: null,
       };
     },
