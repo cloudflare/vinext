@@ -459,7 +459,15 @@ export function resolveAppPageSpecialErrorStoredHeaders(
   return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
-const REDIRECT_BASE_HOST = "redirect-base.vinext.invalid";
+const REDIRECT_BASE_HOSTS = ["a.redirect-base.vinext.invalid", "b.redirect-base.vinext.invalid"];
+
+function resolveAgainstPlaceholderHost(location: string, requestUrl: string, host: string) {
+  const base = new URL(requestUrl);
+  base.host = host;
+  base.port = "";
+  const resolved = new URL(location, base);
+  return { relative: resolved.origin === base.origin, resolved };
+}
 
 /**
  * The redirect target embedded in the flight digest and its streamed
@@ -468,23 +476,26 @@ const REDIRECT_BASE_HOST = "redirect-base.vinext.invalid";
  * entry is sent to the same place; the header carries its parsed URL, which is
  * always a valid header value. A relative target resolves against the
  * request's path to a path-only form, which the client resolves against its
- * own origin. Resolving against a placeholder host tells the two apart the way
- * the URL parser does, so it never depends on the request's host.
+ * own origin. Resolving against two placeholder hosts tells the two apart the
+ * way the URL parser does, never depends on the request's host, and cannot
+ * mistake an absolute target naming one placeholder for a relative one.
  */
 function resolveRedirectTargets(
   location: string,
   requestUrl: string,
 ): { digestUrl: string; headerUrl: string } {
   try {
-    const base = new URL(requestUrl);
-    base.host = REDIRECT_BASE_HOST;
-    base.port = "";
-    const resolved = new URL(location, base);
-    if (resolved.origin !== base.origin) {
-      return { digestUrl: location, headerUrl: resolved.href };
+    const [first, second] = REDIRECT_BASE_HOSTS.map((host) =>
+      resolveAgainstPlaceholderHost(location, requestUrl, host),
+    );
+    if (!first.relative || !second.relative) {
+      return {
+        digestUrl: location,
+        headerUrl: (first.relative ? second : first).resolved.href,
+      };
     }
-    const path = `${resolved.pathname}${resolved.search}${resolved.hash}`;
-    return { digestUrl: path, headerUrl: path };
+    const { pathname, search, hash } = first.resolved;
+    return { digestUrl: `${pathname}${search}${hash}`, headerUrl: `${pathname}${search}${hash}` };
   } catch {
     return { digestUrl: location, headerUrl: location };
   }

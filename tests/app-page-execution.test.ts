@@ -792,6 +792,8 @@ describe("app page execution helpers", () => {
     [" https://other.test/out", "https://other.test/out"],
     ["https://other.test/😀", "https://other.test/%F0%9F%98%80"],
     ["//other.test/out", "https://other.test/out"],
+    ["https://a.redirect-base.vinext.invalid/out", "https://a.redirect-base.vinext.invalid/out"],
+    ["//b.redirect-base.vinext.invalid/out", "https://b.redirect-base.vinext.invalid/out"],
   ])(
     "keeps the absolute RSC redirect target %s in the digest and parses it for the header",
     async (location, header) => {
