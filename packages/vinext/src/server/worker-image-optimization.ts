@@ -25,8 +25,9 @@ const OMIT_MIDDLEWARE_HEADERS = new Set([
 ]);
 
 // Next.js' fetchInternalImage dispatches the source as a relative URL without
-// headers, so the caller's host selects no host condition or middleware branch.
-const IMAGE_SOURCE_ORIGIN = "http://vinext.invalid";
+// headers on the caller's socket, so the caller's host selects no middleware
+// branch while its protocol is kept.
+const IMAGE_SOURCE_HOST = "vinext.invalid";
 
 export type WorkerImageOptimizationOptions = {
   allowedWidths: number[];
@@ -91,9 +92,12 @@ async function fetchImageSource(
   // a public file that the application selects is served.
   const sourceResponse = await options.resolveSource(
     attachRequestCfMetadata(
-      new Request(new URL(sourceUrl.pathname + sourceUrl.search, IMAGE_SOURCE_ORIGIN), {
-        signal: request.signal,
-      }),
+      new Request(
+        `${sourceUrl.protocol}//${IMAGE_SOURCE_HOST}${sourceUrl.pathname}${sourceUrl.search}`,
+        {
+          signal: request.signal,
+        },
+      ),
       request,
     ),
   );

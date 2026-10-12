@@ -878,9 +878,10 @@ export default {
       await expect(denied.text()).resolves.toBe("Image not found");
 
       // Next.js' internal image request has no Host header, so a host-conditioned
-      // rewrite does not match it.
+      // rewrite does not match it. It keeps the caller's protocol.
       expect((await get("/host-avatar")).status).toBe(404);
       expect(capturedRequests.map((request) => request.headers.has("host"))).toEqual([false]);
+      expect(capturedRequests.map((request) => new URL(request.url).protocol)).toEqual(["https:"]);
       expect(fetchedAssets).toEqual(["/open.png"]);
     } finally {
       setImageOptimizer(null);
