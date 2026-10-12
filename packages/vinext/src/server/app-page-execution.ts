@@ -459,26 +459,6 @@ export function resolveAppPageSpecialErrorStoredHeaders(
   return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
-/**
- * Returns a path-relative form (`/foo?bar`) of an absolute URL when it shares
- * the request's origin; otherwise returns the URL verbatim. Used so the digest
- * we embed in the flight payload matches Next.js's convention — the digest
- * stores the path the developer passed to `redirect("/about")`, not a
- * fully-qualified URL like `https://example.com/about`.
- */
-function sameOriginPathOrAbsolute(location: string, requestUrl: string): string {
-  try {
-    const resolved = new URL(location, requestUrl);
-    const requestOrigin = new URL(requestUrl).origin;
-    if (resolved.origin !== requestOrigin) {
-      return resolved.toString();
-    }
-    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
-  } catch {
-    return location;
-  }
-}
-
 function buildMetadataRedirectHtmlResponse(options: {
   digest: string;
   getAndClearPendingCookies?: () => string[];
@@ -519,7 +499,9 @@ export async function buildAppPageSpecialErrorResponse(
       options.specialError.location,
       options.basePath,
     );
-    const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
+    // Next.js's digest keeps the target `redirect()` received, so the payload
+    // is the same on every host that shares its cache entry.
+    const digestUrl = prefixedLocation;
     const digest = formatNextRedirectDigest({
       type: options.specialError.type ?? "replace",
       url: digestUrl,
@@ -553,11 +535,6 @@ export async function buildAppPageSpecialErrorResponse(
       Boolean(options.buildRscRedirectFlightStream) && options.isRscRequest;
 
     if (shouldEmbedRedirectInFlight && options.buildRscRedirectFlightStream) {
-      // Reduce the resolved (absolute) URL back to a path-only form for
-      // same-origin redirects. Next.js's digest stores the raw URL passed to
-      // `redirect()` (typically a path like "/about"), and the client router's
-      // `router.push(url)` happily accepts paths. Cross-origin targets keep
-      // their absolute form, matching Next.js's external-redirect handling.
       const stream = options.buildRscRedirectFlightStream({ digest });
 
       const headers = new Headers({

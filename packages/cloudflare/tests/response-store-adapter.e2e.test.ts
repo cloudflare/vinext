@@ -408,6 +408,61 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
   });
 
+  // Next.js keys its response cache by pathname, so one entry answers every
+  // host an app serves:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/app-page.ts
+  test("shares one App Router entry across the hosts an app serves", async () => {
+    type Init = Parameters<Miniflare["dispatchFetch"]>[1];
+    const onHost = (host: string, pathname: string, init?: Init) =>
+      miniflare.dispatchFetch(`https://${host}${pathname}`, init);
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const entries: Array<[string, Init | undefined, number]> = [
+      ["/static-default", undefined, 200],
+      ["/static-default.rsc?_rsc=", rscInit, 200],
+      ["/api/host-shared", undefined, 200],
+      ["/metadata-storage/status-404/opengraph-image", undefined, 404],
+      ["/special-error/absolute-redirect.rsc?_rsc=", rscInit, 200],
+    ];
+    for (const [pathname, init, status] of entries) {
+      const entryPath = new URL(pathname, "https://app.test").pathname.replace(/\.rsc$/, "");
+      const before = (await responseEntries(entryPath)).length;
+      const fill = await onHost("tenant-a.test", pathname, init);
+      const fillBody = await fill.text();
+      assert.equal(fill.status, status, `${pathname}: ${fillBody}`);
+      assert.equal(fill.headers.get("x-vinext-cache"), "MISS", pathname);
+      await waitForStoredEntries(() => responseEntries(entryPath), before + 1);
+
+      for (const host of ["tenant-b.test", "tenant-b.test:8443"]) {
+        const hit = await onHost(host, pathname, init);
+        assert.equal(hit.status, status, pathname);
+        assert.equal(hit.headers.get("x-vinext-cache"), "HIT", `${host}${pathname}`);
+        assert.equal(await hit.text(), fillBody, `${host}${pathname}`);
+      }
+    }
+
+    // The shared redirect keeps the absolute target the page wrote.
+    const redirect = await onHost(
+      "tenant-b.test",
+      "/special-error/absolute-redirect.rsc?_rsc=",
+      rscInit,
+    );
+    assert.match(
+      await redirect.text(),
+      /NEXT_REDIRECT;;https%3A%2F%2Ftenant-a\.test%2Fstatic-default/,
+    );
+  });
+
+  test("never shares a route handler response that read the host", async () => {
+    const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
+    for (const host of hosts) {
+      const response = await miniflare.dispatchFetch(`https://${host}/api/host-echo`);
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
+      assert.equal(((await response.json()) as { host: string }).host, host);
+    }
+    assert.deepEqual(await storedEntriesNaming("/api/host-echo"), []);
+  });
+
   test("never stores a dynamic-segment route without generateStaticParams", async () => {
     const first = await request("/dynamic-segment/a");
     const firstBody = await first.text();

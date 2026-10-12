@@ -738,6 +738,36 @@ describe("app page execution helpers", () => {
     await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
   });
 
+  // Next.js's digest keeps the target redirect() received, so one shared
+  // cache entry sends every host to the same place.
+  it("keeps a same-origin absolute redirect target in the RSC flight on every host", async () => {
+    const payloads = [];
+    for (const origin of ["https://www.example.com", "https://example.com"]) {
+      const response = await buildAppPageSpecialErrorResponse({
+        buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+        clearRequestContext: vi.fn(),
+        isRscRequest: true,
+        request: new Request(`${origin}/start.rsc`),
+        specialError: {
+          kind: "redirect",
+          location: "https://www.example.com/target",
+          statusCode: 307,
+          type: "replace",
+        },
+      });
+      payloads.push({
+        body: await response.text(),
+        header: response.headers.get("x-vinext-rsc-redirect"),
+      });
+    }
+
+    expect(payloads[0]).toEqual({
+      body: "NEXT_REDIRECT;replace;https://www.example.com/target;307;",
+      header: "https://www.example.com/target",
+    });
+    expect(payloads[1]).toEqual(payloads[0]);
+  });
+
   it("preserves explicit push semantics in RSC redirect flights", async () => {
     const buildRscRedirectFlightStream = vi.fn(
       ({ digest }: { digest: string }) =>

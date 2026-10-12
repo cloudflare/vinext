@@ -1,5 +1,13 @@
 import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
 
+/**
+ * The origin a shared cache identity names in place of the request's. Next.js
+ * keys its response cache by pathname, so one stored response answers every
+ * host an app serves. `.invalid` never resolves, so no configured domain or
+ * host condition can match it when the identity is replayed.
+ */
+export const VINEXT_CACHE_IDENTITY_ORIGIN = "https://cache-identity.vinext.invalid";
+
 /** Whether a response-stage cache must reject a field it did not key itself by. */
 export function hasUnsupportedResponseStageVary(
   headers: Headers,
@@ -54,22 +62,30 @@ export type VinextResponseStageDispatchOptions = {
    */
   regeneratesStoredEntry?: boolean;
   /**
-   * Query-free identity of a shared App page GET/HEAD dispatch, supplied only
-   * to adapters that declare `responseStageCacheIdentity: "query-free"` and
+   * Shared cache identity of an App Router GET/HEAD dispatch, supplied only to
+   * adapters that declare `responseStageCacheIdentity: "query-free"` and
    * require completed-response admission. A transport given one partitions
    * its baseline lookup and stored entry by this request's method and complete
    * URL plus these complete serialized props, instead of the dispatched request
    * and props, and replays this identity for background regeneration.
    * Everything else in the contract above still applies.
    *
-   * The identity drops the user query from the URL and `resolvedUrl`, keeping
-   * framework representation selectors: the `.rsc` suffix, the render mode,
-   * and, for RSC requests only, the one validated `_rsc` value. That is safe only because completed-response
-   * admission refuses a cacheable App page response unless its render proved
-   * it never read `searchParams`. The dispatched request still carries the real
-   * query for the render itself. Core omits the identity when a `next.config`
-   * public cache policy applies (cached per full URL, as Next.js CDN caching
-   * is), and for bypassed, interception, and mounted-slot dispatches.
+   * The identity names `VINEXT_CACHE_IDENTITY_ORIGIN` in place of the
+   * request's origin, in its URL and its `requestOrigin`, so one stored
+   * response answers every host, as Next.js's pathname-keyed response cache
+   * does. That is safe only because completed-response admission refuses a
+   * response whose render used a dynamic API, which every App Router read of
+   * the request's host is. Core omits the identity for bypassed dispatches.
+   *
+   * An App page identity also drops the user query from the URL and
+   * `resolvedUrl`, keeping framework representation selectors: the `.rsc`
+   * suffix, the render mode, and, for RSC requests only, the one validated
+   * `_rsc` value. That is safe only because completed-response admission
+   * refuses a cacheable App page response unless its render proved it never
+   * read `searchParams`. The dispatched request still carries the real query
+   * for the render itself. A page identity keeps the query when a
+   * `next.config` public cache policy applies (cached per full URL, as Next.js
+   * CDN caching is), and for interception and mounted-slot dispatches.
    */
   cacheIdentity?: {
     props: unknown;

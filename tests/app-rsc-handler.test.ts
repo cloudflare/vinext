@@ -18,6 +18,7 @@ import {
   type DispatchAppWorkerResponseStage,
 } from "../packages/vinext/src/server/app-worker-stages.js";
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
+import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import {
@@ -1016,7 +1017,7 @@ describe("createAppRscHandler", () => {
     }
   });
 
-  describe("query-free cache identity", () => {
+  describe("shared cache identity", () => {
     function useQueryFreeIdentityAdapter(
       overrides: Partial<Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission">> = {},
     ): void {
@@ -1062,9 +1063,15 @@ describe("createAppRscHandler", () => {
           resolvedUrl: "/about?tab=latest&utm_source=x",
         });
         expect(options.cache).toBe("shared");
-        expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
+        expect(options.cacheIdentity?.request.url).toBe(
+          `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
+        );
         expect(options.cacheIdentity?.request.method).toBe("GET");
-        expect(options.cacheIdentity?.props).toEqual({ ...props, resolvedUrl: "/about" });
+        expect(options.cacheIdentity?.props).toEqual({
+          ...props,
+          requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+          resolvedUrl: "/about",
+        });
       }
     });
 
@@ -1085,7 +1092,7 @@ describe("createAppRscHandler", () => {
       const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
       expect(props).toMatchObject({ isRscRequest: false, kind: "app-page" });
       expect(new URL(request.url).searchParams.has("_rsc")).toBe(true);
-      expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
+      expect(options.cacheIdentity?.request.url).toBe(`${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`);
     });
 
     it("drops RSC selector headers from HTML identities, which never read them", async () => {
@@ -1206,7 +1213,11 @@ describe("createAppRscHandler", () => {
       expect(props).toMatchObject({ renderMode: "navigation", resolvedUrl: "/about?tab=latest" });
       expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/about?_rsc");
       expect(options.cacheIdentity!.request.headers.get(RSC_HEADER)).toBe("1");
-      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+      expect(options.cacheIdentity!.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        resolvedUrl: "/about",
+      });
 
       dispatchResponseStage.mockClear();
       const shellHeaders = createRscRequestHeaders({
@@ -1236,7 +1247,11 @@ describe("createAppRscHandler", () => {
       expect(options.cacheIdentity!.request.headers.get("x-vinext-rsc-render-mode")).toBe(
         "prefetch-loading-shell",
       );
-      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+      expect(options.cacheIdentity!.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        resolvedUrl: "/about",
+      });
 
       dispatchResponseStage.mockClear();
       const suffixHeaders = createRscRequestHeaders();
@@ -1249,7 +1264,11 @@ describe("createAppRscHandler", () => {
       [request, props, options] = dispatchResponseStage.mock.calls[0]!;
       expect(pathAndSearch(request.url)).toBe("/docs/about.rsc?tab=latest&_rsc");
       expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/about.rsc?_rsc");
-      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+      expect(options.cacheIdentity!.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        resolvedUrl: "/about",
+      });
     });
 
     it("is absent unless the adapter declares it behind completed-response admission", async () => {
@@ -1323,13 +1342,21 @@ describe("createAppRscHandler", () => {
         dispatchResponseStage,
       );
 
-      expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
-        ["Cache-Control", "public, s-maxage=60"],
-      ]);
-      expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(props.cacheability.policyHeaders).toEqual([["Cache-Control", "public, s-maxage=60"]]);
+      // The policy is cached per URL, so the identity keeps the query and
+      // drops only the host.
+      expect(options.cacheIdentity?.request.url).toBe(
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about?tab=latest`,
+      );
+      expect(options.cacheIdentity?.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+      });
+      expect(new URL(request.url).origin).toBe("https://example.test");
     });
 
-    it("is absent for mounted-slot, interception and route-handler dispatches", async () => {
+    it("keeps the query and contextual selectors in mounted-slot, interception and route-handler identities", async () => {
       useQueryFreeIdentityAdapter();
       const pageRoute = createPageRoute();
       const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
@@ -1393,16 +1420,77 @@ describe("createAppRscHandler", () => {
         dispatchResponseStage,
       );
 
+      for (const [request, props, options] of dispatchResponseStage.mock.calls) {
+        expect(options.cache).toBe("shared");
+        expect(options.cacheIdentity?.request.url).toBe(
+          `${VINEXT_CACHE_IDENTITY_ORIGIN}${pathAndSearch(request.url)}`,
+        );
+        expect([...options.cacheIdentity!.request.headers]).toEqual([...request.headers]);
+        expect(options.cacheIdentity?.props).toEqual({
+          ...props,
+          requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        });
+      }
       expect(
-        dispatchResponseStage.mock.calls.map(([, props, options]) => [
+        dispatchResponseStage.mock.calls.map(([, props]) => [
           props.kind,
           "matchKind" in props ? props.matchKind : null,
-          options,
         ]),
       ).toEqual([
-        ["app-page", "request", { cache: "shared" }],
-        ["app-page", "interception", { cache: "shared" }],
-        ["app-route-handler", "request", { cache: "shared" }],
+        ["app-page", "request"],
+        ["app-page", "interception"],
+        ["app-route-handler", "request"],
+      ]);
+    });
+
+    // Next.js keys its response cache by pathname, so every host an app
+    // serves shares one entry.
+    it("names one origin for every host, whatever the dispatch kind", async () => {
+      useQueryFreeIdentityAdapter();
+      const pageRoute = createPageRoute();
+      const handlerRoute = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/route",
+        routeHandler: { GET: () => new Response("get") },
+        routeSegments: ["route"],
+      });
+      const matchRoute = (pathname: string) => {
+        if (pathname === "/about") return { params: {}, route: pageRoute };
+        if (pathname === "/route") return { params: {}, route: handlerRoute };
+        return null;
+      };
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      const identities = [];
+      for (const pathname of ["/docs/about?tab=latest", "/docs/route?tab=latest"]) {
+        const perHost = [];
+        for (const origin of ["https://tenant-a.example", "http://tenant-b.example:8080"]) {
+          dispatchResponseStage.mockClear();
+          await handler(new Request(`${origin}${pathname}`), null, false, dispatchResponseStage);
+          const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+          expect(new URL(request.url).origin).toBe(origin);
+          expect(props.requestOrigin).toBe(origin);
+          perHost.push({
+            method: options.cacheIdentity!.request.method,
+            props: options.cacheIdentity!.props,
+            url: options.cacheIdentity!.request.url,
+          });
+        }
+        expect(perHost[0]).toEqual(perHost[1]);
+        identities.push(perHost[0]);
+      }
+      expect(identities.map(({ url }) => url)).toEqual([
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/route?tab=latest`,
       ]);
     });
   });
