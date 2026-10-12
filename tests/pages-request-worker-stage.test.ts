@@ -270,6 +270,7 @@ describe("Pages Worker request stage", () => {
         const { props, options } = await dispatchFor(url);
         expect(props).toMatchObject({ sharedAcrossHosts: true });
         expect(options.cache).toBe("shared");
+        expect(options.cacheIdentity!.regenerateFromDispatch).toBe(true);
         identities.push({
           method: options.cacheIdentity!.request.method,
           props: options.cacheIdentity!.props,

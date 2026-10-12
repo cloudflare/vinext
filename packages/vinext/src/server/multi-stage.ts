@@ -77,7 +77,8 @@ export type VinextResponseStageDispatchOptions = {
    * require completed-response admission. A transport given one partitions
    * its baseline lookup and stored entry by this request's method and complete
    * URL plus these complete serialized props, instead of the dispatched request
-   * and props, and replays this identity for background regeneration.
+   * and props, and replays this identity for background regeneration, or the
+   * dispatched request and props when `regenerateFromDispatch` is set.
    * Everything else in the contract above still applies.
    *
    * The identity names `VINEXT_CACHE_IDENTITY_ORIGIN` in place of the
@@ -114,6 +115,13 @@ export type VinextResponseStageDispatchOptions = {
      */
     queryFree?: true;
     request: Request;
+    /**
+     * Regenerate from the dispatched request and props. A getStaticProps
+     * page's custom `_app` getInitialProps receives the request, host
+     * included, so a Pages page regenerates from a real request, as in
+     * Next.js, never from the identity's synthetic origin.
+     */
+    regenerateFromDispatch?: true;
   };
 };
 

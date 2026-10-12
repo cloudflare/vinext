@@ -153,6 +153,15 @@ function serializeInvocation(request: Request, props: unknown): string {
   return JSON.stringify(prepareInvocation(request, props));
 }
 
+// A Request built from the stored URL carries no Host header, and a Pages
+// render reads the host from its request headers, so a dispatch replay keeps
+// the host it was filled on.
+function serializeDispatchInvocation(request: Request, props: unknown): string {
+  const invocation = prepareInvocation(request, props);
+  invocation.request.headers.push(["host", new URL(request.url).host]);
+  return JSON.stringify(invocation);
+}
+
 function parseInvocation(value: unknown): StoredInvocation {
   if (typeof value !== "string") throw new TypeError("Invalid vinext response-store invocation");
   const invocation = JSON.parse(value) as StoredInvocation;
@@ -720,7 +729,8 @@ const handler = {
       // Core supplies a host-free identity for shared App Router dispatches
       // and static Pages pages, query-free for App pages, behind
       // completed-response admission. The render still receives the real
-      // request; the key, route replay and RSC seed use the identity.
+      // request; the key and RSC seed use the identity, and route replay
+      // does unless the identity asks to regenerate from the dispatch.
       const identityRequest = options.cacheIdentity?.request ?? stageRequest;
       const identityProps = options.cacheIdentity?.props ?? props;
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
@@ -757,6 +767,11 @@ const handler = {
         ...otherPagePartCapture(otherPart),
       };
       const serializedInvocation = JSON.stringify(invocation);
+      // A Pages page's custom _app can read the request host, so it
+      // regenerates from the request that filled it, not the identity.
+      const revalidatorInvocation = options.cacheIdentity?.regenerateFromDispatch
+        ? serializeDispatchInvocation(stageRequest, props)
+        : serializedInvocation;
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
       // No client waits on a warm-up either, so it renders the document whole.
@@ -797,7 +812,7 @@ const handler = {
               }
               await responseStore.put(key, stored, {
                 coalesce: true,
-                revalidator: routeRevalidator(serializedInvocation, otherPart !== undefined),
+                revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
               });
             })
             .catch((error) => {
@@ -840,7 +855,7 @@ const handler = {
         await putOtherPagePart(otherPart, capture, cacheResponse);
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
-          revalidator: routeRevalidator(serializedInvocation, otherPart !== undefined),
+          revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
         });
       } catch (error) {
         // Warming must confirm persistence; ordinary requests can serve the render.
