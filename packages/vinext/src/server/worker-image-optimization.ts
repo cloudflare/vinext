@@ -60,8 +60,11 @@ async function fetchImageSource(
   request: Request,
   options: WorkerImageOptimizationOptions,
 ): Promise<Response> {
+  // Build assets under a distinct assetPrefix path are not under the basePath.
   const sourceUrl = new URL(
-    options.sourceBasePath && !hasBasePath(sourcePath, options.sourceBasePath)
+    options.sourceBasePath &&
+      !hasBasePath(sourcePath, options.sourceBasePath) &&
+      !(options.assetPathPrefix && hasBasePath(sourcePath, options.assetPathPrefix))
       ? options.sourceBasePath + sourcePath
       : sourcePath,
     request.url,
@@ -75,9 +78,10 @@ async function fetchImageSource(
   }
   // Any other source goes through the application as a GET without the
   // caller's headers, like Next.js' fetchInternalImage, so middleware admits
-  // it. Only a public file that the application selects is served.
+  // it. Without a Host header, host conditions never match. Only a public
+  // file that the application selects is served.
   const sourceResponse = await options.resolveSource(
-    new Request(sourceUrl, { signal: request.signal }),
+    new Request(sourceUrl, { headers: { host: "" }, signal: request.signal }),
   );
   const staticFile = sourceResponse.ok ? readStaticFileSignal(sourceResponse) : null;
   cancelResponseBody(sourceResponse);

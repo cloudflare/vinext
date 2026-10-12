@@ -59,6 +59,12 @@ export default async function rscHandler(request) {
     const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
     return createStaticFileSignal("/open.png", {});
   }
+  if (url.pathname === "/host-avatar") {
+    // A rewrite conditioned on the request host, read like requestContextFromRequest.
+    if ((request.headers.get("host") ?? url.hostname) !== "example.com") return new Response(null, { status: 404 });
+    const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
+    return createStaticFileSignal("/open.png", {});
+  }
   if (url.pathname === "/protected/private.png") {
     // Middleware admits the source only with a cookie.
     if (request.headers.get("cookie") !== "members=1") return new Response("blocked", { status: 403 });
@@ -858,6 +864,10 @@ export default {
       expect(denied.status).toBe(404);
       expect(denied.headers.get("x-mw")).toBe("1");
       await expect(denied.text()).resolves.toBe("Image not found");
+
+      // Next.js' internal image request has no Host header, so a host-conditioned
+      // rewrite does not match it.
+      expect((await get("/host-avatar")).status).toBe(404);
       expect(fetchedAssets).toEqual(["/open.png"]);
     } finally {
       setImageOptimizer(null);
