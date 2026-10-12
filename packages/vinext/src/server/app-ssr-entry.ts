@@ -463,7 +463,12 @@ export async function handleSsr(
       ),
     };
 
-    await clientReferencePreloader.preload();
+    // A fallback shell aborts its prerender on the next tick, before a client
+    // module that is still loading could resolve, so it loads every client
+    // reference first. Any other render waits on the modules it reaches.
+    if (options?.pprFallbackShellSignal !== undefined) {
+      await clientReferencePreloader.preload();
+    }
 
     setNavigationContext(ssrNavigationContext);
 

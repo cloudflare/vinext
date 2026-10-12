@@ -38,13 +38,3 @@ describe("RSC Flight hint fix", () => {
     );
   });
 });
-// ── Client reference preloading (Issue #256) ─────────────────────────────────
-//
-// On the first SSR request after server start, client reference modules are
-// loaded lazily via async import(). The memoize cache in @vitejs/plugin-rsc is
-// cold, so __vite_rsc_client_require__ returns an unresolved Promise. Without
-// <Suspense> wrapping the root shell, React SSR rejects and the server returns
-// 500. Subsequent requests work because the memoize cache is warm.
-//
-// Fix: the SSR entry eagerly preloads all client reference modules before
-// renderToReadableStream runs, warming the memoize cache on every request.
