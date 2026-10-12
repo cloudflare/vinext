@@ -491,6 +491,49 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(hit.headers.get("location"), "/static-default");
   });
 
+  // Next.js keys a static Pages page, and its data, by path too:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+  test("shares one static Pages entry across the hosts an app serves", async () => {
+    const onHost = (host: string, pathname: string) =>
+      miniflare.dispatchFetch(`https://${host}${pathname}`);
+    const fillAndShare = async (pathname: string): Promise<string> => {
+      const before = (await responseEntries(pathname)).length;
+      const fill = await onHost("tenant-c.test", pathname);
+      const fillBody = await fill.text();
+      assert.equal(fill.status, 200, `${pathname}: ${fillBody}`);
+      assert.equal(fill.headers.get("x-vinext-cache"), "MISS", pathname);
+      await waitForStoredEntries(() => responseEntries(pathname), before + 1);
+
+      for (const host of ["tenant-d.test", "tenant-d.test:8443"]) {
+        const hit = await onHost(host, pathname);
+        assert.equal(hit.status, 200, pathname);
+        assert.equal(hit.headers.get("x-vinext-cache"), "HIT", `${host}${pathname}`);
+        assert.equal(await hit.text(), fillBody, `${host}${pathname}`);
+      }
+      return fillBody;
+    };
+
+    const html = await fillAndShare("/host-shared-static");
+    const buildId = html.match(/"buildId":"([^"]+)"/)?.[1];
+    assert.ok(buildId, "missing the Pages buildId");
+    await fillAndShare(`/_next/data/${buildId}/host-shared-static.json`);
+    await fillAndShare("/host-shared-auto");
+  });
+
+  // The build sees no data function, but getInitialProps runs per request and
+  // reads the Host header, so its explicitly public render stays unstored.
+  test("never shares a getInitialProps page that read the host", async () => {
+    const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
+    for (const host of hosts) {
+      const response = await miniflare.dispatchFetch(`https://${host}/host-echo-initial`);
+      const body = await response.text();
+      assert.equal(response.status, 200, body);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
+      assert.ok(htmlValue(body, "host"));
+    }
+    await assertNeverStored("/host-echo-initial");
+  }, 15_000);
+
   test("never shares a route handler response that read the host", async () => {
     const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
     for (const host of hosts) {

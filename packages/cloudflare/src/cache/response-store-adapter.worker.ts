@@ -717,10 +717,10 @@ const handler = {
         );
       }
 
-      // Core supplies a host-free identity for shared App Router dispatches,
-      // query-free for App pages, behind completed-response admission. The
-      // render still receives the real request; the key, route replay and RSC
-      // seed use the identity.
+      // Core supplies a host-free identity for shared App Router dispatches
+      // and static Pages pages, query-free for App pages, behind
+      // completed-response admission. The render still receives the real
+      // request; the key, route replay and RSC seed use the identity.
       const identityRequest = options.cacheIdentity?.request ?? stageRequest;
       const identityProps = options.cacheIdentity?.props ?? props;
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;

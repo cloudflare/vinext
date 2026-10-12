@@ -1,7 +1,9 @@
 import type { PagesRenderOptions } from "./pages-request-pipeline.js";
-import type {
-  VinextResponseStageCacheability,
-  VinextResponseStageTransport,
+import {
+  withCacheIdentityOrigin,
+  type VinextResponseStageCacheability,
+  type VinextResponseStageDispatchOptions,
+  type VinextResponseStageTransport,
 } from "./multi-stage.js";
 
 export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 5;
@@ -20,10 +22,16 @@ type PagesResponseStageEnvelope = {
 };
 
 /** Serializable Pages page render delegated to a cacheable Worker stage. */
-type PagesPageResponseStageProps = PagesResponseStageEnvelope & {
+export type PagesPageResponseStageProps = PagesResponseStageEnvelope & {
   kind: "pages-page";
   renderOptions: PagesRenderOptions | null;
   resolvedUrl: string;
+  /**
+   * The shared cache entry answers every host, as Next.js keys a static page
+   * by its path, so a getInitialProps render of a page without
+   * getStaticProps, which reads the request, is not stored.
+   */
+  sharedAcrossHosts: boolean;
 };
 
 /** Serializable Pages API dispatch delegated to a cacheable Worker stage. */
@@ -52,6 +60,29 @@ export type WorkerResponseStageProps =
  * response as Next.js.
  */
 export type DispatchWorkerResponseStage = VinextResponseStageTransport<WorkerResponseStageProps>;
+
+type PagesPageResponseStageCacheIdentity = NonNullable<
+  VinextResponseStageDispatchOptions["cacheIdentity"]
+>;
+
+/**
+ * Build the cache identity of a shared Pages page dispatch: the dispatched
+ * request and props under `origin`, so every host that names it shares one
+ * entry.
+ */
+export function createSharedPagesPageCacheIdentity(
+  request: Request,
+  props: PagesPageResponseStageProps,
+  origin: string,
+): PagesPageResponseStageCacheIdentity {
+  return {
+    props: { ...props, requestHost: new URL(origin).host },
+    request: new Request(withCacheIdentityOrigin(request.url, origin), {
+      headers: new Headers(request.headers),
+      method: request.method,
+    }),
+  };
+}
 
 function isSerializedHeaders(value: unknown): value is Array<[string, string]> {
   return (
@@ -108,7 +139,13 @@ export function isPagesResponseStageProps(value: unknown): value is WorkerRespon
   }
   if (props.kind === "pages-api") return typeof props.apiUrl === "string";
   if (props.kind === "pages-prerender-discovery") return true;
-  if (props.kind !== "pages-page" || typeof props.resolvedUrl !== "string") return false;
+  if (
+    props.kind !== "pages-page" ||
+    typeof props.resolvedUrl !== "string" ||
+    typeof props.sharedAcrossHosts !== "boolean"
+  ) {
+    return false;
+  }
   if (props.renderOptions === null) return true;
   if (!props.renderOptions || typeof props.renderOptions !== "object") return false;
   const options = props.renderOptions;

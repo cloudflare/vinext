@@ -15,6 +15,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
+import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
@@ -41,6 +42,11 @@ const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
   configHeaders: [] as Array<Record<string, unknown>>,
   ensureInstrumentation: vi.fn(),
+  i18n: { defaultLocale: "en", locales: ["en", "fr"] } as {
+    defaultLocale: string;
+    domains?: Array<{ defaultLocale: string; domain: string; http?: true }>;
+    locales: string[];
+  },
   ensureResponseInstrumentation: vi.fn(),
   matchApiRoute: vi.fn((url: string) =>
     url === "/api/hello"
@@ -112,7 +118,7 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   runMiddleware: mocks.runMiddleware,
   vinextConfig: {
     headers: mocks.configHeaders,
-    i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+    i18n: mocks.i18n,
   },
 }));
 
@@ -141,7 +147,14 @@ describe("Pages Worker request stage", () => {
     mocks.ensureInstrumentation.mockReset();
     mocks.ensureResponseInstrumentation.mockReset();
     mocks.matchApiRoute.mockReset();
-    mocks.matchPageRoute.mockClear();
+    mocks.matchPageRoute.mockReset();
+    mocks.matchPageRoute.mockImplementation((url: string) => ({
+      route: {
+        dataKind: url.startsWith("/gssp") ? "server" : "static",
+        isDynamic: false,
+        pattern: url.startsWith("/gssp") ? "/gssp" : "/page",
+      },
+    }));
     mocks.configHeaders.length = 0;
     mocks.matchApiRoute.mockImplementation((url: string) =>
       url === "/api/hello"
@@ -213,11 +226,84 @@ describe("Pages Worker request stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: null,
       },
       { cache: "shared" },
     );
     expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  // Next.js keys a static page's response cache entry by its path, so every
+  // host shares one entry.
+  it("names one origin for every host of a static page behind completed admission", async () => {
+    setCdnCacheAdapter({
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseStageCacheIdentity: "query-free",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("remote"));
+    const dispatchFor = async (url: string) => {
+      dispatch.mockClear();
+      await handleRequestStage(new Request(url), undefined, undefined, dispatch);
+      const [request, props, options] = dispatch.mock.calls[0]!;
+      expect(request.url).toBe(url);
+      expect(props).toMatchObject({ requestHost: new URL(url).host });
+      return { props, options };
+    };
+
+    for (const dataKind of ["static", "none"]) {
+      mocks.matchPageRoute.mockImplementation(() => ({
+        route: { dataKind, isDynamic: false, pattern: "/page" },
+      }));
+      const identities = [];
+      for (const url of [
+        "https://tenant-a.example/page?tab=latest",
+        "http://tenant-b.example:8080/page?tab=latest",
+      ]) {
+        const { props, options } = await dispatchFor(url);
+        expect(props).toMatchObject({ sharedAcrossHosts: true });
+        expect(options.cache).toBe("shared");
+        identities.push({
+          method: options.cacheIdentity!.request.method,
+          props: options.cacheIdentity!.props,
+          url: options.cacheIdentity!.request.url,
+        });
+      }
+      expect(identities[0]).toEqual(identities[1]);
+      expect(identities[0]).toMatchObject({
+        method: "GET",
+        props: {
+          requestHost: new URL(VINEXT_CACHE_IDENTITY_ORIGIN).host,
+          sharedAcrossHosts: true,
+        },
+        url: `${VINEXT_CACHE_IDENTITY_ORIGIN}/page?tab=latest`,
+      });
+    }
+
+    // vinext's Pages ISR key keeps a configured i18n domain, so the identity
+    // names that domain without the request's port.
+    mocks.i18n.domains = [{ defaultLocale: "fr", domain: "example.fr", http: true }];
+    try {
+      const { options } = await dispatchFor("https://example.fr:8443/page");
+      expect(options.cacheIdentity!.request.url).toBe("http://example.fr/page");
+      expect(options.cacheIdentity!.props).toMatchObject({ requestHost: "example.fr" });
+    } finally {
+      delete mocks.i18n.domains;
+    }
+
+    mocks.matchPageRoute.mockImplementation(() => ({
+      route: { dataKind: "server", isDynamic: false, pattern: "/gssp" },
+    }));
+    const { props, options } = await dispatchFor("https://tenant-a.example/gssp");
+    expect(props).toMatchObject({ sharedAcrossHosts: false });
+    expect(options).toEqual({ cache: "shared" });
   });
 
   it("activates a derived cacheability context inside an outer Worker context", async () => {
@@ -456,6 +542,7 @@ describe("Pages Worker request stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: [],
       },
       { cache: "bypass" },

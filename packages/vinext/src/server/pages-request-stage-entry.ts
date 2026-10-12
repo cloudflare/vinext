@@ -55,10 +55,16 @@ import {
   validateCdnRequest,
 } from "./cache-control.js";
 import {
+  createSharedPagesPageCacheIdentity,
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   type DispatchWorkerResponseStage,
+  type PagesPageResponseStageProps,
   type WorkerResponseStageProps,
 } from "./worker-stages.js";
+import {
+  adapterUsesSharedCacheIdentity,
+  pagesCacheIdentityOrigin,
+} from "./shared-cache-identity.js";
 import { getPagesResponseStageCacheDisposition } from "./pages-response-stage.js";
 import type {
   VinextAssetFetcher,
@@ -540,10 +546,16 @@ async function handleRequestImpl(
                 stagedHeaders,
               });
         const isSharedStaticPage = cache === "shared" && matchedPage?.route.dataKind === "static";
+        // Next.js keys a static page's response cache entry by its path, so
+        // one entry answers every host that is not a configured i18n domain.
+        const sharedAcrossHosts =
+          cache === "shared" &&
+          (matchedPage?.route.dataKind === "static" || matchedPage?.route.dataKind === "none") &&
+          adapterUsesSharedCacheIdentity();
         const transportedPolicyHeaders = isSharedStaticPage
           ? withoutResponseStageVary(responseStagePolicyHeaders)
           : withResponseStageVary(responseStagePolicyHeaders, stagedHeaders?.get("Vary"));
-        const responseStageProps = (): WorkerResponseStageProps => ({
+        const responseStageProps = (): PagesPageResponseStageProps => ({
           buildId: pagesEntry.buildId,
           cacheability: {
             policyHeaders: transportedPolicyHeaders,
@@ -558,6 +570,7 @@ async function handleRequestImpl(
             ? { ...options, originalUrl: originalRenderUrl }
             : (options ?? null),
           resolvedUrl,
+          sharedAcrossHosts,
           // Static/ISR pages cannot observe Node's response object. Keep their
           // request-specific middleware headers outside the shared artifact so
           // one safe render can still serve every outer composition. Pages
@@ -566,10 +579,20 @@ async function handleRequestImpl(
           stagedHeaders: isSharedStaticPage ? null : [...(stagedHeaders ?? new Headers())],
         });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
+        const props = responseStageProps();
         const dispatched = trackedDispatchResponseStage(
           stageRequest,
-          responseStageProps(),
-          { cache },
+          props,
+          sharedAcrossHosts
+            ? {
+                cache,
+                cacheIdentity: createSharedPagesPageCacheIdentity(
+                  stageRequest,
+                  props,
+                  pagesCacheIdentityOrigin(stageRequest.url, i18nConfig),
+                ),
+              }
+            : { cache },
           env,
           ctx,
         );

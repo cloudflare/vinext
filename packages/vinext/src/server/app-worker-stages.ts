@@ -9,13 +9,14 @@ import {
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   VINEXT_CACHE_IDENTITY_ORIGIN,
+  withCacheIdentityOrigin,
   type VinextResponseStageCacheability,
   type VinextResponseStageDispatchOptions,
   type VinextResponseStageTransport,
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 12;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 13;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -87,7 +88,7 @@ type AppMetadataWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   routePathname: string;
 };
 
-type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
+export type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "hybrid-pages";
   allowRscDocumentFallback: boolean;
   appRouteMatch: {
@@ -104,6 +105,12 @@ type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   resourceKind: "api" | "page";
   requestUrl: string;
   resolvedUrl: string;
+  /**
+   * The shared cache entry answers every host, as Next.js keys a static page
+   * by its path, so a getInitialProps render of a page without
+   * getStaticProps, which reads the request, is not stored.
+   */
+  sharedAcrossHosts: boolean;
 };
 
 export type AppWorkerResponseStageProps =
@@ -146,10 +153,9 @@ function sharedAppCacheIdentity(
 ): SharedAppCacheIdentity {
   // Next.js keys its response cache by pathname, so the identity names one
   // origin for every host. Admission refuses a render that read the host.
-  const url = new URL(requestUrl);
   return {
     props: { ...props, requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
-    request: new Request(`${VINEXT_CACHE_IDENTITY_ORIGIN}${url.pathname}${url.search}`, init),
+    request: new Request(withCacheIdentityOrigin(requestUrl), init),
   };
 }
 
@@ -189,6 +195,29 @@ export function createSharedAppPageCacheIdentity(
   return {
     ...sharedAppCacheIdentity(queryFree.url, { headers, method: request.method }, queryFree.props),
     queryFree: true,
+  };
+}
+
+/**
+ * Build the cache identity of a shared hybrid Pages page dispatch: the
+ * dispatched request and props under `origin`, so every host that names it
+ * shares one entry.
+ */
+export function createSharedHybridPagesCacheIdentity(
+  request: Request,
+  props: HybridPagesWorkerResponseStageProps,
+  origin: string,
+): SharedAppCacheIdentity {
+  return {
+    props: {
+      ...props,
+      requestOrigin: origin,
+      requestUrl: withCacheIdentityOrigin(props.requestUrl, origin),
+    },
+    request: new Request(withCacheIdentityOrigin(request.url, origin), {
+      headers: new Headers(request.headers),
+      method: request.method,
+    }),
   };
 }
 
@@ -302,7 +331,8 @@ export function isAppWorkerResponseStageProps(
       (hybrid.resourceKind === "api" || hybrid.resourceKind === "page") &&
       typeof hybrid.requestUrl === "string" &&
       typeof hybrid.resolvedUrl === "string" &&
-      hybrid.resolvedUrl.startsWith("/")
+      hybrid.resolvedUrl.startsWith("/") &&
+      typeof hybrid.sharedAcrossHosts === "boolean"
     );
   }
   if (props.kind === "app-metadata" || props.kind === "app-not-found") {

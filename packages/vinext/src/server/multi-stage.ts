@@ -8,6 +8,15 @@ import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
  */
 export const VINEXT_CACHE_IDENTITY_ORIGIN = "https://cache-identity.vinext.invalid";
 
+/** Name `origin` in place of a dispatch URL's origin in a shared cache identity. */
+export function withCacheIdentityOrigin(
+  requestUrl: string,
+  origin: string = VINEXT_CACHE_IDENTITY_ORIGIN,
+): string {
+  const url = new URL(requestUrl);
+  return `${origin}${url.pathname}${url.search}`;
+}
+
 /** Whether a response-stage cache must reject a field it did not key itself by. */
 export function hasUnsupportedResponseStageVary(
   headers: Headers,
@@ -62,7 +71,8 @@ export type VinextResponseStageDispatchOptions = {
    */
   regeneratesStoredEntry?: boolean;
   /**
-   * Shared cache identity of an App Router GET/HEAD dispatch, supplied only to
+   * Shared cache identity of an App Router GET/HEAD dispatch, or of a Pages
+   * page the build found static (getStaticProps or none), supplied only to
    * adapters that declare `responseStageCacheIdentity: "query-free"` and
    * require completed-response admission. A transport given one partitions
    * its baseline lookup and stored entry by this request's method and complete
@@ -76,6 +86,14 @@ export type VinextResponseStageDispatchOptions = {
    * does. That is safe only because completed-response admission refuses a
    * response whose render used a dynamic API, which every App Router read of
    * the request's host is. Core omits the identity for bypassed dispatches.
+   *
+   * A Pages page identity instead names the configured i18n domain the
+   * request's host selects, as vinext's Pages ISR key keeps the domain, and
+   * the cache identity origin for every other host. A page without
+   * getStaticProps whose page or `_app` getInitialProps turns out to run is
+   * refused admission, because its props say the entry is shared across
+   * hosts. A getStaticProps page's `_app` getInitialProps shares its entry,
+   * as in Next.js, which keys it by path.
    *
    * An App page identity also drops the user query from the URL and
    * `resolvedUrl`, keeping framework representation selectors: the `.rsc`
