@@ -5,7 +5,7 @@ import { waitForAppRouterHydration } from "./helpers";
 // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/actions/app-action.test.ts
 // Reproduced against next@16.2.7 build/start: a production action error
 // reaches the browser as React's generic message, never the thrown value.
-const GENERIC_RSC_ERROR =
+export const GENERIC_RSC_ERROR =
   "Error: An error occurred in the Server Components render. The specific message is omitted in production builds to avoid leaking sensitive details. A digest property is included on this error instance which may provide additional details about the nature of the error.";
 
 const SENSITIVE_DETAILS = /s3cret|10\.0\.0\.5|DB_CONNECTION_FAILED|connectionString|actions\.ts/;
@@ -33,6 +33,9 @@ export function testProductionActionErrorSanitization(pathname: string): void {
 
       expect(response.status()).toBe(500);
       await expect(page.locator("#error-text")).toHaveText(GENERIC_RSC_ERROR);
+      // The digest is the only detail the error carries, as in Next.js.
+      await expect(page.locator("#error-digest")).toHaveText(/^\S+$/);
+      await expect(page.locator("#error-keys")).toHaveText("digest");
       const bodies = await readBodies();
       expect(bodies).toHaveLength(1);
       expect(bodies[0]).not.toMatch(SENSITIVE_DETAILS);

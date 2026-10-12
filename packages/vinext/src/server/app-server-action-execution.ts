@@ -66,6 +66,7 @@ import {
   isServerActionNotFoundError,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
+import { hasDigest } from "./app-rsc-errors.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
@@ -1119,6 +1120,30 @@ function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRo
   return currentRuntime !== targetRuntime;
 }
 
+/**
+ * A failed fetch action's result, as Next.js sends it: a rejected promise.
+ * React's Flight error channel reports the rejection through the render's
+ * onError and gives the client error its digest, where an Error value would
+ * reach the client without one.
+ */
+function createRejectedActionResult(error: unknown): Promise<never> {
+  const result = Promise.reject(error);
+  // The Flight render reads the rejection later; mark it handled now.
+  result.catch(() => {});
+  return result;
+}
+
+/**
+ * In development the render's onError logs a rejected action result unless it
+ * already has a digest; log those here, so each failure is logged once. As in
+ * Next.js, a thrown string is not logged in development.
+ */
+function logRejectedActionResult(error: unknown): void {
+  if (process.env.NODE_ENV === "production" || hasDigest(error)) {
+    console.error("[vinext] Server action error:", error);
+  }
+}
+
 function getActionHttpFallbackStatus(error: unknown): number | null {
   const digest = getNextErrorDigest(error);
   if (!digest) return null;
@@ -1482,7 +1507,7 @@ export async function handleProgressiveServerActionRequest(
  * with status 500 carrying the rejected action result, so the nearest client
  * error boundary catches it (see action-handler.ts, the `isFetchAction` branch
  * of the generic error path). vinext mirrors that by rendering a Flight stream
- * with `returnValue: { ok: false }` and no page root (the action never ran, so
+ * with a rejected `returnValue: { ok: false }` and no page root (the action never ran, so
  * nothing was revalidated and the page render is skipped). A bare 413 plain
  * response would bypass the boundary and surface the wrong status/content-type.
  */
@@ -1502,29 +1527,14 @@ async function renderFetchActionBodyExceededResponse<
   >,
 ): Promise<Response> {
   const error = createBodyExceededError(options.maxActionBodySizeLabel);
-  console.error("[vinext] Server action error:", error);
-  options.reportRequestError(
-    error,
-    {
-      path: options.cleanPathname,
-      method: options.request.method,
-      headers: Object.fromEntries(options.request.headers.entries()),
-    },
-    {
-      routerKind: "App Router",
-      routePath: options.currentRouteMatch?.route.pattern ?? options.cleanPathname,
-      routeType: "action",
-      renderSource: "react-server-components-payload",
-      revalidateReason: undefined,
-    },
-  );
+  logRejectedActionResult(error);
   // Discard any side effects accumulated before the limit was hit.
   getAndClearActionRevalidationKind();
   options.getAndClearPendingCookies();
 
   const returnValue: AppServerActionReturnValue = {
     ok: false,
-    data: options.sanitizeErrorForClient(error),
+    data: createRejectedActionResult(options.sanitizeErrorForClient(error)),
   };
   const temporaryReferences = options.createTemporaryReferenceSet();
   const onRenderError = options.createRscOnErrorHandler(
@@ -1694,8 +1704,11 @@ export async function handleServerActionRscRequest<
             returnValue = { ok: false, data: error };
           } else {
             actionStatus = 500;
-            console.error("[vinext] Server action error:", error);
-            returnValue = { ok: false, data: options.sanitizeErrorForClient(error) };
+            logRejectedActionResult(error);
+            returnValue = {
+              ok: false,
+              data: createRejectedActionResult(options.sanitizeErrorForClient(error)),
+            };
           }
         }
       }

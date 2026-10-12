@@ -1157,7 +1157,8 @@ export function createAppBrowserNavigationController(
     // skipped UI updates observable to the caller without conflating them here.
     if (returnValue) {
       if (!returnValue.ok) {
-        throw returnValue.data;
+        // A failed action's thrown value may still be settling.
+        throw await returnValue.data;
       }
       return returnValue.data;
     }
