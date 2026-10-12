@@ -280,16 +280,20 @@ async function readRequestBodyChunksWithinLimit(
   return { chunks, contentType };
 }
 
-/** Whether serializeBody keys this init body type itself. */
+/**
+ * Whether serializeBody keys this init body type itself. Only genuine
+ * instances count, so an array (which has keys()) or a Response (which has
+ * arrayBuffer()) is sent however the runtime sends it.
+ */
 function isKeyableInitBody(body: BodyInit): boolean {
   return (
     typeof body === "string" ||
     body instanceof ArrayBuffer ||
     ArrayBuffer.isView(body) ||
     body instanceof URLSearchParams ||
-    typeof (body as { getReader?: unknown }).getReader === "function" ||
-    typeof (body as { keys?: unknown }).keys === "function" ||
-    typeof (body as { arrayBuffer?: unknown }).arrayBuffer === "function"
+    body instanceof ReadableStream ||
+    body instanceof FormData ||
+    body instanceof Blob
   );
 }
 

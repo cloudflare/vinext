@@ -3288,6 +3288,16 @@ describe("fetch cache shim", () => {
         expect(await sent(1).text()).toBe("b");
       });
 
+      it("sends objects shaped like FormData or a Blob as the runtime does", async () => {
+        // An array has keys() and a Response has arrayBuffer(), but neither is
+        // a FormData or Blob body.
+        expect(await read([1, 2])).toBe(1);
+        expect(await read([1, 3])).toBe(2);
+        expect(await read(new Response("payload"))).toBe(3);
+        expect(await sent(0).text()).toBe("1,2");
+        expect(await sent(2).text()).toBe("[object Response]");
+      });
+
       it("rejects a body fetch would reject before reading it", async () => {
         let pulls = 0;
         async function* body() {
