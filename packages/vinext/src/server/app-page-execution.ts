@@ -478,16 +478,37 @@ function resolveAgainstPlaceholder(
 }
 
 /**
+ * A URL reference as the URL parser reads it, with every byte a header value
+ * cannot carry percent-encoded. The parser trims C0 controls and spaces and
+ * drops tabs and newlines; percent-decoding reverses the rest, including in a
+ * host, so the client resolves it as it would the raw target.
+ */
+function toHeaderSafeUrlReference(location: string): string {
+  return (
+    location
+      // oxlint-disable-next-line no-control-regex -- the URL parser trims these
+      .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "")
+      .replace(/[\t\n\r]/g, "")
+      .replace(/[^\u0021-\u007e]+/g, (chars) =>
+        Array.from(
+          new TextEncoder().encode(chars),
+          (byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`,
+        ).join(""),
+      )
+  );
+}
+
+/**
  * The redirect target embedded in the flight digest and its streamed
  * side-channel header. An absolute target stays in the digest as `redirect()`
  * received it, as in Next.js's digest, so every host that shares the cache
- * entry is sent to the same place; the header carries its parsed URL, which is
- * always a valid header value, and stays protocol-relative when the target
- * is, so each client keeps its own scheme. A relative target resolves against
- * the request's path to a path-only form, which the client resolves against
- * its own origin. Resolving against two placeholder origins tells these apart
- * the way the URL parser does, never depends on the request's origin, and
- * cannot mistake an absolute target naming one placeholder for a relative one.
+ * entry is sent to the same place; the header carries the same reference made
+ * header-safe, so a protocol-relative or scheme-relative target still resolves
+ * against each client's own origin. A relative target resolves against the
+ * request's path to a path-only form, which the client resolves against its
+ * own origin. Resolving against two placeholder origins tells these apart the
+ * way the URL parser does, never depends on the request's origin, and cannot
+ * mistake an absolute target naming one placeholder for a relative one.
  */
 function resolveRedirectTargets(
   location: string,
@@ -498,17 +519,12 @@ function resolveRedirectTargets(
       resolveAgainstPlaceholder(location, requestUrl, placeholder),
     );
     if (!first.relative || !second.relative) {
-      const { resolved } = first.relative ? second : first;
-      const inheritsScheme = first.resolved.protocol !== second.resolved.protocol;
-      return {
-        digestUrl: location,
-        headerUrl: inheritsScheme ? resolved.href.slice(resolved.protocol.length) : resolved.href,
-      };
+      return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
     }
     const { pathname, search, hash } = first.resolved;
     return { digestUrl: `${pathname}${search}${hash}`, headerUrl: `${pathname}${search}${hash}` };
   } catch {
-    return { digestUrl: location, headerUrl: location };
+    return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
   }
 }
 

@@ -788,39 +788,38 @@ describe("app page execution helpers", () => {
     },
   );
 
-  // One shared entry answers HTTP and HTTPS hosts, so a protocol-relative
-  // target leaves each client its own scheme.
-  it("keeps a protocol-relative RSC redirect target scheme-free on every scheme", async () => {
-    const payloads = [];
-    for (const origin of ["http://tenant-a.example", "https://tenant-b.example"]) {
-      const response = await buildAppPageSpecialErrorResponse({
-        buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
-        clearRequestContext: vi.fn(),
-        isRscRequest: true,
-        request: new Request(`${origin}/start.rsc`),
-        specialError: {
-          kind: "redirect",
-          location: "//other.test/out",
-          statusCode: 307,
-          type: "replace",
-        },
-      });
-      payloads.push({
-        body: await response.text(),
-        header: response.headers.get("x-vinext-rsc-redirect"),
-      });
-    }
+  // One shared entry answers HTTP and HTTPS hosts, so a target that inherits
+  // the scheme keeps its reference form and each client resolves it.
+  it.each(["//other.test/out", "//other.test:443/out", "https:foo", "http:foo"])(
+    "keeps the RSC redirect target %s in the same form on every scheme",
+    async (location) => {
+      const payloads = [];
+      for (const origin of ["http://tenant-a.example", "https://tenant-b.example"]) {
+        const response = await buildAppPageSpecialErrorResponse({
+          buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+          clearRequestContext: vi.fn(),
+          isRscRequest: true,
+          request: new Request(`${origin}/start.rsc`),
+          specialError: { kind: "redirect", location, statusCode: 307, type: "replace" },
+        });
+        payloads.push({
+          body: await response.text(),
+          header: response.headers.get("x-vinext-rsc-redirect"),
+        });
+      }
 
-    expect(payloads[0]).toEqual({
-      body: "NEXT_REDIRECT;replace;//other.test/out;307;",
-      header: "//other.test/out",
-    });
-    expect(payloads[1]).toEqual(payloads[0]);
-  });
+      expect(payloads[0]).toEqual({
+        body: `NEXT_REDIRECT;replace;${location};307;`,
+        header: location,
+      });
+      expect(payloads[1]).toEqual(payloads[0]);
+    },
+  );
 
   it.each([
     [" https://other.test/out", "https://other.test/out"],
     ["https://other.test/😀", "https://other.test/%F0%9F%98%80"],
+    ["https://other.tést/a b", "https://other.t%C3%A9st/a%20b"],
     ["//other.test/😀", "//other.test/%F0%9F%98%80"],
     ["https://a.redirect-base.vinext.invalid/out", "https://a.redirect-base.vinext.invalid/out"],
     ["//a.redirect-base.vinext.invalid/out", "//a.redirect-base.vinext.invalid/out"],
