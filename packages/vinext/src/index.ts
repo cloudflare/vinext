@@ -6806,6 +6806,7 @@ export const loadServerActionClient = ${
                         nextConfig?.trailingSlash,
                         opts.isDataRequest,
                         pathname,
+                        opts.isStaleDataRequest,
                       );
 
                       // Forward middleware context to the RSC entry so it can

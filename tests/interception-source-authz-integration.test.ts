@@ -7,6 +7,7 @@ import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/interception-source-authz");
 const GUARDED_MARKER = "SECRET-FEED-CONTENT";
+const GUARDED_OWNER_MARKER = "SECRET-VAULT-CONTENT";
 
 type StartedServer = {
   baseUrl: string;
@@ -128,6 +129,31 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
     exposedGuardedContent: false,
   });
 
+  // `/vault` owns an interception slot and middleware guards only its exact
+  // path. A source below it with no route of its own passes source middleware,
+  // so it must not fall back to rendering the guarded owner page.
+  const guardedOwner = await fetch(`${baseUrl}/photos/1`, {
+    headers: interceptionHeaders("/vault"),
+  });
+  expect(guardedOwner.status).toBe(403);
+  expect(await guardedOwner.text()).not.toContain(GUARDED_OWNER_MARKER);
+
+  const missingDescendant = await fetch(`${baseUrl}/photos/1`, {
+    headers: interceptionHeaders("/vault/missing"),
+  });
+  const missingDescendantBody = await missingDescendant.text();
+  expect({
+    status: missingDescendant.status,
+    rendersPhoto:
+      missingDescendantBody.includes("Refresh") ||
+      missingDescendantBody.includes("VAULT-PHOTO-MODAL"),
+    exposedGuardedOwner: missingDescendantBody.includes(GUARDED_OWNER_MARKER),
+  }).toEqual({
+    status: 200,
+    rendersPhoto: true,
+    exposedGuardedOwner: false,
+  });
+
   // A server action rerenders the page it was posted to, intercepted tree
   // included, so a forged source context reaches the same render. The vinext
   // client always sends `RSC: 1` with action POSTs; that request must still
@@ -182,6 +208,7 @@ describe.each([
   // the reported application and request boundary:
   // /photos/[id] is intercepted from /feed/@modal/(...)photos/[id], while
   // middleware guards /feed/:path* and /feed/[...rest] exposes a marker.
+  // /vault owns the same intercept, and middleware guards only its exact path.
   it("does not authorize and render different interception source paths", async () => {
     if (!server) throw new Error("Interception authorization fixture server did not start");
     await expectInterceptionSourceAuthorization(server.baseUrl);

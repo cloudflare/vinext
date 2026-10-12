@@ -280,11 +280,14 @@ const projectServers = {
     testDir: "./tests/e2e",
     testMatch: [
       "**/cloudflare-pages-router-dev/**/*.spec.ts",
+      "**/cloudflare-pages-router/middleware-data-guard.spec.ts",
       "**/pages-router/instrumentation-startup.spec.ts",
     ],
     use: { baseURL: "http://localhost:4179" },
     server: {
-      command: "npx vp dev --force --port 4179",
+      // Cover the Worker request stage with raw `_next/data` URLs reaching
+      // middleware; the production project keeps the default config.
+      command: "VINEXT_E2E_SKIP_PROXY_URL_NORMALIZE=1 npx vp dev --force --port 4179",
       cwd: "./examples/pages-router-cloudflare",
       port: 4179,
       reuseExistingServer: !process.env.CI,
