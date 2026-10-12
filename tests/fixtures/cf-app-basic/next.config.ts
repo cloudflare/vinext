@@ -1,5 +1,14 @@
 import type { NextConfig } from "vinext";
 
+// Used by E2E: cloudflare-encoded-paths/external-rewrite-credentials.spec.ts,
+// which listens on this port and records the headers each phase forwards.
+function externalCredentialsRewrite(phase: string) {
+  return {
+    source: `/external-credentials/${phase}`,
+    destination: `http://127.0.0.1:43198/${phase}`,
+  };
+}
+
 const nextConfig: NextConfig = {
   async headers() {
     return [
@@ -60,14 +69,19 @@ const nextConfig: NextConfig = {
   },
   async rewrites() {
     return {
-      beforeFiles: ["/api/browser-cache-rewrite", "/api/browser-cache-pages-rewrite"].map(
-        (source) => ({
+      beforeFiles: [
+        ...["/api/browser-cache-rewrite", "/api/browser-cache-pages-rewrite"].map((source) => ({
           source,
           has: [{ type: "cookie" as const, key: "plan", value: "pro" }],
           destination: source.replace(/-rewrite$/, "-query") + "?visitor=pro",
-        }),
-      ),
-      afterFiles: [{ source: "/rewrite-about", destination: "/about" }],
+        })),
+        externalCredentialsRewrite("before-files"),
+      ],
+      afterFiles: [
+        { source: "/rewrite-about", destination: "/about" },
+        externalCredentialsRewrite("after-files"),
+      ],
+      fallback: [externalCredentialsRewrite("fallback")],
     };
   },
 };

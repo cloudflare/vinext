@@ -178,6 +178,14 @@ const nextConfig: NextConfig = {
             : "/rewrite-about",
           destination: "/about",
         },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination host must not be able to
+        // retarget the proxy.
+        {
+          source: "/proxy-external-host-capture",
+          has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
+          destination: "http://:proxyHost.invalid/host-capture",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
