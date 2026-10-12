@@ -45,6 +45,15 @@ test.describe("Cloudflare Workers image optimization behind middleware", () => {
     expect(image.status()).toBe(200);
     expect(image.headers()["content-type"]).toBe("image/webp");
     expect(image.headers()["x-mw-image-endpoint"]).toBe("true");
+
+    // HEAD runs in the complete response graph of a multi-stage build.
+    const head = await request.head(imagePath("/_next/image", "/vinext-image.png"), {
+      headers: { Accept: "image/webp" },
+      maxRedirects: 0,
+    });
+    expect(head.status()).toBe(200);
+    expect(head.headers()["content-type"]).toBe("image/webp");
+    expect(head.headers()["x-mw-image-endpoint"]).toBe("true");
   });
 
   test("serves the image query middleware rewrites to", async ({ request }) => {
