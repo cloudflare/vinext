@@ -311,7 +311,7 @@ test("a next.config public policy with Vary: Cookie keeps each session's page pr
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
 
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
 
   const url = `${baseURL}/vary-cookie?case=${randomUUID()}`;
   const renderIds = new Set<string>();
@@ -334,10 +334,11 @@ test("a next.config public policy with Vary: Cookie keeps each session's page pr
   };
 
   for (const session of ["alice", "alice", "bob", undefined]) await expectPrivateRender(session);
-  // Backends publish a completed response after it returns, so keep probing
-  // other sessions through the window a wrongly stored entry would appear in.
-  for (let attempt = 0; attempt < 10; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  // Backends publish a completed response in waitUntil, which may run up to
+  // 30 seconds after the response returns, so keep probing other sessions
+  // past that window, in which a wrongly stored entry would appear.
+  for (let attempt = 0; attempt < 16; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
     await expectPrivateRender(attempt % 2 === 0 ? `visitor-${attempt}` : undefined);
   }
 });
