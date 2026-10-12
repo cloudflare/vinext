@@ -188,7 +188,13 @@ test("keeps an encoded dynamic 404 out of a dynamic sibling's ISR entry on Worke
     const literal = await getRawPath("/encoded-isr/bob/archive");
     expect(literal.status).toBe(200);
     expect(literal.body).toContain("archive for bob");
+    if (attempt === 1) expect(literal.headers["x-vinext-cache"]).toBe("HIT");
   }
+
+  // Nor does the encoded spelling read the literal page's entry.
+  const repeated = await getRawPath("/encoded-isr/bob/%61rchive");
+  expect(repeated.status).toBe(404);
+  expect(repeated.body).not.toContain("archive for bob");
 });
 
 test("shares a dynamic Pages ISR entry with its encoded spelling on Workers", async () => {
