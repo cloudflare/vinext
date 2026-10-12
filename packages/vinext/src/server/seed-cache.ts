@@ -138,7 +138,7 @@ export async function seedMemoryCacheFromPrerender(
 
     const artifactPathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(artifactPathname);
-    // Fallback keys support older generated entries that do not export their
+    // Default keys support older generated entries that do not export their
     // runtime key builders. Current App Router entries inject buildAppPage*Key
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
     const htmlKey = isFallbackShell

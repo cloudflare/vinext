@@ -42,7 +42,7 @@ describe("PPR fallback shell cache key", () => {
   }, 120_000);
 
   afterAll(async () => {
-    server?.close();
+    await new Promise((resolve) => (server ? server.close(resolve) : resolve(undefined)));
     if (fixtureDir) await fs.rm(fixtureDir, { recursive: true, force: true });
   });
 

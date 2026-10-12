@@ -990,8 +990,6 @@ describe("seedMemoryCacheFromPrerender", () => {
       {
         "en/blog/known-post.html": "<html>known post</html>",
         "en/blog/known-post.rsc": "flight-data",
-        "en/blog/[slug].html": "<html>shell</html>",
-        "en/blog/[slug].rsc": "shell-flight-data",
       },
     );
     await seedMemoryCacheFromPrerender(serverDir);
@@ -1001,6 +999,31 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(paths!.has("/en/blog/known-post")).toBe(true);
     expect(paths!.has("/en/blog/[slug]")).toBe(false);
     expect(paths!.size).toBe(1);
+  });
+
+  it("seeds fallback shells apart from the page of their literal path", async () => {
+    const buildId = "fallback-shell-key-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/en/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/en/blog/[slug]",
+            revalidate: 60,
+            fallback: true,
+          },
+        ],
+      },
+      {
+        "en/blog/[slug].html": "<html>shell</html>",
+        "en/blog/[slug].rsc": "shell-flight-data",
+      },
+    );
+    await seedMemoryCacheFromPrerender(serverDir);
 
     // The shell is seeded apart from the page a literal `/en/blog/%5Bslug%5D`
     // request renders, which decodes to the same pathname.
