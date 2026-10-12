@@ -17,6 +17,29 @@ export function localeRootHasTrailingSlash(config: {
   return !!config.trailingSlash && !config.skipProxyUrlNormalize;
 }
 
+/** The origin Next.js redirects a domain's default locale to. */
+export function getDomainLocaleOrigin(item: DomainLocale): string {
+  return `http${item.http ? "" : "s"}://${item.domain}`;
+}
+
+/** Whether `url` is absolute on one of the configured locale domains. */
+export function isDomainLocaleUrl(url: string, domainItems?: readonly DomainLocale[]): boolean {
+  if (!domainItems?.length || !/^https?:\/\//i.test(url)) return false;
+  const origin = parseUrlOrigin(url);
+  return (
+    origin !== null &&
+    domainItems.some((item) => parseUrlOrigin(getDomainLocaleOrigin(item)) === origin)
+  );
+}
+
+function parseUrlOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeDomainHostname(hostname: string | null | undefined): string | undefined {
   if (!hostname) return undefined;
   return hostname.split(",", 1)[0]?.trim().split(":", 1)[0]?.toLowerCase() || undefined;

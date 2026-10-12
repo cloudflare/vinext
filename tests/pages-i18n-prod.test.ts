@@ -380,6 +380,23 @@ describe("Pages i18n domain routing with basePath (production)", () => {
     expect(res.headers.location).toBe("http://example.fr/app/?utm=campaign");
   });
 
+  it("redirects each domain's default locale to that domain", async () => {
+    // Matches real Next.js 16.2.7: the locale in the path picks the variant
+    // (the host only supplies the default when the path has none), and the
+    // domain variant wins over the relative global default one.
+    for (const [pathname, host, location] of [
+      ["/app/old-domain-redirect/?x=1", "localhost", "https://example.com/app/about/?x=1"],
+      ["/app/old-domain-redirect/", "example.com", "https://example.com/app/about/"],
+      ["/app/old-domain-redirect/", "example.fr", "http://example.fr/app/about/"],
+      ["/app/fr/old-domain-redirect/", "localhost", "http://example.fr/app/about/"],
+      ["/app/en/old-domain-redirect/", "example.fr", "https://example.com/app/about/"],
+    ]) {
+      const res = await requestNodeServerWithHost(prodPort, pathname, host);
+      expect(res.status, `${host}${pathname}`).toBe(307);
+      expect(res.headers.location, `${host}${pathname}`).toBe(location);
+    }
+  });
+
   it("renders locale-switcher links with basePath on cross-domain hrefs", async () => {
     const res = await requestNodeServerWithHost(prodPort, "/app/about/", "example.com");
 

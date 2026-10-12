@@ -1903,6 +1903,7 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
     destination,
     routeContext.search,
     redirect.destinationQuery,
+    getDomainLocales(),
   );
 }
 

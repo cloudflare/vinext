@@ -2049,7 +2049,7 @@ export async function resolveNextConfig(
   // can capture the prefix themselves. Mirrors processRoutes() in
   // packages/next/src/lib/load-custom-routes.ts.
   if (i18n) {
-    const opts = { trailingSlash: config.trailingSlash ?? false };
+    const opts = { trailingSlash: config.trailingSlash ?? false, basePath: config.basePath ?? "" };
     redirects = applyLocaleToRoutes(redirects, i18n, "redirect", opts);
     rewrites = {
       beforeFiles: applyLocaleToRoutes(rewrites.beforeFiles, i18n, "rewrite", opts),
