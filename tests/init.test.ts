@@ -1282,6 +1282,27 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     },
   );
 
+  it.each(["", "Storefront", "store front", "-storefront", "a".repeat(64)])(
+    "rejects the invalid programmatic Worker name %j before changing files",
+    async (name) => {
+      setupProject(tmpDir, { router: "app" });
+      const before = snapshotProject(tmpDir);
+
+      await expect(
+        runInit(tmpDir, {
+          cloudflare: {
+            dataCache: "none",
+            cdnCache: "none",
+            imageOptimization: "none",
+            name,
+          },
+        }),
+      ).rejects.toThrow("Invalid --name value");
+
+      expect(snapshotProject(tmpDir)).toBe(before);
+    },
+  );
+
   it("omits KV setup steps when Wrangler already has a namespace ID", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(

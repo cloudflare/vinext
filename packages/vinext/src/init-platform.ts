@@ -106,15 +106,19 @@ export function parseNameArg(args: string[]): string | undefined {
       if (!value) throw new Error("--name requires a Worker name.");
     }
     if (value) {
-      if (value.length > WORKER_NAME_MAX_LENGTH || !WORKER_NAME_PATTERN.test(value)) {
-        throw new Error(
-          `Invalid --name value "${value}". Worker names must be at most ${WORKER_NAME_MAX_LENGTH} characters of lowercase letters, numbers, and dashes, and cannot start or end with a dash.`,
-        );
-      }
+      validateWorkerName(value);
       return value;
     }
   }
   return undefined;
+}
+
+export function validateWorkerName(value: string): void {
+  if (value.length > WORKER_NAME_MAX_LENGTH || !WORKER_NAME_PATTERN.test(value)) {
+    throw new Error(
+      `Invalid --name value "${value}". Worker names must be at most ${WORKER_NAME_MAX_LENGTH} characters of lowercase letters, numbers, and dashes, and cannot start or end with a dash.`,
+    );
+  }
 }
 
 function parseChoiceArg<T extends string>(

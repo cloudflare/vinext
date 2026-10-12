@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import type { ESTree } from "vite";
-import type { CloudflareInitOptions } from "./init-platform.js";
+import { validateWorkerName, type CloudflareInitOptions } from "./init-platform.js";
 import { detectProject } from "./utils/project.js";
 import { isUnknownRecord } from "./utils/record.js";
 
@@ -72,7 +72,9 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
-  if (cloudflare.name) {
+  if (cloudflare.name !== undefined) {
+    // Programmatic callers skip parseNameArg, so validate the name here too.
+    validateWorkerName(cloudflare.name);
     // Existing config is kept as-is, so --name would otherwise be silently ignored.
     const existingConfig = (
       cloudflare.legacyWrangler ? ["wrangler.jsonc", "wrangler.json"] : ["cloudflare.config.ts"]
