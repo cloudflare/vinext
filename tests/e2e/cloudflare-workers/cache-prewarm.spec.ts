@@ -301,6 +301,37 @@ test("a dynamic-segment route without generateStaticParams is never cached", asy
   expect(renderIds[1]).not.toBe(renderIds[0]);
 });
 
+// The request stage applies a next.config `Vary` above the shared response
+// entry, so a page that reads cookies() under a public config policy must not
+// be stored: one session's page would otherwise reach every other session.
+test("a next.config public policy with Vary: Cookie keeps each session's page private", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  const url = `${baseURL}/vary-cookie?case=${randomUUID()}`;
+  const renderIds = new Set<string>();
+  for (const session of ["alice", "alice", "bob", undefined]) {
+    const response = await request.get(url, {
+      headers: { accept: "text/html", ...(session ? { cookie: `session=${session}` } : {}) },
+    });
+    const headers = response.headers();
+    const trace = JSON.stringify({ backend, session, headers });
+    expect(response.ok(), trace).toBe(true);
+    expect(headers["x-vinext-cache"], trace).not.toBe("HIT");
+    expect(headers["cf-cache-status"], trace).not.toBe("HIT");
+    expect(headers.vary?.toLowerCase().split(/,\s*/), trace).toContain("cookie");
+    const body = await response.text();
+    expect(/data-vary-cookie-viewer="([^"]*)"/.exec(body)?.[1], trace).toBe(session ?? "anonymous");
+    const renderId = /data-render-id="([^"]*)"/.exec(body)?.[1];
+    expect(renderId, trace).toBeTruthy();
+    renderIds.add(renderId!);
+  }
+  expect(renderIds.size).toBe(4);
+});
+
 test("a static page with no revalidate source is served from the configured cache", async ({
   baseURL,
   request,
