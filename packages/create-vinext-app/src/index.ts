@@ -21,6 +21,8 @@ type CloudflareInitOptions = {
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
   legacyWrangler?: boolean;
+  /** Worker name for generated config, instead of one derived from package.json. */
+  name?: string;
 };
 
 type PlatformPromptOptions = {

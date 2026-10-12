@@ -136,6 +136,31 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, "app/page.tsx")).not.toContain("export const revalidate");
   });
 
+  it("uses a Worker name passed through the programmatic API", async () => {
+    const appPath = path.join(tmpDir, "named-app");
+
+    await withQuietConsole(() =>
+      createVinextApp({
+        appPath,
+        packageManager: "npm",
+        install: false,
+        git: false,
+        initOptions: {
+          platform: "cloudflare",
+          prerender: false,
+          cloudflare: {
+            dataCache: "none",
+            cdnCache: "none",
+            imageOptimization: "cloudflare-images",
+            name: "storefront",
+          },
+        },
+      }),
+    );
+
+    expect(readFile(appPath, "cloudflare.config.ts")).toContain('name: "storefront"');
+  });
+
   it("creates a fixed App Router TypeScript Tailwind template and applies Cloudflare init", async () => {
     const appPath = path.join(tmpDir, "fresh-app");
 
@@ -445,23 +470,28 @@ describe("create-vinext-app CLI", () => {
 
   it("accepts a space-separated Worker name before the app directory", async () => {
     const appPath = path.join(tmpDir, "named-app");
+    // Resolve a misparsed "storefront" directory inside tmpDir, not the repo root.
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+    try {
+      await withQuietConsole(() =>
+        runCreateVinextAppCli([
+          "--name",
+          "storefront",
+          appPath,
+          "--platform=cloudflare",
+          "--cdn-cache=none",
+          "--skip-install",
+          "--disable-git",
+          "--use-pnpm",
+          "--yes",
+        ]),
+      );
 
-    await withQuietConsole(() =>
-      runCreateVinextAppCli([
-        "--name",
-        "storefront",
-        appPath,
-        "--platform=cloudflare",
-        "--cdn-cache=none",
-        "--skip-install",
-        "--disable-git",
-        "--use-pnpm",
-        "--yes",
-      ]),
-    );
-
-    expect(readFile(appPath, "cloudflare.config.ts")).toContain('name: "storefront"');
-    expect(fs.existsSync(path.join(tmpDir, "storefront"))).toBe(false);
+      expect(readFile(appPath, "cloudflare.config.ts")).toContain('name: "storefront"');
+      expect(fs.existsSync(path.join(tmpDir, "storefront"))).toBe(false);
+    } finally {
+      cwdSpy.mockRestore();
+    }
   });
 
   it.each(["--experimental-cf", "--experimental-cf=true", "--experimental-cf=false"])(
