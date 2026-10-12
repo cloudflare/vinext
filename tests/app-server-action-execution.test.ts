@@ -410,12 +410,11 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(result).toMatchObject({ kind: "form-state", actionFailed: true });
-    expect(result && "actionError" in result ? result.actionError : null).toMatchObject({
-      name: "Error",
-      message:
-        "`import('next/root-params').lang()` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.",
-    });
+    const response = requireProgressiveActionResponse(result);
+    expect(response.status).toBe(500);
+    expect(await response.text()).toBe(
+      "Server action failed: `import('next/root-params').lang()` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.",
+    );
     errorSpy.mockRestore();
   });
 
@@ -1120,10 +1119,10 @@ describe("app server action execution helpers", () => {
 
   // Ported from Next.js: test/e2e/on-request-error/server-action-error/server-action-error.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/server-action-error/server-action-error.test.ts
-  it("passes action execution failures as actionError to be rendered by error boundaries", async () => {
+  // Next.js rethrows the error and answers a plain 500 that still carries the
+  // action's cookies (reproduced against next@16.2.7 build/start).
+  it("answers a plain 500 with middleware headers and the action's cookies for action execution failures", async () => {
     const reportRequestError = vi.fn();
-    // Failure-path renders still need to flush action-set cookies onto the
-    // error page response (issue #1483), so the handler captures them here.
     const clearedCookies = vi.fn(() => ["session=1; Path=/"]);
     const clearContext = vi.fn();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1139,20 +1138,24 @@ describe("app server action execution helpers", () => {
           };
         },
         getAndClearPendingCookies: clearedCookies,
+        middlewareHeaders: new Headers([
+          ["x-middleware-ran", "1"],
+          ["set-cookie", "mw=1; Path=/"],
+          ["cache-control", "public, max-age=60"],
+        ]),
         reportRequestError,
         routePattern: "/products/[id]",
       }),
     );
 
-    expect(result).toEqual({
-      kind: "form-state",
-      formState: null,
-      actionError: error,
-      actionFailed: true,
-      pendingCookies: ["session=1; Path=/"],
-      draftCookie: null,
-      revalidationKind: 1,
-    });
+    const response = requireProgressiveActionResponse(result);
+    expect(response.headers.get("x-middleware-ran")).toBe("1");
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toBe(
+      "no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.getSetCookie()).toEqual(["mw=1; Path=/", "session=1; Path=/"]);
+    expect(await response.text()).toBe("Server action failed: boom");
     expect(reportRequestError).toHaveBeenCalledWith(
       error,
       expect.objectContaining({ path: "/action-source", method: "POST" }),
@@ -1165,12 +1168,12 @@ describe("app server action execution helpers", () => {
       },
     );
     expect(clearedCookies).toHaveBeenCalledTimes(1);
-    expect(clearContext).not.toHaveBeenCalled(); // Handled by app-rsc-handler
+    expect(clearContext).toHaveBeenCalledTimes(1);
 
     errorSpy.mockRestore();
   });
 
-  it("passes falsy action execution failures to the page render path", async () => {
+  it("answers a plain 500 for falsy action execution failures", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
@@ -1184,15 +1187,9 @@ describe("app server action execution helpers", () => {
         }),
       );
 
-      expect(result).toEqual({
-        kind: "form-state",
-        formState: null,
-        actionError: 0,
-        actionFailed: true,
-        pendingCookies: [],
-        draftCookie: null,
-        revalidationKind: 0,
-      });
+      const response = requireProgressiveActionResponse(result);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe("Server action failed: 0");
     } finally {
       errorSpy.mockRestore();
     }

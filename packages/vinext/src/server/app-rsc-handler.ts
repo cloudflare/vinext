@@ -2138,6 +2138,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
       ? actionError
       : { digest: "NEXT_NOT_FOUND" };
+  // Other errors answer a plain 500 before the render, so this is an action
+  // that failed to find another Server Action.
   if (actionFailed && middlewareContext.status === null && actionHttpFallbackStatus === null) {
     middlewareContext.status = 500;
   }

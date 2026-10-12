@@ -1343,6 +1343,7 @@ export async function handleProgressiveServerActionRequest(
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionError: unknown = undefined;
     let actionFailed = false;
+    let actionFailedWithError = false;
     let actionThrew = false;
     let actionResult: unknown;
     const rootParamsUsage = createRootParamsUsageController();
@@ -1359,9 +1360,9 @@ export async function handleProgressiveServerActionRequest(
       if (!actionRedirect) {
         actionError = error;
         actionFailed = true;
-        const isControlFlow =
-          getActionHttpFallbackStatus(error) !== null || isServerActionNotFoundError(error, null);
-        if (!isControlFlow) {
+        actionFailedWithError =
+          getActionHttpFallbackStatus(error) === null && !isServerActionNotFoundError(error, null);
+        if (actionFailedWithError) {
           console.error("[vinext] Server action error:", error);
           options.reportRequestError(
             error,
@@ -1409,6 +1410,25 @@ export async function handleProgressiveServerActionRequest(
       const revalidationKind = resolveActionRevalidationKind(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
       );
+
+      if (actionFailedWithError) {
+        // Next.js rethrows the error of an action submitted without
+        // JavaScript, so the server answers a plain 500 instead of rendering
+        // an error boundary. Middleware headers and the action's cookies still
+        // reach the response.
+        options.clearRequestContext();
+        const headers = new Headers();
+        mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
+        headers.set("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
+        for (const cookie of actionPendingCookies) headers.append("Set-Cookie", cookie);
+        if (actionDraftCookie) headers.append("Set-Cookie", actionDraftCookie);
+        return internalServerErrorResponse(
+          process.env.NODE_ENV === "production"
+            ? undefined
+            : "Server action failed: " + getServerActionFailureMessage(actionError),
+          { headers },
+        );
+      }
 
       if (actionFailed) {
         return {

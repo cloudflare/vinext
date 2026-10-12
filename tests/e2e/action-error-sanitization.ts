@@ -42,9 +42,9 @@ export function testProductionActionErrorSanitization(pathname: string): void {
     });
   }
 
-  test("form action submitted without JavaScript does not render its thrown details", async ({
-    browser,
-  }) => {
+  // Next.js rethrows the error of a form action submitted without JavaScript,
+  // so it answers a plain 500 that keeps the action's cookies.
+  test("form action submitted without JavaScript answers a plain 500", async ({ browser }) => {
     const context = await browser.newContext({ javaScriptEnabled: false });
     try {
       const page = await context.newPage();
@@ -55,11 +55,14 @@ export function testProductionActionErrorSanitization(pathname: string): void {
         (response) => response.request().method() === "POST",
       );
       await page.click("#submit-form");
-      await responsePromise;
+      const response = await responsePromise;
 
-      const bodies = await readBodies();
-      expect(bodies).toHaveLength(1);
-      expect(bodies[0]).not.toMatch(SENSITIVE_DETAILS);
+      expect(response.status()).toBe(500);
+      const headers = await response.allHeaders();
+      expect(headers["content-type"]).toMatch(/^text\/plain/);
+      expect(headers["cache-control"]).toBe("no-cache, no-store, max-age=0, must-revalidate");
+      expect(headers["set-cookie"]).toMatch(/^action-error-cookie=set-before-throw;/);
+      expect(await readBodies()).toEqual(["Internal Server Error"]);
     } finally {
       await context.close();
     }
