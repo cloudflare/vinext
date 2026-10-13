@@ -7,11 +7,13 @@ import type { Plugin, ResolvedConfig } from "vite";
  * template-literal dynamic imports as glob patterns
  * (``import(`file://${p}`)`` becomes `"file://*"`). The scan then emits them as
  * plain imports, which fail to resolve (e.g. in @module-federation/vite).
- * Earlier versions skipped these specifiers, so keep them external during the
- * scan. Its output is discarded, so nothing else changes.
+ * Earlier versions skipped these specifiers, so keep the ones that don't
+ * resolve external during the scan. A real module whose specifier contains
+ * `*` still resolves and stays in the scan graph. The scan's output is
+ * discarded, so nothing else changes.
  *
  * TODO: cap the version gate at the plugin-rsc release that skips glob
- * specifiers itself.
+ * specifiers itself (vitejs/vite-plugin-react#1506).
  */
 export const RSC_SCAN_GLOB_IMPORTS_AFFECTED_FROM: [number, number, number] = [0, 5, 36];
 
@@ -24,9 +26,17 @@ export function createRscScanGlobImportsPlugin(options: {
     enforce: "pre",
     resolveId: {
       filter: { id: /\*/ },
-      async handler(source) {
+      async handler(source, importer, resolveOptions) {
         const manager = await options.getManager(this.environment.config);
-        if (manager?.isScanBuild) return { id: source, external: true };
+        if (!manager?.isScanBuild) return;
+        try {
+          const resolved = await this.resolve(source, importer, {
+            ...resolveOptions,
+            skipSelf: true,
+          });
+          if (resolved) return resolved;
+        } catch {}
+        return { id: source, external: true };
       },
     },
   };

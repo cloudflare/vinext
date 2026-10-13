@@ -45,10 +45,10 @@ export function magicStringTransformResult<TMap = ReturnType<MagicString["genera
  * (`config.build.sourcemap ? s.generateMap(...) : null`). Dev and builds with
  * sourcemaps enabled keep the result unchanged.
  */
-export function omitUnusedBuildSourcemap(
+export function omitUnusedBuildSourcemap<TMap = ReturnType<MagicString["generateMap"]>>(
   environment: SourcemapEnvironment | undefined,
-  result: MagicStringTransformResult | null,
-): { code: string; map: MagicStringTransformResult["map"] | null } | null {
+  result: MagicStringTransformResult<TMap> | null,
+): { code: string; map: TMap | null } | null {
   if (!result || environment?.mode !== "build" || environment.config?.build?.sourcemap !== false) {
     return result;
   }

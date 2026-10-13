@@ -375,7 +375,8 @@ import {
   getViteCliInvocation,
   isViteCliConfigFile,
 } from "./utils/vite-cli-invocation.js";
-import { findPackageVersion, getReactUpgradeDeps, isVersionBelow } from "./utils/react-version.js";
+import { assertPluginRscVersion } from "./utils/plugin-rsc-version.js";
+import { getReactUpgradeDeps, isVersionBelow } from "./utils/react-version.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
@@ -1940,6 +1941,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // peer deps explicitly, so fall back to vinext's own install location.
   resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
+  const rscVersion =
+    earlyAppDirExists && resolvedRscPath ? assertPluginRscVersion(resolvedRscPath) : null;
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
@@ -8611,18 +8614,15 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
   }
-  if (earlyAppDirExists && resolvedRscPath) {
-    const rscVersion = findPackageVersion(resolvedRscPath, "@vitejs/plugin-rsc");
-    if (rscVersion && !isVersionBelow(rscVersion, RSC_SCAN_GLOB_IMPORTS_AFFECTED_FROM)) {
-      plugins.push(
-        createRscScanGlobImportsPlugin({
-          async getManager(config) {
-            const rscPluginModule = await rscPluginModulePromise;
-            return rscPluginModule?.getPluginApi(config)?.manager;
-          },
-        }),
-      );
-    }
+  if (rscVersion && !isVersionBelow(rscVersion, RSC_SCAN_GLOB_IMPORTS_AFFECTED_FROM)) {
+    plugins.push(
+      createRscScanGlobImportsPlugin({
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
+      }),
+    );
   }
   if (earlyAppDirExists) {
     plugins.push(
