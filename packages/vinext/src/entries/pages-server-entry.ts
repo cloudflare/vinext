@@ -95,6 +95,7 @@ export async function generatePagesRequestEntry(
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
+    skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect ?? false,
     skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -149,6 +150,7 @@ export function __ensureInstrumentation() {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });
 }`
@@ -360,6 +362,7 @@ export async function generateServerEntry(
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
+    skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect ?? false,
     skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -466,6 +469,7 @@ export async function runMiddleware(request, ctx, options) {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });
 }

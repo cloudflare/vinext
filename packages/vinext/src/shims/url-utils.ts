@@ -120,9 +120,15 @@ function removeRouteTrailingSlash(route: string): string {
  *   `.well-known`-aware redirect rule shipped in `routes-manifest.json`.
  * - Query strings and hash fragments are preserved verbatim.
  * - Idempotent: already-canonical paths round-trip unchanged.
+ * - With `skipTrailingSlashRedirect`, every path is returned as written, like
+ *   Next.js's `__NEXT_MANUAL_TRAILING_SLASH` short-circuit.
  */
 export function normalizePathTrailingSlash(path: string, trailingSlash: boolean): string {
-  if (!path.startsWith("/") || path.startsWith("//")) {
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    process.env.__VINEXT_MANUAL_TRAILING_SLASH === "true"
+  ) {
     return path;
   }
 

@@ -1,0 +1,5 @@
+{
+  "name": "skip-trailing-slash-redirect-fixture",
+  "private": true,
+  "type": "module"
+}

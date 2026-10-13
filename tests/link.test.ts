@@ -1809,6 +1809,44 @@ describe("normalizePathTrailingSlash", () => {
   });
 });
 
+// `skipTrailingSlashRedirect` defines __NEXT_MANUAL_TRAILING_SLASH in Next.js,
+// which makes `normalizePathTrailingSlash` return every path as written.
+// Ported from Next.js: test/e2e/skip-trailing-slash-redirect/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/skip-trailing-slash-redirect/index.test.ts
+describe("normalizePathTrailingSlash with skipTrailingSlashRedirect", () => {
+  beforeEach(() => {
+    vi.stubEnv("__VINEXT_MANUAL_TRAILING_SLASH", "true");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([true, false])("keeps paths as written with trailingSlash: %s", (trailingSlash) => {
+    for (const path of [
+      "/another",
+      "/another/",
+      "/another/?x=1#y",
+      "/another?x=1#y",
+      "/file.txt/",
+      "/",
+    ]) {
+      expect(normalizePathTrailingSlash(path, trailingSlash)).toBe(path);
+    }
+  });
+
+  it("renders Link hrefs with their original trailing slash", () => {
+    const withoutSlash = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/another" }, "x"),
+    );
+    const withSlash = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/another/" }, "x"),
+    );
+    expect(withoutSlash).toContain('href="/another"');
+    expect(withSlash).toContain('href="/another/"');
+  });
+});
+
 // ─── Link href trailing-slash rendering ─────────────────────────────────
 //
 // Ports cases from upstream `testLinkShouldRewriteTo` in:

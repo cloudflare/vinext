@@ -187,6 +187,8 @@ export type PagesPipelineDeps = {
   assetPrefix?: string;
   basePath: string;
   trailingSlash: boolean;
+  /** next.config `skipTrailingSlashRedirect`: serve both slash forms without a 308. */
+  skipTrailingSlashRedirect?: boolean;
   i18nConfig: NextI18nConfig | null;
   configRedirects: NextRedirect[];
   configRewrites: {
@@ -369,6 +371,7 @@ export async function runPagesRequest(
   const {
     basePath,
     trailingSlash,
+    skipTrailingSlashRedirect,
     i18nConfig,
     configRedirects,
     configRewrites,
@@ -404,11 +407,13 @@ export async function runPagesRequest(
 
   // Step 2: Trailing-slash normalization. Adapters must rewrite `_next/data`
   // URLs to page paths and classify them via `isDataReq`; those requests must
-  // never receive path redirects.
+  // never receive path redirects. `skipTrailingSlashRedirect` drops these
+  // redirects entirely, like Next.js omitting them from the routes manifest.
   {
-    const trailingSlashRedirect = isDataReq
-      ? null
-      : normalizeTrailingSlash(pathname, basePath, trailingSlash, search);
+    const trailingSlashRedirect =
+      isDataReq || skipTrailingSlashRedirect
+        ? null
+        : normalizeTrailingSlash(pathname, basePath, trailingSlash, search);
     if (trailingSlashRedirect) {
       return { type: "response", response: trailingSlashRedirect };
     }

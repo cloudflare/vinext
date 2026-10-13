@@ -889,6 +889,12 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === name)).toBeDefined();
   });
 
+  it("reports skipTrailingSlashRedirect as supported", () => {
+    writeFile("next.config.mjs", `export default { skipTrailingSlashRedirect: true };`);
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "skipTrailingSlashRedirect")?.status).toBe("supported");
+  });
+
   it("reads next.config.ts files", () => {
     writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
 
@@ -903,7 +909,6 @@ describe("analyzeConfig", () => {
         cacheHandler: "./cache-handler.js",
         cacheHandlers: { default: "./handler.js" },
         cacheLife: { blog: { revalidate: 60 } },
-        skipTrailingSlashRedirect: true,
         reactCompiler: true,
         modularizeImports: {},
         typedRoutes: true,
@@ -918,7 +923,6 @@ describe("analyzeConfig", () => {
     expect(status("cacheHandlers")).toBe("unsupported");
     expect(status("cacheLife")).toBe("unsupported");
     expect(status("experimental.cacheLife")).toBe("unsupported");
-    expect(status("skipTrailingSlashRedirect")).toBe("unsupported");
     expect(status("compiler.relay")).toBe("unsupported");
     expect(status("experimental.dynamicIO")).toBe("unsupported");
     // Ignored, but the app still works — it only loses an optimization or type check.

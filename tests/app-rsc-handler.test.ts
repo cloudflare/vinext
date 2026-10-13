@@ -251,6 +251,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     renderResponseStageLocally: overrides.renderResponseStageLocally,
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,
     setNavigationContext: overrides.setNavigationContext ?? (() => {}),
+    skipTrailingSlashRedirect: overrides.skipTrailingSlashRedirect,
     staticParamsMap: overrides.staticParamsMap ?? {},
     trailingSlash: overrides.trailingSlash ?? false,
     validateDevRequestOrigin: overrides.validateDevRequestOrigin ?? (() => null),
@@ -7342,6 +7343,32 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(308);
     expect(response.headers.get("location")).toBe("/outside/");
   });
+
+  // Ported from Next.js: test/e2e/skip-trailing-slash-redirect/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/skip-trailing-slash-redirect/index.test.ts
+  it.each([
+    { trailingSlash: false, pathname: "/docs/about/" },
+    { trailingSlash: true, pathname: "/docs/about" },
+  ])(
+    "serves $pathname without a redirect under skipTrailingSlashRedirect (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, pathname }) => {
+      const route = createPageRoute();
+      // The real route matcher tolerates either slash form.
+      const matchRoute = (pathname: string) =>
+        pathname.replace(/\/$/, "") === "/about" ? { params: {}, route } : null;
+      const handler = createHandler({
+        configHeaders: [],
+        matchRoute,
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      const response = await handler(new Request(`https://example.test${pathname}`), null);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("page");
+    },
+  );
 
   it("preserves raw encoded spelling when normalizing trailing slashes", async () => {
     const handler = createHandler({ configHeaders: [], trailingSlash: true });

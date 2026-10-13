@@ -114,6 +114,12 @@ type ExecuteMiddlewareOptions = {
    * `new URL('/x', req.url)`.
    */
   trailingSlash?: boolean;
+  /**
+   * next.config `skipTrailingSlashRedirect`. Middleware then sees requests in
+   * either slash form, so NextURL keeps each request's own trailing slash and
+   * redirect Locations keep theirs, as Next.js's `getNextPathnameInfo` does.
+   */
+  skipTrailingSlashRedirect?: boolean;
 };
 
 function reportProxyError(options: ExecuteMiddlewareOptions, error: unknown): Promise<void> {
@@ -283,6 +289,7 @@ function createNextRequest(
   trailingSlash?: boolean,
   hadBasePath?: boolean,
   requestBodyAlreadyIsolated = false,
+  skipTrailingSlashRedirect = false,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
@@ -307,12 +314,17 @@ function createNextRequest(
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
-  const hasNextConfig = basePath || i18nConfig || trailingSlash;
+  // Without the trailing-slash redirect, middleware can see either slash form.
+  // Next.js's getNextPathnameInfo takes the slash from the pathname itself
+  // (the config only decides root), so NextURL keeps the request's form.
+  const urlTrailingSlash =
+    skipTrailingSlashRedirect && mwPathname !== "/" ? mwPathname.endsWith("/") : trailingSlash;
+  const hasNextConfig = basePath || i18nConfig || urlTrailingSlash;
   const nextConfig = hasNextConfig
     ? {
         basePath: basePath ?? "",
         i18n: i18nConfig ?? undefined,
-        trailingSlash: trailingSlash ?? undefined,
+        trailingSlash: urlTrailingSlash ?? undefined,
       }
     : undefined;
 
@@ -527,6 +539,7 @@ async function executeMiddlewareModule(
     options.trailingSlash,
     hadBasePath,
     options.requestBodyAlreadyIsolated,
+    options.skipTrailingSlashRedirect,
   );
   if (options.isDataRequest) {
     Object.defineProperty(nextRequest, "__isData", {
@@ -603,8 +616,11 @@ async function executeMiddlewareModule(
       // Normalize trailing slash on middleware redirect Locations that came
       // from a plain `new URL(...)` rather than `request.nextUrl`. NextURL
       // already applies the policy at stringify time, but plain URLs bypass it.
+      // Next.js formats a redirect Location from its own slash; only the
+      // trailing-slash redirect would re-slash it on the next request, and
+      // `skipTrailingSlashRedirect` disables that redirect.
       let normalizedLocation = relativeLocation;
-      if (options.trailingSlash !== undefined) {
+      if (options.trailingSlash !== undefined && !options.skipTrailingSlashRedirect) {
         try {
           const loc = new URL(relativeLocation, options.request.url);
           if (loc.origin === new URL(options.request.url).origin) {

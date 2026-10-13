@@ -229,6 +229,28 @@ describe("trailing slash normalization", () => {
   });
 });
 
+// Ported from Next.js: test/e2e/skip-trailing-slash-redirect/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/skip-trailing-slash-redirect/index.test.ts
+describe("skipTrailingSlashRedirect", () => {
+  it.each([
+    { trailingSlash: false, pathname: "/foo/" },
+    { trailingSlash: true, pathname: "/foo" },
+  ])(
+    "renders $pathname without a redirect (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, pathname }) => {
+      const renderPage = makeRenderPage();
+      const result = await runPagesRequest(
+        makeRequest(pathname),
+        baseDeps({ trailingSlash, skipTrailingSlashRedirect: true, renderPage }),
+      );
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(200);
+      expect(renderPage).toHaveBeenCalledOnce();
+    },
+  );
+});
+
 // 2. Config redirect: permanent redirect → status 308 with Location
 describe("config redirects", () => {
   it("fails probing closed when an unkeyed redirect condition misses", async () => {

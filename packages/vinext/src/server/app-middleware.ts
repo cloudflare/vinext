@@ -46,6 +46,8 @@ export type ApplyAppMiddlewareOptions = {
    * `trailingSlash`.
    */
   trailingSlash?: boolean;
+  /** next.config `skipTrailingSlashRedirect`, forwarded to `executeMiddleware`. */
+  skipTrailingSlashRedirect?: boolean;
 };
 
 export type ApplyAppMiddlewareResult =
@@ -362,6 +364,7 @@ export async function applyAppMiddleware(
         },
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,
+        skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
         trailingSlash: options.trailingSlash,
       });
     } finally {

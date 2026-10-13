@@ -2371,6 +2371,7 @@ async function createPagesRouterRequestHandler(
   const pagesAssetPathPrefix = assetPrefixPathname(assetPrefix);
   const assetBase = basePath ? `${basePath}/` : "/";
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+  const skipTrailingSlashRedirect: boolean = vinextConfig?.skipTrailingSlashRedirect ?? false;
   const skipProxyUrlNormalize: boolean = vinextConfig?.skipProxyUrlNormalize ?? false;
   const i18nConfig = vinextConfig?.i18n ?? null;
   const configRedirects = vinextConfig?.redirects ?? [];
@@ -2703,6 +2704,7 @@ async function createPagesRouterRequestHandler(
         assetPrefix,
         basePath,
         trailingSlash,
+        skipTrailingSlashRedirect,
         i18nConfig,
         configRedirects,
         configRewrites,

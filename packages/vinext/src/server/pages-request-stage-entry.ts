@@ -159,6 +159,7 @@ export const pagesRequestStagePrerenderSecret: string | null = pagesEntry.preren
 const basePath: string = vinextConfig?.basePath ?? "";
 const assetPathPrefix: string = assetPrefixPathname(vinextConfig?.assetPrefix ?? "");
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+const skipTrailingSlashRedirect: boolean = vinextConfig?.skipTrailingSlashRedirect ?? false;
 const i18nConfig = vinextConfig?.i18n ?? null;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? {
@@ -477,6 +478,7 @@ async function handleRequestImpl(
       assetPrefix: vinextConfig?.assetPrefix,
       basePath,
       trailingSlash,
+      skipTrailingSlashRedirect,
       i18nConfig,
       configRedirects,
       configRewrites,
