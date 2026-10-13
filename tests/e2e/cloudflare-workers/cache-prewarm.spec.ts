@@ -679,23 +679,29 @@ test("res.revalidate() purges an encoded spelling of a Pages ISR path", async ({
 // Next.js keys its response cache by pathname, so every host an app serves
 // shares one entry, and Workers Cache leaves the host out of its key:
 // https://developers.cloudflare.com/workers/cache/cache-keys/
-// A version preview URL is a second host of the same deployed version:
+// A preview alias and a Version URL are two hosts of one uploaded version:
 // https://developers.cloudflare.com/workers/configuration/previews/
+// A Version URL is not compared with production traffic: on a deployed Worker
+// it never reached the entries production requests filled, which those docs
+// leave unspecified.
+const previewAliasURL = process.env.VINEXT_E2E_PREVIEW_ALIAS_URL;
+const previewAlias = process.env.VINEXT_E2E_PREVIEW_ALIAS;
+
 test("Workers Cache shares one entry across the hosts of a deployed Worker", async ({
-  baseURL,
   request,
 }) => {
-  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   test.skip(backend !== "workers-cache", "the preview URL host is specific to Workers Cache");
-  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.skip(!previewAliasURL || !previewAlias, "requires a preview alias of a deployed Worker");
   test.setTimeout(240_000);
+  const baseURL = previewAliasURL!;
 
   const versionResponse = await request.get(`${baseURL}/api/worker-version`);
   expect(versionResponse.ok()).toBe(true);
   const { id } = (await versionResponse.json()) as { id: string | null };
   expect(id).toMatch(/^[0-9a-f-]{36}$/);
-  const [workerName, ...subdomain] = new URL(baseURL).hostname.split(".");
-  const previewURL = `https://${id!.slice(0, 8)}-${workerName}.${subdomain.join(".")}`;
+  const aliasHost = new URL(baseURL).hostname;
+  expect(aliasHost.startsWith(`${previewAlias}-`)).toBe(true);
+  const previewURL = `https://${id!.slice(0, 8)}${aliasHost.slice(previewAlias!.length)}`;
 
   // Only an entry shared across hosts gives the preview host a HIT carrying
   // the render the base host was just served.
@@ -718,8 +724,6 @@ test("Workers Cache shares one entry across the hosts of a deployed Worker", asy
           const otherRender = other.ok() ? renderOf(await other.text()) : undefined;
           return {
             pathname,
-            previewURL,
-            filledCacheStatus: filled.headers()["cf-cache-status"],
             otherStatus: other.status(),
             otherCacheStatus: other.headers()["cf-cache-status"],
             sameRender: otherRender === filledRender,
@@ -727,7 +731,7 @@ test("Workers Cache shares one entry across the hosts of a deployed Worker", asy
         },
         { intervals: [1_000], timeout: 45_000 },
       )
-      .toMatchObject({ otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
+      .toEqual({ pathname, otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
   }
 
   // A page whose getInitialProps runs renders per request, as in Next.js, so
