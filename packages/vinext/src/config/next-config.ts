@@ -1069,10 +1069,6 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
       `\`skipMiddlewareUrlNormalize\` is deprecated. Please use \`skipProxyUrlNormalize\` instead in ${configFileName}.`,
     ],
     [
-      "experimental.skipTrailingSlashRedirect",
-      `\`experimental.skipTrailingSlashRedirect\` has been moved to \`skipTrailingSlashRedirect\`. Please update your ${configFileName} file accordingly.`,
-    ],
-    [
       "experimental.instrumentationHook",
       `\`experimental.instrumentationHook\` is no longer needed, because \`instrumentation.js\` is available by default. You can remove it from ${configFileName}.`,
     ],
@@ -1080,6 +1076,12 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
 
   for (const [propertyPath, warning] of warnings) {
     if (hasConfigProperty(config, propertyPath)) warnConfigOnce(warning);
+  }
+  // Next.js drops nullish nested values before warning about the moved key.
+  if (readOptionalRecord(config.experimental)?.skipTrailingSlashRedirect != null) {
+    warnConfigOnce(
+      `\`experimental.skipTrailingSlashRedirect\` has been moved to \`skipTrailingSlashRedirect\`. Please update your ${configFileName} file accordingly.`,
+    );
   }
 }
 

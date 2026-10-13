@@ -227,15 +227,29 @@ describe("deprecated config warnings", () => {
   });
 
   it("keeps the top-level skipTrailingSlashRedirect when the legacy key is nullish", async () => {
-    // Next.js drops undefined/null nested config values before moving the
-    // legacy key (assignDefaults in packages/next/src/server/config.ts).
-    for (const legacy of [undefined, null]) {
-      await expect(
-        resolveNextConfig({
-          skipTrailingSlashRedirect: true,
-          experimental: { skipTrailingSlashRedirect: legacy } as never,
-        }),
-      ).resolves.toMatchObject({ skipTrailingSlashRedirect: true });
+    // A config file name no other test warns for, so warn-once cannot hide a warning.
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.ts"), "export default {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      // Next.js drops undefined/null nested config values before moving the
+      // legacy key (assignDefaults in packages/next/src/server/config.ts).
+      for (const legacy of [undefined, null]) {
+        await expect(
+          resolveNextConfig(
+            {
+              skipTrailingSlashRedirect: true,
+              experimental: { skipTrailingSlashRedirect: legacy } as never,
+            },
+            root,
+          ),
+        ).resolves.toMatchObject({ skipTrailingSlashRedirect: true });
+      }
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
