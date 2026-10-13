@@ -3777,6 +3777,15 @@ describe("fetch cache shim", () => {
       expect((await (await pending).json()).sent).toContain("alice");
     });
 
+    it("a Request's body is used up even when a property shadows it", async () => {
+      const input = new Request(url, { method: "POST", body: "alice" });
+      Object.defineProperty(input, "body", { value: null });
+      const pending = fetch(input, { next: { revalidate: 60 } });
+
+      await expect(input.text()).rejects.toThrow();
+      expect((await (await pending).json()).sent).toContain("alice");
+    });
+
     it("a Blob body's type isn't sent or keyed with a change made right after the call", async () => {
       const read = async (change: boolean) => {
         const body = new Blob(["user"], { type: "text/alice" });

@@ -275,6 +275,8 @@ const getBlobType = getIntrinsic<string>(Blob.prototype, "type");
 const getFileName = getIntrinsic<string>(File.prototype, "name");
 const getFileLastModified = getIntrinsic<number>(File.prototype, "lastModified");
 const getRequestHeaders = getIntrinsic<Headers>(Request.prototype, "headers");
+const getRequestBody = getIntrinsic<ReadableStream | null>(Request.prototype, "body");
+const getRequestBodyUsed = getIntrinsic<boolean>(Request.prototype, "bodyUsed");
 // Both are deliberately invoked with Reflect.apply on the body.
 // oxlint-disable-next-line typescript/unbound-method
 const { toString: urlSearchParamsToString } = URLSearchParams.prototype;
@@ -434,7 +436,9 @@ function snapshotFetchRequest(
 // A copy of the Request takes the body, as fetch does, so the caller can't
 // read it while the copy's body is keyed and sent.
 function snapshotRequestBody(input: Request, init: RequestInit): Request {
-  if (init.body != null || input.body === null || input.bodyUsed) return input;
+  if (init.body != null || getRequestBody(input) === null || getRequestBodyUsed(input)) {
+    return input;
+  }
   try {
     return new Request(input);
   } catch {
