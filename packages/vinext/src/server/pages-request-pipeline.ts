@@ -40,6 +40,7 @@ import {
   normalizeDefaultLocalePathname,
   stripI18nLocaleForApiRoute,
 } from "./pages-i18n.js";
+import { localeRootHasTrailingSlash } from "../utils/domain-locale.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
@@ -187,6 +188,7 @@ export type PagesPipelineDeps = {
   assetPrefix?: string;
   basePath: string;
   trailingSlash: boolean;
+  skipProxyUrlNormalize?: boolean;
   i18nConfig: NextI18nConfig | null;
   configRedirects: NextRedirect[];
   configRewrites: {
@@ -417,9 +419,14 @@ export async function runPagesRequest(
   // Step 3: Build pre-middleware request context
   const reqCtx: RequestContext = requestContextFromRequest(request);
   const requestHostname = i18nConfig ? url.hostname : "";
+  const rootTrailingSlash = localeRootHasTrailingSlash({
+    trailingSlash,
+    skipProxyUrlNormalize: deps.skipProxyUrlNormalize,
+  });
   const requestConfigMatchPathname = i18nConfig
     ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
         hostname: requestHostname,
+        rootTrailingSlash,
       })
     : requestConfigPathname;
 
@@ -630,7 +637,12 @@ export async function runPagesRequest(
   let resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
 
   const matchResolvedPathname = (p: string): string =>
-    i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
+    i18nConfig
+      ? normalizeDefaultLocalePathname(p, i18nConfig, {
+          hostname: requestHostname,
+          rootTrailingSlash,
+        })
+      : p;
   const configSourcePathname = (): string =>
     resolvedPathnameIsRequestPathname
       ? requestConfigMatchPathname

@@ -2624,6 +2624,7 @@ async function createPagesRouterRequestHandler(
         assetPrefix,
         basePath,
         trailingSlash,
+        skipProxyUrlNormalize,
         i18nConfig,
         configRedirects,
         configRewrites,
