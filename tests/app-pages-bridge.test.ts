@@ -134,14 +134,16 @@ describe("renderPagesFallback", () => {
 
   // A page the build found static can still run a getInitialProps that reads
   // the request, so an entry every host shares cannot store its render.
+  // A Workers Cache probe classifies the same render, so it sees it as dynamic.
   it.each([
-    [true, "initial", "getInitialProps render shares a cache entry across hosts"],
-    [true, "static", undefined],
-    [false, "initial", undefined],
+    ["admit", true, "initial", "getInitialProps render shares a cache entry across hosts"],
+    ["probe", true, "initial", "getInitialProps render shares a cache entry across hosts"],
+    ["admit", true, "static", undefined],
+    ["admit", false, "initial", undefined],
   ] as const)(
-    "vetoes admission when shared across hosts is %s and the page is %s",
-    async (sharedAcrossHosts, runtimeDataKind, reason) => {
-      const context = { waitUntil() {}, [CACHEABILITY_REQUEST_STATE]: { mode: "admit" as const } };
+    "marks the render dynamic in %s mode when shared across hosts is %s and the page is %s",
+    async (mode, sharedAcrossHosts, runtimeDataKind, reason) => {
+      const context = { waitUntil() {}, [CACHEABILITY_REQUEST_STATE]: { mode } };
       const request = new Request("https://example.com/page");
       const getRuntimePageDataKind = vi.fn(() => runtimeDataKind);
       await runWithExecutionContext(context, () =>
@@ -163,8 +165,8 @@ describe("renderPagesFallback", () => {
           },
         ),
       );
-      const state = context[CACHEABILITY_REQUEST_STATE] as { finalResponseVetoReason?: string };
-      expect(state.finalResponseVetoReason).toBe(reason);
+      const state = context[CACHEABILITY_REQUEST_STATE] as { forcedDynamicReason?: string };
+      expect(state.forcedDynamicReason).toBe(reason);
       expect(getRuntimePageDataKind).toHaveBeenCalledTimes(sharedAcrossHosts ? 1 : 0);
     },
   );

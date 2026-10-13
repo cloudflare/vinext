@@ -588,6 +588,45 @@ describe("Pages Worker request stage", () => {
     expect(options).toEqual({ cache: "bypass" });
   });
 
+  // Workers Cache warms what a probe finds cacheable. A probe renders as the
+  // shared dispatch, so a page whose shared entry refuses a request-time
+  // getInitialProps is classified as uncacheable rather than warmed forever.
+  it("marks a probe of a page shared across hosts as the shared dispatch would be", async () => {
+    setCdnCacheAdapter({
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseStageCacheIdentity: "host-free",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    });
+    mocks.matchPageRoute.mockImplementation(() => ({
+      route: { dataKind: "none", isDynamic: false, pattern: "/page" },
+    }));
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("probe"));
+    await handleRequestStage(
+      new Request("https://example.com/page?__vinext_cacheability_probe=retry", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "prerender-secret",
+        },
+      }),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    const [, props, options] = dispatch.mock.calls[0]!;
+    expect(props).toMatchObject({
+      cacheability: { probeMode: "probe" },
+      sharedAcrossHosts: true,
+    });
+    expect(options).toEqual({ cache: "bypass" });
+  });
+
   it("transports matched positive config cache policy using the i18n match path", async () => {
     setCdnCacheAdapter({
       buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),

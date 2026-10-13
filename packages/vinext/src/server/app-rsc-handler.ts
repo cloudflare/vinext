@@ -2323,8 +2323,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const renderRequest = responseStageRequest(stageRequest);
           // Next.js keys a static page's response cache entry by its path, so
           // one entry answers every host that is not a configured i18n domain.
+          // A probe classifies the shared dispatch, so it renders as one.
           const sharedAcrossHosts =
-            cache === "shared" &&
+            (cache === "shared" || responseStageProbeMode !== null) &&
             resourceKind === "page" &&
             pagesPageSharesAcrossHosts({ dataKind, runsInitialProps }) &&
             adapterUsesSharedCacheIdentity();
@@ -2363,7 +2364,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           let response = await dispatchResponseStage(
             renderRequest,
             hybridProps,
-            sharedAcrossHosts
+            cache === "shared" && sharedAcrossHosts
               ? {
                   cache,
                   cacheIdentity: createSharedHybridPagesCacheIdentity(
