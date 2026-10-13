@@ -195,6 +195,59 @@ describe("App Worker response stage", () => {
     expect(stages.renderResponse).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { kind: "hybrid-pages" as const, regeneratesStoredEntry: true, expected: true },
+    { kind: "hybrid-pages" as const, regeneratesStoredEntry: undefined, expected: undefined },
+    { kind: "app-not-found" as const, regeneratesStoredEntry: true, expected: undefined },
+  ])(
+    "marks a $kind stored-entry regeneration: $regeneratesStoredEntry",
+    async ({ kind, regeneratesStoredEntry, expected }) => {
+      stages.renderResponse.mockResolvedValueOnce(new Response("rendered"));
+      const props: AppWorkerResponseStageProps =
+        kind === "app-not-found"
+          ? notFoundStage
+          : {
+              allowRscDocumentFallback: false,
+              appRouteMatch: null,
+              buildId: null,
+              cacheability: {
+                policyHeaders: null,
+                probeMode: null,
+                resolvedRoutePathname: "/posts/one",
+              },
+              canonicalPathname: "/posts/one",
+              cleanPathname: "/posts/one",
+              draftModeCookie: null,
+              isDataRequest: false,
+              isRscRequest: false,
+              kind,
+              matchKind: "dynamic",
+              middlewareCookieOverlay: null,
+              preHandlerHeaders: null,
+              protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+              requestOrigin: "https://example.com",
+              requestUrl: "https://example.com/posts/one",
+              resolvedUrl: "/posts/one",
+              resourceKind: "page",
+              scriptNonce: null,
+            };
+
+      await handleResponseStage(
+        new Request("https://example.com/posts/one"),
+        undefined,
+        undefined,
+        props,
+        async () => new Response("request-stage"),
+        { cache: "shared", regeneratesStoredEntry },
+      );
+
+      const context = stages.renderResponse.mock.calls[0]?.[1] as {
+        isStoredEntryRegeneration?: boolean;
+      };
+      expect(context.isStoredEntryRegeneration).toBe(expected);
+    },
+  );
+
   it("re-enters the request stage through the adapter-owned reverse transport", async () => {
     const dispatchRequestStage = vi.fn(async () => new Response("revalidated"));
     stages.renderResponse.mockImplementationOnce(async (_request, ctx) =>

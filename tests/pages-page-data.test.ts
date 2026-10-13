@@ -212,6 +212,32 @@ describe("dynamic Pages stored entry", () => {
     },
   );
 
+  it.each([false, true])(
+    "renders an adapter-stored entry regeneration without rerunning getStaticPaths (data: %s)",
+    async (isDataReq) => {
+      // Response Store keeps its entries outside isrGet; its trusted
+      // regeneration callback proves the path was admitted for this build.
+      const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: true as const }));
+      const getStaticProps = vi.fn(async () => ({ props: { regenerated: true }, revalidate: 60 }));
+      const options = createOptions({
+        isDataReq,
+        regeneratesStoredEntry: true,
+        route: { isDynamic: true },
+        pageModule: { getStaticPaths, getStaticProps },
+      });
+      const result = await resolvePagesPageData(options);
+      expect(getStaticPaths).not.toHaveBeenCalled();
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        kind: "render",
+        isFallback: false,
+        pageProps: { regenerated: true },
+      });
+      // No data-first entry: the stored entry already exists.
+      expect(options.isrSet).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not run getStaticPaths for a draft-mode request", async () => {
     // Next.js skips the fallback gate in draft mode (`hasStaticPaths && !isDraftMode`).
     const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: false as const }));

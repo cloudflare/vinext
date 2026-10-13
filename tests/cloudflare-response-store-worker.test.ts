@@ -664,7 +664,12 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect((replayedRequest as Request).url).toBe("https://example.com/page");
     expect(replayedProps).toMatchObject({ resolvedUrl: "/page" });
     // No client waits on a regeneration, so it renders the document whole.
-    expect(replayedOptions).toEqual({ cache: "shared", renderWholeDocument: true });
+    // Only the store invokes it, for an entry it holds, so admission is known.
+    expect(replayedOptions).toEqual({
+      cache: "shared",
+      regeneratesStoredEntry: true,
+      renderWholeDocument: true,
+    });
     expect(regenerated.headers.has("X-Vinext-Params")).toBe(false);
     expect(regenerated.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
   });

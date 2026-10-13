@@ -55,6 +55,8 @@ export type ExecutionContextLike = {
   isInternalPagesRevalidation?: boolean;
   /** Marks a build-secret-authorized Worker request that may run prerender discovery hooks. */
   isPrerenderPathDiscovery?: boolean;
+  /** Marks an adapter-invoked regeneration of an entry stored for this build. */
+  isStoredEntryRegeneration?: boolean;
   /**
    * Installed only by the prerender server: records the page's special error
    * that escaped the shell, with the headers to store, for the build.

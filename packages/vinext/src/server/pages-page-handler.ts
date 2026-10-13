@@ -1145,6 +1145,7 @@ export function createPagesPageHandler(
           // arbitrary header value (cache-stampede/DoS vector).
           isOnDemandRevalidate,
           revalidateOnlyGenerated,
+          regeneratesStoredEntry: getRequestExecutionContext()?.isStoredEntryRegeneration === true,
           previewData,
           pageModule,
           AppComponent,
