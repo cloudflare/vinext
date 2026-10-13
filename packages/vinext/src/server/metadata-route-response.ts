@@ -932,8 +932,9 @@ export async function handleMetadataRouteRequest(
     const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
     if (cached.response) return cached.response;
 
-    // Only allowed params are ever stored, so a cached response needs no
-    // generateStaticParams call. Next decides this from its build manifest.
+    // A deployment stores only the params it allows, so a cached response
+    // needs no generateStaticParams call, as for App Router pages. Next
+    // decides this from its build manifest.
     if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
       const validationParams = { ...rawParams };
       canonicalizeAppPageParams(validationParams);
