@@ -43,7 +43,20 @@ function shouldSkipElement(element: HTMLElement): boolean {
   return rectProperties.every((property) => rect[property] === 0);
 }
 
-function topOfElementInViewport(element: HTMLElement, viewportHeight: number): boolean {
+function getScrollPaddingTopPx(element: HTMLElement, viewportHeight: number): number {
+  const scrollPaddingTop = getComputedStyle(element).scrollPaddingTop;
+  const value = Number.parseFloat(scrollPaddingTop);
+  if (!Number.isFinite(value) || value < 0) return 0;
+  if (scrollPaddingTop.endsWith("px")) return value;
+  if (scrollPaddingTop.endsWith("%")) return (value / 100) * viewportHeight;
+  return 0;
+}
+
+function topOfElementInViewport(
+  element: HTMLElement,
+  viewportHeight: number,
+  getCurrentScrollPaddingTop: () => number,
+): boolean {
   const rects = element.getClientRects();
   if (rects.length === 0) {
     return false;
@@ -56,7 +69,7 @@ function topOfElementInViewport(element: HTMLElement, viewportHeight: number): b
     }
   }
 
-  return elementTop >= 0 && elementTop <= viewportHeight;
+  return elementTop >= getCurrentScrollPaddingTop() && elementTop <= viewportHeight;
 }
 
 function getHashFragmentDomNode(hash: string): Element | null {
@@ -103,14 +116,24 @@ function scrollToElement(target: HTMLElement, hash: string | null): void {
 
   const htmlElement = document.documentElement;
   const viewportHeight = htmlElement.clientHeight;
+  let scrollPaddingTop: number | null = null;
 
-  if (topOfElementInViewport(target, viewportHeight)) {
+  // Lazily get current scroll padding top inside `topOfElementInViewport()`
+  // to ensure `getComputedStyle()` is called after checking rect !== null
+  const getCurrentScrollPaddingTop = () => {
+    if (scrollPaddingTop === null) {
+      scrollPaddingTop = getScrollPaddingTopPx(htmlElement, viewportHeight);
+    }
+    return scrollPaddingTop;
+  };
+
+  if (topOfElementInViewport(target, viewportHeight, getCurrentScrollPaddingTop)) {
     return;
   }
 
   htmlElement.scrollTop = 0;
 
-  if (!topOfElementInViewport(target, viewportHeight)) {
+  if (!topOfElementInViewport(target, viewportHeight, getCurrentScrollPaddingTop)) {
     target.scrollIntoView({ behavior: "auto", block: "start", inline: "nearest" });
   }
 }
