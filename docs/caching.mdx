@@ -502,7 +502,7 @@ Next.js keeps one cache entry per path whatever the host, so an app served on se
 
 - **KV and in-memory:** keys leave out the host.
 - **Workers Response Store:** App Router entries leave out the host. Pages Router entries keep it in their keys.
-- **Workers Cache:** Cloudflare keys each entry by its request URL, so every host fills and stores its own copy.
+- **Workers Cache:** Cloudflare [keys an entry](https://developers.cloudflare.com/workers/cache/cache-keys/) by its path and query, entrypoint, `ctx.props`, Worker version and a few request headers that name another host, such as `X-Forwarded-Host`, but not by the host itself. vinext puts the request's full URL, host included, into the key it adds and into the props it passes, so every host fills and stores its own copy.
 
 ## Freshness and revalidation
 
