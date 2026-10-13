@@ -3252,6 +3252,54 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    // Workers sends the bytes of these chunks, which aren't keyed.
+    it.each([
+      ["DataView", (bytes: Uint8Array) => new DataView(bytes.buffer)],
+      ["ArrayBuffer", (bytes: Uint8Array) => bytes.buffer],
+      ["Uint16Array", (bytes: Uint8Array) => new Uint16Array(bytes.buffer)],
+    ])("fetches a ReadableStream body with %s chunks uncached", async (_name, toChunk) => {
+      const read = async (byte: number) => {
+        startNewFetchCacheScope();
+        const res = await fetch("https://api.example.com/body-stream-view-chunks", {
+          method: "POST",
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(toChunk(Uint8Array.of(byte, byte)));
+              controller.close();
+            },
+          }),
+          next: { revalidate: 60 },
+        });
+        return (await res.json()).count;
+      };
+
+      expect(await read(0x61)).toBe(1);
+      expect(await read(0x62)).toBe(2);
+      expect(await read(0x61)).toBe(3);
+    });
+
+    it("sends every chunk of a ReadableStream body it fetches uncached", async () => {
+      await fetch("https://api.example.com/body-stream-mixed-chunks", {
+        method: "POST",
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(Uint8Array.of(0x61));
+            controller.enqueue(new DataView(Uint8Array.of(0x62).buffer));
+            controller.enqueue(Uint8Array.of(0x63));
+            controller.close();
+          },
+        }),
+        next: { revalidate: 60 },
+      });
+
+      const body = (fetchMock.mock.calls[0][1] as RequestInit).body as ReadableStream;
+      const sent: number[] = [];
+      for await (const chunk of body as unknown as AsyncIterable<ArrayBufferView>) {
+        sent.push(...new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+      }
+      expect(sent).toEqual([0x61, 0x62, 0x63]);
+    });
+
     // Bodies such as async iterables are built into a Request as fetch would,
     // and keyed by that Request's bytes.
     describe("bodies built into a Request", () => {

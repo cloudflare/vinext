@@ -378,6 +378,11 @@ async function serializeBody(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // A runtime may send other chunk types (Workers sends the bytes of
+        // DataViews and ArrayBuffers), and those are not keyed.
+        if (typeof value !== "string" && !(value instanceof Uint8Array)) {
+          throw new SkipCacheKeyGenerationError();
+        }
         const bytes = typeof value === "string" ? encoder.encode(value) : value;
         totalBodyBytes += bytes.byteLength;
         if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {

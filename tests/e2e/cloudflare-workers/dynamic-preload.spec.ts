@@ -123,4 +123,32 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     expect(publicRead.body).toEqual({ caseId, visibility: "public" });
     expect(publicRead.originRequestId).not.toBe(privateEntry?.originRequestId);
   });
+
+  // Workers sends the bytes of DataView and ArrayBuffer chunks in a stream
+  // fetch body. Those bytes aren't keyed, so such a cached POST is fetched
+  // uncached rather than sharing an entry with an equal-length body.
+  for (const chunk of ["dataview", "arraybuffer"]) {
+    test(`fetches cached POSTs with ${chunk} stream chunks uncached`, async ({ request }) => {
+      type OriginRead = {
+        body: { caseId: string; variant: string };
+        originRequestId: string;
+      };
+      const caseId = crypto.randomUUID();
+      const readCase = async (variant: string): Promise<OriginRead> => {
+        const response = await request.get(
+          `${BASE_URL}/api/fetch-cache-stream-chunk-body?case=${caseId}&variant=${variant}&chunk=${chunk}`,
+        );
+        expect(response.status()).toBe(200);
+        return (await response.json()) as OriginRead;
+      };
+
+      const reads = [await readCase("a"), await readCase("a"), await readCase("b")];
+      expect(reads.map((read) => read.body)).toEqual([
+        { caseId, variant: "a" },
+        { caseId, variant: "a" },
+        { caseId, variant: "b" },
+      ]);
+      expect(new Set(reads.map((read) => read.originRequestId)).size).toBe(3);
+    });
+  }
 });

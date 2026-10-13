@@ -515,6 +515,7 @@ Some requests with a body are fetched without the cache:
 
 - **Large bodies.** A body over 1 MiB isn't keyed.
 - **Other chunk types in a `Request` body.** A `Request`'s body, including one built from an async iterable, isn't keyed if it streams anything other than `Uint8Array`s. Node.js converts an iterable's chunks to `Uint8Array`s, but Workers passes them through, so on Workers an async iterable that yields strings or `ArrayBuffer`s is fetched uncached.
+- **Other chunk types in a `ReadableStream` body.** A `ReadableStream` body isn't keyed if it streams anything other than `Uint8Array`s and strings. Node.js rejects other chunks, but Workers sends the bytes of `ArrayBuffer`, `DataView` and other typed array chunks, so on Workers those requests are fetched uncached.
 
 A cached `fetch` reads the body, up to 1 MiB, before it sends the request. A body that waits for the response, or for anything else that happens after the request starts, never finishes, so the fetch doesn't either. Aborting the request takes effect only once that read ends. Next.js also reads a stream body before it sends the request.
 
