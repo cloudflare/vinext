@@ -37,6 +37,15 @@ const nextConfig = {
         destination: "/about?next=/:next&safe=1",
         permanent: false,
       },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — a decoded
+      // query capture at the start of a local destination must not become
+      // protocol-relative.
+      {
+        source: "/query-capture-redirect",
+        destination: "/:to",
+        permanent: false,
+        has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
+      },
       // Used by E2E: pages-router-prod/redirect-conditions.spec.ts — header and
       // cookie condition values are server-only and must stay out of the
       // public client bundle.

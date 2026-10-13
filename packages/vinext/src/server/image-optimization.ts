@@ -124,6 +124,8 @@ const IMAGE_OPTIMIZATION_SIGNAL = Symbol.for("vinext.image-optimization-signal")
 export type ImageOptimizationSignal = {
   /** Middleware response headers to send with the image. */
   middlewareHeaders: Headers;
+  /** The request headers after middleware's overrides, when it set any. */
+  requestHeaders: Headers | null;
   /** The image query after middleware and rewrites. */
   search: string;
 };
@@ -147,10 +149,95 @@ export function markImageOptimizationSignal(
 export function readImageOptimizationSignal(response: Response): ImageOptimizationSignal | null {
   const signal: unknown = Reflect.get(response, IMAGE_OPTIMIZATION_SIGNAL);
   if (typeof signal !== "object" || signal === null) return null;
-  const { middlewareHeaders, search } = signal as Partial<ImageOptimizationSignal>;
-  return middlewareHeaders instanceof Headers && typeof search === "string"
-    ? { middlewareHeaders, search }
+  const { middlewareHeaders, requestHeaders, search } = signal as Partial<ImageOptimizationSignal>;
+  return middlewareHeaders instanceof Headers &&
+    (requestHeaders === null || requestHeaders instanceof Headers) &&
+    typeof search === "string"
+    ? { middlewareHeaders, requestHeaders, search }
     : null;
+}
+
+const IMAGE_OPTIMIZATION_SIGNAL_TRANSPORT_HEADER = "x-vinext-stage-image-optimization";
+
+function isHeaderEntries(value: unknown): value is [string, string][] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        typeof entry[1] === "string",
+    )
+  );
+}
+
+/**
+ * Carry a signal through the response-stage transport, which drops the
+ * symbol. The signal rides in the body of the bodiless carrier, with the
+ * carrier's status in the token-authenticated marker.
+ */
+export function serializeImageOptimizationSignalForTransport(
+  response: Response,
+  token: string,
+): Response {
+  const signal = readImageOptimizationSignal(response);
+  if (signal === null) return response;
+  const headers = new Headers(response.headers);
+  headers.set(IMAGE_OPTIMIZATION_SIGNAL_TRANSPORT_HEADER, `${token}:${response.status}`);
+  return new Response(
+    JSON.stringify({
+      middlewareHeaders: [...signal.middlewareHeaders],
+      requestHeaders: signal.requestHeaders ? [...signal.requestHeaders] : null,
+      search: signal.search,
+    }),
+    { headers },
+  );
+}
+
+/** Restore and consume a signal returned by the trusted response-stage wrapper. */
+export async function restoreImageOptimizationSignalFromTransport(
+  response: Response,
+  token: string,
+): Promise<Response> {
+  const marker = response.headers.get(IMAGE_OPTIMIZATION_SIGNAL_TRANSPORT_HEADER);
+  // Non-standard responses such as Worker WebSocket upgrades cannot be
+  // reconstructed, and can never carry the signal.
+  if (marker === null || response.status < 200 || response.status > 599) return response;
+  const headers = new Headers(response.headers);
+  headers.delete(IMAGE_OPTIMIZATION_SIGNAL_TRANSPORT_HEADER);
+  const prefix = `${token}:`;
+  const status = marker.startsWith(prefix) ? Number(marker.slice(prefix.length)) : NaN;
+  if (!Number.isInteger(status) || status < 200 || status > 599) {
+    // An application value under the reserved name stays inert.
+    const body =
+      response.status === 204 || response.status === 205 || response.status === 304
+        ? null
+        : response.body;
+    return new Response(body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+  // The token authenticates this body as the response stage's own output.
+  const transported: unknown = JSON.parse(await response.text());
+  const { middlewareHeaders, requestHeaders, search } = (transported ?? {}) as Record<
+    string,
+    unknown
+  >;
+  if (
+    !isHeaderEntries(middlewareHeaders) ||
+    (requestHeaders !== null && !isHeaderEntries(requestHeaders)) ||
+    typeof search !== "string"
+  ) {
+    throw new Error("Invalid image optimization signal from the response stage");
+  }
+  return markImageOptimizationSignal(new Response(null, { headers, status }), {
+    middlewareHeaders: new Headers(middlewareHeaders),
+    requestHeaders: requestHeaders ? new Headers(requestHeaders) : null,
+    search,
+  });
 }
 
 /**

@@ -433,7 +433,7 @@ You can run `vinext init --platform=cloudflare` to configure these choices. The 
 Pages Router uses the page's data-fetching methods to determine its caching behavior:
 
 - **`getStaticProps()`:** caches the rendered page and its JSON data. Omitting `revalidate` or returning `revalidate: false` keeps the entry fresh until it is invalidated or removed by the cache backend. Return a positive `revalidate` interval in seconds to enable ISR.
-- **`getStaticPaths()`:** supplies concrete paths for a dynamic `getStaticProps()` page. Its `fallback` setting determines whether paths outside that list can be generated on demand.
+- **`getStaticPaths()`:** supplies concrete paths for a dynamic `getStaticProps()` page. Its `fallback` setting determines whether paths outside that list can be generated on demand. In production, Next.js only calls `getStaticPaths()` at build time. vinext calls it at request time in the deployed server or Worker when a path has no fresh or stale cached entry, including paths outside the list that return 404 under `fallback: false`, expired entries, and on-demand revalidation. Cache hits, stale responses, and draft-mode requests do not call it.
 - **Pages without `getServerSideProps()` or `getInitialProps()`:** qualify for automatic static optimization and response caching through Workers Response Store, Workers Cache, or prerendering with Static Assets. A custom `_app.getInitialProps` disables this for pages without `getStaticProps()`.
 - **`getServerSideProps()` or page `getInitialProps()`:** render per request by default. An explicitly authored public cache policy can opt a response into Workers Response Store or Workers Cache; use this only when the response can be shared between visitors.
 

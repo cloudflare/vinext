@@ -12,6 +12,10 @@
  * both webpack ("'server-only' cannot be imported from a Client Component
  * module", import trace through the barrel) and Turbopack.
  *
+ * The same boundary holds for a page importing from middleware or a Pages API
+ * route: those server entries may import `server-only`, but the modules they
+ * pull into the page's browser graph may not.
+ *
  * Pages-only client graphs are guarded when `server-only` resolves, so the
  * dev server must also reject the module while still serving pages whose
  * stripped data exports import `server-only`, without failing Vite's
@@ -80,6 +84,13 @@ function copyFixture(fixtureDir: string): string {
     "server/session-key.cjs",
     `exports.SESSION_SIGNING_KEY = ${JSON.stringify(SIGNING_KEY)};\n`,
   );
+  return root;
+}
+
+/** A `"use server"` module reached through a barrel that re-exports only `greet`. */
+function writeSessionModule(root: string, file: string, source: string) {
+  writeFile(root, `server/${file}`, source);
+  writeFile(root, "server/index.ts", `export { greet } from "./${file}";\n`);
   writeFile(
     root,
     "pages/use-server-greet.tsx",
@@ -90,13 +101,6 @@ export default function UseServerGreetPage() {
 }
 `,
   );
-  return root;
-}
-
-/** A `"use server"` module reached through a barrel that re-exports only `greet`. */
-function writeSessionModule(root: string, file: string, source: string) {
-  writeFile(root, `server/${file}`, source);
-  writeFile(root, "server/index.ts", `export { greet } from "./${file}";\n`);
 }
 
 const ESM_SESSION_BODY = `import { SESSION_SIGNING_KEY } from "./session-key";
@@ -140,6 +144,100 @@ exports.signSession = async (payload) => payload + "." + SESSION_SIGNING_KEY.len
   ],
 ];
 
+/**
+ * A page importing a harmless constant from a server entry (a Pages API route
+ * or middleware) whose own imports reach a `server-only` module. Those server
+ * entries may import `server-only`, but the page's browser graph may not:
+ * Next.js 16.2.7 fails the client build for both graphs ("You're importing a
+ * module that depends on "server-only"", import trace through the server
+ * entry) and builds them without the page. Returns the page, the server
+ * entry, and the module that imports `server-only`.
+ */
+const SERVER_ENTRY_CHAINS: Array<
+  [
+    entry: string,
+    write: (
+      root: string,
+      options: { withPage: boolean },
+    ) => { page: string; serverEntry: string; guarded: string },
+  ]
+> = [
+  [
+    "a Pages API route",
+    (root, { withPage }) => {
+      writeFile(
+        root,
+        "lib/api-secret.ts",
+        `import "server-only";\n\nexport const API_SECRET = ${JSON.stringify(SIGNING_KEY)};\n`,
+      );
+      writeFile(
+        root,
+        "pages/api/contact-fields.ts",
+        `import { API_SECRET } from "../../lib/api-secret";
+
+export const CONTACT_FIELDS = ["name", "email"];
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ keyLength: API_SECRET.length });
+}
+`,
+      );
+      if (withPage) {
+        writeFile(
+          root,
+          "pages/contact-fields.tsx",
+          `import { CONTACT_FIELDS } from "./api/contact-fields";
+
+export default function ContactFieldsPage() {
+  return <p>{CONTACT_FIELDS.join(",")}</p>;
+}
+`,
+        );
+      }
+      return {
+        page: "pages/contact-fields.tsx",
+        serverEntry: "pages/api/contact-fields.ts",
+        guarded: "lib/api-secret.ts",
+      };
+    },
+  ],
+  [
+    "middleware",
+    (root, { withPage }) => {
+      writeFile(
+        root,
+        "lib/middleware-secret.ts",
+        `import "server-only";\n\nexport const MIDDLEWARE_SECRET = ${JSON.stringify(SIGNING_KEY)};\n`,
+      );
+      fs.appendFileSync(
+        path.join(root, "middleware.ts"),
+        `
+import { MIDDLEWARE_SECRET } from "./lib/middleware-secret";
+
+export const MIDDLEWARE_LABEL = "middleware-" + MIDDLEWARE_SECRET.length;
+`,
+      );
+      if (withPage) {
+        writeFile(
+          root,
+          "pages/middleware-label.tsx",
+          `import { MIDDLEWARE_LABEL } from "../middleware";
+
+export default function MiddlewareLabelPage() {
+  return <p>{MIDDLEWARE_LABEL}</p>;
+}
+`,
+        );
+      }
+      return {
+        page: "pages/middleware-label.tsx",
+        serverEntry: "middleware.ts",
+        guarded: "lib/middleware-secret.ts",
+      };
+    },
+  ],
+];
+
 async function buildFixture(root: string, plugins: Plugin[] = []): Promise<void> {
   const builder = await createBuilder({
     root,
@@ -148,6 +246,19 @@ async function buildFixture(root: string, plugins: Plugin[] = []): Promise<void>
     logLevel: "silent",
   });
   await builder.buildApp();
+}
+
+async function fixturePlugins(useCloudflare: boolean): Promise<Plugin[]> {
+  if (!useCloudflare) return [];
+  const { cloudflare } = (await import(
+    pathToFileURL(path.join(CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"))
+      .href
+  )) as { cloudflare: () => Plugin };
+  return [cloudflare()];
+}
+
+function serverOnlyClientImportError(importer: string): string {
+  return `depends on "server-only". This API is only available in Server Components in the App Router, but ${importer} is reachable from a client bundle.`;
 }
 
 describe.each([
@@ -159,21 +270,39 @@ describe.each([
     async (_form, file, source) => {
       const root = copyFixture(fixtureDir);
       writeSessionModule(root, file, source);
-      const plugins: Plugin[] = [];
-      if (useCloudflare) {
-        const { cloudflare } = (await import(
-          pathToFileURL(
-            path.join(CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
-          ).href
-        )) as { cloudflare: () => Plugin };
-        plugins.push(cloudflare());
-      }
 
       // The error names the "use server" module as the importer.
       const importer = path.join(fs.realpathSync(root), "server", file);
-      await expect(buildFixture(root, plugins)).rejects.toThrow(
-        `depends on "server-only". This API is only available in Server Components in the App Router, but ${importer} is reachable from a client bundle.`,
+      await expect(buildFixture(root, await fixturePlugins(useCloudflare))).rejects.toThrow(
+        serverOnlyClientImportError(importer),
       );
+    },
+    120_000,
+  );
+
+  it.each(SERVER_ENTRY_CHAINS)(
+    "reject server-only reached from a page through %s",
+    async (_entry, writeChain) => {
+      const root = copyFixture(fixtureDir);
+      const { guarded } = writeChain(root, { withPage: true });
+
+      const importer = path.join(fs.realpathSync(root), guarded);
+      await expect(buildFixture(root, await fixturePlugins(useCloudflare))).rejects.toThrow(
+        serverOnlyClientImportError(importer),
+      );
+    },
+    120_000,
+  );
+
+  it.each(SERVER_ENTRY_CHAINS)(
+    "build server-only reached only through %s",
+    async (_entry, writeChain) => {
+      const root = copyFixture(fixtureDir);
+      writeChain(root, { withPage: false });
+
+      await expect(
+        buildFixture(root, await fixturePlugins(useCloudflare)),
+      ).resolves.toBeUndefined();
     },
     120_000,
   );
@@ -183,6 +312,9 @@ describe("Pages Router dev server", () => {
   it("rejects server-only behind a 'use server' directive and keeps data-export imports working", async () => {
     const root = copyFixture(PAGES_FIXTURE_DIR);
     writeSessionModule(root, "session.ts", SESSION_MODULES[0][2]);
+    const chains = SERVER_ENTRY_CHAINS.map(([, writeChain]) =>
+      writeChain(root, { withPage: true }),
+    );
     writeFile(
       root,
       "lib/gssp-server-only.ts",
@@ -231,6 +363,17 @@ export default function GsspServerOnlyPage({ keyLength }: { keyLength: number })
       const sessionModule = await fetch(`${baseUrl}/server/session.ts`);
       expect(sessionModule.status).toBe(500);
       expect(await sessionModule.text()).toContain('depends on \\"server-only\\"');
+
+      // Middleware already ran (and imported its server-only module) on the
+      // server for the request above. The browser graph of a page importing
+      // middleware or an API route still fails at the server-only module.
+      for (const { page, serverEntry, guarded } of chains) {
+        expect((await fetch(`${baseUrl}/${page}`)).status).toBe(200);
+        expect((await fetch(`${baseUrl}/${serverEntry}`)).status).toBe(200);
+        const guardedModule = await fetch(`${baseUrl}/${guarded}`);
+        expect(guardedModule.status).toBe(500);
+        expect(await guardedModule.text()).toContain('depends on \\"server-only\\"');
+      }
 
       await server.environments.client.depsOptimizer?.scanProcessing;
       expect(errors.filter((message) => message.includes("dependency scan"))).toEqual([]);

@@ -34,6 +34,7 @@ import {
 import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
+import { pagesPathCacheTag } from "../packages/vinext/src/server/pages-cache-tag.js";
 import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
@@ -475,8 +476,116 @@ describe("createPagesPageHandler — on-demand terminal responses", () => {
 
     expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
     expect(response.headers.get("x-vinext-cache")).toBeNull();
-    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe("_N_T_/redirect");
+    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe(
+      encodeURIComponent("_N_T_/redirect"),
+    );
   });
+});
+
+describe("createPagesPageHandler — percent-encoded pathname cache tags", () => {
+  // `/users/%40alice` and `/users/@alice` share one Pages ISR entry. Each
+  // spelling's edge copy must carry the decoded path tag that
+  // res.revalidate("/users/@alice") and revalidatePath("/users/@alice") purge.
+  function captureCacheTags(): void {
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": input.cacheControl,
+          "X-Example-Cache-Tag": input.tags?.join(",") ?? null,
+        };
+      },
+    });
+  }
+
+  function makeUsersHandler(getStaticProps: () => Promise<Record<string, unknown>>) {
+    const usersRoute: PageRoute = {
+      ...makeRoute("/users/:handle", makePageModule({ getStaticProps })),
+      params: ["handle"],
+    };
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    return createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [usersRoute, notFoundRoute],
+        matchRoute: (url, routes) => {
+          const pathname = url.split("?")[0];
+          const exact = routes.find((route) => route.pattern === pathname);
+          const handle = /^\/users\/([^/]+)$/.exec(pathname)?.[1];
+          const params: Record<string, string> = handle
+            ? { handle: decodeURIComponent(handle) }
+            : {};
+          if (exact) return { route: exact, params };
+          return handle ? { route: usersRoute, params } : null;
+        },
+      }),
+    );
+  }
+
+  it.each([
+    ["/", "_N_T_/"],
+    ["/users/", "_N_T_/users"],
+    ["/users/%40alice", "_N_T_/users/@alice"],
+    ["/a%2fb", "_N_T_/a%2Fb"],
+    ["/caf%C3%A9", "_N_T_/caf%C3%A9"],
+    ["/caf\u00e9", "_N_T_/caf%C3%A9"],
+    ["/bad%E0%A4%A", "_N_T_/bad%E0%A4%A"],
+  ])("derives the path tag for %s from the ISR key identity", (pathname, tag) => {
+    expect(pagesPathCacheTag(pathname)).toBe(tag);
+  });
+
+  it.each([
+    ["props", async () => ({ props: {}, revalidate: false })],
+    ["notFound", async () => ({ notFound: true, revalidate: 7 })],
+    [
+      "redirect",
+      async () => ({ redirect: { destination: "/target", permanent: false }, revalidate: 60 }),
+    ],
+  ])("tags an encoded %s response with the decoded path", async (kind, getStaticProps) => {
+    captureCacheTags();
+    const handler = makeUsersHandler(getStaticProps);
+    const handle = `${kind}-${Date.now()}`;
+
+    const response = await handler(
+      makeRequest(`/users/%40${handle}`),
+      `/users/%40${handle}`,
+      null,
+      null,
+      null,
+    );
+
+    expect(response.headers.get("x-example-cache-tag")).toBe(`_N_T_/users/@${handle}`);
+  });
+
+  it.each([
+    ["props", "%40", "@", async () => ({ props: {}, revalidate: false })],
+    ["notFound", "%40", "@", async () => ({ notFound: true, revalidate: 7 })],
+    // Headers trim trailing whitespace, so the reported tag must stay URI-encoded.
+    ["trailing-space props", "%20", " ", async () => ({ props: {}, revalidate: false })],
+  ])(
+    "reports the decoded path tag after an encoded on-demand %s revalidation",
+    async (_kind, encoded, decoded, getStaticProps) => {
+      const handler = makeUsersHandler(getStaticProps);
+      const handle = `on-demand-${Date.now()}`;
+      const request = new Request(`http://localhost/users/${handle}${encoded}`, {
+        headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+      });
+
+      const response = await handler(request, `/users/${handle}${encoded}`, null, null, null);
+
+      expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+      expect(
+        decodeURIComponent(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER) ?? ""),
+      ).toBe(`_N_T_/users/${handle}${decoded}`);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1659,7 +1768,9 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
 
     const response = await makeHandler("_app")(request, "/", null, null, null);
     expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
-    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe("_N_T_/");
+    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe(
+      encodeURIComponent("_N_T_/"),
+    );
     expect(pageWrites()).toHaveLength(1);
   });
 

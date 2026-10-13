@@ -15,6 +15,7 @@ import {
   type ImageConfig,
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
+import { VINEXT_PRERENDER_SPECIAL_ERROR_HEADER } from "./headers.js";
 import type { VinextAssetFetcher } from "./multi-stage.js";
 import { normalizePath } from "./normalize-path.js";
 import { attachRequestCfMetadata, cloneRequestWithUrl } from "./request-pipeline.js";
@@ -36,13 +37,15 @@ export type WorkerImageSourceOptions = {
   fetchPublicFile(sourceRequest: Request): Promise<Response | null>;
 };
 
-// Representation headers belong to the image, not to middleware's response.
+// Representation headers belong to the image, not to middleware's response,
+// and only a page's special error carries the internal header.
 const OMITTED_MIDDLEWARE_HEADERS = new Set([
   "content-encoding",
   "content-length",
   "content-range",
   "content-type",
   "transfer-encoding",
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
 
 function cancelResponseBody(response: Response): void {
@@ -133,9 +136,13 @@ export async function serveWorkerImageOptimization(
   // The query middleware and rewrites selected, which the handler validated.
   const imageUrl = new URL(request.url);
   imageUrl.search = signal.search;
+  const imageRequest = cloneRequestWithUrl(request, imageUrl.href);
   const response = await handleConfiguredImageOptimization(
-    cloneRequestWithUrl(request, imageUrl.href),
-    (sourceUrl, imageRequest) => fetchWorkerImageSource(sourceUrl, imageRequest, options),
+    // Format negotiation reads the request headers after middleware's overrides.
+    signal.requestHeaders
+      ? new Request(imageRequest, { headers: signal.requestHeaders })
+      : imageRequest,
+    (sourceUrl) => fetchWorkerImageSource(sourceUrl, imageRequest, options),
     allowedWidths,
     imageConfig,
   );

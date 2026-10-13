@@ -67,6 +67,7 @@ const projectServers = {
       "app-router-prod/use-cache.spec.ts",
       "app-router-prod/public-file-encoding.spec.ts",
       "app-router-prod/image-middleware.spec.ts",
+      "app-router-prod/pages-res-revalidate.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
     ],

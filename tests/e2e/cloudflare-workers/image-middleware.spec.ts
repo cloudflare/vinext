@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 
 const imagePath = (source: string) => `/_next/image?url=${encodeURIComponent(source)}&w=64&q=75`;
 
+const endpointImagePath = (endpoint: string, source: string, extra = "") =>
+  `${endpoint}?url=${encodeURIComponent(source)}&w=64&q=75${extra}`;
+
 // Next.js answers a local source that yields no image with this 400.
 const INVALID_IMAGE = "The requested resource isn't a valid image.";
 
@@ -38,5 +41,71 @@ test.describe("image optimization source behind middleware", () => {
       expect(image.status(), source).toBe(200);
       expect(image.headers()["content-type"], source).toBe("image/webp");
     }
+  });
+});
+
+// Verified against Next.js 16.2.7 `next start`: middleware runs on the image
+// endpoint before it reads a source. wrangler.jsonc routes /protected/* to the
+// Worker first, so middleware gates direct requests for those files.
+test.describe("Cloudflare Workers image endpoint behind middleware", () => {
+  for (const endpoint of ["/_next/image", "/_vinext/image"]) {
+    test(`${endpoint} returns middleware's denial of the endpoint`, async ({ request }) => {
+      const image = await request.get(endpointImagePath(endpoint, "/vinext-image.png", "&deny=1"));
+      expect(image.status()).toBe(403);
+      expect(await image.text()).toBe("image endpoint blocked by middleware");
+    });
+
+    test(`${endpoint} does not serve a source middleware denies`, async ({ request }) => {
+      const admitted = await request.get("/protected/private.png", {
+        headers: { cookie: "members=1" },
+      });
+      expect(admitted.status()).toBe(200);
+      expect(admitted.headers()["content-type"]).toBe("image/png");
+      const direct = await request.get("/protected/private.png");
+      expect(direct.status()).toBe(403);
+
+      for (const cookie of [undefined, "members=1"]) {
+        const image = await request.get(endpointImagePath(endpoint, "/protected/private.png"), {
+          headers: { Accept: "image/webp", ...(cookie ? { cookie } : {}) },
+        });
+        expect(image.status(), cookie).toBe(400);
+        expect(await image.text(), cookie).toBe(INVALID_IMAGE);
+        expect(image.headers()["content-type"] ?? "", cookie).not.toContain("image/");
+        expect(image.headers()["x-mw-image-endpoint"], cookie).toBe("true");
+      }
+    });
+  }
+
+  test("serves an admitted source with middleware's response headers", async ({ request }) => {
+    const image = await request.get(endpointImagePath("/_next/image", "/vinext-image.png"), {
+      headers: { Accept: "image/webp" },
+    });
+    expect(image.status()).toBe(200);
+    expect(image.headers()["content-type"]).toBe("image/webp");
+    expect(image.headers()["x-mw-image-endpoint"]).toBe("true");
+
+    // HEAD runs in the complete response graph of a multi-stage build.
+    const head = await request.head(endpointImagePath("/_next/image", "/vinext-image.png"), {
+      headers: { Accept: "image/webp" },
+      maxRedirects: 0,
+    });
+    expect(head.status()).toBe(200);
+    expect(head.headers()["content-type"]).toBe("image/webp");
+    expect(head.headers()["x-mw-image-endpoint"]).toBe("true");
+  });
+
+  test("serves the image query middleware rewrites to", async ({ request }) => {
+    const image = await request.get(
+      endpointImagePath("/_next/image", "/image-endpoint-replaced.png"),
+      { headers: { Accept: "image/webp" } },
+    );
+    expect(image.status()).toBe(200);
+    expect(image.headers()["content-type"]).toBe("image/webp");
+  });
+
+  test("keeps rejecting missing sources", async ({ request }) => {
+    const missing = await request.get(endpointImagePath("/_next/image", "/missing.png"));
+    expect(missing.status()).toBe(400);
+    expect(missing.headers()["x-mw-image-endpoint"]).toBe("true");
   });
 });

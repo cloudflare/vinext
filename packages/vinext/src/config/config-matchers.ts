@@ -1165,18 +1165,22 @@ function appendQueryParams(url: string, params: Iterable<[string, string]>): str
  * users off-site.
  *
  * This function collapses any leading double (or more) slashes to a single
- * slash for non-external (relative) destinations.
+ * slash for non-external (relative) destinations, including tab/newline and
+ * leading C0 control characters that browsers ignore while parsing.
  */
 export function sanitizeDestination(dest: string): string {
   // External URLs (http://, https://) are intentional — don't touch them
   if (dest.startsWith("http://") || dest.startsWith("https://")) {
     return dest;
   }
-  // Normalize leading backslashes to forward slashes. Browsers interpret
-  // backslash as forward slash in URL contexts, so "\/evil.com" becomes
-  // "//evil.com" (protocol-relative redirect). Replace any mix of leading
-  // slashes and backslashes with a single forward slash.
-  dest = dest.replace(/^[\\/]+/, "/");
+  // Collapse the leading run of slashes and backslashes to a single "/".
+  // Browsers treat a backslash as "/" in URL contexts, and the WHATWG URL
+  // parser removes ASCII tab/newline anywhere and trims leading C0
+  // controls/space before parsing, so "\/evil.com" and "/<TAB>/evil.com" both
+  // resolve as the protocol-relative "//evil.com". Only the leading prefix is
+  // rewritten, so the rest of the path is left as substituted.
+  // oxlint-disable-next-line no-control-regex -- matching C0 controls is the point (WHATWG URL leading trim)
+  dest = dest.replace(/^[\u0000-\u0020]*(?:[\\/][\t\n\r]*)+/, "/");
   return dest;
 }
 

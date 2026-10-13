@@ -113,11 +113,12 @@ describe("performOnDemandRevalidate", () => {
   it.each([
     ["a rewritten source", "/alias?view=one", "_N_T_/source"],
     ["a base-path-stripped source", "/docs/fixed-page", "_N_T_/fixed-page"],
+    ["a path ending in whitespace", "/fixed-page%20", "_N_T_/fixed-page "],
   ])("purges the actual regenerated tag for %s", async (_name, requestedPath, regeneratedTag) => {
     const fetchMock = vi.fn(
       async () =>
         new Response(null, {
-          headers: { [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: regeneratedTag },
+          headers: { [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: encodeURIComponent(regeneratedTag) },
           status: 200,
         }),
     );

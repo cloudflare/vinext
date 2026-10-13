@@ -238,6 +238,8 @@ type AppRouterConfig = {
   prerenderSecret?: string;
   /** next.config `skipTrailingSlashRedirect`. */
   skipTrailingSlashRedirect?: boolean;
+  /** Dev-only key authenticating the hybrid Pages handler's forwarded middleware context. */
+  devForwardedMiddlewareContextKey?: string;
 };
 
 function createSegmentSourceReader(): (filePath: string | null | undefined) => string | null {
@@ -535,6 +537,7 @@ const __requestHandler = createAppRscRequestHandler({
   configRedirects: ${JSON.stringify(config?.redirects ?? [])},
   configRewrites: ${JSON.stringify(config?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] })},
   draftModeSecret: __draftModeSecret,
+  devForwardedMiddlewareContextKey: ${JSON.stringify(config?.devForwardedMiddlewareContextKey ?? null)},
   dispatchMatchedPage() { throw new Error("App request stage attempted to render a page inline"); },
   dispatchMatchedRouteHandler() { throw new Error("App request stage attempted to render a route handler inline"); },
   ${instrumentationPath ? "ensureInstrumentation() { return __ensureInstrumentation(); }," : ""}
@@ -1382,6 +1385,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   imageConfig: __runtimeImageConfig,
   isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,
+  devForwardedMiddlewareContextKey: ${JSON.stringify(config?.devForwardedMiddlewareContextKey ?? null)},
   dispatchMatchedPage({
     bypassInterceptionContextCache,
     cachePathname,
