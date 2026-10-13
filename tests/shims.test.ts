@@ -15375,6 +15375,18 @@ describe("sanitizeDestination", () => {
     expect(sanitizeDestination("/\\evil.com")).toBe("/evil.com");
   });
 
+  it("removes ASCII tab/newline and leading C0 controls (browsers strip them)", async () => {
+    const { sanitizeDestination } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    expect(sanitizeDestination("/\t/evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("/\t\\evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("\t//evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("/\n/\r/evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("\u0000 //evil.com")).toBe("/evil.com");
+    // Only the leading prefix is rewritten.
+    expect(sanitizeDestination("/a\tb")).toBe("/a\tb");
+  });
+
   it("preserves normal relative paths", async () => {
     const { sanitizeDestination } =
       await import("../packages/vinext/src/config/config-matchers.js");
