@@ -94,6 +94,25 @@ describe("fetchSignalledPublicFile", () => {
     expect(new URL(assets.fetch.mock.calls[0][0].url).pathname).toBe("/members%20only/a.png");
   });
 
+  it("fetches the file with middleware's request header overrides", async () => {
+    const assets = { fetch: vi.fn(async (_request: Request) => new Response("file")) };
+    const sourceRequest = new Request("https://example.com/a.png");
+
+    await fetchSignalledPublicFile(
+      createStaticFileSignal(
+        "/a.png",
+        { headers: null, status: null },
+        new Headers({ "x-from-middleware": "1" }),
+      ),
+      sourceRequest,
+      assets,
+    );
+
+    const assetRequest = assets.fetch.mock.calls[0][0];
+    expect(assetRequest.method).toBe("GET");
+    expect([...assetRequest.headers]).toEqual([["x-from-middleware", "1"]]);
+  });
+
   it("returns null for a non-2xx signal or a response that is not a signal", async () => {
     const assets = { fetch: vi.fn(async (_request: Request) => new Response("file")) };
     const sourceRequest = new Request("https://example.com/a.png");

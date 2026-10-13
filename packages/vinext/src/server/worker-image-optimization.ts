@@ -15,8 +15,8 @@ import {
 } from "./image-optimization.js";
 import type { VinextAssetFetcher } from "./multi-stage.js";
 import { normalizePath } from "./normalize-path.js";
-import { readStaticFileSignal } from "./static-file-signal.js";
-import { mergeHeaders } from "./worker-utils.js";
+import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
+import { createStaticAssetRequest, mergeHeaders } from "./worker-utils.js";
 
 export type WorkerImageSourceOptions = {
   assets: VinextAssetFetcher;
@@ -89,7 +89,8 @@ export async function fetchWorkerImageSource(
 
 /**
  * Return the public file a framework static-file signal selects, provided the
- * pipeline answered with a 2xx outcome.
+ * pipeline answered with a 2xx outcome. The file is fetched with middleware's
+ * request header overrides, as resolveStaticAssetSignal fetches it.
  */
 export function fetchSignalledPublicFile(
   response: Response,
@@ -97,6 +98,7 @@ export function fetchSignalledPublicFile(
   assets: VinextAssetFetcher,
 ): Promise<Response> | null {
   const signal = response.ok ? readStaticFileSignal(response) : null;
+  const requestHeaders = readStaticFileSignalRequestHeaders(response);
   cancelResponseBody(response);
   if (signal === null) return null;
   let assetPath = signal;
@@ -105,7 +107,9 @@ export function fetchSignalledPublicFile(
   } catch {
     // Fetch the encoded form, as resolveStaticAssetSignal does.
   }
-  return Promise.resolve(assets.fetch(new Request(new URL(assetPath, sourceRequest.url))));
+  return Promise.resolve(
+    assets.fetch(createStaticAssetRequest(assetPath, sourceRequest, requestHeaders)),
+  );
 }
 
 /**
