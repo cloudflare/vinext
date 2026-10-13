@@ -2606,7 +2606,10 @@ async function createPagesRouterRequestHandler(
       const signal = signalFromNodeResponse(res);
       // Match Next.js: an already-aborted request carries no body.
       const hasBody = method !== "GET" && method !== "HEAD" && !signal.aborted;
-      const webRequest = new Request(`${protocol}://${revalidationHostname ?? hostHeader}${url}`, {
+      // Resolve the path against the origin so a Host carrying `?`, `#` or `/`
+      // can only change the origin, never the pathname middleware matches.
+      const requestOrigin = `${protocol}://${revalidationHostname ?? hostHeader}`;
+      const webRequest = new Request(new URL(url, requestOrigin), {
         method,
         headers: reqHeaders,
         signal,
