@@ -62,6 +62,10 @@ export const openTelemetryTracingIntegration: FrameworkTracingIntegration = {
     return span ? backendSpan(span) : undefined;
   },
   id: "opentelemetry",
+  isRecording() {
+    const api = getOpenTelemetryApi();
+    return api !== undefined && isEnabled(api);
+  },
   enterSpan<T>(
     descriptor: ResolvedFrameworkSpanDescriptor,
     callback: (span: FrameworkTracingBackendSpan) => T,

@@ -64,7 +64,11 @@ export function traceResponseStartWithCompletion(response: Response): {
 } {
   const existing = tracedResponses.get(response);
   if (existing) return { response, started: existing };
-  if (!response.body) return { response, started: Promise.resolve() };
+  // The stream wrapper exists only to time the start span, so skip it when no
+  // backend would record that span.
+  if (!response.body || !frameworkTracer.isRecording()) {
+    return { response, started: Promise.resolve() };
+  }
 
   let onSettled!: () => void;
   const started = new Promise<void>((resolve) => {
@@ -84,7 +88,14 @@ export function traceResponseStart(response: Response): Response {
   return traceResponseStartWithCompletion(response).response;
 }
 
-/** Trace a response replayed by a cache above the framework renderer. */
+/**
+ * Trace a response replayed by a cache above the framework renderer.
+ *
+ * A replayed body is a stored, complete response rather than a render in
+ * progress, so the zero-duration start span is recorded as the replay is handed
+ * back instead of re-streaming the whole body through a JS reader just to
+ * observe its first chunk.
+ */
 export function traceCachedResponseStart(
   response: Response,
   cacheStatus: string | null,
@@ -96,11 +107,16 @@ export function traceCachedResponseStart(
   const isTracedResponse =
     kind === "app-route-handler" ||
     (kind === "app-page" && props !== null && Reflect.get(props, "isRscRequest") === false);
-  return isTracedResponse &&
+  if (
+    isTracedResponse &&
     (cacheStatus === "HIT" ||
       cacheStatus === "STALE" ||
       cacheStatus === "REVALIDATED" ||
-      cacheStatus === "UPDATING")
-    ? traceResponseStart(response)
-    : response;
+      cacheStatus === "UPDATING") &&
+    response.body &&
+    frameworkTracer.isRecording()
+  ) {
+    frameworkTracer.trace(createResponseStartSpanDescriptor(), () => undefined);
+  }
+  return response;
 }

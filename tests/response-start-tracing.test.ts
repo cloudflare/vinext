@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createResponseStartSpanDescriptor,
+  getResponseStartCompletion,
   traceCachedResponseStart,
   traceResponseStart,
   traceResponseStartWithCompletion,
@@ -25,9 +26,11 @@ import {
 type RecordedSpan = ResolvedFrameworkSpanDescriptor & { parentType?: string };
 
 let activeSpan: string | undefined;
+let recording = true;
 const recordedSpans: RecordedSpan[] = [];
 registerFrameworkTracingIntegration({
   id: "response-start-tracing-test",
+  isRecording: () => recording,
   captureActiveContext() {
     const captured = activeSpan;
     return <T>(callback: () => T): T => {
@@ -132,27 +135,66 @@ describe("response start tracing", () => {
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("body");
   });
 
+  it("leaves the response untouched when no tracing backend is recording", async () => {
+    recordedSpans.length = 0;
+    recording = false;
+    try {
+      const original = new Response("body");
+      const traced = traceResponseStartWithCompletion(original);
+
+      expect(traced.response).toBe(original);
+      await expect(traced.started).resolves.toBeUndefined();
+      expect(getResponseStartCompletion(original)).toBeUndefined();
+      expect(await original.text()).toBe("body");
+      expect(recordedSpans).toEqual([]);
+    } finally {
+      recording = true;
+    }
+  });
+
   it.each(["HIT", "STALE", "REVALIDATED", "UPDATING"])(
-    "traces a response-stage cache %s beneath the active request",
+    "traces a response-stage cache %s beneath the active request without re-streaming it",
     async (cacheStatus) => {
       recordedSpans.length = 0;
+      const original = new Response("cached");
       const response = frameworkTracer.trace(
         { name: "GET", type: "BaseServer.handleRequest" },
         () =>
-          traceCachedResponseStart(new Response("cached"), cacheStatus, {
+          traceCachedResponseStart(original, cacheStatus, {
             kind: "app-page",
             isRscRequest: false,
           }),
       );
 
-      await response.text();
-
+      // A replayed body is complete, so the start span is recorded as the
+      // replay is handed back rather than when its first chunk is read.
+      expect(response).toBe(original);
       expect(recordedSpans.map(({ type, parentType }) => ({ type, parentType }))).toEqual([
         { type: "BaseServer.handleRequest", parentType: undefined },
         { type: "NextNodeServer.startResponse", parentType: "BaseServer.handleRequest" },
       ]);
+      expect(await response.text()).toBe("cached");
+      expect(recordedSpans).toHaveLength(2);
     },
   );
+
+  it("does not trace a cached replay when no tracing backend is recording", async () => {
+    recordedSpans.length = 0;
+    recording = false;
+    try {
+      const original = new Response("cached");
+      const response = traceCachedResponseStart(original, "HIT", {
+        kind: "app-route-handler",
+      });
+
+      await response.text();
+
+      expect(response).toBe(original);
+      expect(recordedSpans).toEqual([]);
+    } finally {
+      recording = true;
+    }
+  });
 
   it.each(["MISS", "BYPASS", "EXPIRED", null])(
     "leaves a newly rendered response-stage %s response alone",

@@ -25,9 +25,11 @@ type RecordedSpan = {
 const spans: RecordedSpan[] = [];
 const finishedSpans = new Set<RecordedSpan>();
 let activeSpan: FrameworkTracingBackendSpan | undefined;
+let recording = true;
 registerFrameworkTracingIntegration({
   getActiveSpan: () => activeSpan,
   id: "request-tracing-test",
+  isRecording: () => recording,
   enterSpan<T>(
     descriptor: ResolvedFrameworkSpanDescriptor,
     callback: (span: FrameworkTracingBackendSpan) => T,
@@ -92,6 +94,25 @@ describe("framework request tracing", () => {
     controller.close();
     await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
     await vi.waitFor(() => expect(finishedSpans.has(spans[0])).toBe(true));
+  });
+
+  it("returns the response body unwrapped when no tracing backend is recording", async () => {
+    spans.length = 0;
+    finishedSpans.clear();
+    recording = false;
+    try {
+      const original = new Response(new ReadableStream({ pull() {} }));
+      const response = await traceRequest(async () => traceResponseStart(original));
+
+      expect(response).toBe(original);
+      await vi.waitFor(() => expect(finishedSpans.has(spans[0])).toBe(true));
+      expect(spans.map(({ attributes }) => attributes["next.span_type"])).toEqual([
+        "BaseServer.handleRequest",
+      ]);
+      await response.body!.cancel();
+    } finally {
+      recording = true;
+    }
   });
 
   it("keeps a fully buffered request span open until response start is traced", async () => {

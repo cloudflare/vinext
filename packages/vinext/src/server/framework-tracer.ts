@@ -28,6 +28,11 @@ export type FrameworkTracingIntegration = {
   captureActiveContext?(): <T>(callback: () => T) => T;
   getActiveSpan?(): FrameworkTracingBackendSpan | undefined;
   id: string;
+  /**
+   * Whether a span entered in the current context would be recorded.
+   * Integrations that cannot tell are treated as recording.
+   */
+  isRecording?(): boolean;
   enterSpan<T>(
     descriptor: ResolvedFrameworkSpanDescriptor,
     callback: (span: FrameworkTracingBackendSpan) => T,
@@ -49,6 +54,8 @@ export type FrameworkSpan = {
 export type FrameworkTracer = {
   captureActiveContext(): <T>(callback: () => T) => T;
   getActiveScopeSpan(): FrameworkSpan | undefined;
+  /** Whether any integration would record a span entered in the current context. */
+  isRecording(): boolean;
   runWithDetachedContext<T>(callback: () => T): T;
   trace<T>(descriptor: FrameworkSpanDescriptor, callback: (span: FrameworkSpan) => T): T;
   withPropagatedContext<T>(carrier: Headers, callback: () => T): T;
@@ -138,6 +145,10 @@ export function createFrameworkTracer(
         return span ? [span] : [];
       });
       return spans.length ? createCompositeSpan(spans) : undefined;
+    },
+
+    isRecording(): boolean {
+      return integrations.some((integration) => integration.isRecording?.() ?? true);
     },
 
     runWithDetachedContext<T>(callback: () => T): T {

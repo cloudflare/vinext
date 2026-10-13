@@ -344,6 +344,34 @@ describe("Workers framework tracing integration", () => {
     expect(attributes["error.type"]).toBe("Error");
   });
 
+  it("reports whether the current invocation is sampled", () => {
+    const sampled = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing([]))]);
+    const unsampled = createFrameworkTracer([
+      createWorkersTracingIntegration(fakeTracing([], false)),
+    ]);
+    const root = { isTraced: true, setAttribute() {} };
+    const withRoot = createFrameworkTracer([
+      createWorkersTracingIntegration({ ...fakeTracing([]), getActiveSpan: () => root }),
+    ]);
+    const legacy = fakeTracing([]);
+    const withoutActiveSpan = createFrameworkTracer([
+      createWorkersTracingIntegration({ enterSpan: legacy.enterSpan.bind(legacy) }),
+    ]);
+
+    expect(sampled.trace({ type: "BaseServer.handleRequest" }, () => sampled.isRecording())).toBe(
+      true,
+    );
+    expect(
+      unsampled.trace({ type: "BaseServer.handleRequest" }, () => unsampled.isRecording()),
+    ).toBe(false);
+    // getActiveSpan() returns undefined outside a request.
+    expect(sampled.isRecording()).toBe(false);
+    // Outside a custom span, the invocation root carries the sampling decision.
+    expect(withRoot.isRecording()).toBe(true);
+    // Runtimes that cannot report sampling are assumed to record.
+    expect(withoutActiveSpan.isRecording()).toBe(true);
+  });
+
   it("executes unsampled work without inspecting or recording exception metadata", async () => {
     const spans: RecordedSpan[] = [];
     const tracer = createFrameworkTracer([
