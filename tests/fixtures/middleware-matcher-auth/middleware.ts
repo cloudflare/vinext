@@ -59,5 +59,13 @@ export const config = {
       source: "/billing/invoices/current/q3",
       has: [{ type: "header", key: "x-encoded-delimiter-auth", value: "1" }],
     },
+    {
+      source: "/staff/:path*",
+      has: [{ type: "header", key: "x-hybrid-pages-auth", value: "1" }],
+    },
+    {
+      source: "/api/staff/:path*",
+      has: [{ type: "header", key: "x-hybrid-pages-auth", value: "1" }],
+    },
   ],
 };
