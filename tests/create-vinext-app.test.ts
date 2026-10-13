@@ -244,7 +244,7 @@ describe("createVinextApp", () => {
       typescript: "latest",
       vite: "8.3.0",
       "@vitejs/plugin-react": "latest",
-      "@vitejs/plugin-rsc": "latest",
+      "@vitejs/plugin-rsc": "^0.5.37",
       "@cloudflare/vite-plugin": "beta",
       cf: "latest",
     });
@@ -291,7 +291,7 @@ describe("createVinextApp", () => {
       'pnpm add "vinext" "react-server-dom-webpack" "@vinext/cloudflare" "@cloudflare/workers-response-store"',
     );
     expect(calls).toContain(
-      'pnpm add -D "vite@8.3.0" "@vitejs/plugin-react" "@vitejs/plugin-rsc" "@cloudflare/vite-plugin@beta" "cf@latest"',
+      'pnpm add -D "vite@8.3.0" "@vitejs/plugin-react" "@vitejs/plugin-rsc@^0.5.37" "@cloudflare/vite-plugin@beta" "cf@latest"',
     );
     expect(calls.some((command) => command.split(/\s+/).includes('"next"'))).toBe(false);
     expect(calls.some((command) => command.includes("typegen"))).toBe(false);
