@@ -1,8 +1,15 @@
 import type MagicString from "magic-string";
 
-export type MagicStringTransformResult = {
+export type MagicStringTransformResult<TMap = ReturnType<MagicString["generateMap"]>> = {
   code: string;
-  map: ReturnType<MagicString["generateMap"]>;
+  map: TMap;
+};
+
+// Outputs can come from @vitejs/plugin-rsc's transforms, which may use a
+// different magic-string major (and SourceMap type) than vinext.
+type MagicStringOutput<TMap> = {
+  toString(): string;
+  generateMap(options: Parameters<MagicString["generateMap"]>[0]): TMap;
 };
 
 type SourcemapEnvironment = {
@@ -11,14 +18,14 @@ type SourcemapEnvironment = {
 };
 
 /** Build the standard code + sourcemap result returned by source transforms. */
-export function magicStringTransformResult(
-  output: MagicString,
+export function magicStringTransformResult<TMap = ReturnType<MagicString["generateMap"]>>(
+  output: MagicStringOutput<TMap>,
   options: Parameters<MagicString["generateMap"]>[0] = { hires: "boundary" },
-): MagicStringTransformResult {
+): MagicStringTransformResult<TMap> {
   // High-resolution maps for large dependencies are expensive, and cached
   // results are not always consumed with their map, so generate it on first read.
-  let source: MagicString | undefined = output;
-  let map: MagicStringTransformResult["map"] | undefined;
+  let source: MagicStringOutput<TMap> | undefined = output;
+  let map: TMap | undefined;
   return {
     code: output.toString(),
     get map() {
