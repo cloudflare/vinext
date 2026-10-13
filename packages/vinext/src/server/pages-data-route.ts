@@ -40,6 +40,16 @@ type NextDataMatch = {
  * Returns true if the pathname looks like a `_next/data` request, regardless
  * of buildId. Used by the request pipeline to short-circuit before middleware
  * even when the buildId is wrong (so we can still return a 404 JSON response).
+ *
+ * The prefix and suffix comparisons are byte-exact, so a case variant
+ * (`/_NEXT/data/...`, `/_next/DATA/...`) is an ordinary pathname and never a
+ * Pages data request. This mirrors Next.js, where the same matcher is built
+ * with `{ sensitive: true }` — see vercel/next.js#99481 (commit 445ccb3),
+ * which added `sensitive` after `getPathMatch` matched case-insensitively by
+ * default. Keep the comparisons exact: a case-insensitive rewrite of this
+ * predicate would let a non-canonical URL reach the data endpoint, and the
+ * match must not depend on filesystem case behavior either (Node's static
+ * asset lookup is case-sensitive; macOS and Windows are not).
  */
 export function isNextDataPathname(pathname: string): boolean {
   return pathname.startsWith(NEXT_DATA_PREFIX) && pathname.endsWith(NEXT_DATA_SUFFIX);
