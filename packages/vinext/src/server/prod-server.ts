@@ -1964,7 +1964,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const sourceSignal = isImageSourceBodyStatus(sourceResponse.status)
         ? readStaticFileSignal(sourceResponse)
         : null;
-      cancelResponseBody(sourceResponse);
+      cancelResponseBody(sourceResponse, request.signal.reason);
       if (request.signal.aborted) return;
       if (sourceSignal !== null) {
         let sourcePath = sourceSignal;

@@ -392,7 +392,9 @@ describe.each(targets)(
           const state = (await fetch(`${baseUrl}/api/instrumentation-test`).then((response) =>
             response.json(),
           )) as { errors: { message: string; path: string }[] };
-          expect(state.errors.filter((error) => error.path === renderAbort.page)).toEqual([]);
+          expect(state.errors.filter((error) => error.path.startsWith(renderAbort.page))).toEqual(
+            [],
+          );
         } finally {
           server.off("request", onRequest);
           await driveRenderAbortProbe(baseUrl, renderAbort.probe, id, "finish");
