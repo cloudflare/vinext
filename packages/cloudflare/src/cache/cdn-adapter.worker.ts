@@ -301,6 +301,8 @@ async function createCacheFacingRequest(
   return new Request(url, {
     ...init,
     method: request.method,
+    // A stored redirect is the response; following it would fetch its target.
+    redirect: "manual",
   });
 }
 

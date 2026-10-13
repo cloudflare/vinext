@@ -139,7 +139,7 @@ export async function readAppRouteHandlerCacheResponse(
                   }),
                 };
               } catch (error) {
-                if (resolveAppRouteHandlerSpecialError(error, options.requestUrl)) {
+                if (resolveAppRouteHandlerSpecialError(error)) {
                   return { specialError: error };
                 }
                 throw error;

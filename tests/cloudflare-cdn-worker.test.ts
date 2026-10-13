@@ -366,6 +366,29 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
   });
 
+  it("returns a cached stage's redirect instead of following it", async () => {
+    const requests: Request[] = [];
+    const binding = vi.fn(() => ({
+      fetch(request: Request) {
+        requests.push(request);
+        return new Response(null, { headers: { Location: "/target" }, status: 307 });
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/redirect"),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(requests.map((request) => request.redirect)).toEqual(["manual"]);
+    expect(response.status).toBe(307);
+    expect(response.headers.get("Location")).toBe("/target");
+  });
+
   it("makes a pre-fix named stage fail before render or Workers Cache admission", async () => {
     // No Next.js test port applies: propagation between named Worker
     // entrypoints and Workers Cache admission is Cloudflare-specific.
