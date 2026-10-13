@@ -8,7 +8,7 @@ type Props = {
 export async function getServerSideProps({
   req,
 }: {
-  req: { headers: Record<string, string | undefined>; rawHeaders: string[] };
+  req: { headers: Record<string, string | undefined>; rawHeaders?: string[] };
 }) {
   return {
     props: {
@@ -18,7 +18,7 @@ export async function getServerSideProps({
       // vinext's internal hybrid dev header must never reach Pages handlers.
       forwardedMiddlewareContextVisible:
         "x-vinext-mw-ctx" in req.headers ||
-        req.rawHeaders.some((name) => name.toLowerCase() === "x-vinext-mw-ctx"),
+        (req.rawHeaders?.some((name) => name.toLowerCase() === "x-vinext-mw-ctx") ?? false),
     } satisfies Props,
   };
 }
