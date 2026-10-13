@@ -4190,6 +4190,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // that should be preloaded when a dynamic boundary renders.
                 // Cloudflare builds also use it to inject lazy chunk metadata
                 // into the Worker entry.
+                ...(options.clientOutDir ? { outDir: options.clientOutDir } : {}),
                 manifest: true,
                 ...(hasPagesDir ? { ssrManifest: true } : {}),
                 // Client-scoped so RSC/SSR keep their normal asset handling
@@ -4217,6 +4218,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
+                ...(options.clientOutDir ? { outDir: options.clientOutDir } : {}),
                 manifest: true,
                 ssrManifest: true,
                 assetsInlineLimit: clientAssetsInlineLimit,
@@ -4246,7 +4248,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: "dist/client",
+                outDir: options.clientOutDir ?? "dist/client",
                 manifest: true,
                 ssrManifest: true,
                 assetsInlineLimit: clientAssetsInlineLimit,
