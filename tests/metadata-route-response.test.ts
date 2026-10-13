@@ -1,4 +1,5 @@
 import {
+  cookies,
   headers,
   draftMode,
   getDraftModeCookieHeader,
@@ -18,6 +19,12 @@ import {
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  forbidden,
+  notFound,
+  redirect,
+  unauthorized,
+} from "../packages/vinext/src/shims/navigation-errors.js";
 import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
@@ -1121,6 +1128,260 @@ describe("handleMetadataRouteRequest", () => {
     ).rejects.toThrow(
       "Dynamic metadata opengraph-image route /opengraph-image must return a Response.",
     );
+  });
+
+  // Next.js compiles metadata files into Route Handlers, whose module turns
+  // these errors into empty status or redirect responses (app-route/module.ts).
+  function makeSlugImageRoute(render: (slug: string) => Response | Promise<Response>) {
+    return {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/blog/[slug]/opengraph-image.tsx",
+      routePrefix: "/blog/[slug]",
+      routeSegments: ["blog", "[slug]"],
+      servedUrl: "/blog/[slug]/opengraph-image",
+      patternParts: ["blog", ":slug", "opengraph-image"],
+      contentType: "image/png",
+      module: {
+        revalidate: 60,
+        default: async ({ params }: { params: Promise<{ slug: string }> }) =>
+          render((await params).slug),
+      },
+    } satisfies MetadataFileRoute;
+  }
+
+  it.each([
+    ["notFound", notFound, 404],
+    ["forbidden", forbidden, 403],
+    ["unauthorized", unauthorized, 401],
+  ] as const)(
+    "returns an empty %s response when an image route calls it",
+    async (_, fn, status) => {
+      const response = await handleMetadataRouteRequest({
+        metadataRoutes: [makeSlugImageRoute(() => fn())],
+        cleanPathname: "/blog/missing/opengraph-image",
+        makeThenableParams,
+      });
+
+      expect(response?.status).toBe(status);
+      expect(await response?.text()).toBe("");
+    },
+  );
+
+  it("caches the 404 from notFound() like any other metadata route response", async () => {
+    const write = vi.fn(async () => {});
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [makeSlugImageRoute(() => notFound())],
+      cleanPathname: "/blog/missing/opengraph-image",
+      makeThenableParams,
+      isrRouteKey: (pathname) => pathname,
+      isrSet: write,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(write).toHaveBeenCalledOnce();
+    const [key, value] = write.mock.calls[0] as unknown as [string, unknown];
+    expect(key).toBe("/blog/missing/opengraph-image");
+    expect(value).toMatchObject({ kind: "APP_ROUTE", status: 404 });
+  });
+
+  it("returns a redirect response with the verbatim URL when an image route redirects", async () => {
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [
+        makeSlugImageRoute((slug) => redirect(`/blog/${slug}-renamed/opengraph-image`)),
+      ],
+      cleanPathname: "/blog/old/opengraph-image",
+      makeThenableParams,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("/blog/old-renamed/opengraph-image");
+  });
+
+  it("sends cookies set before redirect() but not before notFound()", async () => {
+    const run = (slug: string) =>
+      runWithRequestContext(
+        createRequestContext({ headersContext: { headers: new Headers(), cookies: new Map() } }),
+        () =>
+          handleMetadataRouteRequest({
+            metadataRoutes: [
+              makeSlugImageRoute(async (slug) => {
+                (await cookies()).set("session", slug);
+                if (slug === "old") redirect("/blog/new/opengraph-image");
+                notFound();
+              }),
+            ],
+            cleanPathname: `/blog/${slug}/opengraph-image`,
+            makeThenableParams,
+          }),
+      );
+
+    const redirected = await run("old");
+    expect(redirected?.status).toBe(307);
+    expect(redirected?.headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^session=old(;|$)/),
+    ]);
+
+    const missing = await run("missing");
+    expect(missing?.status).toBe(404);
+    expect(missing?.headers.getSetCookie()).toEqual([]);
+  });
+
+  // Production capture reads the body in full; development streams it on.
+  it.each(["production", "development"])(
+    "keeps the route-handler phase until a streamed body completes in %s",
+    async (nodeEnv) => {
+      const result = await withEnvVar("NODE_ENV", nodeEnv, () =>
+        runWithRequestContext(
+          createRequestContext({ headersContext: { headers: new Headers(), cookies: new Map() } }),
+          async () => {
+            const response = await handleMetadataRouteRequest({
+              metadataRoutes: [
+                makeSlugImageRoute(
+                  () =>
+                    new Response(
+                      new ReadableStream({
+                        async pull(controller) {
+                          (await cookies()).set("lazy", "1");
+                          controller.enqueue(new TextEncoder().encode("lazy image"));
+                          controller.close();
+                        },
+                      }),
+                      { headers: { "Content-Type": "image/png" } },
+                    ),
+                ),
+              ],
+              cleanPathname: "/blog/post/opengraph-image",
+              makeThenableParams,
+            });
+            const body = await response?.text();
+            let afterBody: unknown = null;
+            try {
+              (await cookies()).set("after", "1");
+            } catch (error) {
+              afterBody = error;
+            }
+            return { body, afterBody };
+          },
+        ),
+      );
+
+      expect(result.body).toBe("lazy image");
+      // The phase is restored once the body has completed.
+      expect(result.afterBody).toBeInstanceOf(Error);
+    },
+  );
+
+  it("drops the draft mode cookie on notFound() but keeps it on redirect()", async () => {
+    const run = (slug: string) =>
+      runWithRequestContext(
+        createRequestContext({
+          headersContext: {
+            headers: new Headers(),
+            cookies: new Map(),
+            draftModeEnabled: false,
+            draftModeSecret: "secret",
+          },
+        }),
+        async () => {
+          const response = await handleMetadataRouteRequest({
+            metadataRoutes: [
+              makeSlugImageRoute(async (slug) => {
+                (await draftMode()).enable();
+                if (slug === "old") redirect("/blog/new/opengraph-image");
+                notFound();
+              }),
+            ],
+            cleanPathname: `/blog/${slug}/opengraph-image`,
+            makeThenableParams,
+          });
+          // The response stage appends whatever draft cookie is still pending.
+          return { response, draftCookie: getDraftModeCookieHeader() };
+        },
+      );
+
+    const redirected = await run("old");
+    expect(redirected.response?.status).toBe(307);
+    expect(redirected.draftCookie).toContain("__prerender_bypass=");
+
+    const missing = await run("missing");
+    expect(missing.response?.status).toBe(404);
+    expect(missing.draftCookie).toBeNull();
+  });
+
+  it("returns 404 when generateImageMetadata calls notFound()", async () => {
+    const route = makeSlugImageRoute(() => new Response("image"));
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [
+        {
+          ...route,
+          module: { ...route.module, generateImageMetadata: () => notFound() },
+        },
+      ],
+      cleanPathname: "/blog/missing/opengraph-image/small",
+      makeThenableParams,
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("returns 404 when a generated sitemap calls notFound()", async () => {
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [
+        {
+          type: "sitemap",
+          isDynamic: true,
+          filePath: "/tmp/app/sitemap.ts",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/sitemap.xml",
+          contentType: "application/xml",
+          module: {
+            generateSitemaps: () => [{ id: "0" }],
+            default: () => notFound(),
+          },
+        },
+      ],
+      cleanPathname: "/sitemap/0.xml",
+      makeThenableParams,
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("still throws other errors from metadata routes", async () => {
+    await expect(
+      handleMetadataRouteRequest({
+        metadataRoutes: [
+          makeSlugImageRoute(() => {
+            throw new Error("render failed");
+          }),
+        ],
+        cleanPathname: "/blog/post/opengraph-image",
+        makeThenableParams,
+      }),
+    ).rejects.toThrow("render failed");
+  });
+
+  it.each([
+    "NEXT_HTTP_ERROR_FALLBACK;500",
+    "NEXT_HTTP_ERROR_FALLBACK;abc",
+    "NEXT_HTTP_ERROR_FALLBACK;404garbage",
+    "NEXT_REDIRECT",
+    "NEXT_REDIRECT;bogus;/target;307;",
+  ])("still throws errors with a non-access-fallback digest (%s)", async (digest) => {
+    const error = Object.assign(new Error("digest error"), { digest });
+    await expect(
+      handleMetadataRouteRequest({
+        metadataRoutes: [
+          makeSlugImageRoute(() => {
+            throw error;
+          }),
+        ],
+        cleanPathname: "/blog/post/opengraph-image",
+        makeThenableParams,
+      }),
+    ).rejects.toBe(error);
   });
 });
 

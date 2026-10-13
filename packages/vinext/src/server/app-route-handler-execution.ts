@@ -161,7 +161,10 @@ export async function completeAppRouteHandlerResponse(
   return { completed: captured.kind === "captured", response: completed };
 }
 
-function deferAppRouteHandlerCleanup(response: Response, cleanup: () => Promise<void>): Response {
+export function deferAppRouteHandlerCleanup(
+  response: Response,
+  cleanup: () => Promise<void>,
+): Response {
   if (!response.body) {
     void cleanup();
     return response;
