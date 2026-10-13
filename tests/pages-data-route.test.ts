@@ -8,6 +8,7 @@ import {
   normalizePagesDataRequest,
   shouldAddTrailingSlashToPagesDataPath,
   normalizeNextDataPagePathname,
+  nextUrlDataPagePathname,
   urlParserCreatesPagesDataPath,
 } from "../packages/vinext/src/server/pages-data-route.js";
 import { buildPagesDataPath } from "../packages/vinext/src/shims/internal/pages-data-url.js";
@@ -280,6 +281,21 @@ describe("pages-data-route", () => {
         if (savedVinext !== undefined) process.env.__VINEXT_DEPLOYMENT_ID = savedVinext;
         if (savedNext !== undefined) process.env.NEXT_DEPLOYMENT_ID = savedNext;
       }
+    });
+  });
+
+  // Ported from Next.js's `getNextPathnameInfo` (`parseData`).
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-next-pathname-info.ts
+  describe("nextUrlDataPagePathname", () => {
+    it.each([
+      ["/_next/data/any-build/about.json", "/about"],
+      ["/_next/data/any-build/fr/blog/post.json", "/fr/blog/post"],
+      ["/_next/data/any-build/index.json", "/"],
+      ["/_next/data/any-build/index/foo.json", "/"],
+      ["/_next/data/any-build/blog/index.json", "/blog/index"],
+      ["/about", null],
+    ])("presents %s as %s", (pathname, expected) => {
+      expect(nextUrlDataPagePathname(pathname)).toBe(expected);
     });
   });
 

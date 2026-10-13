@@ -449,9 +449,6 @@ async function handleRequestImpl(
     // `req.url`, matching prod-server's `originalRenderUrl` and Next.js.
     const originalRenderUrl = pathname + new URL(request.url).search;
     const dataNorm = normalizeDataRequest(request);
-    if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
-      return dataNorm.notFoundResponse;
-    }
     const isDataReq = dataNorm.isDataReq;
     if (isDataReq && dataNorm.normalizedPathname) {
       request = dataNorm.request;
@@ -489,7 +486,8 @@ async function handleRequestImpl(
       recordCacheability: forceCacheBypass,
       middlewareRequest:
         isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,
-      dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
+      // Next.js runs middleware for a stale data URL before its JSON 404.
+      dataNotFoundResponse: dataNorm.notFoundResponse,
       authorizeOnDemandRevalidate:
         typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
       matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null,

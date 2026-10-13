@@ -2579,13 +2579,8 @@ async function createPagesRouterRequestHandler(
         if (!dataMatch) {
           // Wrong buildId (or malformed) — surface a JSON 404 so the client
           // hard-navigates instead of silently rendering an empty page.
-          const notFound = buildNextDataNotFoundResponse();
-          if (!skipProxyUrlNormalize) {
-            await sendWebResponse(notFound, req, res, compress);
-            return;
-          }
           isDataReq = true;
-          dataNotFoundResponse = notFound;
+          dataNotFoundResponse = buildNextDataNotFoundResponse();
         } else {
           isDataReq = true;
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";

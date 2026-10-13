@@ -149,6 +149,7 @@ export function __ensureInstrumentation() {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    skipProxyUrlNormalize: vinextConfig.skipProxyUrlNormalize,
     trailingSlash: vinextConfig.trailingSlash,
   });
 }`
@@ -466,6 +467,7 @@ export async function runMiddleware(request, ctx, options) {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    skipProxyUrlNormalize: vinextConfig.skipProxyUrlNormalize,
     trailingSlash: vinextConfig.trailingSlash,
   });
 }

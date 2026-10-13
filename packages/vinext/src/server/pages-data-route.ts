@@ -111,6 +111,19 @@ export function nextDataMiddlewareMatchPathname(pathname: string): string | null
   return pageFromNextDataRest(rest)?.pagePathname ?? null;
 }
 
+/**
+ * The pathname Next.js's NextURL gives middleware for a data URL it did not
+ * normalize first (a stale buildId) when proxy URL normalization is on: the
+ * `_next/data/<buildId>` prefix and `.json` suffix are removed whatever the
+ * buildId, and a page path starting with `index` becomes `/`.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-next-pathname-info.ts
+ */
+export function nextUrlDataPagePathname(pathname: string): string | null {
+  if (!isNextDataPathname(pathname)) return null;
+  const segments = pathname.slice(NEXT_DATA_PREFIX.length, -NEXT_DATA_SUFFIX.length).split("/");
+  return segments[1] !== "index" ? `/${segments.slice(1).join("/")}` : "/";
+}
+
 function pageFromNextDataRest(rest: string): NextDataMatch | null {
   const pagePathname = pagePathnameFromNextDataAsset(rest);
   return pagePathname === null ? null : { pagePathname };

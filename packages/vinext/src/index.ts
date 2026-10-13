@@ -6614,8 +6614,8 @@ export const loadServerActionClient = ${
               // Client-side navigations in the Pages Router fetch
               // `/_next/data/<buildId>/<page>.json`. Route matching uses the
               // normalized page path, while skipProxyUrlNormalize preserves the
-              // original URL for middleware. A stale build ID is likewise
-              // deferred until after middleware so it may answer the raw URL.
+              // original URL for middleware. A stale build ID is deferred until
+              // after middleware, which Next.js runs for it either way.
               let isDataReq = false;
               let dataNotFoundResponse: Response | null = null;
               // Like page routing, data recognition reads the raw path: a
@@ -6657,9 +6657,9 @@ export const loadServerActionClient = ${
                   // path, not the raw _next/data URL.
                   req.url = routeUrl;
                 } else {
-                  // Stale buildId or malformed path. Return a JSON 404 here
-                  // (matching the prod-server path) so clients hard-navigate
-                  // instead of trying to parse Vite's HTML 404 as JSON.
+                  // Stale buildId or malformed path. Answer with a JSON 404
+                  // after middleware (matching the prod-server path) so clients
+                  // hard-navigate instead of parsing Vite's HTML 404 as JSON.
                   // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
                   // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
                   const deploymentId =
@@ -6668,11 +6668,6 @@ export const loadServerActionClient = ${
                     "Content-Type": "application/json",
                   };
                   if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
-                  if (!nextConfig?.skipProxyUrlNormalize) {
-                    res.writeHead(404, notFoundHeaders);
-                    res.end("{}");
-                    return;
-                  }
                   isDataReq = true;
                   dataNotFoundResponse = new Response("{}", {
                     status: 404,
@@ -6823,6 +6818,7 @@ export const loadServerActionClient = ${
                         opts.isDataRequest,
                         pathname,
                         opts.isStaleDataRequest,
+                        nextConfig?.skipProxyUrlNormalize === true,
                       );
 
                       // Forward middleware context to the RSC entry so it can

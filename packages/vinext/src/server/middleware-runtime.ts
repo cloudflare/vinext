@@ -33,7 +33,7 @@ import {
   stripBasePath,
 } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
-import { nextDataMiddlewareMatchPathname } from "./pages-data-route.js";
+import { nextDataMiddlewareMatchPathname, nextUrlDataPagePathname } from "./pages-data-route.js";
 import { reportRequestError } from "./instrumentation.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { frameworkTracer } from "./tracer.js";
@@ -89,10 +89,15 @@ type ExecuteMiddlewareOptions = {
   isDataRequest?: boolean;
   /**
    * The data request names a buildId other than the current build. Adapters
-   * pass it raw to middleware only under `skipProxyUrlNormalize`.
+   * pass it raw, as Next.js leaves it raw for matching.
    */
   isStaleDataRequest?: boolean;
   isProxy: boolean;
+  /**
+   * Next.js `skipProxyUrlNormalize`. Without it, middleware sees a stale data
+   * request as its page path while the matcher still tests the raw URL.
+   */
+  skipProxyUrlNormalize?: boolean;
   module: MiddlewareModule;
   normalizedPathname?: string;
   /** Called only after the configured matcher accepts this request. */
@@ -283,6 +288,7 @@ function createNextRequest(
   trailingSlash?: boolean,
   hadBasePath?: boolean,
   requestBodyAlreadyIsolated = false,
+  presentDataUrlAsPage = false,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
@@ -297,22 +303,34 @@ function createNextRequest(
   // ("absolute path") requests stay unprefixed so middleware observes
   // nextUrl.basePath === "" (Next.js getNextPathnameInfo semantics).
   const requestPathname = url.pathname;
-  const mwPathname =
+  let mwPathname =
     basePath && hadBasePath && !hasBasePath(requestPathname, basePath)
       ? addBasePathToPathname(requestPathname, basePath)
       : requestPathname;
+  if (presentDataUrlAsPage) {
+    const inBasePath = !!basePath && hasBasePath(mwPathname, basePath);
+    const pagePathname = nextUrlDataPagePathname(
+      inBasePath ? stripBasePath(mwPathname, basePath) : mwPathname,
+    );
+    if (pagePathname !== null) {
+      mwPathname = inBasePath ? addBasePathToPathname(pagePathname, basePath) : pagePathname;
+    }
+  }
   if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
     mwUrl.pathname = mwPathname;
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
-  const hasNextConfig = basePath || i18nConfig || trailingSlash;
+  // Next.js derives trailingSlash from the request pathname, and a data URL
+  // never ends in a slash, so its page path is presented without one.
+  const formatTrailingSlash = presentDataUrlAsPage ? false : trailingSlash;
+  const hasNextConfig = basePath || i18nConfig || formatTrailingSlash;
   const nextConfig = hasNextConfig
     ? {
         basePath: basePath ?? "",
         i18n: i18nConfig ?? undefined,
-        trailingSlash: trailingSlash ?? undefined,
+        trailingSlash: formatTrailingSlash ?? undefined,
       }
     : undefined;
 
@@ -527,6 +545,7 @@ async function executeMiddlewareModule(
     options.trailingSlash,
     hadBasePath,
     options.requestBodyAlreadyIsolated,
+    isStaleDataRequest && !options.skipProxyUrlNormalize,
   );
   if (options.isDataRequest) {
     Object.defineProperty(nextRequest, "__isData", {

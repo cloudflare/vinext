@@ -48,13 +48,13 @@ test.describe("middleware matcher guards Pages data requests", () => {
   test("does not disclose data for a stale build ID", async ({ request }) => {
     const dataPath = "/_next/data/stale-build-id/members.json";
     const anonymous = await request.get(dataPath);
-    expect(anonymous.status()).not.toBe(200);
+    // Middleware runs before the stale data 404 and sees the page path unless
+    // normalization is skipped.
+    expect(anonymous.status()).toBe(403);
     expect(await anonymous.text()).not.toContain(RECORD);
-    if (skipsProxyUrlNormalize()) {
-      // The raw stale URL still reaches the guard before the data 404.
-      expect(anonymous.status()).toBe(403);
-      expect(anonymous.headers()["x-mw-pathname"]).toBe(dataPath);
-    }
+    expect(anonymous.headers()["x-mw-pathname"]).toBe(
+      skipsProxyUrlNormalize() ? dataPath : "/members",
+    );
 
     const member = await request.get(dataPath, { headers: MEMBER_COOKIE });
     expect(member.status()).toBe(404);

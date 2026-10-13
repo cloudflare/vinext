@@ -1130,6 +1130,7 @@ describe("middleware matching for raw data requests", () => {
       i18nConfig?: { defaultLocale: string; locales: string[] };
       isDataRequest?: boolean;
       isStaleDataRequest?: boolean;
+      skipProxyUrlNormalize?: boolean;
       matcherConfig?: unknown;
       headers?: HeadersInit;
     } = {},
@@ -1140,6 +1141,8 @@ describe("middleware matching for raw data requests", () => {
       i18nConfig: options.i18nConfig,
       isDataRequest: options.isDataRequest ?? true,
       isStaleDataRequest: options.isStaleDataRequest,
+      // These cases model adapters that hand middleware the raw data URL.
+      skipProxyUrlNormalize: options.skipProxyUrlNormalize ?? true,
       isProxy: false,
       module: {
         config: { matcher: options.matcherConfig ?? matcher },
@@ -1231,6 +1234,74 @@ describe("middleware matching for raw data requests", () => {
       matcherConfig: [matcher],
     });
     expect(observed).toBe(invoked ? pathname : undefined);
+  });
+
+  // Without `skipProxyUrlNormalize`, Next.js's NextURL presents a stale data
+  // URL as its page path, while the matcher still tests the raw URL.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-next-pathname-info.ts
+  it.each([
+    ["/_next/data/stale/admin.json", "/admin", "/admin"],
+    ["/_next/data/stale/index.json", "/", "/"],
+    ["/_next/data/stale/index/foo.json", "/:path*", "/"],
+  ])("presents the stale data URL %s as its page path", async (pathname, matcher, expected) => {
+    await expect(
+      observedPathname(pathname, matcher, {
+        isStaleDataRequest: true,
+        skipProxyUrlNormalize: false,
+      }),
+    ).resolves.toBe(expected);
+  });
+
+  it("presents a stale data URL inside basePath as its page path", async () => {
+    let observed: NextRequest | undefined;
+    await executeMiddleware({
+      basePath: "/docs",
+      isDataRequest: true,
+      isStaleDataRequest: true,
+      isProxy: false,
+      module: {
+        config: { matcher: "/admin" },
+        default(request: NextRequest) {
+          observed = request;
+        },
+      },
+      request: new Request("http://localhost:3000/docs/_next/data/stale/admin.json?x=1"),
+    });
+    expect(observed?.nextUrl.basePath).toBe("/docs");
+    expect(observed?.nextUrl.pathname).toBe("/admin");
+    expect(observed?.url).toBe("http://localhost:3000/docs/admin?x=1");
+  });
+
+  it("presents a stale data URL without a trailing slash under trailingSlash", async () => {
+    // Next.js derives trailingSlash from the `.json` request pathname.
+    let observed: NextRequest | undefined;
+    await executeMiddleware({
+      isDataRequest: true,
+      isStaleDataRequest: true,
+      isProxy: false,
+      module: {
+        config: { matcher: "/admin" },
+        default(request: NextRequest) {
+          observed = request;
+        },
+      },
+      request: new Request("http://localhost:3000/_next/data/stale/admin.json?x=1"),
+      trailingSlash: true,
+    });
+    expect(observed?.url).toBe("http://localhost:3000/admin?x=1");
+    expect(observed?.nextUrl.href).toBe("http://localhost:3000/admin?x=1");
+  });
+
+  it("matches the raw stale URL even when presenting its page path", async () => {
+    // The page path `/admin` would gain the default locale and match; the raw
+    // stale URL has no locale segment, so Next.js's compiled matcher skips it.
+    await expect(
+      observedPathname("/_next/data/stale/admin.json", "/admin", {
+        i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+        isStaleDataRequest: true,
+        skipProxyUrlNormalize: false,
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("leaves ordinary requests matched against their own pathname", async () => {

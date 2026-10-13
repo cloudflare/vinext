@@ -3328,12 +3328,22 @@ export const config = { matcher: "${matcher}" };
 
     it("returns JSON 404 for a stale buildId (dev)", async () => {
       // Mirrors the prod-server path: when the buildId in the URL doesn't
-      // match the resolved buildId we surface a JSON 404 right away so the
-      // client can hard-navigate (instead of parsing Vite's HTML 404).
+      // match the resolved buildId we surface a JSON 404 after middleware so
+      // the client can hard-navigate (instead of parsing Vite's HTML 404).
       const res = await fetch(`${baseUrl}/_next/data/wrong-build-id/ssr.json`);
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(await res.json()).toEqual({});
+      // Next.js runs middleware for a stale data URL and presents its page path.
+      expect(res.headers.get("x-mw-pathname")).toBe("/ssr");
+    });
+
+    it("lets middleware answer a stale-buildId data request (dev)", async () => {
+      const res = await fetch(
+        `${baseUrl}/_next/data/wrong-build-id/middleware-protected-data.json`,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.text()).toBe("Access Denied");
     });
 
     // ── x-nextjs-deployment-id on dev _next/data exits (issue #1829) ──
@@ -8294,6 +8304,16 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(await res.json()).toEqual({});
+      // Next.js runs middleware for a stale data URL and presents its page path.
+      expect(res.headers.get("x-mw-pathname")).toBe("/ssr");
+    });
+
+    it("lets middleware answer a stale-buildId data request", async () => {
+      const res = await fetch(
+        `${prodUrl}/_next/data/wrong-build-id/middleware-protected-data.json`,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.text()).toBe("Access Denied");
     });
   });
 });
