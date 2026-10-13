@@ -5827,7 +5827,7 @@ export const config = { matcher: ["/protected"] };
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(34 * 1024); // < 34 KB, including storage-policy, encoded-path and config query-param fixture rules
+      expect(entrySize).toBeLessThan(36 * 1024); // < 36 KB, including storage-policy, encoded-path, config query-param, res.revalidate and getStaticPaths request-time fixture routes
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
