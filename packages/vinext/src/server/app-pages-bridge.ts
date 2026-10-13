@@ -2,7 +2,7 @@ import type { AppMiddlewareContext } from "./app-middleware.js";
 import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
 import {
   beginRouteCacheability,
-  markRouteCacheabilityFinalResponseUncacheable,
+  markRouteCacheabilityDynamic,
 } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
@@ -229,10 +229,10 @@ export async function renderPagesFallback(
       // The build keeps the host in the key of a page that names getInitialProps,
       // or under a custom _app that does. One an imported wrapper attaches is only
       // seen here, after the key was chosen, and it can read the host this entry
-      // is shared across, so the render isn't stored.
-      markRouteCacheabilityFinalResponseUncacheable(
-        "getInitialProps render shares a cache entry across hosts",
-      );
+      // is shared across, so the render isn't stored. It counts as dynamic, as
+      // Next.js counts a getInitialProps page, so a Workers Cache probe of
+      // the shared dispatch classifies it as one too.
+      markRouteCacheabilityDynamic("getInitialProps render shares a cache entry across hosts");
     }
   }
   const renderRequest = pagesDataRequest
