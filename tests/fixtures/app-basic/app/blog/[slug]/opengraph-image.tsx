@@ -1,5 +1,6 @@
 // Dynamic OG image in a dynamic segment — returns a plain Response
 // to avoid Satori/Resvg dependencies in the test environment.
+import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 
 export const size = {
@@ -15,6 +16,7 @@ export default async function OGImage({ params }: { params: Promise<{ slug: stri
   const { slug } = await params;
   if (slug === "missing") notFound();
   if (slug === "moved") redirect("/blog/hello-world/opengraph-image");
+  if (slug === "cookie") (await cookies()).set("og-visited", slug);
   return new Response(`og:${slug}`, {
     headers: { "Content-Type": "image/png" },
   });

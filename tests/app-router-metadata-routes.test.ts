@@ -477,6 +477,13 @@ describe("metadata routes integration (App Router)", () => {
     expect(res.headers.get("location")).toBe("/blog/hello-world/opengraph-image");
   });
 
+  it("sends cookies set by a dynamic opengraph-image", async () => {
+    const res = await fetch(`${baseUrl}/blog/cookie/opengraph-image`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("og:cookie");
+    expect(res.headers.getSetCookie()).toEqual(["og-visited=cookie; Path=/"]);
+  });
+
   it("honors dynamicParams = false for dynamic metadata images", async () => {
     const publicImage = await fetch(
       `${baseUrl}/metadata-static-params/public-post/opengraph-image`,
