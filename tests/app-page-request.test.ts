@@ -336,6 +336,29 @@ describe("app page request helpers", () => {
     await expect(validate("de", "c", "x")).resolves.toMatchObject({ status: 404 });
   });
 
+  it("runs a child generator once for each duplicate parent row", async () => {
+    const categoryGenerateStaticParams = vi.fn(() => [{ category: "docs" }, { category: "docs" }]);
+    const slugs = ["intro", "advanced"];
+    let slugCalls = 0;
+    const slugGenerateStaticParams = vi.fn(() => [{ slug: slugs[slugCalls++ % slugs.length] }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: categoryGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      routeSegments: ["[category]", "[slug]"],
+    });
+
+    await expect(
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { category: "docs", slug: "advanced" },
+      }),
+    ).resolves.toBeNull();
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(2);
+  });
+
   it("gives parallel slot generators every primary combination", async () => {
     const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }, { locale: "fr" }]);
     const slugGenerateStaticParams = vi.fn(
