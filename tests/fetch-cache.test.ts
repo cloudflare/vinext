@@ -3604,7 +3604,7 @@ describe("fetch cache shim", () => {
           request.url,
           ...request.headers.values(),
           await request.text(),
-          String(cf?.resolveOverride),
+          JSON.stringify(cf),
         ].join(" ");
         return Response.json({ sent, count: requestCount });
       });
@@ -3661,6 +3661,13 @@ describe("fetch cache shim", () => {
           const input = new Request(url);
           Object.defineProperty(input, "cf", { value: cf, configurable: true });
           return { input, change: () => (cf.resolveOverride = "bobby") };
+        },
+      ],
+      [
+        "a cf option's nested value",
+        () => {
+          const cf = { cacheTags: ["alice"] };
+          return { input: url, init: { cf }, change: () => (cf.cacheTags[0] = "bobby") };
         },
       ],
       [
@@ -3739,6 +3746,20 @@ describe("fetch cache shim", () => {
       expect(response.sent).not.toContain("bobby");
       // The same request, unchanged, reads that response from the cache.
       expect(await read(changedRequest())).toEqual(response);
+    });
+
+    it("a Blob body's type isn't sent or keyed with a change made right after the call", async () => {
+      const read = async (change: boolean) => {
+        const body = new Blob(["user"], { type: "text/alice" });
+        const pending = fetch(url, { method: "POST", body, next: { revalidate: 60 } });
+        if (change) Object.defineProperty(body, "type", { value: "text/bobby" });
+        return (await pending).json();
+      };
+
+      const response = await read(true);
+      expect(response.sent).toContain("text/alice");
+      expect(response.sent).not.toContain("bobby");
+      expect(await read(false)).toEqual(response);
     });
   });
 

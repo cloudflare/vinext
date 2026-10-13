@@ -417,7 +417,7 @@ function snapshotFetchRequest(
         ? (input as { cf?: unknown }).cf
         : undefined;
   if (cf !== null && typeof cf === "object") {
-    snapshotInit.cf = { ...cf };
+    snapshotInit.cf = snapshotCf(cf);
   }
   if (snapshotInit.body !== undefined && snapshotInit.body !== null) {
     snapshotInit.body = snapshotBody(snapshotInit.body);
@@ -427,6 +427,16 @@ function snapshotFetchRequest(
     input: input instanceof Request ? input : String(input),
     init: snapshotInit,
   };
+}
+
+// `cf` options are plain data, some of them nested (`image`, `cacheTags`).
+// One that can't be cloned, like a function, is copied by reference.
+function snapshotCf(cf: object): object {
+  try {
+    return structuredClone(cf);
+  } catch {
+    return { ...cf };
+  }
 }
 
 function snapshotBody(body: BodyInit): BodyInit {
@@ -459,7 +469,12 @@ function snapshotBody(body: BodyInit): BodyInit {
     }
     return formData;
   }
-  // Strings and Blobs can't change. A stream can't be read synchronously, so,
+  // A Blob's bytes can't change, but the type its owner exposes can, so a fresh
+  // Blob holds its bytes and the type in its internal slot.
+  if (body instanceof Blob) {
+    return new Blob([body], { type: getBlobType(body) });
+  }
+  // Strings can't change. A stream can't be read synchronously, so,
   // as in fetch, its chunks are read after the call. They're sent as the bytes
   // they're keyed by, as is any other body, which is built into a Request.
   return body;
