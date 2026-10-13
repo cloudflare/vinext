@@ -6884,6 +6884,7 @@ export const loadServerActionClient = ${
                             h: mwCtxEntries,
                             s: mwStatus ?? null,
                             r: result.rewriteUrl ?? null,
+                            b: result.rewriteHadBasePath ?? null,
                           }),
                         );
                       }

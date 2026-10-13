@@ -73,6 +73,7 @@ export type ApplyAppMiddlewareResult =
     };
 
 type ForwardedMiddlewareContext = {
+  b?: unknown;
   h?: unknown;
   q?: unknown;
   r?: unknown;
@@ -256,7 +257,7 @@ function validationResponseWithMiddlewareHeaders(
 function applyForwardedMiddlewareContext(
   request: Request,
   context: AppMiddlewareContext,
-): { applied: boolean; rewriteUrl?: string } {
+): { applied: boolean; rewriteHadBasePath?: boolean; rewriteUrl?: string } {
   if (process.env.NODE_ENV === "production") {
     return { applied: false };
   }
@@ -284,7 +285,11 @@ function applyForwardedMiddlewareContext(
       context.status = data.s;
     }
     if (typeof data.r === "string" && data.r.length > 0) {
-      return { applied: true, rewriteUrl: data.r };
+      return {
+        applied: true,
+        rewriteHadBasePath: typeof data.b === "boolean" ? data.b : undefined,
+        rewriteUrl: data.r,
+      };
     }
     return { applied: true };
   } catch (e) {
@@ -333,6 +338,7 @@ export async function applyAppMiddleware(
       const rewriteParsed = new URL(forwarded.rewriteUrl, options.request.url);
       cleanPathname = rewriteParsed.pathname;
       rewritten = true;
+      rewriteHadBasePath = forwarded.rewriteHadBasePath;
       search = rewriteParsed.search;
     } catch (e) {
       console.error("[vinext] Failed to apply forwarded middleware rewrite:", e);

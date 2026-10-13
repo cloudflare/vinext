@@ -4420,6 +4420,38 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each([
+    { rewriteHadBasePath: true, served: true },
+    { rewriteHadBasePath: false, served: false },
+  ])(
+    "serves the App Router image endpoint for a forwarded middleware rewrite only when it kept the basePath ($rewriteHadBasePath)",
+    async ({ rewriteHadBasePath, served }) => {
+      // Hybrid app+pages dev runs middleware in the Pages pipeline and forwards
+      // the basePath-stripped rewrite, so the basePath state travels with it.
+      const handler = createHandler({
+        configHeaders: [],
+        middlewareModule: { default: () => new Response(null) },
+      });
+      const response = await handler(
+        new Request("https://example.test/docs/photo", {
+          headers: {
+            [VINEXT_MW_CTX_HEADER]: sealedForwardedContext({
+              r: "/_next/image?url=%2Fimg.jpg&w=640&q=75",
+              b: rewriteHadBasePath,
+            }),
+          },
+        }),
+        null,
+      );
+      if (served) {
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe("https://example.test/img.jpg");
+      } else {
+        expect(response.status).toBe(404);
+      }
+    },
+  );
+
   it("dispatches an RSC interception target with all dynamic descendant source params", async () => {
     const sourceRoute = createPageRoute({
       isDynamic: true,
