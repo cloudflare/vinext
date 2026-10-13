@@ -34,6 +34,7 @@ import {
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import { sealForwardedMiddlewareContext } from "../packages/vinext/src/server/forwarded-middleware-context.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
@@ -159,6 +160,12 @@ function createPageRoute(overrides: Partial<TestRoute> = {}): TestRoute {
   };
 }
 
+const TEST_FORWARDED_MW_CTX_KEY = "test-forwarded-mw-ctx-key";
+
+function sealedForwardedContext(context: Record<string, unknown>): string {
+  return sealForwardedMiddlewareContext(TEST_FORWARDED_MW_CTX_KEY, JSON.stringify(context));
+}
+
 function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
   const route = createPageRoute();
 
@@ -182,6 +189,8 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     },
     createPprFallbackShells: overrides.createPprFallbackShells,
     draftModeSecret: overrides.draftModeSecret ?? "test-draft-secret",
+    devForwardedMiddlewareContextKey:
+      overrides.devForwardedMiddlewareContextKey ?? TEST_FORWARDED_MW_CTX_KEY,
     dispatchMatchedPage:
       overrides.dispatchMatchedPage ??
       (async () => new Response("page", { status: 200, headers: { "x-from-dispatch": "page" } })),
@@ -5780,7 +5789,7 @@ describe("createAppRscHandler", () => {
     });
 
     const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
-    headers.set(VINEXT_MW_CTX_HEADER, JSON.stringify({ h: [["x-mw-target", "1"]] }));
+    headers.set(VINEXT_MW_CTX_HEADER, sealedForwardedContext({ h: [["x-mw-target", "1"]] }));
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
@@ -7896,7 +7905,7 @@ describe("createAppRscHandler", () => {
         if (mode === "forwarded") {
           headers.set(
             VINEXT_MW_CTX_HEADER,
-            JSON.stringify({
+            sealedForwardedContext({
               h: [
                 ["location", "/middleware-location"],
                 ["set-cookie", "session=forwarded"],
@@ -7965,7 +7974,7 @@ describe("createAppRscHandler", () => {
         if (mode === "forwarded") {
           headers.set(
             VINEXT_MW_CTX_HEADER,
-            JSON.stringify({
+            sealedForwardedContext({
               h: [
                 [
                   "x-middleware-override-headers",

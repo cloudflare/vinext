@@ -175,6 +175,14 @@ describe("App Router middleware with NextRequest", () => {
     expect(html).toContain('"cookie":null');
   });
 
+  it("keeps the forwarded middleware context away from pages getServerSideProps in mixed projects", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/pages-header-override-delete");
+
+    expect(res.status).toBe(200);
+    expect(html).toContain('id="middleware-header">hello-from-middleware<');
+    expect(html).toContain('<p id="forwarded-mw-ctx-visible">false</p>');
+  });
+
   it("middleware rewrite preserves query params from the rewrite URL", async () => {
     // Middleware rewrites /middleware-rewrite-query → /search-query?searchParams=from-rewrite&extra=injected
     // The rewrite URL's query string must be visible to the target page.

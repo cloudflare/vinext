@@ -6807,6 +6807,9 @@ export const loadServerActionClient = ${
               });
 
               const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
+                // The sealed forwarded context is only for the App Router. Drop
+                // it from rawHeaders too so Pages handlers never see its key.
+                removeForwardedMiddlewareContext(req);
                 for (const key of Object.keys(req.headers)) {
                   delete req.headers[key];
                 }
