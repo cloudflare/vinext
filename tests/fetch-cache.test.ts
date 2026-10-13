@@ -3361,7 +3361,11 @@ describe("fetch cache shim", () => {
         } as RequestInit);
         return (await res.json()).count as number;
       };
-      const sent = (callIndex: number) => fetchMock.mock.calls[callIndex][0] as Request;
+      // The request as fetch sends it, with any init body in place of its own.
+      const sent = (callIndex: number) => {
+        const [input, init] = fetchMock.mock.calls[callIndex];
+        return new Request(input, init);
+      };
       async function* iterable(...chunks: string[]) {
         for (const chunk of chunks) yield new TextEncoder().encode(chunk);
       }
@@ -3775,6 +3779,25 @@ describe("fetch cache shim", () => {
       expect(input.bodyUsed).toBe(true);
       await expect(input.text()).rejects.toThrow();
       expect((await (await pending).json()).sent).toContain("alice");
+      // Sent as the bytes it's keyed by, the copy that took the body releases it.
+      expect((fetchMock.mock.calls[0][0] as Request).bodyUsed).toBe(true);
+    });
+
+    it("a Request's body isn't used up by a fetch its init makes fail", async () => {
+      const input = new Request(url, { method: "POST", body: "alice" });
+
+      await expect(fetch(input, { method: "GET", next: { revalidate: 60 } })).rejects.toThrow();
+      expect(input.bodyUsed).toBe(false);
+    });
+
+    it("rejects a cf option JSON can't copy, as Workers does", async () => {
+      const cf: Record<string, unknown> = { resolveOverride: "alice.example.com" };
+      cf.self = cf;
+
+      await expect(
+        fetch(url, { cf, next: { revalidate: 60 } } as WorkersInit & { next: object }),
+      ).rejects.toThrow();
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it("a Request's body is used up even when a property shadows it", async () => {

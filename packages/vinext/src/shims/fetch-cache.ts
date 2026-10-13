@@ -369,6 +369,9 @@ async function readRequestBodyChunksWithinLimit(
 // Requests the patched fetch builds for bodies serializeBody doesn't key. They
 // are never FormData, so their bytes are keyed as sent, without form parsing.
 const builtBodyRequests = new WeakSet<Request>();
+// Requests whose body only vinext holds: those built for such bodies, and
+// copies that took a caller's Request body.
+const ownedBodyRequests = new WeakSet<Request>();
 
 /**
  * Whether serializeBody keys this init body type itself. Only genuine
@@ -440,23 +443,22 @@ function snapshotRequestBody(input: Request, init: RequestInit): Request {
     return input;
   }
   try {
-    return new Request(input);
+    // init is checked before the body moves, so a fetch it makes fail, like a
+    // GET with a body, leaves the body unused.
+    const copy = new Request(input, init);
+    ownedBodyRequests.add(copy);
+    return copy;
   } catch {
-    // A locked body is left for fetch to reject.
+    // So is a locked body. fetch rejects either one.
     return input;
   }
 }
 
 // `cf` options are plain data, some of them nested (`image`, `cacheTags`).
-// Workers copies them as JSON when a Request is built, which drops values JSON
-// can't hold, like functions.
+// Workers copies them as JSON when fetch is called, which drops values JSON
+// can't hold, like functions, and rejects a fetch whose options it can't copy.
 function snapshotCf(cf: object): object {
-  try {
-    return JSON.parse(JSON.stringify(cf)) as object;
-  } catch {
-    // Options JSON can't hold, like a cycle, are left for the runtime to reject.
-    return cf;
-  }
+  return JSON.parse(JSON.stringify(cf)) as object;
 }
 
 function snapshotBody(body: BodyInit): BodyInit {
@@ -641,9 +643,11 @@ async function serializeBody(
       throw new SkipCacheKeyGenerationError();
     }
     // Send the bytes the key is built from rather than the Request's own body,
-    // whose chunks the caller could still change.
+    // whose chunks the caller could still change. A body only vinext holds
+    // is then released.
     if (init) {
       (init as ExtendedRequestInit)._ogBody = concatBodyBytes(chunks);
+      if (ownedBodyRequests.has(input)) void input.body.cancel().catch(() => {});
     }
     const formContentType = builtBodyRequests.has(input)
       ? undefined
@@ -1455,6 +1459,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // Request's bytes are keyed and it is sent.
       input = new Request(input, fetchInit);
       builtBodyRequests.add(input);
+      ownedBodyRequests.add(input);
       fetchInit = {};
     }
     let cacheKey: string;
