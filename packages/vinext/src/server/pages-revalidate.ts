@@ -114,7 +114,9 @@ export async function performOnDemandRevalidate(
   // Do not invalidate the data-cache tag here: that would delete the fresh
   // artifact that the authenticated HEAD request just produced.
   const regeneratedTag = res.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER);
-  if (regeneratedTag) await getCdnCacheAdapter().revalidateTag(regeneratedTag);
+  if (regeneratedTag) {
+    await getCdnCacheAdapter().revalidateTag(decodeURIComponent(regeneratedTag));
+  }
 }
 
 function readSourceHeader(source: IncomingMessage | Headers, key: string): string | undefined {

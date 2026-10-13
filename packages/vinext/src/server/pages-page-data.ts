@@ -37,7 +37,7 @@ import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
-import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { tracePagesData, tracePagesDocument } from "./pages-execution-tracing.js";
 
 export type PagesRedirectResult = {
@@ -493,14 +493,13 @@ function applyPagesTerminalMissHeaders(
   isrCachePathname: string,
   expireSeconds?: number,
 ): Response {
-  const stem = isrCachePathname.endsWith("/") ? isrCachePathname.slice(0, -1) : isrCachePathname;
   recordRouteCacheability({
     cacheable: revalidateSeconds !== 0,
     cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
   });
   applyCdnResponseHeaders(response.headers, {
     cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
-    tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+    tags: [pagesPathCacheTag(isrCachePathname)],
   });
   for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
     response.headers.set(name, value);

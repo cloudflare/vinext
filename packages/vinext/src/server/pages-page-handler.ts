@@ -90,7 +90,7 @@ import {
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
-import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import {
   hasPagesGetInitialProps,
@@ -162,11 +162,10 @@ function withPagesCacheState(
     headers.set(NEXTJS_CACHE_HEADER, state);
     headers.delete(VINEXT_CACHE_HEADER);
     if (revalidatedPathname !== undefined) {
-      const stem =
-        revalidatedPathname.length > 1 && revalidatedPathname.endsWith("/")
-          ? revalidatedPathname.slice(0, -1)
-          : revalidatedPathname;
-      headers.set(VINEXT_REVALIDATED_CACHE_TAG_HEADER, encodeCacheTag(`_N_T_${stem || "/"}`));
+      headers.set(
+        VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+        encodeURIComponent(pagesPathCacheTag(revalidatedPathname)),
+      );
     }
   } else {
     setCacheStateHeaders(headers, state);
@@ -216,10 +215,9 @@ function applyPagesErrorCachePolicy(
   if (revalidateSeconds === undefined) {
     applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
   } else {
-    const stem = cacheTagPathname.endsWith("/") ? cacheTagPathname.slice(0, -1) : cacheTagPathname;
     applyCdnResponseHeaders(headers, {
       cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
-      tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+      tags: [pagesPathCacheTag(cacheTagPathname)],
     });
   }
   return new Response(response.body, {
@@ -1338,15 +1336,12 @@ export function createPagesPageHandler(
               headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
-              const stem = isrCachePathname.endsWith("/")
-                ? isrCachePathname.slice(0, -1)
-                : isrCachePathname;
               applyCdnResponseHeaders(headers, {
                 cacheControl: buildMissIsrCacheControl(
                   isrRevalidateSeconds,
                   vinextConfig.expireTime,
                 ),
-                tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+                tags: [pagesPathCacheTag(isrCachePathname)],
               });
             } else if (shouldUseNextDeployCacheControl()) {
               headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
