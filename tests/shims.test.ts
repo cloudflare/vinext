@@ -17067,6 +17067,161 @@ describe("app router scroll intent state", () => {
   });
 });
 
+// Ported from Next.js:
+// test/e2e/app-dir/router-disable-smooth-scroll/router-disable-smooth-scroll.optimized.test.ts
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/disable-smooth-scroll.ts
+describe("app router route-transition scroll honours data-scroll-behavior", () => {
+  type ScrollWrite = { scrollBehavior: string; value: number };
+
+  function createDocumentElement(dataScrollBehavior: string | undefined) {
+    const writes: ScrollWrite[] = [];
+    const style = { scrollBehavior: "smooth" };
+    let scrollTop = 500;
+    const documentElement = {
+      clientHeight: 800,
+      dataset: dataScrollBehavior === undefined ? {} : { scrollBehavior: dataScrollBehavior },
+      getClientRects: vi.fn(() => []),
+      style,
+      get scrollTop() {
+        return scrollTop;
+      },
+      set scrollTop(value: number) {
+        writes.push({ scrollBehavior: style.scrollBehavior, value });
+        scrollTop = value;
+      },
+    };
+    return { documentElement, writes };
+  }
+
+  function withDocument(documentValue: unknown, run: () => void): void {
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "document", { configurable: true, value: documentValue });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+    try {
+      run();
+    } finally {
+      for (const [key, descriptor] of [
+        ["document", originalDocument],
+        ["window", originalWindow],
+      ] as const) {
+        if (descriptor) {
+          Object.defineProperty(globalThis, key, descriptor);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+    }
+  }
+
+  it('forces scroll-behavior: auto for the document-top scroll when <html data-scroll-behavior="smooth">', async () => {
+    const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
+      await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+    const { applyAppRouterScrollFallback } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const { documentElement, writes } = createDocumentElement("smooth");
+
+    clearAppRouterScrollIntent();
+    const intent = beginAppRouterScrollIntent(null);
+    withDocument({ documentElement, head: { children: [] } }, () => {
+      applyAppRouterScrollFallback(intent);
+    });
+    clearAppRouterScrollIntent();
+
+    expect(writes).toEqual([{ scrollBehavior: "auto", value: 0 }]);
+    expect(documentElement.getClientRects).toHaveBeenCalled();
+    expect(documentElement.style.scrollBehavior).toBe("smooth");
+  });
+
+  it("leaves scroll-behavior alone without the data attribute (Next.js 16 default)", async () => {
+    const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
+      await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+    const { applyAppRouterScrollFallback } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const { documentElement, writes } = createDocumentElement(undefined);
+
+    clearAppRouterScrollIntent();
+    const intent = beginAppRouterScrollIntent(null);
+    withDocument({ documentElement, head: { children: [] } }, () => {
+      applyAppRouterScrollFallback(intent);
+    });
+    clearAppRouterScrollIntent();
+
+    expect(writes).toEqual([{ scrollBehavior: "smooth", value: 0 }]);
+    expect(documentElement.getClientRects).not.toHaveBeenCalled();
+  });
+
+  it("restores the inline scroll-behavior even when the scroll throws", async () => {
+    const { disableSmoothScrollDuringRouteTransition } =
+      await import("../packages/vinext/src/shims/disable-smooth-scroll.js");
+    const { documentElement } = createDocumentElement("smooth");
+
+    withDocument({ documentElement }, () => {
+      expect(() =>
+        disableSmoothScrollDuringRouteTransition(() => {
+          expect(documentElement.style.scrollBehavior).toBe("auto");
+          throw new Error("scroll failed");
+        }),
+      ).toThrow("scroll failed");
+    });
+
+    expect(documentElement.style.scrollBehavior).toBe("smooth");
+  });
+
+  it("forces scroll-behavior: auto for the deferred cross-route hash scroll", async () => {
+    const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
+      await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+    const { applyAppRouterScrollFallback } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const { documentElement } = createDocumentElement("smooth");
+    const scrollBehaviorDuringScroll: string[] = [];
+    const scrollIntoView = vi.fn(() => {
+      scrollBehaviorDuringScroll.push(documentElement.style.scrollBehavior);
+    });
+    let frame: (() => void) | null = null;
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "requestAnimationFrame",
+    );
+    Object.defineProperty(globalThis, "requestAnimationFrame", {
+      configurable: true,
+      value: (callback: () => void) => {
+        frame = callback;
+        return 1;
+      },
+    });
+
+    try {
+      clearAppRouterScrollIntent();
+      const intent = beginAppRouterScrollIntent("#target");
+      withDocument(
+        {
+          documentElement,
+          getElementById: () => ({ scrollIntoView }),
+          getElementsByName: () => [],
+          head: { children: [] },
+        },
+        () => {
+          applyAppRouterScrollFallback(intent);
+          expect(frame).not.toBeNull();
+          frame!();
+        },
+      );
+    } finally {
+      clearAppRouterScrollIntent();
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(globalThis, "requestAnimationFrame", originalRequestAnimationFrame);
+      } else {
+        Reflect.deleteProperty(globalThis, "requestAnimationFrame");
+      }
+    }
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto" });
+    expect(scrollBehaviorDuringScroll).toEqual(["auto"]);
+    expect(documentElement.style.scrollBehavior).toBe("smooth");
+  });
+});
+
 describe("app router scroll document-top fallback", () => {
   // applyAppRouterScrollFallback runs in navigateClientSide after a committed
   // navigation declined to consume its scroll intent. It must scroll the
@@ -17076,7 +17231,13 @@ describe("app router scroll document-top fallback", () => {
     head: { querySelectorAll: () => unknown[] },
     run: (documentElement: { scrollTop: number }) => void,
   ): void {
-    const documentElement = { clientHeight: 800, scrollTop: 500 };
+    const documentElement = {
+      clientHeight: 800,
+      dataset: {},
+      getClientRects: () => [],
+      scrollTop: 500,
+      style: { scrollBehavior: "" },
+    };
     const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 
@@ -17131,7 +17292,12 @@ describe("app router scroll document-top fallback", () => {
     Object.defineProperty(globalThis, "document", {
       configurable: true,
       value: {
-        documentElement: { scrollTop: 0 },
+        documentElement: {
+          dataset: {},
+          getClientRects: () => [],
+          scrollTop: 0,
+          style: { scrollBehavior: "" },
+        },
         getElementById: () => ({ scrollIntoView }),
         getElementsByName: () => [],
         head: { querySelectorAll: () => [] },

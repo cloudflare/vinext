@@ -82,7 +82,8 @@ import {
   resolveDirectHybridClientRouteOwner,
   type HybridClientOwner,
 } from "./internal/hybrid-client-route-owner-direct.js";
-import { retryScrollTo, scrollToHashTarget, scrollToHashTargetOnNextFrame } from "./hash-scroll.js";
+import { disableSmoothScrollDuringRouteTransition } from "./disable-smooth-scroll.js";
+import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -2496,7 +2497,13 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
     // Browsers can apply their own scroll restoration after the navigation's
     // commit microtasks. Defer the fallback to the next frame so that native
     // work cannot immediately reset the requested fragment scroll.
-    scrollToHashTargetOnNextFrame(intent.hash, () => isLatestAppRouterScrollIntent(intent));
+    const hash = intent.hash;
+    requestAnimationFrame(() => {
+      if (!isLatestAppRouterScrollIntent(intent)) return;
+      disableSmoothScrollDuringRouteTransition(() => {
+        scrollToHashTarget(hash);
+      });
+    });
     return;
   }
 
@@ -2511,7 +2518,9 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
     return;
   }
 
-  document.documentElement.scrollTop = 0;
+  disableSmoothScrollDuringRouteTransition(() => {
+    document.documentElement.scrollTop = 0;
+  });
 }
 
 function scheduleAppRouterScrollFallback(intent: AppRouterScrollIntent): void {
