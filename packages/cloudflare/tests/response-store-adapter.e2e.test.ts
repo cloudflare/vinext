@@ -769,6 +769,30 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  // Next.js regenerates a generated path from its prerender manifest and never
+  // reruns getStaticPaths for it; the demo page stops listing its path after
+  // the first call.
+  test("regenerates a stored Pages entry without rerunning getStaticPaths", async () => {
+    const inline = await selfContainedWorker();
+
+    try {
+      const fetch = async () => {
+        const response = await inline.dispatchFetch(
+          "https://app.test/static-paths-regeneration/listed",
+        );
+        assert.equal(response.status, 200);
+        return htmlValue(await response.text(), "static-paths-regeneration-render-id");
+      };
+      const first = await fetch();
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      assert.equal(await fetch(), first);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.notEqual(await fetch(), first);
+    } finally {
+      await inline.dispose();
+    }
+  });
+
   // Next.js stores the page before it evaluates the ETag, so a crawler's
   // conditional request that fills a cold entry gets a 304 while later
   // visitors get the stored page.

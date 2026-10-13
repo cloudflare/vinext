@@ -301,6 +301,12 @@ export type ResolvePagesPageDataOptions = {
    * fallback path. Mirrors Next.js `unstable_onlyGenerated`.
    */
   revalidateOnlyGenerated?: boolean;
+  /**
+   * Set when a cache adapter regenerates an entry it stores for this build.
+   * The stored entry proves the path was admitted, so `getStaticPaths()` is
+   * skipped as it is for an entry read through `isrGet`.
+   */
+  regeneratesStoredEntry?: boolean;
   previewData?: PagesPreviewData | false;
   /**
    * The deployment ID used for deployment-skew protection. When set, it is
@@ -1174,12 +1180,15 @@ export async function resolvePagesPageData(
   // A packaged prerendered entry gets the same admission even when a runtime
   // getStaticPaths (which may depend on build-only data) would not list it.
   // Nonce requests still need this admission; the HTML replay branches below
-  // keep their own nonce guard and render fresh instead.
-  let hasStoredEntry = false;
+  // keep their own nonce guard and render fresh instead. An adapter that
+  // stores entries outside `isrGet` passes the same proof when it regenerates
+  // one.
+  let hasStoredEntry = options.regeneratesStoredEntry === true;
   if (
     options.route.isDynamic &&
     typeof options.pageModule.getStaticProps === "function" &&
     typeof options.pageModule.getServerSideProps !== "function" &&
+    !hasStoredEntry &&
     !options.isOnDemandRevalidate &&
     previewData === false
   ) {

@@ -104,6 +104,8 @@ export async function handleResponseStage(
   );
   if (props.kind === "app-full-request" && props.prerenderDiscovery) {
     ctx = { ...ctx, isPrerenderPathDiscovery: true };
+  } else if (props.kind === "hybrid-pages" && options.regeneratesStoredEntry === true) {
+    ctx = { ...ctx, isStoredEntryRegeneration: true };
   }
   return withResponseStageCacheability(
     {

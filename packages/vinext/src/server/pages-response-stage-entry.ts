@@ -114,6 +114,8 @@ export async function renderPagesResponse(
   );
   if (props.kind === "pages-prerender-discovery") {
     ctx = { ...ctx, isPrerenderPathDiscovery: true };
+  } else if (props.kind === "pages-page" && dispatchOptions.regeneratesStoredEntry === true) {
+    ctx = { ...ctx, isStoredEntryRegeneration: true };
   }
   const render = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
     if (props.kind === "pages-prerender-discovery") {
