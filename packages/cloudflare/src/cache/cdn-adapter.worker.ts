@@ -384,17 +384,31 @@ function isAppPageDocumentInvocation(invocation: CloudflareResponseStageInvocati
   );
 }
 
+/** A Pages page render, as an HTML document or a `_next/data` payload. */
+function isPagesPageInvocation(invocation: CloudflareResponseStageInvocation): boolean {
+  const props = invocation.props;
+  if (props === null || typeof props !== "object") return false;
+  const kind = Reflect.get(props, "kind");
+  return (
+    kind === "pages-page" ||
+    (kind === "hybrid-pages" && Reflect.get(props, "resourceKind") === "page")
+  );
+}
+
 /**
- * No client waits on a deployment warm-up. Workers Cache revalidates an entry
- * that has a validator with a conditional request, as it does the Response
- * Store's, and serves the stale entry meanwhile or fills an expired one.
+ * Workers Cache revalidates an entry that has a validator with a conditional
+ * request, and serves the stale entry meanwhile or fills an expired one.
+ */
+function revalidatesStoredEntry(request: Request): boolean {
+  return request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since");
+}
+
+/**
+ * No client waits on a deployment warm-up or on a revalidation, as with the
+ * Response Store's.
  */
 function rendersWholeDocument(request: Request): boolean {
-  return (
-    request.headers.get("user-agent") === WARMUP_USER_AGENT ||
-    request.headers.has("If-None-Match") ||
-    request.headers.has("If-Modified-Since")
-  );
+  return request.headers.get("user-agent") === WARMUP_USER_AGENT || revalidatesStoredEntry(request);
 }
 
 /** Give a cacheable document a validator, so Workers Cache revalidates it conditionally. */
@@ -608,13 +622,20 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     // As in Next.js, which renders a static page whole, a document no client
     // waits on has its streamed metadata in <head>.
     const isAppPageDocument = isAppPageDocumentInvocation(invocation);
+    const isPagesPage = isPagesPageInvocation(invocation);
     const response = await invokeResponseStage(
       restored.request,
       this.env,
       context,
       isAppPageDocument && rendersWholeDocument(request)
         ? { ...invocation, options: { ...invocation.options, renderWholeDocument: true } }
-        : invocation,
+        : // Only a successful Pages render gets a validator below, so a
+          // conditional revalidation proves the entry stored for this build
+          // was admitted, and Next.js regenerates such a path without
+          // calling getStaticPaths().
+          isPagesPage && revalidatesStoredEntry(request)
+          ? { ...invocation, options: { ...invocation.options, regeneratesStoredEntry: true } }
+          : invocation,
     );
     // Workers Cache variants share one purge identity and therefore must carry
     // exactly the same Cache-Tag values. Application-defined Vary fields can
@@ -625,7 +646,7 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     return stampResponseStageBuildIdentity(
       restored.didAccessRequestCf() || hasTaggedCustomVary(response)
         ? preventResponseCaching(response)
-        : isAppPageDocument
+        : isAppPageDocument || (isPagesPage && response.status === 200)
           ? withRevalidationValidator(response)
           : response,
     );

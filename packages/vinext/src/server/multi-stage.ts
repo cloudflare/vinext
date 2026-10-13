@@ -44,8 +44,9 @@ export type VinextResponseStageDispatchOptions = {
   renderWholeDocument?: boolean;
   /**
    * Regenerate an entry the adapter already stores for this build. Set only
-   * from a platform-invoked regeneration callback, never from anything a
-   * client can send: core then treats the path as admitted and skips
+   * from a platform-invoked regeneration callback or a platform cache's
+   * conditional revalidation of a stored entry, never from anything a client
+   * can send: core then treats the path as admitted and skips
    * request-time admission work such as a Pages `getStaticPaths()` call, as
    * Next.js regenerates a generated path without consulting it. It is not a
    * cache selector: a transport must not partition its lookup or stored entry
