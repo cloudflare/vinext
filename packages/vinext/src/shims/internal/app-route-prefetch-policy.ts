@@ -87,7 +87,9 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (routeHref === null) return NO_APP_ROUTE_PREFETCH;
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
-  if (!match) return NO_APP_ROUTE_PREFETCH;
+  // Document-only entries are route handlers: an RSC prefetch would run the
+  // handler and download its body, which a navigation can never reuse.
+  if (!match || match.route.documentOnly) return NO_APP_ROUTE_PREFETCH;
 
   // Export builds only emit one full-route Flight artifact per pathname; they
   // have no server that can produce loading-shell, route-tree, or per-segment

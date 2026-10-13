@@ -204,6 +204,26 @@ export async function apiRouter(
   return getCachedRoutes(cacheKey, () => scanApiRoutes(pagesDir, matcher));
 }
 
+/**
+ * Whether pages/ holds any file with a configured page extension: a page, an
+ * API route, or a special file such as `_app`. A pages/ directory that only
+ * holds content read at runtime (e.g. Markdown) contributes nothing to the
+ * Pages Router. Scan failures count as having page files.
+ */
+export async function hasPagesRouterFiles(
+  pagesDir: string,
+  matcher: ValidFileMatcher,
+): Promise<boolean> {
+  try {
+    for await (const _file of scanWithExtensions("**/*", pagesDir, matcher.extensions)) {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
+
 async function getCachedRoutes(cacheKey: string, scan: () => Promise<Route[]>): Promise<Route[]> {
   const cached = routeCache.get(cacheKey);
   if (cached) return cached;
