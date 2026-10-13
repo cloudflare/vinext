@@ -85,6 +85,31 @@ describe("client asset sidecar builds", () => {
     }
   });
 
+  it("rejects a clientOutDir that contains a server output directory", async () => {
+    const fixtureRoot = await createFixture();
+    try {
+      // The client build runs last and empties its outDir, which would delete
+      // build/rsc/index.js and leave no request handler.
+      await expect(
+        createBuilder({
+          root: fixtureRoot,
+          configFile: false,
+          logLevel: "silent",
+          plugins: [
+            vinext({
+              appDir: fixtureRoot,
+              clientOutDir: "build",
+              rscOutDir: "build/rsc",
+              ssrOutDir: "build/ssr",
+            }),
+          ],
+        }),
+      ).rejects.toThrow('clientOutDir "build" contains rscOutDir "build/rsc"');
+    } finally {
+      await fs.rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("keeps disjoint App Router outputs self-contained", async () => {
     const fixtureRoot = await createFixture();
     const outRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-client-assets-disjoint-"));

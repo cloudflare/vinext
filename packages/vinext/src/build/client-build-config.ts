@@ -1,5 +1,5 @@
 import type { UserConfig } from "vite";
-import { toSlash } from "pathslash";
+import path, { toSlash } from "pathslash";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
@@ -371,4 +371,30 @@ export function createMultiStageChunkFileNames(
     const pattern = existing ?? joinAssetFileNamePattern(assetsDir, "[name]-[hash].js");
     return pattern.replaceAll("[name]", name);
   };
+}
+
+/**
+ * The client environment builds after RSC and SSR, and Vite empties its
+ * output directory first. A client output directory that is, or contains, a
+ * server output directory would therefore delete the server build.
+ */
+export function assertClientOutDirIsSeparate(
+  root: string,
+  dirs: { clientOutDir?: string; rscOutDir?: string; ssrOutDir?: string },
+): void {
+  if (!dirs.clientOutDir) return;
+  const clientOutDir = path.resolve(root, dirs.clientOutDir);
+  const serverOutDirs = [
+    ["rscOutDir", dirs.rscOutDir ?? "dist/server"],
+    ["ssrOutDir", dirs.ssrOutDir ?? "dist/server/ssr"],
+  ] as const;
+  for (const [name, dir] of serverOutDirs) {
+    const relative = path.relative(clientOutDir, path.resolve(root, dir));
+    if (relative === ".." || relative.startsWith("../") || path.isAbsolute(relative)) continue;
+    throw new Error(
+      `[vinext] clientOutDir "${dirs.clientOutDir}" contains ${name} "${dir}". ` +
+        "The client build runs last and empties its output directory, which would delete " +
+        "the server build. Use separate output directories.",
+    );
+  }
 }

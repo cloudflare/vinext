@@ -295,6 +295,7 @@ import {
 } from "./plugins/sass.js";
 import {
   createClientFileNameConfig,
+  assertClientOutDirIsSeparate,
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
@@ -2596,6 +2597,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
         root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
+        if (env.command === "build") assertClientOutDirIsSeparate(root, options);
         const devCliLifecycleEnabled =
           env.command === "serve" &&
           env.isPreview !== true &&
