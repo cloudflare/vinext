@@ -1215,6 +1215,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     : undefined;
   let didMiddlewareRewrite = false;
   let didMiddlewareRewritePathname = false;
+  // The image endpoint is served only under basePath. Rewrites carry or drop
+  // it: middleware by its target URL, config rules unless they set
+  // `basePath: false`.
+  let resolvedPathnameHasBasePath = hadBasePath;
 
   if (runMiddleware) {
     const middlewareResult = await runMiddleware({
@@ -1253,6 +1257,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
     cleanPathname = middlewareResult.cleanPathname;
     didMiddlewareRewrite = middlewareResult.rewritten;
+    if (didMiddlewareRewrite) {
+      resolvedPathnameHasBasePath = middlewareResult.rewriteHadBasePath ?? true;
+    }
     // A rewrite destination is authoritative even when normalization makes it
     // textually equal to the incoming path (for example /%61dmin -> /admin).
     if (didMiddlewareRewrite || cleanPathname !== normalized.cleanPathname) {
@@ -1592,6 +1599,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
+      resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
     }
   }
 
@@ -1634,6 +1642,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
+      resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
       actionMatch = matchCleanPathname();
       if (actionMatch) break;
     }
@@ -1665,6 +1674,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname = pathnameForResolvedUrl(resolvedUrl);
         cleanPathnameIsRequestPathname = false;
         filesystemRouteEligible = true;
+        resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
         actionMatch = matchCleanPathname();
         if (actionMatch) break;
       }
@@ -1675,7 +1685,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const lateActionRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
   if (lateActionRscCacheBustingRedirect) return lateActionRscCacheBustingRedirect;
 
-  if (filesystemRouteEligible && isImageOptimizationPath(cleanPathname)) {
+  if (
+    filesystemRouteEligible &&
+    resolvedPathnameHasBasePath &&
+    isImageOptimizationPath(cleanPathname)
+  ) {
     // Rewrites to or of the endpoint replace the query in `resolvedUrl`.
     const imageUrl = new URL(resolvedUrl, url);
     const imageRedirect = resolveDevImageRedirect(

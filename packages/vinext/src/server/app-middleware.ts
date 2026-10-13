@@ -59,6 +59,8 @@ export type ApplyAppMiddlewareResult =
       /** True when this pathname can match middleware for some request context. */
       pathnameEligible?: boolean;
       rewritten: boolean;
+      /** False when a same-origin rewrite target was outside the basePath. */
+      rewriteHadBasePath?: boolean;
       search: string | null;
     }
   | {
@@ -299,6 +301,7 @@ export async function applyAppMiddleware(
   let pathnameEligible = forwarded.applied;
   let cleanPathname = options.cleanPathname;
   let rewritten = false;
+  let rewriteHadBasePath: boolean | undefined;
   let search: string | null = null;
 
   if (forwarded.rewriteUrl) {
@@ -432,6 +435,7 @@ export async function applyAppMiddleware(
       const rewriteParsed = new URL(result.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
       rewritten = true;
+      rewriteHadBasePath = result.rewriteHadBasePath;
       search = rewriteParsed.search;
     }
   }
@@ -454,6 +458,7 @@ export async function applyAppMiddleware(
     matched,
     pathnameEligible,
     rewritten,
+    rewriteHadBasePath,
     search,
   };
 }
