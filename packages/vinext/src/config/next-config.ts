@@ -2085,11 +2085,10 @@ export async function resolveNextConfig(
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
     // Next.js copies the legacy `experimental.skipTrailingSlashRedirect` over
-    // the top-level key (warnOptionHasBeenMovedOutOfExperimental).
+    // the top-level key (warnOptionHasBeenMovedOutOfExperimental), after
+    // dropping nullish nested values, so only a set legacy value overrides it.
     skipTrailingSlashRedirect:
-      (experimental && "skipTrailingSlashRedirect" in experimental
-        ? experimental.skipTrailingSlashRedirect === true
-        : config.skipTrailingSlashRedirect) ?? false,
+      (experimental?.skipTrailingSlashRedirect ?? config.skipTrailingSlashRedirect) === true,
     // Next.js disables compression only for an explicit `compress: false`.
     compress: config.compress !== false,
     skipProxyUrlNormalize:

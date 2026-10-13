@@ -226,6 +226,19 @@ describe("deprecated config warnings", () => {
     ]);
   });
 
+  it("keeps the top-level skipTrailingSlashRedirect when the legacy key is nullish", async () => {
+    // Next.js drops undefined/null nested config values before moving the
+    // legacy key (assignDefaults in packages/next/src/server/config.ts).
+    for (const legacy of [undefined, null]) {
+      await expect(
+        resolveNextConfig({
+          skipTrailingSlashRedirect: true,
+          experimental: { skipTrailingSlashRedirect: legacy } as never,
+        }),
+      ).resolves.toMatchObject({ skipTrailingSlashRedirect: true });
+    }
+  });
+
   it("resolves both URL-normalization option names", async () => {
     await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
       skipProxyUrlNormalize: true,
