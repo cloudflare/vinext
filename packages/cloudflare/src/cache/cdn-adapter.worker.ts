@@ -437,11 +437,14 @@ function withPagesRevalidationValidator(response: Response): Response {
   });
 }
 
-/** `no-cache` still lets a shared cache store the response; it only forces revalidation. */
+/**
+ * `no-cache` and a field-qualified `private` still let a shared cache store the
+ * response (RFC 9111 sections 5.2.2.4 and 5.2.2.7).
+ */
 function forbidsSharedStorage(policy: string): boolean {
   return policy.split(",").some((directive) => {
-    const name = directive.split("=", 1)[0]!.trim().toLowerCase();
-    return name === "private" || name === "no-store";
+    const normalized = directive.trim().toLowerCase();
+    return normalized === "private" || normalized.split("=", 1)[0]!.trim() === "no-store";
   });
 }
 
