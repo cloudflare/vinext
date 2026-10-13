@@ -415,14 +415,14 @@ function rendersWholeDocument(request: Request): boolean {
  * A conditional revalidation of a Pages page skips getStaticPaths(), so only a
  * successful render may be stored with a validator. Bot renders carry an ETag
  * whatever their status. A 304 answers a revalidation of a stored 200, and a
- * non-cacheable response is never stored, so both keep theirs.
+ * response a shared cache may not store keeps its validators.
  */
 function withPagesRevalidationValidator(response: Response): Response {
   if (response.status === 200) return withRevalidationValidator(response);
   const policy = selectedCachePolicy(response);
   if (
     response.status === 304 ||
-    (policy !== null && isNonCacheableCacheControl(policy)) ||
+    (policy !== null && forbidsSharedStorage(policy)) ||
     (!response.headers.has("ETag") && !response.headers.has("Last-Modified"))
   ) {
     return response;
@@ -434,6 +434,14 @@ function withPagesRevalidationValidator(response: Response): Response {
     headers,
     status: response.status,
     statusText: response.statusText,
+  });
+}
+
+/** `no-cache` still lets a shared cache store the response; it only forces revalidation. */
+function forbidsSharedStorage(policy: string): boolean {
+  return policy.split(",").some((directive) => {
+    const name = directive.split("=", 1)[0]!.trim().toLowerCase();
+    return name === "private" || name === "no-store";
   });
 }
 

@@ -664,15 +664,24 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
   });
 
   it.each<{ name: string; headers: Record<string, string> }>([
-    { name: "an ETag", headers: { ETag: '"bot-404"' } },
-    { name: "a Last-Modified", headers: { "Last-Modified": "Tue, 06 Oct 2026 00:00:00 GMT" } },
-  ])("strips $name from a storable Pages page 404", async ({ headers }) => {
-    stages.response.mockResolvedValue(
-      new Response("not found", {
-        headers: { ...headers, "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
-        status: 404,
-      }),
-    );
+    {
+      name: "an ETag from a cacheable",
+      headers: { ETag: '"bot-404"', "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+    },
+    {
+      name: "a Last-Modified from a cacheable",
+      headers: {
+        "Last-Modified": "Tue, 06 Oct 2026 00:00:00 GMT",
+        "Cloudflare-CDN-Cache-Control": "public, max-age=300",
+      },
+    },
+    {
+      name: "an ETag from a no-cache",
+      headers: { ETag: '"bot-404"', "Cache-Control": "no-cache" },
+    },
+    { name: "an ETag from a policy-less", headers: { ETag: '"bot-404"' } },
+  ])("strips $name Pages page 404", async ({ headers }) => {
+    stages.response.mockResolvedValue(new Response("not found", { headers, status: 404 }));
 
     const response = await createEntrypoint(responseStageInvocation({ kind: "pages-page" })).fetch(
       new Request("https://example.com/page"),
