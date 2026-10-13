@@ -3280,6 +3280,53 @@ describe("fetch cache shim", () => {
       expect(await read(0x61, 0xff)).toBe(1);
     });
 
+    // Runtimes send the bytes a view's internal slots cover, whatever its own
+    // buffer, byteOffset and byteLength properties say.
+    describe.each([
+      ["Uint8Array", (buffer: ArrayBuffer) => new Uint8Array(buffer, 2, 2)],
+      ["DataView", (buffer: ArrayBuffer) => new DataView(buffer, 2, 2)],
+      ["Uint16Array", (buffer: ArrayBuffer) => new Uint16Array(buffer, 2, 1)],
+    ])("a %s with shadowed byte range properties", (name, toView) => {
+      const shadowedView = (byte: number) => {
+        const view = toView(Uint8Array.of(0, 0, 0, byte).buffer);
+        const decoy = new Uint8Array(2);
+        Object.defineProperties(view, {
+          buffer: { value: decoy.buffer },
+          byteOffset: { value: 0 },
+          byteLength: { value: decoy.byteLength },
+        });
+        return view;
+      };
+
+      it.each([
+        ["body", (view: ArrayBufferView): BodyInit => view as BodyInit],
+        [
+          "ReadableStream chunk",
+          (view: ArrayBufferView): BodyInit =>
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(view);
+                controller.close();
+              },
+            }),
+        ],
+      ])("is keyed as a %s by the bytes it covers", async (source, toBody) => {
+        const read = async (byte: number) => {
+          startNewFetchCacheScope();
+          const res = await fetch(`https://api.example.com/body-shadowed-view/${name}/${source}`, {
+            method: "POST",
+            body: toBody(shadowedView(byte)),
+            next: { revalidate: 60 },
+          });
+          return (await res.json()).count;
+        };
+
+        expect(await read(0x61)).toBe(1);
+        expect(await read(0x62)).toBe(2);
+        expect(await read(0x61)).toBe(1);
+      });
+    });
+
     it("sends every chunk of a ReadableStream body with mixed chunk types", async () => {
       await fetch("https://api.example.com/body-stream-mixed-chunks", {
         method: "POST",

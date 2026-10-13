@@ -251,16 +251,57 @@ function normalizeFetchMethod(method: string): string {
   return NORMALIZED_FETCH_METHODS.has(upperMethod) ? upperMethod : method;
 }
 
+// A view's own properties can shadow `buffer`, `byteOffset` and `byteLength`,
+// but runtimes send the bytes its internal slots cover. These intrinsic getters
+// read those slots.
+function getIntrinsic<T>(prototype: object, key: PropertyKey): (target: unknown) => T {
+  // The getter is deliberately invoked with Reflect.apply on the target.
+  // oxlint-disable-next-line typescript/unbound-method
+  const getter = Object.getOwnPropertyDescriptor(prototype, key)?.get;
+  if (!getter) throw new Error(`Missing intrinsic getter: ${String(key)}`);
+  return (target) => Reflect.apply(getter, target, []) as T;
+}
+const typedArrayPrototype: object = Object.getPrototypeOf(Uint8Array.prototype);
+// Undefined for anything that isn't a typed array, rather than throwing.
+const getTypedArrayTag = getIntrinsic<string | undefined>(typedArrayPrototype, Symbol.toStringTag);
+const getTypedArrayBuffer = getIntrinsic<ArrayBufferLike>(typedArrayPrototype, "buffer");
+const getTypedArrayByteOffset = getIntrinsic<number>(typedArrayPrototype, "byteOffset");
+const getTypedArrayByteLength = getIntrinsic<number>(typedArrayPrototype, "byteLength");
+const getDataViewBuffer = getIntrinsic<ArrayBufferLike>(DataView.prototype, "buffer");
+const getDataViewByteOffset = getIntrinsic<number>(DataView.prototype, "byteOffset");
+const getDataViewByteLength = getIntrinsic<number>(DataView.prototype, "byteLength");
+const getArrayBufferByteLength = getIntrinsic<number>(ArrayBuffer.prototype, "byteLength");
+
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  if (!(value instanceof ArrayBuffer)) return false;
+  try {
+    getArrayBufferByteLength(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The bytes sent for a binary body chunk: the bytes an ArrayBuffer holds, or
  * those a typed array or DataView covers. Undefined for any other chunk.
  */
 function getBinaryChunkBytes(value: unknown): Uint8Array | undefined {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (ArrayBuffer.isView(value)) {
-    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (getTypedArrayTag(value) !== undefined) {
+      return new Uint8Array(
+        getTypedArrayBuffer(value),
+        getTypedArrayByteOffset(value),
+        getTypedArrayByteLength(value),
+      );
+    }
+    return new Uint8Array(
+      getDataViewBuffer(value),
+      getDataViewByteOffset(value),
+      getDataViewByteLength(value),
+    );
   }
+  if (isArrayBuffer(value)) return new Uint8Array(value);
   return undefined;
 }
 
@@ -371,11 +412,9 @@ async function serializeBody(
   };
   const getTotalBodyBytes = (): number => totalBodyBytes;
 
-  if (init?.body instanceof ArrayBuffer || (init?.body && ArrayBuffer.isView(init.body))) {
-    const bytes =
-      init.body instanceof ArrayBuffer
-        ? new Uint8Array(init.body)
-        : new Uint8Array(init.body.buffer, init.body.byteOffset, init.body.byteLength);
+  const directBodyBytes = getBinaryChunkBytes(init?.body);
+  if (init?.body && directBodyBytes) {
+    const bytes = directBodyBytes;
     if (bytes.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }

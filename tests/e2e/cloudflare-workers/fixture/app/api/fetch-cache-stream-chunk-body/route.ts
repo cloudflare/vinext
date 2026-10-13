@@ -14,7 +14,24 @@ function toChunk(
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
-function body(value: unknown, chunk: string | null, source: string | null): BodyInit {
+// Workers sends the bytes a view's internal slots cover, whatever its own
+// properties say, so these point the properties at other bytes.
+function shadowByteRange(view: ArrayBuffer | ArrayBufferView): void {
+  if (!ArrayBuffer.isView(view)) return;
+  const decoy = new Uint8Array(view.byteLength);
+  Object.defineProperties(view, {
+    buffer: { value: decoy.buffer },
+    byteOffset: { value: 0 },
+    byteLength: { value: decoy.byteLength },
+  });
+}
+
+function body(
+  value: unknown,
+  chunk: string | null,
+  source: string | null,
+  shadow: boolean,
+): BodyInit {
   // Pad to an even length so the bytes fit a Uint16Array.
   let json = JSON.stringify(value);
   if (json.length % 2) json += " ";
@@ -23,6 +40,7 @@ function body(value: unknown, chunk: string | null, source: string | null): Body
   const buffer = new Uint8Array(encoded.byteLength + 4).fill(0x7b);
   buffer.set(encoded, 2);
   const bytes = toChunk(buffer.subarray(2, 2 + encoded.byteLength), chunk);
+  if (shadow) shadowByteRange(bytes);
   if (source === "iterable") {
     return (async function* () {
       yield bytes;
@@ -48,6 +66,7 @@ export async function GET(request: Request) {
       { caseId: searchParams.get("case"), variant: searchParams.get("variant") },
       searchParams.get("chunk"),
       searchParams.get("source"),
+      searchParams.has("shadow"),
     ),
     duplex: "half",
     next: { revalidate: 60 },

@@ -126,46 +126,52 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
 
   // Workers sends the bytes of ArrayBuffer and other typed array chunks in a
   // stream or async iterable fetch body, so cached POSTs are keyed by them.
-  for (const source of ["stream", "iterable"]) {
-    for (const chunk of ["dataview", "arraybuffer", "uint16array"]) {
-      test(`keys cached fetches by the bytes of ${chunk} ${source} body chunks`, async ({
-        request,
-      }) => {
-        type CachedOrigin = {
-          body: { caseId: string; variant: string };
-          originRequestId: string;
-        };
-        const caseId = crypto.randomUUID();
-        const readCase = async (variant: string): Promise<CachedOrigin> => {
-          const response = await request.get(
-            `${BASE_URL}/api/fetch-cache-stream-chunk-body?case=${caseId}&variant=${variant}&chunk=${chunk}&source=${source}`,
-          );
-          expect(response.status()).toBe(200);
-          return (await response.json()) as CachedOrigin;
-        };
+  // Views with shadowed byte range properties are keyed by the bytes sent too.
+  const chunkCases = [
+    ...["stream", "iterable"].flatMap((source) =>
+      ["dataview", "arraybuffer", "uint16array"].map((chunk) => ({ source, chunk, shadow: false })),
+    ),
+    ...["dataview", "uint16array"].map((chunk) => ({ source: "stream", chunk, shadow: true })),
+  ];
+  for (const { source, chunk, shadow } of chunkCases) {
+    const shadowed = shadow ? " shadowed" : "";
+    test(`keys cached fetches by the bytes of${shadowed} ${chunk} ${source} body chunks`, async ({
+      request,
+    }) => {
+      type CachedOrigin = {
+        body: { caseId: string; variant: string };
+        originRequestId: string;
+      };
+      const caseId = crypto.randomUUID();
+      const readCase = async (variant: string): Promise<CachedOrigin> => {
+        const response = await request.get(
+          `${BASE_URL}/api/fetch-cache-stream-chunk-body?case=${caseId}&variant=${variant}&chunk=${chunk}&source=${source}${shadow ? "&shadow" : ""}`,
+        );
+        expect(response.status()).toBe(200);
+        return (await response.json()) as CachedOrigin;
+      };
 
-        // Read until the first body is served from the data cache, so the read
-        // of the equal-length second body would find it if both shared a key.
-        let first: CachedOrigin | undefined;
-        await expect
-          .poll(
-            async () => {
-              const read = await readCase("aa");
-              expect(read.body).toEqual({ caseId, variant: "aa" });
-              const servedFromCache = read.originRequestId === first?.originRequestId;
-              first = read;
-              return servedFromCache;
-            },
-            { timeout: 15_000 },
-          )
-          .toBe(true);
+      // Read until the first body is served from the data cache, so the read
+      // of the equal-length second body would find it if both shared a key.
+      let first: CachedOrigin | undefined;
+      await expect
+        .poll(
+          async () => {
+            const read = await readCase("aa");
+            expect(read.body).toEqual({ caseId, variant: "aa" });
+            const servedFromCache = read.originRequestId === first?.originRequestId;
+            first = read;
+            return servedFromCache;
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(true);
 
-        // The bodies differ only at an odd byte offset, which a Uint16Array
-        // chunk's elements wouldn't keep if they were truncated to bytes.
-        const second = await readCase("ab");
-        expect(second.body).toEqual({ caseId, variant: "ab" });
-        expect(second.originRequestId).not.toBe(first?.originRequestId);
-      });
-    }
+      // The bodies differ only at an odd byte offset, which a Uint16Array
+      // chunk's elements wouldn't keep if they were truncated to bytes.
+      const second = await readCase("ab");
+      expect(second.body).toEqual({ caseId, variant: "ab" });
+      expect(second.originRequestId).not.toBe(first?.originRequestId);
+    });
   }
 });
