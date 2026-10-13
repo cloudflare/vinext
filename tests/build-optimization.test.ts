@@ -1354,6 +1354,134 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    {
+      name: "dev with a matched multi-stage output",
+      expected: ["@adapter/store", "@adapter/store/style.css", "helper-dep"],
+    },
+    { name: "production", command: "build", expected: [] as string[] },
+    { name: "without the Cloudflare plugin", cloudflare: false, expected: [] as string[] },
+    { name: "unmatched multi-stage output", matchesBuild: false, expected: [] as string[] },
+    { name: "rsc noDiscovery", rsc: { noDiscovery: true }, expected: [] as string[] },
+    { name: "rsc preserveSymlinks", preserveSymlinks: true, expected: [] as string[] },
+    {
+      name: "aliased dependency",
+      alias: "helper-dep",
+      expected: ["@adapter/store", "@adapter/store/style.css"],
+    },
+    {
+      name: "rsc exclusion",
+      rsc: { exclude: ["helper-dep"] },
+      expected: ["@adapter/store", "@adapter/store/style.css"],
+    },
+    {
+      name: "rsc explicit include",
+      rsc: { include: ["helper-dep"] },
+      expected: ["@adapter/store", "@adapter/store/style.css", "helper-dep"],
+    },
+  ])("pre-includes multi-stage host entry dependencies: $name", async (options) => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-host-entry-optdeps-"));
+    await fsp.mkdir(path.join(root, "app"));
+    await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
+    // The host-entry transform re-exports this adapter-owned Worker entry, so
+    // Vite's scanner never sees its imports.
+    const adapterRoot = path.join(root, "node_modules/@adapter/platform");
+    await fsp.mkdir(adapterRoot, { recursive: true });
+    await fsp.writeFile(
+      path.join(adapterRoot, "package.json"),
+      JSON.stringify({ name: "@adapter/platform", type: "module" }),
+    );
+    const entry = path.join(adapterRoot, "entry.worker.js");
+    await fsp.writeFile(
+      entry,
+      [
+        'import { createStore } from "@adapter/store";',
+        'import "@adapter/store/style.css";',
+        'import { loadVinextRequestStage } from "vinext/server/request-stage";',
+        'import { helper } from "./helper.js";',
+        "export default createStore(helper, loadVinextRequestStage);",
+      ].join("\n"),
+    );
+    await fsp.writeFile(path.join(adapterRoot, "helper.js"), 'export * from "helper-dep";\n');
+    for (const name of ["@adapter/store", "helper-dep", "vinext"]) {
+      await fsp.mkdir(path.join(root, "node_modules", name), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, "node_modules", name, "package.json"),
+        JSON.stringify({ name }),
+      );
+    }
+    try {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const plugin = vinext({
+        cache: {
+          cdn: {
+            adapter: path.join(adapterRoot, "cache.js"),
+            output: {
+              entry,
+              matchesBuild: () => options.matchesBuild ?? true,
+              type: "multi-stage",
+            },
+          },
+        },
+      }).find((p: any) => p.name === "vinext:config") as any;
+      const command = options.command ?? "serve";
+      const config = await plugin.config(
+        {
+          root,
+          build: {},
+          plugins: options.cloudflare === false ? [] : [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command },
+      );
+      const rscConfig = mergeConfig(config.environments.rsc, {
+        optimizeDeps: options.rsc ?? {},
+        resolve: { preserveSymlinks: options.preserveSymlinks ?? false },
+      });
+      const ssrConfig = mergeConfig(config.environments.ssr, {});
+      const warned: string[] = [];
+      const logger = createLogger("silent");
+      logger.warn = (msg) => warned.push(msg);
+      const resolvedConfig = {
+        cacheDir: path.join(root, ".vite"),
+        command,
+        configFile: false,
+        environments: { rsc: rscConfig, ssr: ssrConfig },
+        logger,
+        plugins: [],
+        resolve: {
+          alias: options.alias
+            ? [{ find: options.alias, replacement: path.join(root, "src", `${options.alias}.ts`) }]
+            : [],
+        },
+        root,
+      };
+      await plugin.configResolved(resolvedConfig);
+
+      const hostEntryIds = new Set(["@adapter/store", "@adapter/store/style.css", "helper-dep"]);
+      const rscIncludes = rscConfig.optimizeDeps.include as string[];
+      expect(rscIncludes.filter((id) => hostEntryIds.has(id)).sort()).toEqual(options.expected);
+      expect(
+        (ssrConfig.optimizeDeps.include ?? []).filter((id: string) => hostEntryIds.has(id)),
+      ).toEqual([]);
+      // Excluded packages (vinext itself) stay out.
+      expect(rscIncludes.some((id) => id.includes("vinext/"))).toBe(false);
+
+      // Unresolvable or non-JS optional ids stay quiet, as discovery skips
+      // them too. Warnings for explicit includes are kept.
+      const expectedWarnings: string[] = [];
+      for (const id of options.expected) {
+        for (const reason of ["Failed to resolve dependency", "Cannot optimize dependency"]) {
+          const warning = `${reason}: \x1b[36m${id}\x1b[39m, present in rsc 'optimizeDeps.include'`;
+          resolvedConfig.logger.warn(warning);
+          if (options.rsc?.include?.includes(id)) expectedWarnings.push(warning);
+        }
+      }
+      expect(warned).toEqual(expectedWarnings);
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────
