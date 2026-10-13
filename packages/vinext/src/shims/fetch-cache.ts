@@ -389,7 +389,8 @@ function isKeyableInitBody(body: BodyInit): boolean {
  * Its cache key is built, and it is sent, only after awaits. A URL, headers,
  * body or `cf` the caller changes in the meantime must reach neither: the
  * request would be sent with values its key doesn't hold, and its response
- * cached for the values the key does hold.
+ * cached for the values the key does hold. A stream body is read after the
+ * call, as fetch reads it, and sent as the bytes its key is built from.
  */
 function snapshotFetchRequest(
   input: string | URL | Request,
@@ -458,8 +459,9 @@ function snapshotBody(body: BodyInit): BodyInit {
     }
     return formData;
   }
-  // Strings and Blobs can't change. A ReadableStream's chunks, and any other
-  // body (which is built into a Request), are sent as the bytes they're keyed by.
+  // Strings and Blobs can't change. A stream can't be read synchronously, so,
+  // as in fetch, its chunks are read after the call. They're sent as the bytes
+  // they're keyed by, as is any other body, which is built into a Request.
   return body;
 }
 

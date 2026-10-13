@@ -520,7 +520,7 @@ Some requests with a body are fetched without the cache:
 
 A cached `fetch` reads the body, up to 1 MiB, before it sends the request. A body that waits for the response, or for anything else that happens after the request starts, never finishes, so the fetch doesn't either. Aborting the request takes effect only once that read ends. Next.js also reads a stream body before it sends the request.
 
-Like `fetch` itself, a cached `fetch` copies its URL, headers, body and `cf` when it is called. It keys and sends that copy, so changing those objects after the call changes neither. A body read in chunks, from a `ReadableStream` or a `Request`, is sent as the bytes it was keyed by, as in Next.js. Next.js sends the caller's other objects, though, so a request changed after its key is built is sent, and its response stored, under the key of the request it was changed from.
+Like `fetch` itself, a cached `fetch` copies its URL, headers, `cf` and body when it is called. It keys and sends that copy, so changing those objects after the call changes neither. A stream body, from a `ReadableStream` or a `Request`, can't be copied then: as with `fetch`, its chunks are read after the call, so a chunk changed before it is read is sent changed. It is keyed by the bytes read, and sent as those same bytes, as in Next.js. Next.js sends the caller's other objects, though, so a request changed after its key is built is sent, and its response stored, under the key of the request it was changed from.
 
 ## Where generated metadata goes
 
