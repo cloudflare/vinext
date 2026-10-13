@@ -651,6 +651,11 @@ describe("optimizeDeps.exclude for vinext", () => {
         expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.client.optimizeDeps?.exclude).toContain(shimExclude);
       }
+      for (const nextShim of ["next/headers", "next/navigation", "next/link", "next/cache"]) {
+        expect(result.environments.rsc.optimizeDeps?.exclude).toContain(nextShim);
+        expect(result.environments.ssr.optimizeDeps?.exclude).toContain(nextShim);
+        expect(result.environments.client.optimizeDeps?.exclude).toContain(nextShim);
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
