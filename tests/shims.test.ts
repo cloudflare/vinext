@@ -17168,6 +17168,50 @@ describe("app router route-transition scroll honours data-scroll-behavior", () =
     expect(documentElement.style.scrollBehavior).toBe("smooth");
   });
 
+  it("warns once in development when smooth scrolling is detected without the data attribute", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.resetModules();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const originalGetComputedStyle = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "getComputedStyle",
+    );
+    Object.defineProperty(globalThis, "getComputedStyle", {
+      configurable: true,
+      value: () => ({ scrollBehavior: "smooth" }),
+    });
+
+    try {
+      const { disableSmoothScrollDuringRouteTransition } =
+        await import("../packages/vinext/src/shims/disable-smooth-scroll.js");
+      const scroll = vi.fn();
+
+      withDocument({ documentElement: createDocumentElement("smooth").documentElement }, () => {
+        disableSmoothScrollDuringRouteTransition(scroll);
+      });
+      expect(warn).not.toHaveBeenCalled();
+
+      withDocument({ documentElement: createDocumentElement(undefined).documentElement }, () => {
+        disableSmoothScrollDuringRouteTransition(scroll);
+        disableSmoothScrollDuringRouteTransition(scroll);
+      });
+
+      expect(scroll).toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain(
+        "Detected `scroll-behavior: smooth` on the `<html>` element.",
+      );
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+      if (originalGetComputedStyle) {
+        Object.defineProperty(globalThis, "getComputedStyle", originalGetComputedStyle);
+      } else {
+        Reflect.deleteProperty(globalThis, "getComputedStyle");
+      }
+    }
+  });
+
   it("forces scroll-behavior: auto for the deferred cross-route hash scroll", async () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
