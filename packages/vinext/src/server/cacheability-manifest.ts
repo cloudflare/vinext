@@ -13,6 +13,7 @@ import {
   VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 } from "./headers.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "./app-rsc-render-mode.js";
+import { pagePathnameFromNextDataAsset } from "./pages-data-route.js";
 
 export const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
 /** Request-stage projection of the manifest: the App page routes that can admit a query-free entry. */
@@ -334,15 +335,9 @@ export function cacheabilityRoutePathname(
   const assetPath = restWithBuildId.slice(buildIdEnd + 1, -".json".length);
   if (!assetPath) return normalizeCacheabilityRoutePathname(normalized);
 
-  let pagePathname: string;
-  if (assetPath === "index") pagePathname = "/";
-  else if (assetPath.endsWith("/index")) {
-    pagePathname = `/${assetPath.slice(0, -"/index".length)}`;
-  } else if (assetPath.startsWith("index/")) {
-    pagePathname = `/${assetPath.slice("index/".length)}`;
-  } else {
-    pagePathname = `/${assetPath}`;
-  }
+  // Resolve the page exactly as the data route does.
+  const pagePathname = pagePathnameFromNextDataAsset(assetPath);
+  if (pagePathname === null) return normalizeCacheabilityRoutePathname(normalized);
   const basePath = normalized.slice(0, marker);
   return normalizeCacheabilityRoutePathname(
     pagePathname === "/" ? basePath || "/" : `${basePath}${pagePathname}`,

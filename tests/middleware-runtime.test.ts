@@ -1157,8 +1157,7 @@ describe("middleware matching for raw data requests", () => {
     ["the current build", "/_next/data/build-id/admin.json", "/admin"],
     ["a stale build", "/_next/data/stale-build/admin.json", "/admin"],
     ["the index page", "/_next/data/build-id/index.json", "/"],
-    // vinext routes this URL to the `/admin` page, so its guard must apply.
-    ["a nested index page", "/_next/data/build-id/admin/index.json", "/admin"],
+    ["a nested index page", "/_next/data/build-id/admin/index.json", "/admin/index"],
     ["an encoded page path", "/_next/data/build-id/adm%69n.json", "/admin"],
   ])("applies a page matcher to the data URL of %s", async (_label, pathname, matcher) => {
     // Middleware still observes the raw URL it was given.
@@ -1181,6 +1180,8 @@ describe("middleware matching for raw data requests", () => {
 
   it.each([
     ["a different page", "/_next/data/build-id/admin/settings.json"],
+    // Next.js 16.2.7 resolves this URL to `/admin/index`, not `/admin`.
+    ["an index segment below the page", "/_next/data/build-id/admin/index.json"],
     ["a sibling page", "/_next/data/build-id/administrator.json"],
   ])("does not widen an exact matcher to %s", async (_label, pathname) => {
     await expect(observedPathname(pathname, "/admin")).resolves.toBeUndefined();

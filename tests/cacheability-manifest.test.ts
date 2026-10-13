@@ -208,6 +208,10 @@ describe("cacheability manifest", () => {
       ),
     ).toBe("/docs/products/one");
     expect(cacheabilityRoutePathname("/_next/data/build-a/index.json", "pages-data")).toBe("/");
+    // The data route renders `/blog/index` for this URL, so its state must too.
+    expect(cacheabilityRoutePathname("/_next/data/build-a/blog/index.json", "pages-data")).toBe(
+      "/blog/index",
+    );
     expect(cacheabilityRoutePathname("/docs/products/one?_rsc", "rsc-full")).toBe(
       "/docs/products/one",
     );
