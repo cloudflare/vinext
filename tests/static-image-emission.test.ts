@@ -466,6 +466,44 @@ describe("static image import production emission", () => {
     await assertStaticImageProductionParity("pages", { basePath: "/docs" });
   }, 60_000);
 
+  it("serves the Pages Router image endpoint when middleware rewrites to it from outside basePath", async () => {
+    const root = await createFixture("pages", { basePath: "/docs" });
+    writeFixtureFile(
+      root,
+      "middleware.ts",
+      `import { NextResponse, type NextRequest } from "next/server";
+
+export function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/legacy-image") {
+    return NextResponse.rewrite(new URL(\`/docs/_next/image\${request.nextUrl.search}\`, request.url));
+  }
+}
+`,
+    );
+    await buildFixture(root, "pages");
+    const started = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: path.join(root, "dist"),
+    });
+    servers.push(started.server);
+    const address = started.server.address();
+    if (!address || typeof address === "string") throw new Error("Production server did not bind");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const html = await (await fetch(`${origin}/docs/`)).text();
+    const search = new URL(getAttribute(html, "static-image", "src"), origin).search;
+
+    // Next.js resolves middleware rewrites before its filesystem lookup, so a
+    // rewrite into the basePath reaches the image endpoint.
+    const rewritten = await fetch(`${origin}/legacy-image${search}`);
+    expect(rewritten.status).toBe(200);
+    expect(rewritten.headers.get("content-type")).toBe("image/png");
+    await rewritten.arrayBuffer();
+    const direct = await fetch(`${origin}/_next/image${search}`);
+    expect(direct.status).toBe(404);
+    await direct.arrayBuffer();
+  }, 60_000);
+
   it("emits matching SSR and client image URLs in Cloudflare builds", async () => {
     const root = await createFixture("app");
     await buildCloudflareFixture(root);

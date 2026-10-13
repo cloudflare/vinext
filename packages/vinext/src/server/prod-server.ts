@@ -2768,8 +2768,8 @@ async function createPagesRouterRequestHandler(
         serveFilesystemRoute: async (requestPathname, stagedHeaders, phase, resolvedUrl) => {
           // Next.js resolves middleware and beforeFiles rewrites before
           // dispatching the built-in image endpoint, which it serves only
-          // under the basePath.
-          if (hadBasePath && isImageOptimizationPath(requestPathname)) {
+          // under the basePath. A rewrite can bring a request outside it there.
+          if ((phase !== "direct" || hadBasePath) && isImageOptimizationPath(requestPathname)) {
             for (const [name, value] of Object.entries(stagedHeaders)) {
               res.setHeader(name, value);
             }
