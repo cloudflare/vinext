@@ -363,7 +363,7 @@ describe("staticAssetsAdapter", () => {
     expect(await adapter.get(key)).toEqual(cached);
   });
 
-  it("reuses only a loaded cache index across requests", async () => {
+  it("retries a cache index fetch that failed", async () => {
     const indexResponses: Array<() => Promise<Response>> = [
       () => Promise.reject(new Error("network")),
       async () => new Response(null, { status: 503 }),
@@ -379,22 +379,29 @@ describe("staticAssetsAdapter", () => {
     expect(await adapter.get("missing")).toBeNull();
     expect(await adapter.get("missing")).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
 
-    const pending = vi.fn((input: string) =>
-      input.endsWith("/index.json") && pending.mock.calls.length === 1
-        ? new Promise<Response>(() => {})
-        : Promise.resolve(Response.json({})),
-    );
-    const adapterWithPendingIndex = new StaticAssetsCacheAdapter({ fetch: pending });
-    void adapterWithPendingIndex.get("cancelled");
-    expect(await adapterWithPendingIndex.get("missing")).toBeNull();
-    expect(pending).toHaveBeenCalledTimes(2);
+  it("does not share a pending cache index fetch with later requests", async () => {
+    let indexFetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => (indexFetchStarted = resolve));
+    const fetch = vi.fn((_input: string) => {
+      if (fetch.mock.calls.length > 1) return Promise.resolve(Response.json({}));
+      indexFetchStarted();
+      return new Promise<Response>(() => {});
+    });
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    void adapter.get("cancelled");
+    await started;
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 
-    const withoutIndex = vi.fn(async () => new Response(null, { status: 404 }));
-    const adapterWithoutIndex = new StaticAssetsCacheAdapter({ fetch: withoutIndex });
-    expect(await adapterWithoutIndex.get("missing")).toBeNull();
-    expect(await adapterWithoutIndex.get("missing")).toBeNull();
-    expect(withoutIndex).toHaveBeenCalledTimes(1);
+  it("remembers that the build packaged no cache index", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 404 }));
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("fails clearly when the configured Assets binding is missing", () => {

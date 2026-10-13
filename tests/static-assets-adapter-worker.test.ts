@@ -197,9 +197,12 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           script: `export default {
   async fetch(request, env) {
     if (new URL(request.url).pathname !== "/abandon") return env.APP.fetch("https://app.local/");
-    env.APP.fetch("https://app.local/").catch(() => {});
-    await env.INDEX_REQUESTED.fetch("https://signal.local/");
-    return new Response("abandoned");
+    const app = env.APP.fetch("https://app.local/").then(
+      (response) => "app responded before loading the index: " + response.status,
+      (error) => "app failed before loading the index: " + error,
+    );
+    const indexRequested = env.INDEX_REQUESTED.fetch("https://signal.local/").then(() => "abandoned");
+    return new Response(await Promise.race([indexRequested, app]));
   },
 };`,
         },
