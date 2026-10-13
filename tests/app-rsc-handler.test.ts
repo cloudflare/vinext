@@ -317,6 +317,45 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it("keeps the request query on a domain default-locale redirect", async () => {
+    const i18nConfig = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.fr", defaultLocale: "fr", http: true as const }],
+    };
+    const handler = createHandler({
+      configRedirects: applyLocaleToRoutes(
+        [{ source: "/old", destination: "/new", permanent: false }],
+        i18nConfig,
+        "redirect",
+        { basePath: "/docs" },
+      ),
+      i18nConfig,
+    });
+
+    const documentResponse = await handler(
+      new Request("https://example.test/docs/fr/old?x=1"),
+      null,
+    );
+    expect(documentResponse.status).toBe(307);
+    expect(documentResponse.headers.get("location")).toBe("http://example.fr/docs/new?x=1");
+
+    // An RSC navigation keeps the whole query, `_rsc` included, as Next.js
+    // does (test/e2e/app-dir/rsc-query-routing).
+    const headers = createRscRequestHeaders();
+    const rscUrl = new URL(
+      await createRscRequestUrl("/docs/fr/old?x=1", headers),
+      "https://example.test",
+    );
+    const rscResponse = await handler(new Request(rscUrl, { headers }), null);
+    expect(rscResponse.status).toBe(307);
+    const rscLocation = new URL(rscResponse.headers.get("location")!);
+    expect(`${rscLocation.origin}${rscLocation.pathname}`).toBe("http://example.fr/docs/new");
+    expect([...rscLocation.searchParams]).toEqual([...rscUrl.searchParams]);
+    expect(rscLocation.searchParams.get("x")).toBe("1");
+    expect(rscLocation.searchParams.has("_rsc")).toBe(true);
+  });
+
   it("applies i18n trailingSlash root headers to a staged root response", async () => {
     const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
     const handler = createHandler({

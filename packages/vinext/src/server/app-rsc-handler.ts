@@ -91,7 +91,7 @@ import {
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
-import { localeRootHasTrailingSlash } from "../utils/domain-locale.js";
+import { isDomainLocaleUrl, localeRootHasTrailingSlash } from "../utils/domain-locale.js";
 import {
   badRequestResponse,
   notFoundResponse,
@@ -1157,13 +1157,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // cache-busting `_rsc` param onto the Location. For plain (document)
     // requests, carry the original request query onto the Location so it
     // survives the redirect, mirroring Next.js resolve-routes.ts (issue #1529).
+    // A redirect to one of the app's locale domains keeps the whole request
+    // query, `_rsc` included, as Next.js does; createRscRedirectLocation
+    // returns cross-origin destinations unchanged.
+    const domainLocales = options.i18nConfig?.domains;
     const location =
-      isRscRequest && request.headers.get(RSC_HEADER) === "1"
+      isRscRequest &&
+      request.headers.get(RSC_HEADER) === "1" &&
+      !isDomainLocaleUrl(destination, domainLocales)
         ? await createRscRedirectLocation(destination, request)
         : configMatchers.preserveRedirectDestinationQuery(
             destination,
             url.search,
             redirect.destinationQuery,
+            domainLocales,
           );
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
