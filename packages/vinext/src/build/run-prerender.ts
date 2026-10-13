@@ -239,11 +239,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // routes from being served as stale static files forever (bypassing
   // revalidation) when KV pre-population is added in the future.
   //
-  // output: 'export' builds use dist/client/ (handled by static-export.ts which
-  // passes its own outDir — this path is only reached for non-export builds).
+  // output: 'export' builds write into the client output directory
+  // (dist/client/ unless clientOutDir moves it) alongside the client assets.
   const outDir =
     mode === "export"
-      ? path.join(root, "dist", "client")
+      ? path.resolve(root, options.routeRootConfig?.clientOutDir ?? path.join("dist", "client"))
       : path.join(manifestDir, "prerendered-routes");
 
   // For hybrid builds (both app/ and pages/ present), start a single shared

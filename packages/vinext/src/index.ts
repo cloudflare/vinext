@@ -1532,7 +1532,9 @@ export type VinextOptions = {
   ssrOutDir?: string;
   /**
    * Override the output directory for the client bundle.
-   * Defaults to Vite's default (dist/client or dist).
+   * Defaults to "dist/client". Like rscOutDir and ssrOutDir, it is not
+   * supported by `vinext start` or `output: "standalone"`, which expect the
+   * default dist/ layout.
    */
   clientOutDir?: string;
   /**
@@ -8392,7 +8394,7 @@ export const loadServerActionClient = ${
           if (!envConfig) return;
 
           const buildRoot = envConfig.root ?? process.cwd();
-          const clientDir = path.resolve(buildRoot, "dist", "client");
+          const clientDir = path.resolve(buildRoot, envConfig.build.outDir);
           const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
           const rscOutDir = path.resolve(
             buildRoot,
