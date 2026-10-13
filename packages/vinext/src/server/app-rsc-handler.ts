@@ -101,6 +101,7 @@ import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
 } from "./revalidation-request.js";
+import { openForwardedMiddlewareContext } from "./forwarded-middleware-context.js";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { hasPagesPreviewCookie } from "./pages-response-stage.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
@@ -620,6 +621,11 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     fallback: NextRewrite[];
   };
   draftModeSecret: string;
+  /**
+   * Dev-only key the hybrid Pages handler seals x-vinext-mw-ctx with. Null
+   * outside `vite dev`, so a forwarded middleware context is never honored.
+   */
+  devForwardedMiddlewareContextKey?: string | null;
   dispatchMatchedPage: (options: DispatchMatchedPageOptions<TRoute>) => Promise<Response>;
   dispatchMatchedRouteHandler: (
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
@@ -2931,11 +2937,13 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // handler already filtered headers upstream and x-vinext-mw-ctx carries
     // the forwarded middleware context.
     // filterInternalHeaders drops x-vinext-mw-ctx, so read it first and
-    // re-attach it below for applyForwardedMiddlewareContext. Only vinext can
-    // supply it: the dev server strips any client copy from both req.headers
-    // and req.rawHeaders on ingress, and the Worker and production entries
-    // filter it.
-    const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
+    // re-attach it below for applyForwardedMiddlewareContext. Only a value
+    // sealed with this dev server's key is honored; any other copy is dropped
+    // and middleware runs as usual.
+    const mwCtx = openForwardedMiddlewareContext(
+      rawRequest.headers.get(VINEXT_MW_CTX_HEADER),
+      options.devForwardedMiddlewareContextKey,
+    );
     const pagesDataUrl = new URL(rawRequest.url);
     const pagesDataInScope =
       !options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath);

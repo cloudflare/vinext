@@ -176,6 +176,7 @@ import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-mani
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
+import { sealForwardedMiddlewareContext } from "./server/forwarded-middleware-context.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 import { traceFrameworkRequest } from "./server/request-tracing.js";
 
@@ -435,11 +436,13 @@ function removeForwardedMiddlewareContext(req: import("node:http").IncomingMessa
 
 function setForwardedMiddlewareContext(
   req: import("node:http").IncomingMessage,
+  key: string,
   context: string,
 ): void {
   removeForwardedMiddlewareContext(req);
-  req.headers[VINEXT_MW_CTX_HEADER] = context;
-  req.rawHeaders.push(VINEXT_MW_CTX_HEADER, context);
+  const value = sealForwardedMiddlewareContext(key, context);
+  req.headers[VINEXT_MW_CTX_HEADER] = value;
+  req.rawHeaders.push(VINEXT_MW_CTX_HEADER, value);
 }
 
 function scopeRscPlugin(plugin: Plugin): Plugin {
@@ -1773,6 +1776,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const prerenderSecret =
     process.env.__VINEXT_SHARED_PRERENDER_SECRET ?? randomBytes(32).toString("hex");
   let revalidateSecret = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+  // Authenticates the middleware context hybrid dev forwards to the App Router.
+  const devForwardedMiddlewareContextKey = randomBytes(32).toString("hex");
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
@@ -2378,23 +2383,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
-    {
-      name: "vinext:dev-ingress",
-      // Pre-phase middleware runs in plugin order, so enforce "pre" puts this
-      // ahead of plugins that dispatch requests themselves (e.g. Nitro's dev
-      // middleware) no matter where vinext() sits in the plugins array.
-      enforce: "pre",
-      apply: "serve",
-      configureServer(server) {
-        server.middlewares.use((req, _res, next) => {
-          // Only the hybrid Pages handler may attach the forwarded middleware
-          // context. The App Router trusts the request header for it, so a
-          // client copy would otherwise replace middleware execution.
-          removeForwardedMiddlewareContext(req);
-          next();
-        });
-      },
-    },
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
@@ -5039,6 +5027,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 globalNotFoundPath,
                 draftModeSecret,
                 prerenderSecret,
+                // Dev-only, and never emitted into a client-environment copy.
+                devForwardedMiddlewareContextKey:
+                  isServeCommand && this.environment.config.consumer === "server"
+                    ? devForwardedMiddlewareContextKey
+                    : undefined,
               },
               instrumentationPath,
             );
@@ -5685,6 +5678,9 @@ export const loadServerActionClient = ${
 
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
+          // Only the hybrid Pages handler may attach the forwarded middleware
+          // context. The App Router also rejects any copy without the dev key.
+          removeForwardedMiddlewareContext(req);
           next();
         });
 
@@ -6873,6 +6869,7 @@ export const loadServerActionClient = ${
                         const mwStatus = result.status ?? result.rewriteStatus;
                         setForwardedMiddlewareContext(
                           req,
+                          devForwardedMiddlewareContextKey,
                           JSON.stringify({
                             h: mwCtxEntries,
                             s: mwStatus ?? null,
@@ -7089,6 +7086,7 @@ export const loadServerActionClient = ${
                 flushRequestHeaders();
                 setForwardedMiddlewareContext(
                   req,
+                  devForwardedMiddlewareContextKey,
                   JSON.stringify({
                     h: responseHeaders,
                     q: [...requestHeaders],

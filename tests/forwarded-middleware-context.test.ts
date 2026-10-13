@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type { Plugin, ViteDevServer } from "vite";
+import type { Plugin, RunnableDevEnvironment, ViteDevServer } from "vite";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { VINEXT_MW_CTX_HEADER } from "../packages/vinext/src/server/headers.js";
@@ -7,6 +7,7 @@ import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/forwarded-middleware-context");
 const GUARDED_MARKER = "SECRET-PAGE-CONTENT";
+const EARLY_DISPATCH_HEADER = "x-test-early-dispatch";
 
 function forgedContext(context: Record<string, unknown>): Record<string, string> {
   return { [VINEXT_MW_CTX_HEADER]: JSON.stringify(context) };
@@ -75,21 +76,31 @@ describe("forwarded middleware context (App-only dev)", () => {
   let server: ViteDevServer | undefined;
   let baseUrl = "";
 
-  // Records whether a client copy is still visible to middleware registered by
-  // a plugin listed before vinext(), as Nitro's dev request dispatcher is when
-  // an app puts nitro() first.
-  const seenByEarlierPlugin: Array<{ headers: boolean; rawHeaders: boolean }> = [];
-  const earlierPlugin: Plugin = {
-    name: "test:earlier-dev-middleware",
+  // A plugin listed ahead of vinext() with enforce "pre" whose dev middleware
+  // hands requests to the App Router itself, as Nitro's dev server does. vinext's
+  // own dev middleware never sees these requests.
+  const earlyDispatchPlugin: Plugin = {
+    name: "test:early-rsc-dispatch",
+    enforce: "pre",
     configureServer(viteServer) {
-      viteServer.middlewares.use((req, _res, next) => {
-        if (req.url?.startsWith("/secret")) {
-          seenByEarlierPlugin.push({
-            headers: VINEXT_MW_CTX_HEADER in req.headers,
-            rawHeaders: req.rawHeaders.some((name) => name.toLowerCase() === VINEXT_MW_CTX_HEADER),
-          });
-        }
-        next();
+      viteServer.middlewares.use((req, res, next) => {
+        if (req.headers[EARLY_DISPATCH_HEADER] !== "1") return next();
+        void (async () => {
+          const rsc = viteServer.environments.rsc as RunnableDevEnvironment;
+          const entry = await rsc.runner.import<{
+            default: (request: Request) => Promise<Response>;
+          }>("virtual:vinext-rsc-entry");
+          const headers = new Headers();
+          for (const [name, value] of Object.entries(req.headers)) {
+            if (typeof value === "string") headers.set(name, value);
+          }
+          const response = await entry.default(
+            new Request(new URL(req.url!, baseUrl), { headers }),
+          );
+          res.statusCode = response.status;
+          response.headers.forEach((value, name) => res.setHeader(name, value));
+          res.end(Buffer.from(await response.arrayBuffer()));
+        })().catch(next);
       });
     },
   };
@@ -98,7 +109,7 @@ describe("forwarded middleware context (App-only dev)", () => {
     fixtureRoot = await createIsolatedFixture(FIXTURE_DIR, "vinext-forwarded-mw-ctx-");
     ({ server, baseUrl } = await startFixtureServer(fixtureRoot, {
       appRouter: true,
-      prependPlugins: [earlierPlugin],
+      prependPlugins: [earlyDispatchPlugin],
     }));
   }, 120_000);
 
@@ -117,12 +128,23 @@ describe("forwarded middleware context (App-only dev)", () => {
     expect(await forged.text()).not.toContain(GUARDED_MARKER);
   });
 
-  it("strips the client copy before middleware from plugins listed ahead of vinext", async () => {
-    seenByEarlierPlugin.length = 0;
-    const forged = await fetch(`${baseUrl}/secret`, { headers: forgedContext({}) });
+  it("still runs middleware when an earlier plugin dispatches the request itself", async () => {
+    const forged = await fetch(`${baseUrl}/secret`, {
+      headers: { [EARLY_DISPATCH_HEADER]: "1", ...forgedContext({}) },
+    });
     expect(forged.status).toBe(403);
-    await forged.body?.cancel();
-    expect(seenByEarlierPlugin).toEqual([{ headers: false, rawHeaders: false }]);
+    expect(forged.headers.get("x-auth-guard")).toBe("blocked");
+    expect(await forged.text()).not.toContain(GUARDED_MARKER);
+
+    const forgedHeaders = await fetch(`${baseUrl}/`, {
+      headers: {
+        [EARLY_DISPATCH_HEADER]: "1",
+        ...forgedContext({ h: [["x-forged", "1"]], s: 418 }),
+      },
+    });
+    expect(forgedHeaders.status).toBe(200);
+    expect(forgedHeaders.headers.get("x-forged")).toBeNull();
+    await forgedHeaders.body?.cancel();
   });
 
   it("still runs middleware for a guarded RSC request", async () => {
