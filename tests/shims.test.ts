@@ -2903,6 +2903,58 @@ describe("window.next debug global", () => {
       vi.resetModules();
     }
   });
+
+  // Next.js resets the shallow scroll through Router.set() -> client/index.tsx,
+  // which wraps window.scrollTo in disableSmoothScrollDuringRouteTransition.
+  it('shallow push scroll reset forces scroll-behavior: auto when <html data-scroll-behavior="smooth">', async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const documentElement = {
+      dataset: { scrollBehavior: "smooth" },
+      getClientRects: vi.fn(() => []),
+      style: { scrollBehavior: "smooth" },
+    };
+    const scrollBehaviorDuringScroll: string[] = [];
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {
+        scrollBehaviorDuringScroll.push(documentElement.style.scrollBehavior);
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        value: { documentElement },
+      });
+
+      const result = await win.next.router.push("/foo", undefined, { shallow: true });
+      expect(result).toBe(true);
+      expect(scrollBehaviorDuringScroll).toEqual(["auto"]);
+      expect(documentElement.getClientRects).toHaveBeenCalled();
+      expect(documentElement.style.scrollBehavior).toBe("smooth");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      if (originalDocument) {
+        Object.defineProperty(globalThis, "document", originalDocument);
+      } else {
+        Reflect.deleteProperty(globalThis, "document");
+      }
+      vi.resetModules();
+    }
+  });
 });
 
 describe("window.next debug global", () => {
@@ -20258,7 +20310,7 @@ describe("Pages Router concurrent navigation", () => {
 
     render.mockImplementation(() => {});
     (globalThis as any).window = win;
-    (globalThis as any).document = { documentElement: {} };
+    (globalThis as any).document = { documentElement: { dataset: {} } };
     globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
       fetchSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
       return new Response(buildNavHtml("/page-a", pageModuleUrl));

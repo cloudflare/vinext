@@ -3793,7 +3793,7 @@ async function performNavigation(
     // ordering of scroll-during-commit, then completion event.
     if (doScroll) {
       if (hash) scrollToHashTarget(hash);
-      else window.scrollTo(0, 0);
+      else scrollToPagesRouterPosition({ x: 0, y: 0 });
     }
   }
   onStateUpdate?.();
