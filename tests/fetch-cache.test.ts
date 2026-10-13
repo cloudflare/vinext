@@ -3671,10 +3671,10 @@ describe("fetch cache shim", () => {
         },
       ],
       [
-        "a cf option's nested value beside one that can't be cloned",
+        "a cf option's nested value beside one JSON can't hold",
         () => {
-          const cf = { cacheTags: ["alice"], uncloneable: () => {} };
-          return { input: url, init: { cf }, change: () => (cf.cacheTags[0] = "bobby") };
+          const cf = { image: { format: "alice", ignored: () => {} } };
+          return { input: url, init: { cf }, change: () => (cf.image.format = "bobby") };
         },
       ],
       [
@@ -3768,12 +3768,13 @@ describe("fetch cache shim", () => {
       expect(await read()).toEqual(response);
     });
 
-    it("a Request's body is used up, as fetch uses it, when it is sent as the bytes it's keyed by", async () => {
+    it("a Request's body is used up when fetch is called, as fetch uses it", async () => {
       const input = new Request(url, { method: "POST", body: "alice" });
-      const response = await (await fetch(input, { next: { revalidate: 60 } })).json();
+      const pending = fetch(input, { next: { revalidate: 60 } });
 
-      expect(response.sent).toContain("alice");
       expect(input.bodyUsed).toBe(true);
+      await expect(input.text()).rejects.toThrow();
+      expect((await (await pending).json()).sent).toContain("alice");
     });
 
     it("a Blob body's type isn't sent or keyed with a change made right after the call", async () => {
@@ -3984,7 +3985,7 @@ describe("fetch cache shim", () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [forwardedRequest, forwardedInit] = fetchMock.mock.calls[0];
-      expect(forwardedRequest).toBe(request);
+      expect(forwardedRequest).toBeInstanceOf(Request);
       expect(await new Request(forwardedRequest, forwardedInit).text()).toBe(
         "request-body-content",
       );
@@ -4143,7 +4144,9 @@ describe("fetch cache shim", () => {
         expect(data.count).toBe(1);
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(cloneSpy).not.toHaveBeenCalled();
-        expect(request.bodyUsed).toBe(false);
+        // The body moves to the request that is sent, as fetch uses it, unread.
+        expect(request.bodyUsed).toBe(true);
+        expect((fetchMock.mock.calls[0][0] as Request).bodyUsed).toBe(false);
       } finally {
         cloneSpy.mockRestore();
       }

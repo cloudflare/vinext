@@ -425,24 +425,34 @@ function snapshotFetchRequest(
   }
   return {
     // fetch reads a URL input as a string when it is called.
-    input: input instanceof Request ? input : String(input),
+    input: input instanceof Request ? snapshotRequestBody(input, snapshotInit) : String(input),
     init: snapshotInit,
   };
 }
 
+// Unless init replaces it, fetch uses up a Request's body when it is called.
+// A copy of the Request takes the body, as fetch does, so the caller can't
+// read it while the copy's body is keyed and sent.
+function snapshotRequestBody(input: Request, init: RequestInit): Request {
+  if (init.body != null || input.body === null || input.bodyUsed) return input;
+  try {
+    return new Request(input);
+  } catch {
+    // A locked body is left for fetch to reject.
+    return input;
+  }
+}
+
 // `cf` options are plain data, some of them nested (`image`, `cacheTags`).
-// Each is cloned on its own, so one that can't be, like a function, is kept by
-// reference without leaving the others shared with the caller.
+// Workers copies them as JSON when a Request is built, which drops values JSON
+// can't hold, like functions.
 function snapshotCf(cf: object): object {
-  return Object.fromEntries(
-    Object.entries(cf).map(([name, value]) => {
-      try {
-        return [name, structuredClone(value)];
-      } catch {
-        return [name, value];
-      }
-    }),
-  );
+  try {
+    return JSON.parse(JSON.stringify(cf)) as object;
+  } catch {
+    // Options JSON can't hold, like a cycle, are left for the runtime to reject.
+    return cf;
+  }
 }
 
 function snapshotBody(body: BodyInit): BodyInit {
@@ -627,11 +637,9 @@ async function serializeBody(
       throw new SkipCacheKeyGenerationError();
     }
     // Send the bytes the key is built from rather than the Request's own body,
-    // whose chunks the caller could still change. The caller's body is used
-    // up, as it is when fetch sends it.
+    // whose chunks the caller could still change.
     if (init) {
       (init as ExtendedRequestInit)._ogBody = concatBodyBytes(chunks);
-      if (!builtBodyRequests.has(input)) void input.body.cancel().catch(() => {});
     }
     const formContentType = builtBodyRequests.has(input)
       ? undefined
