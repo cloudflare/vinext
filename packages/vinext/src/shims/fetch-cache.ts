@@ -274,6 +274,7 @@ const getArrayBufferByteLength = getIntrinsic<number>(ArrayBuffer.prototype, "by
 const getBlobType = getIntrinsic<string>(Blob.prototype, "type");
 const getFileName = getIntrinsic<string>(File.prototype, "name");
 const getFileLastModified = getIntrinsic<number>(File.prototype, "lastModified");
+const getRequestHeaders = getIntrinsic<Headers>(Request.prototype, "headers");
 // Both are deliberately invoked with Reflect.apply on the body.
 // oxlint-disable-next-line typescript/unbound-method
 const { toString: urlSearchParamsToString } = URLSearchParams.prototype;
@@ -405,7 +406,7 @@ function snapshotFetchRequest(
     snapshotInit.headers !== undefined
       ? snapshotInit.headers
       : input instanceof Request
-        ? input.headers
+        ? getRequestHeaders(input)
         : undefined;
   if (headers !== undefined) {
     snapshotInit.headers = new Headers(headers);
@@ -626,9 +627,11 @@ async function serializeBody(
       throw new SkipCacheKeyGenerationError();
     }
     // Send the bytes the key is built from rather than the Request's own body,
-    // whose chunks the caller could still change.
+    // whose chunks the caller could still change. The caller's body is used
+    // up, as it is when fetch sends it.
     if (init) {
       (init as ExtendedRequestInit)._ogBody = concatBodyBytes(chunks);
+      if (!builtBodyRequests.has(input)) void input.body.cancel().catch(() => {});
     }
     const formContentType = builtBodyRequests.has(input)
       ? undefined

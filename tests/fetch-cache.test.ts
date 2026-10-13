@@ -1325,11 +1325,11 @@ describe("fetch cache shim", () => {
 
   it("preserves Request bodies for stale background revalidation", async () => {
     const seenBodies: string[] = [];
-    fetchMock.mockImplementation(async (input: string | URL | Request, _init?: RequestInit) => {
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
       requestCount++;
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      const body = input instanceof Request ? await input.clone().text() : "";
+      const body = input instanceof Request ? await new Request(input, init).text() : "";
       seenBodies.push(body);
       return new Response(JSON.stringify({ url, count: requestCount, body }), {
         status: 200,
@@ -3755,6 +3755,27 @@ describe("fetch cache shim", () => {
       expect(await read(changedRequest())).toEqual(response);
     });
 
+    it("a Request's headers are read from the Request, not a property shadowing them", async () => {
+      const read = async () => {
+        const input = new Request(url, { headers: { "x-user": "alice" } });
+        Object.defineProperty(input, "headers", { value: new Headers({ "x-user": "bobby" }) });
+        return (await fetch(input, { next: { revalidate: 60 } })).json();
+      };
+
+      const response = await read();
+      expect(response.sent).toContain("alice");
+      expect(response.sent).not.toContain("bobby");
+      expect(await read()).toEqual(response);
+    });
+
+    it("a Request's body is used up, as fetch uses it, when it is sent as the bytes it's keyed by", async () => {
+      const input = new Request(url, { method: "POST", body: "alice" });
+      const response = await (await fetch(input, { next: { revalidate: 60 } })).json();
+
+      expect(response.sent).toContain("alice");
+      expect(input.bodyUsed).toBe(true);
+    });
+
     it("a Blob body's type isn't sent or keyed with a change made right after the call", async () => {
       const read = async (change: boolean) => {
         const body = new Blob(["user"], { type: "text/alice" });
@@ -3962,10 +3983,11 @@ describe("fetch cache shim", () => {
       await fetch(request, { next: { revalidate: 60 } });
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      const call = fetchMock.mock.calls[0];
-      const forwardedRequest = call[0] as Request;
-      expect(forwardedRequest).toBeInstanceOf(Request);
-      expect(await forwardedRequest.text()).toBe("request-body-content");
+      const [forwardedRequest, forwardedInit] = fetchMock.mock.calls[0];
+      expect(forwardedRequest).toBe(request);
+      expect(await new Request(forwardedRequest, forwardedInit).text()).toBe(
+        "request-body-content",
+      );
     });
 
     it("already-consumed Request bodies bypass cache key generation and defer to the underlying fetch", async () => {
