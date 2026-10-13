@@ -455,7 +455,7 @@ if (earlyViteCliInvocation) {
   loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
 }
 
-// Install the process-level peer-disconnect backstop at module load.
+// Install the process-level error backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
 // timing-fragile in vite-plus — install was silently skipped,
 // confirmed via VINEXT_DEBUG_SOCKET_ERRORS=1. Skips Vitest workers
@@ -5643,6 +5643,10 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        // Like `next dev`, the dev server logs uncaught errors from app code
+        // and keeps serving. See socket-error-backstop.ts.
+        installSocketErrorBackstop({ runningServer: true });
+
         const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
 
         server.middlewares.use((req, _res, next) => {

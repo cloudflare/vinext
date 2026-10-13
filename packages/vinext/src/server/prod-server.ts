@@ -1393,14 +1393,14 @@ function waitForNodeResponseCompletion(res: ServerResponse): Promise<void> {
  * Pages Router (dist/server/entry.js) and configures the appropriate handler.
  */
 export async function startProdServer(options: ProdServerOptions = {}) {
-  // Process-level peer-disconnect backstop. Idempotent via the
-  // Symbol.for guard inside installSocketErrorBackstop, so this call
-  // is a no-op when index.ts has already installed it. Kept here so
-  // entry points that load prod-server without going through index.ts
-  // (none today, but preserves Next.js's "install everywhere a Node
-  // HTTP server runs" parity) still get the backstop. Prerender
-  // bypass is fire-time via VINEXT_PRERENDER, not install-time.
-  installSocketErrorBackstop();
+  // Process-level error backstop. Listener install is idempotent via the
+  // Symbol.for guard inside installSocketErrorBackstop, so index.ts may
+  // already have installed it. A real production server opts into
+  // Next.js's log-and-keep-serving handling of uncaught errors
+  // (router-server.ts); build-time prerender servers keep the re-throw
+  // semantics, and must not set the sticky flag when they run inside
+  // the build process.
+  installSocketErrorBackstop({ runningServer: options.purpose !== "prerender" });
 
   const {
     port = process.env.PORT ? parseInt(process.env.PORT) : 3000,
