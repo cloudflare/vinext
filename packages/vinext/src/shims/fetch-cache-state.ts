@@ -49,27 +49,41 @@ export type FetchCacheMode =
 const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
 export const fetchCacheAls = getOrCreateAls<FetchCacheState>("vinext.fetchCache.als");
 
+function createFetchCacheState(): FetchCacheState {
+  return {
+    cacheableFetchUrls: new Set<string>(),
+    currentRequestTags: [],
+    currentFetchSoftTags: [],
+    currentFetchCacheMode: null,
+    currentFetchRevalidate: null,
+    currentForceDynamicFetchDefault: false,
+    dynamicFetchUrls: new Set<string>(),
+    refreshStaleFetchesInForeground: false,
+    isFetchDedupeActive: false,
+    currentFetchDedupeEntries: new Map(),
+    nextFetchId: 1,
+  };
+}
+
+/**
+ * Process-wide state used only while the deprecated `withFetchCache()` is
+ * active, which marks it with `isFetchDedupeActive`.
+ */
 export const fallbackFetchCacheState = ((globalThis as unknown as Record<PropertyKey, unknown>)[
   _FALLBACK_KEY
-] ??= {
-  cacheableFetchUrls: new Set<string>(),
-  currentRequestTags: [],
-  currentFetchSoftTags: [],
-  currentFetchCacheMode: null,
-  currentFetchRevalidate: null,
-  currentForceDynamicFetchDefault: false,
-  dynamicFetchUrls: new Set<string>(),
-  refreshStaleFetchesInForeground: false,
-  isFetchDedupeActive: false,
-  currentFetchDedupeEntries: new Map(),
-  nextFetchId: 1,
-} satisfies FetchCacheState) as FetchCacheState;
+] ??= createFetchCacheState()) as FetchCacheState;
 
 export function getFetchCacheState(): FetchCacheState {
   if (isInsideUnifiedScope()) {
     return getRequestContext();
   }
-  return fetchCacheAls.getStore() ?? fallbackFetchCacheState;
+  const store = fetchCacheAls.getStore();
+  if (store) return store;
+  if (fallbackFetchCacheState.isFetchDedupeActive) return fallbackFetchCacheState;
+  // No request store (a Pages API route, middleware, or work outside any
+  // request): hand out a throwaway state so fetch URLs, tags and revalidate
+  // made here never accumulate in, or govern, the whole process.
+  return createFetchCacheState();
 }
 
 /**
@@ -77,17 +91,7 @@ export function getFetchCacheState(): FetchCacheState {
  * in single-threaded contexts where ALS.run() isn't used.
  */
 export function resetFallbackFetchCacheState(isFetchDedupeActive: boolean): void {
-  fallbackFetchCacheState.cacheableFetchUrls = new Set<string>();
-  fallbackFetchCacheState.currentRequestTags = [];
-  fallbackFetchCacheState.currentFetchSoftTags = [];
-  fallbackFetchCacheState.currentFetchCacheMode = null;
-  fallbackFetchCacheState.currentFetchRevalidate = null;
-  fallbackFetchCacheState.currentForceDynamicFetchDefault = false;
-  fallbackFetchCacheState.dynamicFetchUrls = new Set<string>();
-  fallbackFetchCacheState.refreshStaleFetchesInForeground = false;
-  fallbackFetchCacheState.isFetchDedupeActive = isFetchDedupeActive;
-  fallbackFetchCacheState.currentFetchDedupeEntries = new Map();
-  fallbackFetchCacheState.nextFetchId = 1;
+  Object.assign(fallbackFetchCacheState, createFetchCacheState(), { isFetchDedupeActive });
 }
 
 /**
