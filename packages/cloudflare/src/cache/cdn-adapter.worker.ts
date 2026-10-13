@@ -13,7 +13,7 @@ import type {
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
-import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import { isNonCacheableCacheControl, splitCacheControlDirectives } from "vinext/shims/cdn-cache";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -442,8 +442,8 @@ function withPagesRevalidationValidator(response: Response): Response {
  * response (RFC 9111 sections 5.2.2.4 and 5.2.2.7).
  */
 function forbidsSharedStorage(policy: string): boolean {
-  return policy.split(",").some((directive) => {
-    const normalized = directive.trim().toLowerCase();
+  return splitCacheControlDirectives(policy).some((directive) => {
+    const normalized = directive.toLowerCase();
     return normalized === "private" || normalized.split("=", 1)[0]!.trim() === "no-store";
   });
 }

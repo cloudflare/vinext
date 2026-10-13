@@ -683,6 +683,10 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       name: "an ETag from a qualified private",
       headers: { ETag: '"bot-404"', "Cache-Control": 'private="Set-Cookie", max-age=300' },
     },
+    {
+      name: "an ETag from a quoted-private",
+      headers: { ETag: '"bot-404"', "Cache-Control": 'max-age=300, ext="a, private, b"' },
+    },
     { name: "an ETag from a policy-less", headers: { ETag: '"bot-404"' } },
   ])("strips $name Pages page 404", async ({ headers }) => {
     stages.response.mockResolvedValue(new Response("not found", { headers, status: 404 }));
