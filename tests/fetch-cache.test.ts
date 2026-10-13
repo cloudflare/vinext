@@ -3758,70 +3758,6 @@ describe("fetch cache shim", () => {
       // The same request, unchanged, reads that response from the cache.
       expect(await read(changedRequest())).toEqual(response);
     });
-
-    it("a Request's headers are read from the Request, not a property shadowing them", async () => {
-      const read = async () => {
-        const input = new Request(url, { headers: { "x-user": "alice" } });
-        Object.defineProperty(input, "headers", { value: new Headers({ "x-user": "bobby" }) });
-        return (await fetch(input, { next: { revalidate: 60 } })).json();
-      };
-
-      const response = await read();
-      expect(response.sent).toContain("alice");
-      expect(response.sent).not.toContain("bobby");
-      expect(await read()).toEqual(response);
-    });
-
-    it("a Request's body is used up when fetch is called, as fetch uses it", async () => {
-      const input = new Request(url, { method: "POST", body: "alice" });
-      const pending = fetch(input, { next: { revalidate: 60 } });
-
-      expect(input.bodyUsed).toBe(true);
-      await expect(input.text()).rejects.toThrow();
-      expect((await (await pending).json()).sent).toContain("alice");
-      // Sent as the bytes it's keyed by, the copy that took the body releases it.
-      expect((fetchMock.mock.calls[0][0] as Request).bodyUsed).toBe(true);
-    });
-
-    it("a Request's body isn't used up by a fetch its init makes fail", async () => {
-      const input = new Request(url, { method: "POST", body: "alice" });
-
-      await expect(fetch(input, { method: "GET", next: { revalidate: 60 } })).rejects.toThrow();
-      expect(input.bodyUsed).toBe(false);
-    });
-
-    it("rejects a cf option JSON can't copy, as Workers does", async () => {
-      const cf: Record<string, unknown> = { resolveOverride: "alice.example.com" };
-      cf.self = cf;
-
-      await expect(
-        fetch(url, { cf, next: { revalidate: 60 } } as WorkersInit & { next: object }),
-      ).rejects.toThrow();
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
-
-    it("a Request's body is used up even when a property shadows it", async () => {
-      const input = new Request(url, { method: "POST", body: "alice" });
-      Object.defineProperty(input, "body", { value: null });
-      const pending = fetch(input, { next: { revalidate: 60 } });
-
-      await expect(input.text()).rejects.toThrow();
-      expect((await (await pending).json()).sent).toContain("alice");
-    });
-
-    it("a Blob body's type isn't sent or keyed with a change made right after the call", async () => {
-      const read = async (change: boolean) => {
-        const body = new Blob(["user"], { type: "text/alice" });
-        const pending = fetch(url, { method: "POST", body, next: { revalidate: 60 } });
-        if (change) Object.defineProperty(body, "type", { value: "text/bobby" });
-        return (await pending).json();
-      };
-
-      const response = await read(true);
-      expect(response.sent).toContain("text/alice");
-      expect(response.sent).not.toContain("bobby");
-      expect(await read(false)).toEqual(response);
-    });
   });
 
   // ── Workers cf.resolveOverride ──────────────────────────────────────
@@ -4017,7 +3953,7 @@ describe("fetch cache shim", () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [forwardedRequest, forwardedInit] = fetchMock.mock.calls[0];
-      expect(forwardedRequest).toBeInstanceOf(Request);
+      expect(forwardedRequest).toBe(request);
       expect(await new Request(forwardedRequest, forwardedInit).text()).toBe(
         "request-body-content",
       );
@@ -4176,9 +4112,7 @@ describe("fetch cache shim", () => {
         expect(data.count).toBe(1);
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(cloneSpy).not.toHaveBeenCalled();
-        // The body moves to the request that is sent, as fetch uses it, unread.
-        expect(request.bodyUsed).toBe(true);
-        expect((fetchMock.mock.calls[0][0] as Request).bodyUsed).toBe(false);
+        expect(request.bodyUsed).toBe(false);
       } finally {
         cloneSpy.mockRestore();
       }

@@ -271,17 +271,6 @@ const getDataViewBuffer = getIntrinsic<ArrayBufferLike>(DataView.prototype, "buf
 const getDataViewByteOffset = getIntrinsic<number>(DataView.prototype, "byteOffset");
 const getDataViewByteLength = getIntrinsic<number>(DataView.prototype, "byteLength");
 const getArrayBufferByteLength = getIntrinsic<number>(ArrayBuffer.prototype, "byteLength");
-const getBlobType = getIntrinsic<string>(Blob.prototype, "type");
-const getFileName = getIntrinsic<string>(File.prototype, "name");
-const getFileLastModified = getIntrinsic<number>(File.prototype, "lastModified");
-const getRequestHeaders = getIntrinsic<Headers>(Request.prototype, "headers");
-const getRequestBody = getIntrinsic<ReadableStream | null>(Request.prototype, "body");
-const getRequestBodyUsed = getIntrinsic<boolean>(Request.prototype, "bodyUsed");
-// Both are deliberately invoked with Reflect.apply on the body.
-// oxlint-disable-next-line typescript/unbound-method
-const { toString: urlSearchParamsToString } = URLSearchParams.prototype;
-// oxlint-disable-next-line typescript/unbound-method
-const { entries: formDataEntries } = FormData.prototype;
 
 function isArrayBuffer(value: unknown): value is ArrayBuffer {
   if (!(value instanceof ArrayBuffer)) return false;
@@ -369,9 +358,6 @@ async function readRequestBodyChunksWithinLimit(
 // Requests the patched fetch builds for bodies serializeBody doesn't key. They
 // are never FormData, so their bytes are keyed as sent, without form parsing.
 const builtBodyRequests = new WeakSet<Request>();
-// Requests whose body only vinext holds: those built for such bodies, and
-// copies that took a caller's Request body.
-const ownedBodyRequests = new WeakSet<Request>();
 
 /**
  * Whether serializeBody keys this init body type itself. Only genuine
@@ -411,7 +397,7 @@ function snapshotFetchRequest(
     snapshotInit.headers !== undefined
       ? snapshotInit.headers
       : input instanceof Request
-        ? getRequestHeaders(input)
+        ? input.headers
         : undefined;
   if (headers !== undefined) {
     snapshotInit.headers = new Headers(headers);
@@ -430,73 +416,34 @@ function snapshotFetchRequest(
   }
   return {
     // fetch reads a URL input as a string when it is called.
-    input: input instanceof Request ? snapshotRequestBody(input, snapshotInit) : String(input),
+    input: input instanceof Request ? input : String(input),
     init: snapshotInit,
   };
 }
 
-// Unless init replaces it, fetch uses up a Request's body when it is called.
-// A copy of the Request takes the body, as fetch does, so the caller can't
-// read it while the copy's body is keyed and sent.
-function snapshotRequestBody(input: Request, init: RequestInit): Request {
-  if (init.body != null || getRequestBody(input) === null || getRequestBodyUsed(input)) {
-    return input;
-  }
-  try {
-    // init is checked before the body moves, so a fetch it makes fail, like a
-    // GET with a body, leaves the body unused.
-    const copy = new Request(input, init);
-    ownedBodyRequests.add(copy);
-    return copy;
-  } catch {
-    // So is a locked body. fetch rejects either one.
-    return input;
-  }
-}
-
 // `cf` options are plain data, some of them nested (`image`, `cacheTags`).
 // Workers copies them as JSON when fetch is called, which drops values JSON
-// can't hold, like functions, and rejects a fetch whose options it can't copy.
+// can't hold, like functions.
 function snapshotCf(cf: object): object {
-  return JSON.parse(JSON.stringify(cf)) as object;
+  try {
+    return JSON.parse(JSON.stringify(cf)) as object;
+  } catch {
+    // Options JSON can't hold, like a cycle, are left for the runtime to reject.
+    return cf;
+  }
 }
 
 function snapshotBody(body: BodyInit): BodyInit {
   const bytes = getBinaryChunkBytes(body);
   if (bytes) return bytes.slice();
-  // Entries are read through the prototypes' methods, which own properties
-  // can't shadow, as fetch reads them from internal slots.
-  if (body instanceof URLSearchParams) {
-    return new URLSearchParams(Reflect.apply(urlSearchParamsToString, body, []));
-  }
+  if (body instanceof URLSearchParams) return new URLSearchParams(body);
   if (body instanceof FormData) {
+    // Its entries can change, but a File entry, like a Blob, can't.
     const formData = new FormData();
-    const entries: FormDataIterator<[string, FormDataEntryValue]> = Reflect.apply(
-      formDataEntries,
-      body,
-      [],
-    );
-    for (const [name, value] of entries) {
-      // A fresh File holds the same bytes and metadata, read from the File's
-      // internal slots rather than properties its owner could shadow.
-      formData.append(
-        name,
-        typeof value === "string"
-          ? value
-          : new File([value], getFileName(value), {
-              type: getBlobType(value),
-              lastModified: getFileLastModified(value),
-            }),
-      );
-    }
+    for (const [name, value] of body) formData.append(name, value);
     return formData;
   }
-  // A Blob's bytes can't change, but the type its owner exposes can, so a fresh
-  // Blob holds its bytes and the type in its internal slot.
-  if (body instanceof Blob) {
-    return new Blob([body], { type: getBlobType(body) });
-  }
-  // Strings can't change. A stream can't be read synchronously, so,
+  // Strings and Blobs can't change. A stream can't be read synchronously, so,
   // as in fetch, its chunks are read after the call. They're sent as the bytes
   // they're keyed by, as is any other body, which is built into a Request.
   return body;
@@ -643,11 +590,9 @@ async function serializeBody(
       throw new SkipCacheKeyGenerationError();
     }
     // Send the bytes the key is built from rather than the Request's own body,
-    // whose chunks the caller could still change. A body only vinext holds
-    // is then released.
+    // whose chunks the caller could still change.
     if (init) {
       (init as ExtendedRequestInit)._ogBody = concatBodyBytes(chunks);
-      if (ownedBodyRequests.has(input)) void input.body.cancel().catch(() => {});
     }
     const formContentType = builtBodyRequests.has(input)
       ? undefined
@@ -1459,7 +1404,6 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // Request's bytes are keyed and it is sent.
       input = new Request(input, fetchInit);
       builtBodyRequests.add(input);
-      ownedBodyRequests.add(input);
       fetchInit = {};
     }
     let cacheKey: string;
