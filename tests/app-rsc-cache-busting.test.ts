@@ -476,6 +476,17 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBe("https://example.com/redirected?tab=1&_rsc=9qLBDIU2NgN178cB");
   });
 
+  it("returns an unparsable redirect Location unchanged", async () => {
+    await expect(
+      createRscRedirectLocation(
+        "https://attacker.test%23.example.com/landing",
+        new Request("https://example.com/photos/42?_rsc", {
+          headers: createCanonicalRscRequestHeaders(),
+        }),
+      ),
+    ).resolves.toBe("https://attacker.test%23.example.com/landing");
+  });
+
   it("redirects bare loading-shell requests to their varying identity", async () => {
     const headers = createCanonicalLoadingShellRscRequestHeaders();
     const response = await resolveInvalidRscCacheBustingRequest({

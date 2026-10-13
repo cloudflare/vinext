@@ -10,6 +10,15 @@ const nextConfig = {
   },
   async redirects() {
     return [
+      // Used by E2E: external-redirect-host-capture.spec.ts. A request-controlled
+      // capture in an external redirect host must not move the Location to
+      // another host.
+      {
+        source: "/redirect-external-host-capture",
+        has: [{ type: "query", key: "host", value: "(?<redirectHost>.*)" }],
+        destination: "https://:redirectHost.example.com/landing",
+        permanent: false,
+      },
       {
         source: "/old-about",
         destination: "/about",

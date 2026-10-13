@@ -488,7 +488,15 @@ export async function createRscRedirectLocation(
   request: Request,
 ): Promise<string> {
   const requestUrl = new URL(request.url);
-  const destinationUrl = new URL(location, requestUrl);
+  let destinationUrl: URL;
+  try {
+    destinationUrl = new URL(location, requestUrl);
+  } catch {
+    // A config redirect param can make an external host invalid (see
+    // substituteDestinationParams). An unparsable Location is not a
+    // same-origin RSC target, so send it as is, as a document request gets it.
+    return location;
+  }
 
   if (destinationUrl.origin !== requestUrl.origin) {
     return destinationUrl.toString();

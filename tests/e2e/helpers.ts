@@ -124,3 +124,30 @@ export async function expectHostCaptureCannotRetargetProxy(
     );
   }
 }
+
+/**
+ * Drive the `/redirect-external-host-capture` redirect in the pages-basic and
+ * app-basic fixtures (`https://:redirectHost.example.com/landing`,
+ * `redirectHost` from `?host=`). A decoded capture carrying `#`, `/` or `@`
+ * must not move the Location off `example.com` to a host the request names.
+ */
+export async function expectHostCaptureCannotRetargetRedirect(
+  request: APIRequestContext,
+  base = "",
+  headers: Record<string, string> = {},
+): Promise<void> {
+  const redirect = async (host: string) => {
+    const response = await request.get(
+      `${base}/redirect-external-host-capture?host=${encodeURIComponent(host)}`,
+      { headers, maxRedirects: 0 },
+    );
+    expect(response.status()).toBe(307);
+    return response.headers()["location"];
+  };
+
+  expect(new URL(await redirect("tenant")).host).toBe("tenant.example.com");
+  for (const host of ["attacker.test#", "attacker.test/", "@attacker.test/"]) {
+    const location = await redirect(host);
+    expect(URL.canParse(location), location).toBe(false);
+  }
+}

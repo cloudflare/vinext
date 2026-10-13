@@ -29,28 +29,27 @@ const _compiledDestinationParamCache = new Map<string, RegExp>();
  *   verbatim, so an already percent-encoded capture is decoded once by the
  *   client. vinext inserts redirect params verbatim too.
  *
- * A rewrite's absolute destination is proxied server-side, so params in its
- * authority (`https://:tenant.example.com/`) are percent-encoded, keeping the
- * `%XX` escapes a raw path capture already carries. A decoded `has` capture
- * carrying `#`, `/`, `?`, `@` or `:` then makes the host invalid instead of
- * moving the proxy to another host. Next.js substitutes the hostname verbatim
- * and can be retargeted this way; vinext is stricter.
+ * Params in an absolute destination's authority (`https://:tenant.example.com/`)
+ * are percent-encoded for both kinds, keeping the `%XX` escapes a raw path
+ * capture already carries. A decoded `has` capture carrying `#`, `/`, `?`, `@`
+ * or `:` then makes the host invalid instead of moving a rewrite's proxy or a
+ * redirect's Location to another host. Next.js substitutes the hostname
+ * verbatim and can be retargeted this way; vinext is stricter.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
  */
 export function substituteDestinationParams(
-  destination: string,
+  rawDestination: string,
   params: Record<string, string>,
   kind: "redirect" | "rewrite",
 ): string {
   const paramRe = getDestinationParamRegex(params);
-  if (!paramRe) return destination;
+  if (!paramRe) return rawDestination;
+  const destination = stripUrlIgnoredCharacters(rawDestination);
 
   const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
     value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
-
-  if (kind === "redirect") return replaceParams(destination, (value) => value);
 
   const hashIndex = destination.indexOf("#");
   const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
@@ -60,12 +59,15 @@ export function substituteDestinationParams(
   // A param may supply the scheme itself (`:proto://:tenant.example.com/`), so
   // find the authority with each param token standing in as same-length text.
   const authorityEnd = getAbsoluteUrlAuthorityEnd(
+    beforeQuery,
     beforeQuery.replace(paramRe, (token) => "x".repeat(token.length)),
   );
-  const path = `${replaceParams(beforeQuery.slice(0, authorityEnd), encodeAuthorityParam)}${replaceParams(
-    beforeQuery.slice(authorityEnd),
-    (value) => value,
-  )}`;
+  const authority = replaceParams(beforeQuery.slice(0, authorityEnd), encodeAuthorityParam);
+  if (kind === "redirect") {
+    return `${authority}${replaceParams(destination.slice(authorityEnd), (value) => value)}`;
+  }
+
+  const path = `${authority}${replaceParams(beforeQuery.slice(authorityEnd), (value) => value)}`;
   const query =
     queryIndex === -1
       ? ""
@@ -73,19 +75,47 @@ export function substituteDestinationParams(
   return `${path}${query}${replaceParams(hash, (value) => value)}`;
 }
 
-// End of the `scheme://authority` prefix of an absolute URL. Like the URL
-// parser for special schemes, any run of `/` or `\` after the scheme belongs
-// to the prefix, and the ASCII tab/newline characters it strips do not end it.
-// A destination that is neither a path nor a literal absolute URL (Next.js
-// rejects these) has its first segment treated the same way, so a param can
-// never supply the `:` or slashes of a scheme.
-function getAbsoluteUrlAuthorityEnd(value: string): number {
-  const scheme = /^[a-z][a-z0-9+.-]*:[/\\\t\n\r]*/i.exec(value);
-  if (!scheme && /^[/\\]/.test(value)) return 0;
-  const start = scheme ? scheme[0].length : 0;
-  const pathStart = value.slice(start).search(/[/\\]/);
-  return pathStart === -1 ? value.length : start + pathStart;
+// The URL parser drops leading and trailing C0 controls and spaces, and every
+// tab or newline, so ` https://:h.example.com` or `ht\ttps://…` still has an
+// authority. Strip them before locating it.
+function stripUrlIgnoredCharacters(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) start++;
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) end--;
+  return value.slice(start, end).replace(/[\t\n\r]/g, "");
 }
+
+// End of the `scheme://authority` prefix of an absolute URL, following the URL
+// parser: http(s), ws(s) and ftp skip any run of `/` or `\` and end the
+// authority at either; `file:` takes exactly two; any other scheme has an
+// authority only after `//`, ended by `/` alone (`\` is authority data there).
+// A scheme supplied by a param, or a destination that is neither a path nor a
+// literal absolute URL (Next.js rejects these for rewrites), is handled
+// conservatively: everything up to the first `/` after any leading slashes is
+// encoded, so a param can never supply a scheme's `:` or slashes.
+function getAbsoluteUrlAuthorityEnd(template: string, shape: string): number {
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(shape);
+  if (!scheme && /^[/\\]/.test(shape)) return 0;
+
+  const name = scheme ? template.slice(0, scheme[1].length).toLowerCase() : "";
+  let start = scheme ? scheme[0].length : 0;
+  let terminator = /\//;
+  if (scheme && name === scheme[1].toLowerCase() && !SPECIAL_SCHEMES.has(name)) {
+    const slashes = name === "file" ? /^[/\\]{2}/ : /^\/\//;
+    if (!slashes.test(shape.slice(start))) return start;
+    start += 2;
+    if (name === "file") terminator = /[/\\]/;
+  } else {
+    start += /^[/\\]*/.exec(shape.slice(start))![0].length;
+    if (scheme && SPECIAL_SCHEMES.has(name)) terminator = /[/\\]/;
+  }
+  const pathStart = shape.slice(start).search(terminator);
+  return pathStart === -1 ? shape.length : start + pathStart;
+}
+
+// Special schemes whose authority follows any run of slashes (`file` differs).
+const SPECIAL_SCHEMES = new Set(["ftp", "http", "https", "ws", "wss"]);
 
 /**
  * Split a redirect destination's query into parts before substituting params,

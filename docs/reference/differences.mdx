@@ -32,6 +32,10 @@ At request time, vinext decides whether a render is dynamic while it renders. (T
 
 Next.js also treats an otherwise static route as SSG when a layout above its last dynamic segment returns every param from `generateStaticParams`. vinext doesn't run the generator to classify requests, so it renders such a route on every request unless it exports `dynamic = "force-static"` or `"error"`. Adding `generateStaticParams` to the last dynamic segment, even one that returns `[]`, makes the route static in both.
 
+## Rewrites and redirects
+
+A param in the host of an external rewrite or redirect destination, such as `https://:tenant.example.com/`, can only supply hostname characters. vinext percent-encodes it, so a value containing `/`, `?`, `#`, `@`, `\` or `:` makes the destination invalid: a rewrite gets a 500, and a redirect's `Location` has an invalid host the browser won't follow. Next.js inserts the value as is, so a request-controlled `has` capture can send a redirect, or a rewrite's proxy along with the request headers it forwards, to another host. Ordinary host labels behave the same in both. Put path segments in the destination path (`https://:host/:prefix/api`) rather than in a host param.
+
 ## Compatibility
 
 App Router, Pages Router, RSC, Server Actions, middleware, Route Handlers, static generation, ISR, and the commonly used `next/*` modules are implemented. Cache Components and Partial Prerendering remain incomplete, and build-time image and font optimization do not yet reproduce the full Next.js pipeline.

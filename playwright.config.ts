@@ -68,6 +68,7 @@ const projectServers = {
       "app-router-prod/public-file-encoding.spec.ts",
       "app-router-prod/image-middleware.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
+      "app-router/external-redirect-host-capture.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {
