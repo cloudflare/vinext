@@ -238,8 +238,10 @@ export async function renderPagesFallback(
       ? pagesEntry.getRuntimePageDataKind?.(pagesUrl, matchRequest)
       : undefined;
     if (runtimeDataKind === "server" || runtimeDataKind === "initial") {
-      // The build saw no data function, but a getInitialProps reads the request,
-      // which can include the host every request shares this entry across.
+      // The build keeps the host in the key of a page that names getInitialProps,
+      // or under a custom _app that does. One an imported wrapper attaches is only
+      // seen here, after the key was chosen, and it can read the host this entry
+      // is shared across, so the render isn't stored.
       markRouteCacheabilityFinalResponseUncacheable(
         "getInitialProps render shares a cache entry across hosts",
       );

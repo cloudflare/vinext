@@ -1506,6 +1506,7 @@ describe("createAppRscHandler", () => {
         async () => new Response("payload"),
       );
       let dataKind: PagesRouteDataKind = "static";
+      let runsInitialProps = false;
       const handler = createHandler({
         configHeaders: [],
         i18nConfig: {
@@ -1516,7 +1517,13 @@ describe("createAppRscHandler", () => {
         matchRequestRoute: () => null,
         matchRoute: () => null,
         renderPagesFallback: async (options) =>
-          options.dispatchPagesResponseStage?.(options.request, "page", dataKind) ?? null,
+          options.dispatchPagesResponseStage?.(
+            options.request,
+            "page",
+            dataKind,
+            false,
+            runsInitialProps,
+          ) ?? null,
       });
       const dispatch = async (url: string) => {
         dispatchResponseStage.mockClear();
@@ -1560,10 +1567,18 @@ describe("createAppRscHandler", () => {
         });
       }
 
-      dataKind = "server";
-      const { props, options } = await dispatch("https://tenant-a.example/docs/pages");
-      expect(props).toMatchObject({ sharedAcrossHosts: false });
-      expect(options).toEqual({ cache: "shared" });
+      // A getServerSideProps page, or one whose getInitialProps runs, renders
+      // per request and keeps the host in its key.
+      for (const [kind, initialProps] of [
+        ["server", false],
+        ["none", true],
+      ] as const) {
+        dataKind = kind;
+        runsInitialProps = initialProps;
+        const { props, options } = await dispatch("https://tenant-a.example/docs/pages");
+        expect(props).toMatchObject({ sharedAcrossHosts: false });
+        expect(options).toEqual({ cache: "shared" });
+      }
     });
   });
 

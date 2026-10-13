@@ -520,18 +520,38 @@ describe("Cloudflare Workers Response Store adapter", () => {
     await fillAndShare("/host-shared-auto");
   });
 
-  // The build sees no data function, but getInitialProps runs per request and
-  // reads the Host header, so its explicitly public render stays unstored.
-  test("never shares a getInitialProps page that read the host", async () => {
+  // Next.js renders a page whose getInitialProps runs per request and sends
+  // its explicit policy, which a CDN stores per host, so each host fills and
+  // stores its own entry.
+  test("stores a getInitialProps page per host", async () => {
+    for (const host of ["tenant-a.test", "tenant-b.test"]) {
+      const before = (await responseEntries("/host-echo-initial")).length;
+      const fill = await miniflare.dispatchFetch(`https://${host}/host-echo-initial`);
+      const body = await fill.text();
+      assert.equal(fill.status, 200, body);
+      assert.equal(fill.headers.get("x-vinext-cache"), "MISS", host);
+      assert.ok(htmlValue(body, "host"));
+      await waitForStoredEntries(() => responseEntries("/host-echo-initial"), before + 1);
+    }
+    for (const host of ["tenant-a.test", "tenant-b.test"]) {
+      const hit = await miniflare.dispatchFetch(`https://${host}/host-echo-initial`);
+      await hit.text();
+      assert.equal(hit.headers.get("x-vinext-cache"), "HIT", host);
+    }
+  });
+
+  // An imported wrapper's getInitialProps is only seen once the page renders,
+  // after its key was shared across hosts, so the render isn't stored.
+  test("never stores a page whose getInitialProps only the render sees", async () => {
     const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
     for (const host of hosts) {
-      const response = await miniflare.dispatchFetch(`https://${host}/host-echo-initial`);
+      const response = await miniflare.dispatchFetch(`https://${host}/host-echo-wrapped`);
       const body = await response.text();
       assert.equal(response.status, 200, body);
       assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
       assert.ok(htmlValue(body, "host"));
     }
-    await assertNeverStored("/host-echo-initial");
+    await assertNeverStored("/host-echo-wrapped");
   }, 15_000);
 
   test("never shares a route handler response that read the host", async () => {

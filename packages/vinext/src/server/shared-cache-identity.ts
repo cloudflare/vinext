@@ -16,6 +16,19 @@ export function adapterUsesSharedCacheIdentity(): boolean {
 }
 
 /**
+ * Whether a Pages page's response is one for every host, as Next.js serves a
+ * getStaticProps page and an automatically static page. A page without data
+ * functions is rendered per request when its getInitialProps or a custom
+ * _app's runs, and may read the host, so it keeps the host in its key.
+ */
+export function pagesPageSharesAcrossHosts(
+  route: { dataKind?: string; runsInitialProps?: boolean } | null | undefined,
+): boolean {
+  if (route?.dataKind === "static") return true;
+  return route?.dataKind === "none" && route.runsInitialProps !== true;
+}
+
+/**
  * The origin a shared Pages page identity names. A static Pages render reads
  * the host only to select a configured i18n domain, so the identity keeps that
  * domain, as vinext's Pages ISR key does, and every other host shares one entry.

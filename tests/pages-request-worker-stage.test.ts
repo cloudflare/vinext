@@ -299,12 +299,17 @@ describe("Pages Worker request stage", () => {
       delete mocks.i18n.domains;
     }
 
-    mocks.matchPageRoute.mockImplementation(() => ({
-      route: { dataKind: "server", isDynamic: false, pattern: "/gssp" },
-    }));
-    const { props, options } = await dispatchFor("https://tenant-a.example/gssp");
-    expect(props).toMatchObject({ sharedAcrossHosts: false });
-    expect(options).toEqual({ cache: "shared" });
+    // A getServerSideProps page, or one whose getInitialProps runs, renders
+    // per request and keeps the host in its key.
+    for (const route of [
+      { dataKind: "server", isDynamic: false, pattern: "/gssp" },
+      { dataKind: "none", isDynamic: false, pattern: "/gip", runsInitialProps: true },
+    ]) {
+      mocks.matchPageRoute.mockImplementation(() => ({ route }));
+      const { props, options } = await dispatchFor(`https://tenant-a.example${route.pattern}`);
+      expect(props).toMatchObject({ sharedAcrossHosts: false });
+      expect(options).toEqual({ cache: "shared" });
+    }
   });
 
   it("activates a derived cacheability context inside an outer Worker context", async () => {
