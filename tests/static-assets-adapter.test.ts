@@ -363,6 +363,30 @@ describe("staticAssetsAdapter", () => {
     expect(await adapter.get(key)).toEqual(cached);
   });
 
+  it("reuses only a loaded cache index across requests", async () => {
+    const indexResponses: Array<() => Promise<Response>> = [
+      () => Promise.reject(new Error("network")),
+      async () => new Response(null, { status: 503 }),
+      async () => Response.json({}),
+    ];
+    const fetch = vi.fn(async (input: string) => {
+      expect(new URL(input).pathname).toBe("/_vinext/static-cache/index.json");
+      return indexResponses.shift()!();
+    });
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    await expect(adapter.get("missing")).rejects.toThrow("network");
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(3);
+
+    const withoutIndex = vi.fn(async () => new Response(null, { status: 404 }));
+    const adapterWithoutIndex = new StaticAssetsCacheAdapter({ fetch: withoutIndex });
+    expect(await adapterWithoutIndex.get("missing")).toBeNull();
+    expect(await adapterWithoutIndex.get("missing")).toBeNull();
+    expect(withoutIndex).toHaveBeenCalledTimes(1);
+  });
+
   it("fails clearly when the configured Assets binding is missing", () => {
     expect(() => createStaticAssetsCacheAdapter({ env: {} })).toThrow(/`ASSETS`/);
     expect(() =>

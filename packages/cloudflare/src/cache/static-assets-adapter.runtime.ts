@@ -47,17 +47,29 @@ function isMetadata(value: unknown): value is StaticAssetCacheMetadata {
 export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
   readonly hasPrerenderedPages = true;
   readonly ownsBackgroundRevalidation = false;
-  private indexPromise: Promise<StaticAssetCacheIndex | null> | undefined;
+  // Only a loaded index is shared. A pending fetch belongs to the request that
+  // started it, and Workers never settles it once that request is cancelled
+  // (for example, when its client disconnects), so other requests must not
+  // await it.
+  private index: StaticAssetCacheIndex | null | undefined;
 
   constructor(readonly assets: AssetFetcher) {}
 
-  private loadIndex(): Promise<StaticAssetCacheIndex | null> {
-    return (this.indexPromise ??= this.assets
-      .fetch(`https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`)
-      .then(async (response) => (response.ok ? ((await response.json()) as unknown) : null))
-      .then((value) =>
-        value !== null && typeof value === "object" ? (value as StaticAssetCacheIndex) : null,
-      ));
+  private async loadIndex(): Promise<StaticAssetCacheIndex | null> {
+    if (this.index !== undefined) return this.index;
+    const response = await this.assets.fetch(
+      `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`,
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      // The build writes no index when it packages no entries; any other
+      // failure is retried by the next request.
+      if (response.status === 404) this.index = null;
+      return null;
+    }
+    const value: unknown = await response.json();
+    return (this.index =
+      value !== null && typeof value === "object" ? (value as StaticAssetCacheIndex) : null);
   }
 
   async get(key: string): Promise<CacheHandlerValue | null> {
