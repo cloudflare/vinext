@@ -48,7 +48,7 @@ type DevStackMiddleware = (req: IncomingMessage, res: ServerResponse, next: () =
 
 function createServer(
   sourceMap: SourceMapPayload | null = SOURCE_MAP,
-  options: { root?: string } = {},
+  options: { root?: string; resolveId?: (id: string) => string } = {},
 ): {
   server: ViteDevServer;
   transformRequests: string[];
@@ -67,7 +67,7 @@ function createServer(
       rsc: {
         pluginContainer: {
           async resolveId(id: string) {
-            return { id };
+            return { id: options.resolveId?.(id) ?? id };
           },
         },
         async transformRequest(viteUrl: string) {
@@ -591,6 +591,27 @@ describe("mapStackLine", () => {
     );
     // Only the client environment, which keeps Vite's server.fs checks, sees it.
     expect(transformRequests).toEqual(["client:/repo/outside/secret.js"]);
+  });
+
+  it("server-transforms the same local filesystem frame id whose resolution was checked", async () => {
+    // transformRequest resolves its argument again. Passing it the already
+    // resolved id would resolve a second alias hop (b.js -> denied.js) that
+    // was never checked against server.fs.
+    const aliases: Record<string, string> = {
+      "/repo/app/a.js": "/repo/app/b.js",
+      "/repo/app/b.js": "/repo/app/denied.js",
+    };
+    const { server, transformRequests } = createServer(SOURCE_MAP, {
+      resolveId: (id) => aliases[id] ?? id,
+    });
+
+    await mapStackLineForTest(
+      server,
+      "    at aliased (/repo/app/a.js:1:1)",
+      undefined,
+      new Map<string, Promise<SourceMapPayload | null>>(),
+    );
+    expect(transformRequests).toEqual([`rsc:${canonical("/repo/app/a.js")}`]);
   });
 
   it("maps React Server component frame URLs through the RSC environment source map", async () => {

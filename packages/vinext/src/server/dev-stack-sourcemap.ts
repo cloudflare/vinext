@@ -600,9 +600,11 @@ async function loadServerSourceMapForLocalPath(
       // itself refuses to serve.
       const resolved = await environment.pluginContainer.resolveId(localPath);
       if (!resolved || resolved.external || resolved.id.startsWith("\0")) continue;
-      const resolvedFile = stripQuery(resolved.id);
-      if (!isFileLoadingAllowed(server.config, resolvedFile)) continue;
-      const result = await environment.transformRequest(resolvedFile);
+      if (!isFileLoadingAllowed(server.config, stripQuery(resolved.id))) continue;
+      // transformRequest resolves its argument itself, so pass the same id that
+      // was just resolved and checked. Passing the resolved id would resolve it
+      // a second time, which an alias chain could point at an unchecked file.
+      const result = await environment.transformRequest(localPath);
       const sourceMap = normalizeSourceMapPayload(result?.map);
       if (sourceMap) return sourceMap;
     } catch {
