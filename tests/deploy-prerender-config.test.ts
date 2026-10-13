@@ -185,6 +185,62 @@ function writeCfBuildOutputScaffolding(): void {
   writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
 }
 
+function writePreviewBuildProject(failure?: "config" | "build"): void {
+  writeProject(undefined);
+  writeCfBuildOutputScaffolding();
+  const cloudflarePluginUrl = pathToFileURL(
+    path.resolve("apps/web/node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
+  ).href;
+  writeFile(
+    "node_modules/@cloudflare/vite-plugin/index.js",
+    `export { cloudflare } from ${JSON.stringify(cloudflarePluginUrl)};\n`,
+  );
+  writeFile("worker.js", 'export default { fetch() { return new Response("Preview"); } };\n');
+  const recordContext = `
+function recordContext(phase, context) {
+  fs.appendFileSync(${JSON.stringify(path.join(tmpDir, "contexts.jsonl"))}, JSON.stringify({ phase, ...context }) + "\\n");
+}`;
+  writeFile(
+    "cloudflare.config.ts",
+    `import fs from "node:fs";
+${recordContext}
+export default (context) => {
+  recordContext("cloudflare", context);
+  return {
+    worker: {
+      name: "preview-context-test",
+      entrypoint: "./worker.js",
+      compatibilityDate: "2026-01-01",
+    },
+  };
+};
+`,
+  );
+  writeFile(
+    "vite.config.ts",
+    `import fs from "node:fs";
+import { cloudflare } from "@cloudflare/vite-plugin";
+${recordContext}
+export default ({ mode }) => {
+  recordContext("vite", { mode, isPreview: process.env.CLOUDFLARE_PREVIEW_BUILD === "true" });
+  ${failure === "config" ? 'throw new Error("Preview config failed");' : ""}
+  let lifecycle;
+  return {
+    plugins: [cloudflare(), {
+      name: "test-build-lifecycle",
+      configResolved(config) { lifecycle = config.__vinextBuildLifecycle; },
+      buildStart() {
+        recordContext("build", { mode, isPreview: process.env.CLOUDFLARE_PREVIEW_BUILD === "true" });
+        ${failure === "build" ? 'throw new Error("Preview build failed");' : ""}
+      },
+      closeBundle() { lifecycle?.onComplete(); },
+    }],
+  };
+};
+`,
+  );
+}
+
 function writeApiOnlyProject(): void {
   writeFile("package.json", JSON.stringify({ name: "warm-skip-build-app", type: "module" }));
   writeFile(
@@ -242,6 +298,7 @@ describe("deploy prerender config wiring", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -279,6 +336,116 @@ describe("deploy prerender config wiring", () => {
     await expect(deploy({ root: tmpDir, dryRun: true })).resolves.toBeUndefined();
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])(
+    "ignores production controls for a Preview (promote: %s)",
+    async (warmCdnPromote) => {
+      writeProject(undefined, "{ cdn: workersCacheCdnAdapter() }");
+      writeCfBuildOutputScaffolding();
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({
+        root: tmpDir,
+        skipBuild: true,
+        target: { type: "preview", name: "pr-123" },
+        warmCdnCache: true,
+        experimentalTPR: true,
+        warmCdnCertify: true,
+        warmCdnTarget: "not-an-origin",
+        warmCdnTimeout: 0,
+        warmCdnPromote,
+      });
+
+      expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
+      expect(discoverPrerenderPathManifestMock).not.toHaveBeenCalled();
+      expect(execFileSync).not.toHaveBeenCalled();
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
+        expect.stringContaining(path.join("cf", "bin", "cf")),
+        "previews",
+        "deploy",
+        "pr-123",
+        "--prebuilt",
+        "--mode",
+        "preview",
+      ]);
+    },
+  );
+
+  it("does not recommend production warming for a Preview", async () => {
+    writeProject("true");
+    writeCfBuildOutputScaffolding();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+      await deploy({ root: tmpDir, skipBuild: true, target: { type: "preview" } });
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Preview deployments render these routes on request."),
+      );
+      expect(warn.mock.calls.flat().join("\n")).not.toContain("--warm-cache");
+      expect(runPrerenderMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("propagates Preview context through config loading and Build Output", async () => {
+    writePreviewBuildProject();
+    vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", "false");
+    vi.stubEnv("CLOUDFLARE_ENV", "staging");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, target: { type: "preview", name: "pr-123" } });
+
+    const contexts = fs
+      .readFileSync(path.join(tmpDir, "contexts.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(contexts.filter(({ phase }) => phase === "vite").length).toBeGreaterThanOrEqual(2);
+    expect(contexts).toEqual(
+      expect.arrayContaining([
+        { phase: "cloudflare", mode: "preview", isPreview: true },
+        { phase: "build", mode: "preview", isPreview: true },
+      ]),
+    );
+    expect(contexts.every(({ mode, isPreview }) => mode === "preview" && isPreview === true)).toBe(
+      true,
+    );
+    expect(
+      JSON.parse(fs.readFileSync(path.join(tmpDir, ".cloudflare/output/v0/config.json"), "utf8")),
+    ).toMatchObject({ buildContext: { mode: "preview", isPreview: true } });
+    expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("false");
+    expect(process.env.CLOUDFLARE_ENV).toBe("staging");
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
+      expect.any(String),
+      "previews",
+      "deploy",
+      "pr-123",
+      "--prebuilt",
+      "--mode",
+      "preview",
+    ]);
+  });
+
+  it.each(["config", "build"] as const)(
+    "restores Preview context after a %s failure",
+    async (failure) => {
+      writePreviewBuildProject(failure);
+      vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", undefined);
+      vi.stubEnv("CLOUDFLARE_ENV", undefined);
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await expect(deploy({ root: tmpDir, target: { type: "preview" } })).rejects.toThrow(
+        `Preview ${failure} failed`,
+      );
+      expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBeUndefined();
+      expect(process.env.CLOUDFLARE_ENV).toBeUndefined();
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["true", '{ routes: "*" }'])(
     "ignores runtime prerender config during Cloudflare deploy: %s",

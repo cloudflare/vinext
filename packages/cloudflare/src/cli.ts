@@ -2,7 +2,8 @@
 
 import fs from "node:fs";
 import { deploy, parseDeployArgs } from "./deploy.js";
-import { printDeployHelp } from "./deploy-help.js";
+import { printDeployHelp, printPreviewsDeployHelp } from "./deploy-help.js";
+import { parsePreviewsDeployArgs } from "./previews-deploy.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
   .version as string;
@@ -12,6 +13,10 @@ const rawArgs = process.argv.slice(3);
 function printHelp(commandName?: string): void {
   if (commandName === "deploy") {
     printDeployHelp();
+    return;
+  }
+  if (commandName === "previews") {
+    printPreviewsDeployHelp();
     return;
   }
 
@@ -25,7 +30,8 @@ function printHelp(commandName?: string): void {
     vp exec vinext-cloudflare <command>    Run the locally installed bin
 
   Commands:
-    deploy   Deploy to Cloudflare Workers
+    deploy                          Deploy to Cloudflare Workers
+    previews deploy [preview-name]  Deploy a Cloudflare Worker Preview
 
   Options:
     -h, --help     Show this help
@@ -75,6 +81,30 @@ async function deployCommand(): Promise<void> {
   });
 }
 
+async function previewsCommand(): Promise<void> {
+  const subcommand = rawArgs[0];
+  if (subcommand !== "deploy") {
+    if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+      printHelp("previews");
+      return;
+    }
+    throw new Error(`Unknown previews command: ${subcommand}`);
+  }
+
+  const options = parsePreviewsDeployArgs(rawArgs.slice(1));
+  if (options.help) {
+    printHelp("previews");
+    return;
+  }
+
+  await deploy({
+    root: process.cwd(),
+    env: "preview",
+    skipBuild: options.skipBuild,
+    target: { type: "preview", name: options.name },
+  });
+}
+
 if (command === "--version" || command === "-v") {
   console.log(`vinext-cloudflare v${VERSION}`);
   process.exit(0);
@@ -88,6 +118,12 @@ if (command === "--help" || command === "-h" || !command) {
 switch (command) {
   case "deploy":
     deployCommand().catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    });
+    break;
+  case "previews":
+    previewsCommand().catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     });

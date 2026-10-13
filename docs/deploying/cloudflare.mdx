@@ -58,7 +58,7 @@ Set `accountId` at the top level of `defineConfig` in `cloudflare.config.ts` (ou
   }}
 />
 
-The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode; `--preview` selects the preview mode.
+The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode. The existing `--preview` flag is an alias for `--env preview`; it selects the preview mode but does not create a Worker Preview.
 
 For Response Store service-binding mode, build and deploy the cache Worker explicitly before the first application deployment:
 
@@ -71,6 +71,29 @@ pnpm run deploy:vinext
 `create-vinext-app` uses `build` and `deploy` instead of `build:vinext` and `deploy:vinext`. Redeploy the Response Store when its package or config changes; normal application deployments do not redeploy it.
 
 To prefill configured caches before promoting a new Worker version, see [Cache warming](/docs/guides/caching#cache-warming).
+
+### Deploy a Worker Preview
+
+Use `previews deploy` with a project that has `cloudflare.config.ts` and the `cf` CLI installed:
+
+```sh
+vinext-cloudflare previews deploy
+vinext-cloudflare previews deploy pr-123
+vinext-cloudflare previews deploy pr-123 --skip-build
+```
+
+The optional name identifies the Preview, not the Worker or the build mode. If you omit it, CF uses the current CI or Git branch. If no branch is available, provide a name.
+
+This command always uses the `preview` Vite mode and loads the matching `.env.preview*` files. Functions in `cloudflare.config.ts` receive `mode: "preview"` and `isPreview: true`. The command deploys the Preview Build Output with `cf previews deploy` and prints the Preview URL. Preview deployments do not use production cache warming or version promotion.
+
+`--skip-build` uploads existing Preview Build Output without rebuilding it. CF checks that the output is from a Preview build and that its mode is `preview`. A normal build, including one made with `deploy --preview`, is not a substitute. To build the output separately, use:
+
+```sh
+CLOUDFLARE_PREVIEW_BUILD=true vite build --mode preview
+vinext-cloudflare previews deploy pr-123 --skip-build
+```
+
+The subcommand accepts only the optional name, `--skip-build`, and `--help`. It does not accept `--env` or CF's build and Worker-selection flags. Configure Preview-specific settings in `cloudflare.config.ts` using `isPreview`.
 
 ## Use Workers bindings
 

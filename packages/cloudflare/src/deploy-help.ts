@@ -86,11 +86,14 @@ export function formatDeployHelp(): string {
   be reused outside the data center reached by the warmup request after cache
   propagation, but the deploy does not wait for every edge location to fill.
 
+  --preview is an alias for --env preview. It selects a mode/environment,
+  not a Preview deployment. Use previews deploy to deploy a Worker Preview.
+
   Examples:
     npx @vinext/cloudflare deploy                                      Build and deploy to production
     vpx @vinext/cloudflare deploy                                      Build and deploy with Vite+
     vp exec vinext-cloudflare deploy                                   Run the locally installed Vite+ bin
-    vinext-cloudflare deploy --preview                                 Deploy to a preview URL
+    vinext-cloudflare deploy --preview                                 Deploy using mode/environment preview
     vinext-cloudflare deploy --env staging                             Deploy using Cloudflare mode/environment staging
     vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
@@ -112,4 +115,31 @@ export function formatDeployHelp(): string {
 
 export function printDeployHelp(): void {
   console.log(formatDeployHelp());
+}
+
+export function formatPreviewsDeployHelp(): string {
+  return `
+  vinext-cloudflare previews deploy - Deploy a Cloudflare Worker Preview
+
+  Usage: vinext-cloudflare previews deploy [preview-name] [options]
+
+  Builds the app in preview mode with isPreview=true, then deploys its
+  Preview Build Output using cf. Requires cloudflare.config.ts and the cf CLI.
+
+  Arguments:
+    preview-name    Optional Preview name (cf uses the CI or Git branch if omitted)
+
+  Options:
+    --skip-build    Deploy existing Preview Build Output without rebuilding
+    -h, --help      Show this help
+
+  Examples:
+    vinext-cloudflare previews deploy
+    vinext-cloudflare previews deploy pr-123
+    vinext-cloudflare previews deploy pr-123 --skip-build
+`;
+}
+
+export function printPreviewsDeployHelp(): void {
+  console.log(formatPreviewsDeployHelp());
 }
