@@ -3212,6 +3212,25 @@ export const config = { matcher: "${matcher}" };
     expect(res.status).toBe(200);
   });
 
+  // Next.js has no `.html` route aliases: `/about.html` is its own path.
+  // Routing it as `/about` would bypass middleware gated on `/about`.
+  it("does not route .html spellings of pages or API routes in development", async () => {
+    const canonical = await fetch(`${baseUrl}/middleware-protected-data`);
+    expect(canonical.status).toBe(403);
+
+    const cases = [
+      ["/middleware-protected-data.html", "only visible after middleware"],
+      ["/middleware-protected-data.html?x=1", "only visible after middleware"],
+      ["/index.html", "Hello, vinext!"],
+      ["/api/hello.html", "Hello from API!"],
+    ];
+    for (const [pathname, body] of cases) {
+      const response = await fetch(`${baseUrl}${pathname}`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain(body);
+    }
+  });
+
   // ── /_next/data JSON endpoint (issue #1330) ──────────────────────
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // ("should trigger middleware for data requests").
@@ -8167,6 +8186,25 @@ describe("Production server middleware (Pages Router)", () => {
     // Ensure encoded variants like /%2Evite/ are also blocked
     const res = await fetch(`${prodUrl}/%2Evite/ssr-manifest.json`);
     expect(res.status).toBe(404);
+  });
+
+  // Next.js has no `.html` route aliases: `/about.html` is its own path.
+  // Routing it as `/about` would bypass middleware gated on `/about`.
+  it("does not route .html spellings of pages or API routes in production", async () => {
+    const canonical = await fetch(`${prodUrl}/middleware-protected-data`);
+    expect(canonical.status).toBe(403);
+
+    const cases = [
+      ["/middleware-protected-data.html", "only visible after middleware"],
+      ["/middleware-protected-data.html?x=1", "only visible after middleware"],
+      ["/index.html", "Hello, vinext!"],
+      ["/api/hello.html", "Hello from API!"],
+    ];
+    for (const [pathname, body] of cases) {
+      const response = await fetch(`${prodUrl}${pathname}`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain(body);
+    }
   });
 
   // ── /_next/data JSON endpoint in production (issue #1330) ─────────

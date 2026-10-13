@@ -6476,29 +6476,12 @@ export const loadServerActionClient = ${
               const canonicalOriginalUrl = canonicalizeRequestUrlPathname(originalEncodedUrl);
               url = canonicalizeRequestUrlPathname(url);
 
-              // Vite's built-in middleware may rewrite "/" to "/index.html".
-              // Normalize it back so our router can match correctly.
-              const rawPathname = url.split("?")[0];
-              if (rawPathname.endsWith("/index.html")) {
-                url = url.replace("/index.html", "/");
-              } else if (rawPathname.endsWith(".html")) {
-                // Strip .html extensions (e.g. "/about.html" -> "/about")
-                url = url.replace(/\.html(?=\?|$)/, "");
-              }
-
-              // Preserve the original request URL for NextRequest. Vite may
-              // rewrite extensionless paths to `.html`, while an actual
-              // `.html` request must remain distinguishable to middleware.
+              // Route the same path middleware is matched against. With
+              // appType "custom", Vite never rewrites URLs to `.html`, so a
+              // `.html` suffix came from the client. Like Next.js, it is part of
+              // the path: `/about.html` does not route to pages/about.
               let middlewareUrl = canonicalOriginalUrl;
               let routeUrl = middlewareUrl;
-              {
-                const routePathname = routeUrl.split("?")[0];
-                if (routePathname.endsWith("/index.html")) {
-                  routeUrl = routeUrl.replace("/index.html", "/");
-                } else if (routePathname.endsWith(".html")) {
-                  routeUrl = routeUrl.replace(/\.html(?=\?|$)/, "");
-                }
-              }
               let pathname = url.split("?")[0];
 
               // Guard against protocol-relative URL open redirects.
