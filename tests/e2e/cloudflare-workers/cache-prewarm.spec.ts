@@ -715,16 +715,19 @@ test("Workers Cache shares one entry across the hosts of a deployed Worker", asy
           const filledRender = renderOf(await filled.text());
           expect(filledRender, pathname).toBeTruthy();
           const other = await request.get(`${previewURL}${pathname}`);
-          const trace = JSON.stringify({ pathname, headers: other.headers() });
-          expect(other.ok(), trace).toBe(true);
-          return (
-            other.headers()["cf-cache-status"] === "HIT" &&
-            renderOf(await other.text()) === filledRender
-          );
+          const otherRender = other.ok() ? renderOf(await other.text()) : undefined;
+          return {
+            pathname,
+            previewURL,
+            filledCacheStatus: filled.headers()["cf-cache-status"],
+            otherStatus: other.status(),
+            otherCacheStatus: other.headers()["cf-cache-status"],
+            sameRender: otherRender === filledRender,
+          };
         },
         { intervals: [1_000], timeout: 45_000 },
       )
-      .toBe(true);
+      .toMatchObject({ otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
   }
 
   // A page whose getInitialProps runs renders per request, as in Next.js, so
