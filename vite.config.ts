@@ -35,6 +35,9 @@ export default defineConfig({
       // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
       "tests/e2e/sentry-nextjs-16-static/fixture/**",
       "tests/fixtures/ecosystem/**",
+      // Ported from next-intl's playground; kept in upstream style for diffing.
+      "tests/fixtures/cf-next-intl/**",
+      "tests/e2e/cloudflare-next-intl/**",
       "examples/**",
       "packages/types/next/upstream/**",
     ],

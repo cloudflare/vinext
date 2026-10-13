@@ -1,0 +1,64 @@
+{
+  "ApiRoute": {
+    "hello": "こんにちは{name}！"
+  },
+  "AsyncComponent": {
+    "basic": "AsyncComponent",
+    "markup": "Markup with <important>bold content</important>",
+    "rich": "This is a <important>rich</important> text."
+  },
+  "Client": {
+    "description": "このページは、クライアント側で水分補給されます。",
+    "title": "Client"
+  },
+  "ClientCounter": {
+    "count": "現在のカウント：{count}",
+    "increment": "インクリメント"
+  },
+  "Counter": {
+    "count": "現在のカウント：",
+    "increment": "インクリメント"
+  },
+  "Index": {
+    "description": "This is the home page (ja).",
+    "rich": "This is a <b>rich</b> text (ja).",
+    "title": "Home (ja)"
+  },
+  "JustIn": {
+    "title": "ちょうど"
+  },
+  "LocaleLayout": {
+    "description": "これは、「アプリ」ディレクトリでnext-intlを使用する例です。",
+    "title": "next-intlの例"
+  },
+  "LocaleSwitcher": {
+    "switchLocale": "Switch to {locale, select, de {German} en {English} es {Spanish} ja {Japanese} nl {Dutch} other {Unknown}}"
+  },
+  "Navigation": {
+    "about": "(MDX) について",
+    "client": "クライアントページ",
+    "home": "家",
+    "nested": "ネストされたページ",
+    "newsArticle": "ニュース記事 #{articleId}"
+  },
+  "Nested": {
+    "description": "これはネストされたページです。",
+    "title": "ネステッド"
+  },
+  "NewsArticle": {
+    "title": "ニュース記事 #{articleId}"
+  },
+  "NotFound": {
+    "title": "このページは見つかりませんでした (404)"
+  },
+  "OpenGraph": {
+    "title": "next-intlの例"
+  },
+  "ServerActions": {
+    "item": "項目 #{id}"
+  },
+  "ZodFormExample": {
+    "task": "タスクを入力してください",
+    "taskEmpty": "タスクを入力してください。"
+  }
+}

@@ -549,6 +549,34 @@ jobs:
             label: cloudflare-sentry-app
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-next-intl
+            label: cloudflare-next-intl
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-locale-prefix-never
+            label: cloudflare-next-intl-locale-prefix-never
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-trailing-slash
+            label: cloudflare-next-intl-trailing-slash
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-base-path
+            label: cloudflare-next-intl-base-path
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-domains
+            label: cloudflare-next-intl-domains
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-domains-locale-prefix
+            label: cloudflare-next-intl-domains-locale-prefix
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-locale-cookie-false
+            label: cloudflare-next-intl-locale-cookie-false
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-sentry-app-workers-cache
             label: cloudflare-sentry-app-workers-cache
             shardIndex: 1

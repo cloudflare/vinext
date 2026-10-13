@@ -1067,16 +1067,29 @@ describe("checkLibraries", () => {
     expect(items[0].detail).toContain("clerkMiddleware");
   });
 
-  it("reports next-intl and @sentry/nextjs as partial", () => {
+  it("reports next-intl as supported and names the experimental options that don't work", () => {
     writeFile(
       "package.json",
       JSON.stringify({
-        dependencies: { "next-intl": "^4.0.0", "@sentry/nextjs": "^10.0.0" },
+        dependencies: { "next-intl": "^4.0.0" },
+      }),
+    );
+
+    const [item] = checkLibraries(tmpDir);
+    expect(item.status).toBe("supported");
+    expect(item.detail).toContain("precompile");
+    expect(item.detail).not.toContain("No intl context found");
+  });
+
+  it("reports @sentry/nextjs as partial", () => {
+    writeFile(
+      "package.json",
+      JSON.stringify({
+        dependencies: { "@sentry/nextjs": "^10.0.0" },
       }),
     );
 
     const items = checkLibraries(tmpDir);
-    expect(items.find((i) => i.name === "next-intl")?.status).toBe("partial");
     expect(items.find((i) => i.name === "@sentry/nextjs")?.status).toBe("partial");
   });
 
@@ -1116,7 +1129,7 @@ describe("checkLibraries", () => {
         dependencies: {
           tailwindcss: "^3.0.0",
           "next-auth": "^4.0.0",
-          "next-intl": "^4.0.0",
+          "@sentry/nextjs": "^10.0.0",
         },
       }),
     );
