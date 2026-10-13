@@ -251,6 +251,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // and ensures both phases render against the same built bundle.
   let sharedProdServer: { server: HttpServer; port: number } | null = null;
   let sharedPrerenderSecret: string | undefined;
+  let appNotFoundRendered = false;
   // Match Next's static-worker phase while user modules execute. This wider
   // scope also covers shared-server startup; the nested router helpers restore
   // back to this value and this cleanup restores the ordinary caller phase.
@@ -311,6 +312,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
       allRoutes.push(...result.routes);
       if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
+      appNotFoundRendered = result.appNotFoundRendered === true;
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
@@ -333,7 +335,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         // For hybrid builds pass the shared prod server; for single-router builds
         // fall back to the pages bundle path so prerenderPages starts its own.
         ...(sharedProdServer
-          ? { _prodServer: sharedProdServer, _prerenderSecret: sharedPrerenderSecret }
+          ? {
+              _appRendered404: appNotFoundRendered,
+              _prodServer: sharedProdServer,
+              _prerenderSecret: sharedPrerenderSecret,
+            }
           : {
               pagesBundlePath,
             }),

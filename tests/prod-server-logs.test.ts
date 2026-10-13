@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -194,6 +195,54 @@ describe("startProdServer logging", () => {
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
+    }
+  });
+
+  it("gates every spelling of the prerender not-found endpoint behind the secret", async () => {
+    const root = createAppBuild();
+    roots.push(root);
+    const distDir = path.join(root, "dist");
+    fs.writeFileSync(
+      path.join(distDir, "server", "vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "not-found-secret" }),
+    );
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server, port } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: distDir,
+      noCompression: true,
+      silent: true,
+    });
+    // fetch() would resolve these targets itself, so send them verbatim.
+    const statusFor = (target: string, headers: Record<string, string> = {}) =>
+      new Promise<number | undefined>((resolve, reject) => {
+        http
+          .get({ host: "127.0.0.1", port, path: target, headers }, (res) => {
+            res.resume();
+            resolve(res.statusCode);
+          })
+          .on("error", reject);
+      });
+    try {
+      for (const target of [
+        "/__vinext/prerender/not-found",
+        // An absolute-form target: the handler's WHATWG parse resolves it to
+        // the endpoint, while prod-server's own pathname normalization does not.
+        "http://example.com/__vinext/prerender/not-found",
+      ]) {
+        expect(await statusFor(target), target).toBe(403);
+        expect(
+          await statusFor(target, { "x-vinext-prerender-secret": "not-found-secret" }),
+          target,
+        ).toBe(200);
+      }
+      // Node accepts this target, but it is not a WHATWG URL.
+      expect(await statusFor("http://[x/not-found")).toBeTypeOf("number");
+      expect(await statusFor("/__vinext/prerender/not-found")).toBe(403);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 

@@ -76,6 +76,11 @@ describe("App request-stage dispatch", () => {
       name: "internal path below the base path",
       request: new Request("https://example.test/docs/__vinext/revalidate"),
     },
+    {
+      // Its handler branch needs the complete graph's renderNotFound.
+      name: "prerender not-found endpoint",
+      request: new Request("https://example.test/__vinext/prerender/not-found"),
+    },
   ])("uses the complete graph for a $name", ({ request }) => {
     expect(appRequestUsesFullResponseGraph(request, createOptions())).toBe(true);
   });
