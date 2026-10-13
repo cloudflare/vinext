@@ -62,7 +62,7 @@ export function getReactUpgradeDeps(
   });
 }
 
-function isVersionBelow(version: string, minimum: [number, number, number]): boolean {
+export function isVersionBelow(version: string, minimum: [number, number, number]): boolean {
   const current = version.split(".").map((part) => parseInt(part, 10));
   for (let index = 0; index < minimum.length; index++) {
     if ((current[index] ?? 0) !== minimum[index]) return (current[index] ?? 0) < minimum[index];
@@ -71,7 +71,7 @@ function isVersionBelow(version: string, minimum: [number, number, number]): boo
 }
 
 /** Walk up from a resolved module entry to find its package version. */
-function findPackageVersion(resolvedEntry: string, packageName: string): string | null {
+export function findPackageVersion(resolvedEntry: string, packageName: string): string | null {
   let dir = path.dirname(resolvedEntry);
   while (dir !== path.dirname(dir)) {
     const candidate = path.join(dir, "package.json");

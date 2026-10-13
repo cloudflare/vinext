@@ -99,6 +99,10 @@ import {
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
 import {
+  createRscScanGlobImportsPlugin,
+  RSC_SCAN_GLOB_IMPORTS_AFFECTED_FROM,
+} from "./plugins/rsc-scan-glob-imports.js";
+import {
   normalizePathnameForRouteMatch,
   normalizePathnameForRouteMatchStrict,
 } from "./routing/utils.js";
@@ -371,7 +375,7 @@ import {
   getViteCliInvocation,
   isViteCliConfigFile,
 } from "./utils/vite-cli-invocation.js";
-import { getReactUpgradeDeps } from "./utils/react-version.js";
+import { findPackageVersion, getReactUpgradeDeps, isVersionBelow } from "./utils/react-version.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
@@ -8606,6 +8610,19 @@ export const loadServerActionClient = ${
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
+  }
+  if (earlyAppDirExists && resolvedRscPath) {
+    const rscVersion = findPackageVersion(resolvedRscPath, "@vitejs/plugin-rsc");
+    if (rscVersion && !isVersionBelow(rscVersion, RSC_SCAN_GLOB_IMPORTS_AFFECTED_FROM)) {
+      plugins.push(
+        createRscScanGlobImportsPlugin({
+          async getManager(config) {
+            const rscPluginModule = await rscPluginModulePromise;
+            return rscPluginModule?.getPluginApi(config)?.manager;
+          },
+        }),
+      );
+    }
   }
   if (earlyAppDirExists) {
     plugins.push(
