@@ -9,6 +9,7 @@ import { isNextStaticPath } from "../utils/asset-prefix.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   handleConfiguredImageOptimization,
+  invalidImageSourceResponse,
   isImageSourceBodyStatus,
   resolveImageSourceUrl,
   type ImageConfig,
@@ -52,10 +53,6 @@ function cancelResponseBody(response: Response): void {
   });
 }
 
-function imageNotFound(): Response {
-  return new Response("Image not found", { status: 404 });
-}
-
 /**
  * Fetch a local image source. Build output is fetched from the asset binding,
  * which serves it before the Worker and its middleware. Any other source is
@@ -76,7 +73,7 @@ export async function fetchWorkerImageSource(
   try {
     sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
   } catch {
-    return imageNotFound();
+    return invalidImageSourceResponse();
   }
 
   const buildAssetPath = isNextStaticPath(sourcePathname, options.basePath, options.assetPathPrefix)
@@ -93,7 +90,7 @@ export async function fetchWorkerImageSource(
   );
   if (sourceResponse && isImageSourceBodyStatus(sourceResponse.status)) return sourceResponse;
   if (sourceResponse) cancelResponseBody(sourceResponse);
-  return imageNotFound();
+  return invalidImageSourceResponse();
 }
 
 /**

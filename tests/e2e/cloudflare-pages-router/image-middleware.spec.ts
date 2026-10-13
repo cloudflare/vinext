@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 
 const imagePath = (source: string) => `/_next/image?url=${encodeURIComponent(source)}&w=64&q=75`;
 
+// Next.js answers a local source that yields no image with this 400.
+const INVALID_IMAGE = "The requested resource isn't a valid image.";
+
 // Next.js' image optimizer fetches a local source through the router as a GET
 // without the caller's headers (fetchInternalImage in
 // packages/next/src/server/image-optimizer.ts), so middleware admits the
@@ -16,14 +19,16 @@ test.describe("image optimization source behind middleware", () => {
         imagePath("/vinext-image.png?members-only"),
         cookie ? { headers: { cookie } } : undefined,
       );
-      expect(image.status(), cookie).toBe(404);
+      expect(image.status(), cookie).toBe(400);
+      expect(await image.text(), cookie).toBe(INVALID_IMAGE);
       expect(image.headers()["content-type"] ?? "", cookie).not.toContain("image/");
     }
   });
 
   test("does not follow a redirect middleware answers the source with", async ({ request }) => {
     const image = await request.get(imagePath("/vinext-image.png?redirect"));
-    expect(image.status()).toBe(404);
+    expect(image.status()).toBe(400);
+    expect(await image.text()).toBe(INVALID_IMAGE);
     expect(image.headers()["content-type"] ?? "").not.toContain("image/");
   });
 

@@ -27780,7 +27780,7 @@ describe("handleImageOptimization", () => {
     expect(response.status).toBe(400);
   });
 
-  it("returns 404 when fetchAsset fails", async () => {
+  it("returns 400 when fetchAsset fails", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75");
@@ -27788,7 +27788,8 @@ describe("handleImageOptimization", () => {
       fetchAsset: async () => new Response("", { status: 404 }),
     };
     const response = await handleImageOptimization(request, handlers);
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("The requested resource isn't a valid image.");
   });
 
   it("returns original image when no transformImage handler", async () => {
@@ -27889,7 +27890,7 @@ describe("handleImageOptimization", () => {
         fetchAsset: source("image/svg+xml"),
       }),
     ];
-    expect(errors.map((response) => response.status)).toEqual([400, 404, 400]);
+    expect(errors.map((response) => response.status)).toEqual([400, 400, 400]);
     for (const response of errors) {
       expect(response.headers.get("x-nextjs-cache")).toBeNull();
       expect(response.headers.get("x-vinext-cache")).toBeNull();
@@ -27973,7 +27974,7 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
-  it("returns 404 when refetch fallback cannot reload the source image", async () => {
+  it("returns 400 when refetch fallback cannot reload the source image", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75");
@@ -27996,7 +27997,8 @@ describe("handleImageOptimization", () => {
     };
     const response = await handleImageOptimization(request, handlers);
     expect(fetchCount).toBe(2);
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("The requested resource isn't a valid image.");
   });
 
   it("returns 400 when refetch fallback reloads an unsafe content type", async () => {

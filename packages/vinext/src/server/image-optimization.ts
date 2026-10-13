@@ -155,11 +155,21 @@ export function readImageOptimizationSignal(response: Response): ImageOptimizati
 
 /**
  * Whether a local source's pipeline status carries the file's bytes. A no-body
- * success such as 204 serves no file, which Next.js rejects as an empty
- * internal response (fetchInternalImage).
+ * success such as 204 serves no file, which Next.js rejects as an invalid
+ * image.
  */
 export function isImageSourceBodyStatus(status: number): boolean {
   return status >= 200 && status < 300 && status !== 204 && status !== 205;
+}
+
+/**
+ * Body Next.js answers, with a 400, for a local source that yields no image:
+ * a missing file, or anything middleware or routing answers in its place.
+ */
+export const INVALID_IMAGE_SOURCE_MESSAGE = "The requested resource isn't a valid image.";
+
+export function invalidImageSourceResponse(): Response {
+  return new Response(INVALID_IMAGE_SOURCE_MESSAGE, { status: 400 });
 }
 
 const RECURSIVE_IMAGE_URL_RE = /\/_(?:next|vinext)\/image(?:$|\/)/;
@@ -405,7 +415,7 @@ export async function handleImageOptimization(
   // Fetch source image
   const source = await handlers.fetchAsset(imageUrl, request);
   if (!source.ok || !source.body) {
-    return new Response("Image not found", { status: 404 });
+    return invalidImageSourceResponse();
   }
 
   // Negotiate output format from Accept header
@@ -457,7 +467,7 @@ export async function handleImageOptimization(
     console.error("[vinext] Image fallback error, refetching source image:", e);
     const refetchedSource = await handlers.fetchAsset(imageUrl, request);
     if (!refetchedSource.ok || !refetchedSource.body) {
-      return new Response("Image not found", { status: 404 });
+      return invalidImageSourceResponse();
     }
 
     const refetchedContentType = refetchedSource.headers.get("Content-Type");

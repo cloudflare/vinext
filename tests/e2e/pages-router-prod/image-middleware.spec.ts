@@ -5,6 +5,9 @@ const BASE = "http://localhost:4175";
 const imageQuery = (source: string) => `/_next/image?url=${encodeURIComponent(source)}&w=640&q=75`;
 const imagePath = (source: string) => `${BASE}${imageQuery(source)}`;
 
+// Next.js answers a local source that yields no image with this 400.
+const INVALID_IMAGE = "The requested resource isn't a valid image.";
+
 async function readPng(request: APIRequestContext, path: string, cookie?: string): Promise<Buffer> {
   const response = await request.get(
     `${BASE}${path}`,
@@ -30,7 +33,8 @@ test.describe("image optimization source behind middleware", () => {
         imagePath("/members only/private.png"),
         cookie ? { headers: { cookie } } : undefined,
       );
-      expect(image.status(), cookie).toBe(404);
+      expect(image.status(), cookie).toBe(400);
+      expect(await image.text(), cookie).toBe(INVALID_IMAGE);
       expect(image.headers()["content-type"] ?? "", cookie).not.toContain("image/");
       expect(Buffer.from(await image.body()).includes(privatePng), cookie).toBe(false);
     }
@@ -38,7 +42,8 @@ test.describe("image optimization source behind middleware", () => {
 
   test("does not follow a redirect middleware answers the source with", async ({ request }) => {
     const image = await request.get(imagePath("/image-source-redirect.png"));
-    expect(image.status()).toBe(404);
+    expect(image.status()).toBe(400);
+    expect(await image.text()).toBe(INVALID_IMAGE);
     expect(image.headers()["content-type"] ?? "").not.toContain("image/");
   });
 
@@ -56,7 +61,11 @@ test.describe("image optimization source behind middleware", () => {
   });
 
   test("keeps rejecting missing, recursive, and SVG sources", async ({ request }) => {
-    expect((await request.get(imagePath("/missing.png"))).status()).toBe(404);
+    // Ported from Next.js: test/integration/image-optimizer/test/util.ts
+    // https://github.com/vercel/next.js/blob/canary/test/integration/image-optimizer/test/util.ts
+    const missing = await request.get(imagePath("/missing.png"));
+    expect(missing.status()).toBe(400);
+    expect(await missing.text()).toBe(INVALID_IMAGE);
     // Next.js rejects a source that is itself the image endpoint.
     expect((await request.get(imagePath(imageQuery("/heart.png")))).status()).toBe(400);
 

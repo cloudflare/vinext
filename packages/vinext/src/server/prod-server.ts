@@ -33,6 +33,7 @@ import {
   isImageOptimizationPath,
   IMAGE_CONTENT_SECURITY_POLICY,
   IMAGE_RESPONSE_CACHE_STATE,
+  INVALID_IMAGE_SOURCE_MESSAGE,
   parseImageParams,
   isImageSourceBodyStatus,
   isSafeImageContentType,
@@ -1975,8 +1976,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await serveSource(sourcePath)) return;
       }
     }
-    res.writeHead(404);
-    res.end("Image not found");
+    res.writeHead(400);
+    res.end(INVALID_IMAGE_SOURCE_MESSAGE);
   };
 
   // Files the client build emits outside `_next/static`, for example a
@@ -2858,8 +2859,8 @@ async function createPagesRouterRequestHandler(
               }
               if (await serveSource(sourcePath)) return true;
             }
-            res.writeHead(404);
-            res.end("Image not found");
+            res.writeHead(400);
+            res.end(INVALID_IMAGE_SOURCE_MESSAGE);
             return true;
           }
           if (isPagesFilesystemExcludedPath(requestPathname, phase)) return false;

@@ -596,7 +596,8 @@ describe("App Router Production server worker entry compatibility", () => {
         );
 
       const denied = await requestImage("/members.png");
-      expect(denied.status).toBe(404);
+      expect(denied.status).toBe(400);
+      expect(await denied.text()).toBe("The requested resource isn't a valid image.");
       expect(sourceRequests).toHaveLength(1);
       expect(sourceRequests[0].method).toBe("GET");
       expect(sourceRequests[0].headers.has("cookie")).toBe(false);
@@ -609,7 +610,7 @@ describe("App Router Production server worker entry compatibility", () => {
       expect(fetchAsset).toHaveBeenCalledOnce();
 
       // A source is served only as a public file; it never renders a page.
-      expect((await requestImage("/page.png")).status).toBe(404);
+      expect((await requestImage("/page.png")).status).toBe(400);
       expect(dispatchResponseStage).not.toHaveBeenCalled();
       expect(fetchAsset).toHaveBeenCalledOnce();
 

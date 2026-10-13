@@ -5,6 +5,9 @@ const BASE_URL = process.env.VINEXT_BASEPATH_E2E_BASE_URL ?? "";
 const imagePath = (endpoint: string, source: string) =>
   `${BASE_URL}${endpoint}?url=${encodeURIComponent(source)}&w=640&q=75`;
 
+// Next.js answers a local source that yields no image with this 400.
+const INVALID_IMAGE = "The requested resource isn't a valid image.";
+
 test("serves the image endpoint behind basePath only for sources middleware admits", async ({
   request,
 }) => {
@@ -37,7 +40,8 @@ test("serves the image endpoint behind basePath only for sources middleware admi
     imagePath("/_next/image", "/members only/private.png"),
   ]) {
     const image = await request.get(path, { headers: { cookie: "members=1" } });
-    expect(image.status(), path).toBe(404);
+    expect(image.status(), path).toBe(400);
+    expect(await image.text(), path).toBe(INVALID_IMAGE);
     expect(Buffer.from(await image.body()).includes(privatePng), path).toBe(false);
   }
 });

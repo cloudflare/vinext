@@ -90,7 +90,7 @@ describe("fetchWorkerImageSource", () => {
     expect(Reflect.get(fetchPublicFile.mock.calls[0][0], "cf")).toBe(cf);
   });
 
-  it("answers 404 when the pipeline selects no public file or a non-2xx or no-body outcome", async () => {
+  it("answers 400 when the pipeline selects no public file or a non-2xx or no-body outcome", async () => {
     const cancel = vi.fn();
     const denied = new Response(new ReadableStream({ cancel }), { status: 403 });
     for (const result of [null, denied, new Response(null, { status: 204 })]) {
@@ -98,8 +98,8 @@ describe("fetchWorkerImageSource", () => {
 
       const response = await fetchWorkerImageSource("/a.png", callerRequest(), options);
 
-      expect(response.status).toBe(404);
-      expect(await response.text()).toBe("Image not found");
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("The requested resource isn't a valid image.");
     }
     expect(cancel).toHaveBeenCalledOnce();
   });

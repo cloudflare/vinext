@@ -317,7 +317,7 @@ describe("Pages Router production /_next/image cache-state headers", () => {
     for (const [query, status] of [
       ["url=%2Fhello%20world.png&w=65&q=75", 400],
       ["url=%2Ficon.svg&w=64&q=75", 400],
-      ["url=%2Fmissing.png&w=64&q=75", 404],
+      ["url=%2Fmissing.png&w=64&q=75", 400],
     ] as const) {
       const res = await fetch(`${baseUrl}/_next/image?${query}`);
       expect(res.status, query).toBe(status);
