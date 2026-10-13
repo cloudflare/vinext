@@ -11,7 +11,6 @@ import {
   handleConfiguredImageOptimization,
   invalidImageSourceResponse,
   isImageSourceBodyStatus,
-  resolveImageSourceUrl,
   type ImageConfig,
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
@@ -27,8 +26,6 @@ export type WorkerImageSourceOptions = {
   basePath: string;
   assetPathPrefix: string;
   clientBuildFiles: ReadonlySet<string>;
-  /** The basePath an unprefixed source resolves under; see resolveImageSourceUrl. */
-  sourceBasePath: string;
   /**
    * Run `sourceRequest`, a GET without the caller's headers, through the
    * application pipeline and return the public file it selects with a 2xx
@@ -66,12 +63,7 @@ export async function fetchWorkerImageSource(
   request: Request,
   options: WorkerImageSourceOptions,
 ): Promise<Response> {
-  const sourceUrl = resolveImageSourceUrl(
-    imageUrl,
-    options.sourceBasePath,
-    options.assetPathPrefix,
-    request.url,
-  );
+  const sourceUrl = new URL(imageUrl, request.url);
   let sourcePathname: string;
   try {
     sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));

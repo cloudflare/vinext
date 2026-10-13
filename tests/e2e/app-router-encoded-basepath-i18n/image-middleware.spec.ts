@@ -15,17 +15,12 @@ test("serves the image endpoint behind basePath only for sources middleware admi
   expect(direct.status()).toBe(200);
   const heartPng = Buffer.from(await direct.body());
 
-  // Next.js serves the endpoint under basePath and expects basePath in `url`.
-  // vinext's next/image emits the endpoint without basePath, so that form is
-  // admitted as the basePath endpoint with its source resolved under basePath.
-  for (const path of [
-    imagePath("/docs/_next/image", "/docs/heart.png"),
-    imagePath("/_next/image", "/heart.png"),
-  ]) {
-    const image = await request.get(path);
-    expect(image.status(), path).toBe(200);
-    expect(Buffer.from(await image.body()).equals(heartPng), path).toBe(true);
-  }
+  // Next.js serves the endpoint only under basePath and expects basePath in `url`.
+  const image = await request.get(imagePath("/docs/_next/image", "/docs/heart.png"));
+  expect(image.status()).toBe(200);
+  expect(Buffer.from(await image.body()).equals(heartPng)).toBe(true);
+  const unprefixed = await request.get(imagePath("/_next/image", "/docs/heart.png"));
+  expect(unprefixed.status()).toBe(404);
 
   const protectedDirect = await request.get(`${BASE_URL}/docs/members%20only/private.png`);
   expect(protectedDirect.status()).toBe(403);
@@ -35,13 +30,11 @@ test("serves the image endpoint behind basePath only for sources middleware admi
   expect(admitted.status()).toBe(200);
   const privatePng = Buffer.from(await admitted.body());
 
-  for (const path of [
+  const protectedImage = await request.get(
     imagePath("/docs/_next/image", "/docs/members only/private.png"),
-    imagePath("/_next/image", "/members only/private.png"),
-  ]) {
-    const image = await request.get(path, { headers: { cookie: "members=1" } });
-    expect(image.status(), path).toBe(400);
-    expect(await image.text(), path).toBe(INVALID_IMAGE);
-    expect(Buffer.from(await image.body()).includes(privatePng), path).toBe(false);
-  }
+    { headers: { cookie: "members=1" } },
+  );
+  expect(protectedImage.status()).toBe(400);
+  expect(await protectedImage.text()).toBe(INVALID_IMAGE);
+  expect(Buffer.from(await protectedImage.body()).includes(privatePng)).toBe(false);
 });

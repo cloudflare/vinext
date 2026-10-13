@@ -27,7 +27,6 @@ function sourceOptions(overrides: Partial<WorkerImageSourceOptions> = {}) {
     basePath: "",
     assetPathPrefix: "",
     clientBuildFiles: new Set(),
-    sourceBasePath: "",
     fetchPublicFile,
     ...overrides,
   };
@@ -55,7 +54,6 @@ describe("fetchWorkerImageSource", () => {
     const { options, assets, fetchPublicFile } = sourceOptions({
       basePath: "/docs",
       assetPathPrefix: "/cdn",
-      sourceBasePath: "/docs",
     });
 
     await fetchWorkerImageSource("/cdn/_next/static/media/a.png", callerRequest(), options);
@@ -67,9 +65,9 @@ describe("fetchWorkerImageSource", () => {
   });
 
   it("runs any other source through the pipeline as a GET without the caller's headers", async () => {
-    const { options, assets, fetchPublicFile } = sourceOptions({ sourceBasePath: "/docs" });
+    const { options, assets, fetchPublicFile } = sourceOptions({ basePath: "/docs" });
 
-    const response = await fetchWorkerImageSource("/a.png?v=1", callerRequest(), options);
+    const response = await fetchWorkerImageSource("/docs/a.png?v=1", callerRequest(), options);
 
     expect(await response.text()).toBe("public");
     expect(assets.fetch).not.toHaveBeenCalled();

@@ -38,7 +38,6 @@ import {
   isImageSourceBodyStatus,
   isSafeImageContentType,
   readImageOptimizationSignal,
-  resolveImageSourceUrl,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
@@ -1881,7 +1880,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     res: ServerResponse,
     request: Request,
     signal: ImageOptimizationSignal,
-    sourceBasePath: string,
   ): Promise<void> => {
     const stagedHeaders = omitHeadersCaseInsensitive(
       mergeResponseHeaders({}, new Response(null, { headers: signal.middlewareHeaders })),
@@ -1931,12 +1929,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
     // Serve the source only as an anonymous direct request would receive it.
     // Build assets bypass middleware there too.
-    const sourceUrl = resolveImageSourceUrl(
-      params.imageUrl,
-      sourceBasePath,
-      appAssetPathPrefix,
-      request.url,
-    );
+    const sourceUrl = new URL(params.imageUrl, request.url);
     let sourcePathname: string | null = null;
     try {
       sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
@@ -2084,12 +2077,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
     }
 
-    // vinext's next/image emits the image endpoint without the basePath, where
-    // Next.js prefixes it. Admit that form as the basePath endpoint and resolve
-    // its unprefixed sources under the basePath.
-    const imageEndpointBasePath =
-      appRouterBasePath && isImageOptimizationPath(pathname) ? appRouterBasePath : "";
-
     try {
       // Static-asset checks above use the normalized pathname, but the RSC
       // handler must receive the original URL so its request boundary decodes
@@ -2097,7 +2084,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // percent signs eligible for a second decode inside normalizeRscRequest.
       const request = nodeToWebRequest(
         req,
-        imageEndpointBasePath + rawUrl,
+        rawUrl,
         prerenderSecret,
         appRouterI18nConfig,
         appRouterAuthorizeOnDemandRevalidate,
@@ -2119,7 +2106,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const imageSignal = readImageOptimizationSignal(response);
       if (imageSignal) {
         cancelResponseBody(response);
-        await serveImageOptimization(req, res, request, imageSignal, imageEndpointBasePath);
+        await serveImageOptimization(req, res, request, imageSignal);
         return;
       }
 
@@ -2780,8 +2767,9 @@ async function createPagesRouterRequestHandler(
         // Set-Cookie / security headers from middleware are included in the response.
         serveFilesystemRoute: async (requestPathname, stagedHeaders, phase, resolvedUrl) => {
           // Next.js resolves middleware and beforeFiles rewrites before
-          // dispatching the built-in image endpoint.
-          if (isImageOptimizationPath(requestPathname)) {
+          // dispatching the built-in image endpoint, which it serves only
+          // under the basePath.
+          if (hadBasePath && isImageOptimizationPath(requestPathname)) {
             for (const [name, value] of Object.entries(stagedHeaders)) {
               res.setHeader(name, value);
             }
@@ -2828,15 +2816,8 @@ async function createPagesRouterRequestHandler(
               );
 
             // Serve the source only as an anonymous direct request would
-            // receive it. Build assets bypass middleware there too. An endpoint
-            // outside the basePath is next/image's unprefixed form, whose
-            // sources resolve under the basePath.
-            const sourceUrl = resolveImageSourceUrl(
-              params.imageUrl,
-              hadBasePath ? "" : basePath,
-              pagesAssetPathPrefix,
-              webRequest.url,
-            );
+            // receive it. Build assets bypass middleware there too.
+            const sourceUrl = new URL(params.imageUrl, webRequest.url);
             let sourcePathname: string | null = null;
             try {
               sourcePathname = normalizePath(

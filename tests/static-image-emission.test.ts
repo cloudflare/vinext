@@ -387,6 +387,23 @@ async function assertStaticImageProductionParity(
     );
     expect(src).toContain("q=85");
     expect(src).not.toContain("data%3Aimage");
+    // Next.js serves the image endpoint under basePath, the path next/image emits.
+    expect(new URL(src, "http://vinext.test").pathname).toBe(
+      `${options.basePath ?? ""}/_next/image`,
+    );
+    const imageResponse = await fetch(new URL(src, `http://127.0.0.1:${address.port}`));
+    expect(imageResponse.status, src).toBe(200);
+    expect(imageResponse.headers.get("content-type"), src).toBe("image/png");
+    await imageResponse.arrayBuffer();
+    if (options.basePath) {
+      const unprefixed = new URL(
+        `/_next/image${new URL(src, "http://vinext.test").search}`,
+        imageResponse.url,
+      );
+      const unprefixedResponse = await fetch(unprefixed);
+      expect(unprefixedResponse.status, unprefixed.href).toBe(404);
+      await unprefixedResponse.arrayBuffer();
+    }
     expect(srcset).toContain(`url=${encodeURIComponent(managedUrl)}`);
     if (options.deploymentId) expect(srcset).toContain(`dpl=${options.deploymentId}`);
     expect(srcset).not.toContain("data%3Aimage");
@@ -443,6 +460,10 @@ describe("static image import production emission", () => {
       assetPrefix: "/cdn",
       deploymentId: "static-image-test",
     });
+  }, 60_000);
+
+  it("serves Pages Router managed image URLs under basePath", async () => {
+    await assertStaticImageProductionParity("pages", { basePath: "/docs" });
   }, 60_000);
 
   it("emits matching SSR and client image URLs in Cloudflare builds", async () => {

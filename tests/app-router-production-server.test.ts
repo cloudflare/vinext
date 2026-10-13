@@ -2001,22 +2001,26 @@ describe("App Router Production server (startProdServer)", () => {
       const withoutBasePathRes = await fetch(`${tmpBaseUrl}/logo/logo.svg`);
       expect(withoutBasePathRes.status).toBe(404);
 
-      // Middleware runs before the image endpoint reads a source, in both the
-      // Next.js form and the unprefixed form vinext's next/image emits.
-      for (const imagePath of [
-        "/app/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
-        "/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
-      ]) {
-        const imageRes = await fetch(`${tmpBaseUrl}${imagePath}`);
-        expect(imageRes.status, imagePath).toBe(403);
-        expect(await imageRes.text(), imagePath).toBe("image endpoint blocked by middleware");
-      }
-      const imageRes = await fetch(`${tmpBaseUrl}/_next/image?url=%2Fheart.png&w=640&q=75`);
+      // Next.js serves the image endpoint only under basePath, and middleware
+      // runs before it reads a source, which must carry the basePath itself.
+      const guardedRes = await fetch(
+        `${tmpBaseUrl}/app/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75`,
+      );
+      expect(guardedRes.status).toBe(403);
+      expect(await guardedRes.text()).toBe("image endpoint blocked by middleware");
+      const unprefixedRes = await fetch(
+        `${tmpBaseUrl}/_next/image?url=%2Fapp%2Fheart.png&w=640&q=75`,
+      );
+      expect(unprefixedRes.status).toBe(404);
+      await unprefixedRes.arrayBuffer();
+      const imageRes = await fetch(
+        `${tmpBaseUrl}/app/_next/image?url=%2Fapp%2Fheart.png&w=640&q=75`,
+      );
       expect(imageRes.status).toBe(200);
       expect(imageRes.headers.get("content-type")).toBe("image/png");
       await imageRes.arrayBuffer();
       const protectedImageRes = await fetch(
-        `${tmpBaseUrl}/_next/image?url=%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
+        `${tmpBaseUrl}/app/_next/image?url=%2Fapp%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
       );
       expect(protectedImageRes.status).toBe(400);
       expect(await protectedImageRes.text()).toBe("The requested resource isn't a valid image.");

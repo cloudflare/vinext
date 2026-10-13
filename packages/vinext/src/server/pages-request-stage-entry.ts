@@ -642,7 +642,8 @@ async function handleRequestImpl(
         filesystemRequest,
       ) => {
         if (!assets) return false;
-        if (isImageOptimizationPath(requestPathname)) {
+        // Like Next.js, serve the image endpoint only under the basePath.
+        if (hadBasePath && isImageOptimizationPath(requestPathname)) {
           const imageUrl = new URL(resolvedUrl, request.url);
           const imageRequest = cloneRequestWithUrl(request, imageUrl.href);
           const allowedWidths = [
@@ -658,8 +659,6 @@ async function handleRequestImpl(
                 basePath,
                 assetPathPrefix,
                 clientBuildFiles,
-                // vinext's next/image emits the endpoint without the basePath.
-                sourceBasePath: hadBasePath ? "" : basePath,
                 fetchPublicFile: (sourceRequest) => resolvePublicImageSource(sourceRequest, assets),
               }),
             allowedWidths,
