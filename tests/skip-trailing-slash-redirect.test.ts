@@ -5,7 +5,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
-const FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/skip-trailing-slash-redirect");
+// use-params-app-pages enables skipTrailingSlashRedirect and hosts the ported
+// Pages routes under /skip-trailing-slash/ and the App routes under /with-app-dir/.
+const FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/use-params-app-pages");
 
 async function startServer(
   fixtureRoot: string,
@@ -66,7 +68,7 @@ describe.each(["development", "production"] as const)("skipTrailingSlashRedirect
 
   // Next.js runs these against both routers to ensure the behavior is the same.
   describe.each([
-    ["pages dir", "/"],
+    ["pages dir", "/skip-trailing-slash/"],
     ["app dir", "/with-app-dir/"],
   ])("%s", (_name, basePath) => {
     it("should not apply trailing slash redirect (with slash)", async () => {
@@ -123,15 +125,17 @@ describe.each(["development", "production"] as const)("skipTrailingSlashRedirect
   });
 
   it("should apply config redirect correctly", async () => {
-    const res = await fetch(`${baseUrl}/redirect-me`, { redirect: "manual" });
+    const res = await fetch(`${baseUrl}/skip-trailing-slash/redirect-me`, { redirect: "manual" });
     expect(res.status).toBe(307);
-    expect(new URL(res.headers.get("location") ?? "", "http://n").pathname).toBe("/another");
+    expect(new URL(res.headers.get("location") ?? "", "http://n").pathname).toBe(
+      "/skip-trailing-slash/another",
+    );
   });
 
   it("should keep middleware redirect trailing slashes", async () => {
     for (const [source, destination] of [
-      ["/middleware-redirect-with", "/another/"],
-      ["/middleware-redirect-without", "/another"],
+      ["/skip-trailing-slash/middleware-redirect-with", "/skip-trailing-slash/another/"],
+      ["/skip-trailing-slash/middleware-redirect-without", "/skip-trailing-slash/another"],
     ]) {
       const res = await fetch(`${baseUrl}${source}`, { redirect: "manual" });
       expect(res.status, source).toBe(307);
@@ -142,7 +146,7 @@ describe.each(["development", "production"] as const)("skipTrailingSlashRedirect
   });
 
   it("should apply config rewrites correctly", async () => {
-    const res = await fetch(`${baseUrl}/rewrite-me`, { redirect: "manual" });
+    const res = await fetch(`${baseUrl}/skip-trailing-slash/rewrite-me`, { redirect: "manual" });
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("another page");
   });

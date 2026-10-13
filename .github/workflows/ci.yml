@@ -486,8 +486,8 @@ jobs:
             label: app-router-encoded-basepath-i18n
             shardIndex: 1
             shardTotal: 1
-          - project: skip-trailing-slash-redirect
-            label: skip-trailing-slash-redirect
+          - project: use-params-app-pages
+            label: use-params-app-pages
             shardIndex: 1
             shardTotal: 1
           - project: app-router

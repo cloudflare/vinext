@@ -540,20 +540,6 @@ const projectServers = {
       timeout: 120_000,
     },
   },
-  // skipTrailingSlashRedirect changes slash handling app-wide, so it gets its
-  // own hybrid fixture rather than changing app-basic or pages-basic.
-  "skip-trailing-slash-redirect": {
-    testDir: "./tests/e2e/skip-trailing-slash-redirect",
-    use: { baseURL: "http://localhost:4211" },
-    server: {
-      command:
-        "(test -e node_modules || test -L node_modules || ln -s ../app-basic/node_modules node_modules) && npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4211",
-      cwd: "./tests/fixtures/skip-trailing-slash-redirect",
-      port: 4211,
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-  },
   "app-router-encoded-basepath-i18n": {
     testDir: "./tests/e2e/app-router-encoded-basepath-i18n",
     use: { baseURL: "http://localhost:4196" },

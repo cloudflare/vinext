@@ -3,9 +3,12 @@ import { waitForAppRouterHydration, waitForHydration } from "../helpers";
 
 // Ported from Next.js: test/e2e/skip-trailing-slash-redirect/index.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/skip-trailing-slash-redirect/index.test.ts
+//
+// The use-params-app-pages fixture enables skipTrailingSlashRedirect. Next's
+// Pages routes at / live under /skip-trailing-slash/ here.
 
 const routers = [
-  { name: "pages dir", basePath: "/", hydrate: waitForHydration },
+  { name: "pages dir", basePath: "/skip-trailing-slash/", hydrate: waitForHydration },
   { name: "app dir", basePath: "/with-app-dir/", hydrate: waitForAppRouterHydration },
 ] as const;
 
@@ -67,11 +70,11 @@ for (const { name, basePath, hydrate } of routers) {
 }
 
 test("should not apply trailing slash on load on client", async ({ page }) => {
-  await page.goto("/another");
+  await page.goto("/skip-trailing-slash/another");
   await waitForHydration(page);
-  expect(await pathname(page)).toBe("/another");
+  expect(await pathname(page)).toBe("/skip-trailing-slash/another");
 
-  await page.goto("/another/");
+  await page.goto("/skip-trailing-slash/another/");
   await waitForHydration(page);
-  expect(await pathname(page)).toBe("/another/");
+  expect(await pathname(page)).toBe("/skip-trailing-slash/another/");
 });
