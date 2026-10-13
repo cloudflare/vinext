@@ -294,6 +294,9 @@ describe("app page request helpers", () => {
       });
 
     await expect(validate("blog", "hello")).resolves.toBeNull();
+    // The rerun over every parent reuses the results the first pass returned.
+    expect(categoryGenerateStaticParams).toHaveBeenCalledTimes(1);
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(2);
     await expect(validate("docs", "intro")).resolves.toBeNull();
     await expect(validate("guides", "intro")).resolves.toMatchObject({ status: 404 });
   });
@@ -325,6 +328,9 @@ describe("app page request helpers", () => {
       });
 
     await expect(validate("de", "b", "x")).resolves.toBeNull();
+    expect(langGenerateStaticParams).toHaveBeenCalledTimes(1);
+    expect(sectionGenerateStaticParams).toHaveBeenCalledTimes(2);
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(2);
     await expect(validate("de", "a", "x")).resolves.toBeNull();
     await expect(validate("fr", "b", "x")).resolves.toMatchObject({ status: 404 });
     await expect(validate("de", "c", "x")).resolves.toMatchObject({ status: 404 });

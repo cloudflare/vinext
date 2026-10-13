@@ -544,12 +544,20 @@ function rewritesParentParams(
 async function generateChainedStaticParams(
   sources: readonly GenerateStaticParamsSource[],
   requestParams: AppPageParams | null,
+  // A rerun over every combination reuses the results each generator already
+  // returned, so it calls generators only for the parents it skipped.
+  results = new Map<GenerateStaticParamsSource, Map<string, unknown>>(),
 ): Promise<Record<string, unknown>[]> {
   let generatedParams: Record<string, unknown>[] = [];
   let skippedParents = false;
   let needsEveryCombination = false;
 
   for (const source of sources) {
+    let sourceResults = results.get(source);
+    if (!sourceResults) {
+      sourceResults = new Map();
+      results.set(source, sourceResults);
+    }
     const hasParentParams = generatedParams.length > 0;
     let parents = hasParentParams ? generatedParams : [{}];
     const nextParams: Record<string, unknown>[] = [];
@@ -567,9 +575,14 @@ async function generateChainedStaticParams(
     if (hasParentParams && parents.length < generatedParams.length) skippedParents = true;
 
     for (const parentParams of parents) {
-      const result = await runWithFetchDedupe(() =>
-        source.generateStaticParams({ params: parentParams as AppPageParams }),
-      );
+      const resultKey = JSON.stringify(parentParams);
+      let result = sourceResults.get(resultKey);
+      if (!sourceResults.has(resultKey)) {
+        result = await runWithFetchDedupe(() =>
+          source.generateStaticParams({ params: parentParams as AppPageParams }),
+        );
+        sourceResults.set(resultKey, result);
+      }
       if (Array.isArray(result) && result.length > 0) {
         for (const item of result) {
           if (item !== null && typeof item === "object" && !Array.isArray(item)) {
@@ -594,7 +607,7 @@ async function generateChainedStaticParams(
   // Next merges each result over its parent combination, so a generator that
   // rewrites a parent param can produce the request from a skipped parent.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
-  if (needsEveryCombination) return generateChainedStaticParams(sources, null);
+  if (needsEveryCombination) return generateChainedStaticParams(sources, null, results);
   return generatedParams;
 }
 
