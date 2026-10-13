@@ -663,6 +663,38 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Last-Modified")).toBeNull();
   });
 
+  it.each<{ name: string; headers: Record<string, string> }>([
+    { name: "an ETag", headers: { ETag: '"bot-404"' } },
+    { name: "a Last-Modified", headers: { "Last-Modified": "Tue, 06 Oct 2026 00:00:00 GMT" } },
+  ])("strips $name from a cacheable Pages page 404", async ({ headers }) => {
+    stages.response.mockResolvedValue(
+      new Response("not found", {
+        headers: { ...headers, "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+        status: 404,
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "pages-page" })).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("ETag")).toBeNull();
+    expect(response.headers.get("Last-Modified")).toBeNull();
+  });
+
+  it("keeps the ETag on a Pages page 304", async () => {
+    stages.response.mockResolvedValue(
+      new Response(null, { headers: { ETag: '"bot-page"' }, status: 304 }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "pages-page" })).fetch(
+      new Request("https://example.com/page", { headers: { "If-None-Match": '"bot-page"' } }),
+    );
+
+    expect(response.headers.get("ETag")).toBe('"bot-page"');
+  });
+
   it("rejects an expected build identity when the named stage has no identity", async () => {
     const response = await createEntrypoint({
       ...responseStageInvocation({ kind: "app-page" }),

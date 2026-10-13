@@ -411,6 +411,29 @@ function rendersWholeDocument(request: Request): boolean {
   return request.headers.get("user-agent") === WARMUP_USER_AGENT || revalidatesStoredEntry(request);
 }
 
+/**
+ * A conditional revalidation of a Pages page skips getStaticPaths(), so only a
+ * successful render may be stored with a validator. Bot renders carry an ETag
+ * whatever their status. A 304 answers a revalidation of a stored 200.
+ */
+function withPagesRevalidationValidator(response: Response): Response {
+  if (response.status === 200) return withRevalidationValidator(response);
+  if (
+    response.status === 304 ||
+    (!response.headers.has("ETag") && !response.headers.has("Last-Modified"))
+  ) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("ETag");
+  headers.delete("Last-Modified");
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 /** Give a cacheable document a validator, so Workers Cache revalidates it conditionally. */
 function withRevalidationValidator(response: Response): Response {
   if (response.headers.has("ETag") || response.headers.has("Last-Modified")) return response;
@@ -629,7 +652,7 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
       context,
       isAppPageDocument && rendersWholeDocument(request)
         ? { ...invocation, options: { ...invocation.options, renderWholeDocument: true } }
-        : // Only a successful Pages render gets a validator below, so a
+        : // Only a successful Pages render is stored with a validator, so a
           // conditional revalidation proves the entry stored for this build
           // was admitted, and Next.js regenerates such a path without
           // calling getStaticPaths().
@@ -646,9 +669,11 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     return stampResponseStageBuildIdentity(
       restored.didAccessRequestCf() || hasTaggedCustomVary(response)
         ? preventResponseCaching(response)
-        : isAppPageDocument || (isPagesPage && response.status === 200)
+        : isAppPageDocument
           ? withRevalidationValidator(response)
-          : response,
+          : isPagesPage
+            ? withPagesRevalidationValidator(response)
+            : response,
     );
   }
 
