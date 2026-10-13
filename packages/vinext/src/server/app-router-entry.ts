@@ -315,7 +315,7 @@ async function handleRequest(
     if (imageSignal && assets) {
       const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
         await import("./worker-image-optimization.js");
-      return serveWorkerImageOptimization(
+      response = await serveWorkerImageOptimization(
         request,
         imageSignal,
         __rscImageAllowedWidths,
@@ -337,8 +337,7 @@ async function handleRequest(
           },
         },
       );
-    }
-    if (assets) {
+    } else if (assets) {
       const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path, requestHeaders) =>
           Promise.resolve(assets.fetch(createStaticAssetRequest(path, request, requestHeaders))),

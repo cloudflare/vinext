@@ -16,6 +16,7 @@ import {
   DEFAULT_IMAGE_SIZES,
   handleConfiguredImageOptimization,
   isImageOptimizationPath,
+  isImageSourceBodyStatus,
 } from "./image-optimization.js";
 import type { ImageConfig } from "./image-optimization.js";
 import {
@@ -641,7 +642,7 @@ async function handleRequestImpl(
         if (!assets) return false;
         if (isImageOptimizationPath(requestPathname)) {
           const imageUrl = new URL(resolvedUrl, request.url);
-          const imageRequest = new Request(imageUrl, request);
+          const imageRequest = cloneRequestWithUrl(request, imageUrl.href);
           const allowedWidths = [
             ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
             ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
@@ -690,9 +691,12 @@ async function handleRequestImpl(
       if (isNextDataPathname(sourcePathname)) return null;
       let sourceAsset = null as Response | null;
       const sourceResult = await runPagesRequest(
-        new Request(new URL(sourcePathname + sourceUrl.search, sourceUrl), {
-          signal: sourceRequest.signal,
-        }),
+        attachRequestCfMetadata(
+          new Request(new URL(sourcePathname + sourceUrl.search, sourceUrl), {
+            signal: sourceRequest.signal,
+          }),
+          sourceRequest,
+        ),
         {
           ...deps,
           hadBasePath: sourceHadBasePath,
@@ -734,7 +738,7 @@ async function handleRequestImpl(
       );
       if (sourceResult.type !== "response") return null;
       await sourceResult.response.body?.cancel().catch(() => {});
-      if (sourceResult.response.ok) return sourceAsset;
+      if (isImageSourceBodyStatus(sourceResult.response.status)) return sourceAsset;
       await sourceAsset?.body?.cancel().catch(() => {});
       return null;
     };

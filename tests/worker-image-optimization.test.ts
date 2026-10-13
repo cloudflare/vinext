@@ -51,6 +51,21 @@ describe("fetchWorkerImageSource", () => {
     expect([...assetRequest.headers]).toEqual([]);
   });
 
+  it("fetches build output under a path assetPrefix at its emitted URL", async () => {
+    const { options, assets, fetchPublicFile } = sourceOptions({
+      basePath: "/docs",
+      assetPathPrefix: "/cdn",
+      sourceBasePath: "/docs",
+    });
+
+    await fetchWorkerImageSource("/cdn/_next/static/media/a.png", callerRequest(), options);
+
+    expect(fetchPublicFile).not.toHaveBeenCalled();
+    expect(new URL(assets.fetch.mock.calls[0][0].url).pathname).toBe(
+      "/cdn/_next/static/media/a.png",
+    );
+  });
+
   it("runs any other source through the pipeline as a GET without the caller's headers", async () => {
     const { options, assets, fetchPublicFile } = sourceOptions({ sourceBasePath: "/docs" });
 
@@ -64,10 +79,21 @@ describe("fetchWorkerImageSource", () => {
     expect([...sourceRequest.headers]).toEqual([]);
   });
 
-  it("answers 404 when the pipeline selects no public file or a non-2xx outcome", async () => {
+  it("keeps the connection's Cloudflare metadata on the source request", async () => {
+    const { options, fetchPublicFile } = sourceOptions();
+    const request = callerRequest();
+    const cf = { country: "NZ" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true });
+
+    await fetchWorkerImageSource("/a.png", request, options);
+
+    expect(Reflect.get(fetchPublicFile.mock.calls[0][0], "cf")).toBe(cf);
+  });
+
+  it("answers 404 when the pipeline selects no public file or a non-2xx or no-body outcome", async () => {
     const cancel = vi.fn();
     const denied = new Response(new ReadableStream({ cancel }), { status: 403 });
-    for (const result of [null, denied]) {
+    for (const result of [null, denied, new Response(null, { status: 204 })]) {
       const { options } = sourceOptions({ fetchPublicFile: async () => result });
 
       const response = await fetchWorkerImageSource("/a.png", callerRequest(), options);
@@ -113,12 +139,13 @@ describe("fetchSignalledPublicFile", () => {
     expect([...assetRequest.headers]).toEqual([["x-from-middleware", "1"]]);
   });
 
-  it("returns null for a non-2xx signal or a response that is not a signal", async () => {
+  it("returns null for a non-2xx or no-body signal or a response that is not a signal", async () => {
     const assets = { fetch: vi.fn(async (_request: Request) => new Response("file")) };
     const sourceRequest = new Request("https://example.com/a.png");
 
     for (const response of [
       createStaticFileSignal("/a.png", { headers: null, status: 404 }),
+      createStaticFileSignal("/a.png", { headers: null, status: 204 }),
       new Response("rendered by middleware"),
     ]) {
       expect(fetchSignalledPublicFile(response, sourceRequest, assets)).toBeNull();

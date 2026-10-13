@@ -234,24 +234,29 @@ async function handleRequest(
   if (imageSignal && assets) {
     const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
       await import("./worker-image-optimization.js");
-    return serveWorkerImageOptimization(request, imageSignal, __imageAllowedWidths, __imageConfig, {
-      assets,
-      basePath: __basePath,
-      assetPathPrefix,
-      clientBuildFiles,
-      sourceBasePath: imageEndpointBasePath,
-      // The source runs outside this request's cacheability probe.
-      fetchPublicFile: async (sourceRequest) =>
-        fetchSignalledPublicFile(
-          await runWithExecutionContext(requestCtx, () =>
-            requestRscHandler(sourceRequest, requestCtx, rejectResponseStage, null, false, null),
+    response = await serveWorkerImageOptimization(
+      request,
+      imageSignal,
+      __imageAllowedWidths,
+      __imageConfig,
+      {
+        assets,
+        basePath: __basePath,
+        assetPathPrefix,
+        clientBuildFiles,
+        sourceBasePath: imageEndpointBasePath,
+        // The source runs outside this request's cacheability probe.
+        fetchPublicFile: async (sourceRequest) =>
+          fetchSignalledPublicFile(
+            await runWithExecutionContext(requestCtx, () =>
+              requestRscHandler(sourceRequest, requestCtx, rejectResponseStage, null, false, null),
+            ),
+            sourceRequest,
+            assets,
           ),
-          sourceRequest,
-          assets,
-        ),
-    });
-  }
-  if (assets) {
+      },
+    );
+  } else if (assets) {
     const assetResponse = await resolveStaticAssetSignal(response, {
       fetchAsset: (path, requestHeaders) =>
         Promise.resolve(assets.fetch(createStaticAssetRequest(path, request, requestHeaders))),

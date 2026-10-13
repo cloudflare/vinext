@@ -9,12 +9,14 @@ import { isNextStaticPath } from "../utils/asset-prefix.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   handleConfiguredImageOptimization,
+  isImageSourceBodyStatus,
   resolveImageSourceUrl,
   type ImageConfig,
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
 import type { VinextAssetFetcher } from "./multi-stage.js";
 import { normalizePath } from "./normalize-path.js";
+import { attachRequestCfMetadata, cloneRequestWithUrl } from "./request-pipeline.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 import { createStaticAssetRequest, mergeHeaders } from "./worker-utils.js";
 
@@ -64,7 +66,12 @@ export async function fetchWorkerImageSource(
   request: Request,
   options: WorkerImageSourceOptions,
 ): Promise<Response> {
-  const sourceUrl = resolveImageSourceUrl(imageUrl, options.sourceBasePath, request.url);
+  const sourceUrl = resolveImageSourceUrl(
+    imageUrl,
+    options.sourceBasePath,
+    options.assetPathPrefix,
+    request.url,
+  );
   let sourcePathname: string;
   try {
     sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
@@ -79,17 +86,19 @@ export async function fetchWorkerImageSource(
     return options.assets.fetch(new Request(new URL(buildAssetPath, request.url)));
   }
 
+  // Without the caller's headers, but with the connection's Cloudflare
+  // metadata, as Next.js keeps the caller's socket.
   const sourceResponse = await options.fetchPublicFile(
-    new Request(sourceUrl, { signal: request.signal }),
+    attachRequestCfMetadata(new Request(sourceUrl, { signal: request.signal }), request),
   );
-  if (sourceResponse?.ok) return sourceResponse;
+  if (sourceResponse && isImageSourceBodyStatus(sourceResponse.status)) return sourceResponse;
   if (sourceResponse) cancelResponseBody(sourceResponse);
   return imageNotFound();
 }
 
 /**
  * Return the public file a framework static-file signal selects, provided the
- * pipeline answered with a 2xx outcome. The file is fetched with middleware's
+ * pipeline answered with a body-bearing 2xx outcome. The file is fetched with middleware's
  * request header overrides, as resolveStaticAssetSignal fetches it.
  */
 export function fetchSignalledPublicFile(
@@ -97,7 +106,7 @@ export function fetchSignalledPublicFile(
   sourceRequest: Request,
   assets: VinextAssetFetcher,
 ): Promise<Response> | null {
-  const signal = response.ok ? readStaticFileSignal(response) : null;
+  const signal = isImageSourceBodyStatus(response.status) ? readStaticFileSignal(response) : null;
   const requestHeaders = readStaticFileSignalRequestHeaders(response);
   cancelResponseBody(response);
   if (signal === null) return null;
@@ -128,7 +137,7 @@ export async function serveWorkerImageOptimization(
   const imageUrl = new URL(request.url);
   imageUrl.search = signal.search;
   const response = await handleConfiguredImageOptimization(
-    new Request(imageUrl, request),
+    cloneRequestWithUrl(request, imageUrl.href),
     (sourceUrl, imageRequest) => fetchWorkerImageSource(sourceUrl, imageRequest, options),
     allowedWidths,
     imageConfig,

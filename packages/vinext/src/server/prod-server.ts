@@ -34,6 +34,7 @@ import {
   IMAGE_CONTENT_SECURITY_POLICY,
   IMAGE_RESPONSE_CACHE_STATE,
   parseImageParams,
+  isImageSourceBodyStatus,
   isSafeImageContentType,
   readImageOptimizationSignal,
   resolveImageSourceUrl,
@@ -1924,7 +1925,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
     // Serve the source only as an anonymous direct request would receive it.
     // Build assets bypass middleware there too.
-    const sourceUrl = resolveImageSourceUrl(params.imageUrl, sourceBasePath, request.url);
+    const sourceUrl = resolveImageSourceUrl(
+      params.imageUrl,
+      sourceBasePath,
+      appAssetPathPrefix,
+      request.url,
+    );
     let sourcePathname: string | null = null;
     try {
       sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
@@ -1949,7 +1955,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         new Request(sourceUrl, { signal: request.signal }),
         createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
       );
-      const sourceSignal = sourceResponse.ok ? readStaticFileSignal(sourceResponse) : null;
+      const sourceSignal = isImageSourceBodyStatus(sourceResponse.status)
+        ? readStaticFileSignal(sourceResponse)
+        : null;
       cancelResponseBody(sourceResponse);
       if (request.signal.aborted) return;
       if (sourceSignal !== null) {
@@ -2683,7 +2691,7 @@ async function createPagesRouterRequestHandler(
         );
         if (result.type !== "response") return null;
         cancelResponseBody(result.response);
-        return result.response.ok ? sourcePath : null;
+        return isImageSourceBodyStatus(result.response.status) ? sourcePath : null;
       };
 
       // ── Delegate steps 3–11 to the shared Pages Router pipeline ──
@@ -2815,6 +2823,7 @@ async function createPagesRouterRequestHandler(
             const sourceUrl = resolveImageSourceUrl(
               params.imageUrl,
               hadBasePath ? "" : basePath,
+              pagesAssetPathPrefix,
               webRequest.url,
             );
             let sourcePathname: string | null = null;

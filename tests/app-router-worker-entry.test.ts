@@ -77,6 +77,13 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage, _
       search: new URL(request.url).search,
     });
   }
+  if (new URL(request.url).pathname === "/image-rewrite") {
+    const { markImageOptimizationSignal } = await import(${JSON.stringify(IMAGE_OPTIMIZATION_MODULE)});
+    return markImageOptimizationSignal(Response.redirect(request.url, 302), {
+      middlewareHeaders: new Headers(),
+      search: "?url=%2Fvisible.png&w=64&q=75",
+    });
+  }
   if (new URL(request.url).pathname === "/members.png") {
     globalThis.${CAPTURE_IMAGE_SOURCE}?.(request);
     if (request.headers.get("cookie") !== "members=1") {
@@ -605,6 +612,29 @@ describe("App Router Production server worker entry compatibility", () => {
       expect((await requestImage("/page.png")).status).toBe(404);
       expect(dispatchResponseStage).not.toHaveBeenCalled();
       expect(fetchAsset).toHaveBeenCalledOnce();
+
+      // A probe of a route that resolves to the image endpoint still receives
+      // its classification rather than the image.
+      const probe = await entry.handleRequestStage(
+        new Request("https://example.com/image-rewrite?__vinext_cacheability_probe=one", {
+          headers: {
+            [VINEXT_CACHEABILITY_PROBE_HEADER]: "1",
+            [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializeWorkerCacheabilityProbeRoute({
+              kind: "app-page",
+              pattern: "/image-rewrite",
+            }),
+            [VINEXT_PRERENDER_SECRET_HEADER]: "worker-prerender-secret",
+          },
+        }),
+        {},
+        undefined,
+        dispatchResponseStage,
+      );
+      await expect(probe.json()).resolves.toMatchObject({
+        kind: "app-page",
+        pattern: "/image-rewrite",
+        status: 200,
+      });
     } finally {
       await server?.close();
       setImageOptimizer(null);
