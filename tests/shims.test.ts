@@ -13211,6 +13211,29 @@ describe("matchConfigPattern", () => {
     expect(matchConfigPattern("/api", "/api/:path+")).toBeNull();
   });
 
+  it("makes the slash before a trailing :path* optional after other params", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Like path-to-regexp, the `/` prefix of a trailing `*` param is optional.
+    expect(matchConfigPattern("/en/files", "/:locale/files/:path*")).toEqual({
+      locale: "en",
+      path: "",
+    });
+    expect(matchConfigPattern("/en/files/a/b", "/:locale/files/:path*")).toEqual({
+      locale: "en",
+      path: "a/b",
+    });
+    expect(matchConfigPattern("/en/filesx", "/:locale/files/:path*")).toBeNull();
+    expect(matchConfigPattern("/en/files", "/:locale/files/:path+")).toBeNull();
+    // Unnamed groups do not shift the param captures.
+    expect(matchConfigPattern("/en", "/(en|fr)/:path*")).toEqual({ path: "" });
+    expect(matchConfigPattern("/en/a", "/(en|fr)/:path*")).toEqual({ path: "a" });
+    expect(matchConfigPattern("/en/b", "/(en|fr)/:x(a|b)/:tail*")).toEqual({ x: "b", tail: "" });
+    // The compiled source adds no named groups, so `\\k` stays an identity escape.
+    expect(matchConfigPattern("/k/z", "/(\\k)/:tail*")).toEqual({ tail: "z" });
+    // A greedy earlier param takes the rest, as in path-to-regexp.
+    expect(matchConfigPattern("/x/y", "/:a+/:b*")).toEqual({ a: "x/y", b: "" });
+  });
+
   it("matches regex group patterns", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Common Next.js pattern: /:path(\\d+) for numeric paths
@@ -24372,14 +24395,15 @@ describe("Pages Router _next/data client navigation", () => {
 
   it.each([
     ["a mixed-case literal", "/:locale/FILES", "/about", "/files", "/about"],
+    ["a catch-all after another param", "/:locale/files/:path*", "/about", "/files", "/about"],
     [
       "a __proto__ capture",
       "/:locale/:__proto__",
       "/show/:locale/:__proto__",
       "/value",
-      "/show/en/value",
+      "/show/[locale]/[value]",
     ],
-  ])(
+  ] as const)(
     "matches i18n client rewrites like the server for %s",
     async (_label, source, destination, target, expectedRoute) => {
       // Locale prefixing reaches source shapes the simple matcher handles
@@ -24416,8 +24440,7 @@ describe("Pages Router _next/data client navigation", () => {
         const Router = (await import("../packages/vinext/src/shims/router.js")).default;
         expect(await Router.push(target)).toBe(true);
 
-        const expectedLoader =
-          expectedRoute === "/about" ? loaders["/about"] : loaders["/show/[locale]/[value]"];
+        const expectedLoader = loaders[expectedRoute];
         expect(expectedLoader).toHaveBeenCalledTimes(1);
         for (const loader of Object.values(loaders)) {
           if (loader !== expectedLoader) expect(loader).not.toHaveBeenCalled();
