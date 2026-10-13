@@ -26,6 +26,19 @@ function getRawPath(
   });
 }
 
+test("matches the basePath root redirect like Next.js with i18n", async () => {
+  // Observed against real Next.js 16.2.7 (basePath + i18n, no trailingSlash):
+  // internal routes see the root after the default locale is inserted and
+  // stripped again, so only a basePath in another case still redirects.
+  const root = await getRawPath("/docs/?query=true");
+  expect(root.status).toBe(200);
+  expect(root.location).toBeUndefined();
+
+  const redirect = await getRawPath("/DOCS/?query=true");
+  expect(redirect.status).toBe(308);
+  expect(redirect.location).toBe("/docs?query=true");
+});
+
 test("preserves encoded params through basePath and default-locale rewrites", async ({
   request,
 }) => {

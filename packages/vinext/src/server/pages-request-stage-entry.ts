@@ -20,6 +20,7 @@ import {
 import type { ImageConfig } from "./image-optimization.js";
 import {
   attachRequestCfMetadata,
+  basePathRootRedirect,
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
@@ -430,6 +431,19 @@ async function handleRequestImpl(
     // is invoked. Missing asset-shaped requests still need to reach middleware
     // so it can rewrite/respond before the pipeline classifies the miss.
     const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
+
+    const basePathRootResponse = basePathRootRedirect(
+      pathname,
+      basePath,
+      trailingSlash,
+      url.search,
+      {
+        i18n: i18nConfig,
+        hostname: url.hostname,
+        skipProxyUrlNormalize,
+      },
+    );
+    if (basePathRootResponse) return basePathRootResponse;
 
     // Track basePath presence on the original request so matcher gating can
     // distinguish requests inside basePath from requests outside it.

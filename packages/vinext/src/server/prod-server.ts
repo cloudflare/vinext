@@ -44,6 +44,7 @@ import {
 import { normalizePath } from "./normalize-path.js";
 import { registerPrerenderCloudflareLoader } from "../build/prerender-cloudflare-loader.js";
 import {
+  basePathRootRedirect,
   canonicalizeRequestPathname,
   filterInternalHeaders,
   isOpenRedirectShaped,
@@ -2519,6 +2520,8 @@ async function createPagesRouterRequestHandler(
       // the basePath gating of rewrites/redirects/headers below — Next.js
       // only applies default rules to requests inside basePath, and only
       // applies `basePath: false` rules to requests outside it.
+      // Checked once the Web Request's host is known (below).
+      const basePathRootPathname = requestPathname;
       const hadBasePath = !basePath || hasBasePath(requestPathname, basePath);
       let configMatchPathname = stripBasePath(requestPathname, basePath);
       {
@@ -2614,6 +2617,21 @@ async function createPagesRouterRequestHandler(
         // @ts-expect-error — duplex needed for streaming request bodies
         duplex: hasBody ? "half" : undefined,
       });
+      const basePathRootResponse = basePathRootRedirect(
+        basePathRootPathname,
+        basePath,
+        trailingSlash,
+        rawQs,
+        {
+          i18n: i18nConfig,
+          hostname: new URL(webRequest.url).hostname,
+          skipProxyUrlNormalize,
+        },
+      );
+      if (basePathRootResponse) {
+        await sendWebResponse(basePathRootResponse, req, res, compress);
+        return;
+      }
       const middlewareRequest =
         isDataReq && skipProxyUrlNormalize
           ? new Request(new URL(originalRenderUrl, webRequest.url), webRequest)

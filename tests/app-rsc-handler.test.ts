@@ -317,6 +317,72 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each([
+    [true, "/docs?q=1", "/docs/?q=1"],
+    [true, "/DOCS", "/docs/"],
+    [false, "/docs/?q=1", "/docs?q=1"],
+    [false, "/DOCS/", "/docs"],
+  ])(
+    "redirects the basePath root before config redirects (trailingSlash: %s, %s)",
+    async (trailingSlash, requestPath, location) => {
+      // Next.js's priority basePath root redirect (load-custom-routes.ts) runs
+      // before custom redirects and matches case-insensitively.
+      const handler = createHandler({
+        configRedirects: [{ source: "/", destination: "/other", permanent: false }],
+        trailingSlash,
+      });
+
+      const response = await handler(new Request(`https://example.test${requestPath}`), null);
+
+      expect(response.status).toBe(308);
+      expect(response.headers.get("location")).toBe(location);
+    },
+  );
+
+  it.each([
+    [true, "/docs/en", "/docs/", false],
+    [true, "/docs/en/", null, false],
+    [true, "/docs/en/", "/docs/", true],
+    [false, "/docs/", null, false],
+  ])(
+    "matches the basePath root redirect like Next.js with i18n (trailingSlash: %s, %s → %s, skipProxyUrlNormalize: %s)",
+    async (trailingSlash, requestPath, location, skipProxyUrlNormalize) => {
+      // Observed against real Next.js 16.2.7: internal routes see the root
+      // after the default locale is inserted and stripped again.
+      const handler = createHandler({
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        renderNotFound: async () => new Response("root", { status: 404 }),
+        skipProxyUrlNormalize,
+        trailingSlash,
+      });
+
+      const response = await handler(new Request(`https://example.test${requestPath}`), null);
+
+      expect(response.headers.get("location")).toBe(location);
+      if (location) expect(response.status).toBe(308);
+    },
+  );
+
+  it("does not redirect a hybrid Pages root data request to the basePath root", async () => {
+    // The data URL is rebuilt as the bare basePath before App routing.
+    const renderPagesFallback = vi.fn(async () => new Response("data"));
+    const handler = createHandler({
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback,
+      trailingSlash: true,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/data/build-id/index.json"),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("data");
+    expect(renderPagesFallback).toHaveBeenCalledOnce();
+  });
+
   it("keeps the request query on a domain default-locale redirect", async () => {
     const i18nConfig = {
       locales: ["en", "fr"],
@@ -2918,6 +2984,8 @@ describe("createAppRscHandler", () => {
         pathname === "/" || pathname === "" ? { params: {}, route: rootRoute } : null,
       matchRoute: (pathname) =>
         pathname === "/" || pathname === "" ? { params: {}, route: rootRoute } : null,
+      // `/docs/` is the canonical root only with trailingSlash.
+      trailingSlash: true,
     });
 
     const response = await handler(

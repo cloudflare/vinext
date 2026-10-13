@@ -1,4 +1,6 @@
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
+import type { NextI18nConfig } from "../config/next-config.js";
+import { detectDomainLocale } from "../utils/domain-locale.js";
 import { INTERNAL_HEADERS, MIDDLEWARE_HEADER_PREFIX, VINEXT_INTERNAL_HEADERS } from "./headers.js";
 import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
 import {
@@ -248,6 +250,63 @@ export function normalizeTrailingSlash(
   return new Response(null, {
     status: 308,
     headers: { Location: basePath + encodedPathname + search },
+  });
+}
+
+/**
+ * Next.js's priority basePath root redirect (`load-custom-routes.ts`): with
+ * `trailingSlash`, `/docs` → `/docs/`; without it, `/docs/` → `/docs`. Like
+ * other routes it matches case-insensitively and keeps the query.
+ *
+ * With i18n, Next matches internal routes after inserting the default locale
+ * and stripping it again (`resolve-routes.ts` `handleRoute`). So with
+ * `trailingSlash`, `/docs/<default locale>` matches as well, and so does
+ * `/docs/<default locale>/` under `skipProxyUrlNormalize` (`maybeAddTrailingSlash`
+ * does not restore the slash). Next then also matches `/docs/` itself, a
+ * redirect loop vinext does not reproduce. Without `trailingSlash`, a root
+ * under the exact basePath loses its slash on the way and never matches.
+ *
+ * `normalizeTrailingSlash` never redirects the root, and once basePath is
+ * stripped both spellings are `/`, so adapters call this with the pathname
+ * before basePath stripping.
+ */
+export function basePathRootRedirect(
+  pathname: string,
+  basePath: string,
+  trailingSlash: boolean,
+  search: string,
+  options: {
+    i18n?: NextI18nConfig | null;
+    hostname?: string | null;
+    skipProxyUrlNormalize?: boolean;
+  } = {},
+): Response | null {
+  if (!basePath) return null;
+  const lowerPathname = pathname.toLowerCase();
+  const lowerBasePath = basePath.toLowerCase();
+  const { i18n } = options;
+  const exactBasePath = hasBasePath(pathname, basePath);
+  let matches: boolean;
+  if (trailingSlash) {
+    const defaultLocale = i18n
+      ? (detectDomainLocale(i18n.domains, options.hostname ?? undefined)?.defaultLocale ??
+        i18n.defaultLocale)
+      : undefined;
+    const localeRoot =
+      defaultLocale === undefined ? undefined : `${lowerBasePath}/${defaultLocale.toLowerCase()}`;
+    matches =
+      lowerPathname === lowerBasePath ||
+      (localeRoot !== undefined &&
+        exactBasePath &&
+        (lowerPathname === localeRoot ||
+          (!!options.skipProxyUrlNormalize && lowerPathname === `${localeRoot}/`)));
+  } else {
+    matches = lowerPathname === `${lowerBasePath}/` && !(i18n && exactBasePath);
+  }
+  if (!matches) return null;
+  return new Response(null, {
+    status: 308,
+    headers: { Location: (trailingSlash ? `${basePath}/` : basePath) + search },
   });
 }
 

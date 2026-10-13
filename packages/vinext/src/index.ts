@@ -143,6 +143,7 @@ import {
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import {
+  basePathRootRedirect,
   canonicalizeRequestUrlPathname,
   filterInternalHeaders,
   INTERNAL_HEADERS,
@@ -6137,6 +6138,40 @@ export const loadServerActionClient = ${
         // different origin.
         server.middlewares.use((req, res, next) => {
           if (!sendRepeatedSlashRedirect(req.url ?? "/", res)) next();
+        });
+
+        // Next.js's priority basePath root redirect. It must run before Vite's
+        // base middleware, which 404s `/docs` and strips `/docs/` to `/`. Like
+        // the production adapters' `URL.pathname`, match the canonical spelling
+        // (`/docs/%2e` is `/docs/`).
+        server.middlewares.use((req, res, next) => {
+          const url = canonicalizeRequestUrlPathname(req.url ?? "/");
+          const queryIndex = url.indexOf("?");
+          const pathname = queryIndex === -1 ? url : url.slice(0, queryIndex);
+          const search = queryIndex === -1 ? "" : url.slice(queryIndex);
+          const basePath = nextConfig.basePath ?? "";
+          const redirect = basePathRootRedirect(
+            pathname,
+            basePath,
+            nextConfig.trailingSlash,
+            search,
+            {
+              i18n: nextConfig.i18n,
+              hostname: req.headers.host,
+              skipProxyUrlNormalize: nextConfig.skipProxyUrlNormalize,
+            },
+          );
+          if (redirect) {
+            res.writeHead(redirect.status, { Location: redirect.headers.get("Location") ?? "/" });
+            res.end();
+            return;
+          }
+          // Without trailingSlash the bare basePath is the canonical root;
+          // give Vite's base middleware the spelling it accepts.
+          if (basePath && !nextConfig.trailingSlash && pathname === basePath) {
+            req.url = `${basePath}/${search}`;
+          }
+          next();
         });
 
         // Match Next.js dev behavior: allow the server to start, then reject

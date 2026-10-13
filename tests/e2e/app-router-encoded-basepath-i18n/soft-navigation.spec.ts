@@ -76,3 +76,24 @@ test("an app-relative route beginning with basePath is not stripped twice", asyn
   await expect(page.getByTestId("prefix-collision-render-id")).not.toHaveText(firstId!);
   await expect(page).toHaveURL(/\/docs\/docs\/foo$/);
 });
+
+test("soft navigates to the bare basePath root", async ({ page }) => {
+  // Without trailingSlash the root is `/docs`; the request must not hit the
+  // `basePath/` → `basePath` redirect.
+  const redirects: string[] = [];
+  page.on("response", (response) => {
+    if (response.status() === 308) redirects.push(response.url());
+  });
+  await page.goto(`${BASE_URL}/docs/about`);
+  await waitForAppRouterHydration(page);
+  await page.evaluate(() => {
+    (window as any).__ROOT_NAV_MARKER__ = true;
+  });
+
+  await page.evaluate(() => (window as any).next.router.push("/"));
+
+  await expect(page.locator("h1")).toHaveText("Welcome to App Router");
+  expect(new URL(page.url()).pathname).toBe("/docs");
+  expect(await page.evaluate(() => (window as any).__ROOT_NAV_MARKER__)).toBe(true);
+  expect(redirects).toEqual([]);
+});

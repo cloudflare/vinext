@@ -2047,20 +2047,37 @@ export default function Home() {
     expect(define).toBe(JSON.stringify("/app"));
   });
 
-  it("GET /app/ serves the index page", async () => {
-    const res = await fetch(`${bpBaseUrl}/app/`);
+  it("GET /app serves the index page", async () => {
+    // Without trailingSlash the bare basePath is the canonical root, even
+    // though Vite's base is /app/.
+    const res = await fetch(`${bpBaseUrl}/app`, { redirect: "manual" });
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("BasePath Home");
   });
 
-  it("GET /app (without trailing slash) returns 404 — Vite base requires trailing slash", async () => {
-    // With Vite's base set to /app/, a bare /app request doesn't match the
-    // base and Vite returns 404. This matches how Vite handles base paths.
-    // Users would typically configure a reverse proxy or Vite's server.origin
-    // to redirect /app → /app/ in production.
-    const res = await fetch(`${bpBaseUrl}/app`, { redirect: "manual" });
-    expect(res.status).toBe(404);
+  it("GET /app/ redirects to /app like Next.js", async () => {
+    const res = await fetch(`${bpBaseUrl}/app/?q=1`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/app?q=1");
+  });
+
+  it("redirects a dot-segment spelling of /app/ to /app like the production adapters", async () => {
+    // URL parsing canonicalizes the path client-side, so send it raw.
+    const http = await import("node:http");
+    const { hostname, port } = new URL(bpBaseUrl);
+    const { status, location } = await new Promise<{ status?: number; location?: string }>(
+      (resolve, reject) => {
+        http
+          .get({ hostname, port, path: "/app/%2e?q=1" }, (res) => {
+            res.resume();
+            resolve({ status: res.statusCode, location: res.headers.location });
+          })
+          .on("error", reject);
+      },
+    );
+    expect(status).toBe(308);
+    expect(location).toBe("/app?q=1");
   });
 
   it("GET /app/about serves the about page", async () => {
@@ -2114,7 +2131,7 @@ export default function Home() {
   });
 
   it("Link component renders href with basePath prefix in SSR", async () => {
-    const res = await fetch(`${bpBaseUrl}/app/`);
+    const res = await fetch(`${bpBaseUrl}/app`);
     const html = await res.text();
     // The Link component should render <a href="/app/about">
     expect(html).toContain('href="/app/about"');
