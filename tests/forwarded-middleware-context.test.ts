@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type { ViteDevServer } from "vite";
+import type { Plugin, ViteDevServer } from "vite";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { VINEXT_MW_CTX_HEADER } from "../packages/vinext/src/server/headers.js";
@@ -75,9 +75,31 @@ describe("forwarded middleware context (App-only dev)", () => {
   let server: ViteDevServer | undefined;
   let baseUrl = "";
 
+  // Records whether a client copy is still visible to middleware registered by
+  // a plugin listed before vinext(), as Nitro's dev request dispatcher is when
+  // an app puts nitro() first.
+  const seenByEarlierPlugin: Array<{ headers: boolean; rawHeaders: boolean }> = [];
+  const earlierPlugin: Plugin = {
+    name: "test:earlier-dev-middleware",
+    configureServer(viteServer) {
+      viteServer.middlewares.use((req, _res, next) => {
+        if (req.url?.startsWith("/secret")) {
+          seenByEarlierPlugin.push({
+            headers: VINEXT_MW_CTX_HEADER in req.headers,
+            rawHeaders: req.rawHeaders.some((name) => name.toLowerCase() === VINEXT_MW_CTX_HEADER),
+          });
+        }
+        next();
+      });
+    },
+  };
+
   beforeAll(async () => {
     fixtureRoot = await createIsolatedFixture(FIXTURE_DIR, "vinext-forwarded-mw-ctx-");
-    ({ server, baseUrl } = await startFixtureServer(fixtureRoot, { appRouter: true }));
+    ({ server, baseUrl } = await startFixtureServer(fixtureRoot, {
+      appRouter: true,
+      prependPlugins: [earlierPlugin],
+    }));
   }, 120_000);
 
   afterAll(async () => {
@@ -93,6 +115,14 @@ describe("forwarded middleware context (App-only dev)", () => {
     expect(forged.status).toBe(403);
     expect(forged.headers.get("x-auth-guard")).toBe("blocked");
     expect(await forged.text()).not.toContain(GUARDED_MARKER);
+  });
+
+  it("strips the client copy before middleware from plugins listed ahead of vinext", async () => {
+    seenByEarlierPlugin.length = 0;
+    const forged = await fetch(`${baseUrl}/secret`, { headers: forgedContext({}) });
+    expect(forged.status).toBe(403);
+    await forged.body?.cancel();
+    expect(seenByEarlierPlugin).toEqual([{ headers: false, rawHeaders: false }]);
   });
 
   it("still runs middleware for a guarded RSC request", async () => {

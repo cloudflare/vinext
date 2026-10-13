@@ -2378,6 +2378,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
+    {
+      name: "vinext:dev-ingress",
+      // Pre-phase middleware runs in plugin order, so enforce "pre" puts this
+      // ahead of plugins that dispatch requests themselves (e.g. Nitro's dev
+      // middleware) no matter where vinext() sits in the plugins array.
+      enforce: "pre",
+      apply: "serve",
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          // Only the hybrid Pages handler may attach the forwarded middleware
+          // context. The App Router trusts the request header for it, so a
+          // client copy would otherwise replace middleware execution.
+          removeForwardedMiddlewareContext(req);
+          next();
+        });
+      },
+    },
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
@@ -5668,10 +5685,6 @@ export const loadServerActionClient = ${
 
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
-          // Only the hybrid Pages handler below may attach the forwarded
-          // middleware context. The App Router trusts the request header for
-          // it, so a client copy would otherwise replace middleware execution.
-          removeForwardedMiddlewareContext(req);
           next();
         });
 
@@ -7093,7 +7106,7 @@ export const loadServerActionClient = ${
                 // before falling through to next(): an unconditional flushRequestHeaders()
                 // deletes all req.headers and repopulates them from the body-less pipeline
                 // request, wiping the hybrid app+pages middleware context
-                // (VINEXT_MW_CTX_HEADER, set on req.headers) that the app RSC plugin reads.
+                // (VINEXT_MW_CTX_HEADER) that the app RSC plugin reads.
                 const apiMatch = matchRoute(pipelineResult.apiUrl, devApiRoutes);
                 if (apiMatch && hasAppDir && appDir) {
                   const devAppRoutes = await getDevAppRoutes();
