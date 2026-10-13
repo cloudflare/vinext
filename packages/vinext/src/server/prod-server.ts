@@ -524,10 +524,15 @@ function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
 }
 
-function cancelResponseBody(response: Response): void {
+/**
+ * Discard a response body nobody will read. When the client is gone, pass the
+ * request signal's reason: React reports a reasonless cancel of a pending
+ * render as a server error, but recognizes `ResponseAborted` as a disconnect.
+ */
+function cancelResponseBody(response: Response, reason?: unknown): void {
   const body = response.body;
   if (!body || body.locked) return;
-  void body.cancel().catch(() => {
+  void body.cancel(reason).catch(() => {
     /* ignore cancellation failures on discarded bodies */
   });
 }
@@ -2088,7 +2093,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
       const response = await rscHandler(request, ctx);
       if (request.signal.aborted) {
-        cancelResponseBody(response);
+        cancelResponseBody(response, request.signal.reason);
         return;
       }
 
@@ -2772,7 +2777,7 @@ async function createPagesRouterRequestHandler(
       if (result.type === "response") {
         const { response } = result;
         if (webRequest.signal.aborted) {
-          cancelResponseBody(response);
+          cancelResponseBody(response, webRequest.signal.reason);
           return;
         }
         const streamedApi = isVinextStreamedApiResponse(response);

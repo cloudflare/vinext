@@ -36,6 +36,28 @@ async function readProbe(baseUrl: string, probePath: string, id: string): Promis
   return (await response.json()) as Probe;
 }
 
+type RenderAbortProbe = { started: boolean } | null;
+
+async function readRenderAbortProbe(
+  baseUrl: string,
+  probePath: string,
+  id: string,
+): Promise<RenderAbortProbe> {
+  const response = await fetch(`${baseUrl}${probePath}?mode=status&id=${id}`);
+  expect(response.status).toBe(200);
+  return (await response.json()) as RenderAbortProbe;
+}
+
+async function driveRenderAbortProbe(
+  baseUrl: string,
+  probePath: string,
+  id: string,
+  mode: "release" | "finish",
+): Promise<void> {
+  const response = await fetch(`${baseUrl}${probePath}?mode=${mode}&id=${id}`);
+  expect(response.status).toBe(200);
+}
+
 /**
  * Open a request, wait until the handler is running (or, with `waitFor:
  * "chunk"`, until the first streamed bytes arrive), then drop the socket.
@@ -151,7 +173,17 @@ type ServerTarget = {
    * ERR_STREAM_PREMATURE_CLOSE code Node reports for a client disconnect.
    */
   truncatedBodyPath?: string;
-  start: () => Promise<{ baseUrl: string; close: () => Promise<void>; logger?: Logger }>;
+  /**
+   * App Router page whose shell waits for the client to disconnect while a
+   * Suspense boundary below it stays pending, plus the route that drives it.
+   */
+  renderAbort?: { page: string; probe: string };
+  start: () => Promise<{
+    baseUrl: string;
+    close: () => Promise<void>;
+    logger?: Logger;
+    server?: http.Server;
+  }>;
 };
 
 /**
@@ -184,6 +216,7 @@ async function startBuiltProdServer(entryPath: string) {
   if (!address || typeof address === "string") throw new Error("Expected TCP listener");
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    server,
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -225,6 +258,7 @@ const targets: ServerTarget[] = [
     reason: "ResponseAborted",
     probes: [APP_ROUTE_PROBE],
     externalRewrites: APP_EXTERNAL_REWRITES,
+    renderAbort: { page: "/render-abort", probe: "/api/render-abort-probe" },
     start: async () => startBuiltProdServer(await buildIsolatedAppFixture()),
   },
   {
@@ -255,17 +289,24 @@ const targets: ServerTarget[] = [
 
 describe.each(targets)(
   "$name request.signal",
-  ({ reason, probes, externalRewrites, truncatedBodyPath, start }) => {
+  ({ reason, probes, externalRewrites, truncatedBodyPath, renderAbort, start }) => {
     let baseUrl: string;
     let close: (() => Promise<void>) | undefined;
     let logger: Logger | undefined;
+    let server: http.Server | undefined;
 
     beforeAll(async () => {
-      ({ baseUrl, close, logger } = await start());
+      ({ baseUrl, close, logger, server } = await start());
       // Compile each probe route up front: dev servers can hold requests to a
       // cold route, which would delay the readiness polls below.
       for (const probe of probes) {
         expect(await readProbe(baseUrl, probe.path, "warmup")).toBeNull();
+      }
+      // The first page render also loads the SSR bundle, which takes seconds.
+      if (renderAbort) {
+        const warmup = await fetch(`${baseUrl}${renderAbort.page}`);
+        expect(warmup.status).toBe(200);
+        await warmup.text();
       }
     }, 120_000);
 
@@ -312,6 +353,49 @@ describe.each(targets)(
             .toContain("Premature close");
         } finally {
           logError.mockRestore();
+        }
+      },
+      30_000,
+    );
+
+    it.runIf(renderAbort !== undefined)(
+      "discards a page rendered after the client disconnected without reporting a render error",
+      async () => {
+        if (!renderAbort || !server) throw new Error("Expected a Node production server");
+        const id = randomUUID();
+        const reset = await fetch(`${baseUrl}/api/instrumentation-test`, { method: "DELETE" });
+        expect(reset.status).toBe(200);
+
+        // The handler hands back the response only once the shell is released,
+        // after the client has gone, while the boundary below the shell still
+        // leaves React work to abort when the server discards the body.
+        let responseClosed = false;
+        const onRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
+          if (req.url !== `${renderAbort.page}?id=${id}`) return;
+          res.once("close", () => {
+            responseClosed = true;
+          });
+        };
+        server.on("request", onRequest);
+        try {
+          const client = http.request(`${baseUrl}${renderAbort.page}?id=${id}`);
+          client.on("error", () => {});
+          client.end();
+          await expect
+            .poll(() => readRenderAbortProbe(baseUrl, renderAbort.probe, id), { timeout: 20_000 })
+            .toMatchObject({ started: true });
+          client.destroy();
+          await expect.poll(() => responseClosed, { timeout: 3_000 }).toBe(true);
+          await driveRenderAbortProbe(baseUrl, renderAbort.probe, id, "release");
+          // A wrongly reported abort reaches onRequestError within milliseconds.
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          const state = (await fetch(`${baseUrl}/api/instrumentation-test`).then((response) =>
+            response.json(),
+          )) as { errors: { message: string; path: string }[] };
+          expect(state.errors.filter((error) => error.path === renderAbort.page)).toEqual([]);
+        } finally {
+          server.off("request", onRequest);
+          await driveRenderAbortProbe(baseUrl, renderAbort.probe, id, "finish");
         }
       },
       30_000,
