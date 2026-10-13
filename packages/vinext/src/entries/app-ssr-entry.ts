@@ -22,6 +22,7 @@ ${
     ? `
 export {
   __ensureInstrumentation,
+  getRuntimePageDataKind,
   handleApiRoute,
   matchApiRoute,
   matchPageRoute,

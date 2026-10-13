@@ -8,6 +8,15 @@ import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
  */
 export const VINEXT_CACHE_IDENTITY_ORIGIN = "https://cache-identity.vinext.invalid";
 
+/** Name `origin` in place of a dispatch URL's origin in a shared cache identity. */
+export function withCacheIdentityOrigin(
+  requestUrl: string,
+  origin: string = VINEXT_CACHE_IDENTITY_ORIGIN,
+): string {
+  const url = new URL(requestUrl);
+  return `${origin}${url.pathname}${url.search}`;
+}
+
 /** Whether a response-stage cache must reject a field it did not key itself by. */
 export function hasUnsupportedResponseStageVary(
   headers: Headers,
@@ -51,12 +60,14 @@ export type VinextResponseStageDispatchOptions = {
    */
   renderWholeDocument?: boolean;
   /**
-   * Shared cache identity of an App Router GET/HEAD dispatch, supplied only to
+   * Shared cache identity of an App Router GET/HEAD dispatch, or of a Pages
+   * page the build found static (getStaticProps or none), supplied only to
    * adapters that declare `responseStageCacheIdentity: "query-free"` and
    * require completed-response admission. A transport given one partitions
    * its baseline lookup and stored entry by this request's method and complete
    * URL plus these complete serialized props, instead of the dispatched request
-   * and props, and replays this identity for background regeneration.
+   * and props, and replays this identity for background regeneration, or the
+   * dispatched request and props when `regenerateFromDispatch` is set.
    * Everything else in the contract above still applies.
    *
    * The identity names `VINEXT_CACHE_IDENTITY_ORIGIN` in place of the
@@ -65,6 +76,14 @@ export type VinextResponseStageDispatchOptions = {
    * does. That is safe only because completed-response admission refuses a
    * response whose render used a dynamic API, which every App Router read of
    * the request's host is. Core omits the identity for bypassed dispatches.
+   *
+   * A Pages page identity instead names the configured i18n domain the
+   * request's host selects, as vinext's Pages ISR key keeps the domain, and
+   * the cache identity origin for every other host. A page without
+   * getStaticProps whose page or `_app` getInitialProps turns out to run is
+   * refused admission, because its props say the entry is shared across
+   * hosts. A getStaticProps page's `_app` getInitialProps shares its entry,
+   * as in Next.js, which keys it by path.
    *
    * An App page identity also drops the user query from the URL and
    * `resolvedUrl`, keeping framework representation selectors: the `.rsc`
@@ -79,6 +98,13 @@ export type VinextResponseStageDispatchOptions = {
   cacheIdentity?: {
     props: unknown;
     request: Request;
+    /**
+     * Regenerate from the dispatched request and props. A getStaticProps
+     * page's custom `_app` getInitialProps receives the request, host
+     * included, so a Pages page regenerates from a real request, as in
+     * Next.js, never from the identity's synthetic origin.
+     */
+    regenerateFromDispatch?: true;
   };
 };
 

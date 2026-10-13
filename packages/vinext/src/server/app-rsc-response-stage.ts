@@ -335,6 +335,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
               pathname: props.resolvedUrl,
               pagesDataRequest: props.isDataRequest ? request : null,
               request: pageRequest,
+              sharedAcrossHosts: props.sharedAcrossHosts,
               url: new URL(props.requestUrl),
             }),
           );

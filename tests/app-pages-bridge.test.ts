@@ -132,6 +132,43 @@ describe("renderPagesFallback", () => {
     await expect(response?.text()).resolves.toBe("page");
   });
 
+  // A page the build found static can still run a getInitialProps that reads
+  // the request, so an entry every host shares cannot store its render.
+  it.each([
+    [true, "initial", "getInitialProps render shares a cache entry across hosts"],
+    [true, "static", undefined],
+    [false, "initial", undefined],
+  ] as const)(
+    "vetoes admission when shared across hosts is %s and the page is %s",
+    async (sharedAcrossHosts, runtimeDataKind, reason) => {
+      const context = { waitUntil() {}, [CACHEABILITY_REQUEST_STATE]: { mode: "admit" as const } };
+      const request = new Request("https://example.com/page");
+      const getRuntimePageDataKind = vi.fn(() => runtimeDataKind);
+      await runWithExecutionContext(context, () =>
+        renderPagesFallback(
+          {
+            isRscRequest: false,
+            request,
+            sharedAcrossHosts,
+            url: new URL(request.url),
+            middlewareContext: { headers: null, requestHeaders: null, status: null },
+          },
+          {
+            ...defaultDeps,
+            loadPagesEntry: () => ({
+              getRuntimePageDataKind,
+              matchPageRoute: () => ({ route: { isDynamic: false, pattern: "/page" } }),
+              renderPage: async () => new Response("page"),
+            }),
+          },
+        ),
+      );
+      const state = context[CACHEABILITY_REQUEST_STATE] as { finalResponseVetoReason?: string };
+      expect(state.finalResponseVetoReason).toBe(reason);
+      expect(getRuntimePageDataKind).toHaveBeenCalledTimes(sharedAcrossHosts ? 1 : 0);
+    },
+  );
+
   it("passes cacheability context and ownership into the separate Pages API renderer", async () => {
     const context = { waitUntil() {}, [CACHEABILITY_REQUEST_STATE]: { mode: "admit" as const } };
     const request = new Request("https://example.com/api/page");

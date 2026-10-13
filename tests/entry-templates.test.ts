@@ -1318,7 +1318,7 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("virtual:vinext-cacheability-manifest");
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
     expect(code).toContain(
-      'dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument)',
+      'dispatchPagesResponseStage(stageRequest, "page", route?.dataKind, __pagesRequestEntry.hasRequestAwareDocument, route?.runsInitialProps === true)',
     );
     expect(code).toContain("buildId: process.env.__VINEXT_BUILD_ID ?? null");
     expect(code).toContain("return __dispatchAppRequestStage(request, ctx, dispatchResponseStage");
@@ -2340,6 +2340,60 @@ describe("Pages Router entry template", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  // Next.js serves a page without data functions as one static file only when
+  // neither it nor a custom _app defines getInitialProps:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/utils.ts
+  it.each([
+    ["server", generateServerEntry],
+    ["request-stage", generatePagesRequestEntry],
+  ] as const)(
+    "marks Pages routes whose getInitialProps runs in the %s entry",
+    async (_, generate) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-initial-props-"));
+      const pagesDir = path.join(tmpDir, "pages");
+      const routeFlag = (code: string, pattern: string) =>
+        code.match(new RegExp(`pattern: "${pattern}",[^\\n]*runsInitialProps: (true|false)`))?.[1];
+      const entry = async () =>
+        generate(pagesDir, await resolveNextConfig({}), createValidFileMatcher(), null, null);
+
+      try {
+        fs.mkdirSync(pagesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(pagesDir, "gsp.tsx"),
+          "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+        );
+        fs.writeFileSync(
+          path.join(pagesDir, "plain.tsx"),
+          "export default function Page() { return null; }",
+        );
+        fs.writeFileSync(
+          path.join(pagesDir, "assigned.tsx"),
+          "function Page() { return null; } Page.getInitialProps = () => ({}); export default Page;",
+        );
+        fs.writeFileSync(
+          path.join(pagesDir, "class.tsx"),
+          "export default class Page { static async getInitialProps() { return {}; } render() { return null; } }",
+        );
+
+        const withoutApp = await entry();
+        expect(routeFlag(withoutApp, "/gsp")).toBe("false");
+        expect(routeFlag(withoutApp, "/plain")).toBe("false");
+        expect(routeFlag(withoutApp, "/assigned")).toBe("true");
+        expect(routeFlag(withoutApp, "/class")).toBe("true");
+
+        fs.writeFileSync(
+          path.join(pagesDir, "_app.tsx"),
+          "function App({ Component, pageProps }) { return <Component {...pageProps} />; } App.getInitialProps = async () => ({ pageProps: {} }); export default App;",
+        );
+        const withApp = await entry();
+        expect(routeFlag(withApp, "/gsp")).toBe("false");
+        expect(routeFlag(withApp, "/plain")).toBe("true");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("keeps user page and API modules out of the Pages request-stage entry", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-request-stage-"));

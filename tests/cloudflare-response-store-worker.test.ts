@@ -229,7 +229,11 @@ describe("Cloudflare Response Store Worker", () => {
     expect(options?.revalidator?.args).toHaveLength(1);
     expect(JSON.parse(String(options?.revalidator?.args[0]))).toEqual({
       props: { kind: "app-page" },
-      request: { headers: [], method: "GET", url: "https://example.com/miss" },
+      request: {
+        headers: [["host", "example.com"]],
+        method: "GET",
+        url: "https://example.com/miss",
+      },
     });
   });
 
@@ -594,6 +598,96 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       props: { resolvedUrl: "/page?q=a" },
       request: { url: "https://example.com/page?q=a" },
     });
+  });
+
+  // A Pages page's custom _app can read the request host, so it regenerates
+  // from the request that filled it, while the key names the identity.
+  it("regenerates from the dispatch when the identity asks to", async () => {
+    stages.request.mockImplementation((request: Request, _env, _context, dispatchResponseStage) => {
+      const props = pageProps("/page");
+      return dispatchResponseStage(request, props, {
+        cache: "shared",
+        cacheIdentity: {
+          props: { ...props, requestOrigin: "https://cache-identity.vinext.invalid" },
+          regenerateFromDispatch: true,
+          request: new Request("https://cache-identity.vinext.invalid/page"),
+        },
+      });
+    });
+    stages.response.mockImplementation(
+      async () => new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const first = await handler.fetch(
+      new Request("https://tenant-a.example/page"),
+      {} as never,
+      context(),
+    );
+    await first.text();
+    const second = await handler.fetch(
+      new Request("https://tenant-b.example/page"),
+      {} as never,
+      context(),
+    );
+
+    expect(second.headers.get("X-Vinext-Cache")).toBe("HIT");
+    const [key] = store.fetch.mock.calls.map(([request]) => request.url);
+    expect(new URL(key!).origin).toBe("https://cache-identity.vinext.invalid");
+    expect(revalidatorInvocation(entries.get(key!))).toMatchObject({
+      request: { url: "https://tenant-a.example/page" },
+    });
+
+    // A custom _app reads req.headers.host, which a regeneration keeps.
+    stages.response.mockClear();
+    await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entries.get(key!)!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request(key!),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    const [replayedRequest] = stages.response.mock.calls[0]!;
+    expect((replayedRequest as Request).url).toBe("https://tenant-a.example/page");
+    expect((replayedRequest as Request).headers.get("host")).toBe("tenant-a.example");
+  });
+
+  // A Pages page rendered per request, such as one whose getInitialProps
+  // runs, is keyed by its own host, and its regeneration reads the same host.
+  it("regenerates an entry keyed by its host with that host", async () => {
+    stages.request.mockImplementation((request: Request, _env, _context, dispatchResponseStage) =>
+      dispatchResponseStage(request, pageProps("/page"), { cache: "shared" }),
+    );
+    stages.response.mockImplementation(
+      async () => new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const response = await handler.fetch(
+      new Request("https://tenant-a.example/page"),
+      {} as never,
+      context(),
+    );
+    await response.text();
+
+    const [key] = store.fetch.mock.calls.map(([request]) => request.url);
+    stages.response.mockClear();
+    await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entries.get(key!)!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request(key!),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    const [replayedRequest] = stages.response.mock.calls[0]!;
+    expect((replayedRequest as Request).url).toBe("https://tenant-a.example/page");
+    expect((replayedRequest as Request).headers.get("host")).toBe("tenant-a.example");
   });
 
   it("keys the full request when no identity is given", async () => {
