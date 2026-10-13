@@ -230,6 +230,142 @@ describe("app page request helpers", () => {
     ).resolves.toMatchObject({ status: 404 });
   });
 
+  it("skips child generators for parent params that disagree with the request", async () => {
+    const categoryGenerateStaticParams = vi.fn(() =>
+      Array.from({ length: 50 }, (_, index) => ({ category: `c${index}` })),
+    );
+    // Echoing the parent's own value is not a rewrite.
+    const slugGenerateStaticParams = vi.fn(
+      ({ params }: { params: Record<string, string | string[]> }) => [
+        { category: params.category, slug: `${String(params.category)}-post` },
+      ],
+    );
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: categoryGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      routeSegments: ["[category]", "[slug]"],
+    });
+    const validate = (category: string, slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { category, slug },
+      });
+
+    await expect(validate("c3", "c3-post")).resolves.toBeNull();
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(1);
+    expect(slugGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "c3" } });
+
+    slugGenerateStaticParams.mockClear();
+    await expect(validate("c3", "attacker")).resolves.toMatchObject({ status: 404 });
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(1);
+
+    slugGenerateStaticParams.mockClear();
+    await expect(validate("nope", "x")).resolves.toMatchObject({ status: 404 });
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(1);
+  });
+
+  it("expands every parent when a child generator rewrites parent params", async () => {
+    // Next merges each child result over its parent combination, so a child
+    // can list a parent value its parent never generated.
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+    const categoryGenerateStaticParams = vi.fn(() => [
+      { category: "docs" },
+      { category: "guides" },
+    ]);
+    const slugGenerateStaticParams = vi.fn(() => [
+      { category: "docs", slug: "intro" },
+      { category: "blog", slug: "hello" },
+    ]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: categoryGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      routeSegments: ["[category]", "[slug]"],
+    });
+    const validate = (category: string, slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { category, slug },
+      });
+
+    await expect(validate("blog", "hello")).resolves.toBeNull();
+    await expect(validate("docs", "intro")).resolves.toBeNull();
+    await expect(validate("guides", "intro")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("expands every combination when a deeper generator rewrites an ancestor param", async () => {
+    const langGenerateStaticParams = vi.fn(() => [{ lang: "en" }, { lang: "fr" }]);
+    const sectionGenerateStaticParams = vi.fn(
+      ({ params }: { params: Record<string, string | string[]> }) => [
+        { section: params.lang === "en" ? "a" : "b" },
+      ],
+    );
+    const slugGenerateStaticParams = vi.fn(() => [{ lang: "de", slug: "x" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [
+        null,
+        { generateStaticParams: langGenerateStaticParams },
+        { generateStaticParams: sectionGenerateStaticParams },
+      ],
+      layoutTreePositions: [0, 1, 2],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      routeSegments: ["[lang]", "[section]", "[slug]"],
+    });
+    const validate = (lang: string, section: string, slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { lang, section, slug },
+      });
+
+    await expect(validate("de", "b", "x")).resolves.toBeNull();
+    await expect(validate("de", "a", "x")).resolves.toBeNull();
+    await expect(validate("fr", "b", "x")).resolves.toMatchObject({ status: 404 });
+    await expect(validate("de", "c", "x")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("gives parallel slot generators every primary combination", async () => {
+    const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }, { locale: "fr" }]);
+    const slugGenerateStaticParams = vi.fn(
+      ({ params }: { params: Record<string, string | string[]> }) => [
+        { slug: `${String(params.locale)}-main` },
+      ],
+    );
+    const parallelGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: parallelGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "ownership", "stories", "[slug]"],
+    });
+
+    await expect(
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug: "en-main" },
+      }),
+    ).resolves.toBeNull();
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(2);
+  });
+
   it("validates chained and parallel branch params independently", async () => {
     const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
     const slugGenerateStaticParams = vi.fn(() => [{ slug: "static-123" }]);
