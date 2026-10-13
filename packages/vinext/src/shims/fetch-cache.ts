@@ -430,13 +430,18 @@ function snapshotFetchRequest(
 }
 
 // `cf` options are plain data, some of them nested (`image`, `cacheTags`).
-// One that can't be cloned, like a function, is copied by reference.
+// Each is cloned on its own, so one that can't be, like a function, is kept by
+// reference without leaving the others shared with the caller.
 function snapshotCf(cf: object): object {
-  try {
-    return structuredClone(cf);
-  } catch {
-    return { ...cf };
-  }
+  return Object.fromEntries(
+    Object.entries(cf).map(([name, value]) => {
+      try {
+        return [name, structuredClone(value)];
+      } catch {
+        return [name, value];
+      }
+    }),
+  );
 }
 
 function snapshotBody(body: BodyInit): BodyInit {

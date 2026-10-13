@@ -3671,6 +3671,13 @@ describe("fetch cache shim", () => {
         },
       ],
       [
+        "a cf option's nested value beside one that can't be cloned",
+        () => {
+          const cf = { cacheTags: ["alice"], uncloneable: () => {} };
+          return { input: url, init: { cf }, change: () => (cf.cacheTags[0] = "bobby") };
+        },
+      ],
+      [
         "a Uint8Array body",
         () => {
           const body = encode("alice");
