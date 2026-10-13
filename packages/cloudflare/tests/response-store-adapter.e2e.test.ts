@@ -540,6 +540,30 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  // Next.js gives a getInitialProps the request's host, so a regeneration of
+  // an entry stored per host renders with the host that filled it.
+  test("regenerates a per-host getInitialProps page with its own host", async () => {
+    const url = `https://tenant-a.test/host-echo-stale?run=${crypto.randomUUID()}`;
+    const before = (await responseEntries("/host-echo-stale")).length;
+    const fill = await miniflare.dispatchFetch(url);
+    const filled = await fill.text();
+    assert.equal(fill.headers.get("x-vinext-cache"), "MISS");
+    // Miniflare sends its own address as the Host header, where a deployed
+    // Worker's request names its URL's host.
+    assert.ok(htmlValue(filled, "host"));
+    await waitForStoredEntries(() => responseEntries("/host-echo-stale"), before + 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    let regenerated = filled;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      regenerated = await (await miniflare.dispatchFetch(url)).text();
+      if (htmlValue(regenerated, "render-id") !== htmlValue(filled, "render-id")) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert.notEqual(htmlValue(regenerated, "render-id"), htmlValue(filled, "render-id"));
+    assert.equal(htmlValue(regenerated, "host"), "tenant-a.test");
+  }, 15_000);
+
   // An imported wrapper's getInitialProps is only seen once the page renders,
   // after its key was shared across hosts, so the render isn't stored.
   test("never stores a page whose getInitialProps only the render sees", async () => {

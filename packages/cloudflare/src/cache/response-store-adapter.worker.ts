@@ -156,10 +156,14 @@ function serializeInvocation(request: Request, props: unknown): string {
 // A Request built from the stored URL carries no Host header, and a Pages
 // render reads the host from its request headers, so a dispatch replay keeps
 // the host it was filled on.
-function serializeDispatchInvocation(request: Request, props: unknown): string {
-  const invocation = prepareInvocation(request, props);
-  invocation.request.headers.push(["host", new URL(request.url).host]);
-  return JSON.stringify(invocation);
+function serializeDispatchInvocation(invocation: StoredInvocation): string {
+  return JSON.stringify({
+    ...invocation,
+    request: {
+      ...invocation.request,
+      headers: [...invocation.request.headers, ["host", new URL(invocation.request.url).host]],
+    },
+  });
 }
 
 function parseInvocation(value: unknown): StoredInvocation {
@@ -767,11 +771,14 @@ const handler = {
         ...otherPagePartCapture(otherPart),
       };
       const serializedInvocation = JSON.stringify(invocation);
-      // A Pages page's custom _app can read the request host, so it
-      // regenerates from the request that filled it, not the identity.
-      const revalidatorInvocation = options.cacheIdentity?.regenerateFromDispatch
-        ? serializeDispatchInvocation(stageRequest, props)
-        : serializedInvocation;
+      // A Pages render can read the request host, so a Pages page regenerates
+      // from the request that filled it, not the identity. An entry keyed by
+      // its own host regenerates from that host too.
+      const revalidatorInvocation = !options.cacheIdentity
+        ? serializeDispatchInvocation(invocation)
+        : options.cacheIdentity.regenerateFromDispatch
+          ? serializeDispatchInvocation(prepareInvocation(stageRequest, props))
+          : serializedInvocation;
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
       // No client waits on a warm-up either, so it renders the document whole.
