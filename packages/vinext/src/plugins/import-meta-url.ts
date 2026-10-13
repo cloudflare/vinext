@@ -20,6 +20,7 @@
 // paths do not exist in Workers and must not leak from the build host, while an
 // emitted URL remains meaningful after relocating Node and Nitro output.
 import { parseAst, type ESTree, type Plugin, type ResolvedConfig } from "vite";
+import type { PluginApi } from "@vitejs/plugin-rsc";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { randomUUID } from "node:crypto";
@@ -63,7 +64,23 @@ type ImportMetaUrlCacheEntry = {
 
 type DependencyModuleCacheEntry = {
   canonicalRoot: string | undefined;
-  value: { canonicalId: string; isCommonJs: boolean } | null;
+  value: DependencyModule | null;
+};
+
+type DependencyModule = { canonicalId: string; isCommonJs: boolean };
+
+// Unbundled dev modules keep their source identity; bundled builds and the
+// dependency optimizer insert this capability's emitted-identity markers.
+type DependencyIdentity = "source" | "emitted";
+
+type DependencyRewriteCacheEntry = {
+  source: string;
+  isCommonJs: boolean;
+  results: Map<DependencyIdentity, { value: MagicStringTransformResult | null }>;
+};
+
+type RscPluginWithApi = Plugin & {
+  api?: PluginApi;
 };
 
 export type ImportMetaUrlCapability = {
@@ -96,6 +113,10 @@ const SOURCE_IDENTITY_FILTER_RE = new RegExp(
   `${IMPORT_META_URL_CANDIDATE_PATTERN}|__filename|__dirname`,
   "u",
 );
+const DYNAMIC_IMPORT_CANDIDATE_RE = new RegExp(
+  String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\(`,
+  "u",
+);
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
   createEmittedModuleFileNameResolver?: (
@@ -105,6 +126,7 @@ export function createImportMetaUrlPlugin(options: {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
   let resolveEmittedModuleFileName: EmittedModuleFileNameResolver = (_, fileName) => fileName;
+  let rscManager: PluginApi["manager"] | undefined;
   // Keep path dependencies as separate equality fields so cache hits avoid
   // allocating and hashing a composite string containing both full paths.
   // Replacing the entry also bounds each raw id to one source/path combination.
@@ -114,6 +136,11 @@ export function createImportMetaUrlPlugin(options: {
   // retained across restarts. Cap the rare token-bearing dependency set to
   // avoid retaining arbitrary ids from long-running dev servers.
   const dependencyModuleCache = new Map<string, DependencyModuleCacheEntry>();
+  // A dependency rewrite depends only on its source, canonical path, module
+  // format, and identity kind; the emitted markers are fixed per capability.
+  // Keying by canonical path lets the RSC/SSR builds and the dependency
+  // optimizer share one parse. A source or format change replaces the entry.
+  const dependencyRewriteCache = new Map<string, DependencyRewriteCacheEntry>();
   // Raw CommonJS cannot contain import.meta before Rolldown lowers it. Keep
   // private per-capability string literals behind own getters, then replace
   // only those return values after lowering. Unlike a bare literal, a marker
@@ -145,6 +172,37 @@ export function createImportMetaUrlPlugin(options: {
     );
     return result;
   }
+  function rewriteDependencyModuleIdentity(
+    code: string,
+    dependency: DependencyModule,
+    identity: DependencyIdentity,
+  ): MagicStringTransformResult | null {
+    const { canonicalId, isCommonJs } = dependency;
+    let entry = dependencyRewriteCache.get(canonicalId);
+    if (!entry || entry.source !== code || entry.isCommonJs !== isCommonJs) {
+      entry = { source: code, isCommonJs, results: new Map() };
+      setBoundedCacheEntry(dependencyRewriteCache, canonicalId, entry, MAX_TRANSFORM_CACHE_ENTRIES);
+    }
+    const cached = entry.results.get(identity);
+    if (cached) return cached.value;
+
+    const value = rewriteModuleIdentity(code, {
+      id: canonicalId,
+      importMetaUrlReplacement: mayContainImportMetaUrl(code)
+        ? identity === "source"
+          ? JSON.stringify(pathToFileURL(canonicalId).href)
+          : emittedModuleIdentity.importMetaUrlInitializer
+        : undefined,
+      cjsGlobalInitializers:
+        isCommonJs && mayContainServerCjsGlobal(code)
+          ? identity === "source"
+            ? sourcePathCjsGlobalInitializers(canonicalId)
+            : emittedModuleIdentity.cjsGlobalInitializers
+          : undefined,
+    });
+    entry.results.set(identity, { value });
+    return value;
+  }
   function commonJsDependencyCanonicalId(id: string): string | null {
     const dependency = dependencyModule(id);
     return dependency?.isCommonJs ? dependency.canonicalId : null;
@@ -172,6 +230,11 @@ export function createImportMetaUrlPlugin(options: {
       resolveEmittedModuleFileName =
         options.createEmittedModuleFileNameResolver?.(config) ?? ((_, fileName) => fileName);
       rootPaths = createRootPaths(root, { outputDirs });
+      rscManager = (
+        config.plugins.find((plugin) => plugin.name === "rsc:minimal") as
+          | RscPluginWithApi
+          | undefined
+      )?.api?.manager;
     },
     watchChange() {
       // Package scope and symlink targets can change while a dev server stays
@@ -193,32 +256,40 @@ export function createImportMetaUrlPlugin(options: {
         // direct hook callers and older Vite versions on the same cheap path.
         if (!mayContainSourceIdentityToken(code)) return null;
 
+        // plugin-rsc's write-less analysis builds reduce every module to its
+        // import specifiers. These rewrites only replace expressions and add
+        // `var` declarations (the runtime `node:*` imports are added to emitted
+        // chunks by renderChunk). The only specifier they can add is the
+        // canonical file URL from a project module's `import(import.meta.url)`,
+        // which is a separate module when the id has a query, so keep those.
+        const isRscScanBuild =
+          rscManager?.isScanBuild === true && this.environment?.config.build.write === false;
+        if (
+          isRscScanBuild &&
+          !(mayContainImportMetaUrl(code) && DYNAMIC_IMPORT_CANDIDATE_RE.test(code))
+        ) {
+          return null;
+        }
+
         const cleanId = stripViteModuleQuery(id);
         const isServer = this.environment?.config?.consumer !== "client";
         if (isServer) {
           const dependency = dependencyModule(cleanId);
-          if (dependency) {
-            const importMetaUrlReplacement = mayContainImportMetaUrl(code)
-              ? this.environment.mode === "dev"
-                ? JSON.stringify(pathToFileURL(dependency.canonicalId).href)
-                : emittedModuleIdentity.importMetaUrlInitializer
-              : undefined;
-            const cjsGlobalInitializers =
-              dependency.isCommonJs && mayContainServerCjsGlobal(code)
-                ? this.environment.mode === "dev"
-                  ? sourcePathCjsGlobalInitializers(dependency.canonicalId)
-                  : emittedModuleIdentity.cjsGlobalInitializers
-                : undefined;
-            if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
-              return omitUnusedBuildSourcemap(
-                this.environment,
-                rewriteModuleIdentity(code, {
-                  id: dependency.canonicalId,
-                  importMetaUrlReplacement,
-                  cjsGlobalInitializers,
-                }),
-              );
-            }
+          if (
+            dependency &&
+            (mayContainImportMetaUrl(code) ||
+              (dependency.isCommonJs && mayContainServerCjsGlobal(code)))
+          ) {
+            // Bundled dependency identities are getters, never import specifiers.
+            if (isRscScanBuild) return null;
+            return omitUnusedBuildSourcemap(
+              this.environment,
+              rewriteDependencyModuleIdentity(
+                code,
+                dependency,
+                this.environment.mode === "dev" ? "source" : "emitted",
+              ),
+            );
           }
         }
         if (isNodeModulesId(cleanId)) return null;
@@ -305,16 +376,7 @@ export function createImportMetaUrlPlugin(options: {
         if (!mayContainSourceIdentityToken(code)) return null;
         const dependency = dependencyModule(id);
         if (!dependency) return null;
-        return rewriteModuleIdentity(code, {
-          id: dependency.canonicalId,
-          importMetaUrlReplacement: mayContainImportMetaUrl(code)
-            ? emittedModuleIdentity.importMetaUrlInitializer
-            : undefined,
-          cjsGlobalInitializers:
-            dependency.isCommonJs && mayContainServerCjsGlobal(code)
-              ? emittedModuleIdentity.cjsGlobalInitializers
-              : undefined,
-        });
+        return rewriteDependencyModuleIdentity(code, dependency, "emitted");
       },
     },
     renderChunk: {
