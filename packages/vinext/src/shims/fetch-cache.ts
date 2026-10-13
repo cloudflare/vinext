@@ -58,7 +58,7 @@ export type { FetchCacheMode, FetchCacheState } from "./fetch-cache-state.js";
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v6";
+const CACHE_KEY_PREFIX = "v7";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.

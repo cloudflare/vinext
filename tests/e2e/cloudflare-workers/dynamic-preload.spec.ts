@@ -150,8 +150,8 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
         await expect
           .poll(
             async () => {
-              const read = await readCase("a");
-              expect(read.body).toEqual({ caseId, variant: "a" });
+              const read = await readCase("aa");
+              expect(read.body).toEqual({ caseId, variant: "aa" });
               const servedFromCache = read.originRequestId === first?.originRequestId;
               first = read;
               return servedFromCache;
@@ -160,8 +160,10 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
           )
           .toBe(true);
 
-        const second = await readCase("b");
-        expect(second.body).toEqual({ caseId, variant: "b" });
+        // The bodies differ only at an odd byte offset, which a Uint16Array
+        // chunk's elements wouldn't keep if they were truncated to bytes.
+        const second = await readCase("ab");
+        expect(second.body).toEqual({ caseId, variant: "ab" });
         expect(second.originRequestId).not.toBe(first?.originRequestId);
       });
     }
