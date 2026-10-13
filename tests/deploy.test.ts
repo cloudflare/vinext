@@ -697,9 +697,21 @@ describe("parseWorkerDeploymentUrl", () => {
   it.each([
     ["app.example.com/*", "https://app.example.com"],
     ["https://app.example.com/*", "https://app.example.com"],
-    ["http://app.example.com/*", "http://app.example.com"],
   ])("uses a concrete catch-all Worker route for CDN warmup: %s", (route, expected) => {
     expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBe(expected);
+  });
+
+  it("never selects an http-only Worker route as the secret-bearing warmup target", () => {
+    // Cloudflare only matches `http://` route patterns for HTTP requests, so
+    // the route has no HTTPS origin to warm through. Fall back to workers.dev.
+    expect(
+      parseCdnWarmupDeploymentUrl(
+        "Deployed my-app triggers (0.41 sec)\n  http://app.example.com/* (zone name: example.com)\n  https://my-app.acct.workers.dev\n",
+      ),
+    ).toBe("https://my-app.acct.workers.dev");
+    expect(
+      parseCdnWarmupDeploymentUrl("Deployed app triggers\n  http://app.example.com/*\n"),
+    ).toBeNull();
   });
 
   it("prefers a concrete Worker route over a workers.dev fallback", () => {

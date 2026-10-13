@@ -7,7 +7,9 @@ export function parseWorkerDeploymentUrl(output: string): string | null {
 /**
  * Parse the concrete hostname that Wrangler reports after applying Worker
  * triggers. Catch-all routes are valid warmup targets even though they are not
- * canonical deployment URLs for general CLI reporting.
+ * canonical deployment URLs for general CLI reporting. Warmup requests carry the
+ * prerender secret, so an `http://`-only route (which Cloudflare does not match
+ * for HTTPS requests) is never used as a target.
  */
 export function parseCdnWarmupDeploymentUrl(output: string): string | null {
   return (
@@ -25,7 +27,7 @@ function parseCatchAllWorkerRouteOrigin(output: string): string | null {
     try {
       const url = new URL(route.includes("://") ? route : `https://${route}`);
       if (
-        (url.protocol !== "https:" && url.protocol !== "http:") ||
+        url.protocol !== "https:" ||
         url.hostname.includes("*") ||
         url.username !== "" ||
         url.password !== "" ||

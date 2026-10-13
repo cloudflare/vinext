@@ -1,45 +1,52 @@
 /**
- * Image optimization for the App Router Worker entries, after the RSC handler
- * admitted the image endpoint through middleware and rewrites.
+ * Image optimization for Worker hosts. A local source is fetched as an
+ * anonymous direct request would receive it, like Next.js' fetchInternalImage
+ * (packages/next/src/server/image-optimizer.ts), so middleware that denies or
+ * redirects a direct request also denies the optimizer.
  */
+import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isNextStaticPath } from "../utils/asset-prefix.js";
-import { hasBasePath } from "../utils/base-path.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   handleConfiguredImageOptimization,
+  invalidImageSourceResponse,
+  isImageSourceBodyStatus,
+  resolveImageSourceUrl,
   type ImageConfig,
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
 import { VINEXT_PRERENDER_SPECIAL_ERROR_HEADER } from "./headers.js";
-import { attachRequestCfMetadata } from "./request-pipeline.js";
+import type { VinextAssetFetcher } from "./multi-stage.js";
+import { normalizePath } from "./normalize-path.js";
+import { attachRequestCfMetadata, cloneRequestWithUrl } from "./request-pipeline.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
-import { mergeHeaders } from "./worker-utils.js";
+import { createStaticAssetRequest, mergeHeaders } from "./worker-utils.js";
 
-// Middleware headers never sent with the image: its own representation
-// headers, and the internal header only a page's special error carries.
-const OMIT_MIDDLEWARE_HEADERS = new Set([
+export type WorkerImageSourceOptions = {
+  assets: VinextAssetFetcher;
+  basePath: string;
+  assetPathPrefix: string;
+  clientBuildFiles: ReadonlySet<string>;
+  /** The basePath an unprefixed source resolves under; see resolveImageSourceUrl. */
+  sourceBasePath: string;
+  /**
+   * Run `sourceRequest`, a GET without the caller's headers, through the
+   * application pipeline and return the public file it selects with a 2xx
+   * outcome, or null.
+   */
+  fetchPublicFile(sourceRequest: Request): Promise<Response | null>;
+};
+
+// Representation headers belong to the image, not to middleware's response,
+// and only a page's special error carries the internal header.
+const OMITTED_MIDDLEWARE_HEADERS = new Set([
   "content-encoding",
   "content-length",
   "content-range",
   "content-type",
+  "transfer-encoding",
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
-
-// Next.js' fetchInternalImage dispatches the source as a relative URL without
-// headers on the caller's socket, so the caller's host selects no middleware
-// branch while its protocol is kept.
-const IMAGE_SOURCE_HOST = "vinext.invalid";
-
-export type WorkerImageOptimizationOptions = {
-  allowedWidths: number[];
-  assetPathPrefix: string;
-  basePath: string;
-  fetchAsset(request: Request): Promise<Response>;
-  imageConfig?: ImageConfig;
-  /** Run a request through the application as a direct request. */
-  resolveSource(request: Request): Promise<Response>;
-  /** Prefix for sources outside basePath, when the endpoint was requested outside it. */
-  sourceBasePath: string;
-};
 
 function cancelResponseBody(response: Response): void {
   const body = response.body;
@@ -49,102 +56,102 @@ function cancelResponseBody(response: Response): void {
   });
 }
 
-function middlewareHeaderRecord(headers: Headers): Record<string, string | string[]> {
-  const record: Record<string, string | string[]> = {};
-  headers.forEach((value, name) => {
-    if (name === "set-cookie" || OMIT_MIDDLEWARE_HEADERS.has(name)) return;
-    record[name] = value;
-  });
-  const cookies = headers.getSetCookie();
-  if (cookies.length > 0) record["set-cookie"] = cookies;
-  return record;
-}
-
-// Serve the source only as an anonymous direct request would receive it.
-async function fetchImageSource(
-  sourcePath: string,
+/**
+ * Fetch a local image source. Build output is fetched from the asset binding,
+ * which serves it before the Worker and its middleware. Any other source is
+ * served only when the application pipeline selects a public file for it.
+ */
+export async function fetchWorkerImageSource(
+  imageUrl: string,
   request: Request,
-  options: WorkerImageOptimizationOptions,
+  options: WorkerImageSourceOptions,
 ): Promise<Response> {
-  // Build assets under a distinct assetPrefix path are not under the basePath.
-  const sourceUrl = new URL(
-    options.sourceBasePath &&
-      !hasBasePath(sourcePath, options.sourceBasePath) &&
-      !(
-        options.assetPathPrefix &&
-        hasBasePath(sourcePath, options.assetPathPrefix) &&
-        isNextStaticPath(sourcePath.split(/[?#]/, 1)[0], "", options.assetPathPrefix)
-      )
-      ? options.sourceBasePath + sourcePath
-      : sourcePath,
+  const sourceUrl = resolveImageSourceUrl(
+    imageUrl,
+    options.sourceBasePath,
+    options.assetPathPrefix,
     request.url,
   );
-  // Workers Static Assets serves build assets before middleware for direct
-  // requests too.
-  if (isNextStaticPath(sourceUrl.pathname, options.basePath, options.assetPathPrefix)) {
-    const asset = await options.fetchAsset(new Request(sourceUrl, { signal: request.signal }));
-    if (asset.ok) return asset;
-    cancelResponseBody(asset);
-  }
-  // Any other source goes through the application as a GET without the
-  // caller's headers, like Next.js' fetchInternalImage, so middleware admits
-  // it. It keeps the caller's edge metadata, as a direct request would. Only
-  // a public file that the application selects is served.
-  const sourceResponse = await options.resolveSource(
-    attachRequestCfMetadata(
-      new Request(
-        `${sourceUrl.protocol}//${IMAGE_SOURCE_HOST}${sourceUrl.pathname}${sourceUrl.search}`,
-        {
-          signal: request.signal,
-        },
-      ),
-      request,
-    ),
-  );
-  const staticFile = sourceResponse.ok ? readStaticFileSignal(sourceResponse) : null;
-  // Middleware's request header overrides for the source reach the asset fetch.
-  const assetHeaders = sourceResponse.ok
-    ? readStaticFileSignalRequestHeaders(sourceResponse)
-    : null;
-  cancelResponseBody(sourceResponse);
-  if (staticFile === null || request.signal.aborted) {
-    return new Response("Image not found", { status: 404 });
-  }
-  let assetPath = staticFile;
+  let sourcePathname: string;
   try {
-    assetPath = decodeURIComponent(staticFile);
+    sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
   } catch {
-    // Fetch the encoded form, as the static-file signal branch does.
+    return invalidImageSourceResponse();
   }
-  return options.fetchAsset(
-    new Request(new URL(assetPath, request.url), {
-      headers: assetHeaders ?? undefined,
-      signal: request.signal,
-    }),
+
+  const buildAssetPath = isNextStaticPath(sourcePathname, options.basePath, options.assetPathPrefix)
+    ? sourcePathname
+    : resolveClientBuildFile(sourceUrl.pathname, options.basePath, options.clientBuildFiles);
+  if (buildAssetPath !== null) {
+    return options.assets.fetch(new Request(new URL(buildAssetPath, request.url)));
+  }
+
+  // Without the caller's headers, but with the connection's Cloudflare
+  // metadata, as Next.js keeps the caller's socket.
+  const sourceResponse = await options.fetchPublicFile(
+    attachRequestCfMetadata(new Request(sourceUrl, { signal: request.signal }), request),
+  );
+  if (sourceResponse && isImageSourceBodyStatus(sourceResponse.status)) return sourceResponse;
+  if (sourceResponse) cancelResponseBody(sourceResponse);
+  return invalidImageSourceResponse();
+}
+
+/**
+ * Return the public file a framework static-file signal selects, provided the
+ * pipeline answered with a body-bearing 2xx outcome. The file is fetched with middleware's
+ * request header overrides, as resolveStaticAssetSignal fetches it.
+ */
+export function fetchSignalledPublicFile(
+  response: Response,
+  sourceRequest: Request,
+  assets: VinextAssetFetcher,
+): Promise<Response> | null {
+  const signal = isImageSourceBodyStatus(response.status) ? readStaticFileSignal(response) : null;
+  const requestHeaders = readStaticFileSignalRequestHeaders(response);
+  cancelResponseBody(response);
+  if (signal === null) return null;
+  let assetPath = signal;
+  try {
+    assetPath = decodeURIComponent(signal);
+  } catch {
+    // Fetch the encoded form, as resolveStaticAssetSignal does.
+  }
+  return Promise.resolve(
+    assets.fetch(createStaticAssetRequest(assetPath, sourceRequest, requestHeaders)),
   );
 }
 
 /**
- * Serve the image for an endpoint response the RSC handler marked, with the
- * query middleware and rewrites selected and middleware's response headers,
- * as Next.js sends them with the image.
+ * Serve the App Router image endpoint once the request handler admitted it
+ * through middleware and rewrites. Middleware's response headers are sent with
+ * the image, as Next.js does.
  */
-export async function handleWorkerImageOptimization(
+export async function serveWorkerImageOptimization(
   request: Request,
   signal: ImageOptimizationSignal,
-  options: WorkerImageOptimizationOptions,
+  allowedWidths: number[] | undefined,
+  imageConfig: ImageConfig | undefined,
+  options: WorkerImageSourceOptions,
 ): Promise<Response> {
+  // The query middleware and rewrites selected, which the handler validated.
   const imageUrl = new URL(request.url);
   imageUrl.search = signal.search;
-  // Format negotiation reads the request headers after middleware's overrides.
-  const imageRequest = new Request(imageUrl, request);
-  const image = await handleConfiguredImageOptimization(
+  const imageRequest = cloneRequestWithUrl(request, imageUrl.href);
+  const response = await handleConfiguredImageOptimization(
+    // Format negotiation reads the request headers after middleware's overrides.
     signal.requestHeaders
       ? new Request(imageRequest, { headers: signal.requestHeaders })
       : imageRequest,
-    (sourcePath) => fetchImageSource(sourcePath, request, options),
-    options.allowedWidths,
-    options.imageConfig,
+    (sourceUrl) => fetchWorkerImageSource(sourceUrl, imageRequest, options),
+    allowedWidths,
+    imageConfig,
   );
-  return mergeHeaders(image, middlewareHeaderRecord(signal.middlewareHeaders));
+  const middlewareHeaders: Record<string, string | string[]> = {};
+  signal.middlewareHeaders.forEach((value, name) => {
+    if (name === "set-cookie" || OMITTED_MIDDLEWARE_HEADERS.has(name)) return;
+    middlewareHeaders[name] = value;
+  });
+  const cookies = signal.middlewareHeaders.getSetCookie();
+  if (cookies.length > 0) middlewareHeaders["set-cookie"] = cookies;
+  return mergeHeaders(response, middlewareHeaders);
 }

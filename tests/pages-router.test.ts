@@ -7437,6 +7437,29 @@ describe("Production server middleware (Pages Router)", () => {
     });
   });
 
+  // Next.js keeps no fetch state outside a work store (patch-fetch.ts returns
+  // originFetch), so a Pages API route's fetches must not pile up for the
+  // life of the process or carry their no-store into later requests.
+  it("keeps no process-wide fetch state from Pages API route fetches in production", async () => {
+    // A page render installs the fetch patch for the whole process.
+    expect((await fetch(`${prodUrl}/about`)).status).toBe(200);
+
+    const id = `fallback-${Date.now()}`;
+    const res = await fetch(`${prodUrl}/api/fetch-request-url?id=${id}`);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ id });
+
+    const fallback = (globalThis as Record<PropertyKey, unknown>)[
+      Symbol.for("vinext.fetchCache.fallback")
+    ] as { dynamicFetchUrls: Set<string>; currentFetchRevalidate: number | null };
+    // Only the route's own outgoing fetches, not this test's request to it.
+    const routeFetchUrls = [...fallback.dynamicFetchUrls].filter(
+      (url) => url.startsWith("http://127.0.0.1:9/upstream?") && url.includes(id),
+    );
+    expect(routeFetchUrls).toEqual([]);
+    expect(fallback.currentFetchRevalidate).toBeNull();
+  });
+
   // Refs #1463: prod-server parity for the dev-server 405 check. POST to a
   // static Pages Router page must return 405 + Allow: GET, HEAD.
   // Ported from Next.js: test/e2e/prerender.test.ts

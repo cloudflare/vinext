@@ -241,6 +241,42 @@ async function assertStaticAssetExclusionAuthGuard(baseUrl: string): Promise<voi
   }
 }
 
+async function assertHybridPagesEncodedAliasAuthGuard(baseUrl: string): Promise<void> {
+  // Middleware and Next.js' filesystem lookup each test the raw pathname and at
+  // most one decode of it. Routing a Pages page or API route in a hybrid
+  // App+Pages app must not decode a `%25xx` alias a second time into a route
+  // that middleware never matched.
+  const headers = { "x-hybrid-pages-auth": "1" };
+  const targets = [
+    { body: "protected pages staff panel", pathname: "/staff/panel" },
+    { body: "protected pages staff api", pathname: "/api/staff/users" },
+  ];
+  const guardedAliasPaths = ["/%73taff/panel", "/api/%73taff/users", "/api/staff/%2575sers"];
+  const aliasPaths = ["/%2573taff/panel", "/api/%2573taff/users"];
+
+  for (const target of targets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`);
+    const body = await response.text();
+    expect(response.status, target.pathname).toBe(200);
+    expect(response.headers.get("x-auth-guard"), target.pathname).toBeNull();
+    expect(body, target.pathname).toContain(target.body);
+  }
+  for (const pathname of [...targets.map((target) => target.pathname), ...guardedAliasPaths]) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+  for (const pathname of aliasPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(404);
+    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+    expect(body, pathname).not.toContain("protected pages staff");
+  }
+}
+
 async function closeHttpServer(server: http.Server | undefined): Promise<void> {
   if (!server) return;
   await new Promise<void>((resolve, reject) => {
@@ -299,6 +335,10 @@ describe("valid middleware matcher auth guards", () => {
     it("skips extensions excluded by bounded optional matcher branches", async () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     }, 30_000);
+
+    it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
+      await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    }, 30_000);
   });
 
   describe("built Node production server", () => {
@@ -354,6 +394,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("skips extensions excluded by bounded optional matcher branches", async () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
+    });
+
+    it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
+      await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     });
   });
 
@@ -435,6 +479,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("skips extensions excluded by bounded optional matcher branches", async () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
+    });
+
+    it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
+      await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     });
   });
 });

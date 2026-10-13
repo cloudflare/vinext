@@ -46,7 +46,6 @@ import {
   isImageOptimizationPath,
   readImageOptimizationSignal,
 } from "./image-optimization.js";
-import { handleWorkerImageOptimization } from "./worker-image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
@@ -214,19 +213,21 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  // With an image optimizer, serve the image endpoint after the RSC handler
-  // admitted it through middleware and rewrites.
-  const imageAssets = assets && getImageOptimizer() ? assets : null;
-  // vinext's next/image emits the image endpoint without the basePath, where
-  // Next.js prefixes it. Admit that form as the basePath endpoint and resolve
-  // its unprefixed sources under the basePath.
+  // The image endpoint runs through middleware and rewrites like any request;
+  // the handler then signals that the Worker may serve the image itself.
+  const servesImages = Boolean(assets) && getImageOptimizer() !== null;
+  // vinext's next/image emits the endpoint without the basePath, where Next.js
+  // prefixes it. Admit that form as the basePath endpoint and resolve its
+  // unprefixed sources under the basePath, as the Node server does.
   const imageEndpointBasePath =
-    imageAssets && __workerBasePath && isImageOptimizationPath(url.pathname)
+    servesImages && __workerBasePath && isImageOptimizationPath(url.pathname)
       ? __workerBasePath
       : "";
   if (imageEndpointBasePath) {
-    url.pathname = imageEndpointBasePath + url.pathname;
-    request = cloneRequestWithUrl(request, url.toString());
+    request = cloneRequestWithUrl(
+      request,
+      new URL(imageEndpointBasePath + url.pathname + url.search, url).href,
+    );
   }
 
   // Redirect repeated slashes / backslashes like Next.js (//evil.com/ →
@@ -309,21 +310,34 @@ async function handleRequest(
   const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
   if (result instanceof Response) {
-    const imageSignal = imageAssets ? readImageOptimizationSignal(result) : null;
-    if (imageAssets && imageSignal) {
-      return handleWorkerImageOptimization(request, imageSignal, {
-        allowedWidths: __rscImageAllowedWidths,
-        assetPathPrefix: __workerAssetPathPrefix,
-        basePath: __workerBasePath,
-        fetchAsset: (assetRequest) => Promise.resolve(imageAssets.fetch(assetRequest)),
-        imageConfig: __rscImageConfig,
-        resolveSource: (sourceRequest) =>
-          runWithExecutionContext(requestCtx, () => rscHandler(sourceRequest, requestCtx)),
-        sourceBasePath: imageEndpointBasePath,
-      });
-    }
     let response = result;
-    if (assets) {
+    const imageSignal = servesImages ? readImageOptimizationSignal(response) : null;
+    if (imageSignal && assets) {
+      const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
+        await import("./worker-image-optimization.js");
+      response = await serveWorkerImageOptimization(
+        request,
+        imageSignal,
+        __rscImageAllowedWidths,
+        __rscImageConfig,
+        {
+          assets,
+          basePath: __workerBasePath,
+          assetPathPrefix: __workerAssetPathPrefix,
+          clientBuildFiles: __workerClientBuildFiles,
+          sourceBasePath: imageEndpointBasePath,
+          // The source runs outside this request's cacheability context.
+          fetchPublicFile: async (sourceRequest) => {
+            const sourceResult = await runWithExecutionContext(requestCtx, () =>
+              rscHandler(sourceRequest, requestCtx),
+            );
+            return sourceResult instanceof Response
+              ? fetchSignalledPublicFile(sourceResult, sourceRequest, assets)
+              : null;
+          },
+        },
+      );
+    } else if (assets) {
       const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path, requestHeaders) =>
           Promise.resolve(assets.fetch(createStaticAssetRequest(path, request, requestHeaders))),

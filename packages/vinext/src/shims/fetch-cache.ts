@@ -1441,8 +1441,9 @@ function stripNextFromInit(
 // ---------------------------------------------------------------------------
 // Fetch patching — install once, not per-request.
 // The patched fetch uses _getState() internally, which reads from ALS
-// (concurrent) or _fallbackState (single-threaded), so per-request
-// isolation is handled at the state level, not by swapping globalThis.fetch.
+// (concurrent), _fallbackState while withFetchCache() is active, or a
+// throwaway state, so per-request isolation is handled at the state level,
+// not by swapping globalThis.fetch.
 // ---------------------------------------------------------------------------
 
 const _PATCH_KEY = Symbol.for("vinext.fetchCache.patchInstalled");

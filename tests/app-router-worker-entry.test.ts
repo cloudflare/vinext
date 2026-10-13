@@ -21,6 +21,7 @@ const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
 const CAPTURE_PRERENDER_STATE = "__vinextCaptureWorkerPrerenderState";
 const REGISTER_CDN_ADAPTER = "__vinextRegisterWorkerCdnAdapter";
 const REGISTER_ALL_CACHE_ADAPTERS = "__vinextRegisterAllWorkerCacheAdapters";
+const CAPTURE_IMAGE_SOURCE = "__vinextCaptureWorkerImageSource";
 const STATIC_FILE_SIGNAL_MODULE = path.resolve(
   import.meta.dirname,
   "../packages/vinext/src/server/static-file-signal.ts",
@@ -62,13 +63,6 @@ export default async function rscHandler(request) {
     const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
     return createStaticFileSignal("/open.png", {}, new Headers({ "x-asset-auth": "1" }));
   }
-  if (url.pathname === "/host-avatar") {
-    globalThis.${CAPTURE_RSC_REQUEST}(request);
-    // A rewrite conditioned on the request host, read like requestContextFromRequest.
-    if ((request.headers.get("host") ?? url.hostname) !== "example.com") return new Response(null, { status: 404 });
-    const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
-    return createStaticFileSignal("/open.png", {});
-  }
   if (url.pathname === "/protected/private.png") {
     // Middleware admits the source only with a cookie.
     if (request.headers.get("cookie") !== "members=1") return new Response("blocked", { status: 403 });
@@ -88,7 +82,7 @@ export const __basePath = "";
 export let hybridInitializationCalls = 0;
 export function __ensureHybridPagesApplication() { hybridInitializationCalls++; }
 export function __ensureInstrumentation() {}
-export const __imageAllowedWidths = [];
+export const __imageAllowedWidths = [64];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
 export default async function rscHandler(request, _ctx, dispatchResponseStage, _probeMode, _prerenderDiscovery, trustedPrerenderState) {
@@ -99,6 +93,37 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage, _
   if (new URL(request.url).pathname === "/middleware-terminal") {
     globalThis.${CAPTURE_RSC_REQUEST}(request);
     return Response.redirect("https://example.com/login", 307);
+  }
+  if (new URL(request.url).pathname === "/_next/image") {
+    const { markImageOptimizationSignal } = await import(${JSON.stringify(IMAGE_OPTIMIZATION_MODULE)});
+    return markImageOptimizationSignal(Response.redirect(request.url, 302), {
+      middlewareHeaders: new Headers({ "x-middleware-image": "admitted" }),
+      requestHeaders: null,
+      search: new URL(request.url).search,
+    });
+  }
+  if (new URL(request.url).pathname === "/image-rewrite") {
+    const { markImageOptimizationSignal } = await import(${JSON.stringify(IMAGE_OPTIMIZATION_MODULE)});
+    return markImageOptimizationSignal(Response.redirect(request.url, 302), {
+      middlewareHeaders: new Headers(),
+      requestHeaders: null,
+      search: "?url=%2Fvisible.png&w=64&q=75",
+    });
+  }
+  if (new URL(request.url).pathname === "/members.png") {
+    globalThis.${CAPTURE_IMAGE_SOURCE}?.(request);
+    if (request.headers.get("cookie") !== "members=1") {
+      return new Response("blocked by middleware", { status: 403 });
+    }
+    const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
+    return createStaticFileSignal("/members.png", {});
+  }
+  if (new URL(request.url).pathname === "/visible.png") {
+    const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
+    return createStaticFileSignal("/visible.png", {});
+  }
+  if (new URL(request.url).pathname === "/page.png") {
+    return dispatchResponseStage(request, { kind: "page" }, {});
   }
   if (new URL(request.url).pathname === "/public-signal") {
     const { createStaticFileSignal } = await import(${JSON.stringify(STATIC_FILE_SIGNAL_MODULE)});
@@ -530,6 +555,122 @@ describe("App Router Production server worker entry compatibility", () => {
     }
   });
 
+  it("fetches an image source through the request handler without the caller's headers", async () => {
+    // Next.js' image optimizer fetches a local source through the router as a
+    // GET without the caller's headers (fetchInternalImage in
+    // packages/next/src/server/image-optimizer.ts). The Worker e2e projects run
+    // app-router-entry, so this covers the multi-stage request stage.
+    const png = fs.readFileSync(
+      path.resolve(
+        import.meta.dirname,
+        "../examples/app-router-cloudflare/public/vinext-image.png",
+      ),
+    );
+    const fetchAsset = vi.fn(
+      async () => new Response(png, { headers: { "content-type": "image/png" } }),
+    );
+    const adapter = Object.assign(new DefaultCdnCacheAdapter(), {
+      assets: { fetch: fetchAsset },
+    });
+    Reflect.set(globalThis, REGISTER_CDN_ADAPTER, () => setCdnCacheAdapter(adapter));
+    const sourceRequests: Request[] = [];
+    Reflect.set(globalThis, CAPTURE_IMAGE_SOURCE, (request: Request) =>
+      sourceRequests.push(request),
+    );
+    setImageOptimizer({
+      transformImage: async (body) =>
+        new Response(body, { headers: { "content-type": "image/webp" } }),
+    });
+
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+        ),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: undefined,
+          dispatchResponseStage: () => Promise<Response>,
+        ): Promise<Response>;
+      };
+      const dispatchResponseStage = vi.fn(async () => new Response("page"));
+      const requestImage = (source: string) =>
+        entry.handleRequestStage(
+          new Request(
+            `https://example.com/_next/image?url=${encodeURIComponent(source)}&w=64&q=75`,
+            { headers: { accept: "image/webp", cookie: "members=1" } },
+          ),
+          {},
+          undefined,
+          dispatchResponseStage,
+        );
+
+      const denied = await requestImage("/members.png");
+      expect(denied.status).toBe(400);
+      expect(await denied.text()).toBe("The requested resource isn't a valid image.");
+      expect(sourceRequests).toHaveLength(1);
+      expect(sourceRequests[0].method).toBe("GET");
+      expect(sourceRequests[0].headers.has("cookie")).toBe(false);
+      expect(fetchAsset).not.toHaveBeenCalled();
+
+      const admitted = await requestImage("/visible.png");
+      expect(admitted.status).toBe(200);
+      expect(admitted.headers.get("content-type")).toBe("image/webp");
+      expect(admitted.headers.get("x-middleware-image")).toBe("admitted");
+      expect(fetchAsset).toHaveBeenCalledOnce();
+
+      // A source is served only as a public file; it never renders a page.
+      expect((await requestImage("/page.png")).status).toBe(400);
+      expect(dispatchResponseStage).not.toHaveBeenCalled();
+      expect(fetchAsset).toHaveBeenCalledOnce();
+
+      // A probe of a route that resolves to the image endpoint still receives
+      // its classification rather than the image.
+      const probe = await entry.handleRequestStage(
+        new Request("https://example.com/image-rewrite?__vinext_cacheability_probe=one", {
+          headers: {
+            [VINEXT_CACHEABILITY_PROBE_HEADER]: "1",
+            [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializeWorkerCacheabilityProbeRoute({
+              kind: "app-page",
+              pattern: "/image-rewrite",
+            }),
+            [VINEXT_PRERENDER_SECRET_HEADER]: "worker-prerender-secret",
+          },
+        }),
+        {},
+        undefined,
+        dispatchResponseStage,
+      );
+      await expect(probe.json()).resolves.toMatchObject({
+        kind: "app-page",
+        pattern: "/image-rewrite",
+        status: 200,
+      });
+    } finally {
+      await server?.close();
+      setImageOptimizer(null);
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      Reflect.deleteProperty(globalThis, REGISTER_CDN_ADAPTER);
+      Reflect.deleteProperty(globalThis, CAPTURE_IMAGE_SOURCE);
+    }
+  });
+
   it("restores prerender route params only for the server-owned Node context", async () => {
     // No Next.js test port applies: these headers and this Worker boundary are vinext-specific.
     const capturedRequests: Request[] = [];
@@ -819,10 +960,6 @@ export default {
     });
     const fetchedAssets: string[] = [];
     const fetchedAssetHeaders: (string | null)[] = [];
-    const capturedRequests: Request[] = [];
-    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
-      capturedRequests.push(request);
-    });
     let server: Awaited<ReturnType<typeof createServer>> | undefined;
     try {
       server = await createServer({
@@ -873,15 +1010,9 @@ export default {
       await expect(image.text()).resolves.toBe("/open.png");
 
       const denied = await get("/protected/private.png");
-      expect(denied.status).toBe(404);
+      expect(denied.status).toBe(400);
       expect(denied.headers.get("x-mw")).toBe("1");
-      await expect(denied.text()).resolves.toBe("Image not found");
-
-      // Next.js' internal image request has no Host header, so a host-conditioned
-      // rewrite does not match it. It keeps the caller's protocol.
-      expect((await get("/host-avatar")).status).toBe(404);
-      expect(capturedRequests.map((request) => request.headers.has("host"))).toEqual([false]);
-      expect(capturedRequests.map((request) => new URL(request.url).protocol)).toEqual(["https:"]);
+      await expect(denied.text()).resolves.toBe("The requested resource isn't a valid image.");
       expect(fetchedAssets).toEqual(["/open.png"]);
     } finally {
       setImageOptimizer(null);

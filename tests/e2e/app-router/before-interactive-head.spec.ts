@@ -39,4 +39,24 @@ test.describe("inline beforeInteractive head ordering", () => {
     // hydration warnings.
     void consoleErrors;
   });
+
+  test("inline beforeInteractive data containing <!--<script> keeps the document intact", async ({
+    page,
+    consoleErrors,
+  }) => {
+    await page.goto(`${BASE}/beforeinteractive-script-data`);
+
+    // Before the fix, `<!--<script>` in the hoisted script's body put the HTML
+    // tokenizer in the double-escaped script state: the script's own
+    // `</script>` no longer closed it, the markup that followed became its
+    // text, and the script threw a SyntaxError.
+    const scriptData = await page.evaluate(
+      () => (self as unknown as { __vinextScriptData?: { name: string } }).__vinextScriptData,
+    );
+    expect(scriptData).toEqual({ name: "<!--<script>" });
+    await expect(page.locator("#script-data-heading")).toHaveText("beforeInteractive script data");
+    await expect(page.locator("main")).toHaveCount(1);
+
+    void consoleErrors;
+  });
 });
