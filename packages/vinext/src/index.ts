@@ -421,6 +421,27 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
 const VINEXT_GENERATED_DIR_RE = /(?:^|[/\\])\.vinext(?:[/\\]|$)/;
 
+// Node keeps each client header in req.rawHeaders as well as req.headers, and
+// srvx (plugin-rsc's dev request adapter) answers Headers reads from rawHeaders
+// once anything iterates them. Keep both views in sync so the App Router only
+// ever sees the forwarded middleware context the hybrid Pages handler attached.
+function removeForwardedMiddlewareContext(req: import("node:http").IncomingMessage): void {
+  delete req.headers[VINEXT_MW_CTX_HEADER];
+  const rawHeaders = req.rawHeaders;
+  for (let i = rawHeaders.length - 2; i >= 0; i -= 2) {
+    if (rawHeaders[i].toLowerCase() === VINEXT_MW_CTX_HEADER) rawHeaders.splice(i, 2);
+  }
+}
+
+function setForwardedMiddlewareContext(
+  req: import("node:http").IncomingMessage,
+  context: string,
+): void {
+  removeForwardedMiddlewareContext(req);
+  req.headers[VINEXT_MW_CTX_HEADER] = context;
+  req.rawHeaders.push(VINEXT_MW_CTX_HEADER, context);
+}
+
 function scopeRscPlugin(plugin: Plugin): Plugin {
   const applyToEnvironment = plugin.applyToEnvironment;
   return {
@@ -5648,9 +5669,9 @@ export const loadServerActionClient = ${
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
           // Only the hybrid Pages handler below may attach the forwarded
-          // middleware context. The App Router trusts req.headers for it, so a
-          // client copy would otherwise replace middleware execution.
-          delete req.headers[VINEXT_MW_CTX_HEADER];
+          // middleware context. The App Router trusts the request header for
+          // it, so a client copy would otherwise replace middleware execution.
+          removeForwardedMiddlewareContext(req);
           next();
         });
 
@@ -6837,11 +6858,14 @@ export const loadServerActionClient = ${
                           }
                         }
                         const mwStatus = result.status ?? result.rewriteStatus;
-                        req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
-                          h: mwCtxEntries,
-                          s: mwStatus ?? null,
-                          r: result.rewriteUrl ?? null,
-                        });
+                        setForwardedMiddlewareContext(
+                          req,
+                          JSON.stringify({
+                            h: mwCtxEntries,
+                            s: mwStatus ?? null,
+                            r: result.rewriteUrl ?? null,
+                          }),
+                        );
                       }
 
                       return result as unknown as MiddlewareResult;
@@ -7050,12 +7074,15 @@ export const loadServerActionClient = ${
                 // match, while mutating req.url would lose the public URL that
                 // App route handlers expose through request.url.
                 flushRequestHeaders();
-                req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
-                  h: responseHeaders,
-                  q: [...requestHeaders],
-                  s: pipelineResult.middlewareStatus ?? null,
-                  r: apiUrl,
-                });
+                setForwardedMiddlewareContext(
+                  req,
+                  JSON.stringify({
+                    h: responseHeaders,
+                    q: [...requestHeaders],
+                    s: pipelineResult.middlewareStatus ?? null,
+                    r: apiUrl,
+                  }),
+                );
               };
 
               if (pipelineResult.type === "api") {

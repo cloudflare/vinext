@@ -2930,14 +2930,11 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // for pure App Router requests; in hybrid app+pages mode the connect
     // handler already filtered headers upstream and x-vinext-mw-ctx carries
     // the forwarded middleware context.
-    // srvx's NodeRequestHeaders reads from rawHeaders for iteration but falls
-    // back to req.headers for .get() / .has(). In the dev server we add
-    // x-vinext-mw-ctx to req.headers after the Request is built, so it is
-    // visible to .get() but lost when filterInternalHeaders iterates. Read it
-    // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
-    // Only that .get() value is trusted: the dev server deletes any client copy
-    // from req.headers on ingress, the Worker and production entries filter it,
-    // and filterInternalHeaders drops the copy still present in rawHeaders.
+    // filterInternalHeaders drops x-vinext-mw-ctx, so read it first and
+    // re-attach it below for applyForwardedMiddlewareContext. Only vinext can
+    // supply it: the dev server strips any client copy from both req.headers
+    // and req.rawHeaders on ingress, and the Worker and production entries
+    // filter it.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
     const pagesDataUrl = new URL(rawRequest.url);
     const pagesDataInScope =
