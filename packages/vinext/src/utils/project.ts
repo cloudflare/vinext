@@ -9,7 +9,6 @@
 import fs from "node:fs";
 import path from "pathslash";
 import { createRequire } from "node:module";
-import { PLUGIN_RSC_VERSION_RANGE } from "./plugin-rsc-version.js";
 
 // ─── CJS Config Handling ─────────────────────────────────────────────────────
 
@@ -573,7 +572,7 @@ export function getMissingDeps(
     missing.push({ name: "@vitejs/plugin-react", version: "latest" });
   }
   if (info.isAppRouter && !info.hasRscPlugin) {
-    missing.push({ name: "@vitejs/plugin-rsc", version: PLUGIN_RSC_VERSION_RANGE });
+    missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
   }
   if (info.isAppRouter && !_isResolvable(info.root, "react-server-dom-webpack")) {
     missing.push({ name: "react-server-dom-webpack", version: "latest" });

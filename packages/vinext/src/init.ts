@@ -38,7 +38,6 @@ import {
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
-import { PLUGIN_RSC_VERSION_RANGE } from "./utils/plugin-rsc-version.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -309,7 +308,7 @@ export function getInitDependencyGroups(
   const devDependencies = ["vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
     dependencies.push("react-server-dom-webpack");
-    devDependencies.push(`@vitejs/plugin-rsc@${PLUGIN_RSC_VERSION_RANGE}`);
+    devDependencies.push("@vitejs/plugin-rsc");
   }
   if (platform === "cloudflare") {
     dependencies.push("@vinext/cloudflare");

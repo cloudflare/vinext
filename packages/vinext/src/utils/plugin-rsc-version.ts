@@ -6,9 +6,6 @@ import { findPackageVersion, isVersionBelow } from "./react-version.js";
 // than left to the optional peer range.
 const MINIMUM_PLUGIN_RSC_VERSION: [number, number, number] = [0, 5, 37];
 
-/** Range to install, so package managers never pick a version vinext rejects. */
-export const PLUGIN_RSC_VERSION_RANGE = `^${MINIMUM_PLUGIN_RSC_VERSION.join(".")}`;
-
 /** Return the installed @vitejs/plugin-rsc version, or throw if it is unsupported. */
 export function assertPluginRscVersion(resolvedRscPath: string): string {
   const version = findPackageVersion(resolvedRscPath, "@vitejs/plugin-rsc");

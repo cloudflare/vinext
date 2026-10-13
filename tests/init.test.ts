@@ -547,7 +547,7 @@ describe("getInitDeps", () => {
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite@8.3.0");
     expect(deps).toContain("@vitejs/plugin-react");
-    expect(deps).toContain("@vitejs/plugin-rsc@^0.5.37");
+    expect(deps).toContain("@vitejs/plugin-rsc");
     expect(deps).toContain("react-server-dom-webpack");
   });
 
@@ -556,7 +556,7 @@ describe("getInitDeps", () => {
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite@8.3.0");
     expect(deps).toContain("@vitejs/plugin-react");
-    expect(deps).not.toContain("@vitejs/plugin-rsc@^0.5.37");
+    expect(deps).not.toContain("@vitejs/plugin-rsc");
     expect(deps).not.toContain("react-server-dom-webpack");
   });
 
@@ -2224,7 +2224,7 @@ describe("init — dependency installation", () => {
     const { result } = await runInit(tmpDir);
 
     expect(result.installedDeps).toContain("@vitejs/plugin-react");
-    expect(result.installedDeps).toContain("@vitejs/plugin-rsc@^0.5.37");
+    expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
   });
 
   it("treats src/app projects as App Router", async () => {
@@ -2246,7 +2246,7 @@ describe("init — dependency installation", () => {
     const { result } = await runInit(tmpDir);
 
     expect(result.installedDeps).toContain("@vitejs/plugin-react");
-    expect(result.installedDeps).toContain("@vitejs/plugin-rsc@^0.5.37");
+    expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
     expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
 
@@ -2265,7 +2265,7 @@ describe("init — dependency installation", () => {
     const { result } = await runInit(tmpDir);
 
     expect(result.installedDeps).toContain("@vitejs/plugin-react");
-    expect(result.installedDeps).not.toContain("@vitejs/plugin-rsc@^0.5.37");
+    expect(result.installedDeps).not.toContain("@vitejs/plugin-rsc");
   });
 
   it("does not require react-server-dom-webpack for Pages Router", async () => {
@@ -2373,7 +2373,7 @@ describe("init — dependency installation", () => {
     expect(pkg.devDependencies).toMatchObject({
       vite: "latest",
       "@vitejs/plugin-react": "latest",
-      "@vitejs/plugin-rsc": "^0.5.37",
+      "@vitejs/plugin-rsc": "latest",
       "@cloudflare/vite-plugin": "1",
       wrangler: "latest",
     });
