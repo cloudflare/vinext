@@ -30,6 +30,7 @@ import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js"
 import { resolveClientBuildFile } from "./client-build-files.js";
 import { createStaticAssetRequest } from "./worker-utils.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { isNextDataPathname } from "./pages-data-route.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -645,10 +646,19 @@ async function handleRequestImpl(
             ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
             ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
           ];
+          const { fetchWorkerImageSource } = await import("./worker-image-optimization.js");
           return handleConfiguredImageOptimization(
             imageRequest,
-            (assetPath) =>
-              Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
+            (sourceUrl, sourceImageRequest) =>
+              fetchWorkerImageSource(sourceUrl, sourceImageRequest, {
+                assets,
+                basePath,
+                assetPathPrefix,
+                clientBuildFiles,
+                // vinext's next/image emits the endpoint without the basePath.
+                sourceBasePath: hadBasePath ? "" : basePath,
+                fetchPublicFile: (sourceRequest) => resolvePublicImageSource(sourceRequest, assets),
+              }),
             allowedWidths,
             imageConfig,
           );
@@ -664,6 +674,69 @@ async function handleRequestImpl(
           hadBasePath,
         );
       },
+    };
+
+    // Run an image source through the pipeline as a direct request without the
+    // caller's headers, like Next.js' fetchInternalImage, so middleware admits
+    // it. Only a public file the pipeline selects with a 2xx outcome is served.
+    const resolvePublicImageSource = async (
+      sourceRequest: Request,
+      sourceAssets: AssetFetcher,
+    ): Promise<Response | null> => {
+      const sourceUrl = new URL(sourceRequest.url);
+      if (guardProtocolRelativeUrl(sourceUrl.pathname, sourceUrl.search)) return null;
+      const sourceHadBasePath = !basePath || hasBasePath(sourceUrl.pathname, basePath);
+      const sourcePathname = stripBasePath(sourceUrl.pathname, basePath);
+      if (isNextDataPathname(sourcePathname)) return null;
+      let sourceAsset = null as Response | null;
+      const sourceResult = await runPagesRequest(
+        new Request(new URL(sourcePathname + sourceUrl.search, sourceUrl), {
+          signal: sourceRequest.signal,
+        }),
+        {
+          ...deps,
+          hadBasePath: sourceHadBasePath,
+          isDataReq: false,
+          isDataRequest: false,
+          middlewareRequest: undefined,
+          dataNotFoundResponse: null,
+          recordCacheability: false,
+          runMiddleware:
+            typeof runMiddleware === "function"
+              ? wrapMiddlewareWithBasePath(runMiddleware, basePath, sourceHadBasePath)
+              : null,
+          renderPage: null,
+          handleApi: null,
+          serveFilesystemRoute: async (
+            candidate,
+            _stagedHeaders,
+            phase,
+            _resolvedUrl,
+            filesystemRequest,
+          ) => {
+            if (isImageOptimizationPath(candidate)) return false;
+            const asset = await fetchWorkerFilesystemRoute(
+              filesystemRequest,
+              candidate,
+              phase,
+              (assetRequest) => Promise.resolve(sourceAssets.fetch(assetRequest)),
+              publicFiles,
+              basePath,
+              assetPathPrefix,
+              sourceHadBasePath,
+            );
+            if (asset === false) return false;
+            sourceAsset = asset;
+            // An empty response lets the pipeline apply middleware's status.
+            return new Response(null);
+          },
+        },
+      );
+      if (sourceResult.type !== "response") return null;
+      await sourceResult.response.body?.cancel().catch(() => {});
+      if (sourceResult.response.ok) return sourceAsset;
+      await sourceAsset?.body?.cancel().catch(() => {});
+      return null;
     };
 
     const result = await runPagesRequest(request, deps);

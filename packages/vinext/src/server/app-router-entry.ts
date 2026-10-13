@@ -43,13 +43,14 @@ import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-con
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import {
   getImageOptimizer,
-  handleConfiguredImageOptimization,
   isImageOptimizationPath,
+  readImageOptimizationSignal,
 } from "./image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -212,12 +213,20 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
-    return handleConfiguredImageOptimization(
+  // The image endpoint runs through middleware and rewrites like any request;
+  // the handler then signals that the Worker may serve the image itself.
+  const servesImages = Boolean(assets) && getImageOptimizer() !== null;
+  // vinext's next/image emits the endpoint without the basePath, where Next.js
+  // prefixes it. Admit that form as the basePath endpoint and resolve its
+  // unprefixed sources under the basePath, as the Node server does.
+  const imageEndpointBasePath =
+    servesImages && __workerBasePath && isImageOptimizationPath(url.pathname)
+      ? __workerBasePath
+      : "";
+  if (imageEndpointBasePath) {
+    request = cloneRequestWithUrl(
       request,
-      (assetPath) => Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
-      __rscImageAllowedWidths,
-      __rscImageConfig,
+      new URL(imageEndpointBasePath + url.pathname + url.search, url).href,
     );
   }
 
@@ -302,6 +311,33 @@ async function handleRequest(
 
   if (result instanceof Response) {
     let response = result;
+    const imageSignal = servesImages ? readImageOptimizationSignal(response) : null;
+    if (imageSignal && assets) {
+      const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
+        await import("./worker-image-optimization.js");
+      return serveWorkerImageOptimization(
+        request,
+        imageSignal,
+        __rscImageAllowedWidths,
+        __rscImageConfig,
+        {
+          assets,
+          basePath: __workerBasePath,
+          assetPathPrefix: __workerAssetPathPrefix,
+          clientBuildFiles: __workerClientBuildFiles,
+          sourceBasePath: imageEndpointBasePath,
+          // The source runs outside this request's cacheability context.
+          fetchPublicFile: async (sourceRequest) => {
+            const sourceResult = await runWithExecutionContext(requestCtx, () =>
+              rscHandler(sourceRequest, requestCtx),
+            );
+            return sourceResult instanceof Response
+              ? fetchSignalledPublicFile(sourceResult, sourceRequest, assets)
+              : null;
+          },
+        },
+      );
+    }
     if (assets) {
       const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path, requestHeaders) =>

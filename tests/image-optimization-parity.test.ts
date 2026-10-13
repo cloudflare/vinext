@@ -181,6 +181,35 @@ describe("image deployment query parity", () => {
   });
 });
 
+// Ported from Next.js: test/integration/image-optimizer/test/util.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
+// ("recursive url is not allowed"). Hosts fetch a local source through the
+// application, so a source that is itself the image endpoint is rejected.
+describe("recursive image source parity", () => {
+  it("rejects a source that is the image endpoint", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    for (const source of [
+      // Verbatim from the Next.js test.
+      "/_next/image?url=test.pngw=1&q=75",
+      "/assets/_next/image?url=%2Ftest.png&w=128&q=75",
+      "/%5Fnext/image?url=%2Ftest.png&w=128&q=75",
+      "/_vinext/image?url=%2Ftest.png&w=128&q=75",
+    ]) {
+      const requestUrl = new URL("http://vinext.test/_next/image");
+      requestUrl.searchParams.set("url", source);
+      requestUrl.searchParams.set("w", "64");
+      requestUrl.searchParams.set("q", "75");
+      expect(parseImageParams(requestUrl), source).toBeNull();
+    }
+    expect(
+      parseImageParams(
+        new URL("http://vinext.test/_next/image?url=%2F_next%2Fimages.png&w=64&q=75"),
+      ),
+    ).not.toBeNull();
+  });
+});
+
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");
 
