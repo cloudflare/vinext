@@ -1166,14 +1166,18 @@ export async function resolvePagesPageData(
     }
   }
 
-  // A packaged dynamic entry proves this path was generated at build time.
-  // getStaticPaths may depend on build-only data; reuse the existing cache
-  // response branches below before letting a runtime path list exclude it.
+  // Next.js never calls getStaticPaths for a production request: path
+  // membership and the fallback mode come from its build-time prerender
+  // manifest. vinext resolves them at request time instead, so read the entry
+  // first. A stored entry for this build proves the path was admitted (listed,
+  // or generated through a fallback), so a hit or stale hit is served by the
+  // cache branches below without re-running the user's path enumeration.
+  // A packaged prerendered entry gets the same admission even when a runtime
+  // getStaticPaths (which may depend on build-only data) would not list it.
   // Nonce requests still need this admission; the HTML replay branches below
   // keep their own nonce guard and render fresh instead.
-  let hasFreshPrerenderedEntry = false;
+  let hasStoredEntry = false;
   if (
-    options.hasPrerenderedPages &&
     options.route.isDynamic &&
     typeof options.pageModule.getStaticProps === "function" &&
     typeof options.pageModule.getServerSideProps !== "function" &&
@@ -1184,15 +1188,17 @@ export async function resolvePagesPageData(
       options.isrCacheKey("pages", options.isrCachePathname ?? options.routeUrl.split("?")[0]),
     );
     const value = previousCacheEntry?.value.value;
-    hasFreshPrerenderedEntry =
+    hasStoredEntry =
       !!previousCacheEntry &&
-      !previousCacheEntry.isStale &&
       !previousCacheEntry.isExpired &&
       (value === null || value?.kind === "PAGES" || value?.kind === "REDIRECT");
   }
 
+  // Draft mode bypasses the fallback gate entirely, as Next.js does
+  // (`hasStaticPaths && !isDraftMode` in pages-handler.ts).
   if (
-    !hasFreshPrerenderedEntry &&
+    !hasStoredEntry &&
+    previewData === false &&
     typeof options.pageModule.getStaticPaths === "function" &&
     options.route.isDynamic
   ) {
@@ -1217,7 +1223,7 @@ export async function resolvePagesPageData(
       ),
     );
 
-    if (fallback === false && !isValidPath && previewData === false) {
+    if (fallback === false && !isValidPath) {
       if (options.isOnDemandRevalidate && !options.revalidateOnlyGenerated) {
         return {
           kind: "response",
@@ -1236,13 +1242,7 @@ export async function resolvePagesPageData(
     // the loading shell ships (`fallback: 'blocking'` keeps SSRing as before).
     const isBotRequest =
       !!options.userAgent && isBotUserAgent(options.userAgent, options.htmlLimitedBots);
-    if (
-      fallback === true &&
-      !isValidPath &&
-      !options.isDataReq &&
-      !isBotRequest &&
-      previewData === false
-    ) {
+    if (fallback === true && !isValidPath && !options.isDataReq && !isBotRequest) {
       isFallback = true;
     }
     shouldPersistFallbackData = fallback === true && !isValidPath && options.isDataReq === true;
