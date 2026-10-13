@@ -3716,6 +3716,19 @@ describe("fetch cache shim", () => {
         },
       ],
       [
+        "a FormData body's File name",
+        () => {
+          const file = new File(["data"], "alice.txt");
+          const body = new FormData();
+          body.set("file", file);
+          return {
+            input: url,
+            init: { method: "POST", body },
+            change: () => Object.defineProperty(file, "name", { value: "bobby.txt" }),
+          };
+        },
+      ],
+      [
         "a ReadableStream body's chunk",
         () => {
           const chunk = encode("alice");

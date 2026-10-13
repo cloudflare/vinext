@@ -438,15 +438,26 @@ function snapshotBody(body: BodyInit): BodyInit {
   if (bytes) return bytes.slice();
   if (body instanceof URLSearchParams) return new URLSearchParams(body);
   if (body instanceof FormData) {
-    // Its entries can change, but a File entry, like a Blob, can't.
     const formData = new FormData();
-    for (const [name, value] of body) formData.append(name, value);
+    for (const [name, value] of body) {
+      formData.append(name, typeof value === "string" ? value : snapshotBlob(value));
+    }
     return formData;
   }
-  // Strings and Blobs can't change. A stream can't be read synchronously, so,
-  // as in fetch, its chunks are read after the call. They're sent as the bytes
+  if (body instanceof Blob) return snapshotBlob(body);
+  // Strings can't change. A stream can't be read synchronously, so, as in
+  // fetch, its chunks are read after the call. They're sent as the bytes
   // they're keyed by, as is any other body, which is built into a Request.
   return body;
+}
+
+// A Blob's bytes can't change, but the properties and methods it's keyed and
+// sent through can be redefined on it. A new Blob copies its bytes.
+function snapshotBlob(blob: Blob): Blob {
+  if (blob instanceof File) {
+    return new File([blob], blob.name, { type: blob.type, lastModified: blob.lastModified });
+  }
+  return new Blob([blob], { type: blob.type });
 }
 
 /**
