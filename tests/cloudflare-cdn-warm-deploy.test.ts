@@ -225,6 +225,7 @@ function mockTwoStageWrangler(
   options: {
     failFinalUpload?: boolean;
     replaceFinalStageBeforeHandoff?: "identity" | "traffic";
+    triggersOutput?: string;
   } = {},
 ) {
   const state = {
@@ -290,7 +291,7 @@ function mockTwoStageWrangler(
     }
     if (args.includes("triggers")) {
       state.triggerDeploys++;
-      return "Triggers deployed\nhttps://my-worker.example.workers.dev\n";
+      return options.triggersOutput ?? "Triggers deployed\nhttps://my-worker.example.workers.dev\n";
     }
     throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
   });
@@ -3264,6 +3265,63 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "fetch:https://workers-cache.vinext.workers.dev/cached/intro",
       "promote",
     ]);
+  });
+
+  it("sends the prerender secret to workers.dev rather than an http-only Worker route", async () => {
+    writeTwoStageWorkerArtifact();
+    const requests: Array<{ url: string; secret: string | null }> = [];
+    const wrangler = mockTwoStageWrangler({
+      // Wrangler prints route patterns verbatim, including an explicit scheme.
+      triggersOutput:
+        "Deployed my-worker triggers (0.41 sec)\n" +
+        "  http://app.example.com/* (zone name: example.com)\n" +
+        "  https://my-worker.example.workers.dev\n",
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      requests.push({
+        url: formatFetchUrl(input),
+        secret: headers.get("x-vinext-prerender-secret"),
+      });
+      if (isReadinessFetch(input)) return readinessResponse();
+      if (headers.get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        return appPageProbeResponse("static-candidate", "/about");
+      }
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, [], {
+      cacheabilityProbe: true,
+      config: "dist/server/wrangler.json",
+      discoverWarmPlan: async () => ({
+        appPaths: ["/about"],
+        buildId: "app-build-a",
+        buildIdentity: "app-build-a",
+        loadingShellPaths: [],
+        paths: ["/about"],
+        routePatterns: {
+          "/about": {
+            cacheabilityProbe: { canPrunePattern: true },
+            kind: "app-page",
+            pattern: "/about",
+          },
+        },
+        rscPaths: [],
+      }),
+      warmCdnConcurrency: 1,
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbes: 1,
+      warmCdnRetries: 0,
+    });
+
+    expect(wrangler.promoted).toBe(true);
+    const secretRequests = requests.filter(({ secret }) => secret === "test-prerender-secret");
+    // Readiness against the staged probe URL and again against the triggers URL.
+    expect(secretRequests.filter(({ url }) => isReadinessFetch(url))).toHaveLength(2);
+    for (const { url } of requests) {
+      expect(new URL(url).origin).toBe("https://my-worker.example.workers.dev");
+    }
   });
 
   it("uses the explicit Worker name for version upload, override, promotion, and triggers", async () => {
