@@ -7454,7 +7454,7 @@ describe("Production server middleware (Pages Router)", () => {
     ] as { dynamicFetchUrls: Set<string>; currentFetchRevalidate: number | null };
     // Only the route's own outgoing fetches, not this test's request to it.
     const routeFetchUrls = [...fallback.dynamicFetchUrls].filter(
-      (url) => url.includes("/api/hello?") && url.includes(id),
+      (url) => url.startsWith("http://127.0.0.1:9/upstream?") && url.includes(id),
     );
     expect(routeFetchUrls).toEqual([]);
     expect(fallback.currentFetchRevalidate).toBeNull();
