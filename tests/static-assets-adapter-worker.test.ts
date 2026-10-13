@@ -178,6 +178,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
 
     let indexRequested!: () => void;
     const indexRequest = new Promise<void>((resolve) => (indexRequested = resolve));
+    let indexFetches = 0;
     let releaseIndex!: () => void;
     const indexReleased = new Promise<void>((resolve) => (releaseIndex = resolve));
     // Production cancels a request when its client disconnects. Workerd does
@@ -215,6 +216,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
             async ASSETS(request: Request) {
               const { pathname } = new URL(request.url);
               if (pathname.endsWith("/static-cache/index.json")) {
+                indexFetches++;
                 indexRequested();
                 await indexReleased;
               }
@@ -227,6 +229,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
         },
       ],
     });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const abandoned = await miniflare.dispatchFetch("https://front.local/abandon");
       expect(await abandoned.text()).toBe("abandoned");
@@ -234,13 +237,16 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
 
       const response = await Promise.race([
         miniflare.dispatchFetch("https://front.local/"),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+        new Promise<null>((resolve) => (timeout = setTimeout(() => resolve(null), 10_000))),
       ]);
       expect(response, "request after the cancelled one never settled").not.toBeNull();
       expect(response!.status).toBe(200);
       expect(response!.headers.get("x-vinext-cache")).toBe("HIT");
       expect(await response!.text()).toContain("served from prerender assets");
+      // The cancelled request never stored the index, so the next one loaded it.
+      expect(indexFetches).toBe(2);
     } finally {
+      clearTimeout(timeout);
       await miniflare.dispose();
     }
   }, 30_000);

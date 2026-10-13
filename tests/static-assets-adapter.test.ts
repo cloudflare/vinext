@@ -380,6 +380,16 @@ describe("staticAssetsAdapter", () => {
     expect(await adapter.get("missing")).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(3);
 
+    const pending = vi.fn((input: string) =>
+      input.endsWith("/index.json") && pending.mock.calls.length === 1
+        ? new Promise<Response>(() => {})
+        : Promise.resolve(Response.json({})),
+    );
+    const adapterWithPendingIndex = new StaticAssetsCacheAdapter({ fetch: pending });
+    void adapterWithPendingIndex.get("cancelled");
+    expect(await adapterWithPendingIndex.get("missing")).toBeNull();
+    expect(pending).toHaveBeenCalledTimes(2);
+
     const withoutIndex = vi.fn(async () => new Response(null, { status: 404 }));
     const adapterWithoutIndex = new StaticAssetsCacheAdapter({ fetch: withoutIndex });
     expect(await adapterWithoutIndex.get("missing")).toBeNull();
