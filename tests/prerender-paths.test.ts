@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -1077,6 +1079,12 @@ describe("prerender path manifest", () => {
     const remoteFetch = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("old Worker", { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 308,
+          headers: { location: "/__vinext/prerender/static-params/" },
+        }),
+      )
       .mockResolvedValueOnce(new Response("version still propagating", { status: 500 }))
       .mockResolvedValueOnce(Response.json([{ slug: "intro" }]));
     vi.stubGlobal("fetch", remoteFetch);
@@ -1102,13 +1110,16 @@ describe("prerender path manifest", () => {
       root: tmpDir,
       pathDiscoveryTarget: {
         baseUrl: "https://workers-cache.example.workers.dev",
-        retries: 2,
+        retries: 3,
         retryDelayMs: 0,
       },
     });
 
     expect(manifest?.paths).toEqual(["/cached/intro"]);
-    expect(remoteFetch).toHaveBeenCalledTimes(3);
+    expect(remoteFetch).toHaveBeenCalledTimes(4);
+    for (const [, init] of remoteFetch.mock.calls) {
+      expect(init?.redirect).toBe("manual");
+    }
   });
 
   it("uses the full discovery phase when no retry limit is configured", async () => {
@@ -1252,6 +1263,73 @@ describe("prerender path manifest", () => {
       }),
     ).rejects.toThrow("path discovery returned HTTP 500: binding lookup failed");
     expect(remoteFetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not follow a discovery redirect with the prerender secret attached", async () => {
+    // No Next.js test port applies: deploy-time remote path discovery is a
+    // vinext Cloudflare deploy feature. A zone redirect rule, or Pages
+    // middleware on a Worker version that rejects this build's capability,
+    // can answer the discovery URL with a redirect to another origin.
+    vi.unstubAllGlobals();
+    const redirectTargetRequests: http.IncomingHttpHeaders[] = [];
+    const redirectTarget = http.createServer((req, res) => {
+      redirectTargetRequests.push(req.headers);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ fallback: false, paths: [{ params: { slug: "injected" } }] }));
+    });
+    const discoverySecrets: (string | string[] | undefined)[] = [];
+    const discoveryHost = http.createServer((req, res) => {
+      discoverySecrets.push(req.headers["x-vinext-prerender-secret"]);
+      const { port } = redirectTarget.address() as AddressInfo;
+      res.statusCode = 307;
+      res.setHeader("location", `http://127.0.0.1:${port}/collect`);
+      res.end();
+    });
+    const listen = (server: http.Server) =>
+      new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const close = (server: http.Server) =>
+      new Promise<void>((resolve) => server.close(() => resolve()));
+    await Promise.all([listen(redirectTarget), listen(discoveryHost)]);
+
+    try {
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "pages-build-a\n");
+      writeFile("dist/server/entry.js", "export default {};\n");
+      writeFile(
+        "dist/server/vinext-server.json",
+        JSON.stringify({ prerenderSecret: "pages-discovery-secret" }),
+      );
+      writeFile(
+        "pages/posts/[slug].tsx",
+        [
+          "export function getStaticPaths() { return { fallback: false, paths: [] }; }",
+          "export function getStaticProps() { return { props: {} }; }",
+          "export default function Page() { return null; }",
+        ].join("\n"),
+      );
+
+      const { port } = discoveryHost.address() as AddressInfo;
+      const { emitPrerenderPathManifest } =
+        await import("../packages/vinext/src/build/prerender-paths.js");
+      await expect(
+        emitPrerenderPathManifest({
+          root: tmpDir,
+          pathDiscoveryTarget: {
+            baseUrl: `http://127.0.0.1:${port}`,
+            headers: { "Cloudflare-Workers-Version-Overrides": 'pages-cache="version-b"' },
+            retries: 2,
+            retryDelayMs: 0,
+          },
+        }),
+      ).rejects.toThrow(
+        "path discovery returned a redirect (HTTP 307); refusing to follow it with the prerender secret after 3 attempt(s)",
+      );
+      // A redirect is retried like the previous Worker's 404, but never followed.
+      expect(discoverySecrets).toEqual(Array(3).fill("pages-discovery-secret"));
+      expect(redirectTargetRequests).toEqual([]);
+    } finally {
+      await Promise.all([close(redirectTarget), close(discoveryHost)]);
+    }
   });
 
   it("discovers binding-backed Pages Router paths from the uploaded Worker", async () => {

@@ -27780,7 +27780,7 @@ describe("handleImageOptimization", () => {
     expect(response.status).toBe(400);
   });
 
-  it("returns 404 when fetchAsset fails", async () => {
+  it("returns 400 when fetchAsset fails", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75");
@@ -27788,7 +27788,8 @@ describe("handleImageOptimization", () => {
       fetchAsset: async () => new Response("", { status: 404 }),
     };
     const response = await handleImageOptimization(request, handlers);
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("The requested resource isn't a valid image.");
   });
 
   it("returns original image when no transformImage handler", async () => {
@@ -27889,7 +27890,7 @@ describe("handleImageOptimization", () => {
         fetchAsset: source("image/svg+xml"),
       }),
     ];
-    expect(errors.map((response) => response.status)).toEqual([400, 404, 400]);
+    expect(errors.map((response) => response.status)).toEqual([400, 400, 400]);
     for (const response of errors) {
       expect(response.headers.get("x-nextjs-cache")).toBeNull();
       expect(response.headers.get("x-vinext-cache")).toBeNull();
@@ -27973,7 +27974,7 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
-  it("returns 404 when refetch fallback cannot reload the source image", async () => {
+  it("returns 400 when refetch fallback cannot reload the source image", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75");
@@ -27996,7 +27997,8 @@ describe("handleImageOptimization", () => {
     };
     const response = await handleImageOptimization(request, handlers);
     expect(fetchCount).toBe(2);
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("The requested resource isn't a valid image.");
   });
 
   it("returns 400 when refetch fallback reloads an unsafe content type", async () => {
@@ -29037,7 +29039,7 @@ describe("next/script SSR rendering", () => {
     // The raw </script> must NOT appear — it would break the tag boundary
     expect(html).not.toContain("</script><img");
     // The escaped form should be present instead
-    expect(html).toContain("<\\/script>");
+    expect(html).toContain("</\\u0073cript>");
   });
 
   it("beforeInteractive escapes </script> case-insensitively", async () => {
@@ -29056,7 +29058,7 @@ describe("next/script SSR rendering", () => {
     );
     // Mixed-case </SCRIPT> must also be escaped
     expect(html).not.toContain("</SCRIPT>");
-    expect(html).toContain("<\\/SCRIPT>");
+    expect(html).toContain("</\\u0053CRIPT>");
   });
 
   it("exports handleClientScriptLoad and initScriptLoader", async () => {
@@ -29711,7 +29713,7 @@ describe("next/head SSR security", () => {
     // The raw </script> must NOT appear in the output
     expect(html).not.toContain("</script><img");
     // The escaped form preserves the JS string content
-    expect(html).toContain("<\\/script>");
+    expect(html).toContain("</\\u0073cript>");
   });
 
   it("escapes </style> in dangerouslySetInnerHTML for style tags", async () => {
@@ -29740,7 +29742,7 @@ describe("next/head SSR security", () => {
     ]);
 
     expect(html).not.toContain("</SCRIPT>");
-    expect(html).toContain("<\\/SCRIPT>");
+    expect(html).toContain("</\\u0053CRIPT>");
   });
 
   it("attributes are still properly escaped", async () => {
@@ -29819,7 +29821,7 @@ describe("escapeInlineContent", () => {
     const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
     const input = 'var x = "</script><img src=x onerror=alert(1)>";';
     const result = escapeInlineContent(input, "script");
-    expect(result).toBe('var x = "<\\/script><img src=x onerror=alert(1)>";');
+    expect(result).toBe('var x = "</\\u0073cript><img src=x onerror=alert(1)>";');
     expect(result).not.toContain("</script>");
   });
 
@@ -29833,18 +29835,33 @@ describe("escapeInlineContent", () => {
 
   it("handles case-insensitive closing tags", async () => {
     const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
-    expect(escapeInlineContent("</Script>", "script")).toBe("<\\/Script>");
-    expect(escapeInlineContent("</SCRIPT>", "script")).toBe("<\\/SCRIPT>");
-    expect(escapeInlineContent("</sCrIpT>", "script")).toBe("<\\/sCrIpT>");
+    expect(escapeInlineContent("</Script>", "script")).toBe("</\\u0053cript>");
+    expect(escapeInlineContent("</SCRIPT>", "script")).toBe("</\\u0053CRIPT>");
+    expect(escapeInlineContent("</sCrIpT>", "script")).toBe("</\\u0073CrIpT>");
   });
 
   it("handles multiple occurrences", async () => {
     const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
     const input = "</script></script></SCRIPT>";
     const result = escapeInlineContent(input, "script");
-    expect(result).toBe("<\\/script><\\/script><\\/SCRIPT>");
+    expect(result).toBe("</\\u0073cript></\\u0073cript></\\u0053CRIPT>");
     expect(result).not.toContain("</script>");
     expect(result).not.toContain("</SCRIPT>");
+  });
+
+  it("escapes <script openers so <!-- cannot enter the double-escaped state", async () => {
+    // Matches React Fizz's escaping of script children (`scriptRegex` in
+    // react-dom-server). With only `</script` escaped, `<!--<script>` would
+    // make the HTML tokenizer ignore the element's real `</script>`.
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = 'window.__CFG__={"name":"<!--<script>"};';
+    const result = escapeInlineContent(input, "script");
+    expect(result).toBe('window.__CFG__={"name":"<!--<\\u0073cript>"};');
+    expect(escapeInlineContent("<SCRIPT><Script", "script")).toBe("<\\u0053CRIPT><\\u0053cript");
+    // The escape is an equivalent JS string, so the script still sees the data.
+    expect(JSON.parse(result.slice("window.__CFG__=".length, -1))).toEqual({
+      name: "<!--<script>",
+    });
   });
 
   it("does not escape unrelated closing tags", async () => {

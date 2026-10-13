@@ -4,6 +4,23 @@ import { NextRequest, NextResponse } from "next/server";
  * Middleware for app-router-cloudflare example.
  */
 export function middleware(request: NextRequest) {
+  // A `members=1` cookie admits `?members-only`; the image optimizer fetches
+  // its source without the caller's cookies, as Next.js does.
+  // Coverage: tests/e2e/cloudflare-workers/image-middleware.spec.ts
+  if (request.nextUrl.pathname === "/vinext-image.png") {
+    if (
+      request.nextUrl.searchParams.has("members-only") &&
+      request.cookies.get("members")?.value !== "1"
+    ) {
+      return new Response("blocked by middleware", { status: 403 });
+    }
+    if (request.nextUrl.searchParams.has("redirect")) {
+      return NextResponse.redirect(new URL("/vinext-image.png", request.url));
+    }
+  }
+  if (request.nextUrl.pathname === "/image-source-rewrite.png") {
+    return NextResponse.rewrite(new URL("/vinext-image.png", request.url));
+  }
   if (request.nextUrl.pathname === "/admin") {
     return new Response("Blocked by middleware", { status: 403 });
   }
@@ -28,5 +45,12 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/", "/admin", "/_next/static/middleware-rewrite.js"],
+  matcher: [
+    "/api/:path*",
+    "/",
+    "/admin",
+    "/_next/static/middleware-rewrite.js",
+    "/vinext-image.png",
+    "/image-source-rewrite.png",
+  ],
 };

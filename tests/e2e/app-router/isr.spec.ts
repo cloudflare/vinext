@@ -487,6 +487,49 @@ test.describe("App Router ISR", () => {
     expect(privateImage.status()).toBe(404);
     expect(await privateImage.text()).not.toContain("UNLISTED_METADATA");
   });
+
+  test("cached dynamicParams=false metadata images skip generateStaticParams", async ({
+    request,
+  }) => {
+    const imagePath = "/metadata-static-params/public-post/opengraph-image";
+    const takeCalls = async () =>
+      (await (await request.get(`${baseUrl()}/metadata-static-params-calls`)).json()).calls;
+
+    await waitForCacheHit(request, imagePath);
+    await takeCalls();
+
+    // Next answers the generated-param gate from its build manifest, so a
+    // cache hit runs no generateStaticParams.
+    const cached = await request.get(`${baseUrl()}${imagePath}`);
+    expect(cached.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(await cached.text()).toBe("PUBLIC");
+    expect(await takeCalls()).toBe(0);
+
+    const unlisted = await request.get(
+      `${baseUrl()}/metadata-static-params/unlisted-draft/opengraph-image`,
+    );
+    expect(unlisted.status()).toBe(404);
+    expect(await takeCalls()).toBe(1);
+  });
+
+  test("dynamicParams=false runs nested generateStaticParams only for matching parents", async ({
+    request,
+  }) => {
+    const basePath = "/layout-segment-config/nested-gsp";
+    const takeCalls = async () =>
+      (await request.get(`${baseUrl()}/layout-segment-config/nested-gsp-calls`)).json();
+    await takeCalls();
+
+    const unlistedSlug = await request.get(`${baseUrl()}${basePath}/guides/missing`);
+    expect(unlistedSlug.status()).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["guides"] });
+
+    // One generator still runs when no parent matches, so a child that rewrites
+    // parent params is observed.
+    const unlistedCategory = await request.get(`${baseUrl()}${basePath}/missing/x`);
+    expect(unlistedCategory.status()).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["docs"] });
+  });
 });
 
 // A background regeneration renders the document whole, so the title that its

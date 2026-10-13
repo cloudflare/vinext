@@ -356,6 +356,9 @@ async function fetchDiscoveryEndpoint(
       const request = (async () => {
         const res = await fetch(url, {
           headers,
+          // Following a redirect would re-send the prerender secret and version
+          // headers to the Location origin, and trust its body as discovery data.
+          redirect: "manual",
           signal: controller.signal,
         });
         return { res, text: await res.text() };
@@ -372,20 +375,26 @@ async function fetchDiscoveryEndpoint(
         return text;
       }
 
-      const userFailure = readDiscoveryUserFailure(res, text);
+      const redirected = res.status >= 300 && res.status < 400;
+      const userFailure = redirected ? null : readDiscoveryUserFailure(res, text);
       const detail =
         userFailure ??
         (/cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(text) ? text.trim() : "");
-      lastError = new Error(
-        `path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
-      );
-      // A newly applied route can briefly reach the previous Worker (404), and
+      lastError = redirected
+        ? new Error(
+            `path discovery returned a redirect (HTTP ${res.status}); refusing to follow it with the prerender secret`,
+          )
+        : new Error(`path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+      // A newly applied route can briefly reach the previous Worker (404, or a
+      // Pages redirect when its capability doesn't match this build), and
       // version-metadata validation rejects that mismatch with 503. Cloudflare
       // can also return an unshaped 5xx while the uploaded version propagates.
       // The authenticated endpoint's JSON { error } envelope is instead a real
       // generateStaticParams/getStaticPaths failure and must surface once.
       const transient =
-        res.status === 404 || (res.status >= 500 && res.status <= 599 && userFailure === null);
+        redirected ||
+        res.status === 404 ||
+        (res.status >= 500 && res.status <= 599 && userFailure === null);
       if (!transient) {
         shouldRetry = false;
         throw lastError;

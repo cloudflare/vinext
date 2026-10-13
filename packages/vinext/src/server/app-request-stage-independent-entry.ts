@@ -2,6 +2,7 @@
 
 import "./server-globals.js";
 import requestRscHandler, {
+  __assetPrefix,
   __basePath,
   __clientBuildFiles,
   __ensureHybridPagesApplication,
@@ -21,13 +22,15 @@ import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters"
 import type { DispatchAppWorkerResponseStage } from "./app-worker-stages.js";
 import {
   getImageOptimizer,
-  handleConfiguredImageOptimization,
   isImageOptimizationPath,
+  readImageOptimizationSignal,
 } from "./image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
+import { assetPrefixPathname } from "../utils/asset-prefix.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -58,6 +61,11 @@ export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
 
 const clientBuildFiles: ReadonlySet<string> = new Set(__clientBuildFiles);
+const assetPathPrefix = assetPrefixPathname(__assetPrefix);
+
+// An image source is served only as a public file, so it never renders a page.
+const rejectResponseStage: DispatchAppWorkerResponseStage = () =>
+  Promise.resolve(new Response(null, { status: 404 }));
 
 export function handleRequestStage(
   request: Request,
@@ -113,6 +121,7 @@ async function handleRequest(
   }
   registerConfiguredImageOptimizer(env);
 
+  const requestCtx = ctx;
   ctx = createWorkerPrerenderDiscoveryContext(ctx, request, __prerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   let didValidateCdnRequest = false;
@@ -147,12 +156,17 @@ async function handleRequest(
   }
 
   const url = new URL(request.url);
-  if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
-    return handleConfiguredImageOptimization(
+  // The image endpoint runs through middleware and rewrites like any request;
+  // the handler then signals that the Worker may serve the image itself.
+  const servesImages = Boolean(assets) && getImageOptimizer() !== null;
+  // vinext's next/image emits the endpoint without the basePath; admit that
+  // form as the basePath endpoint, as app-router-entry does.
+  const imageEndpointBasePath =
+    servesImages && __basePath && isImageOptimizationPath(url.pathname) ? __basePath : "";
+  if (imageEndpointBasePath) {
+    request = cloneRequestWithUrl(
       request,
-      (assetPath) => Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
-      __imageAllowedWidths,
-      __imageConfig,
+      new URL(imageEndpointBasePath + url.pathname + url.search, url).href,
     );
   }
   const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
@@ -216,7 +230,33 @@ async function handleRequest(
     );
   const result = await runWithExecutionContext(ctx, handle);
   let response = result;
-  if (assets) {
+  const imageSignal = servesImages ? readImageOptimizationSignal(response) : null;
+  if (imageSignal && assets) {
+    const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
+      await import("./worker-image-optimization.js");
+    response = await serveWorkerImageOptimization(
+      request,
+      imageSignal,
+      __imageAllowedWidths,
+      __imageConfig,
+      {
+        assets,
+        basePath: __basePath,
+        assetPathPrefix,
+        clientBuildFiles,
+        sourceBasePath: imageEndpointBasePath,
+        // The source runs outside this request's cacheability probe.
+        fetchPublicFile: async (sourceRequest) =>
+          fetchSignalledPublicFile(
+            await runWithExecutionContext(requestCtx, () =>
+              requestRscHandler(sourceRequest, requestCtx, rejectResponseStage, null, false, null),
+            ),
+            sourceRequest,
+            assets,
+          ),
+      },
+    );
+  } else if (assets) {
     const assetResponse = await resolveStaticAssetSignal(response, {
       fetchAsset: (path, requestHeaders) =>
         Promise.resolve(assets.fetch(createStaticAssetRequest(path, request, requestHeaders))),

@@ -1946,6 +1946,28 @@ describe("App Router integration", () => {
     expect(unknown.status).toBe(404);
   });
 
+  it("does not enumerate nested generateStaticParams under parent params the request rules out", async () => {
+    const takeCalls = async () =>
+      (await fetch(`${baseUrl}/layout-segment-config/nested-gsp-calls`)).json();
+    await takeCalls();
+
+    // The layout lists three categories. A child listing runs only for the
+    // one that matches the request, not once per listed category.
+    const known = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/guides/start`);
+    expect(known.status).toBe(200);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["guides"] });
+
+    const unknownChild = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/guides/missing`);
+    expect(unknownChild.status).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["guides"] });
+
+    // With no matching category, a single child listing still runs, so a
+    // generator that rewrites its parent's params keeps Next's merge result.
+    const unknownParent = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/missing/x`);
+    expect(unknownParent.status).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["docs"] });
+  });
+
   it("keeps implicit dynamicParams enabled under a dynamic = 'error' layout", async () => {
     const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error/known`);
     expect(known.status).toBe(200);

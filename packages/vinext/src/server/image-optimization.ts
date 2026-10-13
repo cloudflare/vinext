@@ -17,6 +17,8 @@
  * as-is (no transformation) with security headers applied.
  */
 
+import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
+import { hasBasePath } from "../utils/base-path.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
 
@@ -152,6 +154,46 @@ export function readImageOptimizationSignal(response: Response): ImageOptimizati
 }
 
 /**
+ * Whether a local source's pipeline status carries the file's bytes. A no-body
+ * success such as 204 serves no file, which Next.js rejects as an invalid
+ * image.
+ */
+export function isImageSourceBodyStatus(status: number): boolean {
+  return status >= 200 && status < 300 && status !== 204 && status !== 205;
+}
+
+/**
+ * Body Next.js answers, with a 400, for a local source that yields no image:
+ * a missing file, or anything middleware or routing answers in its place.
+ */
+export const INVALID_IMAGE_SOURCE_MESSAGE = "The requested resource isn't a valid image.";
+
+export function invalidImageSourceResponse(): Response {
+  return new Response(INVALID_IMAGE_SOURCE_MESSAGE, { status: 400 });
+}
+
+const RECURSIVE_IMAGE_URL_RE = /\/_(?:next|vinext)\/image(?:$|\/)/;
+
+/**
+ * The URL of a local image source. vinext's next/image emits the endpoint
+ * without the basePath, so a host that admits that form passes the basePath
+ * as `sourceBasePath` and an unprefixed source resolves under it. Build output
+ * under a path `assetPrefix` is already served at its emitted URL.
+ */
+export function resolveImageSourceUrl(
+  imageUrl: string,
+  sourceBasePath: string,
+  assetPathPrefix: string,
+  requestUrl: string,
+): URL {
+  const servedAsEmitted =
+    !sourceBasePath ||
+    hasBasePath(imageUrl, sourceBasePath) ||
+    (assetPathPrefix !== "" && imageUrl.startsWith(`${assetPathPrefix}/${ASSET_PREFIX_URL_DIR}/`));
+  return new URL(servedAsEmitted ? imageUrl : sourceBasePath + imageUrl, requestUrl);
+}
+
+/**
  * Parse and validate image optimization query parameters.
  * Returns null if the request is malformed.
  *
@@ -212,6 +254,12 @@ export function parseImageParams(
     const base = "https://localhost";
     const resolved = new URL(normalizedUrl, base);
     if (resolved.origin !== base) {
+      return null;
+    }
+    // Hosts fetch a local source through the application, so a source that is
+    // itself the image endpoint would recurse. Next.js rejects it the same way
+    // (`"url" parameter cannot be recursive` in validateParams).
+    if (RECURSIVE_IMAGE_URL_RE.test(decodeURIComponent(resolved.pathname))) {
       return null;
     }
   } catch {
@@ -367,7 +415,7 @@ export async function handleImageOptimization(
   // Fetch source image
   const source = await handlers.fetchAsset(imageUrl, request);
   if (!source.ok || !source.body) {
-    return new Response("Image not found", { status: 404 });
+    return invalidImageSourceResponse();
   }
 
   // Negotiate output format from Accept header
@@ -419,7 +467,7 @@ export async function handleImageOptimization(
     console.error("[vinext] Image fallback error, refetching source image:", e);
     const refetchedSource = await handlers.fetchAsset(imageUrl, request);
     if (!refetchedSource.ok || !refetchedSource.body) {
-      return new Response("Image not found", { status: 404 });
+      return invalidImageSourceResponse();
     }
 
     const refetchedContentType = refetchedSource.headers.get("Content-Type");
