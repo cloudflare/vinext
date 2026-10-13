@@ -3214,7 +3214,7 @@ export const config = { matcher: "${matcher}" };
 
   // Next.js has no `.html` route aliases: `/about.html` is its own path.
   // Routing it as `/about` would bypass middleware gated on `/about`.
-  it("does not route .html spellings of pages or API routes in development", async () => {
+  it("routes .html request paths as written in development", async () => {
     const canonical = await fetch(`${baseUrl}/middleware-protected-data`);
     expect(canonical.status).toBe(403);
 
@@ -3229,6 +3229,11 @@ export const config = { matcher: "${matcher}" };
       expect(response.status).toBe(404);
       expect(await response.text()).not.toContain(body);
     }
+
+    // `.html` stays part of the path, so a dynamic route still receives it.
+    const docs = await fetch(`${baseUrl}/docs/release/foo.html`);
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/foo\.html/);
   });
 
   // ── /_next/data JSON endpoint (issue #1330) ──────────────────────
@@ -8190,7 +8195,7 @@ describe("Production server middleware (Pages Router)", () => {
 
   // Next.js has no `.html` route aliases: `/about.html` is its own path.
   // Routing it as `/about` would bypass middleware gated on `/about`.
-  it("does not route .html spellings of pages or API routes in production", async () => {
+  it("routes .html request paths as written in production", async () => {
     const canonical = await fetch(`${prodUrl}/middleware-protected-data`);
     expect(canonical.status).toBe(403);
 
@@ -8205,6 +8210,11 @@ describe("Production server middleware (Pages Router)", () => {
       expect(response.status).toBe(404);
       expect(await response.text()).not.toContain(body);
     }
+
+    // `.html` stays part of the path, so a dynamic route still receives it.
+    const docs = await fetch(`${prodUrl}/docs/release/foo.html`);
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/foo\.html/);
   });
 
   // ── /_next/data JSON endpoint in production (issue #1330) ─────────
