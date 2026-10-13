@@ -95,6 +95,7 @@ type LocalFontOptions<T extends CssVariable | undefined = CssVariable | undefine
   _vinext?: {
     font?: {
       family?: unknown;
+      adjustedFallbackCSS?: unknown;
     };
   };
 };
@@ -301,10 +302,12 @@ function createLocalFontIdentity(
   options: LocalFontOptions,
   sources: LocalFontSrc[],
   internalFamily: string | undefined,
+  adjustedFallbackCSS: string | undefined,
 ): string {
   return fnv1a64(
     JSON.stringify([
       internalFamily ?? "",
+      adjustedFallbackCSS ?? "",
       sources.map((source) => [source.path, source.weight ?? "", source.style ?? ""]),
       options.display ?? "swap",
       options.weight ?? "",
@@ -341,13 +344,27 @@ function localFont<T extends CssVariable | undefined = undefined>(
 function localFont(options: LocalFontOptions): FontResult {
   const sources = normalizeSources(options);
   const internalFamily = sanitizeInternalFontFamily(options._vinext?.font?.family);
-  const id = createLocalFontIdentity(options, sources, internalFamily);
+  // The vinext:local-fonts transform builds the adjusted fallback face for the
+  // transform-provided family (`'<family> Fallback'`, like Next.js), so it only
+  // applies alongside that family.
+  const internalFallbackCSS = options._vinext?.font?.adjustedFallbackCSS;
+  const adjustedFallbackCSS =
+    internalFamily &&
+    options.adjustFontFallback !== false &&
+    typeof internalFallbackCSS === "string"
+      ? internalFallbackCSS
+      : undefined;
+  const id = createLocalFontIdentity(options, sources, internalFamily, adjustedFallbackCSS);
   const singleSource = sources.length === 1 ? sources[0] : undefined;
   const family = internalFamily ?? `__local_font_${id}`;
   const className = `__font_local_${id}`;
   const fallback = options.fallback ?? ["sans-serif"];
   // Sanitize each fallback name to prevent CSS injection via crafted values
-  const fontFamily = `'${family}', ${fallback.map(sanitizeFallback).join(", ")}`;
+  const fontFamily = [
+    `'${family}'`,
+    ...(adjustedFallbackCSS ? [`'${family} Fallback'`] : []),
+    ...fallback.map(sanitizeFallback),
+  ].join(", ");
   // Validate CSS variable name — reject anything that could inject CSS
   const cssVarName = options.variable ? sanitizeCSSVarName(options.variable) : undefined;
   // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
@@ -364,8 +381,9 @@ function localFont(options: LocalFontOptions): FontResult {
   // Collect font URLs for preload <link> tags (SSR only)
   collectFontPreloads(sources);
 
-  // Inject @font-face declarations
-  const css = generateFontFaceCSS(family, options, sources);
+  // Inject @font-face declarations, followed by the adjusted fallback face
+  const fontFaceCSS = generateFontFaceCSS(family, options, sources);
+  const css = adjustedFallbackCSS ? `${fontFaceCSS}\n${adjustedFallbackCSS}` : fontFaceCSS;
   // The exposed family can repeat across modules; the generated class stays
   // unique for each localFont call and is the correct injection identity.
   injectFontFaceCSS(css, className);

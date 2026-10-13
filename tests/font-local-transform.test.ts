@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { toSlash } from "pathslash";
@@ -731,5 +731,197 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.code).toContain('display: "swap"');
     expect(result.code).toContain("className={inter.variable}");
     expect(result.code).toContain("export default function RootLayout");
+  });
+});
+
+// ── adjustFontFallback ───────────────────────────────────────
+
+describe("next/font/local adjustFontFallback", () => {
+  // Fixture fonts: Next.js's roboto-400.woff2 and a Noto Sans TTF subset.
+  const FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/app-basic");
+  const ROBOTO_DIR = path.join(FIXTURE_DIR, "app/script-nonce/with-next-font");
+  // Vite hands the transform hook forward-slash ids.
+  const ROBOTO_IMPORTER = toSlash(path.join(ROBOTO_DIR, "layout.tsx"));
+  const FIXTURE_IMPORTER = toSlash(path.join(FIXTURE_DIR, "fonts.ts"));
+
+  function fallbackFace(family: string, fallbackFont: string, overrides: string[]) {
+    const [ascent, descent, lineGap, sizeAdjust] = overrides;
+    return `@font-face {
+  font-family: '${family} Fallback';
+  src: local("${fallbackFont}");
+  ascent-override: ${ascent};
+  descent-override: ${descent};
+  line-gap-override: ${lineGap};
+  size-adjust: ${sizeAdjust};
+}\n`;
+  }
+  // Values from Next.js's fontkit implementation for the same files.
+  const ROBOTO_ARIAL = ["92.49%", "24.34%", "0.00%", "100.30%"];
+  const ROBOTO_TIMES = ["84.57%", "22.25%", "0.00%", "109.71%"];
+  const NOTO_ARIAL = ["100.41%", "27.52%", "0.00%", "106.47%"];
+
+  function transformLocalFonts(code: string, id: string) {
+    const plugin = getLocalFontsPlugin();
+    const context = { addWatchFile: vi.fn(), warn: vi.fn() };
+    const transform = unwrapHook(plugin.transform);
+    const run = (source = code) => transform.call(context, source, id);
+    return { plugin, context, run };
+  }
+
+  function adjustedFallbackCSS(code: string): string | undefined {
+    const match = /adjustedFallbackCSS: ("(?:[^"\\]|\\.)*")/.exec(code);
+    return match ? JSON.parse(match[1]) : undefined;
+  }
+
+  it("generates the Arial fallback face from a relative font file", () => {
+    const { context, run } = transformLocalFonts(
+      [
+        `import localFont from "next/font/local";`,
+        `export const roboto = localFont({ src: "./font.woff2", variable: "--font-roboto" });`,
+      ].join("\n"),
+      ROBOTO_IMPORTER,
+    );
+
+    const result = run();
+
+    expect(result.code).toContain(`_vinext: { font: { family: "roboto", adjustedFallbackCSS: `);
+    expect(adjustedFallbackCSS(result.code)).toBe(fallbackFace("roboto", "Arial", ROBOTO_ARIAL));
+    expect(context.addWatchFile).toHaveBeenCalledWith(toSlash(path.join(ROBOTO_DIR, "font.woff2")));
+    expect(context.warn).not.toHaveBeenCalled();
+  });
+
+  it("uses Times New Roman when adjustFontFallback is 'Times New Roman'", () => {
+    const { run } = transformLocalFonts(
+      [
+        `import localFont from "next/font/local";`,
+        `const roboto = localFont({ src: "./font.woff2", adjustFontFallback: "Times New Roman" });`,
+      ].join("\n"),
+      ROBOTO_IMPORTER,
+    );
+
+    expect(adjustedFallbackCSS(run().code)).toBe(
+      fallbackFace("roboto", "Times New Roman", ROBOTO_TIMES),
+    );
+  });
+
+  it("skips the fallback face when adjustFontFallback is false", () => {
+    const { context, run } = transformLocalFonts(
+      [
+        `import localFont from "next/font/local";`,
+        `const roboto = localFont({ src: "./font.woff2", adjustFontFallback: false });`,
+      ].join("\n"),
+      ROBOTO_IMPORTER,
+    );
+
+    const result = run();
+
+    expect(result.code).toContain(`_vinext: { font: { family: "roboto" } }`);
+    expect(context.addWatchFile).not.toHaveBeenCalled();
+  });
+
+  it("generates the fallback from the source closest to normal weight and style", () => {
+    const code = (robotoWeight: string, notoWeight: string) =>
+      [
+        `import localFont from "next/font/local";`,
+        `const mixed = localFont({`,
+        `  src: [`,
+        `    { path: "./app/script-nonce/with-next-font/font.woff2", weight: "${robotoWeight}" },`,
+        `    { path: "./assets/noto-sans.ttf", weight: "${notoWeight}" },`,
+        `  ],`,
+        `});`,
+      ].join("\n");
+    const { run } = transformLocalFonts(code("400", "700"), FIXTURE_IMPORTER);
+
+    expect(adjustedFallbackCSS(run().code)).toBe(fallbackFace("mixed", "Arial", ROBOTO_ARIAL));
+    expect(adjustedFallbackCSS(run(code("700", "400")).code)).toBe(
+      fallbackFace("mixed", "Arial", NOTO_ARIAL),
+    );
+  });
+
+  it("keeps the plain fallback stack when src isn't a static relative path", () => {
+    const { context, run } = transformLocalFonts(
+      [
+        `import localFont from "next/font/local";`,
+        `const fontPath = "./font.woff2";`,
+        `const dynamic = localFont({ src: fontPath });`,
+        `const aliased = localFont({ src: "@/fonts/font.woff2" });`,
+      ].join("\n"),
+      ROBOTO_IMPORTER,
+    );
+
+    const result = run();
+
+    expect(result.code).toContain(`_vinext: { font: { family: "dynamic" } }`);
+    expect(result.code).toContain(`_vinext: { font: { family: "aliased" } }`);
+    expect(result.code).not.toContain("adjustedFallbackCSS");
+    expect(context.addWatchFile).not.toHaveBeenCalled();
+  });
+
+  it("warns once and skips the fallback face for an unreadable font file", () => {
+    // Next.js logs `Failed to load font file` when fontkit can't read a file.
+    const fontDir = path.resolve(import.meta.dirname, "fixtures/font-google-multiple/app");
+    const fontFile = toSlash(path.join(fontDir, "local.woff2"));
+    const { plugin, context, run } = transformLocalFonts(
+      [
+        `import localFont from "next/font/local";`,
+        `const broken = localFont({ src: "./local.woff2" });`,
+      ].join("\n"),
+      toSlash(path.join(fontDir, "layout.tsx")),
+    );
+
+    expect(run().code).toContain(`_vinext: { font: { family: "broken" } }`);
+    expect(context.warn).toHaveBeenCalledTimes(1);
+    expect(context.warn.mock.calls[0][0]).toContain(`Failed to load font file: ${fontFile}`);
+    // The file stays watched so fixing it regenerates the fallback (see
+    // tests/font-local-dev.test.ts for the dev server round trip).
+    expect(context.addWatchFile).toHaveBeenCalledWith(fontFile);
+
+    // The failed parse is cached until the file changes.
+    run();
+    expect(context.warn).toHaveBeenCalledTimes(1);
+    (plugin.watchChange as (id: string) => void)(path.join(fontDir, "local.woff2"));
+    run();
+    expect(context.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("adds the fallback family before the user fallbacks and injects the face", () => {
+    // Ported from Next.js: test/e2e/next-font/index.test.ts (with-local-fonts.js)
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/next-font/index.test.ts
+    const beforeCount = getSSRFontStyles().length;
+    const css = fallbackFace("myFont1", "Times New Roman", ROBOTO_TIMES);
+    const result = localFont({
+      src: "/assets/adjust-fallback.woff2",
+      fallback: ["system-ui"],
+      variable: "--font-adjust-fallback",
+      _vinext: { font: { family: "myFont1", adjustedFallbackCSS: css } },
+    });
+
+    expect(result.style.fontFamily).toBe("'myFont1', 'myFont1 Fallback', system-ui");
+    const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
+    expect(addedStyles).toContain(css);
+    expect(addedStyles).toContain(
+      `.${result.className} { font-family: 'myFont1', 'myFont1 Fallback', system-ui; }`,
+    );
+    expect(addedStyles).toContain(
+      `--font-adjust-fallback: 'myFont1', 'myFont1 Fallback', system-ui;`,
+    );
+  });
+
+  it("ignores the fallback face when adjustFontFallback is false or the family is generated", () => {
+    const beforeCount = getSSRFontStyles().length;
+    const css = fallbackFace("myFont2", "Arial", ROBOTO_ARIAL);
+    const disabled = localFont({
+      src: "/assets/adjust-fallback-disabled.woff2",
+      adjustFontFallback: false,
+      _vinext: { font: { family: "myFont2", adjustedFallbackCSS: css } },
+    });
+    const withoutFamily = localFont({
+      src: "/assets/adjust-fallback-without-family.woff2",
+      _vinext: { font: { adjustedFallbackCSS: css } },
+    });
+
+    expect(disabled.style.fontFamily).toBe("'myFont2', sans-serif");
+    expect(withoutFamily.style.fontFamily).not.toContain("Fallback");
+    expect(getSSRFontStyles().slice(beforeCount).join("\n")).not.toContain("Fallback");
   });
 });
