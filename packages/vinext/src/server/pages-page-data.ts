@@ -1311,7 +1311,10 @@ export async function resolvePagesPageData(
 
   if (isFallback) {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
+    const cached =
+      previousCacheEntry !== undefined
+        ? previousCacheEntry
+        : await options.isrGet(options.isrCacheKey("pages", pathname));
     if (cached?.value.value?.kind !== "PAGES") {
       const appShortCircuit = await loadForegroundAppInitialRenderProps();
       if (appShortCircuit) return appShortCircuit;

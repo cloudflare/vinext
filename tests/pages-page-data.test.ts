@@ -93,7 +93,7 @@ describe("automatically static Pages prerender cache", () => {
   });
 });
 
-// Ported from Next.js: packages/next/src/server/route-modules/pages/pages-handler.ts
+// Mirrors Next.js production gating in packages/next/src/server/route-modules/pages/pages-handler.ts
 // Production requests never call getStaticPaths; a stored entry for the path is
 // served (fresh or stale) on every cache backend, not only packaged prerenders.
 describe("dynamic Pages stored entry", () => {
@@ -164,26 +164,29 @@ describe("dynamic Pages stored entry", () => {
     },
   );
 
-  it("admits a nonce request by its packaged entry but renders it fresh", async () => {
-    // The packaged HTML cannot carry this request's nonce, but its existence
-    // still proves the path was generated at build time.
-    const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: false as const }));
-    const getStaticProps = vi.fn(async () => ({ props: { fresh: true } }));
-    const options = createOptions({
-      hasPrerenderedPages: true,
-      scriptNonce: "request-nonce",
-      route: { isDynamic: true },
-      pageModule: { getStaticPaths, getStaticProps },
-      isrGet: vi.fn<ResolvePagesPageDataOptions["isrGet"]>(async () => ({
-        isStale: false,
-        value: { lastModified: 0, cacheControl: { revalidate: false }, value: values[0][1] },
-      })),
-    });
-    const result = await resolvePagesPageData(options);
-    expect(getStaticPaths).not.toHaveBeenCalled();
-    expect(getStaticProps).toHaveBeenCalledOnce();
-    expect(result.kind).toBe("render");
-  });
+  it.each([true, undefined])(
+    "admits a nonce request by its stored entry but renders it fresh (prerendered adapter: %s)",
+    async (hasPrerenderedPages) => {
+      // The stored HTML cannot carry this request's nonce, but its existence
+      // still proves the path was admitted.
+      const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: false as const }));
+      const getStaticProps = vi.fn(async () => ({ props: { fresh: true } }));
+      const options = createOptions({
+        hasPrerenderedPages,
+        scriptNonce: "request-nonce",
+        route: { isDynamic: true },
+        pageModule: { getStaticPaths, getStaticProps },
+        isrGet: vi.fn<ResolvePagesPageDataOptions["isrGet"]>(async () => ({
+          isStale: false,
+          value: { lastModified: 0, cacheControl: { revalidate: false }, value: values[0][1] },
+        })),
+      });
+      const result = await resolvePagesPageData(options);
+      expect(getStaticPaths).not.toHaveBeenCalled();
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(result.kind).toBe("render");
+    },
+  );
 
   it.each([false, true])(
     "serves a stale stored page without rerunning getStaticPaths (data: %s)",
