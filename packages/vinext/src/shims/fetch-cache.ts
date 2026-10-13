@@ -251,6 +251,19 @@ function normalizeFetchMethod(method: string): string {
   return NORMALIZED_FETCH_METHODS.has(upperMethod) ? upperMethod : method;
 }
 
+/**
+ * The bytes sent for a binary body chunk: the bytes an ArrayBuffer holds, or
+ * those a typed array or DataView covers. Undefined for any other chunk.
+ */
+function getBinaryChunkBytes(value: unknown): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return undefined;
+}
+
 async function readRequestBodyChunksWithinLimit(
   request: Request,
   effectiveHeaders: Headers,
@@ -281,15 +294,17 @@ async function readRequestBodyChunksWithinLimit(
       const { done, value } = await reader.read();
       if (done) break;
       // A runtime may pass other chunk types through (Workers does for
-      // iterable bodies), and those are not keyed.
-      if (!(value instanceof Uint8Array)) throw new SkipCacheKeyGenerationError();
+      // iterable bodies). Binary chunks are keyed by their bytes, and others
+      // are not keyed.
+      const bytes = getBinaryChunkBytes(value);
+      if (!bytes) throw new SkipCacheKeyGenerationError();
 
-      totalBodyBytes += value.byteLength;
+      totalBodyBytes += bytes.byteLength;
       if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
         throw new BodyTooLargeForCacheKeyError();
       }
 
-      chunks.push(value);
+      chunks.push(bytes);
     }
   } catch (err) {
     void reader.cancel().catch(() => {});
@@ -368,7 +383,7 @@ async function serializeBody(
     (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
-    const readableBody = init.body as ReadableStream<Uint8Array | string>;
+    const readableBody = init.body as ReadableStream<unknown>;
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
     (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
@@ -378,12 +393,11 @@ async function serializeBody(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        // A runtime may send other chunk types (Workers sends the bytes of
-        // DataViews and ArrayBuffers), and those are not keyed.
-        if (typeof value !== "string" && !(value instanceof Uint8Array)) {
-          throw new SkipCacheKeyGenerationError();
-        }
-        const bytes = typeof value === "string" ? encoder.encode(value) : value;
+        // Workers also sends the bytes of ArrayBuffer and other typed array
+        // chunks, so those are keyed by their bytes. Other chunks are not keyed.
+        const bytes =
+          typeof value === "string" ? encoder.encode(value) : getBinaryChunkBytes(value);
+        if (!bytes) throw new SkipCacheKeyGenerationError();
         totalBodyBytes += bytes.byteLength;
         if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
           throw new BodyTooLargeForCacheKeyError();

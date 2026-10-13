@@ -3252,19 +3252,20 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    // Workers sends the bytes of these chunks, which aren't keyed.
+    // Workers sends the bytes of these chunks, so they're keyed by those bytes.
     it.each([
-      ["DataView", (bytes: Uint8Array) => new DataView(bytes.buffer)],
-      ["ArrayBuffer", (bytes: Uint8Array) => bytes.buffer],
-      ["Uint16Array", (bytes: Uint8Array) => new Uint16Array(bytes.buffer)],
-    ])("fetches a ReadableStream body with %s chunks uncached", async (_name, toChunk) => {
-      const read = async (byte: number) => {
+      ["DataView", (bytes: Uint8Array) => new DataView(bytes.buffer, 2, 2)],
+      ["ArrayBuffer", (bytes: Uint8Array) => bytes.buffer.slice(2, 4)],
+      ["Uint16Array", (bytes: Uint8Array) => new Uint16Array(bytes.buffer, 2, 1)],
+    ])("keys a ReadableStream body with %s chunks by their bytes", async (_name, toChunk) => {
+      // Each chunk covers bytes 2 and 3 of the buffer.
+      const read = async (byte: number, outside = 0) => {
         startNewFetchCacheScope();
         const res = await fetch("https://api.example.com/body-stream-view-chunks", {
           method: "POST",
           body: new ReadableStream({
             start(controller) {
-              controller.enqueue(toChunk(Uint8Array.of(byte, byte)));
+              controller.enqueue(toChunk(Uint8Array.of(outside, outside, 0, byte, outside)));
               controller.close();
             },
           }),
@@ -3275,10 +3276,11 @@ describe("fetch cache shim", () => {
 
       expect(await read(0x61)).toBe(1);
       expect(await read(0x62)).toBe(2);
-      expect(await read(0x61)).toBe(3);
+      // Bytes outside the chunk aren't sent, so they aren't keyed.
+      expect(await read(0x61, 0xff)).toBe(1);
     });
 
-    it("sends every chunk of a ReadableStream body it fetches uncached", async () => {
+    it("sends every chunk of a ReadableStream body with mixed chunk types", async () => {
       await fetch("https://api.example.com/body-stream-mixed-chunks", {
         method: "POST",
         body: new ReadableStream({
@@ -3364,7 +3366,28 @@ describe("fetch cache shim", () => {
         expect(fetchMock).not.toHaveBeenCalled();
       });
 
-      it("fetches a Request body with chunks other than Uint8Array uncached", async () => {
+      it("keys a Request body's ArrayBuffer chunks by their bytes", async () => {
+        const readRequest = async (byte: number) => {
+          startNewFetchCacheScope();
+          const request = new Request("https://api.example.com/body-request-buffer-chunks", {
+            method: "POST",
+            body: new ReadableStream({
+              start(controller) {
+                controller.enqueue(Uint8Array.of(byte).buffer);
+                controller.close();
+              },
+            }),
+            duplex: "half",
+          } as RequestInit);
+          const res = await fetch(request, { next: { revalidate: 60 } });
+          return (await res.json()).count;
+        };
+        expect(await readRequest(0x61)).toBe(1);
+        expect(await readRequest(0x62)).toBe(2);
+        expect(await readRequest(0x61)).toBe(1);
+      });
+
+      it("fetches a Request body with string chunks uncached", async () => {
         const request = () =>
           new Request("https://api.example.com/body-request-string-chunks", {
             method: "POST",

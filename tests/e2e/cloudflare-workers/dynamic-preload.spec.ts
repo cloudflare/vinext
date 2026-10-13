@@ -124,31 +124,46 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     expect(publicRead.originRequestId).not.toBe(privateEntry?.originRequestId);
   });
 
-  // Workers sends the bytes of DataView and ArrayBuffer chunks in a stream
-  // fetch body. Those bytes aren't keyed, so such a cached POST is fetched
-  // uncached rather than sharing an entry with an equal-length body.
-  for (const chunk of ["dataview", "arraybuffer"]) {
-    test(`fetches cached POSTs with ${chunk} stream chunks uncached`, async ({ request }) => {
-      type OriginRead = {
-        body: { caseId: string; variant: string };
-        originRequestId: string;
-      };
-      const caseId = crypto.randomUUID();
-      const readCase = async (variant: string): Promise<OriginRead> => {
-        const response = await request.get(
-          `${BASE_URL}/api/fetch-cache-stream-chunk-body?case=${caseId}&variant=${variant}&chunk=${chunk}`,
-        );
-        expect(response.status()).toBe(200);
-        return (await response.json()) as OriginRead;
-      };
+  // Workers sends the bytes of ArrayBuffer and other typed array chunks in a
+  // stream or async iterable fetch body, so cached POSTs are keyed by them.
+  for (const source of ["stream", "iterable"]) {
+    for (const chunk of ["dataview", "arraybuffer", "uint16array"]) {
+      test(`keys cached fetches by the bytes of ${chunk} ${source} body chunks`, async ({
+        request,
+      }) => {
+        type CachedOrigin = {
+          body: { caseId: string; variant: string };
+          originRequestId: string;
+        };
+        const caseId = crypto.randomUUID();
+        const readCase = async (variant: string): Promise<CachedOrigin> => {
+          const response = await request.get(
+            `${BASE_URL}/api/fetch-cache-stream-chunk-body?case=${caseId}&variant=${variant}&chunk=${chunk}&source=${source}`,
+          );
+          expect(response.status()).toBe(200);
+          return (await response.json()) as CachedOrigin;
+        };
 
-      const reads = [await readCase("a"), await readCase("a"), await readCase("b")];
-      expect(reads.map((read) => read.body)).toEqual([
-        { caseId, variant: "a" },
-        { caseId, variant: "a" },
-        { caseId, variant: "b" },
-      ]);
-      expect(new Set(reads.map((read) => read.originRequestId)).size).toBe(3);
-    });
+        // Read until the first body is served from the data cache, so the read
+        // of the equal-length second body would find it if both shared a key.
+        let first: CachedOrigin | undefined;
+        await expect
+          .poll(
+            async () => {
+              const read = await readCase("a");
+              expect(read.body).toEqual({ caseId, variant: "a" });
+              const servedFromCache = read.originRequestId === first?.originRequestId;
+              first = read;
+              return servedFromCache;
+            },
+            { timeout: 15_000 },
+          )
+          .toBe(true);
+
+        const second = await readCase("b");
+        expect(second.body).toEqual({ caseId, variant: "b" });
+        expect(second.originRequestId).not.toBe(first?.originRequestId);
+      });
+    }
   }
 });
