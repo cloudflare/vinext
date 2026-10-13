@@ -895,6 +895,17 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "skipTrailingSlashRedirect")?.status).toBe("supported");
   });
 
+  it("reports the legacy experimental.skipTrailingSlashRedirect as supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default { experimental: { skipTrailingSlashRedirect: true } };`,
+    );
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.skipTrailingSlashRedirect")?.status).toBe(
+      "supported",
+    );
+  });
+
   it("reads next.config.ts files", () => {
     writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
 

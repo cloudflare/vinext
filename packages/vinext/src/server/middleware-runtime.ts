@@ -35,6 +35,7 @@ import {
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { nextDataMiddlewareMatchPathname } from "./pages-data-route.js";
 import { reportRequestError } from "./instrumentation.js";
+import { resolveRequestTrailingSlash } from "./request-trailing-slash.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { frameworkTracer } from "./tracer.js";
 
@@ -314,11 +315,11 @@ function createNextRequest(
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
-  // Without the trailing-slash redirect, middleware can see either slash form.
-  // Next.js's getNextPathnameInfo takes the slash from the pathname itself
-  // (the config only decides root), so NextURL keeps the request's form.
-  const urlTrailingSlash =
-    skipTrailingSlashRedirect && mwPathname !== "/" ? mwPathname.endsWith("/") : trailingSlash;
+  const urlTrailingSlash = resolveRequestTrailingSlash(
+    mwPathname,
+    trailingSlash,
+    skipTrailingSlashRedirect,
+  );
   const hasNextConfig = basePath || i18nConfig || urlTrailingSlash;
   const nextConfig = hasNextConfig
     ? {

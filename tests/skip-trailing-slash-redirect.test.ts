@@ -109,6 +109,19 @@ describe.each(["development", "production"] as const)("skipTrailingSlashRedirect
     });
   });
 
+  // Next.js's NextURL takes the slash from the request pathname
+  // (getNextPathnameInfo), so handlers see the form the request arrived in.
+  it.each([
+    ["app route handler", "/with-app-dir/route-url"],
+    ["pages edge API route", "/api/edge-url"],
+  ])("should keep the request's trailing slash in a %s", async (_name, route) => {
+    for (const pathname of [`${route}/`, route]) {
+      const res = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+      expect(res.status, pathname).toBe(200);
+      await expect(res.json(), pathname).resolves.toEqual({ url: pathname, nextUrl: pathname });
+    }
+  });
+
   it("should apply config redirect correctly", async () => {
     const res = await fetch(`${baseUrl}/redirect-me`, { redirect: "manual" });
     expect(res.status).toBe(307);

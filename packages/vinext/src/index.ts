@@ -7109,6 +7109,7 @@ export const loadServerActionClient = ${
                     trustedRevalidateOrigin: getTrustedDevRevalidateOrigin(),
                     allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
+                    skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
                   },
                 );
                 if (handled) return;

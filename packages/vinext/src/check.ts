@@ -272,6 +272,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
   },
   skipTrailingSlashRedirect: { status: "supported" },
+  "experimental.skipTrailingSlashRedirect": {
+    status: "supported",
+    detail: "legacy alias of skipTrailingSlashRedirect",
+  },
   reactCompiler: {
     status: "partial",
     detail: "ignored; enable the React Compiler with vinext({ react: { compiler: true } })",

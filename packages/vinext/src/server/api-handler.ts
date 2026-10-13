@@ -37,6 +37,7 @@ import {
   type PagesReqResResponse,
 } from "./pages-node-compat.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { resolveRequestTrailingSlash } from "./request-trailing-slash.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -409,6 +410,7 @@ export async function handleApiRoute(
     trustedRevalidateOrigin?: string;
     allowedRevalidateHeaderKeys?: readonly string[];
     trailingSlash?: boolean;
+    skipTrailingSlashRedirect?: boolean;
   },
 ): Promise<boolean> {
   const match = matchRoute(url, apiRoutes);
@@ -423,14 +425,19 @@ export async function handleApiRoute(
       // Next.js wraps the incoming Request in a NextRequest before invoking
       // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
       // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
+      const edgeRequest = createEdgeApiRequest(req, res, url, params, nextConfig);
       const nextRequest = new NextRequest(
-        createEdgeApiRequest(req, res, url, params, nextConfig),
+        edgeRequest,
         nextConfig
           ? {
               nextConfig: {
                 basePath: nextConfig.basePath,
                 i18n: nextConfig.i18n ?? undefined,
-                trailingSlash: nextConfig.trailingSlash,
+                trailingSlash: resolveRequestTrailingSlash(
+                  new URL(edgeRequest.url).pathname,
+                  nextConfig.trailingSlash,
+                  nextConfig.skipTrailingSlashRedirect,
+                ),
               },
             }
           : undefined,

@@ -1624,6 +1624,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       draftModeSecret: __draftModeSecret,
       i18n: __i18nConfig,
       trailingSlash: __trailingSlash,
+      skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
       isrDebug: __isrDebug,
       isrGet: __isrGet,
       isrRouteKey(pathname) {
