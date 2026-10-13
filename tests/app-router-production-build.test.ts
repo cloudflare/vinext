@@ -220,6 +220,78 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  it("keeps next/image's remote-pattern helpers out of the eager client bootstrap", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-route-owned-image-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app", "gallery"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() {
+  return <p>no images here</p>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "gallery", "page.tsx"),
+        `import Image from "next/image";
+
+export default function Page() {
+  return <Image src="/hero.png" alt="hero" width={64} height={64} />;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      // image-config imports ipaddr.js, whose error messages survive
+      // minification and identify the chunk it was bundled into.
+      const ipaddrNeedle = "ipaddr: ";
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const clientManifest = JSON.parse(
+        fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8"),
+      ) as Record<string, ClientManifestEntry & { file: string }>;
+      const browserEntryKey = Object.keys(clientManifest).find(
+        (key) => clientManifest[key]?.isEntry === true,
+      );
+      expect(browserEntryKey).toBeDefined();
+
+      const eagerFiles = new Set<string>();
+      const visitEagerImports = (key: string): void => {
+        const entry = clientManifest[key];
+        if (!entry || eagerFiles.has(entry.file)) return;
+        eagerFiles.add(entry.file);
+        for (const importedKey of entry.imports ?? []) visitEagerImports(importedKey);
+      };
+      if (browserEntryKey) visitEagerImports(browserEntryKey);
+
+      expect(readAllJs(clientDir)).toContain(ipaddrNeedle);
+      for (const file of eagerFiles) {
+        expect(fs.readFileSync(path.join(clientDir, file), "utf-8")).not.toContain(ipaddrNeedle);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
     // The `vite build` CLI resolves the build ID once and shares it via
     // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App
