@@ -6997,10 +6997,13 @@ export const loadServerActionClient = ${
                   stagedHeaders,
                   phase,
                   resolvedUrl,
+                  _request,
+                  resolvedPathnameHasBasePath,
                 ) => {
                   // Next.js resolves middleware and beforeFiles rewrites before
-                  // dispatching the built-in image endpoint.
-                  if (isImageOptimizationPath(requestPathname)) {
+                  // dispatching the built-in image endpoint, which it serves
+                  // only under the basePath.
+                  if (resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)) {
                     const imageRequestUrl = new URL(resolvedUrl, requestOrigin);
                     const allowedWidths = [
                       ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),

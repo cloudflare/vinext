@@ -2765,11 +2765,18 @@ async function createPagesRouterRequestHandler(
         // (/_next/static/*) were already served above. Middleware response headers
         // (including next.config headers staged by the pipeline) are passed through so
         // Set-Cookie / security headers from middleware are included in the response.
-        serveFilesystemRoute: async (requestPathname, stagedHeaders, phase, resolvedUrl) => {
+        serveFilesystemRoute: async (
+          requestPathname,
+          stagedHeaders,
+          phase,
+          resolvedUrl,
+          _request,
+          resolvedPathnameHasBasePath,
+        ) => {
           // Next.js resolves middleware and beforeFiles rewrites before
           // dispatching the built-in image endpoint, which it serves only
-          // under the basePath. A rewrite can bring a request outside it there.
-          if ((phase !== "direct" || hadBasePath) && isImageOptimizationPath(requestPathname)) {
+          // under the basePath, including when a rewrite targets it there.
+          if (resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)) {
             for (const [name, value] of Object.entries(stagedHeaders)) {
               res.setHeader(name, value);
             }

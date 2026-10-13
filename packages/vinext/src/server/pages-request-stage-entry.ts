@@ -640,11 +640,12 @@ async function handleRequestImpl(
         phase,
         resolvedUrl,
         filesystemRequest,
+        resolvedPathnameHasBasePath,
       ) => {
         if (!assets) return false;
-        // Like Next.js, serve the image endpoint only under the basePath, or
-        // when a rewrite brings a request outside it there.
-        if ((phase !== "direct" || hadBasePath) && isImageOptimizationPath(requestPathname)) {
+        // Like Next.js, serve the image endpoint only under the basePath,
+        // including when a rewrite targets it there.
+        if (resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)) {
           const imageUrl = new URL(resolvedUrl, request.url);
           const imageRequest = cloneRequestWithUrl(request, imageUrl.href);
           const allowedWidths = [

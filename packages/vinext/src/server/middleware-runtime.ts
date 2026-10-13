@@ -47,6 +47,8 @@ export type MiddlewareResult = {
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
+  /** False when a same-origin rewrite target was outside the basePath. */
+  rewriteHadBasePath?: boolean;
   rewriteStatus?: number;
   status?: number;
   responseHeaders?: Headers;
@@ -678,6 +680,7 @@ async function executeMiddlewareModule(
   const rewriteUrl = response.headers.get(MIDDLEWARE_REWRITE_HEADER);
   if (rewriteUrl) {
     let rewritePath: string;
+    let rewriteHadBasePath: boolean | undefined;
     try {
       const rewriteParsed = new URL(rewriteUrl, options.request.url);
       const requestOrigin = new URL(options.request.url).origin;
@@ -700,6 +703,8 @@ async function executeMiddlewareModule(
         // but callers (pages pipeline, App Router handler) always operate on
         // basePath-stripped paths. This mirrors the Next.js behavior where the
         // rewrite target is normalized via getNextPathnameInfo before routing.
+        rewriteHadBasePath =
+          !options.basePath || hasBasePath(rewriteParsed.pathname, options.basePath);
         const rewritePathname = options.basePath
           ? stripBasePath(rewriteParsed.pathname, options.basePath)
           : rewriteParsed.pathname;
@@ -716,6 +721,7 @@ async function executeMiddlewareModule(
     return {
       continue: true,
       rewriteUrl: rewritePath,
+      rewriteHadBasePath,
       rewriteStatus: response.status !== 200 ? response.status : undefined,
       responseHeaders: collectMiddlewareHeaders(response),
       status: response.status !== 200 ? response.status : undefined,
