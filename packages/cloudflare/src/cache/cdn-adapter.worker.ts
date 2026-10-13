@@ -414,12 +414,15 @@ function rendersWholeDocument(request: Request): boolean {
 /**
  * A conditional revalidation of a Pages page skips getStaticPaths(), so only a
  * successful render may be stored with a validator. Bot renders carry an ETag
- * whatever their status. A 304 answers a revalidation of a stored 200.
+ * whatever their status. A 304 answers a revalidation of a stored 200, and a
+ * non-cacheable response is never stored, so both keep theirs.
  */
 function withPagesRevalidationValidator(response: Response): Response {
   if (response.status === 200) return withRevalidationValidator(response);
+  const policy = selectedCachePolicy(response);
   if (
     response.status === 304 ||
+    (policy !== null && isNonCacheableCacheControl(policy)) ||
     (!response.headers.has("ETag") && !response.headers.has("Last-Modified"))
   ) {
     return response;
@@ -434,13 +437,18 @@ function withPagesRevalidationValidator(response: Response): Response {
   });
 }
 
+function selectedCachePolicy(response: Response): string | null {
+  return (
+    response.headers.get("Cloudflare-CDN-Cache-Control") ??
+    response.headers.get("CDN-Cache-Control") ??
+    response.headers.get("Cache-Control")
+  );
+}
+
 /** Give a cacheable document a validator, so Workers Cache revalidates it conditionally. */
 function withRevalidationValidator(response: Response): Response {
   if (response.headers.has("ETag") || response.headers.has("Last-Modified")) return response;
-  const policy =
-    response.headers.get("Cloudflare-CDN-Cache-Control") ??
-    response.headers.get("CDN-Cache-Control") ??
-    response.headers.get("Cache-Control");
+  const policy = selectedCachePolicy(response);
   if (policy === null || isNonCacheableCacheControl(policy)) return response;
   const headers = new Headers(response.headers);
   headers.set("Last-Modified", new Date().toUTCString());
