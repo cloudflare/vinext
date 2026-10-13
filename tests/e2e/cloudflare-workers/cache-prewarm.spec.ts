@@ -676,6 +676,68 @@ test("res.revalidate() purges an encoded spelling of a Pages ISR path", async ({
     .toBe(false);
 });
 
+// Next.js keys its response cache by pathname, so every host an app serves
+// shares one entry, and Workers Cache leaves the host out of its key:
+// https://developers.cloudflare.com/workers/cache/cache-keys/
+// A version preview URL is a second host of the same deployed version:
+// https://developers.cloudflare.com/workers/configuration/previews/
+test("Workers Cache shares one entry across the hosts of a deployed Worker", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(backend !== "workers-cache", "the preview URL host is specific to Workers Cache");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(240_000);
+
+  const versionResponse = await request.get(`${baseURL}/api/worker-version`);
+  expect(versionResponse.ok()).toBe(true);
+  const { id } = (await versionResponse.json()) as { id: string | null };
+  expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  const [workerName, ...subdomain] = new URL(baseURL).hostname.split(".");
+  const previewURL = `https://${id!.slice(0, 8)}-${workerName}.${subdomain.join(".")}`;
+
+  // Only an entry shared across hosts gives the preview host a HIT carrying
+  // the render the base host was just served.
+  for (const [pathname, renderOf] of [
+    ["/static-default", (body: string) => /static-default-render-id[^>]*>([^<]+)</.exec(body)?.[1]],
+    [
+      "/host-shared-static",
+      (body: string) => /data-testid="render-id"[^>]*>([^<]+)</.exec(body)?.[1],
+    ],
+    ["/api/host-shared", (body: string) => (JSON.parse(body) as { renderId?: string }).renderId],
+  ] as const) {
+    await expect
+      .poll(
+        async () => {
+          const filled = await request.get(`${baseURL}${pathname}`);
+          expect(filled.ok(), pathname).toBe(true);
+          const filledRender = renderOf(await filled.text());
+          expect(filledRender, pathname).toBeTruthy();
+          const other = await request.get(`${previewURL}${pathname}`);
+          const trace = JSON.stringify({ pathname, headers: other.headers() });
+          expect(other.ok(), trace).toBe(true);
+          return (
+            other.headers()["cf-cache-status"] === "HIT" &&
+            renderOf(await other.text()) === filledRender
+          );
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe(true);
+  }
+
+  // A page whose getInitialProps runs renders per request, as in Next.js, so
+  // a CDN policy stores it per host and no host gets another's.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    for (const origin of [baseURL, previewURL]) {
+      const response = await request.get(`${origin}/host-echo-initial`);
+      expect(response.ok()).toBe(true);
+      expect(await response.text()).toContain(`>${new URL(origin).host}</output>`);
+    }
+  }
+});
+
 if (backend) {
   testRouteHandlerStoragePolicies();
   testPagesStoragePolicies();
