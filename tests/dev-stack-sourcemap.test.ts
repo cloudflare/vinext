@@ -614,6 +614,26 @@ describe("mapStackLine", () => {
     expect(transformRequests).toEqual([`rsc:${canonical("/repo/app/a.js")}`]);
   });
 
+  it("does not server-transform local filesystem frames that resolve to virtual modules", async () => {
+    // e.g. vinext resolves `<root>/virtual:vinext-rsc-entry` to its generated
+    // RSC entry, whose source embeds dev-only secrets.
+    const { server, transformRequests } = createServer(SOURCE_MAP, {
+      resolveId: (id) =>
+        id.endsWith("/virtual:vinext-rsc-entry") ? "\0virtual:vinext-rsc-entry" : id,
+    });
+    const line = "    at entry (/repo/app/virtual:vinext-rsc-entry:960:1)";
+
+    await expect(
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
+    ).resolves.toBe(line);
+    expect(transformRequests).toEqual([]);
+  });
+
   it("maps React Server component frame URLs through the RSC environment source map", async () => {
     // A drive-less file URL (file:///repo/...) is invalid on Windows, so build
     // the fixture URL and matching root via pathToFileURL: they carry the

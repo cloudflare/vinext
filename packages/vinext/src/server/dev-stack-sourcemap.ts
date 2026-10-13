@@ -598,6 +598,9 @@ async function loadServerSourceMapForLocalPath(
       // apply them here to the resolved file (after symlinks and extension
       // probing), as Vite does before loading a file: never map a file Vite
       // itself refuses to serve.
+      // A disk path resolving to a virtual module is server-only plugin output
+      // (vinext's own entries embed dev secrets) that Vite never serves over
+      // HTTP; real server frames name virtual modules by id, not by disk path.
       const resolved = await environment.pluginContainer.resolveId(localPath);
       if (!resolved || resolved.external || resolved.id.startsWith("\0")) continue;
       if (!isFileLoadingAllowed(server.config, stripQuery(resolved.id))) continue;
