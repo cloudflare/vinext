@@ -1,5 +1,3 @@
-import { recordStaticParamsCall } from "../static-params-calls";
-
 const posts: Record<string, string> = {
   "public-post": "PUBLIC",
   "public post": "PUBLIC ENCODED",
@@ -11,7 +9,6 @@ const posts: Record<string, string> = {
 export const dynamicParams = false;
 
 export function generateStaticParams() {
-  recordStaticParamsCall();
   return [
     { slug: "public-post" },
     { slug: "public post" },

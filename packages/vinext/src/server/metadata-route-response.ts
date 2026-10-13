@@ -922,18 +922,6 @@ export async function handleMetadataRouteRequest(
       match.params = runtimeParams;
     }
 
-    const render = async (): Promise<RenderedMetadataRoute> => {
-      setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-      const response = route.isDynamic
-        ? await callDynamicMetadataRoute(route, match, options.makeThenableParams, functions)
-        : serveStaticMetadataRoute(route);
-      return captureRenderedMetadataRoute(response, route, options.cleanPathname);
-    };
-    const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
-    if (cached.response) return cached.response;
-
-    // Only allowed params are ever stored, so a cached response needs no
-    // generateStaticParams call. Next decides this from its build manifest.
     if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
       const validationParams = { ...rawParams };
       canonicalizeAppPageParams(validationParams);
@@ -950,6 +938,16 @@ export async function handleMetadataRouteRequest(
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }
+
+    const render = async (): Promise<RenderedMetadataRoute> => {
+      setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
+      const response = route.isDynamic
+        ? await callDynamicMetadataRoute(route, match, options.makeThenableParams, functions)
+        : serveStaticMetadataRoute(route);
+      return captureRenderedMetadataRoute(response, route, options.cleanPathname);
+    };
+    const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
+    if (cached.response) return cached.response;
 
     const rendered = await render();
     await writeMetadataRouteMiss(options, route, rendered, cached.cachedEntry);
