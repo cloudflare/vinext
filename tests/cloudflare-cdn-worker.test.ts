@@ -1199,7 +1199,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     },
   );
 
-  it("keys a dispatch by its own host when its identity is not host-free", async () => {
+  it("keys a dispatch by its own host when its identity differs in more than the host", async () => {
     const entrypointProps: unknown[] = [];
     const binding = vi.fn(({ props }: { props: unknown }) => {
       entrypointProps.push(props);
@@ -1207,29 +1207,45 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     });
     stages.request.mockImplementation((request: Request, _env, _ctx, dispatch) => {
       const props = { kind: "app-page", requestOrigin: new URL(request.url).origin };
-      // A query-free identity names another path and query than the dispatch.
-      const identity = createSharedAppCacheIdentity(
-        new Request("https://example.com/page"),
-        props as unknown as SharedAppCacheIdentityProps,
+      // A query-free identity names another path and query than the dispatch,
+      // and one that drops a prop other than the host keys less than it renders.
+      const identity =
+        new URL(request.url).pathname === "/page"
+          ? createSharedAppCacheIdentity(
+              new Request("https://example.com/page"),
+              props as unknown as SharedAppCacheIdentityProps,
+            )
+          : {
+              ...createSharedAppCacheIdentity(
+                request,
+                props as unknown as SharedAppCacheIdentityProps,
+              ),
+              props: { kind: "app-page", requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
+            };
+      return dispatch(
+        request,
+        { ...props, resolvedUrl: new URL(request.url).pathname },
+        { cache: "shared", cacheIdentity: identity },
       );
-      return dispatch(request, props, { cache: "shared", cacheIdentity: identity });
     });
     stages.response.mockImplementation(() => new Response("rendered"));
 
-    await worker.fetch(
-      new Request("https://example.com/page?tab=latest"),
-      {},
-      { exports: { VinextCachedResponse: binding } },
-    );
+    for (const pathname of ["/page", "/other"]) {
+      await worker.fetch(
+        new Request(`https://example.com${pathname}?tab=latest`),
+        {},
+        { exports: { VinextCachedResponse: binding } },
+      );
+    }
 
-    expect(entrypointProps).toEqual([
-      {
+    expect(entrypointProps).toEqual(
+      ["/page", "/other"].map((pathname) => ({
         options: { cache: "shared" },
-        props: { kind: "app-page", requestOrigin: "https://example.com" },
+        props: { kind: "app-page", requestOrigin: "https://example.com", resolvedUrl: pathname },
         requestMethod: "GET",
-        requestUrl: "https://example.com/page?tab=latest",
-      },
-    ]);
+        requestUrl: `https://example.com${pathname}?tab=latest`,
+      })),
+    );
   });
 
   it("refuses a host-free invocation whose dispatch restore is missing or names another page", async () => {
@@ -1251,6 +1267,14 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       { "x-vinext-internal-dispatch": "not-json" },
       { "x-vinext-internal-dispatch": restore("https://tenant.example/other?tab=latest") },
       { "x-vinext-internal-dispatch": restore("https://tenant.example/page?tab=other") },
+      {
+        "x-vinext-internal-dispatch": encodeURIComponent(
+          JSON.stringify({
+            props: { kind: "pages-page" },
+            requestUrl: "https://tenant.example/page?tab=latest",
+          }),
+        ),
+      },
     ]) {
       const response = await createEntrypoint(invocation).fetch(
         new Request("https://tenant.example/page?tab=latest&__vinext_cache_key=digest", {

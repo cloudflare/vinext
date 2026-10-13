@@ -84,6 +84,8 @@ const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
 const RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER = "x-vinext-internal-render-whole-document";
 const DISPATCH_TRANSPORT_HEADER = "x-vinext-internal-dispatch";
+/** The stage props a host-free cache identity replaces. */
+const HOST_BEARING_PROPS = new Set(["requestHost", "requestOrigin", "requestUrl"]);
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const RESPONSE_STAGE_WIRE_CACHE = {
   bypass: "vinext-cloudflare-v1:bypass",
@@ -745,7 +747,11 @@ function getDispatchRestore(
   if (Object.keys(keyed).some((name) => !Object.hasOwn(dispatched, name))) return null;
   const replaced: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(dispatched)) {
-    if (JSON.stringify(value) !== JSON.stringify(keyed[name])) replaced[name] = value;
+    if (JSON.stringify(value) === JSON.stringify(keyed[name])) continue;
+    // Only the host may differ: a render from any other unkeyed prop would
+    // store it under a key that doesn't name it.
+    if (!HOST_BEARING_PROPS.has(name)) return null;
+    replaced[name] = value;
   }
   return { props: replaced, requestUrl: request.url };
 }
@@ -768,6 +774,7 @@ function restoreDispatchInvocation(
     return null;
   }
   if (!isPlainObject(restore) || !isPlainObject(restore.props)) return null;
+  if (Object.keys(restore.props).some((name) => !HOST_BEARING_PROPS.has(name))) return null;
   const requestUrl = restore.requestUrl;
   if (typeof requestUrl !== "string") return null;
   let url: URL;
