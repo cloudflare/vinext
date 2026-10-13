@@ -58,7 +58,6 @@ import { resolveAppRouteHandlerFetchCacheMode } from "./app-segment-config.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
-import { resolveRequestTrailingSlash } from "./request-trailing-slash.js";
 import { reportRequestError } from "./instrumentation.js";
 import { applyCdnResponseBuildIdentityHeaders } from "./cache-control.js";
 import {
@@ -259,11 +258,6 @@ async function dispatchAppRouteHandlerImpl(
   }
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
-  const trailingSlash = resolveRequestTrailingSlash(
-    new URL(options.request.url).pathname,
-    options.trailingSlash,
-    options.skipTrailingSlashRedirect,
-  );
   const shouldReadRouteCache =
     options.bypassSharedCache !== true &&
     revalidateSeconds !== null &&
@@ -312,7 +306,8 @@ async function dispatchAppRouteHandlerImpl(
       getCollectedFetchTags,
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
-      trailingSlash,
+      trailingSlash: options.trailingSlash,
+      skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
       isAutoHead,
       appendResponseLink,
       isrDebug: options.isrDebug,
@@ -380,7 +375,8 @@ async function dispatchAppRouteHandlerImpl(
       handler,
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
-      trailingSlash,
+      trailingSlash: options.trailingSlash,
+      skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
       isAutoHead,
       initialDraftModeCookie,
       isDraftMode,

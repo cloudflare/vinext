@@ -35,7 +35,6 @@ import {
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { nextDataMiddlewareMatchPathname } from "./pages-data-route.js";
 import { reportRequestError } from "./instrumentation.js";
-import { resolveRequestTrailingSlash } from "./request-trailing-slash.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { frameworkTracer } from "./tracer.js";
 
@@ -315,17 +314,13 @@ function createNextRequest(
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
-  const urlTrailingSlash = resolveRequestTrailingSlash(
-    mwPathname,
-    trailingSlash,
-    skipTrailingSlashRedirect,
-  );
-  const hasNextConfig = basePath || i18nConfig || urlTrailingSlash;
+  const hasNextConfig = basePath || i18nConfig || trailingSlash || skipTrailingSlashRedirect;
   const nextConfig = hasNextConfig
     ? {
         basePath: basePath ?? "",
         i18n: i18nConfig ?? undefined,
-        trailingSlash: urlTrailingSlash ?? undefined,
+        trailingSlash: trailingSlash ?? undefined,
+        skipTrailingSlashRedirect,
       }
     : undefined;
 

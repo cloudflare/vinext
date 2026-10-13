@@ -241,6 +241,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
               i18nConfig: overrides.i18nConfig ?? null,
               isProxy: overrides.isMiddlewareProxy ?? false,
               module: overrides.middlewareModule!,
+              skipTrailingSlashRedirect: overrides.skipTrailingSlashRedirect,
               trailingSlash: overrides.trailingSlash ?? false,
             })
         : undefined),
@@ -4628,6 +4629,53 @@ describe("createAppRscHandler", () => {
 
       expect(response.status).toBe(200);
       expect(middlewarePaths).toEqual([seen]);
+    },
+  );
+
+  it.each([
+    { source: "/feed/secret/", trailingSlash: false },
+    { source: "/feed/secret", trailingSlash: true },
+  ])(
+    "keeps the interception source $source as named under skipTrailingSlashRedirect (trailingSlash: $trailingSlash)",
+    async ({ source, trailingSlash }) => {
+      const targetRoute = createPageRoute({
+        pattern: "/photos/1",
+        routeSegments: ["photos", "1"],
+      });
+      const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === source
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) =>
+          pathname === "/photos/1" || pathname === "/photos/1/"
+            ? { params: {}, route: targetRoute }
+            : null,
+        middlewareModule: {
+          default(request: NextRequest) {
+            if (request.nextUrl.pathname.startsWith("/feed")) {
+              middlewarePaths.push(request.nextUrl.pathname);
+            }
+          },
+        },
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: source });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      // A direct request to the source is not redirected, so middleware
+      // authorizes the same spelling.
+      expect(response.status).toBe(200);
+      expect(middlewarePaths).toEqual([source]);
     },
   );
 

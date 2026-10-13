@@ -1807,12 +1807,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // A direct request to a non-canonical spelling redirects to the canonical
     // one first, so every later step sees that. The client can legitimately
     // send a matched route path, such as `/en` under `trailingSlash: true`.
-    const sourceRequestPathname =
-      normalizeTrailingSlashPathname(interceptionContextHeader, options.trailingSlash) ??
-      interceptionContextHeader;
-    const decodedSourceRequestPathname =
-      normalizeTrailingSlashPathname(interceptionSourcePathname, options.trailingSlash) ??
-      interceptionSourcePathname;
+    // With `skipTrailingSlashRedirect` a direct request keeps its spelling, so
+    // the authorization pass must see the source exactly as named.
+    const sourceRequestPathname = options.skipTrailingSlashRedirect
+      ? interceptionContextHeader
+      : (normalizeTrailingSlashPathname(interceptionContextHeader, options.trailingSlash) ??
+        interceptionContextHeader);
+    const decodedSourceRequestPathname = options.skipTrailingSlashRedirect
+      ? interceptionSourcePathname
+      : (normalizeTrailingSlashPathname(interceptionSourcePathname, options.trailingSlash) ??
+        interceptionSourcePathname);
     const adoptRewrittenInterceptionSource = (rewrittenPathname: string): boolean => {
       // The raw context was matched before this rewrite, so it can name another
       // route: with an unprefixed default locale, `/feed` rewrites to

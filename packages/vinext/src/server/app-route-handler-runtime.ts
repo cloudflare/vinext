@@ -132,6 +132,7 @@ type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
   requestMode?: AppRouteRequestMode;
@@ -192,8 +193,14 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
   basePath?: string;
   i18n?: NextI18nConfig;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
 } | null {
-  if (!options.basePath && !options.i18n && !options.trailingSlash) {
+  if (
+    !options.basePath &&
+    !options.i18n &&
+    !options.trailingSlash &&
+    !options.skipTrailingSlashRedirect
+  ) {
     return null;
   }
 
@@ -201,6 +208,7 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
     basePath: options.basePath,
     i18n: options.i18n ?? undefined,
     trailingSlash: options.trailingSlash,
+    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
   };
 }
 

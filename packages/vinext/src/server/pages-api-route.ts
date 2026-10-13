@@ -32,7 +32,6 @@ import { NextRequest } from "vinext/shims/server";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { hasCdnResponsePolicy } from "./cache-control.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
-import { resolveRequestTrailingSlash } from "./request-trailing-slash.js";
 
 type PagesApiRouteConfig = {
   runtime?: string;
@@ -169,19 +168,15 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       // Next.js wraps the incoming Request in a NextRequest before invoking
       // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
       // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
-      const edgeRequest = createEdgeApiRequest(options.request, options.url, params);
       const nextRequest = new NextRequest(
-        edgeRequest,
+        createEdgeApiRequest(options.request, options.url, params),
         options.nextConfig
           ? {
               nextConfig: {
                 basePath: options.nextConfig.basePath,
                 i18n: options.nextConfig.i18n ?? undefined,
-                trailingSlash: resolveRequestTrailingSlash(
-                  new URL(edgeRequest.url).pathname,
-                  options.nextConfig.trailingSlash,
-                  options.nextConfig.skipTrailingSlashRedirect,
-                ),
+                trailingSlash: options.nextConfig.trailingSlash,
+                skipTrailingSlashRedirect: options.nextConfig.skipTrailingSlashRedirect,
               },
             }
           : undefined,

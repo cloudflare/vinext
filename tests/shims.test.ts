@@ -12819,6 +12819,77 @@ describe("NextRequest plumbs trailingSlash into nextUrl", () => {
   });
 });
 
+// Next.js's NextURL derives the slash from the parsed pathname when
+// `skipTrailingSlashRedirect` is set (getNextPathnameInfo), re-analyzing on
+// construction and on `href` assignment but not on `pathname` assignment.
+describe("NextURL under skipTrailingSlashRedirect", () => {
+  it("keeps the slash the URL arrived with", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    for (const trailingSlash of [false, true]) {
+      const config = { nextConfig: { trailingSlash, skipTrailingSlashRedirect: true } };
+      expect(new NextURL("http://localhost/about/", undefined, config).href).toBe(
+        "http://localhost/about/",
+      );
+      expect(new NextURL("http://localhost/about", undefined, config).href).toBe(
+        "http://localhost/about",
+      );
+    }
+  });
+
+  it("keeps the slash on /_next/ paths", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/_next/static/missing/", undefined, {
+      nextConfig: { skipTrailingSlashRedirect: true },
+    });
+    expect(url.pathname).toBe("/_next/static/missing/");
+  });
+
+  it("re-derives the slash when href is assigned", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/from/", undefined, {
+      nextConfig: { skipTrailingSlashRedirect: true },
+    });
+    url.href = "http://localhost/to";
+    expect(url.href).toBe("http://localhost/to");
+    url.href = "http://localhost/again/";
+    expect(url.href).toBe("http://localhost/again/");
+  });
+
+  it("keeps the analyzed slash when pathname is assigned", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/from/", undefined, {
+      nextConfig: { skipTrailingSlashRedirect: true },
+    });
+    url.pathname = "/to";
+    expect(url.href).toBe("http://localhost/to/");
+  });
+
+  it("uses the trailingSlash config for the root and survives clone()", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/", undefined, {
+      nextConfig: { trailingSlash: true, skipTrailingSlashRedirect: true },
+    });
+    const cloned = url.clone();
+    cloned.href = "http://localhost/plain";
+    expect(cloned.href).toBe("http://localhost/plain");
+    cloned.href = "http://localhost/";
+    cloned.pathname = "/next";
+    expect(cloned.href).toBe("http://localhost/next/");
+  });
+
+  it("NextRequest forwards skipTrailingSlashRedirect into nextUrl", async () => {
+    const { NextRequest, NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/about/", {
+      nextConfig: { trailingSlash: false, skipTrailingSlashRedirect: true },
+    });
+    expect(req.nextUrl.pathname).toBe("/about/");
+    const url = req.nextUrl.clone();
+    url.href = "http://localhost/target";
+    const location = NextResponse.redirect(url).headers.get("location");
+    expect(new URL(location!).pathname).toBe("/target");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // NextResponse.next() with request header forwarding
 

@@ -104,6 +104,7 @@ type RunAppRouteHandlerOptions = {
   i18n?: NextI18nConfig | null;
   isDraftMode?: boolean;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -282,6 +283,7 @@ export async function runAppRouteHandler(
     basePath: options.basePath,
     i18n: options.i18n,
     trailingSlash: options.trailingSlash,
+    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
     middlewareHeaders: options.middlewareRequestHeaders,
     onDynamicAccess() {
       options.markDynamicUsage();
