@@ -3212,6 +3212,30 @@ export const config = { matcher: "${matcher}" };
     expect(res.status).toBe(200);
   });
 
+  // Next.js has no `.html` route aliases: `/about.html` is its own path.
+  // Routing it as `/about` would bypass middleware gated on `/about`.
+  it("routes .html request paths as written in development", async () => {
+    const canonical = await fetch(`${baseUrl}/middleware-protected-data`);
+    expect(canonical.status).toBe(403);
+
+    const cases = [
+      ["/middleware-protected-data.html", "only visible after middleware"],
+      ["/middleware-protected-data.html?x=1", "only visible after middleware"],
+      ["/index.html", "Hello, vinext!"],
+      ["/api/hello.html", "Hello from API!"],
+    ];
+    for (const [pathname, body] of cases) {
+      const response = await fetch(`${baseUrl}${pathname}`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain(body);
+    }
+
+    // `.html` stays part of the path, so a dynamic route still receives it.
+    const docs = await fetch(`${baseUrl}/docs/release/foo.html`);
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/foo\.html/);
+  });
+
   // ── /_next/data JSON endpoint (issue #1330) ──────────────────────
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // ("should trigger middleware for data requests").
@@ -7437,6 +7461,29 @@ describe("Production server middleware (Pages Router)", () => {
     });
   });
 
+  // Next.js keeps no fetch state outside a work store (patch-fetch.ts returns
+  // originFetch), so a Pages API route's fetches must not pile up for the
+  // life of the process or carry their no-store into later requests.
+  it("keeps no process-wide fetch state from Pages API route fetches in production", async () => {
+    // A page render installs the fetch patch for the whole process.
+    expect((await fetch(`${prodUrl}/about`)).status).toBe(200);
+
+    const id = `fallback-${Date.now()}`;
+    const res = await fetch(`${prodUrl}/api/fetch-request-url?id=${id}`);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ id });
+
+    const fallback = (globalThis as Record<PropertyKey, unknown>)[
+      Symbol.for("vinext.fetchCache.fallback")
+    ] as { dynamicFetchUrls: Set<string>; currentFetchRevalidate: number | null };
+    // Only the route's own outgoing fetches, not this test's request to it.
+    const routeFetchUrls = [...fallback.dynamicFetchUrls].filter(
+      (url) => url.startsWith("http://127.0.0.1:9/upstream?") && url.includes(id),
+    );
+    expect(routeFetchUrls).toEqual([]);
+    expect(fallback.currentFetchRevalidate).toBeNull();
+  });
+
   // Refs #1463: prod-server parity for the dev-server 405 check. POST to a
   // static Pages Router page must return 405 + Allow: GET, HEAD.
   // Ported from Next.js: test/e2e/prerender.test.ts
@@ -8167,6 +8214,30 @@ describe("Production server middleware (Pages Router)", () => {
     // Ensure encoded variants like /%2Evite/ are also blocked
     const res = await fetch(`${prodUrl}/%2Evite/ssr-manifest.json`);
     expect(res.status).toBe(404);
+  });
+
+  // Next.js has no `.html` route aliases: `/about.html` is its own path.
+  // Routing it as `/about` would bypass middleware gated on `/about`.
+  it("routes .html request paths as written in production", async () => {
+    const canonical = await fetch(`${prodUrl}/middleware-protected-data`);
+    expect(canonical.status).toBe(403);
+
+    const cases = [
+      ["/middleware-protected-data.html", "only visible after middleware"],
+      ["/middleware-protected-data.html?x=1", "only visible after middleware"],
+      ["/index.html", "Hello, vinext!"],
+      ["/api/hello.html", "Hello from API!"],
+    ];
+    for (const [pathname, body] of cases) {
+      const response = await fetch(`${prodUrl}${pathname}`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain(body);
+    }
+
+    // `.html` stays part of the path, so a dynamic route still receives it.
+    const docs = await fetch(`${prodUrl}/docs/release/foo.html`);
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/foo\.html/);
   });
 
   // ── /_next/data JSON endpoint in production (issue #1330) ─────────

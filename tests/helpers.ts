@@ -12,7 +12,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { createServer, build, type ViteDevServer } from "vite";
+import { createServer, build, type PluginOption, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
@@ -93,6 +93,8 @@ export async function startFixtureServer(
     /** The vinext() `cache` option (declarative cache adapters). */
     cache?: VinextCacheConfig;
     listen?: boolean;
+    /** Plugins listed ahead of vinext() in the plugins array. */
+    prependPlugins?: PluginOption[];
     publicDir?: string | false;
     resolve?: { preserveSymlinks?: boolean };
     server?: {
@@ -119,7 +121,7 @@ export async function startFixtureServer(
   } else {
     plugin = vinext({ appDir: opts?.appDir ?? fixtureDir, cache: opts?.cache });
   }
-  const plugins = [plugin];
+  const plugins = [...(opts?.prependPlugins ?? []), plugin];
 
   const server = await createServer({
     root: fixtureDir,

@@ -1938,7 +1938,7 @@ describe("App Router Production server (startProdServer)", () => {
     for (const [query, status] of [
       ["url=%2Fheart.png&w=65&q=75", 400],
       ["url=%2Flogo%2Flogo.svg&w=64&q=75", 400],
-      ["url=%2Fmissing.png&w=64&q=75", 404],
+      ["url=%2Fmissing.png&w=64&q=75", 400],
     ] as const) {
       const res = await fetch(`${baseUrl}/_next/image?${query}`);
       expect(res.status, query).toBe(status);
@@ -2018,8 +2018,8 @@ describe("App Router Production server (startProdServer)", () => {
       const protectedImageRes = await fetch(
         `${tmpBaseUrl}/_next/image?url=%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
       );
-      expect(protectedImageRes.status).toBe(404);
-      await protectedImageRes.arrayBuffer();
+      expect(protectedImageRes.status).toBe(400);
+      expect(await protectedImageRes.text()).toBe("The requested resource isn't a valid image.");
     } finally {
       basePathServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -176,6 +176,7 @@ import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-mani
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
+import { sealForwardedMiddlewareContext } from "./server/forwarded-middleware-context.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 import { traceFrameworkRequest } from "./server/request-tracing.js";
 
@@ -421,6 +422,29 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
 const VINEXT_GENERATED_DIR_RE = /(?:^|[/\\])\.vinext(?:[/\\]|$)/;
 
+// Node keeps each client header in req.rawHeaders as well as req.headers, and
+// srvx (plugin-rsc's dev request adapter) answers Headers reads from rawHeaders
+// once anything iterates them. Keep both views in sync so the App Router only
+// ever sees the forwarded middleware context the hybrid Pages handler attached.
+function removeForwardedMiddlewareContext(req: import("node:http").IncomingMessage): void {
+  delete req.headers[VINEXT_MW_CTX_HEADER];
+  const rawHeaders = req.rawHeaders;
+  for (let i = rawHeaders.length - 2; i >= 0; i -= 2) {
+    if (rawHeaders[i].toLowerCase() === VINEXT_MW_CTX_HEADER) rawHeaders.splice(i, 2);
+  }
+}
+
+function setForwardedMiddlewareContext(
+  req: import("node:http").IncomingMessage,
+  key: string,
+  context: string,
+): void {
+  removeForwardedMiddlewareContext(req);
+  const value = sealForwardedMiddlewareContext(key, context);
+  req.headers[VINEXT_MW_CTX_HEADER] = value;
+  req.rawHeaders.push(VINEXT_MW_CTX_HEADER, value);
+}
+
 function scopeRscPlugin(plugin: Plugin): Plugin {
   const applyToEnvironment = plugin.applyToEnvironment;
   return {
@@ -455,7 +479,7 @@ if (earlyViteCliInvocation) {
   loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
 }
 
-// Install the process-level peer-disconnect backstop at module load.
+// Install the process-level error backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
 // timing-fragile in vite-plus — install was silently skipped,
 // confirmed via VINEXT_DEBUG_SOCKET_ERRORS=1. Skips Vitest workers
@@ -1752,6 +1776,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const prerenderSecret =
     process.env.__VINEXT_SHARED_PRERENDER_SECRET ?? randomBytes(32).toString("hex");
   let revalidateSecret = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+  // Authenticates the middleware context hybrid dev forwards to the App Router.
+  const devForwardedMiddlewareContextKey = randomBytes(32).toString("hex");
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
@@ -5001,6 +5027,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 globalNotFoundPath,
                 draftModeSecret,
                 prerenderSecret,
+                // Dev-only, and never emitted into a client-environment copy.
+                devForwardedMiddlewareContextKey:
+                  isServeCommand && this.environment.config.consumer === "server"
+                    ? devForwardedMiddlewareContextKey
+                    : undefined,
               },
               instrumentationPath,
             );
@@ -5643,14 +5674,17 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        // Like `next dev`, the dev server logs uncaught errors from app code
+        // and keeps serving. See socket-error-backstop.ts.
+        installSocketErrorBackstop({ runningServer: true });
+
         const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
 
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
-          // Only the hybrid Pages handler below may attach the forwarded
-          // middleware context. The App Router trusts req.headers for it, so a
-          // client copy would otherwise replace middleware execution.
-          delete req.headers[VINEXT_MW_CTX_HEADER];
+          // Only the hybrid Pages handler may attach the forwarded middleware
+          // context. The App Router also rejects any copy without the dev key.
+          removeForwardedMiddlewareContext(req);
           next();
         });
 
@@ -6476,29 +6510,12 @@ export const loadServerActionClient = ${
               const canonicalOriginalUrl = canonicalizeRequestUrlPathname(originalEncodedUrl);
               url = canonicalizeRequestUrlPathname(url);
 
-              // Vite's built-in middleware may rewrite "/" to "/index.html".
-              // Normalize it back so our router can match correctly.
-              const rawPathname = url.split("?")[0];
-              if (rawPathname.endsWith("/index.html")) {
-                url = url.replace("/index.html", "/");
-              } else if (rawPathname.endsWith(".html")) {
-                // Strip .html extensions (e.g. "/about.html" -> "/about")
-                url = url.replace(/\.html(?=\?|$)/, "");
-              }
-
-              // Preserve the original request URL for NextRequest. Vite may
-              // rewrite extensionless paths to `.html`, while an actual
-              // `.html` request must remain distinguishable to middleware.
+              // Route the same path middleware is matched against. With
+              // appType "custom", Vite never rewrites URLs to `.html`, so a
+              // `.html` suffix came from the client. Like Next.js, it is part of
+              // the path: `/about.html` does not route to pages/about.
               let middlewareUrl = canonicalOriginalUrl;
               let routeUrl = middlewareUrl;
-              {
-                const routePathname = routeUrl.split("?")[0];
-                if (routePathname.endsWith("/index.html")) {
-                  routeUrl = routeUrl.replace("/index.html", "/");
-                } else if (routePathname.endsWith(".html")) {
-                  routeUrl = routeUrl.replace(/\.html(?=\?|$)/, "");
-                }
-              }
               let pathname = url.split("?")[0];
 
               // Guard against protocol-relative URL open redirects.
@@ -6777,6 +6794,9 @@ export const loadServerActionClient = ${
               });
 
               const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
+                // The sealed forwarded context is only for the App Router. Drop
+                // it from rawHeaders too so Pages handlers never see its key.
+                removeForwardedMiddlewareContext(req);
                 for (const key of Object.keys(req.headers)) {
                   delete req.headers[key];
                 }
@@ -6837,11 +6857,15 @@ export const loadServerActionClient = ${
                           }
                         }
                         const mwStatus = result.status ?? result.rewriteStatus;
-                        req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
-                          h: mwCtxEntries,
-                          s: mwStatus ?? null,
-                          r: result.rewriteUrl ?? null,
-                        });
+                        setForwardedMiddlewareContext(
+                          req,
+                          devForwardedMiddlewareContextKey,
+                          JSON.stringify({
+                            h: mwCtxEntries,
+                            s: mwStatus ?? null,
+                            r: result.rewriteUrl ?? null,
+                          }),
+                        );
                       }
 
                       return result as unknown as MiddlewareResult;
@@ -7050,12 +7074,16 @@ export const loadServerActionClient = ${
                 // match, while mutating req.url would lose the public URL that
                 // App route handlers expose through request.url.
                 flushRequestHeaders();
-                req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
-                  h: responseHeaders,
-                  q: [...requestHeaders],
-                  s: pipelineResult.middlewareStatus ?? null,
-                  r: apiUrl,
-                });
+                setForwardedMiddlewareContext(
+                  req,
+                  devForwardedMiddlewareContextKey,
+                  JSON.stringify({
+                    h: responseHeaders,
+                    q: [...requestHeaders],
+                    s: pipelineResult.middlewareStatus ?? null,
+                    r: apiUrl,
+                  }),
+                );
               };
 
               if (pipelineResult.type === "api") {
@@ -7066,7 +7094,7 @@ export const loadServerActionClient = ${
                 // before falling through to next(): an unconditional flushRequestHeaders()
                 // deletes all req.headers and repopulates them from the body-less pipeline
                 // request, wiping the hybrid app+pages middleware context
-                // (VINEXT_MW_CTX_HEADER, set on req.headers) that the app RSC plugin reads.
+                // (VINEXT_MW_CTX_HEADER) that the app RSC plugin reads.
                 const apiMatch = matchRoute(pipelineResult.apiUrl, devApiRoutes);
                 if (apiMatch && hasAppDir && appDir) {
                   const devAppRoutes = await getDevAppRoutes();

@@ -102,6 +102,14 @@ const nextConfig: NextConfig = {
         destination: "/about?next=/:next&safe=1",
         permanent: false,
       },
+      // Used by E2E: config-redirect.spec.ts — a decoded query capture at the
+      // start of a local destination must not become protocol-relative.
+      {
+        source: "/query-capture-redirect",
+        destination: "/:to",
+        permanent: false,
+        has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
+      },
       // Ported from Next.js v16.2.6:
       // test/e2e/app-dir/rsc-query-routing/next.config.js
       {

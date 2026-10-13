@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vite-plus/test";
 import {
   isBenignAssetImportError,
@@ -169,5 +172,60 @@ describe("installSocketErrorBackstop", () => {
     // installation is short-circuited and the predicate stays false.
     expect(process.env.VITEST).toBe("true");
     expect(isSocketErrorBackstopInstalled()).toBe(false);
+  });
+});
+
+describe("installSocketErrorBackstop listeners", () => {
+  // Vitest workers skip installation, so exercise the real listeners in a
+  // child process with the test-runner env vars cleared.
+  const backstopUrl = pathToFileURL(
+    path.resolve(import.meta.dirname, "../packages/vinext/src/server/socket-error-backstop.ts"),
+  ).href;
+
+  function runWithBackstop(install: string, env: Record<string, string> = {}) {
+    const script = `
+      import { installSocketErrorBackstop } from ${JSON.stringify(backstopUrl)};
+      ${install}
+      process.on("unhandledRejection", () => console.log("app handler saw rejection"));
+      void Promise.reject(new Error("floating rejection"));
+      setTimeout(() => { throw new Error("uncaught throw"); }, 10);
+      setTimeout(() => console.log("still running"), 50);
+    `;
+    return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, VITEST: "", NODE_ENV: "production", ...env },
+      timeout: 10_000,
+    });
+  }
+
+  // Next.js's router server logs uncaught exceptions and unhandled rejections
+  // and keeps serving (packages/next/src/server/lib/router-server.ts, `logError`).
+  it("logs and keeps running on a production server, even when installed first without the opt-in", () => {
+    // Mirrors index.ts installing at module load before startProdServer opts in.
+    const result = runWithBackstop(
+      "installSocketErrorBackstop(); installSocketErrorBackstop({ runningServer: true });",
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("app handler saw rejection");
+    expect(result.stdout).toContain("still running");
+    expect(result.stderr).toContain("[vinext] unhandledRejection: Error: floating rejection");
+    expect(result.stderr).toContain("[vinext] uncaughtException: Error: uncaught throw");
+  });
+
+  it("re-throws outside a running production server", () => {
+    const result = runWithBackstop("installSocketErrorBackstop();");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Error: floating rejection");
+    expect(result.stdout).not.toContain("app handler saw rejection");
+    expect(result.stdout).not.toContain("still running");
+  });
+
+  it("re-throws during prerender even after a running server opted in", () => {
+    const result = runWithBackstop("installSocketErrorBackstop({ runningServer: true });", {
+      VINEXT_PRERENDER: "1",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Error: floating rejection");
+    expect(result.stdout).not.toContain("still running");
   });
 });

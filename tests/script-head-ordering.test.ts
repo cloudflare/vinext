@@ -139,6 +139,19 @@ describe("inline beforeInteractive head ordering", () => {
     );
   });
 
+  it("escapes a <script opener in inline children so data cannot swallow the document", async () => {
+    // The /beforeinteractive-script-data page embeds `{"name":"<!--<script>"}`
+    // in an inline beforeInteractive Script. Left raw, `<!--<script>` puts the
+    // HTML tokenizer in the double-escaped script state, so the hoisted
+    // script's own `</script>` no longer closes it and the markup that follows
+    // becomes its text. React Fizz rewrites both `<script` and `</script`
+    // in script children to the `\u0073` form; the hoisted tag must match.
+    const { res, html } = await fetchHtml(baseUrl, "/beforeinteractive-script-data");
+    expect(res.status).toBe(200);
+    expect(html).toContain('self.__vinextScriptData = {"name":"<!--<\\u0073cript>"};</script>');
+    expect(html).not.toContain("<!--<script>");
+  });
+
   it("preserves passthrough attributes like data-*", async () => {
     const { html } = await fetchHtml(baseUrl, ROUTE);
     const head = extractHeadHtml(html);

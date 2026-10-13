@@ -62,7 +62,10 @@ import {
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
-import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request-headers.js";
+import {
+  buildRequestHeadersFromMiddlewareResponse,
+  hasMiddlewareRequestHeaderOverrides,
+} from "../utils/middleware-request-headers.js";
 import { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
@@ -101,6 +104,7 @@ import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
 } from "./revalidation-request.js";
+import { openForwardedMiddlewareContext } from "./forwarded-middleware-context.js";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { hasPagesPreviewCookie } from "./pages-response-stage.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
@@ -620,6 +624,11 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     fallback: NextRewrite[];
   };
   draftModeSecret: string;
+  /**
+   * Dev-only key the hybrid Pages handler seals x-vinext-mw-ctx with. Null
+   * outside `vite dev`, so a forwarded middleware context is never honored.
+   */
+  devForwardedMiddlewareContextKey?: string | null;
   dispatchMatchedPage: (options: DispatchMatchedPageOptions<TRoute>) => Promise<Response>;
   dispatchMatchedRouteHandler: (
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
@@ -1680,9 +1689,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         headers: middlewareHeaders,
       });
     }
+    const overrideHeaders = middlewareContext.requestHeaders ?? middlewareContext.headers;
     return markImageOptimizationSignal(
       Response.redirect(new URL(imageRedirect, url.origin).href, 302),
-      { middlewareHeaders, search: imageUrl.search },
+      {
+        middlewareHeaders,
+        // The context holds middleware's encoded overrides, not request headers.
+        requestHeaders: overrideHeaders
+          ? buildRequestHeadersFromMiddlewareResponse(request.headers, overrideHeaders)
+          : null,
+        search: imageUrl.search,
+      },
     );
   }
 
@@ -2930,15 +2947,14 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // for pure App Router requests; in hybrid app+pages mode the connect
     // handler already filtered headers upstream and x-vinext-mw-ctx carries
     // the forwarded middleware context.
-    // srvx's NodeRequestHeaders reads from rawHeaders for iteration but falls
-    // back to req.headers for .get() / .has(). In the dev server we add
-    // x-vinext-mw-ctx to req.headers after the Request is built, so it is
-    // visible to .get() but lost when filterInternalHeaders iterates. Read it
-    // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
-    // Only that .get() value is trusted: the dev server deletes any client copy
-    // from req.headers on ingress, the Worker and production entries filter it,
-    // and filterInternalHeaders drops the copy still present in rawHeaders.
-    const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
+    // filterInternalHeaders drops x-vinext-mw-ctx, so read it first and
+    // re-attach it below for applyForwardedMiddlewareContext. Only a value
+    // sealed with this dev server's key is honored; any other copy is dropped
+    // and middleware runs as usual.
+    const mwCtx = openForwardedMiddlewareContext(
+      rawRequest.headers.get(VINEXT_MW_CTX_HEADER),
+      options.devForwardedMiddlewareContextKey,
+    );
     const pagesDataUrl = new URL(rawRequest.url);
     const pagesDataInScope =
       !options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath);

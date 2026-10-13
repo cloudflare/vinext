@@ -104,6 +104,23 @@ test.describe("Config Redirects (OpenNext compat)", () => {
     expect(noRedirect.status()).not.toBe(307);
     expect(noRedirect.status()).not.toBe(308);
   });
+
+  // Browsers strip ASCII tab/newline from a Location before parsing it, so a
+  // decoded query capture of "\t/evil.test" substituted into "/:to" must not
+  // reach the browser as "/\t/evil.test" (resolved as //evil.test).
+  test("query capture at the start of a destination stays same-origin", async ({ request }) => {
+    for (const to of ["%09%2Fevil.test", "%09%5Cevil.test", "%2F%09%2Fevil.test", "%2Fevil.test"]) {
+      const res = await request.get(`${BASE}/query-capture-redirect?to=${to}`, {
+        maxRedirects: 0,
+      });
+      expect(res.status()).toBe(307);
+      const location = res.headers()["location"];
+      expect(location).toBe(`/evil.test?to=${to}`);
+      const resolved = new URL(location, BASE);
+      expect(resolved.origin).toBe(BASE);
+      expect(resolved.pathname).toBe("/evil.test");
+    }
+  });
 });
 
 test.describe("Config Rewrites (OpenNext compat)", () => {
