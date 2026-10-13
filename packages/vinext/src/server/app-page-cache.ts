@@ -143,7 +143,7 @@ type ReadAppPageFallbackShellCacheResponseOptions = {
   isEdgeRuntime?: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
-  isrHtmlKey: (pathname: string) => string;
+  isrFallbackShellHtmlKey: (pathname: string) => string;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   revalidateSeconds: number;
@@ -780,7 +780,7 @@ export async function readAppPageCacheResponse(
 export async function readAppPageFallbackShellCacheResponse(
   options: ReadAppPageFallbackShellCacheResponseOptions,
 ): Promise<Response | null> {
-  const isrKey = options.isrHtmlKey(options.fallbackPathname);
+  const isrKey = options.isrFallbackShellHtmlKey(options.fallbackPathname);
 
   try {
     const cached = await options.isrGet(isrKey);

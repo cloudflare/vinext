@@ -171,8 +171,6 @@ export type DeployOptions = {
   warmCdnPromote?: boolean;
   /** Delay between successful warmup and promotion in milliseconds */
   warmCdnPromotionDelay?: number;
-  /** Include PPR fallback-shell placeholder paths during CDN warmup */
-  warmCdnIncludeFallbacks?: boolean;
   /** Select CDN pre-warm routes using traffic analytics */
   experimentalTPR?: boolean;
   /** TPR: traffic coverage percentage target (0–100, default: 90) */
@@ -327,6 +325,8 @@ const deployArgOptions = {
   "no-promote": { type: "boolean", default: false },
   "warm-cache-no-promote": { type: "boolean", default: false },
   "warm-cache-promotion-delay": { type: "string" },
+  // Accepted but ignored: warming a placeholder path renders that literal URL,
+  // never a fallback shell.
   "warm-cache-include-fallbacks": { type: "boolean", default: false },
   "traffic-aware-warm-cache": { type: "boolean", default: false },
   "traffic-aware-coverage": { type: "string" },
@@ -380,7 +380,9 @@ export function parseDeployArgs(args: string[]) {
   values["warm-cache-readiness-probe-delay"] ??= values["warm-cdn-readiness-probe-delay"];
   values["warm-cache-no-promote"] ||= values["warm-cdn-no-promote"];
   values["warm-cache-promotion-delay"] ??= values["warm-cdn-promotion-delay"];
-  values["warm-cache-include-fallbacks"] ||= values["warm-cdn-include-fallbacks"];
+  if (values["warm-cache-include-fallbacks"] || values["warm-cdn-include-fallbacks"]) {
+    console.warn("[vinext] --warm-cache-include-fallbacks is deprecated and has no effect.");
+  }
   values["traffic-aware-warm-cache"] ||= values["experimental-traffic-aware-warm-cache"];
   const trafficAwareWarmCache = values["traffic-aware-warm-cache"] || values["experimental-tpr"];
   const warming = values["warm-cache"] || trafficAwareWarmCache;
@@ -503,7 +505,6 @@ export function parseDeployArgs(args: string[]) {
             ),
             values["warm-cache-promotion-delay"],
           ),
-    warmCdnIncludeFallbacks: values["warm-cache-include-fallbacks"],
     experimentalTPR: trafficAwareWarmCache,
     tprCoverage: parseIntArg(
       "traffic-aware-coverage",
@@ -2428,7 +2429,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
           if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
           return createPrerenderWarmPlan(root, discovery, {
             includeCanonicalRsc: hasCanonicalRscWarmup,
-            includeFallbackShells: options.warmCdnIncludeFallbacks,
             strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
           });
         },

@@ -1000,10 +1000,26 @@ export function matchRewrite(
         ...conditionParams,
       };
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      return substituteAndSanitizeRewriteDestination(rewrite.destination, rewriteParams);
+      return substituteAndSanitizeRewriteDestination(
+        serializeRewriteDestinationTemplate(rewrite.destination),
+        rewriteParams,
+      );
     }
   }
   return null;
+}
+
+/**
+ * Next.js prepareDestination URL-parses the destination template before it
+ * substitutes params, so a literal `é` routes as `%C3%A9` while substituted
+ * values stay verbatim: a captured `../admin` is never resolved to `/admin`.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ */
+function serializeRewriteDestinationTemplate(destination: string): string {
+  if (!destination.startsWith("/") || destination.startsWith("//")) return destination;
+  const parsed = new URL(destination, "http://n");
+  return parsed.pathname + parsed.search + parsed.hash;
 }
 
 /**
@@ -1238,6 +1254,14 @@ export function preserveRedirectDestinationQuery(
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
 }
 
+function parseExternalRewriteUrl(externalUrl: string): URL | null {
+  try {
+    return new URL(externalUrl);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Proxy an incoming request to an external URL and return the upstream response.
  *
@@ -1253,7 +1277,14 @@ export async function proxyExternalRequest(
 ): Promise<Response> {
   // Build the full external URL, preserving query parameters from the original request
   const originalUrl = new URL(request.url);
-  const targetUrl = new URL(externalUrl);
+  // A param substituted into the destination host can make it invalid (see
+  // substituteDestinationParams). Next.js answers an unparsable proxy target
+  // with a 500; throwing here would surface as a Workers exception page.
+  const targetUrl = parseExternalRewriteUrl(externalUrl);
+  if (!targetUrl) {
+    console.error("[vinext] Invalid external rewrite destination:", externalUrl);
+    return new Response("Internal Server Error", { status: 500 });
+  }
   const destinationKeys = new Set(targetUrl.searchParams.keys());
 
   // If the rewrite destination already has query params, merge them.

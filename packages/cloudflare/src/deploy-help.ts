@@ -66,8 +66,6 @@ export function formatDeployHelp(): string {
                              verified (never bypasses --warm-cache-certify)
     --warm-cache-promotion-delay <ms>
                              Delay before promotion after warmup (default: 15000)
-    --warm-cache-include-fallbacks
-                             Also warm PPR fallback-shell placeholder paths
     -h, --help               Show this help
 
   Traffic-aware warming:

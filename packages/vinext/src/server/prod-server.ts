@@ -26,6 +26,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "pathslash";
 import zlib from "node:zlib";
+import { resolveClientBuildFile } from "./client-build-files.js";
 import { StaticFileCache, contentTypeForPath, etagFromFilenameHash } from "./static-file-cache.js";
 import { signalFromNodeResponse } from "./node-response-signal.js";
 import {
@@ -1960,6 +1961,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     res.end("Image not found");
   };
 
+  // Files the client build emits outside `_next/static`, for example a
+  // Module Federation host's `remoteEntry.js`. Workers Static Assets serves
+  // them before the Worker runs, and so does this server, before routing.
+  const clientBuildFiles: ReadonlySet<string> = new Set(
+    Array.isArray(rscModule.__clientBuildFiles) ? rscModule.__clientBuildFiles : [],
+  );
+
   const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPathname = rawUrl.split("?")[0];
@@ -2035,6 +2043,20 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
           return;
         }
+      }
+    }
+
+    if (req.method === "GET" || req.method === "HEAD") {
+      const clientBuildFile = resolveClientBuildFile(
+        normalizedRawPathname,
+        appRouterBasePath,
+        clientBuildFiles,
+      );
+      if (
+        clientBuildFile &&
+        (await tryServeStatic(req, res, clientDir, clientBuildFile, compress, staticCache))
+      ) {
+        return;
       }
     }
 
@@ -2232,6 +2254,53 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  * - vinextConfig — embedded next.config.js settings
  */
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
+  const { port, host, purpose, silent } = options;
+  const handler = await createPagesRouterRequestHandler(options);
+  const server = createServer(handler);
+
+  await new Promise<void>((resolve) => {
+    server.listen(port, host, () => {
+      const addr = server.address();
+      const actualPort = typeof addr === "object" && addr ? addr.port : port;
+      if (!silent) logProdServerStarted(host, actualPort, purpose);
+      resolve();
+    });
+  });
+
+  const addr = server.address();
+  const actualPort = typeof addr === "object" && addr ? addr.port : port;
+  return { server, port: actualPort };
+}
+
+/**
+ * Create the Pages Router request handler for `vite preview`. Vite's preview
+ * middleware (proxy, compression, `base`, static files) runs first, so this
+ * handles only the requests Vite doesn't serve and leaves compression to Vite.
+ * Resolves to null when the build has no Pages Router server entry.
+ */
+export async function createPagesPreviewHandler(options: {
+  clientDir: string;
+  serverDir: string;
+  host: string;
+  port: number;
+}): Promise<((req: IncomingMessage, res: ServerResponse) => void) | null> {
+  const clientDir = path.resolve(options.clientDir);
+  const serverDir = path.resolve(options.serverDir);
+  const serverEntryPath = path.join(serverDir, "entry.js");
+  if (!fs.existsSync(serverEntryPath)) return null;
+  return createPagesRouterRequestHandler({
+    port: options.port,
+    host: options.host,
+    clientDir,
+    serverDir,
+    serverEntryPath,
+    compress: false,
+  });
+}
+
+async function createPagesRouterRequestHandler(
+  options: Omit<PagesRouterServerOptions, "silent">,
+): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
   const {
     port,
     host,
@@ -2240,7 +2309,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     serverEntryPath,
     compress: compressOption,
     purpose,
-    silent,
   } = options;
 
   // Import the server entry module. importServerEntryModule uses the bare
@@ -2770,22 +2838,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
   };
 
-  const server = createServer((req, res) => {
+  return (req, res) => {
     void runWithServerEntryRequire(serverEntryRequire, () => handleRequest(req, res));
-  });
-
-  await new Promise<void>((resolve) => {
-    server.listen(port, host, () => {
-      const addr = server.address();
-      const actualPort = typeof addr === "object" && addr ? addr.port : port;
-      if (!silent) logProdServerStarted(host, actualPort, purpose);
-      resolve();
-    });
-  });
-
-  const addr = server.address();
-  const actualPort = typeof addr === "object" && addr ? addr.port : port;
-  return { server, port: actualPort };
+  };
 }
 
 // Export helpers for testing

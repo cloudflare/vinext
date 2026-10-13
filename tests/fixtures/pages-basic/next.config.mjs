@@ -127,6 +127,14 @@ const nextConfig = {
           source: "/rewrite-navigation-same/3",
           destination: "/rewrite-navigation-same/003",
         },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination host must not be able to
+        // retarget the proxy.
+        {
+          source: "/proxy-external-host-capture",
+          has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
+          destination: "http://:proxyHost.invalid/host-capture",
+        },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
         // when ?mw-auth is present. The beforeFiles rewrite should see this

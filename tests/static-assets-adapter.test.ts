@@ -9,6 +9,7 @@ import {
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import {
   appIsrCacheKey,
+  appIsrFallbackShellKey,
   pagesIsrCacheKey,
   isrGet,
 } from "../packages/vinext/src/server/isr-cache.js";
@@ -172,6 +173,50 @@ describe("staticAssetsAdapter", () => {
       }
     },
   );
+
+  it("packages a PPR fallback shell apart from the page of its literal path", async () => {
+    const root = createRoot();
+    write(
+      root,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/:lang/:slug",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            path: "/en/[slug]",
+            fallback: true,
+          },
+        ],
+      }),
+    );
+    write(root, "dist/server/prerendered-routes/en/[slug].html", "<h1>shell</h1>");
+    write(root, "dist/server/prerendered-routes/en/[slug].rsc", "shell payload");
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: string) {
+            const file = path.join(root, "dist/client", new URL(input).pathname);
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response(null, { status: 404 });
+          },
+        },
+      },
+    });
+
+    // A request for `/en/%5Bslug%5D` decodes to the shell's own pathname.
+    for (const kind of ["html", "rsc"] as const) {
+      const shell = await adapter.get(appIsrFallbackShellKey("/en/[slug]", kind, "build-a"));
+      expect(shell?.value).toMatchObject({ kind: "APP_PAGE" });
+      await expect(adapter.get(appIsrCacheKey("/en/[slug]", kind, "build-a"))).resolves.toBeNull();
+    }
+  });
 
   it.each(
     [false, true].flatMap((trailingSlash) =>

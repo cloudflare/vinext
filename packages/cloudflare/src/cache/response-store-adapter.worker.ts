@@ -26,7 +26,7 @@ import {
   SHARED_RESPONSE_STAGE_HEADER,
   type SharedResponseStage,
 } from "./browser-cache-policy.js";
-import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import { hasSharedCacheCredentials, isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
@@ -115,7 +115,7 @@ function replayHeaders(request: Request): [string, string][] {
 function isReplayableInvocation(request: Request, props: unknown): boolean {
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "HEAD") return false;
-  if (request.headers.has("authorization") || request.headers.has("cookie")) return false;
+  if (hasSharedCacheCredentials(request.headers)) return false;
   return !(
     props &&
     typeof props === "object" &&

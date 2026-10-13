@@ -355,7 +355,33 @@ describe("App Router Production server (startProdServer)", () => {
         root: APP_FIXTURE_DIR,
         cacheDir: testCacheDir(APP_FIXTURE_DIR),
         configFile: false,
-        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        plugins: [
+          vinext({ appDir: APP_FIXTURE_DIR }),
+          {
+            // Emits a client file at the output root, as Module Federation
+            // does with `remoteEntry.js`.
+            name: "test:emit-client-build-file",
+            apply: "build",
+            generateBundle() {
+              if (this.environment.name !== "client") return;
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-client-build-file.js",
+                source: "export const remote = true;\n",
+              });
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-literal%name.js",
+                source: "export const literal = true;\n",
+              });
+              this.emitFile({
+                type: "asset",
+                fileName: "vinext-test-literal%2Fname.js",
+                source: "export const encodedDelimiter = true;\n",
+              });
+            },
+          },
+        ],
         logLevel: "silent",
       });
       await builder.buildApp();
@@ -1846,6 +1872,25 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("GET, HEAD");
     expect(await res.text()).toBe("Method Not Allowed");
+  });
+
+  it("serves client build files outside _next/ that are not public files", async () => {
+    const res = await fetch(`${baseUrl}/vinext-test-client-build-file.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(await res.text()).toBe("export const remote = true;\n");
+
+    const post = await fetch(`${baseUrl}/vinext-test-client-build-file.js`, { method: "POST" });
+    expect(post.status).not.toBe(200);
+    await post.arrayBuffer();
+
+    const literal = await fetch(`${baseUrl}/vinext-test-literal%25name.js`);
+    expect(literal.status).toBe(200);
+    expect(await literal.text()).toBe("export const literal = true;\n");
+
+    const encodedDelimiter = await fetch(`${baseUrl}/vinext-test-literal%252Fname.js`);
+    expect(encodedDelimiter.status).toBe(200);
+    expect(await encodedDelimiter.text()).toBe("export const encodedDelimiter = true;\n");
   });
 
   // Ported from Next.js: test/integration/image-optimizer/test/util.ts

@@ -85,6 +85,7 @@ import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
+import { getServerActionNotFoundMessage } from "../packages/vinext/src/server/server-action-not-found.js";
 
 const capturedFindPageComponentsSpans: ResolvedFrameworkSpanDescriptor[] = [];
 let captureFindPageComponentsSpans = false;
@@ -925,6 +926,9 @@ describe("createAppRscHandler", () => {
       vi.stubEnv("VINEXT_PRERENDER", "1");
       expect(await marker("/account")).toBe("1");
       expect(await marker("/about")).toBe("0");
+      // The URL parser encodes these characters; that alone is no rewrite.
+      expect(await marker("/blog/café")).toBe("0");
+      expect(await marker("/blog/a b")).toBe("0");
     } finally {
       vi.unstubAllEnvs();
     }
@@ -3214,6 +3218,93 @@ describe("createAppRscHandler", () => {
       { kind: "hybrid-pages", resolvedUrl: "/%66r/a%2561?q=1" },
       { kind: "hybrid-pages", resolvedUrl: "/blog/a%2561?q=1" },
     ]);
+  });
+
+  it("serializes hybrid Pages rewrite destinations in every rewrite phase", async () => {
+    // Next.js parses every rewrite destination as a URL, so a literal `é` reaches
+    // the Pages router as `%C3%A9` whichever phase rewrote to it.
+    const pathnames: Array<string | undefined> = [];
+    const handler = createHandler({
+      configRewrites: {
+        afterFiles: [{ source: "/after", destination: "/café" }],
+        beforeFiles: [{ source: "/before", destination: "/café" }],
+        fallback: [{ source: "/fallback", destination: "/café" }],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) => {
+        pathnames.push(options.pathname);
+        return options.pathname?.startsWith("/caf") ? new Response("page") : null;
+      },
+    });
+
+    for (const pathname of ["/before", "/after", "/fallback"]) {
+      const response = await handler(
+        new Request(new URL(`/docs${pathname}`, "https://example.test")),
+        null,
+      );
+      expect(await response.text(), pathname).toBe("page");
+    }
+
+    expect(pathnames.filter((pathname) => pathname?.startsWith("/caf"))).toEqual([
+      "/caf%C3%A9",
+      "/caf%C3%A9",
+      "/caf%C3%A9",
+    ]);
+  });
+
+  it("keeps a substituted dot-segment capture verbatim in every rewrite phase", async () => {
+    // Next.js only URL-parses the destination template, so a captured `..`
+    // must not resolve into a Pages route the middleware matcher never saw.
+    const pathnames: Array<string | undefined> = [];
+    const capture = (source: string) => ({
+      source,
+      has: [{ type: "query" as const, key: "n", value: "(?<n>.*)" }],
+      destination: "/blog/:n",
+    });
+    const handler = createHandler({
+      configRewrites: {
+        afterFiles: [capture("/after")],
+        beforeFiles: [capture("/before")],
+        fallback: [capture("/fallback")],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) => {
+        pathnames.push(options.pathname);
+        return null;
+      },
+    });
+
+    for (const pathname of ["/before", "/after", "/fallback"]) {
+      await handler(
+        new Request(new URL(`/docs${pathname}?n=..%2Fabout`, "https://example.test")),
+        null,
+      );
+    }
+
+    expect(pathnames.filter((pathname) => pathname?.startsWith("/about"))).toEqual([]);
+    expect(
+      pathnames.filter((pathname) => pathname?.startsWith("/blog/../about")).length,
+    ).toBeGreaterThanOrEqual(3);
+  });
+
+  it("does not report URL-parser encoding as a hybrid Pages data rewrite", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async () => new Response("pages-data"),
+    });
+
+    for (const page of ["blog/caf%C3%A9", "blog/a%20b"]) {
+      const response = await handler(
+        new Request(`https://example.test/docs/_next/data/build-id/${page}.json`),
+        null,
+      );
+      expect(await response.text(), page).toBe("pages-data");
+      expect(response.headers.get("x-nextjs-rewrite"), page).toBeNull();
+    }
   });
 
   it("restores hybrid Pages pre-handler headers inside the response stage", async () => {
@@ -6753,7 +6844,7 @@ describe("createAppRscHandler", () => {
     );
   });
 
-  it("returns HTTP 500 for progressive action execution failures", async () => {
+  it("returns HTTP 500 for progressive actions that fail to find a Server Action", async () => {
     const dispatchMatchedPage = vi.fn(async ({ middlewareContext }) =>
       Promise.resolve(new Response("error page", { status: middlewareContext.status ?? 200 })),
     );
@@ -6764,7 +6855,7 @@ describe("createAppRscHandler", () => {
         return {
           kind: "form-state",
           formState: null,
-          actionError: new Error("boom"),
+          actionError: new Error(getServerActionNotFoundMessage(null)),
           actionFailed: true,
           pendingCookies: [],
           draftCookie: null,
@@ -7920,6 +8011,113 @@ describe("createAppRscHandler", () => {
         expect(received.headers[RSC_HEADER.toLowerCase()]).toBe("1");
         expect(received.headers[NEXT_ROUTER_PREFETCH_HEADER.toLowerCase()]).toBe("1");
         expect(received.headers["next-router-state-tree"]).toBe(routerState);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each([
+    { phase: "beforeFiles", action: false },
+    { phase: "afterFiles", action: false },
+    { phase: "fallback", action: false },
+    { phase: "afterFiles", action: true },
+    { phase: "fallback", action: true },
+  ] as const)(
+    "forwards middleware's request header override to $phase external rewrite proxies (action: $action)",
+    async ({ phase, action }) => {
+      // Next.js applies the override to req.headers before any config rewrite
+      // runs, so credentials deleted by middleware never reach the proxy.
+      const receivedRequests: Array<{
+        body: string;
+        headers: import("node:http").IncomingHttpHeaders;
+        url: string;
+      }> = [];
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        req.on("end", () => {
+          receivedRequests.push({
+            body: Buffer.concat(chunks).toString("utf8"),
+            headers: req.headers,
+            url: req.url ?? "",
+          });
+          res.writeHead(200, { "content-type": "text/plain" });
+          res.end("upstream");
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      // Server Actions resolve late rewrites early only outside the basePath.
+      const rewrite = {
+        source: "/outside",
+        destination: `http://127.0.0.1:${address.port}/proxy`,
+        ...(action ? { basePath: false as const } : {}),
+      };
+
+      try {
+        const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+        headers.set("authorization", "Bearer secret");
+        headers.set("cookie", "session=secret");
+        headers.set("x-kept", "kept");
+        if (action) {
+          headers.set("next-action", "action-id");
+          headers.set("content-type", "text/plain");
+        }
+        const requestUrl = await createRscRequestUrl(
+          action ? "/outside" : "/docs/outside",
+          headers,
+        );
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            beforeFiles: phase === "beforeFiles" ? [rewrite] : [],
+            afterFiles: phase === "afterFiles" ? [rewrite] : [],
+            fallback: phase === "fallback" ? [rewrite] : [],
+          },
+          middlewareModule: {
+            default(request: NextRequest) {
+              const nextHeaders = new Headers(request.headers);
+              nextHeaders.delete("authorization");
+              nextHeaders.delete("cookie");
+              nextHeaders.set("x-from-middleware", "added");
+              return new Response(null, {
+                headers: {
+                  "x-middleware-next": "1",
+                  "x-middleware-override-headers": [...nextHeaders.keys()].join(","),
+                  ...Object.fromEntries(
+                    [...nextHeaders].map(([name, value]) => [
+                      `x-middleware-request-${name}`,
+                      value,
+                    ]),
+                  ),
+                },
+              });
+            },
+          },
+          matchRoute: () => null,
+        });
+
+        const response = await handler(
+          new Request(
+            `https://example.test${requestUrl}`,
+            action ? { body: "action-body", headers, method: "POST" } : { headers },
+          ),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(receivedRequests).toHaveLength(1);
+        const [received] = receivedRequests;
+        expect(received.body).toBe(action ? "action-body" : "");
+        expect(received.headers.authorization).toBeUndefined();
+        expect(received.headers.cookie).toBeUndefined();
+        expect(received.headers["x-kept"]).toBe("kept");
+        expect(received.headers["x-from-middleware"]).toBe("added");
+        // Flight headers are not overridable, so the proxy still receives them.
+        expect(received.headers[RSC_HEADER.toLowerCase()]).toBe("1");
+        const forwardedUrl = new URL(`http://vinext.local${received.url}`);
+        expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(true);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }

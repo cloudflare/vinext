@@ -182,15 +182,28 @@ function restoreFlightHeaders(request: Request, source: Request): Request {
   return changed ? cloneRequestWithHeaders(request, headers) : request;
 }
 
+/**
+ * The request an external rewrite forwards after middleware ran: the complete
+ * middleware request-header override, so deleted credentials stay deleted.
+ * Flight headers come from the original request, matching Next.js, which
+ * treats them as non-overridable.
+ */
+export function requestWithMiddlewareContextHeaders(
+  request: Request,
+  context: AppMiddlewareContext,
+): Request {
+  return restoreFlightHeaders(
+    requestWithMiddlewareRequestHeaders(request, context.requestHeaders ?? context.headers),
+    request,
+  );
+}
+
 export async function proxyExternalMiddlewareRewrite(
   request: Request,
   rewriteUrl: string,
   context: AppMiddlewareContext,
 ): Promise<Response> {
-  const proxyRequest = restoreFlightHeaders(
-    requestWithMiddlewareRequestHeaders(request, context.requestHeaders ?? context.headers),
-    request,
-  );
+  const proxyRequest = requestWithMiddlewareContextHeaders(request, context);
   setHeadersContext(null);
   setNavigationContext(null);
 

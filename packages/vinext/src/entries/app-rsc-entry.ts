@@ -424,6 +424,7 @@ import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stri
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
 import { matchRoutePattern as __matchRoutePattern } from ${JSON.stringify(routePatternPath)};
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${middlewarePath ? `import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};` : ""}
 ${
   instrumentationPath
@@ -482,6 +483,7 @@ export const __imageConfig = ${JSON.stringify({
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
   })};
+export const __clientBuildFiles = __pagesClientAssets.clientBuildFiles ?? [];
 const __routes = ${JSON.stringify(requestRoutes)};
 const __routeMatcher = __createAppRscRouteMatcher(__routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes, config))});
 const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};
@@ -909,6 +911,8 @@ import {
   SIBLING_PAGE_INTERCEPT_SLOT_KEY as __SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
+  appIsrFallbackShellHtmlKey as __isrFallbackShellHtmlKey,
+  appIsrFallbackShellKey as __isrFallbackShellKey,
   appIsrHtmlKey as __isrHtmlKey,
   appIsrRscKey as __isrRscKey,
   appIsrRouteKey as __isrRouteKey,
@@ -1302,6 +1306,9 @@ export async function seedMemoryCacheFromPrerender(serverDir) {
     buildAppPageHtmlKey(pathname) {
       return __isrHtmlKey(pathname);
     },
+    buildAppPageFallbackShellKey(pathname, suffix) {
+      return __isrFallbackShellKey(pathname, suffix);
+    },
     buildAppPageRscKey(pathname) {
       return __isrRscKey(pathname);
     },
@@ -1346,6 +1353,7 @@ ${rootParamNameEntries.join("\n")}
 };
 
 __setPagesClientAssets(__pagesClientAssets);
+export const __clientBuildFiles = __pagesClientAssets.clientBuildFiles ?? [];
 function __VINEXT_ACTION_OWNERS() { return ${actionOwners === undefined ? "__vinextActionOwners" : safeJsonStringify(actionOwners)}; }
 ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandler = createAppRscHandler({"}
   assetPrefix: __assetPrefix,
@@ -1493,6 +1501,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isRscRequest,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
+      isrFallbackShellHtmlKey: __isrFallbackShellHtmlKey,
       isrHtmlKey(pathname) {
         return __isrHtmlKey(pathname === cleanPathname ? cachePathname : pathname);
       },

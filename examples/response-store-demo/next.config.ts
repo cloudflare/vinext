@@ -8,6 +8,13 @@ export default {
     { source: "/storage-policy/short-browser", headers: [{ key: "Cache-Control", value: "public, max-age=1" }] },
     { source: "/storage-policy/long-browser", headers: [{ key: "Cache-Control", value: "private, max-age=300" }] },
     { source: "/storage-policy/no-store", headers: [{ key: "Cache-Control", value: "no-store" }] },
+    {
+      source: "/vary-cookie",
+      headers: [
+        { key: "Cache-Control", value: "public, s-maxage=300" },
+        { key: "Vary", value: "Cookie" },
+      ],
+    },
     ...personalizedPaths.flatMap((source) =>
       personalizedVisitors.map((visitor) => ({
         source,

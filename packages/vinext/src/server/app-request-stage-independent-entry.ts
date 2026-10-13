@@ -4,6 +4,7 @@ import "./server-globals.js";
 import requestRscHandler, {
   __assetPrefix,
   __basePath,
+  __clientBuildFiles,
   __ensureHybridPagesApplication,
   __ensureInstrumentation,
   __imageAllowedWidths,
@@ -27,6 +28,7 @@ import {
 import { handleWorkerImageOptimization } from "./worker-image-optimization.js";
 import { assetPrefixPathname } from "../utils/asset-prefix.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -60,6 +62,8 @@ const assetPathPrefix = assetPrefixPathname(__assetPrefix);
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
+
+const clientBuildFiles: ReadonlySet<string> = new Set(__clientBuildFiles);
 
 export function handleRequestStage(
   request: Request,
@@ -168,6 +172,15 @@ async function handleRequest(
     decodeURIComponent(url.pathname);
   } catch {
     return badRequestResponse();
+  }
+
+  // Client build files outside `_next/static` are build output like the
+  // hashed assets, so serve them before middleware when the Worker runs first.
+  if (assets && (request.method === "GET" || request.method === "HEAD")) {
+    const clientBuildFile = resolveClientBuildFile(url.pathname, __basePath, clientBuildFiles);
+    if (clientBuildFile) {
+      return await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
+    }
   }
 
   const trustedPrerenderState = readTrustedPrerenderStateFromHeaders(

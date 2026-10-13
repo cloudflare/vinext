@@ -142,15 +142,26 @@ describe("createAppRscOnErrorHandler", () => {
     }
   });
 
-  it("returned handler preserves non-Error thrown values", () => {
+  // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
+  it("returned handler only hashes a thrown string, like Next.js", () => {
     const reportRequestError = vi.fn();
     const onError = createAppRscOnErrorHandler(reportRequestError, makeReq(), "/feed", "/feed");
 
-    onError("a plain string");
+    expect(onError("a plain string")).toMatch(/^\d+$/);
+
+    expect(reportRequestError).not.toHaveBeenCalled();
+  });
+
+  it("returned handler reports other non-Error thrown values as an Error, like Next.js", () => {
+    const reportRequestError = vi.fn();
+    const onError = createAppRscOnErrorHandler(reportRequestError, makeReq(), "/feed", "/feed");
+
+    const digest = onError({ code: "E_FEED" });
 
     expect(reportRequestError).toHaveBeenCalledOnce();
     const [error] = reportRequestError.mock.calls[0];
-    expect(error).toBe("a plain string");
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ message: '{"code":"E_FEED"}', digest });
   });
 
   it("requestInfo headers are a plain Record, not Headers", () => {

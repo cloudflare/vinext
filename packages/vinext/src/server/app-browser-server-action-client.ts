@@ -256,6 +256,8 @@ export async function invokeClientServerAction(
         result.returnValue && !result.returnValue.ok
           ? {
               ok: false,
+              // Commit the tree without waiting for the rejection, as Next.js
+              // does; the commit throws the thrown value once it settles.
               data: normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status),
             }
           : result.returnValue;
@@ -269,7 +271,7 @@ export async function invokeClientServerAction(
     }
     if (result.returnValue) {
       if (!result.returnValue.ok) {
-        throw normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);
+        throw await normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);
       }
       return result.returnValue.data;
     }

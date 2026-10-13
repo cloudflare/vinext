@@ -990,7 +990,6 @@ describe("parseDeployArgs", () => {
       "--dangerously-promote-on-warm-cache-error",
       "--warm-cache-no-promote",
       "--warm-cache-promotion-delay=2500",
-      "--warm-cache-include-fallbacks",
     ];
     const parsed = parseDeployArgs(
       spelling === "legacy"
@@ -1024,8 +1023,24 @@ describe("parseDeployArgs", () => {
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(true);
     expect(parsed.warmCdnPromote).toBe(false);
     expect(parsed.warmCdnPromotionDelay).toBe(2500);
-    expect(parsed.warmCdnIncludeFallbacks).toBe(true);
   });
+
+  it.each(["--warm-cache-include-fallbacks", "--warm-cdn-include-fallbacks"])(
+    "accepts the removed %s flag as a no-op",
+    (flag) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(parseDeployArgs(["--warm-cache", flag])).toEqual(parseDeployArgs(["--warm-cache"]));
+        expect(warn).toHaveBeenCalledOnce();
+        expect(warn).toHaveBeenCalledWith(
+          "[vinext] --warm-cache-include-fallbacks is deprecated and has no effect.",
+        );
+        expect(formatDeployHelp()).not.toContain("include-fallbacks");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it.each([
     "http://app.example.com",

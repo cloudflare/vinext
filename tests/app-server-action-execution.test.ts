@@ -47,6 +47,10 @@ import {
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import {
+  createRscOnErrorHandler as createRealRscOnErrorHandler,
+  sanitizeErrorForClient,
+} from "../packages/vinext/src/server/app-rsc-errors.js";
 
 type TestRoute = {
   id: string;
@@ -406,12 +410,11 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(result).toMatchObject({ kind: "form-state", actionFailed: true });
-    expect(result && "actionError" in result ? result.actionError : null).toMatchObject({
-      name: "Error",
-      message:
-        "`import('next/root-params').lang()` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.",
-    });
+    const response = requireProgressiveActionResponse(result);
+    expect(response.status).toBe(500);
+    expect(await response.text()).toBe(
+      "Server action failed: `import('next/root-params').lang()` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.",
+    );
     errorSpy.mockRestore();
   });
 
@@ -697,13 +700,12 @@ describe("app server action execution helpers", () => {
     expect(response?.status).toBe(500);
     expect(response?.headers.get("content-type")).toBe("text/x-component");
     expect(loadServerAction).not.toHaveBeenCalled();
-    expect(reportRequestError).toHaveBeenCalledTimes(1);
+    // The render's onError reports the rejected action result.
+    expect(reportRequestError).not.toHaveBeenCalled();
     expect(renderedModel.get().root).toBeUndefined();
     expect(renderedModel.get().returnValue.ok).toBe(false);
     // Mirrors the upstream e2e log assertion: `Error: Body exceeded 2mb limit`.
-    expect((renderedModel.get().returnValue.data as Error).message).toContain(
-      "Body exceeded 2mb limit",
-    );
+    await expect(renderedModel.get().returnValue.data).rejects.toThrow("Body exceeded 2mb limit");
     // Stream consumed so clearRequestContext fires after the body drains.
     await response?.text();
     expect(clearContext).toHaveBeenCalledTimes(1);
@@ -727,7 +729,7 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("content-type")).toBe("text/x-component");
     expect(loadServerAction).not.toHaveBeenCalled();
     expect(renderedModel.get().returnValue.ok).toBe(false);
-    expect((renderedModel.get().returnValue.data as Error).message).toContain("Body exceeded");
+    await expect(renderedModel.get().returnValue.data).rejects.toThrow("Body exceeded");
   });
 
   it("bounds chunked multipart bodies after resolving a valid action", async () => {
@@ -749,7 +751,7 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("content-type")).toBe("text/x-component");
     expect(loadServerAction).toHaveBeenCalledTimes(1);
     expect(renderedModel.get().returnValue.ok).toBe(false);
-    expect((renderedModel.get().returnValue.data as Error).message).toContain("Body exceeded");
+    await expect(renderedModel.get().returnValue.data).rejects.toThrow("Body exceeded");
   });
 
   it("rejects declared-oversized stale multipart actions before action lookup", async () => {
@@ -1117,10 +1119,10 @@ describe("app server action execution helpers", () => {
 
   // Ported from Next.js: test/e2e/on-request-error/server-action-error/server-action-error.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/server-action-error/server-action-error.test.ts
-  it("passes action execution failures as actionError to be rendered by error boundaries", async () => {
+  // Next.js rethrows the error and answers a plain 500 that still carries the
+  // action's cookies (reproduced against next@16.2.7 build/start).
+  it("answers a plain 500 with middleware headers and the action's cookies for action execution failures", async () => {
     const reportRequestError = vi.fn();
-    // Failure-path renders still need to flush action-set cookies onto the
-    // error page response (issue #1483), so the handler captures them here.
     const clearedCookies = vi.fn(() => ["session=1; Path=/"]);
     const clearContext = vi.fn();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1136,20 +1138,24 @@ describe("app server action execution helpers", () => {
           };
         },
         getAndClearPendingCookies: clearedCookies,
+        middlewareHeaders: new Headers([
+          ["x-middleware-ran", "1"],
+          ["set-cookie", "mw=1; Path=/"],
+          ["cache-control", "public, max-age=60"],
+        ]),
         reportRequestError,
         routePattern: "/products/[id]",
       }),
     );
 
-    expect(result).toEqual({
-      kind: "form-state",
-      formState: null,
-      actionError: error,
-      actionFailed: true,
-      pendingCookies: ["session=1; Path=/"],
-      draftCookie: null,
-      revalidationKind: 1,
-    });
+    const response = requireProgressiveActionResponse(result);
+    expect(response.headers.get("x-middleware-ran")).toBe("1");
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toBe(
+      "no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.getSetCookie()).toEqual(["mw=1; Path=/", "session=1; Path=/"]);
+    expect(await response.text()).toBe("Server action failed: boom");
     expect(reportRequestError).toHaveBeenCalledWith(
       error,
       expect.objectContaining({ path: "/action-source", method: "POST" }),
@@ -1162,12 +1168,12 @@ describe("app server action execution helpers", () => {
       },
     );
     expect(clearedCookies).toHaveBeenCalledTimes(1);
-    expect(clearContext).not.toHaveBeenCalled(); // Handled by app-rsc-handler
+    expect(clearContext).toHaveBeenCalledTimes(1);
 
     errorSpy.mockRestore();
   });
 
-  it("passes falsy action execution failures to the page render path", async () => {
+  it("answers a plain 500 for falsy action execution failures", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
@@ -1181,15 +1187,9 @@ describe("app server action execution helpers", () => {
         }),
       );
 
-      expect(result).toEqual({
-        kind: "form-state",
-        formState: null,
-        actionError: 0,
-        actionFailed: true,
-        pendingCookies: [],
-        draftCookie: null,
-        revalidationKind: 0,
-      });
+      const response = requireProgressiveActionResponse(result);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe("Server action failed: 0");
     } finally {
       errorSpy.mockRestore();
     }
@@ -1428,6 +1428,156 @@ describe("app server action execution helpers", () => {
     });
     errorSpy.mockRestore();
   });
+
+  // Ported from Next.js: test/e2e/on-request-error/server-action-error/server-action-error.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/on-request-error/server-action-error/server-action-error.test.ts
+  it("reports a production fetch action failure once, through the render of its rejected result", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const error = new Error("connect postgres://admin:s3cret@10.0.0.5:5432/prod failed");
+      const reportRequestError = vi.fn();
+      let rejection: Promise<unknown> | undefined;
+
+      const response = await withEnvVar("NODE_ENV", "production", () =>
+        handleServerActionRscRequest(
+          createRscOptions({
+            createRscOnErrorHandler(request, pathname, routePath, overrides) {
+              return createRealRscOnErrorHandler({
+                errorContext: {
+                  routerKind: "App Router",
+                  routePath,
+                  routeType: overrides?.routeType ?? "render",
+                  renderSource: overrides?.renderSource,
+                  revalidateReason: undefined,
+                },
+                nodeEnv: "production",
+                reportRequestError,
+                requestInfo: { path: pathname, method: request.method, headers: {} },
+              });
+            },
+            loadServerAction() {
+              return Promise.resolve(() => {
+                throw error;
+              });
+            },
+            // Like React's Flight render, hand the rejection to onError.
+            renderToReadableStream(model, { onError }) {
+              rejection = (model.returnValue.data as Promise<never>).catch((reason) => ({
+                digest: onError?.(reason),
+                reason,
+              }));
+              return new Response("action-error-flight").body;
+            },
+            sanitizeErrorForClient(thrown) {
+              return sanitizeErrorForClient(thrown, "production");
+            },
+          }),
+        ),
+      );
+
+      expect(response?.status).toBe(500);
+      const { digest, reason } = (await rejection) as { digest: unknown; reason: unknown };
+      expect(reason).toBeInstanceOf(Error);
+      expect((reason as Error).message).toContain("omitted in production builds");
+      expect(digest).toEqual(expect.any(String));
+      expect(digest).toBe((reason as { digest?: unknown }).digest);
+      expect(reportRequestError).toHaveBeenCalledTimes(1);
+      expect(reportRequestError).toHaveBeenCalledWith(
+        error,
+        expect.objectContaining({ path: "/dashboard", method: "POST" }),
+        expect.objectContaining({
+          routeType: "action",
+          renderSource: "react-server-components-payload",
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledWith("[vinext] Server action error:", error);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("logs a development fetch action failure that already has a digest", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // The render's onError does not log errors that already have a digest.
+      const thrown = Object.assign(new Error("digested"), { digest: "custom" });
+      await handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              throw thrown;
+            });
+          },
+        }),
+      );
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith("[vinext] Server action error:", thrown);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  // Ported from Next.js: packages/next/src/lib/is-error.ts getProperError()
+  it.each([
+    [0, "0"],
+    [null, "null"],
+    [undefined, "undefined"],
+    [{ code: "DB_CONNECTION_FAILED" }, '{"code":"DB_CONNECTION_FAILED"}'],
+  ])(
+    "reports a development fetch action that throws %j once, as an Error",
+    async (thrown, message) => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const reportRequestError = vi.fn();
+        let rejection: Promise<unknown> | undefined;
+
+        await handleServerActionRscRequest(
+          createRscOptions({
+            createRscOnErrorHandler(request, pathname, routePath, overrides) {
+              return createRealRscOnErrorHandler({
+                errorContext: {
+                  routerKind: "App Router",
+                  routePath,
+                  routeType: overrides?.routeType ?? "render",
+                  renderSource: overrides?.renderSource,
+                  revalidateReason: undefined,
+                },
+                nodeEnv: "development",
+                reportRequestError,
+                requestInfo: { path: pathname, method: request.method, headers: {} },
+              });
+            },
+            loadServerAction() {
+              return Promise.resolve(() => {
+                throw thrown;
+              });
+            },
+            // Like React's Flight render, hand the rejection to onError.
+            renderToReadableStream(model, { onError }) {
+              rejection = (model.returnValue.data as Promise<never>).catch((reason) => {
+                onError?.(reason);
+                return reason;
+              });
+              return new Response("action-error-flight").body;
+            },
+          }),
+        );
+
+        // As in Next.js, the original value is rejected, and reported as an Error.
+        expect(await rejection).toBe(thrown);
+        expect(reportRequestError).toHaveBeenCalledTimes(1);
+        expect(reportRequestError).toHaveBeenCalledWith(
+          expect.objectContaining({ message }),
+          expect.objectContaining({ method: "POST" }),
+          expect.objectContaining({ routeType: "action" }),
+        );
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
 
   it("rerenders the page for failed fetch actions that revalidate", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -2632,12 +2782,11 @@ describe("app server action execution helpers", () => {
       expect(response?.status).toBe(500);
       expect(await response?.text()).toBe("too-many-args-flight");
       expect(action).not.toHaveBeenCalled();
-      expect(renderedModel).toEqual({
-        returnValue: {
-          ok: false,
-          data: "Server Action arguments list is too long (1001). Maximum allowed is 1000.",
-        },
-      });
+      expect(renderedModel).toEqual({ returnValue: { ok: false, data: expect.any(Promise) } });
+      const { returnValue } = renderedModel as unknown as CapturedActionModel;
+      await expect(returnValue.data).rejects.toBe(
+        "Server Action arguments list is too long (1001). Maximum allowed is 1000.",
+      );
     } finally {
       errorSpy.mockRestore();
     }

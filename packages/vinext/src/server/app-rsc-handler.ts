@@ -743,6 +743,7 @@ async function applyRewrite(
   options: {
     basePathState: BasePathMatchState;
     clearRequestContext: () => void;
+    middlewareContext: AppRscMiddlewareContext;
     request: Request;
     requestContext: RequestContext;
     rewrites: NextRewrite[];
@@ -770,8 +771,15 @@ async function applyRewrite(
   if (isExternalUrl(rewritten)) {
     const validationResponse = await options.validateExternalRewriteRequest();
     if (validationResponse) return validationResponse;
+    // Next.js applies middleware's request-header override before any config
+    // rewrite, so the external origin receives the post-middleware headers.
+    const { requestWithMiddlewareContextHeaders } = await import("./app-middleware.js");
+    const proxyRequest = requestWithMiddlewareContextHeaders(
+      options.request,
+      options.middlewareContext,
+    );
     options.clearRequestContext();
-    return configMatchers.proxyExternalRequest(options.request, rewritten);
+    return configMatchers.proxyExternalRequest(proxyRequest, rewritten);
   }
 
   return rewritten;
@@ -792,6 +800,25 @@ function requestContextForResolvedUrl(
 
 function pathnameForResolvedUrl(resolvedUrl: string): string {
   return resolvedUrl.split("#", 1)[0].split("?", 1)[0];
+}
+
+/**
+ * Percent-encode the code points the URL parser encodes in a path (so `é`
+ * becomes `%C3%A9`) without resolving dot segments or `\`: Next.js only parses
+ * a rewrite destination's template, so a captured `../admin` stays verbatim.
+ */
+function serializeResolvedUrl(resolvedUrl: string, base: URL): string {
+  const resolved = new URL(resolvedUrl, base);
+  stripRscCacheBustingSearchParam(resolved);
+  const pathname = pathnameForResolvedUrl(resolvedUrl).replace(
+    /[\0-\x20"<>`{}^\x7F]|[^\0-\x7F]/gu,
+    // A lone surrogate serializes as U+FFFD, as in the URL parser.
+    (char) =>
+      char.length === 1 && char >= "\uD800" && char <= "\uDFFF"
+        ? "%EF%BF%BD"
+        : encodeURIComponent(char),
+  );
+  return pathname + resolved.search + resolved.hash;
 }
 
 async function applyConfigHeadersToMiddlewareRedirect(
@@ -977,7 +1004,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
   let resolvedUrl = cleanPathname + url.search;
-  const originalResolvedUrl = resolvedUrl;
+  // Compared with `resolvedUrl` only after it is serialized below, so keep the
+  // same form: an unrewritten `/blog/café` must not look rewritten.
+  const originalResolvedUrl = serializeResolvedUrl(resolvedUrl, url);
   const getResolvedSearchParams = () => new URL(resolvedUrl, url).searchParams;
   // Canonical (external) pathname the user requested. Middleware rewrites and
   // next.config.js rewrites mutate `cleanPathname` so internal route matching
@@ -1527,6 +1556,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       {
         basePathState,
         clearRequestContext: options.clearRequestContext,
+        middlewareContext,
         // External RSC rewrites must forward the validated `_rsc` token so the
         // destination server can validate the request without the original URL.
         request: normalizedUserlandRequest,
@@ -1570,6 +1600,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         {
           basePathState,
           clearRequestContext: options.clearRequestContext,
+          middlewareContext,
           request: normalizedUserlandRequest,
           requestContext: requestContextForResolvedUrl(
             postMiddlewareRequestContext,
@@ -1600,6 +1631,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           {
             basePathState,
             clearRequestContext: options.clearRequestContext,
+            middlewareContext,
             request: normalizedUserlandRequest,
             requestContext: requestContextForResolvedUrl(
               postMiddlewareRequestContext,
@@ -1689,9 +1721,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   stripRscCacheBustingSearchParam(url);
-  const resolved = new URL(resolvedUrl, url);
-  stripRscCacheBustingSearchParam(resolved);
-  resolvedUrl = resolved.pathname + resolved.search + resolved.hash;
+  resolvedUrl = serializeResolvedUrl(resolvedUrl, url);
 
   options.setNavigationContext({
     pathname: canonicalPathname,
@@ -2149,6 +2179,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
       ? actionError
       : { digest: "NEXT_NOT_FOUND" };
+  // Other errors answer a plain 500 before the render, so this is an action
+  // that failed to find another Server Action.
   if (actionFailed && middlewareContext.status === null && actionHttpFallbackStatus === null) {
     middlewareContext.status = 500;
   }
@@ -2351,6 +2383,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         {
           basePathState,
           clearRequestContext: options.clearRequestContext,
+          middlewareContext,
           // External RSC rewrites must forward the validated `_rsc` token.
           request: normalizedUserlandRequest,
           requestContext: requestContextForResolvedUrl(
@@ -2410,6 +2443,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         {
           basePathState,
           clearRequestContext: options.clearRequestContext,
+          middlewareContext,
           // External RSC rewrites must forward the validated `_rsc` token.
           request: normalizedUserlandRequest,
           requestContext: requestContextForResolvedUrl(

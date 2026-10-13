@@ -12,6 +12,16 @@ export async function middleware(request: NextRequest) {
   if (request.nextUrl.pathname.startsWith("/members%20only/")) {
     return new NextResponse("blocked by middleware", { status: 403 });
   }
+  if (
+    request.nextUrl.pathname.startsWith("/external-credentials/") &&
+    request.headers.has("x-test-strip-credentials")
+  ) {
+    // Withhold first-party credentials from the external config rewrite.
+    const headers = new Headers(request.headers);
+    headers.delete("authorization");
+    headers.delete("cookie");
+    return NextResponse.next({ request: { headers } });
+  }
   if (/^\/api\/browser-cache(?:-pages)?-bot-blocked$/.test(request.nextUrl.pathname)) {
     return request.headers.get("user-agent")?.toLowerCase().includes("gptbot")
       ? new NextResponse(null, { status: 403 })
