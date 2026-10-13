@@ -224,14 +224,16 @@ describe("handleMetadataRouteRequest", () => {
     expect(response?.headers.has("x-vinext-metadata-route-cache")).toBe(false);
   });
 
-  it("rejects excluded dynamic metadata images before reading ISR", async () => {
-    let cacheReads = 0;
+  it("rejects excluded dynamic metadata images without rendering or storing them", async () => {
+    let cacheWrites = 0;
     const response = await handleMetadataRouteRequest({
       cleanPathname: "/drafts/private/twitter-image",
       isrRouteKey: (pathname) => pathname,
       async isrGet() {
-        cacheReads++;
-        throw new Error("excluded metadata routes must not read cached content");
+        return null;
+      },
+      async isrSet() {
+        cacheWrites++;
       },
       makeThenableParams,
       metadataRoutes: [
@@ -247,14 +249,16 @@ describe("handleMetadataRouteRequest", () => {
           module: {
             dynamicParams: false,
             generateStaticParams: () => [{ slug: "public" }],
-            default: () => new Response("private image"),
+            default: () => {
+              throw new Error("excluded metadata routes must not render");
+            },
           },
         },
       ],
     });
 
     expect(response?.status).toBe(404);
-    expect(cacheReads).toBe(0);
+    expect(cacheWrites).toBe(0);
   });
 
   it("keeps double-encoded metadata params distinct from generated params", async () => {
@@ -354,12 +358,14 @@ describe("handleMetadataRouteRequest", () => {
     ["incomplete", () => [{ slug: "public" }]],
     ["non-array", () => null],
   ])("rejects %s metadata static params", async (_label, generateStaticParams) => {
-    let cacheReads = 0;
+    let cacheWrites = 0;
     const response = await handleMetadataRouteRequest({
       cleanPathname: "/teams/private/public/opengraph-image",
       async isrGet() {
-        cacheReads++;
         return null;
+      },
+      async isrSet() {
+        cacheWrites++;
       },
       isrRouteKey: (pathname) => pathname,
       makeThenableParams,
@@ -383,7 +389,7 @@ describe("handleMetadataRouteRequest", () => {
     });
 
     expect(response?.status).toBe(404);
-    expect(cacheReads).toBe(0);
+    expect(cacheWrites).toBe(0);
   });
 
   it("does not add an outer metadata cache around shared use-cache functions in development", async () => {
