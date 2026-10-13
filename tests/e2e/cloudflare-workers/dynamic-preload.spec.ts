@@ -174,4 +174,44 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
       expect(second.originRequestId).not.toBe(first?.originRequestId);
     });
   }
+
+  // A cached fetch keys and sends its request as it was when fetch was called,
+  // so a change right after the call can't store one request's response under
+  // another's key.
+  for (const input of ["url", "headers", "request-headers", "body"]) {
+    test(`keys and sends a cached fetch's ${input} as it was when fetch was called`, async ({
+      request,
+    }) => {
+      type CachedOrigin = { received: string; originRequestId: string };
+      const caseId = crypto.randomUUID();
+      const readCase = async (user: string, change: boolean): Promise<CachedOrigin> => {
+        const response = await request.get(
+          `${BASE_URL}/api/fetch-cache-changed-request?case=${caseId}&input=${input}&user=${user}${change ? "&change" : ""}`,
+        );
+        expect(response.status()).toBe(200);
+        return (await response.json()) as CachedOrigin;
+      };
+
+      // Read until alice's response is served from the data cache. Each read
+      // changes the request to bobby's after the call.
+      let alice: CachedOrigin | undefined;
+      await expect
+        .poll(
+          async () => {
+            const read = await readCase("alice", true);
+            expect(read.received).toContain("alice");
+            expect(read.received).not.toContain("bobby");
+            const servedFromCache = read.originRequestId === alice?.originRequestId;
+            alice = read;
+            return servedFromCache;
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+
+      const bobby = await readCase("bobby", false);
+      expect(bobby.received).toContain("bobby");
+      expect(bobby.originRequestId).not.toBe(alice?.originRequestId);
+    });
+  }
 });
