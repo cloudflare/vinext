@@ -59,6 +59,7 @@ const projectServers = {
   "app-router-isr-prod": {
     testDir: "./tests/e2e",
     testMatch: [
+      "app-router/action-bound-args.spec.ts",
       "app-router/isr.spec.ts",
       "app-router/metadata-react-cache.spec.ts",
       "app-router-prod/action-error-sanitization.spec.ts",
