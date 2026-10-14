@@ -8,6 +8,13 @@ function validatePreviewName(name: string): string {
   return trimmed;
 }
 
+function validateMode(mode: string): string {
+  const trimmed = mode.trim();
+  // Match `cf previews deploy`, which rejects an empty mode instead of using the default.
+  if (!trimmed) throw new Error("--mode requires a non-empty value.");
+  return trimmed;
+}
+
 /** CLI options for `vinext-cloudflare previews deploy`. */
 export function parsePreviewsDeployArgs(args: string[]) {
   const { values, positionals } = parseArgs({
@@ -28,7 +35,7 @@ export function parsePreviewsDeployArgs(args: string[]) {
   return {
     help: values.help,
     name: positionals[0] === undefined ? undefined : validatePreviewName(positionals[0]),
-    mode: values.mode?.trim() || undefined,
+    mode: values.mode === undefined ? undefined : validateMode(values.mode),
     skipBuild: values["skip-build"],
   };
 }

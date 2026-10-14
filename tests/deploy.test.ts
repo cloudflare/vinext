@@ -838,6 +838,10 @@ describe("parsePreviewsDeployArgs", () => {
     expect(() => parsePreviewsDeployArgs([" "])).toThrow("must not be empty");
     expect(() => parsePreviewsDeployArgs(["pr\0name"])).toThrow("null bytes");
   });
+
+  it.each([["--mode="], ["--mode", " "]])("rejects an empty mode: %j", (...args) => {
+    expect(() => parsePreviewsDeployArgs(args)).toThrow("--mode requires a non-empty value.");
+  });
 });
 
 describe("withCloudflarePreviewBuild", () => {
