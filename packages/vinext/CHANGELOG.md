@@ -2,6 +2,8 @@
 
 ## 1.2.0
 
+Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
+
 ### Features
 
 - **Init:** add --name to set the Cloudflare Worker name (#3863)
