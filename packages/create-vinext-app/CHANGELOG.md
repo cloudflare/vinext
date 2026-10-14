@@ -1,5 +1,15 @@
 # create-vinext-app
 
+## 1.1.0
+
+### Features
+
+- **Init:** add --name to set the Cloudflare Worker name (#3863)
+
+### Contributors
+
+- @MattieTK
+
 ## 1.0.0
 
 ### Features
