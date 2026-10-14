@@ -281,10 +281,27 @@ describe("app route handler runtime helpers", () => {
       },
     );
 
-    expect(tracked.request.ip).toBe("203.0.113.10");
-    expect(tracked.request.geo).toEqual({ country: "AU" });
+    // Without proxy trust or Cloudflare metadata the headers are ignored, but
+    // reading ip/geo is still dynamic request access.
+    expect(tracked.request.ip).toBeUndefined();
+    expect(tracked.request.geo).toBeUndefined();
     expect(tracked.didAccessDynamicRequest()).toBe(true);
     expect(accesses).toEqual(["request.ip", "request.geo"]);
+  });
+
+  it("reads request.ip and request.geo from Cloudflare metadata", () => {
+    const request = new Request("https://example.com/demo", {
+      headers: { "cf-connecting-ip": "203.0.113.10", "cf-ipcountry": "US" },
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "AU", city: "Sydney" },
+      enumerable: true,
+    });
+    const tracked = createTrackedAppRouteRequest(request);
+
+    expect(tracked.request.ip).toBe("203.0.113.10");
+    expect(tracked.request.geo).toEqual({ country: "AU", city: "Sydney" });
+    expect(tracked.didAccessDynamicRequest()).toBe(true);
   });
 
   it("treats request.cf as dynamic request state", () => {

@@ -12243,38 +12243,6 @@ describe("NextRequest API", () => {
     expect(req.nextUrl.port).toBe("8080");
   });
 
-  it("ip reads x-forwarded-for header", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("http://localhost/", {
-      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
-    });
-    expect(req.ip).toBe("1.2.3.4");
-  });
-
-  it("ip returns undefined when no header", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("http://localhost/");
-    expect(req.ip).toBeUndefined();
-  });
-
-  it("geo reads Cloudflare headers", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("http://localhost/", {
-      headers: {
-        "cf-ipcountry": "US",
-        "cf-ipcity": "San Francisco",
-      },
-    });
-    expect(req.geo?.country).toBe("US");
-    expect(req.geo?.city).toBe("San Francisco");
-  });
-
-  it("geo returns undefined when no geo headers", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("http://localhost/");
-    expect(req.geo).toBeUndefined();
-  });
-
   it("nextUrl.buildId returns process.env.__VINEXT_BUILD_ID when set", async () => {
     const original = process.env.__VINEXT_BUILD_ID;
     try {
@@ -27062,38 +27030,109 @@ describe("Pages Router _next/data client navigation", () => {
 });
 
 describe("next/server enhancements", () => {
-  it("NextRequest.ip extracts from x-forwarded-for header", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("https://example.com", {
-      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
+  describe("NextRequest.ip / NextRequest.geo trust", () => {
+    const spoofedHeaders = {
+      "cf-connecting-ip": "10.0.0.1",
+      "x-real-ip": "10.0.0.2",
+      "x-forwarded-for": "10.0.0.3, 10.0.0.4",
+      "cf-ipcountry": "US",
+      "cf-ipcity": "San Francisco",
+      "x-vercel-ip-country": "US",
+    };
+
+    // proxy-trust reads the trust policy at module load, so re-import the
+    // shim after stubbing the environment.
+    async function importServerShim(env: Record<string, string> = {}) {
+      vi.stubEnv("VINEXT_TRUST_PROXY", "");
+      vi.stubEnv("VINEXT_TRUSTED_HOSTS", "");
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      vi.resetModules();
+      return import("../packages/vinext/src/shims/server.js");
+    }
+
+    function withCf(request: Request, cf: Record<string, unknown>): Request {
+      Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
+      return request;
+    }
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      vi.resetModules();
     });
-    expect(req.ip).toBe("1.2.3.4");
-  });
 
-  it("NextRequest.ip returns undefined without forwarded header", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("https://example.com");
-    expect(req.ip).toBeUndefined();
-  });
-
-  it("NextRequest.geo extracts from Cloudflare/Vercel headers", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("https://example.com", {
-      headers: {
-        "cf-ipcountry": "US",
-        "cf-ipcity": "San Francisco",
-      },
+    it("ignores client-supplied IP and geo headers without proxy trust", async () => {
+      const { NextRequest } = await importServerShim();
+      const req = new NextRequest("https://example.com", { headers: spoofedHeaders });
+      expect(req.ip).toBeUndefined();
+      expect(req.geo).toBeUndefined();
     });
-    const geo = req.geo;
-    expect(geo).toBeDefined();
-    expect(geo!.country).toBe("US");
-    expect(geo!.city).toBe("San Francisco");
-  });
 
-  it("NextRequest.geo returns undefined without geo headers", async () => {
-    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("https://example.com");
-    expect(req.geo).toBeUndefined();
+    it("reads IP and geo headers when VINEXT_TRUST_PROXY=1", async () => {
+      const { NextRequest } = await importServerShim({ VINEXT_TRUST_PROXY: "1" });
+      const req = new NextRequest("https://example.com", { headers: spoofedHeaders });
+      expect(req.ip).toBe("10.0.0.1");
+      expect(req.geo).toEqual({
+        country: "US",
+        city: "San Francisco",
+        region: undefined,
+        latitude: undefined,
+        longitude: undefined,
+      });
+
+      const forwarded = new NextRequest("https://example.com", {
+        headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8", "x-vercel-ip-country": "AU" },
+      });
+      expect(forwarded.ip).toBe("1.2.3.4");
+      expect(forwarded.geo?.country).toBe("AU");
+
+      const empty = new NextRequest("https://example.com");
+      expect(empty.ip).toBeUndefined();
+      expect(empty.geo).toBeUndefined();
+    });
+
+    it("reads IP and geo headers when VINEXT_TRUSTED_HOSTS is set", async () => {
+      const { NextRequest } = await importServerShim({ VINEXT_TRUSTED_HOSTS: "example.com" });
+      const req = new NextRequest("https://example.com", {
+        headers: { "x-real-ip": "1.2.3.4", "cf-ipcountry": "DE" },
+      });
+      expect(req.ip).toBe("1.2.3.4");
+      expect(req.geo?.country).toBe("DE");
+    });
+
+    it("uses Cloudflare's CF-Connecting-IP and request.cf geo on Workers", async () => {
+      const { NextRequest } = await importServerShim();
+      const req = new NextRequest(
+        withCf(new Request("https://example.com", { headers: spoofedHeaders }), {
+          country: "AU",
+          city: "Sydney",
+          region: "New South Wales",
+          latitude: "-33.86",
+          longitude: "151.20",
+        }),
+      );
+      expect(req.ip).toBe("10.0.0.1");
+      expect(req.geo).toEqual({
+        country: "AU",
+        city: "Sydney",
+        region: "New South Wales",
+        latitude: "-33.86",
+        longitude: "151.20",
+      });
+    });
+
+    it("never falls back to spoofable headers on Workers", async () => {
+      const { NextRequest } = await importServerShim({ VINEXT_TRUST_PROXY: "1" });
+      const req = new NextRequest(
+        withCf(
+          new Request("https://example.com", {
+            headers: { "x-real-ip": "10.0.0.2", "cf-ipcountry": "US" },
+          }),
+          {},
+        ),
+      );
+      expect(req.ip).toBeUndefined();
+      expect(req.geo).toBeUndefined();
+    });
   });
 
   it("ResponseCookies.getAll returns all set cookies", async () => {

@@ -27,6 +27,7 @@ import {
 } from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
+import { trustProxy } from "../server/proxy-trust.js";
 
 /** @deprecated Import ImageResponse from `next/og` instead. */
 export function ImageResponse(): never {
@@ -173,6 +174,21 @@ function initWithoutInputBody(input: Request, init: RequestInit): RequestInit {
   return { ...init, body: null };
 }
 
+/**
+ * workerd's `request.cf` metadata. Only the Workers runtime sets it, so its
+ * presence means the request came through Cloudflare's edge rather than
+ * straight from a client.
+ */
+function readCloudflareMetadata(request: Request): object | undefined {
+  const cf: unknown = Reflect.get(request, "cf");
+  return cf !== null && typeof cf === "object" ? cf : undefined;
+}
+
+function readStringField(source: object, key: string): string | undefined {
+  const value: unknown = Reflect.get(source, key);
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
 export class NextRequest extends Request {
   private _nextUrl: NextURL;
   private _url: string;
@@ -272,10 +288,19 @@ export class NextRequest extends Request {
   }
 
   /**
-   * Client IP address. Prefers Cloudflare's trusted CF-Connecting-IP header
-   * over the spoofable X-Forwarded-For. Returns undefined if unavailable.
+   * Client IP address. Next.js removed `ip` in v15; vinext keeps it as an
+   * extension. Returns undefined unless the value comes from a trusted source.
+   *
+   * On Cloudflare Workers (the request carries `cf` metadata), Cloudflare's
+   * edge sets `CF-Connecting-IP`. Elsewhere these headers are client-supplied
+   * and are only honored behind a trusted proxy (`VINEXT_TRUST_PROXY` /
+   * `VINEXT_TRUSTED_HOSTS`), matching the `X-Forwarded-*` policy.
    */
   get ip(): string | undefined {
+    if (readCloudflareMetadata(this)) {
+      return this.headers.get("cf-connecting-ip") ?? undefined;
+    }
+    if (!trustProxy) return undefined;
     return (
       this.headers.get("cf-connecting-ip") ??
       this.headers.get("x-real-ip") ??
@@ -285,13 +310,28 @@ export class NextRequest extends Request {
   }
 
   /**
-   * Geolocation data. Platform-dependent (e.g., Cloudflare, Vercel).
-   * Returns undefined if not available.
+   * Geolocation data. Next.js removed `geo` in v15; vinext keeps it as an
+   * extension. Read from Cloudflare's `request.cf` metadata on Workers, or
+   * from platform geo headers behind a trusted proxy. Returns undefined
+   * otherwise, because any client can send these headers.
    */
   get geo():
     | { city?: string; country?: string; region?: string; latitude?: string; longitude?: string }
     | undefined {
-    // Check Cloudflare-style headers, Vercel-style headers
+    const cf = readCloudflareMetadata(this);
+    if (cf) {
+      const country = readStringField(cf, "country");
+      if (!country) return undefined;
+      return {
+        country,
+        city: readStringField(cf, "city"),
+        region: readStringField(cf, "region"),
+        latitude: readStringField(cf, "latitude"),
+        longitude: readStringField(cf, "longitude"),
+      };
+    }
+    if (!trustProxy) return undefined;
+    // Cloudflare-style headers, then Vercel-style headers
     const country =
       this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
     if (!country) return undefined;

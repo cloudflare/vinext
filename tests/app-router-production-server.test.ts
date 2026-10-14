@@ -432,6 +432,24 @@ describe("App Router Production server (startProdServer)", () => {
     await expectRepeatedSlashRedirects(baseUrl);
   });
 
+  // Without VINEXT_TRUST_PROXY / VINEXT_TRUSTED_HOSTS, any client can send
+  // these headers to the Node server, so NextRequest.ip / .geo must not
+  // report them.
+  it("ignores client-supplied IP and geo headers without proxy trust", async () => {
+    const res = await fetch(`${baseUrl}/api/request-ip-geo`, {
+      headers: {
+        "cf-connecting-ip": "10.0.0.1",
+        "x-real-ip": "10.0.0.2",
+        "x-forwarded-for": "10.0.0.3, 10.0.0.4",
+        "cf-ipcountry": "US",
+        "cf-ipcity": "San Francisco",
+        "x-vercel-ip-country": "US",
+      },
+    });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ip: null, geo: null });
+  });
+
   it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
     const res = await fetch(`${baseUrl}/middleware-redirect-double-slash`, { redirect: "manual" });
     expect(res.status).toBe(307);
