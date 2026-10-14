@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { spawn, type SpawnOptions } from "node:child_process";
-import { parseArgs as nodeParseArgs } from "node:util";
+import { parseArgs as nodeParseArgs, stripVTControlCharacters } from "node:util";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -861,9 +861,11 @@ export async function runCfDeploy(
     shell: false,
   });
   let output = "";
+  let stdout = "";
   child.stdout?.on("data", (chunk: Buffer | string) => {
     const text = chunk.toString();
     output += text;
+    stdout += text;
     process.stdout.write(text);
   });
   child.stderr?.on("data", (chunk: Buffer | string) => {
@@ -883,8 +885,32 @@ export async function runCfDeploy(
         );
     });
   });
-  const url = parseWorkerDeploymentUrl(output);
-  return url ?? `(${isPreview ? "Preview " : ""}URL not detected in cf output)`;
+  if (isPreview) {
+    return (
+      parseCfPreviewUrl(stdout) ??
+      parseWorkerDeploymentUrl(output) ??
+      "(Preview URL not detected in cf output)"
+    );
+  }
+  return parseWorkerDeploymentUrl(output) ?? "(URL not detected in cf output)";
+}
+
+/** `cf previews deploy` prints a JSON result; prefer the named Preview URL over the deployment URL. */
+function parseCfPreviewUrl(stdout: string): string | null {
+  const text = stripVTControlCharacters(stdout);
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end < start) return null;
+  let result: { preview_urls?: unknown; deployment_urls?: unknown };
+  try {
+    result = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  for (const urls of [result.preview_urls, result.deployment_urls]) {
+    if (Array.isArray(urls) && typeof urls[0] === "string") return urls[0];
+  }
+  return null;
 }
 
 export function hasCdnWarmRequests(
@@ -2136,25 +2162,38 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
+/** Worker Previews skip production-only steps, so reject options that would otherwise be ignored. */
+function assertPreviewDeployOptions(options: DeployOptions): void {
+  const unsupported = Object.entries({
+    preview: options.preview,
+    name: options.name !== undefined,
+    config: options.config !== undefined,
+    warmCdnCache: options.warmCdnCache,
+    warmCdnTarget: options.warmCdnTarget !== undefined,
+    warmCdnCertify: options.warmCdnCertify,
+    warmCdnPromote: options.warmCdnPromote === false,
+    experimentalTPR: options.experimentalTPR,
+  })
+    .filter(([, isSet]) => isSet)
+    .map(([option]) => option);
+  if (unsupported.length > 0) {
+    throw new Error(`Worker Preview deployments do not support: ${unsupported.join(", ")}.`);
+  }
+}
+
 export async function deploy(options: DeployOptions): Promise<void> {
   const isPreview = options.target?.type === "preview";
-  if (
-    !isPreview &&
-    options.warmCdnTarget !== undefined &&
-    !options.warmCdnCache &&
-    !options.experimentalTPR
-  ) {
+  if (isPreview) assertPreviewDeployOptions(options);
+  if (options.warmCdnTarget !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
     throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
   }
   const warmCdnTarget =
-    !isPreview && options.warmCdnTarget !== undefined
-      ? validateCdnWarmTarget(options.warmCdnTarget)
-      : undefined;
-  const deployEnv = options.env || (isPreview || options.preview ? "preview" : undefined);
+    options.warmCdnTarget === undefined ? undefined : validateCdnWarmTarget(options.warmCdnTarget);
+  const deployEnv = options.env || (options.preview ? "preview" : undefined);
   if (deployEnv) validateWranglerEnvName(deployEnv);
   const root = path.resolve(options.root);
   const deploymentTool = resolveDeploymentTool(root);
-  if (isPreview && (deploymentTool !== "cf" || options.config !== undefined)) {
+  if (isPreview && deploymentTool !== "cf") {
     throw new Error("Worker Previews require a cloudflare.config.ts project and the cf CLI.");
   }
   if (deploymentTool === "cf" && options.name) {
@@ -2308,11 +2347,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
     viteConfigMetadata.routeRootConfig,
   );
 
-  const canWarmTpr =
-    !isPreview && options.experimentalTPR && !shouldPrerenderLocally && hasBuildIdentityHeader;
-  if (!isPreview && options.experimentalTPR && shouldPrerenderLocally) {
+  const canWarmTpr = options.experimentalTPR && !shouldPrerenderLocally && hasBuildIdentityHeader;
+  if (options.experimentalTPR && shouldPrerenderLocally) {
     console.log("  TPR: Skipping route selection (all-route prerendering configured)");
-  } else if (!isPreview && options.experimentalTPR && !hasBuildIdentityHeader) {
+  } else if (options.experimentalTPR && !hasBuildIdentityHeader) {
     console.log(
       workerEntryHasCacheHandler(root)
         ? "  TPR: Skipping pre-warm (legacy imperative cache handlers must migrate to declarative vinext({ cache }) for standard warming)"
@@ -2350,8 +2388,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
       console.log("  TPR: Skipping pre-warm (current deployment cannot be staged safely)");
     }
   }
-  const shouldWarmCdnCache = !isPreview && (options.warmCdnCache || shouldWarmTpr);
-  if (!isPreview && options.warmCdnCertify && !shouldWarmCdnCache) {
+  const shouldWarmCdnCache = options.warmCdnCache || shouldWarmTpr;
+  if (options.warmCdnCertify && !shouldWarmCdnCache) {
     throw new Error("Cannot certify traffic-aware warming because pre-warming was skipped.");
   }
   const shouldSelectTpr = shouldWarmTpr && !options.warmCdnCache;
@@ -2518,7 +2556,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
   if (url === undefined) {
-    if (deploymentTool === "cf" && !isPreview && options.warmCdnPromote === false) {
+    if (deploymentTool === "cf" && options.warmCdnPromote === false) {
       const upload = runCfVersionUpload(root, wranglerOptions);
       url = upload.previewUrl ?? "(Preview URL not detected in cf output)";
     } else if (deploymentTool === "cf") {
@@ -2532,8 +2570,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   console.log("\n  ─────────────────────────────────────────");
-  console.log(
-    `  ${!isPreview && options.warmCdnPromote === false ? "Version URL" : "Deployed to"}: ${url}`,
-  );
+  const urlLabel = isPreview
+    ? "Preview URL"
+    : options.warmCdnPromote === false
+      ? "Version URL"
+      : "Deployed to";
+  console.log(`  ${urlLabel}: ${url}`);
   console.log("  ─────────────────────────────────────────\n");
 }

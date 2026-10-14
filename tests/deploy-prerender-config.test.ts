@@ -337,40 +337,52 @@ describe("deploy prerender config wiring", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])(
-    "ignores production controls for a Preview (promote: %s)",
-    async (warmCdnPromote) => {
-      writeProject(undefined, "{ cdn: workersCacheCdnAdapter() }");
-      writeCfBuildOutputScaffolding();
-      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+  it("rejects production-only options for a Preview", async () => {
+    writeProject(undefined, "{ cdn: workersCacheCdnAdapter() }");
+    writeCfBuildOutputScaffolding();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-      await deploy({
+    await expect(
+      deploy({
         root: tmpDir,
         skipBuild: true,
         target: { type: "preview", name: "pr-123" },
+        preview: true,
         warmCdnCache: true,
         experimentalTPR: true,
         warmCdnCertify: true,
         warmCdnTarget: "not-an-origin",
-        warmCdnTimeout: 0,
-        warmCdnPromote,
-      });
+        warmCdnPromote: false,
+      }),
+    ).rejects.toThrow(
+      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnCertify, warmCdnPromote, experimentalTPR.",
+    );
+    expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
 
-      expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
-      expect(discoverPrerenderPathManifestMock).not.toHaveBeenCalled();
-      expect(execFileSync).not.toHaveBeenCalled();
-      expect(spawn).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
-        expect.stringContaining(path.join("cf", "bin", "cf")),
-        "previews",
-        "deploy",
-        "pr-123",
-        "--prebuilt",
-        "--mode",
-        "preview",
-      ]);
-    },
-  );
+  it("deploys a named Preview without production steps", async () => {
+    writeProject(undefined, "{ cdn: workersCacheCdnAdapter() }");
+    writeCfBuildOutputScaffolding();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, target: { type: "preview", name: "pr-123" } });
+
+    expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
+    expect(discoverPrerenderPathManifestMock).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
+      expect.stringContaining(path.join("cf", "bin", "cf")),
+      "previews",
+      "deploy",
+      "pr-123",
+      "--prebuilt",
+      "--mode",
+      "production",
+    ]);
+  });
 
   it("does not recommend production warming for a Preview", async () => {
     writeProject("true");
@@ -390,45 +402,51 @@ describe("deploy prerender config wiring", () => {
     }
   });
 
-  it("propagates Preview context through config loading and Build Output", async () => {
-    writePreviewBuildProject();
-    vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", "false");
-    vi.stubEnv("CLOUDFLARE_ENV", "staging");
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+  it.each([
+    [undefined, "production"],
+    ["staging", "staging"],
+  ])(
+    "propagates Preview context through config loading and Build Output (env: %s)",
+    async (env, mode) => {
+      writePreviewBuildProject();
+      vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", "false");
+      vi.stubEnv("CLOUDFLARE_ENV", "other");
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, target: { type: "preview", name: "pr-123" } });
+      await deploy({ root: tmpDir, env, target: { type: "preview", name: "pr-123" } });
 
-    const contexts = fs
-      .readFileSync(path.join(tmpDir, "contexts.jsonl"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(contexts.filter(({ phase }) => phase === "vite").length).toBeGreaterThanOrEqual(2);
-    expect(contexts).toEqual(
-      expect.arrayContaining([
-        { phase: "cloudflare", mode: "preview", isPreview: true },
-        { phase: "build", mode: "preview", isPreview: true },
-      ]),
-    );
-    expect(contexts.every(({ mode, isPreview }) => mode === "preview" && isPreview === true)).toBe(
-      true,
-    );
-    expect(
-      JSON.parse(fs.readFileSync(path.join(tmpDir, ".cloudflare/output/v0/config.json"), "utf8")),
-    ).toMatchObject({ buildContext: { mode: "preview", isPreview: true } });
-    expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("false");
-    expect(process.env.CLOUDFLARE_ENV).toBe("staging");
-    expect(spawn).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
-      expect.any(String),
-      "previews",
-      "deploy",
-      "pr-123",
-      "--prebuilt",
-      "--mode",
-      "preview",
-    ]);
-  });
+      const contexts = fs
+        .readFileSync(path.join(tmpDir, "contexts.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(contexts.filter(({ phase }) => phase === "vite").length).toBeGreaterThanOrEqual(2);
+      expect(contexts).toEqual(
+        expect.arrayContaining([
+          { phase: "cloudflare", mode, isPreview: true },
+          { phase: "build", mode, isPreview: true },
+        ]),
+      );
+      expect(contexts.every((context) => context.mode === mode && context.isPreview === true)).toBe(
+        true,
+      );
+      expect(
+        JSON.parse(fs.readFileSync(path.join(tmpDir, ".cloudflare/output/v0/config.json"), "utf8")),
+      ).toMatchObject({ buildContext: { mode, isPreview: true } });
+      expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("false");
+      expect(process.env.CLOUDFLARE_ENV).toBe("other");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
+        expect.any(String),
+        "previews",
+        "deploy",
+        "pr-123",
+        "--prebuilt",
+        "--mode",
+        mode,
+      ]);
+    },
+  );
 
   it.each(["config", "build"] as const)(
     "restores Preview context after a %s failure",

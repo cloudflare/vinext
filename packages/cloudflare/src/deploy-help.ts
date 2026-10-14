@@ -123,19 +123,21 @@ export function formatPreviewsDeployHelp(): string {
 
   Usage: vinext-cloudflare previews deploy [preview-name] [options]
 
-  Builds the app in preview mode with isPreview=true, then deploys its
-  Preview Build Output using cf. Requires cloudflare.config.ts and the cf CLI.
+  Builds the app with isPreview=true, then deploys its Preview Build Output
+  using cf previews deploy. Requires cloudflare.config.ts and the cf CLI.
 
   Arguments:
     preview-name    Optional Preview name (cf uses the CI or Git branch if omitted)
 
   Options:
+    --mode <mode>   Vite mode to build and deploy in (default: production)
     --skip-build    Deploy existing Preview Build Output without rebuilding
     -h, --help      Show this help
 
   Examples:
     vinext-cloudflare previews deploy
     vinext-cloudflare previews deploy pr-123
+    vinext-cloudflare previews deploy pr-123 --mode staging
     vinext-cloudflare previews deploy pr-123 --skip-build
 `;
 }

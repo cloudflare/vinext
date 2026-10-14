@@ -99,7 +99,7 @@ async function previewsCommand(): Promise<void> {
 
   await deploy({
     root: process.cwd(),
-    env: "preview",
+    env: options.mode,
     skipBuild: options.skipBuild,
     target: { type: "preview", name: options.name },
   });

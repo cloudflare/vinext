@@ -622,8 +622,8 @@ describe("cf Build Output deployment", () => {
     const output = JSON.stringify(
       {
         type: "preview",
-        preview_urls: hasNamedUrl ? ["https://main.example.workers.dev"] : [],
         deployment_urls: ["https://deployment.example.workers.dev"],
+        preview_urls: hasNamedUrl ? ["https://main.example.workers.dev"] : [],
       },
       null,
       2,
@@ -802,10 +802,16 @@ describe("parseWorkerDeploymentUrl", () => {
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
 describe("parsePreviewsDeployArgs", () => {
-  it("accepts an optional name, skip-build, and help", () => {
-    expect(parsePreviewsDeployArgs([])).toEqual({ name: undefined, skipBuild: false, help: false });
-    expect(parsePreviewsDeployArgs(["pr-123", "--skip-build"])).toEqual({
+  it("accepts an optional name, mode, skip-build, and help", () => {
+    expect(parsePreviewsDeployArgs([])).toEqual({
+      name: undefined,
+      mode: undefined,
+      skipBuild: false,
+      help: false,
+    });
+    expect(parsePreviewsDeployArgs(["pr-123", "--mode", "staging", "--skip-build"])).toEqual({
       name: "pr-123",
+      mode: "staging",
       skipBuild: true,
       help: false,
     });
@@ -815,7 +821,6 @@ describe("parsePreviewsDeployArgs", () => {
 
   it.each([
     "--env",
-    "--mode",
     "--prebuilt",
     "--worker",
     "--name",

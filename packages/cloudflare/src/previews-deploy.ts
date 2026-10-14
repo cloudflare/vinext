@@ -16,6 +16,7 @@ export function parsePreviewsDeployArgs(args: string[]) {
     strict: true,
     options: {
       help: { type: "boolean", short: "h", default: false },
+      mode: { type: "string" },
       "skip-build": { type: "boolean", default: false },
     },
   });
@@ -27,6 +28,7 @@ export function parsePreviewsDeployArgs(args: string[]) {
   return {
     help: values.help,
     name: positionals[0] === undefined ? undefined : validatePreviewName(positionals[0]),
+    mode: values.mode?.trim() || undefined,
     skipBuild: values["skip-build"],
   };
 }
