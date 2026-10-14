@@ -261,6 +261,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     'import Head from "next/head";\n' +
       'import pageStyles from "@/styles/page.module.css";\n' +
       'export {} from "@/lib/side-effect";\n' +
+      'import type {} from "@/lib/type-only";\n' +
       "export default function Home() {\n" +
       "  return <>\n" +
       '    <Head><style>{".global-css-pages-text { border-top-width: 0px; }"}</style></Head>\n' +

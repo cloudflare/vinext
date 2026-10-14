@@ -112,7 +112,7 @@ export function parseModuleRecord(code: string, lang: ParserOptions["lang"]): Mo
  * way (a block comment stops at the first `*\/`, a line comment runs to the
  * line end), so repeating it cannot backtrack exponentially.
  */
-export const TRIVIA_PATTERN = String.raw`(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*(?![^\n]))`;
+export const TRIVIA_PATTERN = String.raw`(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n\r\u2028\u2029]*(?![^\n\r\u2028\u2029]))`;
 
 /** Leading whitespace and comments. */
 export const LEADING_TRIVIA_RE = new RegExp(`^${TRIVIA_PATTERN}*`);
@@ -131,6 +131,23 @@ export function hasImportAttributes(
   const afterSource = code.slice(sourceEnd, statementEnd);
   const triviaLength = LEADING_TRIVIA_RE.exec(afterSource)?.[0].length ?? 0;
   return /^(?:with|assert)\b/.test(afterSource.slice(triviaLength));
+}
+
+const EMPTY_TYPE_IMPORT_RE = new RegExp(
+  String.raw`^import${TRIVIA_PATTERN}*type${TRIVIA_PATTERN}*\{`,
+);
+
+/**
+ * Whether a static import is erased by TypeScript: every binding is
+ * type-only, or it is `import type {} from "x"`, which the module record
+ * reports with no entries (like a runtime `import {} from "x"`).
+ */
+export function isTypeOnlyImport(
+  code: string,
+  statement: ModuleRecord["staticImports"][number],
+): boolean {
+  if (statement.entries.length > 0) return statement.entries.every((entry) => entry.isType);
+  return EMPTY_TYPE_IMPORT_RE.test(code.slice(statement.start, statement.moduleRequest.start));
 }
 
 /**

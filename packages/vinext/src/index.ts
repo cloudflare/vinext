@@ -16,6 +16,7 @@ import type {
 import { createIdResolver, createLogger, isRunnableDevEnvironment, transformWithOxc } from "vite";
 import {
   hasImportAttributes,
+  isTypeOnlyImport,
   parseModuleRecord,
   parseProgram,
   TRIVIA_PATTERN,
@@ -694,7 +695,7 @@ function isolateGlobalNotFoundStylesheetImports(
 
   let output: MagicString | null = null;
   for (const statement of record.staticImports) {
-    if (statement.entries.length > 0) continue;
+    if (statement.entries.length > 0 || isTypeOnlyImport(code, statement)) continue;
     const source = statement.moduleRequest;
     if (hasImportAttributes(code, source.end, statement.end)) continue;
     if (!isStylesheetSpecifier(source.value)) continue;
@@ -746,7 +747,7 @@ function runtimeStaticDependencySpecifiers(
 ): string[] {
   const dependencies: Array<{ start: number; specifier: string }> = [];
   for (const statement of record.staticImports) {
-    if (statement.entries.length > 0 && statement.entries.every((entry) => entry.isType)) continue;
+    if (isTypeOnlyImport(code, statement)) continue;
     if (hasImportAttributes(code, statement.moduleRequest.end, statement.end)) continue;
     dependencies.push({ start: statement.start, specifier: statement.moduleRequest.value });
   }

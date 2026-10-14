@@ -73,6 +73,23 @@ describe("CSS Module import compatibility", () => {
     );
   });
 
+  it("ends line comments at every line terminator", () => {
+    for (const terminator of ["\r", "\u2028", "\u2029"]) {
+      const source = `import // comment${terminator} * as styles from "./styles.module.css";`;
+
+      expect(rewriteCssModuleNamespaceImports(source)?.code).toBe(
+        `import // comment${terminator} styles from "./styles.module.css";`,
+      );
+    }
+  });
+
+  it("leaves namespace imports with attributes after a line comment untouched", () => {
+    const source =
+      'import * as styles from "./styles.module.css" // comment\u2028with { type: "css" };';
+
+    expect(rewriteCssModuleNamespaceImports(source)).toBeNull();
+  });
+
   it("rewrites namespace imports after MDX compilation", async () => {
     const { default: mdx } = await import("@mdx-js/rollup");
     const mdxPlugin = mdx() as {
