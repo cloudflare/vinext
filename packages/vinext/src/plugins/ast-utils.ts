@@ -107,8 +107,15 @@ export function parseModuleRecord(code: string, lang: ParserOptions["lang"]): Mo
   return result.errors.length > 0 ? null : result.module;
 }
 
+/**
+ * One whitespace character or comment. Each alternative can only match one
+ * way (a block comment stops at the first `*\/`, a line comment runs to the
+ * line end), so repeating it cannot backtrack exponentially.
+ */
+export const TRIVIA_PATTERN = String.raw`(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*(?![^\n]))`;
+
 /** Leading whitespace and comments. */
-export const LEADING_TRIVIA_RE = /^(?:\s+|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*/;
+export const LEADING_TRIVIA_RE = new RegExp(`^${TRIVIA_PATTERN}*`);
 
 /**
  * Whether the static import/export statement ending at `statementEnd` has
