@@ -6768,8 +6768,12 @@ describe("next/cache shim", () => {
       async revalidateTag() {},
     });
 
+    const refreshedIds: number[] = [];
     const getUser = unstable_cache(
-      async (options: { id: number }) => `user-${options.id}`,
+      async (options: { id: number }) => {
+        refreshedIds.push(options.id);
+        return `user-${options.id}`;
+      },
       ["changed-arguments-refresh-test"],
       { revalidate: 1 },
     );
@@ -6791,6 +6795,8 @@ describe("next/cache shim", () => {
       await expect(result).resolves.toBe("user-1");
       await Promise.all(waitUntilPromises);
       expect(waitUntilPromises).toHaveLength(1);
+      // The refresh still runs, but its result isn't stored.
+      expect(refreshedIds).toEqual([2]);
       expect(setBodies).toEqual([]);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
