@@ -2287,6 +2287,17 @@ export async function deploy(options: DeployOptions): Promise<void> {
     return;
   }
 
+  // Like `cf previews deploy --prebuilt`, upload the existing Preview Build Output
+  // without evaluating the current config or post-processing the output.
+  if (isPreview && options.skipBuild) {
+    console.log("\n  Skipping build (--skip-build)");
+    printDeployUrl(
+      "Preview URL",
+      await runCfDeploy(root, { env: viteMode, target: options.target }),
+    );
+    return;
+  }
+
   // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
   // export/prerender behavior, so deploy cannot safely short-circuit before reading it.
   const viteConfigMetadata = await withBuildContext(() =>
@@ -2571,12 +2582,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
 
+  printDeployUrl(
+    isPreview ? "Preview URL" : options.warmCdnPromote === false ? "Version URL" : "Deployed to",
+    url,
+  );
+}
+
+function printDeployUrl(label: string, url: string): void {
   console.log("\n  ─────────────────────────────────────────");
-  const urlLabel = isPreview
-    ? "Preview URL"
-    : options.warmCdnPromote === false
-      ? "Version URL"
-      : "Deployed to";
-  console.log(`  ${urlLabel}: ${url}`);
+  console.log(`  ${label}: ${url}`);
   console.log("  ─────────────────────────────────────────\n");
 }

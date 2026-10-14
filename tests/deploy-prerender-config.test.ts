@@ -366,13 +366,19 @@ describe("deploy prerender config wiring", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("deploys a named Preview without production steps", async () => {
-    writeProject(undefined, "{ cdn: workersCacheCdnAdapter() }");
+  it("deploys prebuilt Preview output without loading config or prerendering", async () => {
+    writeProject("true", "{ cdn: workersCacheCdnAdapter() }");
+    // Loading this config would fail, so the prebuilt path must not evaluate it.
+    fs.appendFileSync(
+      path.join(tmpDir, "vite.config.ts"),
+      'throw new Error("config was loaded");\n',
+    );
     writeCfBuildOutputScaffolding();
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true, target: { type: "preview", name: "pr-123" } });
 
+    expect(runPrerenderMock).not.toHaveBeenCalled();
     expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
     expect(discoverPrerenderPathManifestMock).not.toHaveBeenCalled();
     expect(execFileSync).not.toHaveBeenCalled();
@@ -394,7 +400,8 @@ describe("deploy prerender config wiring", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-      await deploy({ root: tmpDir, skipBuild: true, target: { type: "preview" } });
+      // The warning precedes the build, which this minimal fixture cannot complete.
+      await deploy({ root: tmpDir, target: { type: "preview" } }).catch(() => {});
 
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("Preview deployments render these routes on request."),
