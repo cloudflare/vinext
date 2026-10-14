@@ -33,6 +33,7 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  formatRscRequestPath,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -918,8 +919,10 @@ function toAppPrefetchDestination(href: string): string | null {
     __trailingSlash,
   );
   try {
-    const url = new URL(browserHref, window.location.href);
-    return `${url.pathname}${url.search}`;
+    // A pathname that starts with "//" must not come back as a
+    // protocol-relative reference: the prefetch path resolves this value
+    // against the current URL again and would read its first segment as a host.
+    return formatRscRequestPath(new URL(browserHref, window.location.href));
   } catch {
     return browserHref.split("#", 1)[0];
   }

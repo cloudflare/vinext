@@ -1339,6 +1339,41 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
   });
 
+  it("resolves router.prefetch policy for a // pathname on the app origin", async () => {
+    // "/.//a//attacker.example/p" is a local href whose pathname is
+    // "//a//attacker.example/p". Next.js prefetches that pathname on the app
+    // origin, so the route policy must see it too, not a URL on host "a".
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        patternParts: ["a", "attacker.example", "p"],
+        isDynamic: false,
+      },
+    ];
+    let fetchedUrl: string | undefined;
+    let fetchedHeaders: Headers | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetchedUrl = toRscUrlString(input);
+      fetchedHeaders = new Headers(init?.headers);
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/.//a//attacker.example/p");
+
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    if (fetchedUrl === undefined) throw new Error("Expected router.prefetch to fetch");
+    const resolved = new URL(fetchedUrl, "http://localhost/");
+    expect(resolved.origin).toBe("http://localhost");
+    expect(resolved.pathname).toBe("//a//attacker.example/p");
+    // The manifest route matched, so this is a navigation-reusable prefetch,
+    // not the learning-only loading-shell fallback for unmatched hrefs.
+    expect(fetchedHeaders?.get("x-vinext-rsc-render-mode")).toBeNull();
+    const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+    expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
+  });
+
   it("does not repopulate the prefetch cache across an invalidation (#2707)", async () => {
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },

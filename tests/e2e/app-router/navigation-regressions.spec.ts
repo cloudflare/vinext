@@ -327,3 +327,41 @@ test.describe("RSC request URLs for pathnames that start with //", () => {
     expect(offOriginRequests).toEqual([]);
   });
 });
+
+test.describe("router.prefetch for hrefs that resolve to a // pathname", () => {
+  test("keeps the prefetch RSC request on the app origin", async ({ page }) => {
+    // "/.//a//attacker.example/p" starts with a single "/", but its pathname is
+    // "//a//attacker.example/p". Next.js prefetches the full same-origin URL;
+    // the credentialed prefetch fetch must never go to attacker.example.
+    await page.goto(`${BASE}/about`);
+    await waitForAppRouterHydration(page);
+
+    const offOriginRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin !== BASE) offOriginRequests.push(request.url());
+    });
+    await page.route(
+      (url) => url.origin !== BASE,
+      (route) => route.fulfill({ status: 200, body: "off-origin" }),
+    );
+
+    // Match the RSC request wherever it is sent, so a regression reports the
+    // off-origin URL instead of timing out.
+    const rscRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.searchParams.has("_rsc") && url.href.includes("attacker.example");
+    });
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      router.prefetch("/.//a//attacker.example/p");
+    });
+
+    const request = await rscRequest;
+    const requestUrl = new URL(request.url());
+    expect(requestUrl.origin).toBe(BASE);
+    expect(requestUrl.pathname).toBe("//a//attacker.example/p");
+    expect(request.headers()["next-router-prefetch"]).toBe("1");
+    expect(offOriginRequests).toEqual([]);
+  });
+});
