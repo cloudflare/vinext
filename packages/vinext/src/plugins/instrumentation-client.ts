@@ -1,11 +1,12 @@
 import type { Plugin } from "vite";
-import { normalizePath, parseAst } from "vite";
+import { normalizePath } from "vite";
+import { parseProgram } from "./ast-utils.js";
 import MagicString from "magic-string";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 function insertionPositionAfterDirectives(code: string): number {
-  const ast = parseAst(code);
+  const ast = parseProgram(code);
   let insertPos = 0;
   for (const node of ast.body) {
     if (node.type !== "ExpressionStatement" || node.directive === undefined) break;

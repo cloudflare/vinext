@@ -3,13 +3,8 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import path, { toSlash } from "pathslash";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
-import {
-  isCSSRequest,
-  parseAstAsync,
-  transformWithOxc,
-  type Plugin,
-  type ResolvedConfig,
-} from "vite";
+import { isCSSRequest, transformWithOxc, type Plugin, type ResolvedConfig } from "vite";
+import { parseProgramAsync } from "./ast-utils.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import { USE_CACHE_PLUGIN_NAME, type UseCacheCallableApi } from "./use-cache-callable.js";
@@ -119,7 +114,7 @@ export async function createWorkerUseServerPlugins(options: {
       // virtual modules included); the directive check below narrows it.
       filter: { code: "use server" },
       async handler(code, id) {
-        let ast = await parseAstAsync(code);
+        let ast = await parseProgramAsync(code);
         if (!transforms.hasDirective(ast.body, "use server")) return null;
         if (!manager) {
           throw new Error(
@@ -147,7 +142,7 @@ export async function createWorkerUseServerPlugins(options: {
               // export-name changes explicitly.
               this.addWatchFile(target);
               const source = await fs.promises.readFile(target, "utf-8");
-              return parseAstAsync(
+              return parseProgramAsync(
                 (await transformWithOxc(source, target, { sourcemap: false })).code,
               );
             },
@@ -155,7 +150,7 @@ export async function createWorkerUseServerPlugins(options: {
         );
         if (expanded) {
           code = expanded.code;
-          ast = await parseAstAsync(code);
+          ast = await parseProgramAsync(code);
         }
 
         const { referenceKey } = manager.serverReferences.resolve(id, "rsc");

@@ -7,12 +7,13 @@ import type {
   ModuleExportMeta,
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
-import { parseAstAsync, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
+import { parseProgramAsync } from "./ast-utils.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
-type Program = Awaited<ReturnType<typeof parseAstAsync>>;
+type Program = ESTree.Program;
 
 type Options = {
   projectRoot: string;
@@ -278,7 +279,7 @@ export async function createUseCacheCallablePlugin(
   let manager: RscPluginManager | undefined;
 
   async function analyzeModule(manager: RscPluginManager, code: string, id: string) {
-    const ast = await parseAstAsync(code);
+    const ast = await parseProgramAsync(code);
     const moduleDirective = findModuleUseCacheDirective(ast);
     const useServerBoundary = transforms.hasDirective(ast.body, "use server");
     if (moduleDirective && useServerBoundary) {
@@ -306,7 +307,7 @@ export async function createUseCacheCallablePlugin(
         if (!manager) {
           // Like the worker "use server" transform, fail rather than ship the
           // module body.
-          if (findModuleUseCacheDirective(await parseAstAsync(code))) {
+          if (findModuleUseCacheDirective(await parseProgramAsync(code))) {
             throw new Error(
               'vinext: cannot compile a "use cache" module in a Web Worker without @vitejs/plugin-rsc.',
             );

@@ -24,8 +24,8 @@
  *   correct.
  */
 
-import type { Plugin } from "vite";
-import { parseAst } from "vite";
+import type { ESTree, Plugin } from "vite";
+import { parseProgram } from "./ast-utils.js";
 import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
@@ -186,7 +186,7 @@ type GoogleFontNamedSpecifier = {
 
 /**
  * Safely parse a static JS object literal string into a plain object.
- * Uses Vite's parseAst (Rollup/acorn) so no code is ever evaluated.
+ * Uses Vite's bundled oxc parser so no code is ever evaluated.
  * Returns null if the expression contains anything dynamic (function calls,
  * template literals, identifiers, computed properties, etc.).
  *
@@ -194,10 +194,10 @@ type GoogleFontNamedSpecifier = {
  * arrays of the above, and nested object literals.
  */
 export function parseStaticObjectLiteral(objectStr: string): Record<string, unknown> | null {
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
     // Wrap in parens so the parser treats `{…}` as an expression, not a block
-    ast = parseAst(`(${objectStr})`);
+    ast = parseProgram(`(${objectStr})`);
   } catch {
     return null;
   }

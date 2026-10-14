@@ -8,8 +8,8 @@
 import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
 import { normalizePageExtensions } from "./routing/file-matcher.js";
 import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
-import { unwrapExpression } from "./plugins/ast-utils.js";
-import { parseAst, type ESTree } from "vite";
+import { parseProgram, unwrapExpression } from "./plugins/ast-utils.js";
+import type { ESTree } from "vite";
 import fs from "node:fs";
 import ignore, { type Ignore } from "ignore";
 import path from "pathslash";
@@ -926,7 +926,7 @@ function propertyKeyName(prop: ESTree.ObjectExpression["properties"][number]): s
  * object — top-level keys plus, for each object-valued property, its child keys
  * (used for dot-notation options like `experimental.ppr`).
  *
- * Uses Vite's `parseAst` (the bundled oxc parser) instead of scanning text, so
+ * Uses Vite's bundled oxc parser instead of scanning text, so
  * comments, string values, and other non-key mentions of an option name are
  * never mistaken for a real config option. Returns empty sets if the file cannot
  * be parsed — the check is advisory, so a parse failure simply reports nothing.
@@ -940,7 +940,7 @@ function collectConfigKeys(source: string): ConfigKeys {
   try {
     // Parse as TS (a superset of JS) so `.ts` configs with type annotations,
     // `as`, and `satisfies` parse the same as `.js`/`.mjs`.
-    program = parseAst(source, { lang: "ts" });
+    program = parseProgram(source, { lang: "ts" });
   } catch {
     return { top, nested };
   }
@@ -1183,7 +1183,7 @@ function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
   if (/^next\.config\.(?:ts|mts|cjs)$/.test(rel)) return true;
   if (rel !== "next.config.js") return false;
   try {
-    return !parseAst(content).body.some(
+    return !parseProgram(content).body.some(
       (node) => node.type === "ImportDeclaration" || node.type.startsWith("Export"),
     );
   } catch {
@@ -1199,7 +1199,7 @@ function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
 function exportsPostcssPluginsOnlyObject(content: string): boolean {
   let program: ESTree.Program;
   try {
-    program = parseAst(content, { lang: "ts" });
+    program = parseProgram(content, { lang: "ts" });
   } catch {
     return false;
   }

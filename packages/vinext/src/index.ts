@@ -2,6 +2,7 @@ import type {
   Alias,
   CSSModulesOptions,
   DevEnvironment,
+  ESTree,
   HotUpdateOptions,
   Logger,
   Plugin,
@@ -12,13 +13,13 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
+import { createIdResolver, createLogger, isRunnableDevEnvironment, transformWithOxc } from "vite";
 import {
-  createIdResolver,
-  createLogger,
-  isRunnableDevEnvironment,
-  parseAst,
-  transformWithOxc,
-} from "vite";
+  hasImportAttributes,
+  parseModuleRecord,
+  parseProgram,
+  type ModuleRecord,
+} from "./plugins/ast-utils.js";
 import {
   pagesRouter,
   apiRouter,
@@ -493,7 +494,7 @@ if (earlyViteCliInvocation) {
 // VINEXT_PRERENDER check. See socket-error-backstop.ts.
 installSocketErrorBackstop();
 
-type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+type ASTNode = ESTree.Program["body"][number]["parent"];
 
 // In dev, `server-only` imports that only Vite's dependency scan reaches
 // resolve to this virtual module, which fails when loaded. The importer path
@@ -510,9 +511,19 @@ function createServerOnlyClientImportError(importer: string | undefined): Error 
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
 
-  let ast: ReturnType<typeof parseAst>;
+  const record = parseModuleRecord(code, "js");
+  if (!record) return false;
+  if (record.staticImports.some((statement) => statement.moduleRequest.value === "server-only")) {
+    return true;
+  }
+
+  // The module record only lists ESM imports, so `require("server-only")`
+  // still needs the full AST.
+  if (!code.includes("require")) return false;
+
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch {
     return false;
   }
@@ -521,11 +532,6 @@ function hasServerOnlyMarkerImport(code: string): boolean {
     if (!node) return false;
     if (Array.isArray(node)) return node.some((child) => walk(child));
     if (typeof node !== "object") return false;
-
-    if (node.type === "ImportDeclaration") {
-      const source = (node as ASTNode & { source?: { value?: unknown } }).source?.value;
-      if (source === "server-only") return true;
-    }
 
     if (node.type === "CallExpression") {
       const call = node as ASTNode & {
@@ -631,15 +637,6 @@ type ResolveFromImporter = (
   options?: { skipSelf?: boolean },
 ) => Promise<{ id: string } | null | undefined>;
 
-type AstStaticDependencyDeclaration = ASTNode & {
-  type?: string;
-  importKind?: string;
-  exportKind?: string;
-  source?: { value?: unknown };
-  specifiers?: Array<{ importKind?: string; exportKind?: string }>;
-  attributes?: unknown[];
-};
-
 type MagicStringTransformResult = {
   code: string;
   map: ReturnType<MagicString["generateMap"]>;
@@ -691,31 +688,21 @@ function isolateGlobalNotFoundStylesheetImports(
     return isolateMdxStylesheetImports(code);
   }
 
-  let ast: ReturnType<typeof parseAst>;
-  try {
-    ast = parseAst(code, { lang: parserLanguageForScript(id) });
-  } catch {
-    return null;
-  }
+  const record = parseModuleRecord(code, parserLanguageForScript(id));
+  if (!record) return null;
 
   let output: MagicString | null = null;
-  for (const statement of ast.body as AstStaticDependencyDeclaration[]) {
-    if (statement.type !== "ImportDeclaration" || statement.importKind === "type") continue;
-    if (statement.specifiers && statement.specifiers.length > 0) continue;
-    if (statement.attributes && statement.attributes.length > 0) continue;
-
-    const source = statement.source;
-    const specifier = source?.value;
-    if (typeof specifier !== "string" || !isStylesheetSpecifier(specifier)) continue;
-
-    const range = source as typeof source & { start?: number; end?: number };
-    if (typeof range.start !== "number" || typeof range.end !== "number") continue;
+  for (const statement of record.staticImports) {
+    if (statement.entries.length > 0) continue;
+    const source = statement.moduleRequest;
+    if (hasImportAttributes(code, source.end, statement.end)) continue;
+    if (!isStylesheetSpecifier(source.value)) continue;
 
     output ??= new MagicString(code);
     output.overwrite(
-      range.start,
-      range.end,
-      JSON.stringify(specifier + GLOBAL_NOT_FOUND_CSS_QUERY),
+      source.start,
+      source.end,
+      JSON.stringify(source.value + GLOBAL_NOT_FOUND_CSS_QUERY),
     );
   }
 
@@ -741,14 +728,24 @@ function commonjsTransformFilter(
   return undefined;
 }
 
-function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
-  return (
-    statement.specifiers !== undefined &&
-    statement.specifiers.length > 0 &&
-    statement.specifiers.every(
-      (specifier) => specifier.importKind === "type" || specifier.exportKind === "type",
-    )
-  );
+/**
+ * Sources of a module's static imports and re-exports, in source order.
+ * Type-only declarations and declarations with import attributes are skipped.
+ */
+function runtimeStaticDependencySpecifiers(code: string, record: ModuleRecord): string[] {
+  const dependencies: Array<{ start: number; specifier: string }> = [];
+  for (const statement of record.staticImports) {
+    if (statement.entries.length > 0 && statement.entries.every((entry) => entry.isType)) continue;
+    if (hasImportAttributes(code, statement.moduleRequest.end, statement.end)) continue;
+    dependencies.push({ start: statement.start, specifier: statement.moduleRequest.value });
+  }
+  for (const statement of record.staticExports) {
+    const source = statement.entries[0]?.moduleRequest;
+    if (!source || statement.entries.every((entry) => entry.isType)) continue;
+    if (hasImportAttributes(code, source.end, statement.end)) continue;
+    dependencies.push({ start: statement.start, specifier: source.value });
+  }
+  return dependencies.sort((a, b) => a.start - b.start).map(({ specifier }) => specifier);
 }
 
 function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string): string | null {
@@ -806,32 +803,17 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
     const cleanModulePath = stripViteModuleQuery(modulePath);
     if (!path.isAbsolute(cleanModulePath) || !fs.existsSync(cleanModulePath)) return [];
 
-    let ast: ReturnType<typeof parseAst>;
+    let code: string;
     try {
-      ast = parseAst(fs.readFileSync(cleanModulePath, "utf-8"), {
-        lang: parserLanguageForScript(cleanModulePath),
-      });
+      code = fs.readFileSync(cleanModulePath, "utf-8");
     } catch {
       return [];
     }
+    const record = parseModuleRecord(code, parserLanguageForScript(cleanModulePath));
+    if (!record) return [];
 
     const dependencies: DevPagesModuleDependency[] = [];
-    for (const statement of ast.body as AstStaticDependencyDeclaration[]) {
-      if (
-        statement.type !== "ImportDeclaration" &&
-        statement.type !== "ExportNamedDeclaration" &&
-        statement.type !== "ExportAllDeclaration"
-      ) {
-        continue;
-      }
-      if (statement.importKind === "type") continue;
-      if (statement.exportKind === "type") continue;
-      if (hasOnlyTypeSpecifiers(statement)) continue;
-      if (statement.attributes && statement.attributes.length > 0) continue;
-
-      const specifier = statement.source?.value;
-      if (typeof specifier !== "string") continue;
-
+    for (const specifier of runtimeStaticDependencySpecifiers(code, record)) {
       const resolved = await resolve(specifier, cleanModulePath, { skipSelf: true });
       if (!resolved?.id) continue;
 
@@ -7386,7 +7368,7 @@ export const loadServerActionClient = ${
     // getStaticPaths) from page modules in the client bundle. These functions
     // often import server-only modules (database drivers, fs, etc.) that would
     // break or bloat the client bundle. Next.js does this via an SWC transform
-    // (next-ssg-transform); we use Vite's parseAst + MagicString.
+    // (next-ssg-transform); we use Vite's oxc parser + MagicString.
     //
     // Only applies to client builds (not SSR) and only to files under the
     // pages/ directory.
@@ -7794,15 +7776,15 @@ export const loadServerActionClient = ${
         async handler(code, id) {
           // The `code` filter above (a regex) only decides whether to invoke
           // this handler; it can fire on text inside comments, strings, or
-          // template literals. Scanning must therefore be AST-based so we only
+          // template literals. Scanning must therefore use the parser so we only
           // rewrite real `import X from '...'` declarations, not text that
           // merely looks like one. Regex-based scanning generated phantom
           // variables for commented-out imports, crashing SSR with
           // `__vinext_img_url_X is not defined`.
 
           // This plugin uses `enforce: "pre"`, so the handler runs on RAW
-          // source — before the JSX/TS transform. `parseAst` defaults to plain
-          // JavaScript and would throw on JSX or TS type annotations, which
+          // source — before the JSX/TS transform. Parsing it as plain
+          // JavaScript would fail on JSX or TS type annotations, which
           // would silently skip image transforms for every `.tsx`/`.jsx`/typed
           // `.ts` file. (The adjacent `use-cache` plugin avoids this by running
           // after the JSX transform; we can't, since the import must be
@@ -7812,45 +7794,29 @@ export const loadServerActionClient = ${
           // can contain JSX, so parse those as `tsx`. Plain `.ts` files must be
           // parsed as `ts`: the `tsx` grammar treats `<T>` as the start of a JSX
           // element, so legitimate TS-only syntax such as angle-bracket casts
-          // (`<Foo>bar`) and non-comma generic arrows (`<T>(x) => x`) would throw
-          // — which the `catch` below would swallow, silently leaving image
-          // imports in those files untransformed.
+          // (`<Foo>bar`) and non-comma generic arrows (`<T>(x) => x`) would fail
+          // to parse, silently leaving image imports in those files
+          // untransformed.
           const lang = id.endsWith(".ts") ? "ts" : "tsx";
-          let ast: ReturnType<typeof parseAst>;
-          try {
-            ast = parseAst(code, { lang });
-          } catch {
-            // Unparseable input (e.g. unsupported syntax) — leave untouched.
-            return null;
-          }
+          const record = parseModuleRecord(code, lang);
+          // Unparseable input (e.g. unsupported syntax) — leave untouched.
+          if (!record) return null;
 
           const s = new MagicString(code);
           let hasChanges = false;
           const imageImports = new Set<string>();
 
-          for (const node of ast.body) {
-            if (node.type !== "ImportDeclaration") continue;
-
-            const importNode = node as ASTNode & {
-              start: number;
-              end: number;
-              source?: { value?: unknown };
-              specifiers?: Array<{ type?: string; local?: { name?: string } }>;
-            };
-
-            const importPath = importNode.source?.value;
-            if (typeof importPath !== "string") continue;
+          for (const importNode of record.staticImports) {
+            const importPath = importNode.moduleRequest.value;
             if (!IMAGE_EXT_RE.test(importPath)) continue;
 
             // Only handle a single default import (`import X from '...'`),
             // matching the original behavior. Skip named/namespace imports and
             // side-effect-only imports (`import '...'`).
-            const specifiers = importNode.specifiers ?? [];
-            if (specifiers.length !== 1) continue;
-            const specifier = specifiers[0];
-            if (specifier.type !== "ImportDefaultSpecifier") continue;
-            const varName = specifier.local?.name;
-            if (!varName) continue;
+            if (importNode.entries.length !== 1) continue;
+            const [entry] = importNode.entries;
+            if (entry.importName.kind !== "Default") continue;
+            const varName = entry.localName.value;
 
             // Resolve the absolute path of the image. Normalize separators
             // since the path is embedded in the ESM module specifier below,
