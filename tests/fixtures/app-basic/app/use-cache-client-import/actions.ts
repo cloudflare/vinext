@@ -1,5 +1,7 @@
 "use cache";
 
+import "server-only";
+
 export async function getCachedMessage(value: string) {
   return `client-cache:${value}:${Math.random()}`;
 }

@@ -244,7 +244,10 @@ import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
-import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
+import {
+  createUseCacheCallablePlugin,
+  findModuleUseCacheDirective,
+} from "./plugins/use-cache-callable.js";
 import { cacheFlightCodecPlugin } from "./plugins/cache-flight-codec.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -382,6 +385,7 @@ import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
+  NODE_MODULES_PATH_RE,
   stripJsExtension,
   stripViteModuleQuery,
 } from "./utils/path.js";
@@ -7468,13 +7472,23 @@ export const loadServerActionClient = ${
           },
           code: "server-only",
         },
-        handler(code) {
+        handler(code, id) {
           if (this.environment?.name !== "client" || !hasAppDir) return null;
           // @vitejs/plugin-rsc replaces a "use server" module in the client
           // graph with server reference proxies, so its server-only imports
           // never reach the browser. Pages-only builds have no such transform,
           // which is why they are guarded at resolution above instead.
           if (getLeadingReactDirective(code) === "use server") return null;
+          // vinext:use-cache-callable does the same for "use cache" modules
+          // outside node_modules, as Next.js does; classify them exactly as it
+          // does.
+          if (!NODE_MODULES_PATH_RE.test(id) && code.includes("use cache")) {
+            try {
+              if (findModuleUseCacheDirective(parseAst(code))) return null;
+            } catch {
+              // Unparsable code or an invalid cache directive is not proxied.
+            }
+          }
           if (!hasServerOnlyMarkerImport(code)) return null;
 
           throw new Error(

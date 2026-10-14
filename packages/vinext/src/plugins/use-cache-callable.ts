@@ -58,7 +58,7 @@ function matchUseCacheDirective(directive: string): RegExpMatchArray {
   );
 }
 
-function findModuleUseCacheDirective(ast: Program): string | undefined {
+export function findModuleUseCacheDirective(ast: Program): string | undefined {
   for (const statement of ast.body) {
     if (
       statement.type !== "ExpressionStatement" ||
