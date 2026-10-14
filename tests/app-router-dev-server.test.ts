@@ -139,6 +139,28 @@ describe("App Router integration", () => {
     expect(res.headers.get("location")).toBe("/");
   });
 
+  it("never redirects the image endpoint off-site for a source that resolves to //", async () => {
+    for (const source of [
+      "/a/..//evil.com",
+      "/..//evil.com",
+      "/a/%2e%2e//evil.com",
+      "/a/..\\/evil.com",
+    ]) {
+      const res = await fetch(
+        `${baseUrl}/_next/image?url=${encodeURIComponent(source)}&w=640&q=75`,
+        { redirect: "manual" },
+      );
+      expect(res.status, source).toBe(400);
+      expect(res.headers.get("location"), source).toBeNull();
+    }
+    // A dot segment that stays on a single-slash path is still served.
+    const res = await fetch(`${baseUrl}/_next/image?url=%2Fa%2F..%2Fheart.png&w=640&q=75`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/heart.png");
+  });
+
   it("renders the home page with root layout", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/");
     expect(res.status).toBe(200);

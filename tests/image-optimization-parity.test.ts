@@ -210,6 +210,26 @@ describe("recursive image source parity", () => {
   });
 });
 
+// Real Next.js 16 answers 400 for a source whose dot segments resolve to a
+// protocol-relative pathname, and serves one that stays on a single-slash path.
+describe("dot-segment image source parity", () => {
+  it("rejects a source that resolves to a protocol-relative pathname", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const parse = (source: string) => {
+      const requestUrl = new URL("http://vinext.test/_next/image");
+      requestUrl.searchParams.set("url", source);
+      requestUrl.searchParams.set("w", "64");
+      requestUrl.searchParams.set("q", "75");
+      return parseImageParams(requestUrl);
+    };
+    for (const source of ["/a/..//evil.com", "/a/%2e%2e//evil.com", "/a/..\\/evil.com"]) {
+      expect(parse(source), source).toBeNull();
+    }
+    expect(parse("/a/../heart.png")).not.toBeNull();
+  });
+});
+
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");
 

@@ -3890,6 +3890,22 @@ describe("Pages Router dev server origin check", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("never redirects the image endpoint off-site for a source that resolves to //", async () => {
+    for (const source of [
+      "/a/..//evil.com",
+      "/..//evil.com",
+      "/a/%2e%2e//evil.com",
+      "/a/..\\/evil.com",
+    ]) {
+      const res = await fetch(
+        `${baseUrl}/_next/image?url=${encodeURIComponent(source)}&w=640&q=75`,
+        { redirect: "manual" },
+      );
+      expect(res.status, source).toBe(400);
+      expect(res.headers.get("location"), source).toBeNull();
+    }
+  });
 });
 
 // Ported from Next.js: test/development/basic/allowed-dev-origins.test.ts

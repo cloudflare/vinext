@@ -322,6 +322,12 @@ export function parseImageParams(
     if (resolved.origin !== base) {
       return null;
     }
+    // A dot segment can resolve to a protocol-relative pathname without
+    // changing the origin ("/a/..//evil.com" -> "//evil.com"), which a host
+    // would send as an off-site redirect.
+    if (resolved.pathname.startsWith("//")) {
+      return null;
+    }
     // Hosts fetch a local source through the application, so a source that is
     // itself the image endpoint would recurse. Next.js rejects it the same way
     // (`"url" parameter cannot be recursive` in validateParams).
