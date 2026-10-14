@@ -76,6 +76,17 @@ function createAppProject(): string {
       "",
     ].join("\n"),
   );
+  writeProjectFile(
+    root,
+    "app/isr/page.tsx",
+    [
+      "export const revalidate = 3600;",
+      "export default function IsrPage() {",
+      "  return <div>{new Date().toISOString()}</div>;",
+      "}",
+      "",
+    ].join("\n"),
+  );
   return root;
 }
 
@@ -156,7 +167,8 @@ describe("vinext Nitro setup integration", () => {
 
   // A path-keyed Nitro response cache cannot see request-time dynamic usage,
   // so a `revalidate` page that reads cookies() would be replayed to other
-  // users. vinext's own ISR cache serves these routes instead.
+  // users, and it would bypass vinext's on-demand revalidation even for static
+  // ISR pages. vinext's own ISR cache serves both instead.
   it("does not add Nitro cache rules for App Router revalidate routes", async () => {
     const root = createAppProject();
     const nitroPlugin = await initializeNitroSetupPlugin(root);
