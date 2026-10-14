@@ -404,6 +404,27 @@ describe("staticAssetsAdapter", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("treats an unavailable cache index as a miss when releasing its body fails", async () => {
+    const failingBody = (status: number) =>
+      new Response(
+        new ReadableStream({
+          cancel() {
+            throw new Error("cancel failed");
+          },
+        }),
+        { status },
+      );
+    const fetch = vi
+      .fn<(input: RequestInfo | URL) => Promise<Response>>()
+      .mockResolvedValueOnce(failingBody(503))
+      .mockResolvedValueOnce(failingBody(404));
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("fails clearly when the configured Assets binding is missing", () => {
     expect(() => createStaticAssetsCacheAdapter({ env: {} })).toThrow(/`ASSETS`/);
     expect(() =>

@@ -61,7 +61,7 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
       `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`,
     );
     if (!response.ok) {
-      await response.body?.cancel();
+      void response.body?.cancel().catch(() => {});
       // The build writes no index when it packages no entries; any other
       // failure is retried by the next request.
       if (response.status === 404) this.index = null;
