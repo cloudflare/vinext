@@ -3318,6 +3318,13 @@ async function performNavigation(
   const currentRoute =
     window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath);
   const currentAs = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  // Next.js prepareUrlAs() resolves relative hrefs against the current route
+  // before locale handling. Doing the same keeps locale prefixes and
+  // cross-domain locale URLs from being joined to a path without a leading `/`.
+  const resolveRelativeRoutePath = (href: string): string =>
+    href === "" || /^[/?#]/.test(href) || isAbsoluteUrl(href)
+      ? href
+      : resolvePagesRouterHref(href, { pathname: currentRoute, asPath: currentAs }, __basePath);
   const preparedHistoryHref =
     (isAbsoluteUrl(inputHref) ? toSameOriginAppPath(inputHref, __basePath) : null) ??
     absoluteHistoryUrl ??
@@ -3341,7 +3348,7 @@ async function performNavigation(
     credentialedHistoryAs ?? (!as ? credentialedHistoryHref : undefined);
 
   // Next.js treats a falsy `as` as omitted in prepareUrlAs().
-  as = as ? resolveUrl(as, true) : undefined;
+  as = as ? resolveRelativeRoutePath(resolveUrl(as, true)) : undefined;
 
   // Defence-in-depth dangerous-scheme guard. The synchronous guard inside
   // `Router.push` / `Router.replace` (see RouterMethods below) is the primary
@@ -3360,7 +3367,7 @@ async function performNavigation(
   const urlForResolution = isQueryOnlyString
     ? `${stripBasePath(window.location.pathname, __basePath)}${url}`
     : url;
-  const unlocalizedRouteHref = resolveUrl(urlForResolution);
+  const unlocalizedRouteHref = resolveRelativeRoutePath(resolveUrl(urlForResolution));
   const localRouteHref = isExternalUrl(unlocalizedRouteHref)
     ? toSameOriginAppPath(unlocalizedRouteHref, __basePath)
     : unlocalizedRouteHref;

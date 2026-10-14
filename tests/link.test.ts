@@ -1168,6 +1168,35 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="http://example.fr/about"');
   });
 
+  it("keeps relative hrefs on the configured locale domain", () => {
+    (globalThis as any).window = {
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: {
+        domainLocales: [
+          { domain: "example.com", defaultLocale: "en" },
+          { domain: "example.fr", defaultLocale: "fr", http: true },
+        ],
+        locale: "en",
+        defaultLocale: "en",
+      },
+      location: {
+        protocol: "https:",
+        hostname: "example.com",
+        host: "example.com",
+      },
+    };
+
+    for (const [href, expected] of [
+      ["@evil.com", "http://example.fr/@evil.com"],
+      [".evil.com/x", "http://example.fr/.evil.com/x"],
+    ]) {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(Link, { href, locale: "fr" } as any, "x"),
+      );
+      expect(html).toContain(`href="${expected}"`);
+    }
+  });
+
   it("uses configured locale domains during SSR output", () => {
     delete (globalThis as any).window;
     setI18nContext({

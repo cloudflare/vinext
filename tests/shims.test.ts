@@ -19332,6 +19332,91 @@ describe("Pages Router concurrent navigation", () => {
   });
 
   it.each([
+    { href: "@evil.com", expected: "http://example.fr/posts/@evil.com" },
+    { href: ".evil.com/x", expected: "http://example.fr/posts/.evil.com/x" },
+    { href: "2?tab=x", expected: "http://example.fr/posts/2?tab=x" },
+  ])(
+    "resolves relative href $href against the current route before domain-locale routing",
+    async ({ href, expected }) => {
+      const previousWindow = (globalThis as any).window;
+      const { win } = createNavWindow();
+      Object.assign(win.location, {
+        pathname: "/posts/1",
+        href: "https://example.com/posts/1",
+        hostname: "example.com",
+        origin: "https://example.com",
+      });
+      Object.assign(win, {
+        __VINEXT_LOCALE__: "en",
+        __VINEXT_LOCALES__: ["en", "fr"],
+        __VINEXT_DEFAULT_LOCALE__: "en",
+        __NEXT_DATA__: {
+          ...win.__NEXT_DATA__,
+          page: "/posts/[id]",
+          query: { id: "1" },
+          domainLocales: [
+            { domain: "example.com", defaultLocale: "en" },
+            { domain: "example.fr", defaultLocale: "fr", http: true },
+          ],
+        },
+      });
+      (globalThis as any).window = win;
+
+      try {
+        vi.resetModules();
+        const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+        await expect(Router.push(href, undefined, { locale: "fr" })).resolves.toBe(false);
+
+        // Next.js prepareUrlAs() resolves the href against the current route,
+        // so the configured domain is always followed by a `/` path.
+        expect(win.location.href).toBe(expected);
+        expect(new URL(win.location.href).hostname).toBe("example.fr");
+        expect(win.history.pushState).not.toHaveBeenCalled();
+      } finally {
+        vi.resetModules();
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+      }
+    },
+  );
+
+  it("resolves a relative as against the current route before adding the locale", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/posts/1",
+      href: "http://localhost/posts/1",
+    });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: { ...win.__NEXT_DATA__, page: "/posts/[id]", query: { id: "1" } },
+    });
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(Router.push("/posts/[id]", "2", { locale: "fr", shallow: true })).resolves.toBe(
+        true,
+      );
+
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ as: "/fr/posts/2" }),
+        "",
+        "/fr/posts/2",
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it.each([
     { href: "?id=2", as: "/pretty", expectedUrl: "/posts/[id]?id=2" },
     { href: "?tab=x", as: "/posts/2", expectedUrl: "/posts/[id]?tab=x" },
   ])("keeps dynamic route identity when $href has explicit as $as", async (testCase) => {
