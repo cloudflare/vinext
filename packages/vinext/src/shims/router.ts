@@ -67,7 +67,6 @@ import {
   toBrowserNavigationHref,
   toSameOriginAppPath,
   toSameOriginPath,
-  collapseLeadingSlashes,
   getWindowOrigin,
   withBasePath,
 } from "./url-utils.js";
@@ -1750,12 +1749,14 @@ function resolveLocalRedirectUrl(location: string): string | null {
       // Data redirect headers can already be browser paths with basePath.
       // Convert back to app paths before toBrowserNavigationHref re-applies it.
       const parsed = new URL(location, "http://vinext.local");
-      // Stripping basePath can expose a leading `//`, which as a local path
-      // would point at another host; collapse it like toSameOriginAppPath().
-      appPath =
-        collapseLeadingSlashes(stripBasePath(parsed.pathname, __basePath)) +
-        parsed.search +
-        parsed.hash;
+      const pathname = stripBasePath(parsed.pathname, __basePath);
+      // A leading `//` (from stripping basePath, or dot segments such as
+      // `/docs/..//x` escaping it) would point at another host as a local
+      // path. Resolve it as a browser URL so toSameOriginAppPath() collapses
+      // it and checks basePath on the normalized path.
+      appPath = pathname.startsWith("//")
+        ? toSameOriginAppPath(new URL(location, window.location.href).href, __basePath)
+        : pathname + parsed.search + parsed.hash;
     } catch {
       appPath = location;
     }

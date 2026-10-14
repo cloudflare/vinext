@@ -22152,6 +22152,66 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("hard-navigates middleware redirects whose dot segments leave basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win, pushState, render } = createNavWindow();
+    // "/docs/..//outside" normalizes to "//outside", outside the basePath.
+    const redirectHeader = "/docs/..//outside?token=secret";
+    Object.assign(win.location, {
+      origin: "http://localhost",
+      pathname: "/docs",
+      href: "http://localhost/docs",
+    });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/docs/_next/data/build-1/old-home.json") {
+        return new Response("{}", {
+          headers: { "x-nextjs-redirect": redirectHeader },
+          status: 200,
+        });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/old-home", undefined, { scroll: false });
+
+      expect(result).toBe(false);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(render).not.toHaveBeenCalled();
+      // The browser resolves this on the app origin; it is not "/docs/outside".
+      expect(win.location.href).toBe(redirectHeader);
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("collapses double-slash middleware redirects reached by popstate", async () => {
     const previousWindow = (globalThis as any).window;
     const previousDocument = (globalThis as any).document;
