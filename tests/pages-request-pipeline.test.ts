@@ -9,6 +9,7 @@ import {
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
@@ -2787,6 +2788,20 @@ describe("wrapMiddlewareWithBasePath", () => {
     expect(mwReq.headers.get("x-test")).toBe("kept");
     expect(ctx).toBe("ctx");
     expect(opts).toEqual({ isDataRequest: true });
+  });
+
+  it("keeps Workers cf metadata on the middleware request", async () => {
+    const runMiddleware = makeMiddleware({ continue: true });
+    const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
+    const cf = { country: "AU" };
+    const request = makeRequest("/dashboard", { "cf-connecting-ip": "203.0.113.10" });
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
+    await wrapped(request, null, { isDataRequest: false });
+    const [mwReq] = runMiddleware.mock.calls[0];
+    expect(Reflect.get(mwReq, "cf")).toBe(cf);
+    const middlewareRequest = new NextRequest(mwReq);
+    expect(middlewareRequest.ip).toBe("203.0.113.10");
+    expect(middlewareRequest.geo?.country).toBe("AU");
   });
 
   it("does not double-add an already-present basePath (addBasePathToPathname is idempotent)", async () => {

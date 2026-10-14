@@ -315,7 +315,8 @@ export function wrapMiddlewareWithBasePath(
   return (request, ctx, opts) => {
     const mwUrl = new URL(request.url);
     mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
-    return runMiddleware(new Request(mwUrl, request), ctx, opts);
+    // Keep Workers `cf` metadata, which NextRequest.ip / .geo rely on.
+    return runMiddleware(cloneRequestWithUrl(request, mwUrl.toString()), ctx, opts);
   };
 }
 
