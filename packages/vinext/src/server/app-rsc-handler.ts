@@ -1217,7 +1217,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   let didMiddlewareRewritePathname = false;
   // The image endpoint is served only under basePath. Rewrites carry or drop
   // it: middleware by its target URL, config rules unless they set
-  // `basePath: false`.
+  // `basePath: false`. Once dropped it stays dropped, as Next.js matches
+  // default rules only against basePath-prefixed paths.
   let resolvedPathnameHasBasePath = hadBasePath;
 
   if (runMiddleware) {
@@ -1599,7 +1600,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
-      resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
+      resolvedPathnameHasBasePath &&= !options.basePath || rewrite.basePath !== false;
     }
   }
 
@@ -1642,7 +1643,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
-      resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
+      resolvedPathnameHasBasePath &&= !options.basePath || rewrite.basePath !== false;
       actionMatch = matchCleanPathname();
       if (actionMatch) break;
     }
@@ -1674,7 +1675,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname = pathnameForResolvedUrl(resolvedUrl);
         cleanPathnameIsRequestPathname = false;
         filesystemRouteEligible = true;
-        resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
+        resolvedPathnameHasBasePath &&= !options.basePath || rewrite.basePath !== false;
         actionMatch = matchCleanPathname();
         if (actionMatch) break;
       }
@@ -1685,11 +1686,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const lateActionRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
   if (lateActionRscCacheBustingRedirect) return lateActionRscCacheBustingRedirect;
 
-  if (
-    filesystemRouteEligible &&
-    resolvedPathnameHasBasePath &&
-    isImageOptimizationPath(cleanPathname)
-  ) {
+  // Next.js checks the filesystem after each rewrite phase, so late rewrites
+  // to the endpoint are served as well.
+  const serveImageEndpointIfMatched = (): Response | null => {
+    if (
+      !filesystemRouteEligible ||
+      !resolvedPathnameHasBasePath ||
+      !isImageOptimizationPath(cleanPathname)
+    ) {
+      return null;
+    }
     // Rewrites to or of the endpoint replace the query in `resolvedUrl`.
     const imageUrl = new URL(resolvedUrl, url);
     const imageRedirect = resolveDevImageRedirect(
@@ -1721,7 +1727,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         search: imageUrl.search,
       },
     );
-  }
+  };
+  const imageEndpointResponse = serveImageEndpointIfMatched();
+  if (imageEndpointResponse) return imageEndpointResponse;
 
   const metadataRouteResponse = await renderMetadataRouteIfMatched();
   if (metadataRouteResponse) {
@@ -2440,8 +2448,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathnameIsRequestPathname = false;
       invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
+      resolvedPathnameHasBasePath &&= !options.basePath || rewrite.basePath !== false;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
+      const rewrittenImageEndpointResponse = serveImageEndpointIfMatched();
+      if (rewrittenImageEndpointResponse) return rewrittenImageEndpointResponse;
       const rewrittenMetadataResponse = await renderMetadataRouteIfMatched();
       if (rewrittenMetadataResponse) {
         return composeResponseStageResponse(rewrittenMetadataResponse);
@@ -2500,8 +2511,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathnameIsRequestPathname = false;
       invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
+      resolvedPathnameHasBasePath &&= !options.basePath || rewrite.basePath !== false;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
+      const rewrittenImageEndpointResponse = serveImageEndpointIfMatched();
+      if (rewrittenImageEndpointResponse) return rewrittenImageEndpointResponse;
       const rewrittenMetadataResponse = await renderMetadataRouteIfMatched();
       if (rewrittenMetadataResponse) {
         return composeResponseStageResponse(rewrittenMetadataResponse);

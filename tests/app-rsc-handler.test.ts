@@ -4404,6 +4404,50 @@ describe("createAppRscHandler", () => {
       },
       served: false,
     },
+    {
+      name: "a default config rewrite after a middleware rewrite outside basePath",
+      requestPath: "/docs/photo",
+      overrides: {
+        middlewareModule: {
+          default: (request: Request) =>
+            new Response(null, {
+              headers: { "x-middleware-rewrite": new URL("/outside", request.url).toString() },
+            }),
+        },
+        configRewrites: {
+          beforeFiles: [
+            { source: "/outside", destination: "/_next/image?url=%2Fimg.jpg&w=640&q=75" },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+      },
+      served: false,
+    },
+    {
+      name: "an afterFiles config rewrite",
+      requestPath: "/docs/photo",
+      overrides: {
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/photo", destination: "/_next/image?url=%2Fimg.jpg&w=640&q=75" }],
+          fallback: [],
+        },
+      },
+      served: true,
+    },
+    {
+      name: "a fallback config rewrite",
+      requestPath: "/docs/photo",
+      overrides: {
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [{ source: "/photo", destination: "/_next/image?url=%2Fimg.jpg&w=640&q=75" }],
+        },
+      },
+      served: true,
+    },
   ])(
     "serves the App Router image endpoint only when $name keeps the basePath",
     async ({ requestPath, overrides, served }) => {

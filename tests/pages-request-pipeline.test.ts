@@ -1798,6 +1798,13 @@ describe("serveFilesystemRoute", () => {
       [{ source: "/legacy", destination: "/_next/image", basePath: false as const }],
       false,
     ],
+    [
+      "a default beforeFiles rewrite after a middleware rewrite outside basePath",
+      true,
+      { rewriteUrl: "/outside", rewriteHadBasePath: false },
+      [{ source: "/outside", destination: "/_next/image" }],
+      false,
+    ],
   ])(
     "reports whether %s keeps the basePath",
     async (_name, hadBasePath, middlewareResult, beforeFiles, expected) => {
