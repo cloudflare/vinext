@@ -577,6 +577,10 @@ jobs:
             label: cloudflare-next-intl-locale-cookie-false
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-next-intl-example
+            label: cloudflare-next-intl-example
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-sentry-app-workers-cache
             label: cloudflare-sentry-app-workers-cache
             shardIndex: 1

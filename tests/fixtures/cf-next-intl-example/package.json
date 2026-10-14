@@ -1,0 +1,22 @@
+{
+  "name": "vinext-cf-next-intl-example",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
+    "clsx": "catalog:",
+    "next-intl": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "tailwindcss": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

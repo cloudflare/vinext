@@ -244,6 +244,19 @@ const projectServers = {
     "locale-cookie-false",
     4236,
   ),
+  // Port of next-intl's canonical App Router example (static rendering with
+  // `setRequestLocale`), built for Workers and served through Miniflare.
+  "cloudflare-next-intl-example": {
+    testDir: "./tests/e2e/cloudflare-next-intl-example",
+    use: { baseURL: "http://localhost:4237" },
+    server: {
+      command: "npx vp build && npx vp preview --port 4237",
+      cwd: "./tests/fixtures/cf-next-intl-example",
+      port: 4237,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
   "cloudflare-sentry-app-workers-cache": {
     testDir: "./tests/e2e",
     testMatch: ["**/cloudflare-sentry-app/**/*.spec.ts"],

@@ -38,6 +38,8 @@ export default defineConfig({
       // Ported from next-intl's playground; kept in upstream style for diffing.
       "tests/fixtures/cf-next-intl/**",
       "tests/e2e/cloudflare-next-intl/**",
+      "tests/fixtures/cf-next-intl-example/**",
+      "tests/e2e/cloudflare-next-intl-example/**",
       "examples/**",
       "packages/types/next/upstream/**",
     ],
