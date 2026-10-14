@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 // Hardcoded BASE URL matches the convention used in all other E2E test files in
 // this directory (navigation.spec.ts, server-client-only.spec.ts, after.spec.ts,
@@ -288,5 +288,42 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     // No full page reload occurred
     const marker = await page.evaluate(() => (window as any).__CANCELLED_NAV_MARKER__);
     expect(marker).toBe("active");
+  });
+});
+
+test.describe("RSC request URLs for pathnames that start with //", () => {
+  test("a local href that resolves to a // pathname keeps its RSC fetch on the app origin", async ({
+    page,
+  }) => {
+    // "/.//a//attacker.example/z" starts with a single "/", so apps accept it
+    // as local, but its pathname is "//a//attacker.example/z". Next.js fetches
+    // that pathname on the app origin; it must never become a protocol-relative
+    // request to attacker.example.
+    await page.goto(`${BASE}/about`);
+    await waitForAppRouterHydration(page);
+
+    const offOriginRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin !== BASE) offOriginRequests.push(request.url());
+    });
+    await page.route(
+      (url) => url.origin !== BASE,
+      (route) => route.fulfill({ status: 200, body: "off-origin" }),
+    );
+
+    const rscRequest = page.waitForRequest((request) =>
+      isAppRouterRscRequestForPath(request, "//a//attacker.example/z"),
+    );
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("/.//a//attacker.example/z");
+    });
+
+    expect(new URL((await rscRequest).url()).origin).toBe(BASE);
+    // As in Next.js, the server collapses the repeated slashes and the
+    // navigation settles on the same-origin path.
+    await expect(page).toHaveURL(`${BASE}/a/attacker.example/z`);
+    expect(offOriginRequests).toEqual([]);
   });
 });

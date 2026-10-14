@@ -1,4 +1,4 @@
-import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import { formatRscRequestPath, stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import { peekPrefetchResponseForNavigation, type CachedRscResponse } from "vinext/shims/navigation";
 
 export function peekSettledPrefetchResponseForNavigation(options: {
@@ -47,7 +47,7 @@ function canonicalizeBrowserRscResponseUrl(responseUrl: string, origin: string):
   try {
     const parsed = new URL(responseUrl, origin);
     if (parsed.origin === new URL(origin).origin) {
-      return `${parsed.pathname}${parsed.search}`;
+      return formatRscRequestPath(parsed);
     }
   } catch {
     // Preserve the original value so the normal navigation response

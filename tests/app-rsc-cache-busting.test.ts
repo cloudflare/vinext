@@ -164,6 +164,9 @@ describe("App Router RSC cache-busting", () => {
           await expect(createRscRequestUrl("/docs?tab=api", headers)).resolves.toBe(
             "/docs.txt?tab=api",
           );
+          await expect(createRscRequestUrl("//a//attacker.example/z", headers)).resolves.toBe(
+            "/.//a//attacker.example/z.txt",
+          );
           await withEnvVar("__NEXT_ROUTER_BASEPATH", "/docs", async () => {
             await expect(createRscRequestUrl("/docs", headers)).resolves.toBe("/docs/index.txt");
             await expect(createRscRequestUrl("/docs?tab=api", headers)).resolves.toBe(
@@ -269,6 +272,42 @@ describe("App Router RSC cache-busting", () => {
     expect(headers.get("next-router-prefetch")).toBeNull();
     expect(headers.get("next-router-state-tree")).toBeTruthy();
     expect(headers.get("next-url")).toBe("/current");
+  });
+
+  it("keeps request URLs for pathnames that start with // on the app origin", async () => {
+    // A pathname such as "//a//attacker.example/z" (from the local href
+    // "/.//a//attacker.example/z") must stay a path. Next.js fetches the full
+    // same-origin URL, so the request never treats "a" as a host.
+    const origin = "https://app.example";
+    const headers = createRscRequestHeaders();
+    const resolve = (requestUrl: string) => new URL(requestUrl, `${origin}/current`);
+
+    for (const requestUrl of [
+      await createRscRequestUrl("//a//attacker.example/z?tab=1#hash", headers),
+      createCanonicalRscRequestUrl("//a//attacker.example/z?tab=1"),
+      createServerActionRequestUrl("//a//attacker.example/z?tab=1#hash"),
+    ]) {
+      expect(requestUrl.startsWith("//")).toBe(false);
+      expect(resolve(requestUrl).origin).toBe(origin);
+      expect(resolve(requestUrl).pathname).toBe("//a//attacker.example/z");
+      expect(resolve(requestUrl).searchParams.get("tab")).toBe("1");
+    }
+
+    // Backslashes are path separators in special-scheme URLs.
+    expect(resolve(createServerActionRequestUrl("\\\\a\\attacker.example")).href).toBe(
+      `${origin}//a/attacker.example`,
+    );
+    // Absolute URLs keep their path in full.
+    expect(
+      resolve(createServerActionRequestUrl("https://app.example//a//attacker.example/z")).href,
+    ).toBe(`${origin}//a//attacker.example/z`);
+
+    await expect(
+      createRscRedirectLocation(
+        "/.//a//attacker.example/z",
+        new Request(`${origin}/photos?_rsc`, { headers: createCanonicalRscRequestHeaders() }),
+      ),
+    ).resolves.toBe(`${origin}/.//a//attacker.example/z?_rsc`);
   });
 
   it("keeps server action POSTs on the visible route URL", () => {

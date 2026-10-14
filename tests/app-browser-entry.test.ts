@@ -987,6 +987,20 @@ describe("app browser entry navigation scheduling", () => {
     ).toBe("/rewrite?_rsc=prefetch-digest");
   });
 
+  it("keeps same-origin prefetch response pathnames that start with // on the app origin", () => {
+    const responseUrl = resolvePrefetchNavigationResponseUrl({
+      additionalRscUrls: [],
+      origin: "https://example.com",
+      responseUrl: "https://example.com//a//attacker.example/z?_rsc=prefetch-digest",
+      visibleRscUrl: "/.//a//attacker.example/z",
+    });
+
+    expect(responseUrl).toBe("/.//a//attacker.example/z?_rsc=prefetch-digest");
+    expect(new URL(responseUrl, "https://example.com/current").href).toBe(
+      "https://example.com//a//attacker.example/z?_rsc=prefetch-digest",
+    );
+  });
+
   it("preserves cross-origin prefetch response URLs for navigation validation", () => {
     expect(
       resolvePrefetchNavigationResponseUrl({
