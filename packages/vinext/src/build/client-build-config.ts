@@ -372,3 +372,37 @@ export function createMultiStageChunkFileNames(
     return pattern.replaceAll("[name]", name);
   };
 }
+
+function hasChunkGroups(output: unknown, ownGroups: ReadonlySet<unknown>): boolean {
+  if (!output || typeof output !== "object") return false;
+  const { advancedChunks, codeSplitting, manualChunks } = output as {
+    advancedChunks?: { groups?: readonly unknown[] };
+    codeSplitting?: unknown;
+    manualChunks?: unknown;
+  };
+  if (manualChunks !== undefined) return true;
+  const groups = [
+    ...(advancedChunks?.groups ?? []),
+    ...((codeSplitting && typeof codeSplitting === "object"
+      ? (codeSplitting as { groups?: readonly unknown[] }).groups
+      : undefined) ?? []),
+  ];
+  return groups.some((group) => !ownGroups.has(group));
+}
+
+/**
+ * Whether client output options have chunk groups (`codeSplitting.groups`,
+ * `advancedChunks.groups` or `manualChunks`) other than vinext's own
+ * `ownGroups`, whether they came from the user or another plugin. vinext's
+ * client-reference route grouping is disabled in that case: a manual group can
+ * move modules out of a route group's chunk, and that combination has been
+ * seen to evaluate modules out of order and break hydration.
+ */
+export function hasUserClientChunkGroups(
+  output: unknown,
+  ownGroups: ReadonlySet<unknown>,
+): boolean {
+  return Array.isArray(output)
+    ? output.some((entry) => hasChunkGroups(entry, ownGroups))
+    : hasChunkGroups(output, ownGroups);
+}
