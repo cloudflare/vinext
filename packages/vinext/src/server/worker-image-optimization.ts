@@ -15,7 +15,6 @@ import {
 } from "./image-optimization.js";
 import { VINEXT_PRERENDER_SPECIAL_ERROR_HEADER } from "./headers.js";
 import type { VinextAssetFetcher } from "./multi-stage.js";
-import { normalizePath } from "./normalize-path.js";
 import { attachRequestCfMetadata, cloneRequestWithUrl } from "./request-pipeline.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 import { createStaticAssetRequest, mergeHeaders } from "./worker-utils.js";
@@ -54,21 +53,23 @@ function cancelResponseBody(response: Response): void {
 
 /**
  * Return the pathname of the `_next/static` file a source's decoded pathname
- * segments name, or null. The asset binding decodes each segment once, as
- * Next.js decodes a `.next/static` lookup, so each segment is encoded once
- * from the name checked here. Parsing the decoded pathname as a URL again
- * would resolve a segment that decoded to `%2E%2E` as `..`, outside
+ * names, or null. Next.js matches the decoded pathname against its
+ * `.next/static` files literally, so a `.`, `..` or empty segment names no
+ * file. The asset binding decodes each segment once, so each segment is
+ * encoded once from the name checked here. Parsing the decoded pathname as a
+ * URL again would resolve a segment that decoded to `%2E%2E` as `..`, outside
  * `_next/static`.
  */
 function resolveNextStaticFile(
-  segments: string[],
+  decodedPathname: string,
   options: WorkerImageSourceOptions,
 ): string | null {
-  // A segment that decodes to a `/` names no file.
-  if (segments.some((segment) => segment.includes("/"))) return null;
-  const filePath = normalizePath(segments.join("/"));
-  if (!isNextStaticPath(filePath, options.basePath, options.assetPathPrefix)) return null;
-  return filePath.split("/").map(encodeURIComponent).join("/");
+  if (!isNextStaticPath(decodedPathname, options.basePath, options.assetPathPrefix)) return null;
+  const segments = decodedPathname.split("/").slice(1);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return null;
+  }
+  return "/" + segments.map(encodeURIComponent).join("/");
 }
 
 /**
@@ -82,15 +83,15 @@ export async function fetchWorkerImageSource(
   options: WorkerImageSourceOptions,
 ): Promise<Response> {
   const sourceUrl = new URL(imageUrl, request.url);
-  let segments: string[];
+  let decodedPathname: string;
   try {
-    segments = sourceUrl.pathname.split("/").map(decodeURIComponent);
+    decodedPathname = decodeURIComponent(sourceUrl.pathname);
   } catch {
     return invalidImageSourceResponse();
   }
 
   const buildAssetPath =
-    resolveNextStaticFile(segments, options) ??
+    resolveNextStaticFile(decodedPathname, options) ??
     resolveClientBuildFile(sourceUrl.pathname, options.basePath, options.clientBuildFiles);
   if (buildAssetPath !== null) {
     return options.assets.fetch(new Request(new URL(buildAssetPath, request.url)));

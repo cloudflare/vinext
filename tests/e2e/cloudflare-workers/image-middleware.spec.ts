@@ -77,8 +77,8 @@ test.describe("Cloudflare Workers image endpoint behind middleware", () => {
   }
 
   // Next.js looks a `_next/static` source up under `.next/static` by its once
-  // decoded name, so a segment that decodes to `%2E%2E` names no file there,
-  // and neither does a segment that decodes to a `/`.
+  // decoded name, literally, so a segment that decodes to `%2E%2E` or a decoded
+  // `..` segment names no file there.
   test("does not resolve an encoded dot segment out of _next/static", async ({ request }) => {
     for (const source of [
       "/_next/static/%252E%252E/%252E%252E/protected/private.png",

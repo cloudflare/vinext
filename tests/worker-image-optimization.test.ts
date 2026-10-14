@@ -83,15 +83,30 @@ describe("fetchWorkerImageSource", () => {
     }
   });
 
-  it("does not fetch build output for a segment that decodes to a slash", async () => {
-    const { options, assets, fetchPublicFile } = sourceOptions();
+  it("fetches build output a decoded slash names", async () => {
+    const { options, assets } = sourceOptions();
 
-    await fetchWorkerImageSource("/_next/static/a%2F..%2F..%2Fa.png", callerRequest(), options);
+    await fetchWorkerImageSource("/_next/static/media%2Fa.png", callerRequest(), options);
 
-    expect(assets.fetch).not.toHaveBeenCalled();
-    expect(new URL(fetchPublicFile.mock.calls[0][0].url).pathname).toBe(
+    expect(new URL(assets.fetch.mock.calls[0][0].url).pathname).toBe("/_next/static/media/a.png");
+  });
+
+  it("does not fetch build output for a decoded dot or empty segment", async () => {
+    // Next.js matches the decoded pathname literally, without resolving it.
+    for (const source of [
       "/_next/static/a%2F..%2F..%2Fa.png",
-    );
+      "/_next/static/media%2F..%2Fmedia%2Fa.png",
+      "/_next/static/media%2F.%2Fa.png",
+      "/_next/static/media%2F%2Fa.png",
+      "/_next/static//media/a.png",
+    ]) {
+      const { options, assets, fetchPublicFile } = sourceOptions();
+
+      await fetchWorkerImageSource(source, callerRequest(), options);
+
+      expect(assets.fetch, source).not.toHaveBeenCalled();
+      expect(new URL(fetchPublicFile.mock.calls[0][0].url).pathname, source).toBe(source);
+    }
   });
 
   it("keeps an encoded dot segment under a path assetPrefix a literal name", async () => {
