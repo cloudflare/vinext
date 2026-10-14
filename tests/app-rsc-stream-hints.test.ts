@@ -381,6 +381,19 @@ describe("createRscRenderer", () => {
     return { cancelled, reported, stream };
   }
 
+  // React reads `then` once to decide whether the reason is a thenable.
+  function thenableOnFirstRead(later: "undefined" | "throw") {
+    let reads = 0;
+    return {
+      // oxlint-disable-next-line unicorn/no-thenable
+      get then() {
+        if (reads++ === 0) return () => {};
+        if (later === "throw") throw new Error("then read again");
+        return undefined;
+      },
+    };
+  }
+
   it("does not report a cancellation with a platform's own reason", async () => {
     const { cancelled, reported, stream } = renderPendingModel();
     const reader = stream.getReader();
@@ -394,6 +407,8 @@ describe("createRscRenderer", () => {
     ["without a reason", undefined],
     ["with a promise as its reason", Promise.resolve()],
     ["with NaN as its reason", NaN],
+    ["with a thenable that stops being one when read again", thenableOnFirstRead("undefined")],
+    ["with a thenable that throws when read again", thenableOnFirstRead("throw")],
   ])("does not report a cancellation %s", async (_name, reason) => {
     const { cancelled, reported, stream } = renderPendingModel();
     await stream.cancel(reason);

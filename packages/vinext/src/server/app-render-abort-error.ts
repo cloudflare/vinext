@@ -40,17 +40,14 @@ export function createRenderStreamCancellation(): RenderStreamCancellation {
       if (cancelReason === undefined) {
         return error.message === "The render was aborted by the server without a reason.";
       }
+      // React only substitutes for a thenable object. Its `then` is not read
+      // again here: a getter may answer differently, or throw, a second time.
+      // Any other object React passes on as is, matched above.
       return (
-        isThenable(cancelReason) &&
+        typeof cancelReason === "object" &&
+        cancelReason !== null &&
         error.message === "The render was aborted by the server with a promise."
       );
     },
   };
-}
-
-// Matches React's own check, which only treats objects as thenables here.
-function isThenable(value: unknown): boolean {
-  return (
-    typeof value === "object" && value !== null && typeof Reflect.get(value, "then") === "function"
-  );
 }
