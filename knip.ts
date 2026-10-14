@@ -55,6 +55,8 @@ export default {
         "@vercel/og",
         // The CommonJS syntax tests resolve this from vinext's install, not the root workspace.
         "vite-plugin-commonjs",
+        // The Static Assets worker test resolves this from the Cloudflare fixture's wrangler install.
+        "miniflare",
         // scripts/version.mts resolves release APIs from the pinned Changesets CLI,
         // keeping its dependency tree authoritative instead of installing separate copies.
         "@manypkg/get-packages",
