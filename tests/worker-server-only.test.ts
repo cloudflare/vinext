@@ -518,6 +518,23 @@ self.postMessage("worker.ts:" + typeof keyLength);
     ).toHaveLength(1);
   }, 120_000);
 
+  it("leaves worker stylesheets that mention the directive untouched", async () => {
+    const root = copyFixture();
+    writeFile(root, "app/worker-cache.css", `.worker-cache { content: "use cache"; }\n`);
+    writeFile(
+      root,
+      "app/worker.ts",
+      `import css from "./worker-cache.css?inline";
+
+self.postMessage("worker.ts:" + css);
+`,
+    );
+
+    await buildFixture(root);
+    const workerDir = path.join(root, "dist/client/_next/static/workers");
+    expect(readWorkerJavaScript(workerDir)).toContain("use cache");
+  }, 120_000);
+
   it("rejects inline cache functions in worker modules", async () => {
     const root = copyFixture();
     writeFile(

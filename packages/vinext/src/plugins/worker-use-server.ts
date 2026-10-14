@@ -3,7 +3,13 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import path, { toSlash } from "pathslash";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
-import { parseAstAsync, transformWithOxc, type Plugin, type ResolvedConfig } from "vite";
+import {
+  isCSSRequest,
+  parseAstAsync,
+  transformWithOxc,
+  type Plugin,
+  type ResolvedConfig,
+} from "vite";
 import { escapeRegExp } from "../utils/regex.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import { USE_CACHE_PLUGIN_NAME, type UseCacheCallableApi } from "./use-cache-callable.js";
@@ -176,11 +182,13 @@ export async function createWorkerUseServerPlugins(options: {
   // exports become references with the same ids, and inline cache functions
   // are rejected as they are in Client Components. Unlike the main graphs'
   // transform, match every module id so no worker module ships a cache body.
+  // CSS requests still hold stylesheet text at this point, so skip them.
   const useCachePlugin: Plugin = {
     name: "vinext:worker-use-cache",
     transform: {
       filter: { code: "use cache" },
       async handler(code, id) {
+        if (isCSSRequest(id)) return null;
         const api = useCacheApi;
         if (!api) {
           throw new Error(
