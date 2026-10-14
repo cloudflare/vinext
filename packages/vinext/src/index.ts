@@ -40,7 +40,6 @@ import {
   invalidateAppRouteCache,
   matchAppRoute,
 } from "./routing/app-router.js";
-import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import {
   buildViteResolveExtensions,
   normalizeViteResolveExtensions,
@@ -1658,13 +1657,8 @@ type InternalUserConfig = UserConfig & {
 type NitroSetupContext = {
   options: {
     buildDir?: string;
-    dev?: boolean;
     exportConditions?: string[];
-    routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
-  };
-  logger?: {
-    warn?: (message: string) => void;
   };
 };
 
@@ -8102,10 +8096,15 @@ export const loadServerActionClient = ${
         },
       },
     },
+    // No Nitro `swr`/`cache` routeRules are generated for `revalidate` routes.
+    // vinext's own ISR cache already serves them, and only it can see
+    // request-time dynamic usage (cookies(), headers(), draft mode) and
+    // on-demand revalidation. A Nitro response cache keyed by path would
+    // replay per-user responses to other users.
     {
-      name: "vinext:nitro-route-rules",
+      name: "vinext:nitro-setup",
       nitro: {
-        setup: async (nitro: NitroSetupContext) => {
+        setup: (nitro: NitroSetupContext) => {
           nitroBuildDir = nitro.options.buildDir
             ? path.resolve(root, nitro.options.buildDir)
             : undefined;
@@ -8120,36 +8119,10 @@ export const loadServerActionClient = ${
               ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
             ];
           }
-
-          if (nitro.options.dev) return;
-
-          const { collectNitroRouteRules, mergeNitroRouteRules } =
-            await import("./build/nitro-route-rules.js");
-          const generatedRouteRules = await collectNitroRouteRules({
-            appDir: hasAppDir ? appDir : null,
-            pagesDir: hasPagesDir ? pagesDir : null,
-            pageExtensions: nextConfig.pageExtensions,
-          });
-
-          if (Object.keys(generatedRouteRules).length === 0) return;
-
-          const { routeRules, skippedRoutes } = mergeNitroRouteRules(
-            nitro.options.routeRules,
-            generatedRouteRules,
-          );
-
-          nitro.options.routeRules = routeRules;
-
-          if (skippedRoutes.length > 0) {
-            const warn = nitro.logger?.warn ?? console.warn;
-            warn(
-              `[vinext] Skipping generated Nitro routeRules for routes with existing exact cache config: ${skippedRoutes.join(", ")}`,
-            );
-          }
         },
       },
     } as Plugin & {
-      nitro: { setup: (nitro: NitroSetupContext) => Promise<void> };
+      nitro: { setup: (nitro: NitroSetupContext) => void };
     }, // Nitro plugin extension convention: https://nitro.build/guide/plugins
     // Vite can emit empty SSR manifest entries for modules that Rollup inlines
     // into another chunk. Pages Router looks up assets by page module path at
