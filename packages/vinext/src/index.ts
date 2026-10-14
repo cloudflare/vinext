@@ -728,11 +728,20 @@ function commonjsTransformFilter(
   return undefined;
 }
 
+// Matches `export {}`, which may be an `export {} from "x"` re-export. oxc's
+// module record omits those, but they still load `x`.
+const EMPTY_EXPORT_PRESCAN =
+  /\bexport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\{(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\}/;
+
 /**
  * Sources of a module's static imports and re-exports, in source order.
  * Type-only declarations and declarations with import attributes are skipped.
  */
-function runtimeStaticDependencySpecifiers(code: string, record: ModuleRecord): string[] {
+function runtimeStaticDependencySpecifiers(
+  code: string,
+  record: ModuleRecord,
+  lang: ReturnType<typeof parserLanguageForScript>,
+): string[] {
   const dependencies: Array<{ start: number; specifier: string }> = [];
   for (const statement of record.staticImports) {
     if (statement.entries.length > 0 && statement.entries.every((entry) => entry.isType)) continue;
@@ -744,6 +753,18 @@ function runtimeStaticDependencySpecifiers(code: string, record: ModuleRecord): 
     if (!source || statement.entries.every((entry) => entry.isType)) continue;
     if (hasImportAttributes(code, source.end, statement.end)) continue;
     dependencies.push({ start: statement.start, specifier: source.value });
+  }
+  if (EMPTY_EXPORT_PRESCAN.test(code)) {
+    let program: ESTree.Program | null = null;
+    try {
+      program = parseProgram(code, { lang });
+    } catch {}
+    for (const statement of program?.body ?? []) {
+      if (statement.type !== "ExportNamedDeclaration" || !statement.source) continue;
+      if (statement.specifiers.length > 0 || statement.exportKind === "type") continue;
+      if (statement.attributes.length > 0) continue;
+      dependencies.push({ start: statement.start, specifier: statement.source.value });
+    }
   }
   return dependencies.sort((a, b) => a.start - b.start).map(({ specifier }) => specifier);
 }
@@ -813,7 +834,11 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
     if (!record) return [];
 
     const dependencies: DevPagesModuleDependency[] = [];
-    for (const specifier of runtimeStaticDependencySpecifiers(code, record)) {
+    for (const specifier of runtimeStaticDependencySpecifiers(
+      code,
+      record,
+      parserLanguageForScript(cleanModulePath),
+    )) {
       const resolved = await resolve(specifier, cleanModulePath, { skipSelf: true });
       if (!resolved?.id) continue;
 

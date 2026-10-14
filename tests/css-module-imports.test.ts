@@ -65,6 +65,14 @@ describe("CSS Module import compatibility", () => {
     );
   });
 
+  it("rewrites namespace imports followed by a trailing comment", () => {
+    const source = 'import * as styles from "./styles.module.scss" /* tail */;';
+
+    expect(rewriteCssModuleNamespaceImports(source)?.code).toBe(
+      'import styles from "./styles.module.scss" /* tail */;',
+    );
+  });
+
   it("rewrites namespace imports after MDX compilation", async () => {
     const { default: mdx } = await import("@mdx-js/rollup");
     const mdxPlugin = mdx() as {

@@ -107,29 +107,40 @@ export function parseModuleRecord(code: string, lang: ParserOptions["lang"]): Mo
   return result.errors.length > 0 ? null : result.module;
 }
 
+/** Leading whitespace and comments. */
+export const LEADING_TRIVIA_RE = /^(?:\s+|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*/;
+
 /**
  * Whether the static import/export statement ending at `statementEnd` has
- * `with { ... }` attributes after its source string, which ends at
- * `sourceEnd`. The module record does not report attributes.
+ * `with { ... }` (or legacy `assert { ... }`) attributes after its source
+ * string, which ends at `sourceEnd`. The module record does not report
+ * attributes.
  */
 export function hasImportAttributes(
   code: string,
   sourceEnd: number,
   statementEnd: number,
 ): boolean {
-  return !/^\s*;?$/.test(code.slice(sourceEnd, statementEnd));
+  const afterSource = code.slice(sourceEnd, statementEnd);
+  const triviaLength = LEADING_TRIVIA_RE.exec(afterSource)?.[0].length ?? 0;
+  return /^(?:with|assert)\b/.test(afterSource.slice(triviaLength));
 }
 
 /**
  * The value of the string literal or expression-free template literal spanning
- * `span`, or `null` for any other expression or a literal with escapes. The
- * module record gives only the span of a dynamic import's source.
+ * `span`, or `null` for any other expression. The module record gives only the
+ * span of a dynamic import's source.
  */
 export function quotedStringAt(code: string, span: { start: number; end: number }): string | null {
-  const match = /^(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)'|`([^`\\$]*)`)$/.exec(
-    code.slice(span.start, span.end),
-  );
-  return match ? (match[1] ?? match[2] ?? match[3]) : null;
+  const text = code.slice(span.start, span.end);
+  const match = /^(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)'|`([^`\\$]*)`)$/.exec(text);
+  if (match) return match[1] ?? match[2] ?? match[3];
+  if (!/^["'`]/.test(text)) return null;
+
+  // Escapes and `$` are rare: let the parser cook just this literal.
+  const result = parseSync(PARSE_FILENAME, `(${text})`, PROGRAM_PARSER_DEFAULTS);
+  const statement = result.errors.length > 0 ? undefined : result.program.body[0];
+  return statement?.type === "ExpressionStatement" ? staticStringValue(statement.expression) : null;
 }
 
 const SKIP_CHILD_KEYS = new Set(["type", "parent", "loc", "start", "end"]);

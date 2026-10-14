@@ -208,6 +208,10 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
   );
   fs.writeFileSync(path.join(stylesDir, "page.module.css"), ".pageText { margin-left: 29px; }\n");
   fs.writeFileSync(
+    path.join(stylesDir, "side-effect.css"),
+    ".side-effect-text { margin-bottom: 37px; }\n",
+  );
+  fs.writeFileSync(
     path.join(stylesDir, "type-only.module.css"),
     ".typeOnlyText { margin-right: 31px; }\n",
   );
@@ -232,6 +236,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     path.join(libDir, "reexport.ts"),
     'export { transitiveClassName } from "./transitive";\n',
   );
+  fs.writeFileSync(path.join(libDir, "side-effect.ts"), 'import "../styles/side-effect.css";\n');
   fs.writeFileSync(
     path.join(libDir, "type-only.ts"),
     'import "../styles/type-only.module.css";\n' +
@@ -255,6 +260,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     pagePath,
     'import Head from "next/head";\n' +
       'import pageStyles from "@/styles/page.module.css";\n' +
+      'export {} from "@/lib/side-effect";\n' +
       "export default function Home() {\n" +
       "  return <>\n" +
       '    <Head><style>{".global-css-pages-text { border-top-width: 0px; }"}</style></Head>\n' +
@@ -290,6 +296,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "/styles/app.module.css",
       "/styles/transitive.module.css",
       "/styles/page.module.css",
+      "/styles/side-effect.css",
     ],
     isrDevStylesheetHrefs: [
       "/styles/global%20style.css",
@@ -308,7 +315,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "styles/app.module.css",
       "styles/transitive.module.css",
     ],
-    pageManifestAssets: ["styles/page.module.css"],
+    pageManifestAssets: ["styles/page.module.css", "styles/side-effect.css"],
     isrManifestAssets: ["styles/isr.module.css"],
     errorManifestAssets: ["styles/error.module.css"],
     cssMarkers: [
@@ -316,6 +323,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "padding-left: 17px",
       "margin-top: 19px",
       "margin-left: 29px",
+      "margin-bottom: 37px",
     ],
   };
 }

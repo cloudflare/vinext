@@ -2,6 +2,7 @@ import type { Plugin } from "vite";
 import MagicString from "magic-string";
 import {
   hasImportAttributes,
+  LEADING_TRIVIA_RE,
   parseModuleRecord,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
@@ -12,9 +13,6 @@ import { magicStringTransformResult } from "./transform-result.js";
 const CSS_MODULE_RE = /\.module\.(?:css|scss|sass)$/i;
 const CSS_MODULE_HINT_RE = /\.module\.(?:css|scss|sass)/i;
 const MDX_RE = /\.mdx$/i;
-
-// Whitespace and comments, used to find the `*` that follows `import`.
-const LEADING_TRIVIA_RE = /^(?:\s+|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*/;
 
 export function rewriteCssModuleNamespaceImports(
   code: string,
