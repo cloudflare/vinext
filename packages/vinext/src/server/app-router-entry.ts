@@ -46,6 +46,7 @@ import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-uti
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -173,7 +174,7 @@ async function handleRequest(
       const probeUrl = new URL(request.url);
       if (probeUrl.searchParams.has(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM)) {
         probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-        request = new Request(probeUrl, request);
+        request = cloneRequestWithUrl(request, probeUrl.href);
       }
     }
   }

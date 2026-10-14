@@ -26,6 +26,7 @@ import { resolveClientBuildFile } from "./client-build-files.js";
 import { assetPrefixPathname } from "../utils/asset-prefix.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -141,7 +142,7 @@ async function handleRequest(
       probeRoute = readWorkerCacheabilityProbeRoute(request);
       const probeUrl = new URL(request.url);
       probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-      request = new Request(probeUrl, request);
+      request = cloneRequestWithUrl(request, probeUrl.href);
     }
   }
 

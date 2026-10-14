@@ -344,7 +344,7 @@ async function handleRequestImpl(
         probeRoute = readWorkerCacheabilityProbeRoute(request);
         const probeUrl = new URL(request.url);
         probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-        request = new Request(probeUrl, request);
+        request = cloneRequestWithUrl(request, probeUrl.href);
       }
     }
 
