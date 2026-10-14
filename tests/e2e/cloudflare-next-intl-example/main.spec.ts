@@ -38,16 +38,26 @@ it("handles not found pages for routes that don't match the middleware", async (
 });
 
 it('sets caching headers', async ({request}) => {
-  for (const pathname of ['/en', '/en/pathnames', '/de', '/de/pfadnamen']) {
+  for (const [pathname, text] of [
+    ['/en', 'This is a basic example'],
+    ['/en/pathnames', 'The pathnames are internationalized too.'],
+    ['/de', 'Dies ist ein Beispiel'],
+    ['/de/pfadnamen', 'Auch die Pfadnamen sind internationalisiert.']
+  ]) {
     // vinext: Next.js prerenders these pages at build time, so its first
     // request is already a cache hit. vinext stores them from their first
     // request instead, and that streamed miss is sent with `no-store` because
-    // it can't yet know the render is static. The second request is served
-    // from the cache only if `setRequestLocale` made the page static.
-    await request.get(pathname);
-    expect((await request.get(pathname)).headers()['cache-control']).toContain(
-      's-maxage=31536000'
-    );
+    // it can't yet know the render is static. The page is served from the
+    // cache only if `setRequestLocale` made it static.
+    await expect
+      .poll(
+        async () => (await request.get(pathname)).headers()['x-vinext-cache']
+      )
+      .toBe('HIT');
+    const response = await request.get(pathname);
+    expect(response.status()).toBe(200);
+    expect(response.headers()['cache-control']).toContain('s-maxage=31536000');
+    expect(await response.text()).toContain(text);
   }
 });
 
