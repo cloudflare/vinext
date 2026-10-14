@@ -653,15 +653,17 @@ test.describe("Viewport Metadata", () => {
 });
 
 test.describe("Shallow Routing (history.pushState/replaceState)", () => {
+  // Other app-router specs edit app-basic files on this shared dev server. An
+  // unrelated rsc:update landing mid-test re-renders the shallow URL's shared
+  // history tree, so keep these history tests off the Vite HMR socket.
+  test.beforeEach(async ({ page }) => {
+    await page.routeWebSocket("**", () => {});
+  });
+
   test("pushState updates useSearchParams", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 
-    // Wait for hydration
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
+    await waitForAppRouterHydration(page);
 
     // Initially no search params
     await expect(page.locator('[data-testid="search"]')).toHaveText("search: ");
@@ -683,11 +685,7 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
   test("replaceState updates useSearchParams without adding history entry", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
+    await waitForAppRouterHydration(page);
 
     // Replace with sort=name
     await page.locator('[data-testid="replace-sort"]').click({ noWaitAfter: true });
@@ -704,11 +702,7 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
   test("pushState updates usePathname", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
+    await waitForAppRouterHydration(page);
 
     // Initial pathname
     await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test");
