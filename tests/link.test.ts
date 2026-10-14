@@ -1730,6 +1730,13 @@ describe("toSameOriginAppPath", () => {
       expect(toSameOriginAppPath("http://localhost:3000/base//evil.com/x?q=1", "/base")).toBe(
         "/evil.com/x?q=1",
       );
+      // Collapsing comes first, so "//base/x" is inside basePath, as it is
+      // after Next.js's repeated-slash 308.
+      expect(toSameOriginAppPath("http://localhost:3000//base/x", "/base")).toBe("/x");
+      // Encoded slashes are not path separators and stay encoded.
+      expect(toSameOriginAppPath("http://localhost:3000/base/%2F%2Fevil.com/x", "/base")).toBe(
+        "/%2F%2Fevil.com/x",
+      );
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;

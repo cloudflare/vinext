@@ -406,6 +406,33 @@ describe("Link prefetch pure decisions", () => {
         expected: "/path?tab=1#section",
       },
       {
+        name: "same-origin URL with a // pathname",
+        input: {
+          href: "https://example.com//evil.com/path?q=1",
+          basePath: "",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/evil.com/path?q=1",
+      },
+      {
+        name: "same-origin URL with a // pathname after basePath",
+        input: {
+          href: "https://example.com/docs//evil.com/path",
+          basePath: "/docs",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/evil.com/path",
+      },
+      {
+        name: "same-origin URL with a // pathname before basePath",
+        input: {
+          href: "https://example.com//docs/path",
+          basePath: "/docs",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/path",
+      },
+      {
         name: "same-origin without required basePath",
         input: {
           href: "https://example.com/path",

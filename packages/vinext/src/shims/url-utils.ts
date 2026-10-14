@@ -39,7 +39,7 @@ export function getWindowOrigin(): string | null {
  * Collapse the leading slashes: Next.js does the same for these URLs, on the
  * client (`resolveHref`) or with its server's repeated-slash 308.
  */
-function collapseLeadingSlashes(pathname: string): string {
+export function collapseLeadingSlashes(pathname: string): string {
   return pathname.replace(/^\/{2,}/, "/");
 }
 

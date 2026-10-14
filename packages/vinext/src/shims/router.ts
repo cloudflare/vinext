@@ -67,6 +67,7 @@ import {
   toBrowserNavigationHref,
   toSameOriginAppPath,
   toSameOriginPath,
+  collapseLeadingSlashes,
   getWindowOrigin,
   withBasePath,
 } from "./url-utils.js";
@@ -1716,12 +1717,6 @@ function isAppComponent(value: unknown): value is NonNullable<Window["__VINEXT_A
 function resolveSameOriginRedirectedUrl(responseUrl: string): string | null {
   const appPath = toSameOriginAppPath(responseUrl, __basePath);
   if (appPath === null) return null;
-  // Keep a same-origin absolute URL when stripping its origin/basePath would
-  // expose a leading `//`; performNavigation uses that absolute form for the
-  // history URL while retaining the app path for route state and fetching.
-  if (appPath.startsWith("//")) {
-    return normalizePathTrailingSlash(responseUrl, __trailingSlash);
-  }
   // Followed HTML redirects re-enter performNavigation(), so return its
   // app-relative input rather than a browser URL that already has basePath.
   return normalizePathTrailingSlash(appPath, __trailingSlash);
@@ -1755,7 +1750,12 @@ function resolveLocalRedirectUrl(location: string): string | null {
       // Data redirect headers can already be browser paths with basePath.
       // Convert back to app paths before toBrowserNavigationHref re-applies it.
       const parsed = new URL(location, "http://vinext.local");
-      appPath = stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+      // Stripping basePath can expose a leading `//`, which as a local path
+      // would point at another host; collapse it like toSameOriginAppPath().
+      appPath =
+        collapseLeadingSlashes(stripBasePath(parsed.pathname, __basePath)) +
+        parsed.search +
+        parsed.hash;
     } catch {
       appPath = location;
     }
@@ -1764,19 +1764,6 @@ function resolveLocalRedirectUrl(location: string): string | null {
   }
 
   if (appPath === null) return null;
-  // Stripping an origin or basePath can expose a leading `//` that the browser
-  // would reinterpret as a different authority. Resolve the original target
-  // to a validated same-origin absolute URL; recursive navigation retains its
-  // `//` app path as route state but uses this absolute form for browser I/O.
-  if (appPath.startsWith("//")) {
-    try {
-      const browserUrl = new URL(location, window.location.href);
-      if (browserUrl.origin !== getWindowOrigin()) return null;
-      return normalizePathTrailingSlash(browserUrl.href, __trailingSlash);
-    } catch {
-      return null;
-    }
-  }
   // Internal redirects are re-dispatched through performNavigation(), whose
   // input contract is app-relative. Keep basePath stripped here so the fresh
   // navigation applies it exactly once when deriving its browser URL.
