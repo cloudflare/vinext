@@ -393,6 +393,7 @@ describe("createRscRenderer", () => {
   it.each([
     ["without a reason", undefined],
     ["with a promise as its reason", Promise.resolve()],
+    ["with NaN as its reason", NaN],
   ])("does not report a cancellation %s", async (_name, reason) => {
     const { cancelled, reported, stream } = renderPendingModel();
     await stream.cancel(reason);

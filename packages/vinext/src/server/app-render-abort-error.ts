@@ -34,7 +34,7 @@ export function createRenderStreamCancellation(): RenderStreamCancellation {
     },
     isReason: (error) => {
       if (!cancelled) return false;
-      if (error === cancelReason) return true;
+      if (Object.is(error, cancelReason)) return true;
       if (!(error instanceof Error)) return false;
       // React substitutes its own error for a missing or thenable reason.
       if (cancelReason === undefined) {
