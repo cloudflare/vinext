@@ -6,11 +6,7 @@ import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import { parseAstAsync, transformWithOxc, type Plugin, type ResolvedConfig } from "vite";
 import { escapeRegExp } from "../utils/regex.js";
 import { magicStringTransformResult } from "./transform-result.js";
-import {
-  USE_CACHE_MODULE_ID_FILTER,
-  USE_CACHE_PLUGIN_NAME,
-  type UseCacheCallableApi,
-} from "./use-cache-callable.js";
+import { USE_CACHE_PLUGIN_NAME, type UseCacheCallableApi } from "./use-cache-callable.js";
 
 type RscPluginModule = typeof import("@vitejs/plugin-rsc");
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
@@ -178,11 +174,12 @@ export async function createWorkerUseServerPlugins(options: {
 
   // `"use cache"` modules get the client environment's transform: their
   // exports become references with the same ids, and inline cache functions
-  // are rejected as they are in Client Components.
+  // are rejected as they are in Client Components. Unlike the main graphs'
+  // transform, match every module id so no worker module ships a cache body.
   const useCachePlugin: Plugin = {
     name: "vinext:worker-use-cache",
     transform: {
-      filter: { id: USE_CACHE_MODULE_ID_FILTER, code: "use cache" },
+      filter: { code: "use cache" },
       async handler(code, id) {
         const api = useCacheApi;
         if (!api) {

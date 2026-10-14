@@ -428,28 +428,39 @@ describe("Cache functions in browser Web Worker graphs", () => {
     );
   }
 
-  it("emits server references with the client graph's ids instead of the module body", async () => {
-    const root = copyFixture();
-    writeFile(
-      root,
-      "app/worker-cache.ts",
-      `"use cache";
+  const CACHE_MODULE_SOURCE = `"use cache";
 
 const BODY = ${JSON.stringify(CACHE_BODY_MARKER)};
 
 export async function keyLength(suffix: string) {
   return BODY + suffix;
 }
-`,
-    );
+`;
+
+  function writeWorker(root: string, specifier: string) {
     writeFile(
       root,
       "app/worker.ts",
-      `import { keyLength } from "./worker-cache";
+      `import { keyLength } from ${JSON.stringify(specifier)};
 
 self.postMessage("worker.ts:" + typeof keyLength);
 `,
     );
+  }
+
+  // Other fixture workers import cache functions too; read only this one.
+  function readWorkerJavaScript(workerDir: string): string {
+    return fs
+      .readdirSync(workerDir)
+      .filter((file) => /^worker-[^.]+\.js$/.test(file))
+      .map((file) => fs.readFileSync(path.join(workerDir, file), "utf8"))
+      .join("");
+  }
+
+  it("emits server references with the client graph's ids instead of the module body", async () => {
+    const root = copyFixture();
+    writeFile(root, "app/worker-cache.ts", CACHE_MODULE_SOURCE);
+    writeWorker(root, "./worker-cache");
     // The client page imports the same module so the main client graph's
     // reference ids can be compared with the worker's.
     const pagePath = path.join(root, "app/module/page.js");
@@ -467,15 +478,44 @@ self.postMessage("worker.ts:" + typeof keyLength);
     const clientDir = path.join(root, "dist/client");
     const workerDir = path.join(clientDir, "_next/static/workers");
     expect(readClientJavaScript(clientDir)).not.toContain(CACHE_BODY_MARKER);
-    // Other fixture workers import cache functions too; read only this one.
-    const workerJavaScript = fs
-      .readdirSync(workerDir)
-      .filter((file) => /^worker-[^.]+\.js$/.test(file))
-      .map((file) => fs.readFileSync(path.join(workerDir, file), "utf8"))
-      .join("");
-    const workerIds = cacheReferenceIds(workerJavaScript);
+    const workerIds = cacheReferenceIds(readWorkerJavaScript(workerDir));
     expect(workerIds).toHaveLength(1);
     expect(cacheReferenceIds(readClientJavaScript(clientDir, workerDir))).toEqual(workerIds);
+  }, 120_000);
+
+  it.each(["?worker-query", "#worker-hash"])(
+    "emits server references for cache function imports with a %s postfix",
+    async (postfix) => {
+      const root = copyFixture();
+      writeFile(root, "app/worker-cache.ts", CACHE_MODULE_SOURCE);
+      writeWorker(root, `./worker-cache.ts${postfix}`);
+
+      await buildFixture(root);
+      const clientDir = path.join(root, "dist/client");
+      expect(readClientJavaScript(clientDir)).not.toContain(CACHE_BODY_MARKER);
+      expect(
+        cacheReferenceIds(readWorkerJavaScript(path.join(clientDir, "_next/static/workers"))),
+      ).toHaveLength(1);
+    },
+    120_000,
+  );
+
+  it("emits server references for virtual cache function modules", async () => {
+    const root = copyFixture();
+    writeWorker(root, "virtual:worker-cache");
+    const virtualCache: import("vite").Plugin = {
+      name: "test:virtual-worker-cache",
+      resolveId: (source) => (source === "virtual:worker-cache" ? "\0virtual:worker-cache" : null),
+      load: (id) =>
+        id === "\0virtual:worker-cache" ? CACHE_MODULE_SOURCE.replace(": string", "") : null,
+    };
+
+    await buildFixture(root, [virtualCache]);
+    const clientDir = path.join(root, "dist/client");
+    expect(readClientJavaScript(clientDir)).not.toContain(CACHE_BODY_MARKER);
+    expect(
+      cacheReferenceIds(readWorkerJavaScript(path.join(clientDir, "_next/static/workers"))),
+    ).toHaveLength(1);
   }, 120_000);
 
   it("rejects inline cache functions in worker modules", async () => {

@@ -54,10 +54,6 @@ const PLUGIN_NAME = "vinext:server-function-directives";
 export { PLUGIN_NAME as USE_CACHE_PLUGIN_NAME };
 const SOURCE_MODULE_ID_RE = /\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
 const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
-export const USE_CACHE_MODULE_ID_FILTER = {
-  include: SOURCE_MODULE_ID_RE,
-  exclude: [NODE_MODULES_PATH_RE, RESOLVED_VIRTUAL_MODULE_ID_RE],
-};
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
 
@@ -349,7 +345,12 @@ export async function createUseCacheCallablePlugin(
       manager = pluginApi.manager;
     },
     transform: {
-      filter: { id: USE_CACHE_MODULE_ID_FILTER },
+      filter: {
+        id: {
+          include: SOURCE_MODULE_ID_RE,
+          exclude: [NODE_MODULES_PATH_RE, RESOLVED_VIRTUAL_MODULE_ID_RE],
+        },
+      },
       async handler(code, id) {
         if (!manager) return;
         if (!code.includes("use cache")) {
