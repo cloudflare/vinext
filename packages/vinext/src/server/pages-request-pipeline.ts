@@ -474,9 +474,13 @@ export async function runPagesRequest(
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
   // Rewrites carry or drop the basePath: middleware by its target URL, config
-  // rules unless they set `basePath: false`. Once dropped it stays dropped, as
-  // Next.js matches default rules only against basePath-prefixed paths.
+  // rules unless they set `basePath: false`. Like Next.js, post-middleware
+  // rules match against the current state.
   let resolvedPathnameHasBasePath = hadBasePath;
+  const currentBasePathState = (): BasePathMatchState => ({
+    basePath,
+    hadBasePath: resolvedPathnameHasBasePath,
+  });
   const middlewareHeaders: HeaderRecord = {};
   const mergeConfigHeadersIntoEarlyResponse = (response: Response): Response => {
     if (configHeaders.length === 0) return response;
@@ -723,7 +727,7 @@ export async function runPagesRequest(
       configSourcePathname(),
       [rewrite],
       rewriteRequestContext(),
-      basePathState,
+      currentBasePathState(),
       configSourcePathname(),
       conditionalRewriteCacheability,
     );
@@ -735,7 +739,7 @@ export async function runPagesRequest(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       resolvedPathnameIsRequestPathname = false;
-      resolvedPathnameHasBasePath &&= !basePath || rewrite.basePath !== false;
+      resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
       configRewriteFired = true;
     }
   }
@@ -837,7 +841,7 @@ export async function runPagesRequest(
         configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
-        basePathState,
+        currentBasePathState(),
         configSourcePathname(),
         conditionalRewriteCacheability,
       );
@@ -849,7 +853,7 @@ export async function runPagesRequest(
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
-        resolvedPathnameHasBasePath &&= !basePath || rewrite.basePath !== false;
+        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
         configRewriteFired = true;
         resolvedPathnameChanged = true;
         const afterFilesFilesystemResult = await serveFilesystemRoute(
@@ -892,7 +896,7 @@ export async function runPagesRequest(
           configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
-          basePathState,
+          currentBasePathState(),
           configSourcePathname(),
           conditionalRewriteCacheability,
         );
@@ -906,7 +910,7 @@ export async function runPagesRequest(
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
-        resolvedPathnameHasBasePath &&= !basePath || rewrite.basePath !== false;
+        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
         configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
@@ -950,7 +954,7 @@ export async function runPagesRequest(
           configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
-          basePathState,
+          currentBasePathState(),
           configSourcePathname(),
           conditionalRewriteCacheability,
         );
@@ -965,7 +969,7 @@ export async function runPagesRequest(
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
-        resolvedPathnameHasBasePath &&= !basePath || rewrite.basePath !== false;
+        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
         configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
@@ -1064,7 +1068,7 @@ export async function runPagesRequest(
         configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
-        basePathState,
+        currentBasePathState(),
         configSourcePathname(),
         conditionalRewriteCacheability,
       );
@@ -1076,7 +1080,7 @@ export async function runPagesRequest(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       resolvedPathnameIsRequestPathname = false;
-      resolvedPathnameHasBasePath &&= !basePath || rewrite.basePath !== false;
+      resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
       configRewriteFired = true;
       const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
       if (fallbackFilesystemResult) return fallbackFilesystemResult;

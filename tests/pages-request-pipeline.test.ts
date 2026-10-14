@@ -1805,6 +1805,13 @@ describe("serveFilesystemRoute", () => {
       [{ source: "/outside", destination: "/_next/image" }],
       false,
     ],
+    [
+      "a default beforeFiles rewrite after a middleware rewrite into basePath",
+      false,
+      { rewriteUrl: "/legacy", rewriteHadBasePath: true },
+      [{ source: "/legacy", destination: "/_next/image" }],
+      true,
+    ],
   ])(
     "reports whether %s keeps the basePath",
     async (_name, hadBasePath, middlewareResult, beforeFiles, expected) => {
@@ -1822,8 +1829,9 @@ describe("serveFilesystemRoute", () => {
           serveFilesystemRoute,
         }),
       );
-      expect(serveFilesystemRoute.mock.calls[0][0]).toBe("/_next/image");
-      expect(serveFilesystemRoute.mock.calls[0][5]).toBe(expected);
+      // Rules that don't match the current basePath state never reach the image endpoint.
+      const imageCall = serveFilesystemRoute.mock.calls.find((call) => call[0] === "/_next/image");
+      expect(imageCall?.[5] ?? false).toBe(expected);
     },
   );
 

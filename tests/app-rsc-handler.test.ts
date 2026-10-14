@@ -4425,6 +4425,26 @@ describe("createAppRscHandler", () => {
       served: false,
     },
     {
+      name: "a default config rewrite after a middleware rewrite into basePath",
+      requestPath: "/photo",
+      overrides: {
+        middlewareModule: {
+          default: (request: Request) =>
+            new Response(null, {
+              headers: { "x-middleware-rewrite": new URL("/docs/legacy", request.url).toString() },
+            }),
+        },
+        configRewrites: {
+          beforeFiles: [
+            { source: "/legacy", destination: "/_next/image?url=%2Fimg.jpg&w=640&q=75" },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+      },
+      served: true,
+    },
+    {
       name: "an afterFiles config rewrite",
       requestPath: "/docs/photo",
       overrides: {
