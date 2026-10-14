@@ -1780,6 +1780,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         );
       },
       hasPageRoute: __hasPageRoute,
+      loadServerAction,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
       readFormDataWithLimit: __readFormDataWithLimit,
@@ -1806,6 +1807,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     searchParams,
   }) {
     const {
+      areServerActionsOwnedByRoute: __areServerActionsOwnedByRoute,
       createForwardedActionContext: __createForwardedActionContext,
       forwardServerActionIfNeeded: __forwardServerActionIfNeeded,
     } = await __loadAppActionForwarding();
@@ -1912,6 +1914,13 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       isRscRequest,
       loadServerAction,
+      validateActionReferences(__argumentActionIds) {
+        return __areServerActionsOwnedByRoute(
+          __VINEXT_ACTION_OWNERS(),
+          __argumentActionIds,
+          __actionMatch?.route.pattern ?? null,
+        );
+      },
       // Redirect targets are rendered as if the client had navigated to them,
       // so they must route on the raw pathname a real request would use.
       matchRoute(pathnameToMatch) {

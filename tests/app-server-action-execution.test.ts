@@ -168,6 +168,9 @@ function createOptions(
       return null;
     },
     hasPageRoute: false,
+    async loadServerAction(actionId) {
+      return registerTestServerReference(() => undefined, actionId);
+    },
     maxActionBodySize: 1024,
     middlewareHeaders: null,
     async readFormDataWithLimit() {
@@ -635,6 +638,38 @@ describe("app server action execution helpers", () => {
 
       expect(response.status).toBe(404);
       expect(validateActionReferences).toHaveBeenCalledWith(["selected-action", "nested-action"]);
+      expect(decodeAction).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("rejects unregistered bound references before decoding progressive actions", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "/app/actions.ts#run", bound: "$@1" }));
+    body.set("$ACTION_1:1", JSON.stringify(["$h2"]));
+    body.set("$ACTION_1:2", JSON.stringify({ id: "/app/page.tsx#default", bound: null }));
+    const decodeAction = vi.fn();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            decodeAction,
+            async loadServerAction(actionId) {
+              return actionId === "/app/actions.ts#run"
+                ? registerTestServerReference(() => undefined, actionId)
+                : () => "page component";
+            },
+            readFormDataWithLimit: async () => body,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
       expect(decodeAction).not.toHaveBeenCalled();
     } finally {
       warning.mockRestore();
@@ -3056,6 +3091,124 @@ describe("app server action execution helpers", () => {
     expect(response?.status).toBe(404);
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
     expect(hidden).not.toHaveBeenCalled();
+  });
+
+  function createArgumentReferenceOptions(
+    body: FormData,
+    overrides: Parameters<typeof createRscOptions>[0] = {},
+  ) {
+    const action = vi.fn(() => "saved");
+    const decodeReply = vi.fn(() => Promise.resolve([]));
+    const options = createRscOptions({
+      actionId: "/app/actions.ts#run",
+      contentType: "multipart/form-data; boundary=vinext",
+      decodeReply,
+      readFormDataWithLimit: () => Promise.resolve(body),
+      ...overrides,
+    });
+    // Bypass the factory's auto-registration so unregistered exports stay
+    // unregistered, as they are for plugin-rsc's dev manifest.
+    options.loadServerAction = async (actionId) => {
+      if (actionId === "/app/actions.ts#run") {
+        return registerTestServerReference(action, actionId);
+      }
+      if (actionId === "/app/actions.ts#helper") {
+        return registerTestServerReference(() => "helper", actionId);
+      }
+      if (actionId === "/app/page.tsx#default") return () => "page component";
+      throw new Error(`[vite-rsc] invalid server reference '${actionId.split("#")[0]}'`);
+    };
+    return { action, decodeReply, options };
+  }
+
+  it("rejects fetch-action argument references to non-action exports before decodeReply", async () => {
+    for (const referenceId of ["/app/page.tsx#default", "/app/missing.ts#run"]) {
+      const body = new FormData();
+      body.append("0", JSON.stringify(["$h1"]));
+      body.append("1", JSON.stringify({ id: referenceId, bound: null }));
+      const { action, decodeReply, options } = createArgumentReferenceOptions(body);
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        const response = await handleServerActionRscRequest(options);
+
+        expect(response?.status).toBe(404);
+        expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+        expect(decodeReply).not.toHaveBeenCalled();
+        expect(action).not.toHaveBeenCalled();
+      } finally {
+        warning.mockRestore();
+      }
+    }
+  });
+
+  it("decodes fetch-action argument references to registered Server Actions", async () => {
+    const body = new FormData();
+    body.append("0", JSON.stringify(["$h1"]));
+    body.append("1", JSON.stringify({ id: "/app/actions.ts#helper", bound: null }));
+    const validateActionReferences = vi.fn(() => true);
+    const { action, decodeReply, options } = createArgumentReferenceOptions(body, {
+      validateActionReferences,
+    });
+
+    const response = await handleServerActionRscRequest(options);
+
+    expect(response?.status).toBe(200);
+    expect(validateActionReferences).toHaveBeenCalledWith(["/app/actions.ts#helper"]);
+    expect(decodeReply).toHaveBeenCalledTimes(1);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("authorizes argument references from stream parts and outlined paths", async () => {
+    const body = new FormData();
+    body.append("0", JSON.stringify(["$R1", "$h2:nested", "$x5"]));
+    body.append("1", JSON.stringify("$h3"));
+    body.append("1", `C${JSON.stringify("$h4")}`);
+    body.append("1", "C");
+    body.append("2", JSON.stringify({ nested: { id: "a#nested", bound: null } }));
+    body.append("3", JSON.stringify({ id: "a#streamed", bound: null }));
+    body.append("4", JSON.stringify({ id: "a#closing", bound: null }));
+    // Async-iterable entries are parsed inside `{"done":…,"value":<entry>}`, so
+    // a fragment that is not JSON on its own can still decode to a reference.
+    body.append("5", '0,"value":"$h6"');
+    body.append("5", 'C0,"value":"$h7"');
+    body.append("6", JSON.stringify({ id: "a#iterated", bound: null }));
+    body.append("7", JSON.stringify({ id: "a#iteratorClose", bound: null }));
+    const validateActionReferences = vi.fn((_actionIds: readonly string[]) => false);
+    const { decodeReply, options } = createArgumentReferenceOptions(body, {
+      validateActionReferences,
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = await handleServerActionRscRequest(options);
+
+      expect(response?.status).toBe(404);
+      expect(new Set(validateActionReferences.mock.calls[0]?.[0])).toEqual(
+        new Set(["a#nested", "a#streamed", "a#closing", "a#iterated", "a#iteratorClose"]),
+      );
+      expect(decodeReply).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("rejects argument references whose metadata is not inline", async () => {
+    const body = new FormData();
+    body.append("0", JSON.stringify(["$h1"]));
+    body.append("1", JSON.stringify("$2"));
+    body.append("2", JSON.stringify({ id: "/app/page.tsx#default", bound: null }));
+    const { decodeReply, options } = createArgumentReferenceOptions(body);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = await handleServerActionRscRequest(options);
+
+      expect(response?.status).toBe(404);
+      expect(decodeReply).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   // Reproduces the prod-build error path where the @vitejs/plugin-rsc server

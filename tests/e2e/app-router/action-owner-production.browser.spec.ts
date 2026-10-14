@@ -20,9 +20,11 @@ type ProductionApp = {
     boundaryOnly: string;
     cachedProtected: string;
     cookieOwner: string;
+    describeArgument: string;
     dynamicProtected: string;
     globalErrorOnly: string;
     globalNotFoundOnly: string;
+    inlineArgument: string;
     loop: string;
     objectWrapped: string;
     packageClient: string;
@@ -123,9 +125,11 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       boundaryOnly: findActionId(builtSource, "boundaryOnlyAction"),
       cachedProtected: findOnlyCacheActionId(builtSource),
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
+      describeArgument: findActionId(builtSource, "describeArgument"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
       globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),
       globalNotFoundOnly: findActionId(builtSource, "globalNotFoundOnlyAction"),
+      inlineArgument: findActionId(builtSource, "$$hoist_0_inlineArgumentAction"),
       loop: findActionId(builtSource, "$$hoist_0_loopAction"),
       objectWrapped: findActionId(builtSource, "objectWrappedAction"),
       packageClient: findActionId(builtSource, "packageClientAction"),
@@ -197,6 +201,32 @@ async function postRawAction(
       };
     },
     { actionId, body, contentType, pathname },
+  );
+}
+
+async function postMultipartAction(
+  page: Page,
+  pathname: string,
+  actionId: string,
+  parts: Record<string, string>,
+) {
+  await page.goto(`${app.baseUrl}${pathname}`);
+  return page.evaluate(
+    async ({ actionId, parts, pathname }) => {
+      const body = new FormData();
+      for (const [key, value] of Object.entries(parts)) body.append(key, value);
+      const response = await fetch(pathname, {
+        body,
+        headers: { "next-action": actionId },
+        method: "POST",
+      });
+      return {
+        body: await response.text(),
+        headers: Object.fromEntries(response.headers),
+        status: response.status,
+      };
+    },
+    { actionId, parts, pathname },
   );
 }
 
@@ -522,6 +552,46 @@ test.describe("production server action ownership", () => {
     expect(response.status).toBe(200);
     expect(response.body).toBe("{}");
     expect(response.body).not.toContain("LOOP_ACTION_EXECUTED");
+  });
+
+  test("decodes only route-owned Server Actions as argument references", async ({ page }) => {
+    const postArgumentReference = (parts: Record<string, string>) =>
+      postMultipartAction(page, "/ownership/argument-refs", app.actionIds.describeArgument, parts);
+    const reference = (id: string, bound: string | null = null) => ({
+      0: JSON.stringify(["$h1"]),
+      1: JSON.stringify({ id, bound }),
+    });
+    // The page module also exports its component; it is a server-reference
+    // module because of its inline action, but `default` is not an action.
+    const pageComponentId = app.actionIds.inlineArgument.replace(/#.*$/, "#default");
+
+    for (const id of [app.actionIds.describeArgument, app.actionIds.inlineArgument]) {
+      const response = await postArgumentReference(reference(id));
+      expect(response.status).toBe(200);
+      expect(response.body).toContain("FUNCTION_ARGUMENT");
+    }
+
+    for (const parts of [
+      reference(pageComponentId),
+      reference(app.actionIds.protected),
+      {
+        ...reference(app.actionIds.describeArgument, "$@2"),
+        2: JSON.stringify(["$h3"]),
+        3: JSON.stringify({ id: pageComponentId, bound: null }),
+      },
+      // An async-iterable entry is only JSON once React wraps it in an
+      // iterator result, which yields `{ done: false, value: "$h2" }`.
+      {
+        0: JSON.stringify(["$x1"]),
+        1: '0,"value":"$h2"',
+        2: JSON.stringify({ id: pageComponentId, bound: null }),
+      },
+    ]) {
+      const response = await postArgumentReference(parts);
+      expect(response.status).toBe(404);
+      expect(response.headers["x-nextjs-action-not-found"]).toBe("1");
+      expect(response.body).not.toContain("FUNCTION_ARGUMENT");
+    }
   });
 
   test("fails closed for unknown action ids", async ({ page }) => {
