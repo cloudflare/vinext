@@ -83,7 +83,7 @@ function getInlineStyleText(html: string): string {
 
 async function rawHttpRequest(
   url: URL,
-  options: { method?: string; headers?: Record<string, string> } = {},
+  options: { method?: string; path?: string; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
   return new Promise((resolve, reject) => {
     const request = http.request(url, options, (response) => {
@@ -448,6 +448,18 @@ describe("App Router Production server (startProdServer)", () => {
     });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ ip: null, geo: null });
+  });
+
+  it("never lets an absolute-form request target choose the request origin", async () => {
+    // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
+    // request.url))`, so routing this request would echo the target's origin.
+    const res = await rawHttpRequest(new URL(baseUrl), {
+      path: "http://evil.example/middleware-redirect",
+      headers: { host: "app.example" },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.body.toString()).not.toContain("evil.example");
   });
 
   it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {

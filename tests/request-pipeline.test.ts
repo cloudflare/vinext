@@ -229,9 +229,11 @@ describe("getRepeatedSlashRedirect", () => {
     expect(getRepeatedSlashRedirect("/%5C%5Cevil.com")).toBeNull();
   });
 
-  it("leaves absolute-form request targets to the 404 guard", () => {
-    expect(getRepeatedSlashRedirect("http://evil.com//x")).toBeNull();
-    expect(getRepeatedSlashRedirect("\\/evil.com")).toBeNull();
+  it("answers non-origin-form request targets with a 404", () => {
+    expect(getRepeatedSlashRedirect("http://evil.com//x")).toEqual({ status: 404 });
+    expect(getRepeatedSlashRedirect("http://evil.com/x")).toEqual({ status: 404 });
+    expect(getRepeatedSlashRedirect("\\/evil.com")).toEqual({ status: 404 });
+    expect(getRepeatedSlashRedirect("*")).toEqual({ status: 404 });
   });
 
   it("matches WHATWG URL parsing, which strips tabs and newlines first", () => {

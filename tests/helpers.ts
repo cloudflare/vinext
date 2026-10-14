@@ -288,7 +288,8 @@ export async function requestNodeServerWithHost(
 /**
  * Raw request targets and what `next start` (Next.js 16.2.7) answers for
  * them: literal repeated slashes and backslashes get a 308 to the collapsed
- * path, percent-encoded leading delimiters stay a 404.
+ * path, percent-encoded leading delimiters stay a 404. Absolute-form targets
+ * get vinext's deliberate 404 where Next.js would echo a cross-origin Location.
  */
 const REPEATED_SLASH_CASES: ReadonlyArray<readonly [string, string | 404]> = [
   ["//", "/"],
@@ -305,6 +306,12 @@ const REPEATED_SLASH_CASES: ReadonlyArray<readonly [string, string | 404]> = [
   ["/%2F/evil.com", 404],
   ["/%5C%5Cevil.com", 404],
   ["/.//%2Fevil.com", 404],
+  // Absolute-form targets: Next.js 308s to the target's own URL (another
+  // origin) without routing it. vinext never routes them either, but answers
+  // 404 rather than echoing a cross-origin Location.
+  ["http://evil.example/", 404],
+  ["http://evil.example/about", 404],
+  ["https://evil.example//evil.com?a=1", 404],
 ];
 
 /**
