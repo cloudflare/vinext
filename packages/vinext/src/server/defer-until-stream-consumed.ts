@@ -1,10 +1,12 @@
 /**
  * Defers cleanup until the downstream consumer drains or cancels the stream.
+ * `onCancel` runs before the cancellation reaches the source stream.
  */
 export function deferUntilStreamConsumed(
   stream: ReadableStream<Uint8Array>,
   onFlush: () => void,
   onError?: (error: unknown) => void,
+  onCancel?: (reason: unknown) => void,
 ): ReadableStream<Uint8Array> {
   let called = false;
   const once = () => {
@@ -39,6 +41,7 @@ export function deferUntilStreamConsumed(
       );
     },
     cancel(reason) {
+      onCancel?.(reason);
       once();
       return reader.cancel(reason);
     },

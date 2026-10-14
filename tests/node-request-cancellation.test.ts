@@ -3,7 +3,10 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Logger, ViteDevServer } from "vite";
-import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
+import {
+  importServerEntryModule,
+  startProdServer,
+} from "../packages/vinext/src/server/prod-server.js";
 import {
   APP_FIXTURE_DIR,
   PAGES_FIXTURE_DIR,
@@ -181,6 +184,8 @@ type ServerTarget = {
   start: () => Promise<{
     baseUrl: string;
     close: () => Promise<void>;
+    /** Built RSC entry, so tests can call its handler and cancel the body with any reason. */
+    entryPath?: string;
     logger?: Logger;
     server?: http.Server;
   }>;
@@ -216,6 +221,7 @@ async function startBuiltProdServer(entryPath: string) {
   if (!address || typeof address === "string") throw new Error("Expected TCP listener");
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    entryPath,
     server,
     close: async () => {
       server.closeAllConnections();
@@ -292,11 +298,12 @@ describe.each(targets)(
   ({ reason, probes, externalRewrites, truncatedBodyPath, renderAbort, start }) => {
     let baseUrl: string;
     let close: (() => Promise<void>) | undefined;
+    let entryPath: string | undefined;
     let logger: Logger | undefined;
     let server: http.Server | undefined;
 
     beforeAll(async () => {
-      ({ baseUrl, close, logger, server } = await start());
+      ({ baseUrl, close, entryPath, logger, server } = await start());
       // Compile each probe route up front: dev servers can hold requests to a
       // cold route, which would delay the readiness polls below.
       for (const probe of probes) {
@@ -402,6 +409,65 @@ describe.each(targets)(
       },
       30_000,
     );
+
+    // Next.js cancels the render stream with its own `ResponseAborted`
+    // (packages/next/src/server/pipe-readable.ts), which its error handler
+    // ignores, so a disconnect is never reported. Workers runtimes cancel the
+    // body with their own reason instead: workerd uses
+    // `Error("Network connection lost.")`.
+    describe.runIf(renderAbort !== undefined)("cancelled by the platform", () => {
+      it.each<{ name: string; query: string; headers: Record<string, string>; type: string }>([
+        { name: "an RSC payload", query: "&_rsc", headers: { rsc: "1" }, type: "text/x-component" },
+        { name: "an HTML document", query: "", headers: {}, type: "text/html" },
+      ])(
+        "does not report $name render as an error",
+        async ({ query, headers, type }) => {
+          if (!renderAbort || !entryPath) throw new Error("Expected a built App Router entry");
+          const id = randomUUID();
+          const reset = await fetch(`${baseUrl}/api/instrumentation-test`, { method: "DELETE" });
+          expect(reset.status).toBe(200);
+
+          // The same module instance the production server loaded.
+          const entry = await importServerEntryModule(entryPath);
+          const waitUntil: Promise<unknown>[] = [];
+          const ctx = {
+            waitUntil: (promise: Promise<unknown>) => void waitUntil.push(promise),
+            passThroughOnException: () => {},
+          };
+          try {
+            const pending: Promise<Response> = entry.default(
+              new Request(`${baseUrl}${renderAbort.page}?id=${id}${query}`, { headers }),
+              ctx,
+            );
+            await expect
+              .poll(() => readRenderAbortProbe(baseUrl, renderAbort.probe, id), {
+                timeout: 20_000,
+              })
+              .toMatchObject({ started: true });
+            await driveRenderAbortProbe(baseUrl, renderAbort.probe, id, "release");
+            const response = await pending;
+            expect(response.status).toBe(200);
+            expect(response.headers.get("content-type")).toContain(type);
+            const reader = response.body!.getReader();
+            // The Suspense boundary is still pending, so React has work to abort.
+            expect((await reader.read()).done).toBe(false);
+            await reader.cancel(new Error("Network connection lost."));
+            // A wrongly reported abort reaches onRequestError within milliseconds.
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            const state = (await fetch(`${baseUrl}/api/instrumentation-test`).then((res) =>
+              res.json(),
+            )) as { errors: { message: string; path: string }[] };
+            expect(state.errors.filter((error) => error.path.startsWith(renderAbort.page))).toEqual(
+              [],
+            );
+          } finally {
+            await driveRenderAbortProbe(baseUrl, renderAbort.probe, id, "finish");
+            await Promise.allSettled(waitUntil);
+          }
+        },
+        30_000,
+      );
+    });
 
     describe.each(probes)("$name", ({ path: probePath, body, override, upload }) => {
       it("aborts when the client disconnects before the response is sent", async () => {

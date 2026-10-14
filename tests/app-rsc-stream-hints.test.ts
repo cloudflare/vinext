@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
-import { normalizeReactFlightPreloadHints } from "../packages/vinext/src/server/rsc-stream-hints.js";
+import {
+  createRscRenderer,
+  normalizeReactFlightPreloadHints,
+} from "../packages/vinext/src/server/rsc-stream-hints.js";
+import { loadCacheFlightCodec } from "./helpers/cache-flight-codec.js";
 
 const STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
 
@@ -332,5 +336,95 @@ describe("RSC stream hint helpers", () => {
 
     expect(scripts).toContain('.rsc.push([3,"/w=="])');
     expect(new Uint8Array(await embed.getRawBuffer())).toEqual(payload);
+  });
+});
+
+describe("createRscRenderer", () => {
+  const { renderToReadableStream } = loadCacheFlightCodec();
+
+  // Renders a model with a promise that stays pending, so cancelling the
+  // stream aborts the render.
+  function renderPendingModel(settled?: Promise<unknown>) {
+    const reported: unknown[] = [];
+    let markCancelled = () => {};
+    const cancelled = new Promise<void>((resolve) => {
+      markCancelled = resolve;
+    });
+    const render = createRscRenderer((model, options) => {
+      // React's stream, passed through so tests can wait until React has seen
+      // the cancellation.
+      const reader = renderToReadableStream(model, options as object).getReader();
+      return new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            const { done, value } = await reader.read();
+            if (done) controller.close();
+            else controller.enqueue(value);
+          },
+          async cancel(reason) {
+            await reader.cancel(reason);
+            markCancelled();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+    });
+    const stream = render(
+      { pending: new Promise(() => {}), settled },
+      {
+        onError(error: unknown) {
+          reported.push(error);
+          return "digest";
+        },
+      },
+    );
+    return { cancelled, reported, stream };
+  }
+
+  it("does not report a cancellation with a platform's own reason", async () => {
+    const { cancelled, reported, stream } = renderPendingModel();
+    const reader = stream.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await reader.cancel(new Error("Network connection lost."));
+    await cancelled;
+    expect(reported).toEqual([]);
+  });
+
+  it.each([
+    ["without a reason", undefined],
+    ["with a promise as its reason", Promise.resolve()],
+  ])("does not report a cancellation %s", async (_name, reason) => {
+    const { cancelled, reported, stream } = renderPendingModel();
+    await stream.cancel(reason);
+    await cancelled;
+    expect(reported).toEqual([]);
+  });
+
+  it("does not report a cancellation through a tee", async () => {
+    const { cancelled, reported, stream } = renderPendingModel();
+    const [first, second] = stream.tee();
+    await Promise.all([first.cancel(new Error("first")), second.cancel(new Error("second"))]);
+    await cancelled;
+    expect(reported).toEqual([]);
+  });
+
+  it("still reports an error thrown before the cancellation", async () => {
+    const failure = new Error("render failed");
+    const { cancelled, reported, stream } = renderPendingModel(Promise.reject(failure));
+    await expect.poll(() => reported).toEqual([failure]);
+    await stream.cancel(new Error("Network connection lost."));
+    await cancelled;
+    expect(reported).toEqual([failure]);
+  });
+
+  it("React reports a cancel reason to onError (control)", async () => {
+    const reported: unknown[] = [];
+    const reason = new Error("Network connection lost.");
+    const stream = renderToReadableStream(
+      { pending: new Promise(() => {}) },
+      { onError: (error: unknown) => void reported.push(error) },
+    );
+    await stream.cancel(reason);
+    expect(reported).toEqual([reason]);
   });
 });

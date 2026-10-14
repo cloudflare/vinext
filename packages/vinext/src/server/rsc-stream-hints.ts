@@ -1,3 +1,8 @@
+import {
+  createRenderStreamCancellation,
+  type RenderStreamCancellation,
+} from "./app-render-abort-error.js";
+
 const REACT_FLIGHT_STYLESHEET_PRELOAD_HINT = /^([0-9a-f]*:HL\[.*?),"stylesheet"(\]|,)/;
 const STYLESHEET_TO_STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
 
@@ -157,6 +162,7 @@ function isTagInTable(table: Uint8Array, byte: number): boolean {
  */
 export function normalizeReactFlightPreloadHints(
   stream: ReadableStream<Uint8Array>,
+  onCancel?: (reason: unknown) => void,
 ): ReadableStream<Uint8Array> {
   let carry: Uint8Array | null = null;
   let rawBytesRemaining = 0;
@@ -296,7 +302,10 @@ export function normalizeReactFlightPreloadHints(
           controller.enqueue(rawBytesRemaining > 0 ? carry : normalizeReactFlightHintLine(carry));
         }
       },
-    }),
+      // Runs before the cancellation reaches the source stream. TypeScript's
+      // DOM types predate this hook, which Node (22+) and workerd support.
+      cancel: onCancel,
+    } as Transformer<Uint8Array, Uint8Array>),
   );
 }
 
@@ -308,7 +317,30 @@ export type RscRawPrerenderer = (
 ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
 
 export function createRscRenderer(render: RscRawRenderer): RscRawRenderer {
-  return (model, options) => normalizeReactFlightPreloadHints(render(model, options));
+  return (model, options) => {
+    const cancellation = createRenderStreamCancellation();
+    return normalizeReactFlightPreloadHints(
+      render(model, ignoreCancellationErrors(options, cancellation)),
+      cancellation.record,
+    );
+  };
+}
+
+/** A consumer cancelling the payload is not a render failure. */
+function ignoreCancellationErrors(
+  options: unknown,
+  cancellation: RenderStreamCancellation,
+): unknown {
+  if (!options || typeof options !== "object") return options;
+  const onError: unknown = Reflect.get(options, "onError");
+  if (typeof onError !== "function") return options;
+  return {
+    ...options,
+    onError(error: unknown, ...rest: unknown[]) {
+      if (cancellation.isReason(error)) return undefined;
+      return Reflect.apply(onError, options, [error, ...rest]);
+    },
+  };
 }
 
 export function createRscPrerenderer(prerender: RscRawPrerenderer): RscRawPrerenderer {
