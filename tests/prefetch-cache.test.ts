@@ -1374,6 +1374,41 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
   });
 
+  it("matches prefetch entries for // pathnames by their pathname on the app origin", async () => {
+    // A pathname can begin with "//". Its first segment is a path segment, not
+    // a host. The server reports the rendered path raw, so its alias key is
+    // "//a//attacker.example/z" and must not answer for the different page
+    // "//attacker.example/z", which the request builder spells with "/.".
+    const renderedPathAndSearch = "//a//attacker.example/z";
+    const originalRscUrl = "/.//a//attacker.example/z?_rsc=one";
+
+    prefetchRscResponse(
+      originalRscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent(renderedPathAndSearch),
+          },
+        }),
+      ),
+      null,
+      null,
+    );
+    await getPrefetchCache().get(originalRscUrl)?.pending;
+    expect(getPrefetchCache().has(renderedPathAndSearch)).toBe(true);
+
+    expect(hasPrefetchCacheEntryForNavigation("/.//attacker.example/z?_rsc=two", null, null)).toBe(
+      false,
+    );
+    expect(peekPrefetchResponseForNavigation("/.//attacker.example/z?_rsc=two", null, null)).toBe(
+      null,
+    );
+    expect(
+      hasPrefetchCacheEntryForNavigation("/.//a//attacker.example/z?_rsc=two", null, null),
+    ).toBe(true);
+  });
+
   it("does not repopulate the prefetch cache across an invalidation (#2707)", async () => {
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },

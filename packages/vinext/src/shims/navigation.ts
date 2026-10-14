@@ -34,6 +34,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   formatRscRequestPath,
+  parseRscRequestPath,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -586,7 +587,7 @@ export function resolvePrefetchCacheEntryMountedSlotsHeader(
 
 function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
   try {
-    const url = new URL(rscUrl, "http://vinext.local");
+    const url = parseRscRequestPath(rscUrl);
     stripRscCacheBustingSearchParam(url);
     return `${url.pathname}${url.search}`;
   } catch {
@@ -596,7 +597,7 @@ function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
 
 function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
   try {
-    const url = new URL(rscUrl, "http://vinext.local");
+    const url = parseRscRequestPath(rscUrl);
     return stripRscSuffix(url.pathname);
   } catch {
     return null;

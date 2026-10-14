@@ -445,7 +445,7 @@ const RSC_REQUEST_URL_BASE = "http://vinext.local";
  * relative reference would read its first segment as a host, so a path is
  * appended to the base instead of resolved against it.
  */
-function parseRscRequestPath(href: string): URL {
+export function parseRscRequestPath(href: string): URL {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
   if (beforeHash.startsWith("/") || beforeHash.startsWith("\\")) {
