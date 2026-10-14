@@ -100,7 +100,7 @@ import { planRouteClassificationInjection } from "./build/route-classification-i
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
 import {
   createRscScanGlobImportsPlugin,
-  RSC_SCAN_GLOB_IMPORTS_AFFECTED_FROM,
+  isRscScanGlobImportsAffected,
 } from "./plugins/rsc-scan-glob-imports.js";
 import {
   normalizePathnameForRouteMatch,
@@ -377,7 +377,7 @@ import {
   isViteCliConfigFile,
 } from "./utils/vite-cli-invocation.js";
 import { assertPluginRscVersion } from "./utils/plugin-rsc-version.js";
-import { getReactUpgradeDeps, isVersionBelow } from "./utils/react-version.js";
+import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
@@ -8647,7 +8647,7 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
   }
-  if (rscVersion && !isVersionBelow(rscVersion, RSC_SCAN_GLOB_IMPORTS_AFFECTED_FROM)) {
+  if (rscVersion && isRscScanGlobImportsAffected(rscVersion)) {
     plugins.push(
       createRscScanGlobImportsPlugin({
         async getManager(config) {

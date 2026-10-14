@@ -1,6 +1,9 @@
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import { describe, expect, it } from "vite-plus/test";
-import { createRscScanGlobImportsPlugin } from "../packages/vinext/src/plugins/rsc-scan-glob-imports.js";
+import {
+  createRscScanGlobImportsPlugin,
+  isRscScanGlobImportsAffected,
+} from "../packages/vinext/src/plugins/rsc-scan-glob-imports.js";
 
 // Stands in for Vite's resolver: a real file whose name contains `*`, a
 // relative glob that matches no file, and an invalid `file://` URL.
@@ -47,5 +50,13 @@ describe("vinext:rsc-scan-glob-imports", () => {
   it("leaves real builds and plain specifiers to the normal resolver", async () => {
     await expect(resolveWith(false, "file://*")).resolves.toBeUndefined();
     expect(resolveWith(true, "./page.js")).toBeUndefined();
+  });
+
+  it("only applies to plugin-rsc releases without the upstream glob fix", () => {
+    expect(isRscScanGlobImportsAffected("0.5.35")).toBe(false);
+    expect(isRscScanGlobImportsAffected("0.5.36")).toBe(true);
+    expect(isRscScanGlobImportsAffected("0.5.37")).toBe(true);
+    expect(isRscScanGlobImportsAffected("0.5.38")).toBe(false);
+    expect(isRscScanGlobImportsAffected("0.6.0")).toBe(false);
   });
 });
