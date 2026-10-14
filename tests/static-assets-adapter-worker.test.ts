@@ -24,7 +24,7 @@ function write(root: string, relativePath: string, contents: string): void {
 
 describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
   let root = "";
-  let worker: { url: Promise<URL>; dispose(): Promise<void> } | undefined;
+  let worker: { raw: { teardown(): Promise<void> } } | undefined;
   let baseUrl = "";
 
   beforeAll(async () => {
@@ -107,10 +107,20 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           logLevel: "none";
           watch: false;
           server: { port: 0 };
+          inspector: false;
         };
-      }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
+      }): Promise<{
+        url: Promise<URL>;
+        raw: {
+          once(
+            event: "error",
+            listener: (error: Error | { source: string; reason: string; cause?: unknown }) => void,
+          ): void;
+          teardown(): Promise<void>;
+        };
+      }>;
     };
-    worker = await wrangler.unstable_startWorker({
+    const started = await wrangler.unstable_startWorker({
       config: path.join(root, "dist/server/wrangler.json"),
       dev: {
         remote: false,
@@ -118,13 +128,30 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
         logLevel: "none",
         watch: false,
         server: { port: 0 },
+        // The tests never use the inspector. With it on, wrangler probes for a
+        // free port near 9229, which parallel test processes can race for, and
+        // waits on an inspector WebSocket that never settles `url` if it errors.
+        inspector: false,
       },
     });
-    baseUrl = (await worker.url).origin;
+    worker = started;
+    // wrangler reports startup failures as `error` events and leaves `url`
+    // pending, so fail with the cause instead of waiting out the hook timeout.
+    const startupError = new Promise<never>((_, reject) => {
+      started.raw.once("error", (error) => {
+        reject(
+          error instanceof Error
+            ? error
+            : new Error(`${error.source}: ${error.reason}`, { cause: error.cause }),
+        );
+      });
+    });
+    baseUrl = (await Promise.race([started.url, startupError])).origin;
   }, 180_000);
 
   afterAll(async () => {
-    await worker?.dispose();
+    // `dispose()` waits for a startup that may never finish; tear down directly.
+    await worker?.raw.teardown();
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
