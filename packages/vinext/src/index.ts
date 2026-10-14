@@ -333,6 +333,7 @@ import {
   SERVER_ONLY_SPECIFIER_RE,
 } from "./plugins/worker-server-only-imports.js";
 import { createWorkerUseServerPlugins } from "./plugins/worker-use-server.js";
+import { createInlineServerActionPlugin } from "./plugins/inline-server-actions.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import {
   commonJsEsmFacadeOptimizeDepsPlugin,
@@ -1978,6 +1979,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
   let manualUseCachePluginPromise: Promise<Plugin> | null = null;
+  let manualInlineServerActionPluginPromise: Promise<Plugin> | null = null;
+  const serverActionBoundArgsRuntime = pathToFileURL(
+    resolveShimModulePath(shimsDir, "server-action-bound-args"),
+  ).href;
   if (earlyAppDirExists && autoRsc) {
     if (!resolvedRscPath) {
       throw new Error(
@@ -1999,16 +2004,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
-        const useCachePlugin = await createUseCacheCallablePlugin({
-          projectRoot: earlyBaseDir,
-          cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
-            .href,
-        });
+        const [useCachePlugin, inlineServerActionPlugin] = await Promise.all([
+          createUseCacheCallablePlugin({
+            projectRoot: earlyBaseDir,
+            cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
+              .href,
+          }),
+          createInlineServerActionPlugin({
+            projectRoot: earlyBaseDir,
+            boundArgsRuntime: serverActionBoundArgsRuntime,
+          }),
+        ]);
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
         if (useServerIndex === -1) {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
-        plugins.splice(useServerIndex, 0, cacheFlightCodecPlugin(), useCachePlugin);
+        plugins.splice(
+          useServerIndex,
+          0,
+          cacheFlightCodecPlugin(),
+          useCachePlugin,
+          inlineServerActionPlugin,
+        );
         return plugins.map(scopeRscPlugin);
       })
       .catch((cause) => {
@@ -2021,6 +2038,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     manualUseCachePluginPromise = createUseCacheCallablePlugin({
       projectRoot: earlyBaseDir,
       cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime")).href,
+      allowMissingRsc: true,
+    });
+    manualInlineServerActionPluginPromise = createInlineServerActionPlugin({
+      projectRoot: earlyBaseDir,
+      boundArgsRuntime: serverActionBoundArgsRuntime,
       allowMissingRsc: true,
     });
   }
@@ -8690,6 +8712,7 @@ export const loadServerActionClient = ${
     plugins.push(createRscClientReferenceLoadersPlugin());
   } else if (manualUseCachePluginPromise) {
     plugins.push(cacheFlightCodecPlugin(), manualUseCachePluginPromise);
+    if (manualInlineServerActionPluginPromise) plugins.push(manualInlineServerActionPluginPromise);
   }
   plugins.push({
     name: "vinext:plain-pages-build-config",

@@ -40,7 +40,7 @@ function isPlainFilePath(id: string): boolean {
   return !/[\0?#]/.test(id) && fs.existsSync(id);
 }
 
-function withPositionedError<T>(
+export function withPositionedError<T>(
   ctx: { error(message: string, pos?: number): never },
   run: () => Promise<T> | T,
 ): Promise<T> {

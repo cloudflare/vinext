@@ -466,6 +466,42 @@ test.describe("production server action ownership", () => {
     }
   });
 
+  test("rejects another same-route action's encrypted closure", async ({ page }) => {
+    await page.context().addCookies([{ name: "viewer", value: "mallory", url: app.baseUrl }]);
+    await page.goto(`${app.baseUrl}/ownership/report/bound-args?owner=mallory`);
+    await waitForAppRouterHydration(page);
+    const nextActionRequest = () =>
+      page.waitForRequest(
+        (request) => request.method() === "POST" && Boolean(request.headers()["next-action"]),
+      );
+
+    const protectedRequestPromise = nextActionRequest();
+    await page.getByTestId("bound-args-protected").click();
+    await expect(page.getByTestId("bound-args-protected-result")).toHaveText("DENIED:mallory");
+    const protectedRequest = await protectedRequestPromise;
+
+    const previewRequestPromise = nextActionRequest();
+    await page.getByTestId("bound-args-preview").click();
+    await expect(page.getByTestId("bound-args-preview-result")).toHaveText("PREVIEW:mallory");
+    const previewRequest = await previewRequestPromise;
+
+    const protectedActionId = protectedRequest.headers()["next-action"]!;
+    expect(protectedActionId).not.toBe(previewRequest.headers()["next-action"]);
+    expect(previewRequest.postData()).not.toBe(protectedRequest.postData());
+
+    // Like Next.js, a closure encrypted for one action fails to decrypt in
+    // another, even when both actions are owned by the same route.
+    const response = await postRawAction(
+      page,
+      "/ownership/report/bound-args?owner=mallory",
+      protectedActionId,
+      previewRequest.postData()!,
+      previewRequest.headers()["content-type"]!,
+    );
+    expect(response.status).toBe(500);
+    expect(response.body).not.toContain("BOUND_ARGS_SECRET_MARKER_77");
+  });
+
   test("uses module-level ownership for shared action modules", async ({ page }) => {
     const directAdminOwner = await page.goto(`${app.baseUrl}/ownership/report/admin/shared`);
     expect(directAdminOwner?.status()).toBe(401);
