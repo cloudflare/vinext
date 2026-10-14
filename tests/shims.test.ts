@@ -31192,6 +31192,16 @@ describe("isSafeAttrName", () => {
     expect(isSafeAttrName("onmouseover")).toBe(false);
   });
 
+  it("rejects inline event handler attributes in any case", () => {
+    // HTML attribute names are case-insensitive. React's server renderer drops
+    // every name longer than two characters that starts with "on" in any case.
+    expect(isSafeAttrName("ONERROR")).toBe(false);
+    expect(isSafeAttrName("Onload")).toBe(false);
+    expect(isSafeAttrName("oNclick")).toBe(false);
+    expect(isSafeAttrName("onError")).toBe(false);
+    expect(isSafeAttrName("on")).toBe(true);
+  });
+
   it("allows attributes starting with 'o' that are not event handlers", () => {
     expect(isSafeAttrName("open")).toBe(true);
     expect(isSafeAttrName("og:title")).toBe(true);

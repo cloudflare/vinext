@@ -273,8 +273,15 @@ const SAFE_ATTR_NAME_RE = /^[a-zA-Z][a-zA-Z0-9\-:.]*$/;
 
 export function isSafeAttrName(name: string): boolean {
   if (!SAFE_ATTR_NAME_RE.test(name)) return false;
-  // Block inline event handlers (onclick, onerror, etc.)
-  if (name.length > 2 && name[0] === "o" && name[1] === "n" && name[2] >= "A" && name[2] <= "z")
+  // Block inline event handlers (onclick, onerror, etc.). HTML attribute names
+  // are case-insensitive, so `ONERROR` or `Onload` become working handlers once
+  // parsed. Match React's server renderer, which drops every name longer than
+  // two characters that starts with "on" in any case.
+  if (
+    name.length > 2 &&
+    (name[0] === "o" || name[0] === "O") &&
+    (name[1] === "n" || name[1] === "N")
+  )
     return false;
   return true;
 }
