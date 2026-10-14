@@ -209,6 +209,22 @@ export function matchesDynamicRoute(route: string, pathname: string): boolean {
 }
 
 /**
+ * Next.js route-regex params for `pathname`, or null when it does not match.
+ * Unlike segment matching, an empty segment (`//`) stays in a catch-all value,
+ * as Next.js' client router keeps it in `router.query`.
+ */
+export function matchDynamicRouteParams(
+  route: string,
+  pathname: string,
+): Record<string, string | string[]> | null {
+  try {
+    return getRouteMatcher(getRouteRegex(route))(pathname) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Project a `(route, asPathname, query)` triple back into a fully-interpolated
  * browser URL. Used by the `<Link href as>` masking path in the Pages Router
  * shim: extract param values from the rendered `as` path when it differs from

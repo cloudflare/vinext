@@ -63,6 +63,7 @@ import {
   isAbsoluteUrl,
   isAbsoluteOrProtocolRelativeUrl,
   isHashOnlyBrowserUrlChange,
+  finishInterpolatedDoubleSlashPath,
   normalizePathTrailingSlash,
   toBrowserNavigationHref,
   toSameOriginAppPath,
@@ -96,6 +97,7 @@ import {
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import {
   interpolateDynamicRouteHref,
+  matchDynamicRouteParams,
   matchesDynamicRoute,
   resolveDynamicRouteHref,
 } from "./internal/interpolate-as.js";
@@ -658,6 +660,52 @@ function getHrefInterpolationError(
         )}) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed`,
       )
     : null;
+}
+
+/**
+ * Prefix an interpolated `//...` app path with the navigation locale as a
+ * dot-segment path (`/.//...`), so URL helpers keep it a path rather than a
+ * protocol-relative URL. The interpolated path carries no locale of its own,
+ * so nothing is stripped from it (its first segment can look like one).
+ * Returns null when neither a basePath nor a locale prefix would precede it:
+ * Next.js history.pushState rejects that URL.
+ */
+function prefixInterpolatedDoubleSlashPath(
+  path: string,
+  locale: string | undefined,
+): { href: string; dotSegment: string } | null {
+  const prefixed = applyNavigationLocale(`/.${path}`, locale);
+  if (isAbsoluteOrProtocolRelativeUrl(prefixed)) {
+    // A domain locale hard-navigates to the configured host, as Next.js does.
+    return /^[a-z][a-z\d+.-]*:/i.test(prefixed)
+      ? { href: finishInterpolatedDoubleSlashPath(prefixed, __trailingSlash), dotSegment: "" }
+      : null;
+  }
+  if (__basePath === "" && prefixed.startsWith("/./")) return null;
+  return {
+    href: prefixed,
+    dotSegment: __basePath + prefixed.slice(0, prefixed.indexOf("/.//") + 2),
+  };
+}
+
+function interpolatedDoubleSlashError(path: string, routePathname: string): Error {
+  return new Error(
+    `The interpolated route path (${stripHash(path).split("?", 1)[0]}) for the \`href\` value (${routePathname}) starts with "//" and would leave the current origin.`,
+  );
+}
+
+/**
+ * Drop the `/.` that {@link prefixInterpolatedDoubleSlashPath} added, once the
+ * basePath and locale prefix `dotSegment` precedes it: `/docs/.//x` is
+ * `/docs//x`. Any other URL, such as the caller's own `as`, is left alone.
+ */
+function removeInterpolatedDotSegment(url: string, dotSegment: string): string {
+  // Trailing-slash normalization can shorten an all-empty catch-all (`/.//`).
+  return dotSegment !== "" &&
+    url.startsWith(dotSegment) &&
+    /^(?:[/?#]|$)/.test(url.slice(dotSegment.length))
+    ? url.slice(0, dotSegment.length - 2) + url.slice(dotSegment.length)
+    : url;
 }
 
 /**
@@ -1357,6 +1405,9 @@ function extractRouteParamsFromPath(
   pattern: string,
   pathname: string,
 ): Record<string, string | string[]> | null {
+  // An empty segment only survives client navigation behind a basePath or
+  // locale prefix (`/docs//a`); Next.js' route regex keeps it in catch-alls.
+  if (pathname.includes("//")) return matchDynamicRouteParams(pattern, pathname);
   return matchRoutePattern(splitPathSegments(pathname), routePatternParts(pattern));
 }
 
@@ -3381,8 +3432,14 @@ async function performNavigation(
 
   const isHydrationQueryUpdate = options?._h === 1;
   const navigationLocale = resolveTransitionLocale(options?.locale);
+  const visibleAppPathname = stripBasePath(window.location.pathname, __basePath);
+  // On a `<basePath>//...` page (a root catch-all with an empty first segment),
+  // the visible app path is not a protocol-relative URL. Resolve a query-only
+  // href the way Next.js resolveHref() does instead of joining it to that path.
   const urlForResolution = isQueryOnlyString
-    ? `${stripBasePath(window.location.pathname, __basePath)}${url}`
+    ? visibleAppPathname.startsWith("//")
+      ? resolvePagesUrlPath(url)
+      : `${visibleAppPathname}${url}`
     : url;
   const unlocalizedRouteHref = resolveRelativeRoutePath(resolveUrl(urlForResolution));
   const localRouteHref = isExternalUrl(unlocalizedRouteHref)
@@ -3439,19 +3496,55 @@ async function performNavigation(
     }
   }
 
+  // Next.js Router.change() interpolates an explicit `as` again when it
+  // resolves to the route pattern itself (a query-only `as` on a matching
+  // dynamic page, or the literal pattern), and that `as` has no basePath or
+  // locale prefix. For a `//...` route, history.pushState then rejects it.
+  const asResolvesToRoutePattern = (routePathname: string): boolean => {
+    if (as === undefined || as.startsWith("#")) return false;
+    if (!as.startsWith("?")) {
+      return (
+        removeTrailingSlash(removeNavigationLocalePrefix(stripHash(as).split("?", 1)[0])) ===
+        routePathname
+      );
+    }
+    if (currentRoute !== routePathname) return false;
+    const currentPathname = currentAs.split("?", 1)[0];
+    return matchesDynamicRoute(
+      currentRoute,
+      currentPathname.startsWith("//")
+        ? currentPathname
+        : removeNavigationLocalePrefix(currentPathname),
+    );
+  };
+
   // Next.js validates the route href before the display `as` URL. An external
   // href must therefore hard-navigate even when a local mask was supplied.
+  // An interpolated route is an app path, but a catch-all whose first segment
+  // is empty still matches and yields `//host/...`. Next.js prefixes it with
+  // the basePath and locale as a plain string and navigates on the app origin
+  // (`/docs//host/...`); with no prefix, history.pushState rejects it.
+  let interpolatedDotSegment = "";
+  if (routeIdentityHref !== undefined && resolvedRoute.startsWith("//")) {
+    const routePathname = stripHash(routeIdentityHref).split("?", 1)[0];
+    const asIsRoutePattern = asResolvesToRoutePattern(routePathname);
+    const prefixedRoute = asIsRoutePattern
+      ? null
+      : prefixInterpolatedDoubleSlashPath(resolvedRoute, navigationLocale);
+    if (prefixedRoute !== null) {
+      if (resolved === resolvedRoute) resolved = prefixedRoute.href;
+      resolvedRoute = prefixedRoute.href;
+      interpolatedDotSegment = prefixedRoute.dotSegment;
+    } else if (asIsRoutePattern || toPreparedSameOriginPath(resolvedRoute) === null) {
+      // Unprefixed, it is a protocol-relative URL; only this origin's own host
+      // stays a local path below.
+      throw interpolatedDoubleSlashError(resolvedRoute, routePathname);
+    }
+  }
+
   if (isExternalUrl(resolvedRoute)) {
     const localPath = toPreparedSameOriginPath(resolvedRoute);
     if (localPath == null) {
-      // An interpolated route is an app path, but a catch-all whose first
-      // segment is empty still matches and yields `//host/...`. Next.js fails
-      // that navigation at history.pushState; never hard-navigate off-origin.
-      if (routeIdentityHref !== undefined && /^[/\\]{2}/.test(resolvedRoute)) {
-        throw new Error(
-          `The interpolated route path (${stripHash(resolvedRoute).split("?", 1)[0]}) for the \`href\` value (${stripHash(routeIdentityHref).split("?", 1)[0]}) starts with "//" and would leave the current origin.`,
-        );
-      }
       window.location.href = resolvedRoute;
       return false;
     }
@@ -3518,6 +3611,19 @@ async function performNavigation(
     if (projection?.href) {
       routeIdentityHref ??= removeNavigationLocalePrefix(resolvedRoute);
       interpolatedRoute = projection.href;
+      // A masked route can interpolate to `//host/...` as well. Fetch it behind
+      // the prefix like the unmasked route above; an `as` that is the route
+      // pattern itself is interpolated again by Next.js, without a prefix.
+      if (interpolatedRoute.startsWith("//")) {
+        const prefixedRoute = asResolvesToRoutePattern(projection.routePathname)
+          ? null
+          : prefixInterpolatedDoubleSlashPath(interpolatedRoute, navigationLocale);
+        if (prefixedRoute === null || prefixedRoute.dotSegment === "") {
+          throw interpolatedDoubleSlashError(interpolatedRoute, projection.routePathname);
+        }
+        interpolatedRoute = prefixedRoute.href;
+        interpolatedDotSegment = prefixedRoute.dotSegment;
+      }
 
       // No-mask case: caller didn't pass `as`, so the address bar would
       // otherwise show the literal bracket pathname. Reproject `resolved` /
@@ -3536,7 +3642,7 @@ async function performNavigation(
         const searchStr = remaining.toString();
         const hashStr = extractHash(resolved);
         resolved = normalizePathTrailingSlash(
-          `${projection.href.split(/[?#]/, 1)[0]}${searchStr ? `?${searchStr}` : ""}${hashStr}`,
+          `${interpolatedRoute.split(/[?#]/, 1)[0]}${searchStr ? `?${searchStr}` : ""}${hashStr}`,
           __trailingSlash,
         );
       }
@@ -3562,9 +3668,12 @@ async function performNavigation(
   }
   // Recompute `full` after potential `resolved` rewrite above. Cheap when
   // unchanged; correctness-critical when bracket interpolation rewrote it.
-  const full = normalizePathTrailingSlash(
-    toBrowserNavigationHref(resolved, window.location.href, __basePath),
-    __trailingSlash,
+  const full = removeInterpolatedDotSegment(
+    normalizePathTrailingSlash(
+      toBrowserNavigationHref(resolved, window.location.href, __basePath),
+      __trailingSlash,
+    ),
+    interpolatedDotSegment,
   );
   let browserEventUrl = full;
   if (redirectBrowserHref !== undefined) {
@@ -3584,9 +3693,12 @@ async function performNavigation(
   // no-op and `fullRouteUrl === full`.
   const fullRouteUrl =
     interpolatedRoute !== resolved
-      ? normalizePathTrailingSlash(
-          toBrowserNavigationHref(interpolatedRoute, window.location.href, __basePath),
-          __trailingSlash,
+      ? removeInterpolatedDotSegment(
+          normalizePathTrailingSlash(
+            toBrowserNavigationHref(interpolatedRoute, window.location.href, __basePath),
+            __trailingSlash,
+          ),
+          interpolatedDotSegment,
         )
       : full;
   // The dynamic route identity is a loader/history key, not the caller's
@@ -3666,9 +3778,15 @@ async function performNavigation(
   const historyUrl = historyRouteUrl.startsWith("#")
     ? currentAppUrl + historyRouteUrl
     : historyRouteUrl;
+  // Next.js only normalizes the caller's `as`; an interpolated `as` keeps the
+  // empty segment of a root catch-all (`/fr//x`).
+  const isInterpolatedDisplay =
+    as === undefined &&
+    routeIdentityHref !== undefined &&
+    stripHash(resolved).split("?", 1)[0].includes("//");
   const preparedHistoryAs = resolved.startsWith("#")
     ? currentAppUrl + resolved
-    : redirectBrowserHref !== undefined || resolved.startsWith("//")
+    : redirectBrowserHref !== undefined || resolved.startsWith("//") || isInterpolatedDisplay
       ? resolved
       : resolvePagesRouterHref(resolved, { pathname: currentRoute, asPath: currentAs }, __basePath);
   const navState = {
@@ -3680,7 +3798,10 @@ async function performNavigation(
       ),
     as:
       credentialedDisplayHref ??
-      normalizePathTrailingSlash(withBasePath(preparedHistoryAs, __basePath), __trailingSlash),
+      removeInterpolatedDotSegment(
+        normalizePathTrailingSlash(withBasePath(preparedHistoryAs, __basePath), __trailingSlash),
+        interpolatedDotSegment,
+      ),
     options: navStateOptions,
   };
 
@@ -4262,28 +4383,48 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
       // its parameter values in that URL's query. Interpolate only those
       // values for the network request; keep the pattern for page lookup so
       // a masked dynamic route cannot be mistaken for a colliding static page.
+      // A root catch-all entry with an empty first segment interpolates to a
+      // `//...` app path. It carries no locale and is not a URL: keep it
+      // behind the basePath/locale prefix the push stored it under instead of
+      // parsing or fetching it as a protocol-relative URL.
+      const removeHistoryLocalePrefix = (url: string) =>
+        url.startsWith("//") ? url : removeNavigationLocalePrefix(url);
       const dynamicRoute = interpolateDynamicRouteHref(
         stateUrl,
-        removeNavigationLocalePrefix(stateAs),
+        removeHistoryLocalePrefix(stateAs),
       );
       const concreteRouteUrl = dynamicRoute?.href || stateUrl;
-      const fetchRouteUrl = applyNavigationLocale(concreteRouteUrl, effectiveLocale);
-      stateFetchUrl = normalizePathTrailingSlash(
-        withBasePath(fetchRouteUrl, __basePath),
-        __trailingSlash,
-      );
+      if (concreteRouteUrl.startsWith("//")) {
+        const prefixedRoute = prefixInterpolatedDoubleSlashPath(concreteRouteUrl, effectiveLocale);
+        stateFetchUrl =
+          prefixedRoute === null || prefixedRoute.dotSegment === ""
+            ? browserUrl
+            : removeInterpolatedDotSegment(
+                normalizePathTrailingSlash(
+                  withBasePath(prefixedRoute.href, __basePath),
+                  __trailingSlash,
+                ),
+                prefixedRoute.dotSegment,
+              );
+      } else {
+        stateFetchUrl = normalizePathTrailingSlash(
+          withBasePath(applyNavigationLocale(concreteRouteUrl, effectiveLocale), __basePath),
+          __trailingSlash,
+        );
+      }
       if (dynamicRoute?.href) {
         routePattern = removeTrailingSlash(
           stripHash(removeNavigationLocalePrefix(stateUrl)).split("?", 1)[0],
         );
       }
-      const routePathname = getLocalPathname(concreteRouteUrl);
-      const displayPathname = getLocalPathname(stateAs);
+      const getHistoryPathname = (url: string) =>
+        url.startsWith("//") ? stripHash(url).split("?", 1)[0] : getLocalPathname(url);
+      const routePathname = getHistoryPathname(concreteRouteUrl);
+      const displayPathname = getHistoryPathname(stateAs);
       routeMasked =
         routePathname === null ||
         displayPathname === null ||
-        removeNavigationLocalePrefix(routePathname) !==
-          removeNavigationLocalePrefix(displayPathname);
+        removeHistoryLocalePrefix(routePathname) !== removeHistoryLocalePrefix(displayPathname);
     }
     const result = await runNavigateClient(
       browserUrl,

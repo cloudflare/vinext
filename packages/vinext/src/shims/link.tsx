@@ -33,6 +33,7 @@ import {
   type LinkPrefetchRouterMode,
 } from "./link-prefetch.js";
 import {
+  finishInterpolatedDoubleSlashPath,
   isAbsoluteOrProtocolRelativeUrl,
   normalizePathTrailingSlash,
   toCanonicalBrowserNavigationHref,
@@ -1041,10 +1042,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // that combining a non-empty basePath with the bare root (`/`) still
   // produces a canonical href under `trailingSlash: false` (e.g. `/foo`
   // rather than `/foo/`).
-  const fullHref = normalizePathTrailingSlash(
-    withBasePath(normalizedHref, __basePath),
-    __trailingSlash,
-  );
+  // A root catch-all whose first segment is empty interpolates to `//host/...`.
+  // Next.js renders it behind the basePath and locale as a plain string
+  // (`/docs//host/...`); only an unprefixed one stays protocol-relative. The
+  // dot segment keeps the URL helpers from treating it as an external URL.
+  const fullHref =
+    implicitDynamicRouteHref !== null && !isDangerous && resolvedHref.startsWith("//")
+      ? finishInterpolatedDoubleSlashPath(
+          withBasePath(applyLocaleToHref(`/.${resolvedHref}`, locale), __basePath),
+          __trailingSlash,
+        )
+      : normalizePathTrailingSlash(withBasePath(normalizedHref, __basePath), __trailingSlash);
 
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);

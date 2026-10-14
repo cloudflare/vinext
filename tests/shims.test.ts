@@ -19560,10 +19560,148 @@ describe("Pages Router concurrent navigation", () => {
         "",
         "/docs/b",
       );
+
+      // The app's own host is a same-origin URL, which stays a local path.
+      await Router.push({ query: { slug: ["", "localhost", "x"] } }, undefined, { shallow: true });
+      expect(win.history.pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/x",
+      );
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("keeps an empty root catch-all segment behind a non-default locale prefix", async () => {
+    // Next.js prefixes the interpolated `//attacker.example/x` with the locale
+    // as a plain string and navigates on the app origin to
+    // `/fr//attacker.example/x`. On the default locale nothing precedes it, so
+    // history.pushState rejects the protocol-relative URL.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const i18n = { locale: "fr", locales: ["en", "fr"], defaultLocale: "en" };
+    const slug = ["", "attacker.example", "x"];
+    const guardError = (path: string) =>
+      `The interpolated route path (${path}) for the \`href\` value (/[...slug]) starts with "//" and would leave the current origin.`;
+
+    // Every case starts on `/fr/a/b`, rendered by the root catch-all.
+    async function openCatchAllPage() {
+      const listeners = new Map<string, (event: any) => void>();
+      const { win, pushState } = createNavWindow();
+      Object.assign(win.location, { pathname: "/fr/a/b", href: "http://localhost/fr/a/b" });
+      Object.assign(win, {
+        __VINEXT_LOCALE__: "fr",
+        __VINEXT_LOCALES__: i18n.locales,
+        __VINEXT_DEFAULT_LOCALE__: "en",
+        __VINEXT_PAGE_LOADERS__: { "/[...slug]": async () => import(pageModuleUrl) },
+        __VINEXT_PAGE_PATTERNS__: ["/[...slug]"],
+      });
+      win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+        listeners.set(type, handler);
+      });
+      win.__NEXT_DATA__ = { ...win.__NEXT_DATA__, page: "/[...slug]", query: { slug: ["a", "b"] } };
+      (globalThis as any).window = win;
+      const fetch = vi.fn(async (url: RequestInfo | URL) => {
+        const href = getFetchHref(url);
+        if (!href.startsWith("/fr/")) throw new Error(`Unexpected fetch: ${href}`);
+        return new Response(buildNavHtml("/[...slug]", pageModuleUrl, {}, i18n), { status: 200 });
+      });
+      globalThis.fetch = fetch;
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      return { Router, win, pushState, fetch, listeners };
+    }
+
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+    try {
+      for (const [url, shallow] of [
+        [{ pathname: "/[...slug]", query: { slug } }, false],
+        [{ query: { slug } }, true],
+      ] as const) {
+        const { Router, win, pushState, fetch, listeners } = await openCatchAllPage();
+        await expect(Router.push(url, undefined, { shallow })).resolves.toBe(true);
+        expect(pushState).toHaveBeenCalledTimes(1);
+        expect(pushState.mock.calls[0][2]).toBe("/fr//attacker.example/x");
+        expect(pushState.mock.calls[0][0]).toMatchObject({
+          url: "/[...slug]?slug=&slug=attacker.example&slug=x",
+          as: "/fr//attacker.example/x",
+        });
+        expect(Router.query).toEqual({ slug });
+        expect(Router.asPath).toBe("//attacker.example/x");
+        if (shallow) {
+          expect(fetch).not.toHaveBeenCalled();
+          continue;
+        }
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(getFetchHref(fetch.mock.calls[0][0])).toBe(
+          "/fr//attacker.example/x?slug=&slug=attacker.example&slug=x",
+        );
+
+        // Going back to the entry refetches it behind the same locale prefix.
+        const { installPagesRouterRuntime } =
+          await import("../packages/vinext/src/shims/pages-router-runtime.js");
+        installPagesRouterRuntime();
+        fetch.mockClear();
+        const completed = new Promise<void>((resolve) => {
+          Router.events.on("routeChangeComplete", () => resolve());
+        });
+        listeners.get("popstate")!({ state: win.history.state });
+        await completed;
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(getFetchHref(fetch.mock.calls[0][0])).toBe(
+          "/fr//attacker.example/x?slug=&slug=attacker.example&slug=x",
+        );
+      }
+
+      // The interpolated path has no locale of its own, even when its first
+      // segment looks like one.
+      {
+        const { Router, pushState } = await openCatchAllPage();
+        await Router.push({ query: { slug: ["", "fr", "x"] } }, undefined, { shallow: true });
+        expect(pushState.mock.calls[0][2]).toBe("/fr//fr/x");
+        expect(Router.query).toEqual({ slug: ["", "fr", "x"] });
+      }
+      for (const [url, path] of [
+        [{ pathname: "/[...slug]", query: { slug } }, "//attacker.example/x"],
+        [{ query: { slug: ["", "fr", "x"] } }, "//fr/x"],
+      ] as const) {
+        const { Router, pushState } = await openCatchAllPage();
+        await expect(Router.push(url, undefined, { locale: "en", shallow: true })).rejects.toThrow(
+          guardError(path),
+        );
+        expect(pushState).not.toHaveBeenCalled();
+      }
+
+      // An explicit `as` is the caller's display URL: it is not rewritten, and
+      // only the route fetch target takes the prefixed `//` path.
+      {
+        const { Router, pushState } = await openCatchAllPage();
+        await Router.push({ query: { slug } }, "/?q=/.//z", { shallow: true });
+        expect(pushState.mock.calls[0][2]).toBe("/fr?q=/.//z");
+        expect(Router.asPath).toBe("/?q=/.//z");
+      }
+      // A query-only `as` resolves to the route pattern, which Next.js
+      // interpolates again without the locale prefix: pushState rejects it.
+      {
+        const { Router, pushState } = await openCatchAllPage();
+        await expect(Router.push({ query: { slug } }, "?q=1", { shallow: true })).rejects.toThrow(
+          guardError("//attacker.example/x"),
+        );
+        expect(pushState).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
     }
   });
 

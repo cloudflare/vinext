@@ -42,6 +42,7 @@ import {
   isAbsoluteUrl,
   normalizePathTrailingSlash,
   resolveRelativeHref,
+  finishInterpolatedDoubleSlashPath,
   toBrowserNavigationHref,
   toSameOriginAppPath,
   toSameOriginPath,
@@ -1078,6 +1079,26 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/fr/about#hash"');
   });
 
+  it("prefixes an empty root catch-all segment with the locale as a plain string", () => {
+    // Next.js renders `addLocale(as)` for the interpolated `//...` path, so the
+    // href stays on the app origin; only an unprefixed one is protocol-relative.
+    const render = (slug: string[], locale: string | false) =>
+      ReactDOMServer.renderToString(
+        React.createElement(
+          RouterContext.Provider,
+          { value: { pathname: "/[...slug]", asPath: "/a/b" } as never },
+          React.createElement(
+            Link,
+            { href: { pathname: "/[...slug]", query: { slug } }, locale } as any,
+            "x",
+          ),
+        ),
+      );
+    expect(render(["", "attacker.example", "x"], "fr")).toContain('href="/fr//attacker.example/x"');
+    expect(render(["", "fr", "x"], "fr")).toContain('href="/fr//fr/x"');
+    expect(render(["", "attacker.example", "x"], false)).toContain('href="//attacker.example/x"');
+  });
+
   it("locale string does not double-prefix", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Link, { href: "/fr/about", locale: "fr" } as any, "x"),
@@ -1600,11 +1621,40 @@ describe("resolveRelativeHref", () => {
   });
 });
 
+describe("finishInterpolatedDoubleSlashPath", () => {
+  // Next.js normalizes the joined `addBasePath(addLocale(as))` path before
+  // attaching a domain-locale origin, so the trailing slash applies there too.
+  it.each([
+    ["/docs/.//attacker.example/x", false, "/docs//attacker.example/x"],
+    ["/docs/.//attacker.example/x", true, "/docs//attacker.example/x/"],
+    ["/fr/.//attacker.example/x?q=1#h", true, "/fr//attacker.example/x/?q=1#h"],
+    ["/.//attacker.example/x", true, "//attacker.example/x/"],
+    [
+      "https://example.fr/docs/fr/.//attacker.example/x",
+      true,
+      "https://example.fr/docs/fr//attacker.example/x/",
+    ],
+    ["https://example.fr/.//attacker.example/x", false, "https://example.fr//attacker.example/x"],
+    ["/docs/.//", false, "/docs/"],
+  ] as const)("finishes %s (trailingSlash: %s)", (url, trailingSlash, expected) => {
+    expect(finishInterpolatedDoubleSlashPath(url, trailingSlash)).toBe(expected);
+  });
+});
+
 describe("toBrowserNavigationHref", () => {
   it("keeps relative hrefs aligned with basePath and locale-prefixed browser URLs", () => {
     expect(
       toBrowserNavigationHref("?page=2", "http://localhost:3000/base/fr/posts/1", "/base"),
     ).toBe("/base/fr/posts/1?page=2");
+  });
+
+  it("keeps a relative href resolved on a basePath // page behind the basePath", () => {
+    // `/base//host/x` is the app path `//host/x`, not a protocol-relative URL.
+    const current = "http://localhost:3000/base//host/x";
+    expect(toBrowserNavigationHref("#h", current, "/base")).toBe("/base//host/x#h");
+    expect(toBrowserNavigationHref("?q=1", current, "/base")).toBe("/base//host/x?q=1");
+    expect(toBrowserNavigationHref("y", current, "/base")).toBe("/base//host/y");
+    expect(toBrowserNavigationHref("//host/x", current, "/base")).toBe("//host/x");
   });
 
   it("does not add a trailing slash for query/hash-only navigations from the bare basePath root", () => {
