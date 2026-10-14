@@ -64,6 +64,46 @@ describe("fetchWorkerImageSource", () => {
     );
   });
 
+  it("fetches build output by the name it checked, encoded once", async () => {
+    // The binding decodes each segment once. A segment that decodes to `%2E%2E`
+    // must stay a literal name rather than resolve as `..`.
+    for (const [source, pathname] of [
+      ["/_next/static/%252E%252E/%252E%252E/a.png", "/_next/static/%252E%252E/%252E%252E/a.png"],
+      ["/_next/static/%252e%252E/.%252E/a.png", "/_next/static/%252e%252E/.%252E/a.png"],
+      ["/_next/static/media/logo%402x%20a.png", "/_next/static/media/logo%402x%20a.png"],
+      ["/_next/static/media/logo@2x.png", "/_next/static/media/logo%402x.png"],
+      ["/_next/static/media/100%25.png", "/_next/static/media/100%25.png"],
+    ]) {
+      const { options, assets, fetchPublicFile } = sourceOptions();
+
+      await fetchWorkerImageSource(source, callerRequest(), options);
+
+      expect(fetchPublicFile, source).not.toHaveBeenCalled();
+      expect(new URL(assets.fetch.mock.calls[0][0].url).pathname, source).toBe(pathname);
+    }
+  });
+
+  it("does not fetch build output for a segment that decodes to a slash", async () => {
+    const { options, assets, fetchPublicFile } = sourceOptions();
+
+    await fetchWorkerImageSource("/_next/static/a%2F..%2F..%2Fa.png", callerRequest(), options);
+
+    expect(assets.fetch).not.toHaveBeenCalled();
+    expect(new URL(fetchPublicFile.mock.calls[0][0].url).pathname).toBe(
+      "/_next/static/a%2F..%2F..%2Fa.png",
+    );
+  });
+
+  it("keeps an encoded dot segment under a path assetPrefix a literal name", async () => {
+    const { options, assets } = sourceOptions({ basePath: "/docs", assetPathPrefix: "/cdn" });
+
+    await fetchWorkerImageSource("/cdn/_next/static/%252E%252E/a.png", callerRequest(), options);
+
+    expect(new URL(assets.fetch.mock.calls[0][0].url).pathname).toBe(
+      "/cdn/_next/static/%252E%252E/a.png",
+    );
+  });
+
   it("runs any other source through the pipeline as a GET without the caller's headers", async () => {
     const { options, assets, fetchPublicFile } = sourceOptions({ basePath: "/docs" });
 

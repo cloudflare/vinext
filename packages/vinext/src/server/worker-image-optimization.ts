@@ -4,7 +4,6 @@
  * (packages/next/src/server/image-optimizer.ts), so middleware that denies or
  * redirects a direct request also denies the optimizer.
  */
-import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isNextStaticPath } from "../utils/asset-prefix.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
@@ -54,6 +53,25 @@ function cancelResponseBody(response: Response): void {
 }
 
 /**
+ * Return the pathname of the `_next/static` file a source's decoded pathname
+ * segments name, or null. The asset binding decodes each segment once, as
+ * Next.js decodes a `.next/static` lookup, so each segment is encoded once
+ * from the name checked here. Parsing the decoded pathname as a URL again
+ * would resolve a segment that decoded to `%2E%2E` as `..`, outside
+ * `_next/static`.
+ */
+function resolveNextStaticFile(
+  segments: string[],
+  options: WorkerImageSourceOptions,
+): string | null {
+  // A segment that decodes to a `/` names no file.
+  if (segments.some((segment) => segment.includes("/"))) return null;
+  const filePath = normalizePath(segments.join("/"));
+  if (!isNextStaticPath(filePath, options.basePath, options.assetPathPrefix)) return null;
+  return filePath.split("/").map(encodeURIComponent).join("/");
+}
+
+/**
  * Fetch a local image source. Build output is fetched from the asset binding,
  * which serves it before the Worker and its middleware. Any other source is
  * served only when the application pipeline selects a public file for it.
@@ -64,16 +82,16 @@ export async function fetchWorkerImageSource(
   options: WorkerImageSourceOptions,
 ): Promise<Response> {
   const sourceUrl = new URL(imageUrl, request.url);
-  let sourcePathname: string;
+  let segments: string[];
   try {
-    sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
+    segments = sourceUrl.pathname.split("/").map(decodeURIComponent);
   } catch {
     return invalidImageSourceResponse();
   }
 
-  const buildAssetPath = isNextStaticPath(sourcePathname, options.basePath, options.assetPathPrefix)
-    ? sourcePathname
-    : resolveClientBuildFile(sourceUrl.pathname, options.basePath, options.clientBuildFiles);
+  const buildAssetPath =
+    resolveNextStaticFile(segments, options) ??
+    resolveClientBuildFile(sourceUrl.pathname, options.basePath, options.clientBuildFiles);
   if (buildAssetPath !== null) {
     return options.assets.fetch(new Request(new URL(buildAssetPath, request.url)));
   }
