@@ -12,6 +12,7 @@ import type {
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import type { StaticAssetsAdapterOptions } from "./static-assets-adapter.js";
 import {
   STATIC_ASSET_CACHE_PATH,
@@ -47,16 +48,30 @@ function isMetadata(value: unknown): value is StaticAssetCacheMetadata {
 export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
   readonly hasPrerenderedPages = true;
   readonly ownsBackgroundRevalidation = false;
-  // Only a loaded index is shared. A pending fetch belongs to the request that
-  // started it, and Workers never settles it once that request is cancelled
-  // (for example, when its client disconnects), so other requests must not
-  // await it.
   private index: StaticAssetCacheIndex | null | undefined;
+  // A pending fetch belongs to the request that started it, and Workers never
+  // settles it once that request is cancelled (for example, when its client
+  // disconnects). It is only shared when the starting request's waitUntil()
+  // keeps it running, which Workers allows for up to 30 seconds after the
+  // request ends.
+  private pendingIndex: Promise<StaticAssetCacheIndex | null> | undefined;
 
   constructor(readonly assets: AssetFetcher) {}
 
-  private async loadIndex(): Promise<StaticAssetCacheIndex | null> {
-    if (this.index !== undefined) return this.index;
+  private loadIndex(): Promise<StaticAssetCacheIndex | null> {
+    if (this.index !== undefined) return Promise.resolve(this.index);
+    if (this.pendingIndex) return this.pendingIndex;
+    const ctx = getRequestExecutionContext();
+    if (!ctx) return this.fetchIndex();
+    const pending = this.fetchIndex().finally(() => {
+      if (this.pendingIndex === pending) this.pendingIndex = undefined;
+    });
+    this.pendingIndex = pending;
+    ctx.waitUntil(pending.catch(() => {}));
+    return pending;
+  }
+
+  private async fetchIndex(): Promise<StaticAssetCacheIndex | null> {
     const response = await this.assets.fetch(
       `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`,
     );

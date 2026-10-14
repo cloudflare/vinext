@@ -18,6 +18,7 @@ import { staticAssetsAdapter } from "../packages/cloudflare/src/cache/static-ass
 import createStaticAssetsCacheAdapter, {
   StaticAssetsCacheAdapter,
 } from "../packages/cloudflare/src/cache/static-assets-adapter.runtime.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 describe("staticAssetsAdapter", () => {
   const roots: string[] = [];
@@ -381,7 +382,41 @@ describe("staticAssetsAdapter", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
-  it("does not share a pending cache index fetch with later requests", async () => {
+  it("shares a pending cache index fetch kept alive by the starting request", async () => {
+    let releaseIndex!: (response: Response) => void;
+    const fetch = vi.fn(
+      (_input: string) => new Promise<Response>((resolve) => (releaseIndex = resolve)),
+    );
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    const firstRequest = { waitUntil: vi.fn() };
+    const laterRequest = { waitUntil: vi.fn() };
+    const first = runWithExecutionContext(firstRequest, () => adapter["loadIndex"]());
+    const later = runWithExecutionContext(laterRequest, () => adapter["loadIndex"]());
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(firstRequest.waitUntil).toHaveBeenCalledOnce();
+    expect(laterRequest.waitUntil).not.toHaveBeenCalled();
+    releaseIndex(Response.json({ entry: {} }));
+    expect(await first).toEqual({ entry: {} });
+    expect(await later).toEqual({ entry: {} });
+  });
+
+  it("retries after a shared cache index fetch fails", async () => {
+    const fetch = vi
+      .fn<(input: string) => Promise<Response>>()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(Response.json({}));
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    const request = { waitUntil: vi.fn() };
+    const first = runWithExecutionContext(request, () => adapter["loadIndex"]());
+    const later = runWithExecutionContext(request, () => adapter["loadIndex"]());
+    await expect(first).rejects.toThrow("network");
+    await expect(later).rejects.toThrow("network");
+    await expect(request.waitUntil.mock.calls[0]![0]).resolves.toBeUndefined();
+    expect(await runWithExecutionContext(request, () => adapter["loadIndex"]())).toEqual({});
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not share a pending cache index fetch started outside a request", async () => {
     let indexFetchStarted!: () => void;
     const started = new Promise<void>((resolve) => (indexFetchStarted = resolve));
     const fetch = vi.fn((_input: string) => {

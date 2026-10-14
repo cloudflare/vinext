@@ -236,18 +236,22 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     try {
       const abandoned = await miniflare.dispatchFetch("https://front.local/abandon");
       expect(await abandoned.text()).toBe("abandoned");
-      releaseIndex();
 
+      const later = miniflare.dispatchFetch("https://front.local/");
+      // Give the later request time to reach the pending index fetch, which a
+      // second index fetch would show up as.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      releaseIndex();
       const response = await Promise.race([
-        miniflare.dispatchFetch("https://front.local/"),
+        later,
         new Promise<null>((resolve) => (timeout = setTimeout(() => resolve(null), 10_000))),
       ]);
       expect(response, "request after the cancelled one never settled").not.toBeNull();
       expect(response!.status).toBe(200);
       expect(response!.headers.get("x-vinext-cache")).toBe("HIT");
       expect(await response!.text()).toContain("served from prerender assets");
-      // The cancelled request never stored the index, so the next one loaded it.
-      expect(indexFetches).toBe(2);
+      // The later request shared the cancelled request's fetch, which kept running.
+      expect(indexFetches).toBe(1);
     } finally {
       clearTimeout(timeout);
       await miniflare.dispose();
