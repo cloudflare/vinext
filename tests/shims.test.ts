@@ -9564,7 +9564,9 @@ describe("middleware matcher patterns", () => {
 
       const compiled = compileMiddlewareMatcherPattern(pattern);
       expect(compiled.regexp?.source, pattern).toBe(nextRegexp.source);
-      expect(compiled.regexp?.flags, pattern).toBe(nextRegexp.flags);
+      // Next.js keeps only `.source` and recompiles it without path-to-regexp's
+      // case-insensitive flag, so middleware matchers are case-sensitive.
+      expect(compiled.regexp?.flags, pattern).toBe("");
     }
   });
 

@@ -277,6 +277,46 @@ async function assertHybridPagesEncodedAliasAuthGuard(baseUrl: string): Promise<
   }
 }
 
+async function assertCaseSensitiveMatcherAuthGuard(baseUrl: string): Promise<void> {
+  // Next.js compiles matchers case-sensitively, so exclusions such as `api` or
+  // `js(?!on)` must not skip middleware for case variants that still route.
+  const guardedTargets = [
+    { header: "x-encoded-path-auth", pathname: "/API/admin/dashboard" },
+    { header: "x-encoded-path-auth", pathname: "/Api/admin/dashboard" },
+    { header: "x-encoded-path-auth", pathname: "/_NEXT/admin/dashboard" },
+    { header: "x-encoded-path-auth", pathname: "/FAVICON.ICO" },
+    { header: "x-static-asset-auth", pathname: "/public.JS" },
+    { header: "x-static-asset-auth", pathname: "/public.HTML" },
+  ];
+  for (const { header, pathname } of guardedTargets) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers: { [header]: "1" } });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+
+  // Case variants of included paths miss the matcher, as in Next.js. The
+  // router is case-sensitive too, so they never reach the guarded routes.
+  const codes = await fetch(`${baseUrl}/codes/abcd`);
+  const codesBody = await codes.text();
+  expect(codes.status, codesBody).toBe(200);
+  expect(codes.headers.get("x-auth-guard")).toBeNull();
+  expect(codesBody).toContain("codes secret");
+
+  const missTargets: Array<{ headers: Record<string, string>; pathname: string }> = [
+    { headers: {}, pathname: "/Admin/secrets" },
+    { headers: { "x-hybrid-pages-auth": "1" }, pathname: "/Staff/panel" },
+  ];
+  for (const { headers, pathname } of missTargets) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(404);
+    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+    expect(body, pathname).not.toMatch(/admin secret|protected pages staff/);
+  }
+}
+
 async function closeHttpServer(server: http.Server | undefined): Promise<void> {
   if (!server) return;
   await new Promise<void>((resolve, reject) => {
@@ -339,6 +379,10 @@ describe("valid middleware matcher auth guards", () => {
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     }, 30_000);
+
+    it("matches middleware paths case-sensitively", async () => {
+      await assertCaseSensitiveMatcherAuthGuard(baseUrl);
+    }, 30_000);
   });
 
   describe("built Node production server", () => {
@@ -398,6 +442,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    });
+
+    it("matches middleware paths case-sensitively", async () => {
+      await assertCaseSensitiveMatcherAuthGuard(baseUrl);
     });
   });
 
@@ -483,6 +531,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    });
+
+    it("matches middleware paths case-sensitively", async () => {
+      await assertCaseSensitiveMatcherAuthGuard(baseUrl);
     });
   });
 });

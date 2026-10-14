@@ -2690,11 +2690,11 @@ describe("Pages Router entry template", () => {
       const assignment = code.split("\n").find((line) => line.startsWith(prefix));
       expect(assignment).toBeDefined();
       expect(JSON.parse(assignment!.slice(prefix.length, -1))).toEqual([
-        expect.objectContaining({ source: "/ssr", regexp: expect.any(String), flags: "i" }),
+        expect.objectContaining({ source: "/ssr", regexp: expect.any(String), flags: "" }),
         expect.objectContaining({
           source: "/api/:path*",
           regexp: expect.any(String),
-          flags: "i",
+          flags: "",
         }),
       ]);
     } finally {
