@@ -68,6 +68,16 @@ async function readBuiltJavaScript(directory: string): Promise<string> {
   return output;
 }
 
+async function readBuiltSourcemaps(directory: string): Promise<string[]> {
+  const sourcemaps: string[] = [];
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) sourcemaps.push(...(await readBuiltSourcemaps(entryPath)));
+    else if (entry.name.endsWith(".js.map")) sourcemaps.push(await fs.readFile(entryPath, "utf8"));
+  }
+  return sourcemaps;
+}
+
 function findActionId(source: string, exportName: string): string {
   const escapedExportName = exportName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = source.match(
@@ -107,6 +117,9 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
     root: fixtureRoot,
     configFile: false,
     plugins: [vinext({ appDir: fixtureRoot })],
+    // Every action runs against a build with browser sourcemaps, like the
+    // Next.js actions fixture (`productionBrowserSourceMaps: true`).
+    environments: { client: { build: { sourcemap: true } } },
     logLevel: "silent",
   });
   await builder.buildApp();
@@ -289,6 +302,66 @@ test.describe("production server action ownership", () => {
       throw new Error(
         `Expected ${expectedAssertions} action assertions, completed ${completedAssertions}`,
       );
+    }
+  });
+
+  test("keeps client-imported action source out of browser sourcemaps", async ({
+    page,
+    request,
+  }) => {
+    // Return values that only exist in the "use server" modules client
+    // components import, including one from a linked package.
+    const actionOnlySource = [
+      "CLIENT_OK",
+      "CLIENT_FORM_OK",
+      "GLOBAL_ERROR_ONLY_ACTION_EXECUTED",
+      "PACKAGE_CLIENT_ACTION_EXECUTED",
+      "PROTECTED_CLIENT_ACTION_EXECUTED",
+      "SAME_NAME_ACTION_OK",
+    ];
+
+    const scriptUrls = new Set<string>();
+    page.on("response", (response) => {
+      if (response.request().resourceType() === "script") scriptUrls.add(response.url());
+    });
+    for (const route of ["client", "client-form", "package-client", "same-name/action-owner"]) {
+      await page.goto(`${app.baseUrl}/ownership/${route}`);
+      await waitForAppRouterHydration(page);
+    }
+
+    // Follow each served script's sourceMappingURL anonymously, as any visitor can.
+    const servedSources = new Map<string, string | null>();
+    for (const scriptUrl of scriptUrls) {
+      const script = await (await request.get(scriptUrl)).text();
+      const mapUrl = script.match(/\/\/# sourceMappingURL=(\S+)\s*$/)?.[1];
+      if (!mapUrl) continue;
+      const response = await request.get(new URL(mapUrl, scriptUrl).href);
+      expect(response.status()).toBe(200);
+      const map = (await response.json()) as {
+        sources: string[];
+        sourcesContent?: (string | null)[];
+      };
+      map.sources.forEach((source, index) => {
+        const content = map.sourcesContent?.[index] ?? null;
+        servedSources.set(source, content);
+        for (const marker of actionOnlySource) expect(content ?? "").not.toContain(marker);
+      });
+    }
+    const contentOf = (pattern: RegExp) =>
+      [...servedSources].filter(([source]) => pattern.test(source)).map(([, content]) => content);
+    // The maps still carry the client components that call the actions...
+    expect(contentOf(/ownership\/client\/client-button\.tsx$/)).toEqual([
+      expect.stringContaining("clientImportedAction"),
+    ]);
+    // ...and name the action modules behind the proxies, without their source.
+    expect(contentOf(/ownership\/actions\/client\.ts$/)).toEqual([null]);
+    expect(contentOf(/action-client-package\/actions\.ts$/)).toEqual([null]);
+
+    // Like Next.js, check every emitted map so chunking cannot hide a leak.
+    const sourcemaps = await readBuiltSourcemaps(path.join(app.fixtureRoot, "dist", "client"));
+    expect(sourcemaps.length).toBeGreaterThan(0);
+    for (const sourcemap of sourcemaps) {
+      for (const marker of actionOnlySource) expect(sourcemap).not.toContain(marker);
     }
   });
 
