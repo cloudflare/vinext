@@ -13095,6 +13095,33 @@ describe("middleware request header overrides", () => {
     expect(middlewareHeaders).toEqual({});
   });
 
+  it("config-matchers applyMiddlewareRequestHeaders keeps Workers cf metadata", async () => {
+    const { applyMiddlewareRequestHeaders } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+
+    const cf = { country: "AU" };
+    const request = new Request("http://localhost/api/edge", {
+      headers: { "cf-connecting-ip": "203.0.113.10" },
+    });
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
+
+    const { request: nextRequest } = applyMiddlewareRequestHeaders(
+      {
+        "x-middleware-override-headers": "cf-connecting-ip,x-added",
+        "x-middleware-request-cf-connecting-ip": "203.0.113.10",
+        "x-middleware-request-x-added": "1",
+      },
+      request,
+    );
+
+    expect(nextRequest.headers.get("x-added")).toBe("1");
+    expect(Reflect.get(nextRequest, "cf")).toBe(cf);
+    const edgeRequest = new NextRequest(nextRequest);
+    expect(edgeRequest.ip).toBe("203.0.113.10");
+    expect(edgeRequest.geo?.country).toBe("AU");
+  });
+
   it("config-matchers applyMiddlewareRequestHeaders preserves existing headers in add-only overrides", async () => {
     const { applyMiddlewareRequestHeaders } =
       await import("../packages/vinext/src/config/config-matchers.js");

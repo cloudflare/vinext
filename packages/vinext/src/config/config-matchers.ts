@@ -30,6 +30,7 @@ import {
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
+import { attachRequestCfMetadata } from "../server/request-pipeline.js";
 import {
   substituteDestinationParams,
   substituteRedirectDestinationQuery,
@@ -464,6 +465,7 @@ export function applyMiddlewareRequestHeaders(
 
   if (nextHeaders) {
     // Headers may be immutable (Workers), so always clone via new Headers().
+    const source = request;
     request = new Request(request.url, {
       method: request.method,
       headers: nextHeaders,
@@ -473,6 +475,7 @@ export function applyMiddlewareRequestHeaders(
       // @ts-expect-error — duplex needed for streaming request bodies
       duplex: request.body ? "half" : undefined,
     });
+    attachRequestCfMetadata(request, source);
   }
 
   return { request, postMwReqCtx: requestContextFromRequest(request) };
