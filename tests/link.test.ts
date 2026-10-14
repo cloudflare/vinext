@@ -1504,6 +1504,17 @@ describe("toSameOriginPath", () => {
     it("returns null for same host but different scheme (different origin)", () => {
       expect(toSameOriginPath("https://localhost:3000/about")).toBe(null);
     });
+
+    it("never returns a protocol-relative path for a same-origin // pathname", () => {
+      // The pathname "//evil.com/x" as a local path would point at evil.com.
+      expect(toSameOriginPath("http://localhost:3000//evil.com/x?q=1#h")).toBe("/evil.com/x?q=1#h");
+      expect(toSameOriginPath("http://localhost:3000///evil.com/x")).toBe("/evil.com/x");
+      expect(toSameOriginPath("http://localhost:3000/\\evil.com/x")).toBe("/evil.com/x");
+      expect(toSameOriginPath("http://localhost:3000/.//evil.com/x")).toBe("/evil.com/x");
+      expect(toSameOriginPath("//localhost:3000//evil.com/x")).toBe("/evil.com/x");
+      // Repeated slashes after the first segment are not a host reference.
+      expect(toSameOriginPath("http://localhost:3000/a//b")).toBe("/a//b");
+    });
   });
 });
 
@@ -1693,6 +1704,31 @@ describe("toSameOriginAppPath", () => {
       expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe("/about");
       expect(toSameOriginAppPath("//localhost:3000/base/about?tab=1#top", "/base")).toBe(
         "/about?tab=1#top",
+      );
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("never returns a protocol-relative app path", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        origin: "http://localhost:3000",
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      expect(toSameOriginAppPath("http://localhost:3000//evil.com/x", "")).toBe("/evil.com/x");
+      // "/base//evil.com/x" has a single leading slash, but stripping the
+      // basePath leaves "//evil.com/x".
+      expect(toSameOriginAppPath("http://localhost:3000/base//evil.com/x?q=1", "/base")).toBe(
+        "/evil.com/x?q=1",
       );
     } finally {
       if (originalWindow === undefined) {
