@@ -230,7 +230,11 @@ export default ({ mode }) => {
       name: "test-build-lifecycle",
       configResolved(config) { lifecycle = config.__vinextBuildLifecycle; },
       buildStart() {
-        recordContext("build", { mode, isPreview: process.env.CLOUDFLARE_PREVIEW_BUILD === "true" });
+        recordContext("build", {
+          mode,
+          isPreview: process.env.CLOUDFLARE_PREVIEW_BUILD === "true",
+          cloudflareEnv: process.env.CLOUDFLARE_ENV,
+        });
         ${failure === "build" ? 'throw new Error("Preview build failed");' : ""}
       },
       closeBundle() { lifecycle?.onComplete(); },
@@ -424,7 +428,7 @@ describe("deploy prerender config wiring", () => {
       expect(contexts).toEqual(
         expect.arrayContaining([
           { phase: "cloudflare", mode, isPreview: true },
-          { phase: "build", mode, isPreview: true },
+          { phase: "build", mode, isPreview: true, cloudflareEnv: "other" },
         ]),
       );
       expect(contexts.every((context) => context.mode === mode && context.isPreview === true)).toBe(

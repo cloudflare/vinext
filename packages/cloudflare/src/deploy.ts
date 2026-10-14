@@ -2207,8 +2207,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   // The Preview flag must be present before Vite loads the configuration,
   // including the eager metadata pass, and while the multi-environment build runs.
+  // Like `cf previews deploy`, Previews select only the Vite mode and leave CLOUDFLARE_ENV alone.
+  const cloudflareEnv = isPreview ? undefined : deployEnv;
   const withBuildContext = <T>(fn: () => Promise<T>): Promise<T> =>
-    withCloudflareEnv(deployEnv, () => (isPreview ? withCloudflarePreviewBuild(fn) : fn()));
+    withCloudflareEnv(cloudflareEnv, () => (isPreview ? withCloudflarePreviewBuild(fn) : fn()));
 
   console.log(
     isPreview ? "\n  vinext-cloudflare previews deploy\n" : "\n  vinext-cloudflare deploy\n",
@@ -2337,7 +2339,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   // Step 5: Build
   if (!options.skipBuild) {
-    await withBuildContext(() => runBuild(info, deployEnv, viteMode));
+    await withBuildContext(() => runBuild(info, cloudflareEnv, viteMode));
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
