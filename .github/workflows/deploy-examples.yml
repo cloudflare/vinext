@@ -130,7 +130,6 @@ jobs:
     # Skip entirely for fork and Dependabot PRs — they don't have access to deploy secrets.
     if: github.event_name == 'push' || (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
     name: Deploy ${{ matrix.example.name }}
-    needs: response_store
     runs-on: ubuntu-latest
     permissions:
       contents: read
