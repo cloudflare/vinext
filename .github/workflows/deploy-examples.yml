@@ -194,6 +194,8 @@ jobs:
           - name: static-assets-cache
             project: static-assets-cache
             working_directory: examples/static-assets-cache
+            # PRs deploy a native Worker Preview with `vinext-cloudflare previews deploy`.
+            worker_preview: true
           - name: static-assets-pages
             project: static-assets-pages
             working_directory: examples/static-assets-pages
@@ -258,7 +260,8 @@ jobs:
         run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
 
       - name: Build example
-        if: matrix.example.static_export != true
+        # `previews deploy` builds the Preview Build Output itself.
+        if: matrix.example.static_export != true && !(github.event_name == 'pull_request' && matrix.example.worker_preview)
         run: |
           if [[ -f cloudflare.config.ts ]]; then
             vp run build
@@ -373,12 +376,23 @@ jobs:
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
       - name: Deploy Build Output Preview Version with cf
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != '' && !matrix.example.worker_preview
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: vp exec cf workers versions create --prebuilt --mode production --preview-alias pr-${{ github.event.pull_request.number }}
+
+      # The Worker Preview serves at the same pr-<number>-<worker> workers.dev hostname
+      # as a preview alias, so the smoke test and deployed E2E target it unchanged.
+      - name: Deploy Worker Preview with vinext-cloudflare
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_preview
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+        run: vp exec vinext-cloudflare previews deploy "$PREVIEW_NAME"
 
       - name: Deploy Named Preview Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == '' && matrix.example.worker_name
