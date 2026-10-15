@@ -428,7 +428,10 @@ describe("cloudflare dev module URLs plugin", () => {
         "/project/a.png": [
           {
             importers: [
-              { url: "/app/a.ts", transformResult: { code: '"/assets/a.png" "/a.pngx"' } },
+              {
+                url: "/app/a.ts",
+                transformResult: { code: `new URL("/assets/a.png", '' + import.meta.url)` },
+              },
               { url: "/app/a.css", transformResult: { code: "url(/assets/a.png) url(/a.pngx)" } },
               { url: "/app/b.ts", transformResult: null },
             ],
@@ -439,7 +442,8 @@ describe("cloudflare dev module URLs plugin", () => {
         "/project/route.svg": [
           assetModule('export default "/route.svg"', "/route.svg?raw"),
           assetModule('export default "/route.svg"', "/route.svg?import&inline"),
-          importedBy("/app/icon.ts", 'import icon from "/route.svg?raw";'),
+          // A string literal that isn't Vite's `new URL()` output
+          importedBy("/app/icon.ts", 'import icon from "/route.svg?raw"; fetch("/route.svg");'),
         ],
         // A URL character, not a delimiter, and a function other than `url()`
         "/project/data.json": [

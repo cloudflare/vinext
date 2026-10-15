@@ -206,7 +206,7 @@ function isPublicFileLoadError(error: unknown): boolean {
  *   imports count: other modules, such as JSON or `?raw` and `?inline`
  *   imports, export the file's contents, which could look like a URL.
  * - A JS module that uses `new URL("./logo.svg", import.meta.url)`, which Vite
- *   rewrites to the URL as a string literal.
+ *   rewrites to `new URL("<url>", '' + import.meta.url)`.
  * - A stylesheet whose `url()` or `image-set()` Vite resolved.
  *
  * The importers of the asset's file in the module graph cover the last two.
@@ -262,7 +262,7 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
         const code = importer.transformResult?.code;
         if (!code) continue;
         const css = isCSSRequest(importer.url);
-        if (urls.some((u) => (css ? containsCssUrl(code, u) : code.includes(`"${u}"`)))) {
+        if (urls.some((u) => (css ? containsCssUrl(code, u) : code.includes(`new URL("${u}", `)))) {
           return true;
         }
       }
