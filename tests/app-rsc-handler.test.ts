@@ -4138,6 +4138,37 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it("lets a Pages route claim an out-of-basePath progressive POST before fallback rewrites", async () => {
+    const handleProgressiveActionRequest = vi.fn(async () => new Response("progressive-action"));
+    const renderPagesFallback = vi.fn<NonNullable<HandlerOptions["renderPagesFallback"]>>(
+      async (options) =>
+        (options.pathname ?? options.url.pathname) === "/api/upload"
+          ? new Response("pages-api")
+          : null,
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/outside", destination: "/api/upload", basePath: false }],
+        fallback: [{ source: "/api/upload", destination: "/about", basePath: false }],
+      },
+      handleProgressiveActionRequest,
+      renderPagesFallback,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/outside", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(await response.text()).toBe("pages-api");
+    expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+  });
+
   it.each(["afterFiles", "fallback"] as const)(
     "validates out-of-basePath RSC requests claimed by %s rewrites",
     async (phase) => {
@@ -7335,7 +7366,10 @@ describe("createAppRscHandler", () => {
         routeSegments: ["api", "[slug]"],
       });
       const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
-        async ({ request }) => new Response(String((await request.formData()).get("message"))),
+        async ({ request }) => {
+          const message = (await request.formData()).get("message");
+          return new Response(typeof message === "string" ? message : null);
+        },
       );
       const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
         dispatchMatchedRouteHandler,
@@ -7504,15 +7538,14 @@ describe("createAppRscHandler", () => {
       expect(observedRootParams).toEqual({ lang: "en" });
     });
 
-    it("renders a failed action on the page an afterFiles rewrite reaches", async () => {
-      const actionError = new Error("action failed");
-      const { dispatchMatchedPage, handler } = createProgressiveHandler({
-        configRewrites: {
-          afterFiles: [{ source: "/about-alias", destination: "/about" }],
-          beforeFiles: [],
-          fallback: [],
-        },
-        handleProgressiveActionRequest: async () => ({
+    it.each(["afterFiles", "fallback"] as const)(
+      "renders a failed action on the page that %s rewrites reach",
+      async (phase) => {
+        const actionError = new Error("action failed");
+        const rewrite = { source: "/about-alias", destination: "/about" };
+        const handleProgressiveActionRequest = vi.fn<
+          NonNullable<TestHandlerOptions["handleProgressiveActionRequest"]>
+        >(async () => ({
           actionError,
           actionFailed: true,
           draftCookie: null,
@@ -7520,23 +7553,37 @@ describe("createAppRscHandler", () => {
           kind: "form-state",
           pendingCookies: [],
           revalidationKind: 0,
-        }),
-        matchRoute: (pathname) =>
-          pathname === "/about" ? { params: emptyParams, route: aboutPage } : null,
-      });
+        }));
+        const { dispatchMatchedPage, handler } = createProgressiveHandler({
+          configRewrites: {
+            afterFiles: phase === "afterFiles" ? [rewrite] : [],
+            beforeFiles: [],
+            fallback: phase === "fallback" ? [rewrite] : [],
+          },
+          handleProgressiveActionRequest,
+          matchRoute: (pathname) =>
+            pathname === "/about" ? { params: emptyParams, route: aboutPage } : null,
+        });
 
-      await handler(multipartPost("/about-alias"), null);
+        await handler(multipartPost("/about-alias"), null);
 
-      expect(dispatchMatchedPage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          actionError,
-          actionFailed: true,
-          formState: null,
-          isProgressiveActionRender: true,
-          middlewareContext: expect.objectContaining({ status: 500 }),
-        }),
-      );
-    });
+        expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cleanPathname: "/about",
+            routeMatch: { params: emptyParams, route: aboutPage },
+          }),
+        );
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            actionError,
+            actionFailed: true,
+            formState: null,
+            isProgressiveActionRender: true,
+            middlewareContext: expect.objectContaining({ status: 500 }),
+          }),
+        );
+      },
+    );
 
     it("still runs them for an unmatched route", async () => {
       const { handleProgressiveActionRequest, handler } = createProgressiveHandler({

@@ -1619,7 +1619,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isProgressiveActionRequest =
     isPostRequest && !actionId && contentType.startsWith("multipart/form-data");
   let resolvedLateRewritesForAction = false;
-  if (!filesystemRouteEligible && (actionId || isProgressiveActionRequest)) {
+  // Progressive actions (no action id) wait for the final route, so they take
+  // the normal late-rewrite loops below, where Pages routes can claim them.
+  if (!filesystemRouteEligible && actionId) {
     let actionMatch: ReturnType<typeof options.matchRoute> = null;
     for (const rewrite of options.configRewrites.afterFiles) {
       const rewritten = await applyRewrite(
@@ -1779,8 +1781,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // The route is matched against the current cleanPathname here. Ordinary
   // requests may still be rewritten by the afterFiles / fallback loops below,
   // where the second `setRootParams` call replaces this value before rendering.
-  // Out-of-basePath Server Actions resolve those late rewrites above so this
-  // match already uses their claimed destination.
+  // Out-of-basePath Server Actions with an action id resolve those late
+  // rewrites above so this match already uses their claimed destination.
   // Interception-only RSC targets promote their source route at this same
   // boundary so Server Action rerenders receive the same route and params as
   // the subsequent page dispatch. Document requests remain direct-route-only.
