@@ -2180,25 +2180,26 @@ export default nextConfig;
     expect(result.installedDeps).toContain("@tailwindcss/postcss");
   });
 
-  it.each(["postcss: { plugins: [] }", 'transformer: "lightningcss"'])(
-    "does not write a config file that Vite css { %s } would ignore",
-    async (css) => {
-      setupTailwindLoaderProject("@tailwindcss/turbopack");
-      const viteConfig = `import vinext from "vinext";\nexport default { plugins: [vinext()], css: { ${css} } };\n`;
-      writeFile(tmpDir, "vite.config.ts", viteConfig);
-
-      const { result, output } = await runInit(tmpDir, { platform: "node" });
-
-      expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(false);
-      expect(readFile(tmpDir, "vite.config.ts")).toBe(viteConfig);
-      expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
-      expect(output).toContain(TAILWIND_HINT);
-    },
-  );
-
-  it("ignores a null package.json postcss field and blank config files, as Vite does", async () => {
+  it.each([
+    "postcss: { plugins: [] }",
+    'transformer: "lightningcss"',
+    'transformer: "lightningcss", postcss: { plugins: ["@tailwindcss/postcss"] }',
+  ])("does not write a config file that Vite css { %s } would ignore", async (css) => {
     setupTailwindLoaderProject("@tailwindcss/turbopack");
-    writeFile(tmpDir, "package.json", JSON.stringify({ ...readPkg(tmpDir), postcss: null }));
+    const viteConfig = `import vinext from "vinext";\nexport default { plugins: [vinext()], css: { ${css} } };\n`;
+    writeFile(tmpDir, "vite.config.ts", viteConfig);
+
+    const { result, output } = await runInit(tmpDir, { platform: "node" });
+
+    expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(false);
+    expect(readFile(tmpDir, "vite.config.ts")).toBe(viteConfig);
+    expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+    expect(output).toContain(TAILWIND_HINT);
+  });
+
+  it("ignores a falsy package.json postcss field and blank config files, as Vite does", async () => {
+    setupTailwindLoaderProject("@tailwindcss/turbopack");
+    writeFile(tmpDir, "package.json", JSON.stringify({ ...readPkg(tmpDir), postcss: false }));
     writeFile(tmpDir, ".postcssrc.json", "  \n");
 
     const { result } = await runInit(tmpDir, { platform: "node" });

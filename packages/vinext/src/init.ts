@@ -252,7 +252,8 @@ const POSTCSS_CONFIG_SEARCH_ORDER = [
 function readPostcssConfig(root: string): string | undefined {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
-    if (pkg.postcss != null) return JSON.stringify(pkg.postcss);
+    // Like the loader, skip falsy values.
+    if (pkg.postcss) return JSON.stringify(pkg.postcss);
   } catch {
     // An unreadable package.json has no PostCSS config.
   }
@@ -293,6 +294,8 @@ function getTailwindPostcssSetup(root: string, viteConfigPath?: string): Tailwin
     ? viteConfig
     : readPostcssConfig(root);
   if (config === undefined) return "generate";
+  // Lightning CSS replaces PostCSS whatever the PostCSS options say.
+  if (/lightningcss/.test(config) && !config.includes("@tailwindcss/vite")) return "manual";
   if (config.includes("@tailwindcss/postcss")) return "install";
   return config.includes("tailwindcss") ? "none" : "manual";
 }
