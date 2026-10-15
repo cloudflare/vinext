@@ -5,9 +5,16 @@
  *
  * See https://github.com/cloudflare/vinext/issues/4005.
  */
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
-import type { Connect, ViteDevServer } from "vite";
-import { createCloudflareDevModuleUrlsPlugin } from "../packages/vinext/src/plugins/cloudflare-dev-module-urls.js";
+import { createServer, type Connect, type ViteDevServer } from "vite";
+import {
+  createCloudflareDevModuleUrlsPlugin,
+  VITE_MODULE_MIDDLEWARE_NAMES,
+  VITE_STATIC_MIDDLEWARE_NAME,
+} from "../packages/vinext/src/plugins/cloudflare-dev-module-urls.js";
 
 /** A middleware as Vite registers it; some of Vite's middlewares are async. */
 type ViteMiddleware = (
@@ -644,5 +651,34 @@ describe("cloudflare dev module URLs plugin", () => {
   it("falls through when Vite's middlewares are not found", async () => {
     const { run } = setup({ enabled: true, viteMiddlewares: [] });
     expect(await run()).toEqual({ args: [], url: "/@vite/client" });
+  });
+});
+
+describe("Vite's internal dev middlewares", () => {
+  // The plugin finds Vite's middlewares by function name and falls through
+  // silently if Vite renames them, so check the names against a real server.
+  it("registers every middleware the plugin looks for", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dev-module-urls-"));
+    const server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      // viteBaseMiddleware is only registered with a non-root base.
+      base: "/docs/",
+      appType: "custom",
+      optimizeDeps: { noDiscovery: true },
+      server: { middlewareMode: true, ws: false },
+    });
+    try {
+      const names = server.middlewares.stack.map((layer) =>
+        typeof layer.handle === "function" ? layer.handle.name : undefined,
+      );
+      expect(names).toEqual(
+        expect.arrayContaining([...VITE_MODULE_MIDDLEWARE_NAMES, VITE_STATIC_MIDDLEWARE_NAME]),
+      );
+    } finally {
+      await server.close();
+      await fsp.rm(root, { recursive: true, force: true });
+    }
   });
 });

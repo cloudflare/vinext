@@ -36,7 +36,7 @@ import { isCSSRequest, type Connect, type Plugin, type ViteDevServer } from "vit
  * transform middleware reports a public `.js` or `.css` file as an
  * `ERR_LOAD_PUBLIC_URL` error, which is treated as a fall-through.
  */
-const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
+export const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
   "viteBaseMiddleware",
   "viteHMRPingMiddleware",
   "viteTransformMiddleware",
@@ -54,7 +54,7 @@ const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
  * are served too: in production its URL is under `/_next/static/`, which never
  * reaches the Worker.
  */
-const VITE_STATIC_MIDDLEWARE_NAME = "viteServeStaticMiddleware";
+export const VITE_STATIC_MIDDLEWARE_NAME = "viteServeStaticMiddleware";
 
 /**
  * The Cloudflare plugin's middleware that sends requests matching
