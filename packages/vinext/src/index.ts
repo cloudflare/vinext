@@ -227,7 +227,10 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
-import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import {
+  createDynamicPreloadChunksReferencePlugin,
+  createRscClientReferenceLoadersPlugin,
+} from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
 import { createScanBuildCssPlugin } from "./plugins/scan-build-css.js";
 import {
@@ -1367,6 +1370,7 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
 const _serverDir = path.resolve(__dirname, "server");
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
+const _dynamicPreloadChunksShimPath = resolveShimModulePath(_shimsDir, "dynamic-preload-chunks");
 const _appBrowserServerActionClientPath = resolveShimModulePath(
   _serverDir,
   "app-browser-server-action-client",
@@ -8658,6 +8662,15 @@ export const loadServerActionClient = ${
   } else if (manualUseCachePluginPromise) {
     plugins.push(cacheFlightCodecPlugin(), manualUseCachePluginPromise);
   }
+  // The SSR entry imports the key whichever plugin supplies the
+  // client-references module, so this runs with `rsc: false` as well.
+  plugins.push(
+    createDynamicPreloadChunksReferencePlugin({
+      dynamicPreloadChunksShimId: toSlash(
+        tryRealpathSync(_dynamicPreloadChunksShimPath) ?? _dynamicPreloadChunksShimPath,
+      ),
+    }),
+  );
   plugins.push({
     name: "vinext:plain-pages-build-config",
     apply: "build",

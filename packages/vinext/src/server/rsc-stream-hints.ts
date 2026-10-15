@@ -68,7 +68,7 @@ function normalizeReactFlightHintLine(line: Uint8Array): Uint8Array {
   return normalizedBytes.byteLength === line.byteLength ? normalizedBytes : line;
 }
 
-function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
+export function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
   if (first.byteLength === 0) return second;
   const combined = new Uint8Array(first.byteLength + second.byteLength);
   combined.set(first);
@@ -78,7 +78,7 @@ function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
 
 // A plain loop is intentional: V8's Uint8Array.prototype.indexOf measured
 // ~2.7x slower than this JIT-compiled loop for short Flight row scans.
-function indexOfByte(bytes: Uint8Array, byte: number, from: number): number {
+export function indexOfByte(bytes: Uint8Array, byte: number, from: number): number {
   for (let index = from; index < bytes.byteLength; index++) {
     if (bytes[index] === byte) return index;
   }
@@ -101,7 +101,7 @@ function utf8CompleteEnd(bytes: Uint8Array, from: number): number {
   return length;
 }
 
-function parseHexBytes(bytes: Uint8Array, start: number, end: number): number | null {
+export function parseHexBytes(bytes: Uint8Array, start: number, end: number): number | null {
   if (start === end) return null;
 
   let value = 0;
@@ -115,7 +115,7 @@ function parseHexBytes(bytes: Uint8Array, start: number, end: number): number | 
   return value;
 }
 
-function isUntaggedJsonRowStart(byte: number): boolean {
+export function isUntaggedJsonRowStart(byte: number): boolean {
   return (
     byte === 34 || // "
     byte === 45 || // -
@@ -128,9 +128,9 @@ function isUntaggedJsonRowStart(byte: number): boolean {
   );
 }
 
-const COLON_BYTE = 58;
-const COMMA_BYTE = 44;
-const NEWLINE_BYTE = 10;
+export const COLON_BYTE = 58;
+export const COMMA_BYTE = 44;
+export const NEWLINE_BYTE = 10;
 const HINT_TAG_BYTE = 72; // H
 const LINK_HINT_CODE_BYTE = 76; // L
 
@@ -146,6 +146,14 @@ const NEWLINE_PREFIXED_ROW_TAG_TABLE = createAsciiTagTable(NEWLINE_PREFIXED_ROW_
 
 function isTagInTable(table: Uint8Array, byte: number): boolean {
   return byte < 128 && table[byte] === 1;
+}
+
+export function isLengthPrefixedRowTag(byte: number): boolean {
+  return isTagInTable(LENGTH_PREFIXED_ROW_TAG_TABLE, byte);
+}
+
+export function isNewlineFramedRowTag(byte: number): boolean {
+  return isTagInTable(NEWLINE_PREFIXED_ROW_TAG_TABLE, byte);
 }
 
 /**

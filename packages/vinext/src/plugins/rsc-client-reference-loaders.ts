@@ -1,14 +1,32 @@
-import type { Plugin } from "vite";
+import type { Plugin, ResolvedConfig } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
+import { toSlash } from "pathslash";
+import { tryRealpathSync } from "../build/ssr-manifest.js";
 
 const CLIENT_REFERENCES_ID = "\0virtual:vite-rsc/client-references";
 const RESOLVED_ID_PROXY_PREFIX = "virtual:vite-rsc/resolved-id/";
 
 type RscClientReferenceMeta = PluginApi["manager"]["clientReferenceMetaMap"][string];
 
+type DynamicPreloadChunksReferenceOptions = {
+  /** vinext's preload-hint shim (shims/dynamic-preload-chunks), as a canonical module id. */
+  dynamicPreloadChunksShimId: string;
+};
+
+// Rolldown keys modules by canonical path: realpath, forward slashes.
+function canonicalModuleId(id: string): string {
+  return toSlash(tryRealpathSync(id) ?? id);
+}
+
 type RscPluginWithApi = Plugin & {
   api?: PluginApi;
 };
+
+function findRscPluginApi(config: ResolvedConfig): PluginApi | undefined {
+  return (
+    config.plugins.find((plugin) => plugin.name === "rsc:minimal") as RscPluginWithApi | undefined
+  )?.api;
+}
 
 function withResolvedIdProxy(resolvedId: string): string {
   return resolvedId.startsWith("\0")
@@ -26,6 +44,19 @@ function generateClientReferenceObject(meta: RscClientReferenceMeta): string {
     .join("\n");
 
   return exports ? `{\n${exports}\n    }` : "{}";
+}
+
+/**
+ * Reference key of vinext's preload-hint shim, which the SSR entry loads before
+ * React can reach a next/dynamic boundary. Matched by module id, so a user
+ * module at another `shims/dynamic-preload-chunks` path is never picked.
+ */
+export function selectDynamicPreloadChunksReferenceKey(
+  metaEntries: readonly (readonly [string, { referenceKey: string }])[],
+  dynamicPreloadChunksShimId: string,
+): string | undefined {
+  return metaEntries.find(([id]) => canonicalModuleId(id) === dynamicPreloadChunksShimId)?.[1]
+    .referenceKey;
 }
 
 function generateDirectClientReferenceLoaders(metas: RscClientReferenceMeta[]): string {
@@ -53,11 +84,7 @@ export function createRscClientReferenceLoadersPlugin(): Plugin {
     name: "vinext:rsc-client-reference-loaders",
     enforce: "post",
     configResolved(config) {
-      rscApi = (
-        config.plugins.find((plugin) => plugin.name === "rsc:minimal") as
-          | RscPluginWithApi
-          | undefined
-      )?.api;
+      rscApi = findRscPluginApi(config);
     },
     transform(_code, id) {
       if (id !== CLIENT_REFERENCES_ID) return null;
@@ -85,6 +112,40 @@ export function createRscClientReferenceLoadersPlugin(): Plugin {
 
       return {
         code: generateDirectClientReferenceLoaders(metas),
+        map: null,
+      };
+    },
+  };
+}
+
+/**
+ * Add the reference key of vinext's preload-hint shim to the client-references
+ * module, `undefined` when the build has none, so the SSR entry can import it
+ * in every configuration: with the loaders above, with plugin-rsc's own module
+ * (`rsc: false` and a user-supplied plugin), and in a scan build.
+ */
+export function createDynamicPreloadChunksReferencePlugin(
+  options: DynamicPreloadChunksReferenceOptions,
+): Plugin {
+  let rscApi: PluginApi | undefined;
+
+  return {
+    name: "vinext:dynamic-preload-chunks-reference",
+    // Runs after the loaders plugin, which replaces the module's code.
+    enforce: "post",
+    configResolved(config) {
+      rscApi = findRscPluginApi(config);
+    },
+    transform(code, id) {
+      if (id !== CLIENT_REFERENCES_ID) return null;
+
+      const manager = rscApi?.manager;
+      const key = selectDynamicPreloadChunksReferenceKey(
+        manager && !manager.isScanBuild ? Object.entries(manager.clientReferenceMetaMap) : [],
+        options.dynamicPreloadChunksShimId,
+      );
+      return {
+        code: `${code}\nexport const dynamicPreloadChunksReferenceKey = ${key === undefined ? "undefined" : JSON.stringify(key)};\n`,
         map: null,
       };
     },

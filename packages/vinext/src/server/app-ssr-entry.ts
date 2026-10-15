@@ -8,7 +8,9 @@ import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
-import clientReferences from "virtual:vite-rsc/client-references";
+import clientReferences, {
+  dynamicPreloadChunksReferenceKey,
+} from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
   ServerInsertedHTMLContext,
@@ -58,7 +60,10 @@ import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
 import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
-import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
+import {
+  createClientReferencePreloader,
+  loadClientReferencesAheadOfReact,
+} from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
@@ -463,7 +468,13 @@ export async function handleSsr(
       ),
     };
 
-    await clientReferencePreloader.preload();
+    // A fallback shell aborts its prerender on the next tick, before a client
+    // module that is still loading could resolve, so it loads every client
+    // reference first. Any other render loads the references its Flight
+    // stream names, as they arrive (see loadClientReferencesAheadOfReact).
+    if (options?.pprFallbackShellSignal !== undefined) {
+      await clientReferencePreloader.preload();
+    }
 
     setNavigationContext(ssrNavigationContext);
 
@@ -502,6 +513,14 @@ export async function handleSsr(
             scriptNonce: options?.scriptNonce,
             getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
           });
+        }
+
+        if (options?.pprFallbackShellSignal === undefined) {
+          ssrStream = loadClientReferencesAheadOfReact(
+            ssrStream,
+            (referenceIds) => clientReferencePreloader.preload(referenceIds),
+            dynamicPreloadChunksReferenceKey,
+          );
         }
 
         if (searchParamsGate) {
