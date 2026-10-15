@@ -2140,7 +2140,10 @@ export default nextConfig;
     const kept = file === "postcss.config.js" ? "postcss.config.cjs" : file;
     expect(readFile(tmpDir, kept)).toBe(content);
     expect(fs.readdirSync(tmpDir).filter((name) => /postcss/.test(name))).toEqual([kept]);
-    expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+    // A config that uses @tailwindcss/postcss gets the package it imports.
+    expect(result.installedDeps.includes("@tailwindcss/postcss")).toBe(
+      content.includes("@tailwindcss/postcss"),
+    );
     // A config without Tailwind gets a hint instead of an edit.
     expect(output.includes("add it to your PostCSS config")).toBe(!content.includes("tailwindcss"));
   });
@@ -2204,6 +2207,31 @@ export default nextConfig;
     expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(false);
     expect(readPkg(tmpDir).postcss).toEqual({ plugins: { autoprefixer: {} } });
     expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+  });
+
+  it("judges the PostCSS config Vite loads first when there are several", async () => {
+    setupTailwindLoaderProject("@tailwindcss/turbopack");
+    const pkg = readPkg(tmpDir);
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ ...pkg, postcss: { plugins: { autoprefixer: {} } } }),
+    );
+    writeFile(tmpDir, ".postcssrc.json", '{ "plugins": { "autoprefixer": {} } }\n');
+    const tailwindConfig = 'export default { plugins: { "@tailwindcss/postcss": {} } };\n';
+    writeFile(tmpDir, "postcss.config.mjs", tailwindConfig);
+
+    // package.json wins, then .postcssrc*, then postcss.config.*.
+    const first = await runInit(tmpDir, { platform: "node" });
+    expect(first.output).toContain(
+      'install "@tailwindcss/postcss" and add it to your PostCSS config',
+    );
+    expect(first.result.installedDeps).not.toContain("@tailwindcss/postcss");
+
+    writeFile(tmpDir, "package.json", JSON.stringify(pkg));
+    const second = await runInit(tmpDir, { platform: "node" });
+    expect(second.output).toContain("add it to your PostCSS config");
+    expect(readFile(tmpDir, "postcss.config.mjs")).toBe(tailwindConfig);
   });
 
   it("skips projects whose Vite config already sets up Tailwind", async () => {

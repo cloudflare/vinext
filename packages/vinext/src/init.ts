@@ -40,7 +40,6 @@ import {
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
-import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
 
@@ -228,18 +227,40 @@ function usesTailwindTurbopackLoader(root: string): boolean {
   return TAILWIND_LOADERS.some((loader) => isDepInstalled(root, loader));
 }
 
-/** The project's own PostCSS config, which init never replaces. */
+// postcss-load-config's search order, as Vite uses it; package.json counts
+// only when it has a `postcss` field.
+const POSTCSS_CONFIG_SEARCH_ORDER = [
+  ".postcssrc",
+  ".postcssrc.json",
+  ".postcssrc.yaml",
+  ".postcssrc.yml",
+  ".postcssrc.ts",
+  ".postcssrc.cts",
+  ".postcssrc.mts",
+  ".postcssrc.js",
+  ".postcssrc.cjs",
+  ".postcssrc.mjs",
+  "postcss.config.ts",
+  "postcss.config.cts",
+  "postcss.config.mts",
+  "postcss.config.js",
+  "postcss.config.cjs",
+  "postcss.config.mjs",
+];
+
+/** The source of the PostCSS config Vite would load, which init never replaces. */
 function readPostcssConfig(root: string): string | undefined {
-  for (const file of POSTCSS_CONFIG_FILES) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
+    if (pkg.postcss !== undefined) return JSON.stringify(pkg.postcss);
+  } catch {
+    // An unreadable package.json has no PostCSS config.
+  }
+  for (const file of POSTCSS_CONFIG_SEARCH_ORDER) {
     const configPath = path.join(root, file);
     if (fs.existsSync(configPath)) return fs.readFileSync(configPath, "utf-8");
   }
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
-    return pkg.postcss === undefined ? undefined : JSON.stringify(pkg.postcss);
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 /**
@@ -248,11 +269,11 @@ function readPostcssConfig(root: string): string | undefined {
  * compiled, so adding the PostCSS config leaves Next's output unchanged.
  *
  * - `generate`: write `postcss.config.mjs` and install `@tailwindcss/postcss`.
- * - `install`: the config init generated is already there (e.g. an earlier
- *   run whose install failed), so only the package is needed.
- * - `manual`: an existing PostCSS config, or an inline `css.postcss` in the
- *   Vite config (which makes Vite ignore config files), does not mention
- *   Tailwind. Init leaves it alone and asks the user to add the plugin.
+ * - `install`: the config already uses `@tailwindcss/postcss` (for example
+ *   the one an earlier run generated before its install failed), so only the
+ *   package may be missing.
+ * - `manual`: the config in effect does not mention Tailwind. Init leaves it
+ *   alone and asks the user to add the plugin.
  * - `none`: no Turbopack loader, or Tailwind is already handled.
  *
  * Pass `viteConfigPath` only when init keeps that Vite config.
@@ -261,16 +282,13 @@ type TailwindPostcssSetup = "generate" | "install" | "manual" | "none";
 
 function getTailwindPostcssSetup(root: string, viteConfigPath?: string): TailwindPostcssSetup {
   if (!usesTailwindTurbopackLoader(root)) return "none";
-  const postcssConfig = readPostcssConfig(root);
-  if (postcssConfig === TAILWIND_POSTCSS_CONFIG) return "install";
   const viteConfig = viteConfigPath ? fs.readFileSync(viteConfigPath, "utf-8") : "";
-  // A Vite config that mentions Tailwind (e.g. `@tailwindcss/vite`) handles it there.
-  if (viteConfig.includes("tailwindcss")) return "none";
-  const existing = [postcssConfig, viteConfig.includes("postcss") ? viteConfig : undefined].filter(
-    (source) => source !== undefined,
-  );
-  if (existing.length === 0) return "generate";
-  return existing.some((source) => source.includes("tailwindcss")) ? "none" : "manual";
+  // Vite ignores PostCSS config files when its config sets `css.postcss`, and a
+  // Vite config that mentions Tailwind (e.g. `@tailwindcss/vite`) handles it there.
+  const config = /postcss|tailwindcss/.test(viteConfig) ? viteConfig : readPostcssConfig(root);
+  if (config === undefined) return "generate";
+  if (config.includes("@tailwindcss/postcss")) return "install";
+  return config.includes("tailwindcss") ? "none" : "manual";
 }
 
 // ─── Script Addition ─────────────────────────────────────────────────────────
