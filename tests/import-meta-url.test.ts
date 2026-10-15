@@ -237,6 +237,7 @@ describe("vinext:import-meta-url plugin", () => {
     // file:///ROOT URL can't be fetched by the browser.
     const result = rewriteImportMetaUrl(
       [
+        `import * as RefreshRuntime from "/@react-refresh";`,
         `export const url = import.meta.url;`,
         `if (import.meta.hot) {`,
         `  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {});`,
@@ -252,6 +253,19 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`RefreshRuntime.__hmr_import(import.meta.url)`);
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
     expect(result?.code).toContain(`other.__hmr_import("file:///ROOT/pages/index.tsx")`);
+  });
+
+  it("rewrites RefreshRuntime.__hmr_import calls when RefreshRuntime is not the React Refresh runtime", () => {
+    const result = rewriteImportMetaUrl(
+      [`const RefreshRuntime = runtime;`, `RefreshRuntime.__hmr_import(import.meta.url);`, ``].join(
+        "\n",
+      ),
+      pagePath,
+      linkedRoot,
+      "client",
+    );
+
+    expect(result?.code).toContain(`RefreshRuntime.__hmr_import("file:///ROOT/pages/index.tsx")`);
   });
 
   it("rewrites optional chained import.meta.url reads", () => {

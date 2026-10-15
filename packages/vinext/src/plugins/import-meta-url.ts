@@ -725,6 +725,7 @@ function importMetaUrlValue(
 
 function collectImportMetaUrlRanges(ast: ESTree.Program): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
+  const hasRefreshRuntimeImport = hasReactRefreshRuntimeImport(ast);
 
   function visit(value: ESTree.Node): void {
     if (isImportMetaUrlNode(value)) {
@@ -748,7 +749,7 @@ function collectImportMetaUrlRanges(ast: ESTree.Program): Array<{ start: number;
       return;
     }
 
-    if (isHmrImportCall(value)) {
+    if (hasRefreshRuntimeImport && isHmrImportCall(value)) {
       // React Refresh's dev footer re-imports the module by its own URL. The
       // browser must fetch the real module URL, not the file:///ROOT identity.
       const [first, ...rest] = value.arguments;
@@ -1039,10 +1040,26 @@ function isNewUrlExpression(value: ESTree.Node): value is ESTree.NewExpression {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
 }
 
-// Matches `RefreshRuntime.__hmr_import(...)` from the JS React Refresh footer
-// (@vitejs/plugin-react 5 without the native wrapper, plugin-react-swc < 4.3).
-// The callee is `RefreshRuntime.__hmr_import`, so it can't hold an
-// import.meta.url read.
+// The JS React Refresh footer (@vitejs/plugin-react 5 without the native
+// wrapper, plugin-react-swc < 4.3) imports the runtime as
+// `import * as RefreshRuntime from "<host>/@react-refresh"`. A module-scope
+// import is the only `RefreshRuntime` binding the footer's call can see.
+function hasReactRefreshRuntimeImport(ast: ESTree.Program): boolean {
+  return ast.body.some(
+    (statement) =>
+      statement.type === "ImportDeclaration" &&
+      typeof statement.source.value === "string" &&
+      statement.source.value.endsWith("/@react-refresh") &&
+      statement.specifiers.some(
+        (specifier) =>
+          specifier.type === "ImportNamespaceSpecifier" &&
+          specifier.local.name === "RefreshRuntime",
+      ),
+  );
+}
+
+// Matches the footer's `RefreshRuntime.__hmr_import(...)` call. The callee is
+// `RefreshRuntime.__hmr_import`, so it can't hold an import.meta.url read.
 function isHmrImportCall(value: ESTree.Node): value is ESTree.CallExpression & {
   arguments: [ESTree.Node, ...ESTree.Node[]];
 } {
