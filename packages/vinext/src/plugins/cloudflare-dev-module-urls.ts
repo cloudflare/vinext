@@ -229,15 +229,19 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
     return false;
   }
   // Server environments import the asset without the base, and the client
-  // environment with it, prefixed with `server.origin` when it's set. JS has
-  // the URL encoded, and CSS may not.
+  // environment with the decoded base, prefixed with `server.origin` when it's
+  // set. JS has the URL encoded, and CSS may not.
   const base = server.config.base;
+  let decodedBase = base;
+  try {
+    decodedBase = decodeURI(base);
+  } catch {}
   const origin = server.config.server.origin?.replace(/\/+$/, "");
   const urls = [
     ...new Set(
       [pathname, decodedPathname].flatMap((p) => {
-        const underBase = base + p.slice(1);
-        return origin ? [p, underBase, origin + underBase] : [p, underBase];
+        const underBase = [base, decodedBase].map((b) => b + p.slice(1));
+        return [p, ...underBase, ...(origin ? underBase.map((u) => origin + u) : [])];
       }),
     ),
   ];

@@ -581,6 +581,37 @@ describe("cloudflare dev module URLs plugin", () => {
     expect(calls).toEqual(["viteTransformMiddleware /sw.js", "viteTransformMiddleware /theme.css"]);
   });
 
+  it("serves an asset under an encoded base", () => {
+    const calls: string[] = [];
+    const { pluginMiddlewares } = setup({
+      enabled: true,
+      base: "/caf%C3%A9/",
+      viteMiddlewares: [
+        baseMiddleware("/caf%C3%A9/", calls),
+        named("viteServeStaticMiddleware", (req) => {
+          calls.push(`viteServeStaticMiddleware ${req.url}`);
+        }),
+      ],
+      // Vite writes asset URLs with the decoded base
+      modulesByFile: {
+        "/project/app/logo.svg": [assetModule('export default "/café/app/logo.svg"')],
+      },
+    });
+
+    pluginMiddlewares[0]?.(
+      { url: "/caf%C3%A9/app/logo.svg", method: "GET" } as Connect.IncomingMessage,
+      {},
+      () => {
+        throw new Error("expected the static middleware to handle the request");
+      },
+    );
+
+    expect(calls).toEqual([
+      "viteBaseMiddleware /caf%C3%A9/app/logo.svg",
+      "viteServeStaticMiddleware /app/logo.svg",
+    ]);
+  });
+
   it("forwards errors passed to next", async () => {
     const error = new Error("transform failed");
     const { run } = setup({
