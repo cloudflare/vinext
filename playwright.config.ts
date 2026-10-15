@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, type Project } from "@playwright/test";
 
 const appRouterBrowserSpecificTests = "**/app-router/**/*.browser.spec.ts";
 const appRouterServer = {
@@ -48,10 +48,16 @@ function cloudflareNextIntlProject(useCase: string, port: number) {
  * When PLAYWRIGHT_PROJECT is set
  * (e.g. in CI matrix jobs), only that project and its server are configured,
  * so each CI runner only starts the one server it needs.
+ * Specs matched by isolatedTestMatch run in a separate `<name>-isolated`
+ * project after the rest of the project finishes, whether it passed or not.
  */
 const projectServers = {
   "pages-router": {
     testDir: "./tests/e2e/pages-router",
+    // Fast Refresh specs write syntax errors into fixture pages on the shared
+    // dev server. Vite broadcasts those errors and vinext sends full reloads to
+    // every open page, so they must not run alongside other specs.
+    isolatedTestMatch: ["**/pages-router/hmr.spec.ts"],
     use: { baseURL: "http://localhost:4173" },
     server: {
       command: "npx vp run vinext#build && npx vp dev --port 4173",
@@ -750,16 +756,31 @@ export default defineConfig({
     // Most projects use Chromium by default. Browser-specific projects override this.
     browserName: "chromium",
   },
-  projects: activeProjects.map((name) => {
+  projects: activeProjects.flatMap((name): Project[] => {
     const p = projectServers[name];
-    return {
+    const isolatedTestMatch = "isolatedTestMatch" in p ? p.isolatedTestMatch : [];
+    const testIgnore = [...("testIgnore" in p ? p.testIgnore : []), ...isolatedTestMatch];
+    const project = {
       name,
       testDir: p.testDir,
       ...("testMatch" in p ? { testMatch: p.testMatch } : {}),
-      ...("testIgnore" in p ? { testIgnore: p.testIgnore } : {}),
+      ...(testIgnore.length > 0 ? { testIgnore } : {}),
       ...("grep" in p ? { grep: p.grep } : {}),
       ...("use" in p ? { use: p.use } : {}),
     };
+    if (isolatedTestMatch.length === 0) return [project];
+    // A teardown project runs once its setup project and all of that project's
+    // dependents finish, even when they fail, unlike a dependent project.
+    const isolatedName = `${name}-isolated`;
+    return [
+      { ...project, teardown: isolatedName },
+      {
+        name: isolatedName,
+        testDir: p.testDir,
+        testMatch: isolatedTestMatch,
+        ...("use" in p ? { use: p.use } : {}),
+      },
+    ];
   }),
   webServer: [
     ...new Map(
