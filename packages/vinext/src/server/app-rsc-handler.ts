@@ -2180,62 +2180,68 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     options.clearRequestContext();
     return notFoundResponse();
   }
-  let progressiveActionResult: Response | ProgressiveActionFormStateResult | null = null;
-  if (
-    filesystemRouteEligible &&
-    isPostRequest &&
-    contentType.startsWith("multipart/form-data") &&
-    !actionId &&
-    // Next.js only handles Server Actions while rendering App pages. Route
-    // Handlers receive multipart POSTs untouched, without the action origin
-    // check or body size limit. Only a static match is final here: afterFiles
-    // rewrites can still move a dynamic one to an App page.
-    !(
-      renderedPreActionMatch &&
-      preActionMatch &&
-      !preActionMatch.route.isDynamic &&
-      isAppRouteHandlerRoute(renderedPreActionMatch.route)
-    )
-  ) {
-    if (options.handleProgressiveActionRequest) {
-      progressiveActionResult = await options.handleProgressiveActionRequest({
-        actionId,
-        cleanPathname,
-        contentType,
-        middlewareContext,
-        request,
-        routeMatch: renderedPreActionMatch,
-      });
-    } else if (preActionMatch?.route.__loadPage && !preActionMatch.route.__loadRouteHandler) {
-      return createMissingServerActionResponse(options, null);
+  // Next.js only handles Server Actions while rendering App pages. Route
+  // Handlers and Pages routes receive multipart POSTs untouched, without the
+  // action origin check or body size limit. A static App match is final here;
+  // otherwise afterFiles and fallback rewrites or Pages routes may still claim
+  // the request, so the action waits for the final route.
+  let progressiveActionHandled = false;
+  let progressiveActionFormState: ProgressiveActionFormStateResult | null = null;
+  let formState: ReactFormState | null = null;
+  let actionFailed = false;
+  let normalizedProgressiveActionError: unknown;
+  const handleProgressiveAction = async (
+    routeMatch: AppRscRouteMatch<TRoute> | null,
+    unrenderedRouteMatch: AppRscRouteMatch<TRoute> | null,
+  ): Promise<Response | null> => {
+    progressiveActionHandled = true;
+    if (!filesystemRouteEligible || !isProgressiveActionRequest) return null;
+    if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
+    if (!options.handleProgressiveActionRequest) {
+      return unrenderedRouteMatch?.route.__loadPage &&
+        !unrenderedRouteMatch.route.__loadRouteHandler
+        ? createMissingServerActionResponse(options, null)
+        : null;
     }
-  }
-  if (progressiveActionResult instanceof Response) return progressiveActionResult;
-  const progressiveActionFormState =
-    progressiveActionResult?.kind === "form-state" ? progressiveActionResult : null;
-  const isProgressiveActionRender = progressiveActionFormState !== null;
-  const formState = progressiveActionFormState?.formState ?? null;
-  const failedProgressiveActionResult =
-    progressiveActionFormState && "actionError" in progressiveActionFormState
-      ? progressiveActionFormState
+    const progressiveActionResult = await options.handleProgressiveActionRequest({
+      actionId,
+      cleanPathname,
+      contentType,
+      middlewareContext,
+      request,
+      routeMatch,
+    });
+    if (progressiveActionResult instanceof Response) return progressiveActionResult;
+    if (progressiveActionResult?.kind !== "form-state") return null;
+    progressiveActionFormState = progressiveActionResult;
+    formState = progressiveActionResult.formState;
+    if (!("actionError" in progressiveActionResult)) return null;
+    actionFailed = true;
+    const actionError = progressiveActionResult.actionError;
+    const actionErrorDigest =
+      actionError && typeof actionError === "object" && "digest" in actionError
+        ? String(actionError.digest)
+        : null;
+    const actionHttpFallbackStatus = actionErrorDigest
+      ? (parseNextHttpErrorDigest(actionErrorDigest)?.status ?? null)
       : null;
-  const actionFailed = failedProgressiveActionResult !== null;
-  const actionError = failedProgressiveActionResult?.actionError;
-  const actionErrorDigest =
-    actionError && typeof actionError === "object" && "digest" in actionError
-      ? String(actionError.digest)
-      : null;
-  const actionHttpFallbackStatus = actionErrorDigest
-    ? (parseNextHttpErrorDigest(actionErrorDigest)?.status ?? null)
-    : null;
-  const normalizedProgressiveActionError =
-    actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
-      ? actionError
-      : { digest: "NEXT_NOT_FOUND" };
-  // Other errors answer a plain 500 before the render, so this is an action
-  // that failed to find another Server Action.
-  if (actionFailed && middlewareContext.status === null && actionHttpFallbackStatus === null) {
-    middlewareContext.status = 500;
+    normalizedProgressiveActionError =
+      actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
+        ? actionError
+        : { digest: "NEXT_NOT_FOUND" };
+    // Other errors answer a plain 500 before the render, so this is an action
+    // that failed to find another Server Action.
+    if (middlewareContext.status === null && actionHttpFallbackStatus === null) {
+      middlewareContext.status = 500;
+    }
+    return null;
+  };
+  if (preActionMatch && (isInterceptionMatch || !preActionMatch.route.isDynamic)) {
+    const progressiveActionResponse = await handleProgressiveAction(
+      renderedPreActionMatch,
+      preActionMatch,
+    );
+    if (progressiveActionResponse) return progressiveActionResponse;
   }
 
   let sourceConfigHeaders: Headers | null = null;
@@ -2625,6 +2631,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return buildNextDataNotFoundResponse();
   }
 
+  if (!progressiveActionHandled) {
+    const progressiveActionResponse = await handleProgressiveAction(
+      renderedRouteMatch(match),
+      match,
+    );
+    if (progressiveActionResponse) return progressiveActionResponse;
+  }
+
   if (!match) {
     // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
     // every page load. Don't compile/render the not-found page for it.
@@ -2879,7 +2893,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionContext: interceptionSourceContext,
         interceptionId: interceptionIdHeader,
         interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
-        isProgressiveActionRender,
+        isProgressiveActionRender: progressiveActionFormState !== null,
         isRscRequest,
         middlewareContext,
         mountedSlotsHeader,
@@ -2918,7 +2932,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Set-Cookie headers and revalidation marker, mirroring Next.js'
   // res.setHeader('set-cookie', ...) flush in action-handler.ts / app-render.tsx.
   // Issue: https://github.com/cloudflare/vinext/issues/1483
-  if (isProgressiveActionRender) {
+  if (progressiveActionFormState) {
     return applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState);
   }
   return pageResponse;

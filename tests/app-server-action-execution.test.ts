@@ -1306,10 +1306,9 @@ describe("app server action execution helpers", () => {
     }
   });
 
-  // Route handlers (route.ts) accept raw multipart POSTs that legitimately
-  // decode to no action; those must still fall through to the route-handler
-  // dispatch rather than 404. The page-vs-route distinction comes from the
-  // caller (`hasPageRoute`).
+  // Multipart POSTs without a page match that decode to no action fall
+  // through to the caller's normal dispatch rather than 404. The page
+  // distinction comes from the caller (`hasPageRoute`).
   it("falls through for multipart posts that decode to no action on a non-page route", async () => {
     const response = await handleProgressiveServerActionRequest(
       createOptions({

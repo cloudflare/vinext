@@ -7248,7 +7248,153 @@ describe("createAppRscHandler", () => {
 
     expect(await response.text()).toBe("page:/about");
     expect(handleProgressiveActionRequest).toHaveBeenCalledOnce();
+    expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ routeMatch: { params: emptyParams, route: aboutPage } }),
+    );
     expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
+  });
+
+  describe("progressive actions after late routing", () => {
+    const routeHandler = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      page: null,
+      pattern: "/upload",
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["upload"],
+    });
+    const aboutPage = createPageRoute();
+    const dynamicPage = createPageRoute({
+      isDynamic: true,
+      pattern: "/:slug",
+      routeSegments: ["[slug]"],
+    });
+    const emptyParams: Record<string, string | string[]> = {};
+    const multipartPost = (pathname: string) => {
+      const body = new FormData();
+      body.set("message", "hello");
+      return new Request(`https://example.test/docs${pathname}`, { method: "POST", body });
+    };
+    const createProgressiveHandler = (overrides: Partial<TestHandlerOptions>) => {
+      const handleProgressiveActionRequest = vi.fn<
+        NonNullable<HandlerOptions["handleProgressiveActionRequest"]>
+      >(async () => null);
+      const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+        async () => new Response("route", { status: 200 }),
+      );
+      const dispatchMatchedPage = vi.fn(
+        async ({ route }: { route: TestRoute }) =>
+          new Response(`page:${route.pattern}`, { status: 200 }),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        dispatchMatchedRouteHandler,
+        handleProgressiveActionRequest,
+        ...overrides,
+      });
+      return {
+        dispatchMatchedPage,
+        dispatchMatchedRouteHandler,
+        handleProgressiveActionRequest,
+        handler,
+      };
+    };
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "skips them for a route handler reached through %s rewrites",
+      async (phase) => {
+        const { dispatchMatchedRouteHandler, handleProgressiveActionRequest, handler } =
+          createProgressiveHandler({
+            configRewrites: {
+              afterFiles: [],
+              beforeFiles: [],
+              fallback: [],
+              [phase]: [{ source: "/upload-alias", destination: "/upload" }],
+            },
+            matchRoute: (pathname) =>
+              pathname === "/upload" ? { params: emptyParams, route: routeHandler } : null,
+          });
+
+        const response = await handler(multipartPost("/upload-alias"), null);
+
+        expect(await response.text()).toBe("route");
+        expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+        expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+      },
+    );
+
+    it("skips them when an afterFiles rewrite moves a dynamic page match to a route handler", async () => {
+      const { dispatchMatchedRouteHandler, handleProgressiveActionRequest, handler } =
+        createProgressiveHandler({
+          configRewrites: {
+            afterFiles: [{ source: "/upload-alias", destination: "/upload" }],
+            beforeFiles: [],
+            fallback: [],
+          },
+          matchRoute: (pathname) => {
+            if (pathname === "/upload") return { params: emptyParams, route: routeHandler };
+            return { params: { slug: pathname.slice(1) }, route: dynamicPage };
+          },
+        });
+
+      const response = await handler(multipartPost("/upload-alias"), null);
+
+      expect(await response.text()).toBe("route");
+      expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+      expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("skips them for a Pages route", async () => {
+      const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
+        matchRoute: () => null,
+        renderPagesFallback: async () => new Response("pages", { status: 200 }),
+      });
+
+      const response = await handler(multipartPost("/pages-upload"), null);
+
+      expect(await response.text()).toBe("pages");
+      expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("runs them against the page an afterFiles rewrite reaches", async () => {
+      const { dispatchMatchedPage, handleProgressiveActionRequest, handler } =
+        createProgressiveHandler({
+          configRewrites: {
+            afterFiles: [{ source: "/about-alias", destination: "/about" }],
+            beforeFiles: [],
+            fallback: [],
+          },
+          matchRoute: (pathname) =>
+            pathname === "/about" ? { params: emptyParams, route: aboutPage } : null,
+        });
+
+      const response = await handler(multipartPost("/about-alias"), null);
+
+      expect(await response.text()).toBe("page:/about");
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(handleProgressiveActionRequest).toHaveBeenCalledOnce();
+      expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cleanPathname: "/about",
+          routeMatch: { params: emptyParams, route: aboutPage },
+        }),
+      );
+    });
+
+    it("still runs them for an unmatched route", async () => {
+      const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
+        matchRoute: () => null,
+      });
+
+      const response = await handler(multipartPost("/missing"), null);
+
+      expect(response.status).toBe(404);
+      expect(handleProgressiveActionRequest).toHaveBeenCalledOnce();
+      expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ routeMatch: null }),
+      );
+    });
   });
 
   it("marks progressive action page renders even when decoded form state is null", async () => {

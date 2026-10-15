@@ -92,6 +92,7 @@ const projectServers = {
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
       "app-router-prod/public-file-encoding.spec.ts",
+      "app-router-prod/multipart-late-routing.spec.ts",
       "app-router-prod/image-middleware.spec.ts",
       "app-router-prod/pages-res-revalidate.spec.ts",
       "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
