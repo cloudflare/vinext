@@ -13,7 +13,9 @@ import {
   buildNextClientBuildManifestContent,
   buildNextClientSsgManifestContent,
   emitNextClientRuntimeManifests,
+  getPagesManifestPage,
 } from "../packages/vinext/src/build/next-client-runtime-manifests.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { ClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import {
   findClientEntryFileFromVinextManifest,
@@ -22,7 +24,10 @@ import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
 } from "../packages/vinext/src/utils/client-entry-manifest.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
-import type { HasCondition } from "../packages/vinext/src/config/next-config.js";
+import type {
+  HasCondition,
+  ResolvedNextConfig,
+} from "../packages/vinext/src/config/next-config.js";
 
 describe("client build manifest helpers", () => {
   let tmpDir: string;
@@ -205,6 +210,7 @@ describe("client build manifest helpers", () => {
         ],
         fallback: [],
       },
+      pages: ["/hello"],
     });
 
     const buildManifest = await fsp.readFile(
@@ -214,6 +220,7 @@ describe("client build manifest helpers", () => {
     expect(buildManifest).toContain("self.__BUILD_MANIFEST = ");
     expect(buildManifest).toContain("__BUILD_MANIFEST_CB");
     expect(buildManifest).toContain('"requiresServerEvaluation":true');
+    expect(buildManifest).toContain('"sortedPages":["/_app","/_error","/hello"]');
     expect(buildManifest).not.toContain("emitted-header-target-canary");
     expect(buildManifest).not.toContain("emitted-header-secret-canary");
     expect(buildManifest).not.toContain("emitted-protocol-relative-canary");
@@ -226,7 +233,7 @@ describe("client build manifest helpers", () => {
   });
 
   it("publishes only client-safe rewrites in the Next.js runtime build manifest", () => {
-    const content = buildNextClientBuildManifestContent({
+    const rewrites: ResolvedNextConfig["rewrites"] = {
       beforeFiles: [
         {
           source: "/query/:path*",
@@ -273,7 +280,8 @@ describe("client build manifest helpers", () => {
           missing: [{ type: "cookie", key: "seen" }],
         },
       ],
-    });
+    };
+    const content = buildNextClientBuildManifestContent(rewrites, []);
 
     const serializedManifest = content.slice(
       "self.__BUILD_MANIFEST = ".length,
@@ -306,7 +314,7 @@ describe("client build manifest helpers", () => {
         ],
         fallback: [{ source: "/only-without-cookie", requiresServerEvaluation: true }],
       },
-      sortedPages: [],
+      sortedPages: ["/_app", "/_error"],
     });
     expect(content).not.toContain("header-target-canary");
     expect(content).not.toContain("header-secret-canary");
@@ -316,6 +324,70 @@ describe("client build manifest helpers", () => {
     expect(content).not.toContain("future-target-canary");
     expect(content).not.toContain("future-secret-canary");
     expect(content).not.toContain('"missing"');
+  });
+
+  // Next.js lists every `pages/` page and API route plus `/_app` and `/_error`
+  // in `getSortedRoutes` order, from packages/next/src/shared/lib/turbopack/manifest-loader.ts
+  // (`writeClientBuildManifest`). App Router-only builds still list `/_app` and `/_error`.
+  it("lists Pages routes in Next.js route-priority order in the runtime build manifest", () => {
+    const readSortedPages = (content: string): string[] =>
+      (
+        JSON.parse(
+          content.slice(
+            "self.__BUILD_MANIFEST = ".length,
+            content.indexOf(";self.__BUILD_MANIFEST_CB"),
+          ),
+        ) as { sortedPages: string[] }
+      ).sortedPages;
+    const noRewrites = { beforeFiles: [], afterFiles: [], fallback: [] };
+
+    expect(
+      readSortedPages(
+        buildNextClientBuildManifestContent(noRewrites, [
+          "/hello",
+          "/[slug]",
+          "/",
+          "/blog/[...rest]",
+          "/404",
+          "/500",
+          "/api/[id]",
+          "/api/x",
+        ]),
+      ),
+    ).toEqual([
+      "/",
+      "/404",
+      "/500",
+      "/_app",
+      "/_error",
+      "/api/x",
+      "/api/[id]",
+      "/blog/[...rest]",
+      "/hello",
+      "/[slug]",
+    ]);
+    expect(readSortedPages(buildNextClientBuildManifestContent(noRewrites, []))).toEqual([
+      "/_app",
+      "/_error",
+    ]);
+  });
+
+  // Ported from Next.js: packages/next/src/build/route-discovery.ts (`getPageFromPath`).
+  // Real Next.js 16 lists `pages/caf%C3%A9.js` as "/caf%C3%A9" (no decoding).
+  it("derives Next.js page keys from raw pages/ file paths", () => {
+    const pagesDir = path.join(tmpDir, "pages");
+    const matcher = createValidFileMatcher(["page.tsx", "tsx", "ts"]);
+    const pageFor = (...segments: string[]) =>
+      getPagesManifestPage(pagesDir, path.join(pagesDir, ...segments), matcher);
+
+    expect(pageFor("index.tsx")).toBe("/");
+    expect(pageFor("index", "index.tsx")).toBe("/index");
+    expect(pageFor("blog", "index.page.tsx")).toBe("/blog");
+    expect(pageFor("posts", "[id].tsx")).toBe("/posts/[id]");
+    expect(pageFor("docs", "[[...slug]].tsx")).toBe("/docs/[[...slug]]");
+    expect(pageFor("api", "users", "[uid].ts")).toBe("/api/users/[uid]");
+    expect(pageFor("caf%C3%A9.tsx")).toBe("/caf%C3%A9");
+    expect(pageFor("a b.tsx")).toBe("/a b");
   });
 
   it("prefers the Pages client entry over the App browser entry in on-disk fallback lookup", async () => {
