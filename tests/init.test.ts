@@ -2056,6 +2056,135 @@ describe("init — CJS config renaming", () => {
   });
 });
 
+// ─── Tailwind CSS from a Turbopack loader ────────────────────────────────────
+
+describe("init — Tailwind CSS Turbopack loader", () => {
+  // create-next-app 16.4 sets Tailwind up as a Turbopack loader, without PostCSS.
+  function setupTailwindLoaderProject(loader: string): void {
+    setupProject(tmpDir, {
+      extraPkg: { devDependencies: { [loader]: "^4", tailwindcss: "^4" } },
+    });
+    writeFile(
+      tmpDir,
+      "next.config.ts",
+      `import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  turbopack: {
+    rules: {
+      "*.css": {
+        loaders: ["${loader}"],
+        as: "*.css",
+      },
+    },
+  },
+};
+
+export default nextConfig;
+`,
+    );
+    writeFile(tmpDir, "app/globals.css", '@import "tailwindcss";\n');
+  }
+
+  it.each(["node", "cloudflare"] as const)(
+    "sets up @tailwindcss/postcss for the create-next-app 16.4 shape (%s)",
+    async (platform) => {
+      setupTailwindLoaderProject("@tailwindcss/turbopack");
+
+      const { result, execCalls, output } = await runInit(tmpDir, { platform });
+
+      expect(readFile(tmpDir, "postcss.config.mjs")).toBe(
+        'const config = {\n  plugins: {\n    "@tailwindcss/postcss": {},\n  },\n};\n\nexport default config;\n',
+      );
+      expect(result.installedDeps).toContain("@tailwindcss/postcss");
+      const devInstall = execCalls.find(({ cmd }) => cmd.includes('"@tailwindcss/postcss"'));
+      expect(devInstall?.cmd).toMatch(/ -D /);
+      expect(output).toContain("Generated postcss.config.mjs for Tailwind CSS");
+    },
+  );
+
+  it("sets up @tailwindcss/postcss for @tailwindcss/webpack", async () => {
+    setupTailwindLoaderProject("@tailwindcss/webpack");
+
+    const { result } = await runInit(tmpDir, { platform: "node" });
+
+    expect(readFile(tmpDir, "postcss.config.mjs")).toContain('"@tailwindcss/postcss": {}');
+    expect(result.installedDeps).toContain("@tailwindcss/postcss");
+  });
+
+  it("detects the loader from the Next config alone", async () => {
+    setupTailwindLoaderProject("@tailwindcss/turbopack");
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ name: "test-project", dependencies: { next: "^16.0.0" } }),
+    );
+
+    const { result } = await runInit(tmpDir, { platform: "node" });
+
+    expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(true);
+    expect(result.installedDeps).toContain("@tailwindcss/postcss");
+  });
+
+  it.each([
+    ["postcss.config.mjs", 'export default { plugins: { "@tailwindcss/postcss": {} } };\n'],
+    ["postcss.config.js", "module.exports = { plugins: { autoprefixer: {} } };\n"],
+    [".postcssrc.json", '{ "plugins": { "autoprefixer": {} } }\n'],
+  ])("leaves an existing %s untouched", async (file, content) => {
+    setupTailwindLoaderProject("@tailwindcss/turbopack");
+    writeFile(tmpDir, file, content);
+
+    const { result } = await runInit(tmpDir, { platform: "node" });
+
+    // A CommonJS postcss.config.js is renamed to .cjs as before, unchanged.
+    const kept = file === "postcss.config.js" ? "postcss.config.cjs" : file;
+    expect(readFile(tmpDir, kept)).toBe(content);
+    expect(fs.readdirSync(tmpDir).filter((name) => /postcss/.test(name))).toEqual([kept]);
+    expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+  });
+
+  it("leaves a package.json postcss config untouched", async () => {
+    setupTailwindLoaderProject("@tailwindcss/turbopack");
+    const pkg = readPkg(tmpDir);
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ ...pkg, postcss: { plugins: { autoprefixer: {} } } }),
+    );
+
+    const { result } = await runInit(tmpDir, { platform: "node" });
+
+    expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(false);
+    expect(readPkg(tmpDir).postcss).toEqual({ plugins: { autoprefixer: {} } });
+    expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+  });
+
+  it("skips projects whose Vite config already sets up Tailwind", async () => {
+    setupTailwindLoaderProject("@tailwindcss/turbopack");
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      'import tailwindcss from "@tailwindcss/vite";\nimport vinext from "vinext";\nexport default { plugins: [tailwindcss(), vinext()] };\n',
+    );
+
+    const { result } = await runInit(tmpDir, { platform: "node" });
+
+    expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(false);
+    expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+  });
+
+  it("does nothing for projects without Tailwind", async () => {
+    setupProject(tmpDir);
+    writeFile(tmpDir, "next.config.ts", "export default { turbopack: { rules: {} } };\n");
+
+    const { result, output } = await runInit(tmpDir, { platform: "node" });
+
+    expect(fs.readdirSync(tmpDir).some((name) => /postcss/.test(name))).toBe(false);
+    expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+    expect(output).not.toContain("postcss.config.mjs");
+  });
+});
+
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 describe("init — dependency installation", () => {
