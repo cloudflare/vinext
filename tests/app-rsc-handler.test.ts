@@ -7324,6 +7324,80 @@ describe("createAppRscHandler", () => {
       },
     );
 
+    it("skips them for an unrewritten dynamic route handler", async () => {
+      const dynamicRouteHandler = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        isDynamic: true,
+        page: null,
+        pattern: "/api/:slug",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "[slug]"],
+      });
+      const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+        async ({ request }) => new Response(String((await request.formData()).get("message"))),
+      );
+      const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname) =>
+          pathname.startsWith("/api/")
+            ? { params: { slug: pathname.slice("/api/".length) }, route: dynamicRouteHandler }
+            : null,
+      });
+
+      const response = await handler(multipartPost("/api/upload"), null);
+
+      expect(await response.text()).toBe("hello");
+      expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+      expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+    });
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "skips them for a %s external rewrite",
+      async (phase) => {
+        const receivedBodies: string[] = [];
+        const server = createServer((req, res) => {
+          let body = "";
+          req.setEncoding("utf8");
+          req.on("data", (chunk: string) => (body += chunk));
+          req.on("end", () => {
+            receivedBodies.push(body);
+            res.writeHead(200, { "content-type": "text/plain" });
+            res.end("upstream");
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+
+        try {
+          const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
+            configRewrites: {
+              afterFiles: [],
+              beforeFiles: [],
+              fallback: [],
+              [phase]: [
+                {
+                  source: "/proxy-upload",
+                  destination: `http://127.0.0.1:${address.port}/upload`,
+                },
+              ],
+            },
+            matchRoute: () => null,
+          });
+
+          const response = await handler(multipartPost("/proxy-upload"), null);
+
+          expect(await response.text()).toBe("upstream");
+          expect(receivedBodies).toHaveLength(1);
+          expect(receivedBodies[0]).toContain('name="message"');
+          expect(receivedBodies[0]).toContain("hello");
+          expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+        } finally {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      },
+    );
+
     it("skips them when an afterFiles rewrite moves a dynamic page match to a route handler", async () => {
       const { dispatchMatchedRouteHandler, handleProgressiveActionRequest, handler } =
         createProgressiveHandler({
@@ -7428,6 +7502,40 @@ describe("createAppRscHandler", () => {
 
       expect(handleProgressiveActionRequest).toHaveBeenCalledOnce();
       expect(observedRootParams).toEqual({ lang: "en" });
+    });
+
+    it("renders a failed action on the page an afterFiles rewrite reaches", async () => {
+      const actionError = new Error("action failed");
+      const { dispatchMatchedPage, handler } = createProgressiveHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/about-alias", destination: "/about" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        handleProgressiveActionRequest: async () => ({
+          actionError,
+          actionFailed: true,
+          draftCookie: null,
+          formState: null,
+          kind: "form-state",
+          pendingCookies: [],
+          revalidationKind: 0,
+        }),
+        matchRoute: (pathname) =>
+          pathname === "/about" ? { params: emptyParams, route: aboutPage } : null,
+      });
+
+      await handler(multipartPost("/about-alias"), null);
+
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actionError,
+          actionFailed: true,
+          formState: null,
+          isProgressiveActionRender: true,
+          middlewareContext: expect.objectContaining({ status: 500 }),
+        }),
+      );
     });
 
     it("still runs them for an unmatched route", async () => {
