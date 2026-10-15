@@ -1512,7 +1512,7 @@ function makeErroringPageSearchParams(): Promise<Record<string, never>> {
         (prop === "then" || !isNextWellKnownProperty(prop))
       ) {
         const error = createUseCacheAccessError("searchParams");
-        if (cacheContext) cacheContext.invalidDynamicUsageError = error;
+        if (cacheContext) cacheContext.invalidDynamicUsageError ??= error;
         recordInvalidDynamicUsageError(state, error);
         throw error;
       }

@@ -8251,6 +8251,49 @@ describe('"use cache" runtime', () => {
     consumeInvalidDynamicUsageError();
   });
 
+  // Next.js keeps the first invalid access (`workStore.invalidDynamicUsageError
+  // ??= error`).
+  it("fails the cache with the first caught searchParams access", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const caught: unknown[] = [];
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => {
+        for (const key of ["then", "q"]) {
+          try {
+            Reflect.get(props.searchParams!, key);
+          } catch (error) {
+            caught.push(error);
+          }
+        }
+        return "done";
+      },
+      "/fixture/app/cached/caught-twice/page.tsx:default",
+      "",
+    );
+
+    const rejection = await cached(
+      asPageInvocation({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "first" }),
+      }),
+    ).catch((error: unknown) => error);
+    expect(caught).toHaveLength(2);
+    expect(caught[0]).not.toBe(caught[1]);
+    expect(rejection).toBe(caught[0]);
+    consumeInvalidDynamicUsageError();
+  });
+
   // Next.js's erroring proxy only traps `get`, and binds `catch` and
   // `finally` to the underlying promise, so they don't read its `then`.
   it("lets catch, finally and key checks on the page searchParams settle", async () => {
