@@ -14659,6 +14659,8 @@ describe("matchHeaders source matching parity with Next.js", () => {
     "/unsafe/:a(a+):b(a+):c(a+):d(a+)",
     // A constraint that can consume the `/` separator plus adjacent text.
     "/unsafe/:x(a(?:/a)?)+/end",
+    // A negative lookahead that can never match does not shield the separator.
+    "/unsafe/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end",
   ])("ignores the unsafe source %s", async (source) => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

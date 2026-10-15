@@ -950,20 +950,16 @@ export function analyzeRegexSafety(
  * `(?:(?!\.)[^\/])+?`) shields the atom right after it, because the pattern
  * cannot continue at a position where the separator starts.
  */
-function mayConsumeSeparatorStart(
-  node: RegexNode,
-  separator: RegexSymbol[],
-  budget: WordBudget,
-): boolean {
+function mayConsumeSeparatorStart(node: RegexNode, separator: RegexSymbol[]): boolean {
   switch (node.kind) {
     case "atom":
       return !node.symbol || symbolsMayOverlap(node.symbol, separator[0]);
     case "assertion":
       return false;
     case "repeat":
-      return node.max > 0 && mayConsumeSeparatorStart(node.child, separator, budget);
+      return node.max > 0 && mayConsumeSeparatorStart(node.child, separator);
     case "alternation":
-      return node.branches.some((branch) => mayConsumeSeparatorStart(branch, separator, budget));
+      return node.branches.some((branch) => mayConsumeSeparatorStart(branch, separator));
     case "sequence":
       for (let index = 0; index < node.children.length; index++) {
         const child = node.children[index];
@@ -973,29 +969,33 @@ function mayConsumeSeparatorStart(
           child.negativeLookahead &&
           next?.kind === "atom" &&
           next.fixedWidth &&
-          excludesSeparatorPrefix(child.child, separator, budget)
+          excludesSeparatorPrefix(child.child, separator)
         ) {
           index++;
           continue;
         }
-        if (mayConsumeSeparatorStart(child, separator, budget)) return true;
+        if (mayConsumeSeparatorStart(child, separator)) return true;
       }
       return false;
   }
 }
 
-function excludesSeparatorPrefix(
-  node: RegexNode,
-  separator: RegexSymbol[],
-  budget: WordBudget,
-): boolean {
-  const words = fixedWords(node, budget);
-  if (!words || words.length !== 1) return false;
-  const [word] = words;
+/**
+ * Whether a negative lookahead body is exactly a prefix of the separator.
+ * Only plain literal characters count: a nested assertion or class could stop
+ * the lookahead from ever matching, so anything else fails closed.
+ */
+function excludesSeparatorPrefix(node: RegexNode, separator: RegexSymbol[]): boolean {
+  const atoms = node.kind === "sequence" ? node.children : [node];
   return (
-    word.length > 0 &&
-    word.length <= separator.length &&
-    word.every((symbol, index) => symbol.key === separator[index].key)
+    atoms.length > 0 &&
+    atoms.length <= separator.length &&
+    atoms.every(
+      (atom, index) =>
+        atom.kind === "atom" &&
+        atom.symbol?.kind === "literal" &&
+        atom.symbol.key === separator[index].key,
+    )
   );
 }
 
@@ -1024,8 +1024,7 @@ export function repeatSeparatorIsUnambiguous(
   const separatorSymbols = separator
     .split("")
     .map((character) => literalSymbol(character, ignoreCase));
-  const budget = { words: 0, symbols: 0, exceeded: false };
-  return !mayConsumeSeparatorStart(node, separatorSymbols, budget) && !budget.exceeded;
+  return !mayConsumeSeparatorStart(node, separatorSymbols);
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {

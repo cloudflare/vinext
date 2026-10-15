@@ -546,6 +546,7 @@ describe("unsafe middleware matcher rejection", () => {
     ["/x.:ext([^/]+)+/end", /may match across its repeat separator/],
     ["/x{-:part([^/]+)}+", /may match across its repeat separator/],
     ["/:x(a(?:/a)?)+/end", /may match across its repeat separator/],
+    ["/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end", /may match across its repeat separator/],
     ["/:path((?:a+)+)", /contains nested repetition/],
     ["/:path((?:a|aa)+)", /contains ambiguous alternatives under repetition/],
     ["/:path((?:a|A)+)", /contains ambiguous alternatives under repetition/],
