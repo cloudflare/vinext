@@ -437,14 +437,13 @@ describe("next/navigation shim", () => {
     ).toBe("<span>_b_0_</span>");
   });
 
-  // Next.js parity: refresh-reducer.ts invalidates the entire segment cache.
-  // Our equivalent is clearClientNavigationCaches(), which router.refresh()
-  // must call before re-fetching, or stale cached RSC payloads for sibling
-  // routes will still satisfy a subsequent client navigation. The clear must
-  // happen before the rscNavigate dispatch so it cannot race with prefetches
-  // kicked off during the transition's renders.
+  // Next.js parity: refresh-reducer.ts invalidates the entire segment cache
+  // when the refresh runs. router.refresh() therefore hands off to the
+  // runtime's refresh, which waits for a navigation in flight and then calls
+  // clearClientNavigationCaches() before re-fetching; clearing at call time
+  // would strip the caches from the navigation ahead of it.
   // Ported from: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/refresh-reducer.ts
-  it("router.refresh() clears nav caches before dispatching the RSC re-fetch", async () => {
+  it("router.refresh() leaves cache invalidation to the runtime refresh", async () => {
     const previousWindow = (globalThis as any).window;
     const calls: string[] = [];
     const win = {
@@ -467,6 +466,9 @@ describe("next/navigation shim", () => {
           navigate: async (_href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}`);
           },
+          refresh: () => {
+            calls.push("refresh");
+          },
         },
       },
     };
@@ -476,15 +478,56 @@ describe("next/navigation shim", () => {
       vi.resetModules();
       const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
       appRouterInstance.refresh();
-      // refresh() schedules the rscNavigate inside React.startTransition, so
-      // the navigate call lands after the synchronous clear but is dispatched
-      // in the same tick — yield once to let it flush.
-      await Promise.resolve();
-      await Promise.resolve();
 
-      expect(calls[0]).toBe("clear");
-      expect(calls).toContain("navigate:refresh");
-      expect(calls.indexOf("clear")).toBeLessThan(calls.indexOf("navigate:refresh"));
+      expect(calls).toEqual(["refresh"]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  // A refresh in the same task as router.push() is skipped, as before, since
+  // the push about to dispatch re-renders anyway; it still clears the caches.
+  it("router.refresh() in the same task as router.push() only clears the caches", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const win = {
+      location: { href: "http://localhost/current" },
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: () => {
+            calls.push("clear");
+          },
+          navigate: async (_href: string, _depth: number, kind: string) => {
+            calls.push(`navigate:${kind}`);
+          },
+          refresh: () => {
+            calls.push("refresh");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      appRouterInstance.push("/next");
+      appRouterInstance.refresh();
+
+      expect(calls).toContain("clear");
+      expect(calls).not.toContain("refresh");
+      expect(calls).not.toContain("navigate:refresh");
     } finally {
       (globalThis as any).window = previousWindow;
       vi.resetModules();
