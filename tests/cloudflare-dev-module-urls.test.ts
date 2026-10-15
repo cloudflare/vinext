@@ -48,13 +48,14 @@ function hmrPingMiddleware(calls: string[]): ViteMiddleware {
 
 /** A module graph node with its transformed code and importers. */
 type FakeModule = {
+  url?: string;
   transformResult?: { code: string } | null;
   importers: { url: string; transformResult: { code: string } | null }[];
 };
 
 /** The JS module Vite generates for an imported asset. */
-function assetModule(code: string): FakeModule {
-  return { transformResult: { code }, importers: [] };
+function assetModule(code: string, url = "/asset?import"): FakeModule {
+  return { url, transformResult: { code }, importers: [] };
 }
 
 /** A file referenced only by an importer, like a CSS `url()` dependency. */
@@ -71,6 +72,7 @@ function setup(options: {
   enabled: boolean;
   viteMiddlewares: ViteMiddleware[];
   base?: string;
+  origin?: string;
   alias?: { find: string | RegExp; replacement: string }[];
   /** Module graph nodes by file, for a single environment. */
   modulesByFile?: Record<string, FakeModule[]>;
@@ -81,6 +83,7 @@ function setup(options: {
     config: {
       base: options.base ?? "/",
       root: "/project",
+      server: { origin: options.origin },
       resolve: { alias: options.alias ?? [] },
     },
     environments: {
@@ -143,9 +146,13 @@ describe("cloudflare dev module URLs plugin", () => {
     });
 
     let nextCalled = false;
-    pluginMiddlewares[0]?.({ url: "/@vite/client" } as Connect.IncomingMessage, {}, () => {
-      nextCalled = true;
-    });
+    pluginMiddlewares[0]?.(
+      { url: "/@vite/client", method: "GET" } as Connect.IncomingMessage,
+      {},
+      () => {
+        nextCalled = true;
+      },
+    );
 
     expect(calls).toEqual(["viteTransformMiddleware /@vite/client"]);
     expect(nextCalled).toBe(false);
@@ -200,9 +207,13 @@ describe("cloudflare dev module URLs plugin", () => {
       ],
     });
 
-    pluginMiddlewares[0]?.({ url: "/docs/@vite/client" } as Connect.IncomingMessage, {}, () => {
-      throw new Error("expected the transform middleware to handle the request");
-    });
+    pluginMiddlewares[0]?.(
+      { url: "/docs/@vite/client", method: "GET" } as Connect.IncomingMessage,
+      {},
+      () => {
+        throw new Error("expected the transform middleware to handle the request");
+      },
+    );
 
     expect(calls).toEqual([
       "viteBaseMiddleware /docs/@vite/client",
@@ -384,7 +395,12 @@ describe("cloudflare dev module URLs plugin", () => {
       viteMiddlewares: [passThrough("viteServeStaticMiddleware", calls)],
       modulesByFile: {
         // Tailwind reports scanned files as dependencies of the stylesheet
-        "/project/api/notes.txt": [importedBy("/app/globals.css", "body { color: red }")],
+        "/project/api/notes.txt": [
+          importedBy(
+            "/app/globals.css",
+            'body { color: red } a::after { content: "/api/notes.txt" }',
+          ),
+        ],
         // Only part of a longer path or name
         "/project/a.png": [
           {
@@ -395,9 +411,11 @@ describe("cloudflare dev module URLs plugin", () => {
             ],
           },
         ],
-        // Inlined as a string, so the browser never requests the file
+        // Inlined as a string, so the browser never requests the file, even
+        // when its contents are its own path
         "/project/route.svg": [
-          assetModule('export default "<svg />"'),
+          assetModule('export default "/route.svg"', "/route.svg?raw"),
+          assetModule('export default "/route.svg"', "/route.svg?import&inline"),
           importedBy("/app/icon.ts", 'import icon from "/route.svg?raw";'),
         ],
         // A URL character, not a delimiter
@@ -443,15 +461,57 @@ describe("cloudflare dev module URLs plugin", () => {
     ]);
   });
 
-  it("sends other methods for a referenced asset to the Worker", async () => {
+  it("serves an asset whose URL keeps a query, a fragment, or server.origin", async () => {
     const calls: string[] = [];
     const { run } = setup({
       enabled: true,
-      viteMiddlewares: [passThrough("viteServeStaticMiddleware", calls)],
+      origin: "http://localhost:5173/",
+      viteMiddlewares: [
+        named("viteServeStaticMiddleware", (req) => {
+          calls.push(`viteServeStaticMiddleware ${req.url}`);
+        }),
+      ],
+      modulesByFile: {
+        "/project/app/dark.svg": [assetModule('export default "/app/dark.svg?variant=dark"')],
+        "/project/app/icons.svg": [assetModule('export default "/app/icons.svg#icon"')],
+        "/project/app/logo.svg": [
+          assetModule('export default "http://localhost:5173/app/logo.svg"'),
+        ],
+      },
+    });
+
+    void run("/app/dark.svg?variant=dark");
+    void run("/app/icons.svg");
+    void run("/app/logo.svg");
+    await Promise.resolve();
+    expect(calls).toEqual([
+      "viteServeStaticMiddleware /app/dark.svg?variant=dark",
+      "viteServeStaticMiddleware /app/icons.svg",
+      "viteServeStaticMiddleware /app/logo.svg",
+    ]);
+  });
+
+  it("sends requests other than GET and HEAD straight to the Worker", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      viteMiddlewares: [
+        hmrPingMiddleware(calls),
+        // Vite's raw fs middleware serves any method
+        named("viteServeRawFsMiddleware", (req) => {
+          calls.push(`viteServeRawFsMiddleware ${req.url}`);
+        }),
+        passThrough("viteServeStaticMiddleware", calls),
+      ],
       modulesByFile: { "/project/app/logo.svg": [importedBy("/app/a.css", "url(/app/logo.svg)")] },
     });
 
     expect(await run("/app/logo.svg", {}, "POST")).toEqual({ args: [], url: "/app/logo.svg" });
+    expect(await run("/@fs/project/app/logo.svg", {}, "POST")).toEqual({
+      args: [],
+      url: "/@fs/project/app/logo.svg",
+    });
+    expect(await run("/", { accept: "text/x-vite-ping" }, "POST")).toEqual({ args: [], url: "/" });
     expect(calls).toEqual([]);
   });
 

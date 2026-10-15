@@ -49,8 +49,8 @@ const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
  * and CSS `url(./bg.png)` both resolve to paths like `/app/logo.svg`), and only
  * this middleware serves them. It also serves every other project file, and a
  * Worker route can share its path with one (e.g. an `api/` directory and an
- * `/api/*` route handler), so it only runs for GET and HEAD requests for
- * referenced assets. See `isReferencedAsset`. Navigations to a referenced asset
+ * `/api/*` route handler), so it only runs for referenced assets. See
+ * `isReferencedAsset`. Navigations to a referenced asset
  * are served too: in production its URL is under `/_next/static/`, which never
  * reaches the Worker.
  */
@@ -103,10 +103,11 @@ function runViteModuleMiddlewares(
   res: Parameters<Connect.NextHandleFunction>[1],
   next: Connect.NextFunction,
 ): void {
-  // With a non-root `base` (vinext sets it to `basePath + "/"`), Vite only
-  // serves URLs under it, so any other request goes straight to the Worker.
+  // Vite only serves module URLs and files for GET and HEAD, and with a
+  // non-root `base` (vinext sets it to `basePath + "/"`) only under it, so any
+  // other request goes straight to the Worker.
   const url = req.url;
-  if (!url?.startsWith(server.config.base)) {
+  if ((req.method !== "GET" && req.method !== "HEAD") || !url?.startsWith(server.config.base)) {
     next();
     return;
   }
@@ -124,9 +125,7 @@ function runViteModuleMiddlewares(
       const serveStatic = handle as Connect.NextHandleFunction;
       return [
         (req, res, next) =>
-          (req.method === "GET" || req.method === "HEAD") && isReferencedAsset(server, req.url)
-            ? serveStatic(req, res, next)
-            : next(),
+          isReferencedAsset(server, req.url) ? serveStatic(req, res, next) : next(),
       ];
     }
     return [];
@@ -186,7 +185,9 @@ function isPublicFileLoadError(error: unknown): boolean {
  *
  * The browser only learns an asset URL from a module Vite has transformed:
  * - The asset's own JS module (`import logo from "./logo.svg"` or `?url`),
- *   whose code is `export default "<url>"`, with a `?t=` query after HMR.
+ *   whose code is `export default "<url>"`, possibly followed by a query or
+ *   fragment (`?t=` after HMR). `?raw` and `?inline` modules export the
+ *   file's contents instead, so they don't count.
  * - A JS module that uses `new URL("./logo.svg", import.meta.url)`, which Vite
  *   rewrites to the URL as a string literal.
  * - A stylesheet whose `url()` or `image-set()` Vite resolved.
@@ -211,15 +212,28 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
     return false;
   }
   // Server environments import the asset without the base, and the client
-  // environment with it. JS has the URL encoded, and CSS may not.
+  // environment with it, prefixed with `server.origin` when it's set. JS has
+  // the URL encoded, and CSS may not.
   const base = server.config.base;
-  const urls = [...new Set([pathname, decodedPathname].flatMap((p) => [p, base + p.slice(1)]))];
+  const origin = server.config.server.origin?.replace(/\/+$/, "");
+  const urls = [
+    ...new Set(
+      [pathname, decodedPathname].flatMap((p) => {
+        const underBase = base + p.slice(1);
+        return origin ? [p, underBase, origin + underBase] : [p, underBase];
+      }),
+    ),
+  ];
   const file = resolveStaticFile(server, decodedPathname);
 
   for (const environment of Object.values(server.environments)) {
     for (const module of environment.moduleGraph.getModulesByFile(file) ?? []) {
       const code = module.transformResult?.code;
-      if (code && urls.some((u) => code.includes(`"${u}"`) || code.includes(`"${u}?t=`))) {
+      if (
+        code &&
+        !CONTENTS_QUERY_RE.test(module.url) &&
+        urls.some((u) => containsAssetUrl(code, u))
+      ) {
         return true;
       }
       for (const importer of module.importers) {
@@ -233,6 +247,17 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
     }
   }
   return false;
+}
+
+/** Vite's queries for importing a file's contents rather than its URL. */
+const CONTENTS_QUERY_RE = /[?&](?:raw|inline)(?:&|$)/;
+
+/**
+ * Whether an asset module's code exports `url` as a JS string, possibly with a
+ * query or fragment, as Vite's asset plugin emits it.
+ */
+function containsAssetUrl(code: string, url: string): boolean {
+  return [`"${url}"`, `"${url}?`, `"${url}#`].some((literal) => code.includes(literal));
 }
 
 /**
@@ -257,31 +282,27 @@ function resolveStaticFile(server: ViteDevServer, pathname: string): string {
   return path.join(root, pathname);
 }
 
-/** Characters that can precede and follow a URL Vite wrote into CSS. */
-const CSS_URL_START = /[("',\s]/;
-const CSS_URL_END = /[)"',?#\\\s]/;
-
 /**
  * Whether stylesheet code contains `url` as a resolved `url()` or `image-set()`
- * reference. The code may be the CSS itself or a JS string of it, and the URL
- * may be quoted and may keep a query or fragment from the source.
+ * reference, the only places Vite rewrites asset URLs in CSS. The code may be
+ * the CSS itself or a JS string of it, and the URL may be quoted and may keep a
+ * query or fragment from the source.
  *
  * @param code - Transformed stylesheet code
  * @param url - The URL path to look for
- * @returns `true` if the URL appears delimited as a CSS URL
+ * @returns `true` if the URL appears as a CSS URL
  */
 function containsCssUrl(code: string, url: string): boolean {
   for (let index = code.indexOf(url); index !== -1; index = code.indexOf(url, index + 1)) {
-    const before = code[index - 1];
     const after = code[index + url.length];
-    if (
-      before !== undefined &&
-      CSS_URL_START.test(before) &&
-      after !== undefined &&
-      CSS_URL_END.test(after)
-    ) {
-      return true;
-    }
+    if (after === undefined || !/[)"',?#\\\s]/.test(after)) continue;
+    const before = code.slice(Math.max(0, index - 16), index);
+    // `url(/a.png)`, `url("/a.png")`, or `url(\"/a.png\")` in a JS string
+    if (/url\(\s*\\?["']?$/.test(before)) return true;
+    // A quoted entry in an `image-set()` list in the same declaration
+    if (!/["']$/.test(before)) continue;
+    const imageSet = code.lastIndexOf("image-set(", index);
+    if (imageSet !== -1 && !/[;{}]/.test(code.slice(imageSet, index))) return true;
   }
   return false;
 }
