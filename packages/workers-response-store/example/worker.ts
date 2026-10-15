@@ -36,6 +36,14 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+// Live E2E retries responses without this header: the edge failed those
+// requests before this Worker ran.
+function markFixtureResponse(response: Response): Response {
+  const marked = new Response(response.body, response);
+  marked.headers.set("X-Response-Store-Fixture", "1");
+  return marked;
+}
+
 function cacheRequest(request: Request, prefix: string): Request {
   const source = new URL(request.url);
   const pathname = source.pathname.slice(prefix.length) || "/";
@@ -201,62 +209,66 @@ function storeForRequest(request: Request): WorkersResponseStore {
 export const { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding } =
   responseStore.entrypoints;
 
+async function route(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const store = storeForRequest(request);
+
+  try {
+    if (request.method === "GET" && url.pathname === "/") {
+      return json({
+        name: "workers-response-store",
+        status: "ready",
+        backing: ["Workers Cache", "R2", "SQLite Durable Object"],
+        api: ["fetch", "put", "refresh", "invalidate", "purge"],
+        deployment: "single-worker",
+        revalidator: "ResponseStoreRevalidator.regenerate",
+      });
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/cache")) {
+      return await store.fetch(cacheRequest(request, "/cache"));
+    }
+
+    if (request.method === "PUT" && url.pathname.startsWith("/admin/put")) {
+      return await handlePut(request, store);
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/refresh") {
+      const options = (await request.json()) as ResponseStoreRefreshOptions;
+      return json(await store.refresh(options));
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/invalidate") {
+      const options = (await request.json()) as ResponseStoreInvalidateOptions;
+      return json(await store.invalidate(options));
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/purge") {
+      const options = (await request.json()) as ResponseStorePurgeOptions;
+      return json(await store.purge(options));
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
+      const { tags } = (await request.json()) as { tags: string[] };
+      return json({ expiration: await store.getTagExpiration(tags) });
+    }
+
+    if (request.method === "GET" && url.pathname === "/admin/stats") {
+      return json({ activeRegenerationCount, maxConcurrentRegenerations, regenerationCount });
+    }
+
+    if (request.method === "GET" && url.pathname === "/admin/active-regenerations") {
+      return json([...activeRegenerationRequests]);
+    }
+
+    return new Response("Not found", { status: 404 });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 500);
+  }
+}
+
 export default {
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const store = storeForRequest(request);
-
-    try {
-      if (request.method === "GET" && url.pathname === "/") {
-        return json({
-          name: "workers-response-store",
-          status: "ready",
-          backing: ["Workers Cache", "R2", "SQLite Durable Object"],
-          api: ["fetch", "put", "refresh", "invalidate", "purge"],
-          deployment: "single-worker",
-          revalidator: "ResponseStoreRevalidator.regenerate",
-        });
-      }
-
-      if (request.method === "GET" && url.pathname.startsWith("/cache")) {
-        return store.fetch(cacheRequest(request, "/cache"));
-      }
-
-      if (request.method === "PUT" && url.pathname.startsWith("/admin/put")) {
-        return handlePut(request, store);
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/refresh") {
-        const options = (await request.json()) as ResponseStoreRefreshOptions;
-        return json(await store.refresh(options));
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/invalidate") {
-        const options = (await request.json()) as ResponseStoreInvalidateOptions;
-        return json(await store.invalidate(options));
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/purge") {
-        const options = (await request.json()) as ResponseStorePurgeOptions;
-        return json(await store.purge(options));
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
-        const { tags } = (await request.json()) as { tags: string[] };
-        return json({ expiration: await store.getTagExpiration(tags) });
-      }
-
-      if (request.method === "GET" && url.pathname === "/admin/stats") {
-        return json({ activeRegenerationCount, maxConcurrentRegenerations, regenerationCount });
-      }
-
-      if (request.method === "GET" && url.pathname === "/admin/active-regenerations") {
-        return json([...activeRegenerationRequests]);
-      }
-
-      return new Response("Not found", { status: 404 });
-    } catch (error) {
-      return json({ error: error instanceof Error ? error.message : String(error) }, 500);
-    }
+    return markFixtureResponse(await route(request));
   },
 } satisfies ExportedHandler<WorkersResponseStoreEnv>;

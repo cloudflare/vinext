@@ -346,6 +346,68 @@ describe("app browser server action client", () => {
     expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
   });
 
+  it("commits the RSC tree of a failed action without waiting for its rejection", async () => {
+    const wireElements = AppElementsWire.createMetadataEntries({
+      interception: null,
+      interceptionContext: null,
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/source", null),
+      slotBindings: [],
+    });
+    const actionInitiation = createServerActionInitiationSnapshot({
+      href: "https://example.com/source",
+      navigationId: 1,
+      routerState: createActionTestRouterState(),
+    });
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("flight", {
+          status: 500,
+          headers: { "content-type": "text/x-component", [ACTION_REVALIDATED_HEADER]: "2" },
+        }),
+      ),
+    );
+    // The action's rejection arrives in a later Flight chunk than the tree.
+    const thrown = new Error("action failed after revalidating");
+    let rejectActionResult: (error: unknown) => void = () => {};
+    const actionResult = new Promise<never>((_resolve, reject) => {
+      rejectActionResult = reject;
+    });
+    vi.mocked(createFromFetch).mockResolvedValueOnce({
+      root: wireElements,
+      returnValue: { ok: false, data: actionResult },
+    });
+    const commitSameUrlNavigatePayload = vi.fn(
+      async (_elements: unknown, _initiation: unknown, returnValue?: { data: unknown }) => {
+        throw await returnValue?.data;
+      },
+    );
+
+    const result = invokeClientServerAction("action-id", [], actionInitiation, {
+      basePath: "",
+      clearClientNavigationCaches: vi.fn(),
+      clientRscCompatibilityId: null,
+      commitSameUrlNavigatePayload,
+      navigationPlanner,
+      performHardNavigation: vi.fn(),
+      renderRedirectPayload: vi.fn(),
+      syncCurrentHistoryState: vi.fn(),
+      syncServerActionHttpFallbackHead: vi.fn(),
+    });
+    const rejection = expect(result).rejects.toBe(thrown);
+
+    await vi.waitFor(() => {
+      expect(commitSameUrlNavigatePayload).toHaveBeenCalledOnce();
+    });
+    rejectActionResult(thrown);
+    await rejection;
+  });
+
   it("commits the RSC tree for revalidated actions and returns the action value", async () => {
     const wireElements = AppElementsWire.createMetadataEntries({
       interception: null,

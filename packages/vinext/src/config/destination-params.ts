@@ -29,6 +29,13 @@ const _compiledDestinationParamCache = new Map<string, RegExp>();
  *   verbatim, so an already percent-encoded capture is decoded once by the
  *   client. vinext inserts redirect params verbatim too.
  *
+ * A rewrite's absolute destination is proxied server-side, so params in its
+ * authority (`https://:tenant.example.com/`) are percent-encoded, keeping the
+ * `%XX` escapes a raw path capture already carries. A decoded `has` capture
+ * carrying `#`, `/`, `?`, `@` or `:` then makes the host invalid instead of
+ * moving the proxy to another host. Next.js substitutes the hostname verbatim
+ * and can be retargeted this way; vinext is stricter.
+ *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
  */
@@ -43,21 +50,41 @@ export function substituteDestinationParams(
   const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
     value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
 
+  if (kind === "redirect") return replaceParams(destination, (value) => value);
+
   const hashIndex = destination.indexOf("#");
   const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
   const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
   const queryIndex = beforeHash.indexOf("?");
+  const beforeQuery = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+  // A param may supply the scheme itself (`:proto://:tenant.example.com/`), so
+  // find the authority with each param token standing in as same-length text.
+  const authorityEnd = getAbsoluteUrlAuthorityEnd(
+    beforeQuery.replace(paramRe, (token) => "x".repeat(token.length)),
+  );
+  const path = `${replaceParams(beforeQuery.slice(0, authorityEnd), encodeAuthorityParam)}${replaceParams(
+    beforeQuery.slice(authorityEnd),
+    (value) => value,
+  )}`;
+  const query =
+    queryIndex === -1
+      ? ""
+      : `?${replaceParams(beforeHash.slice(queryIndex + 1), encodeRewriteQueryParamValue)}`;
+  return `${path}${query}${replaceParams(hash, (value) => value)}`;
+}
 
-  if (kind === "rewrite" && queryIndex !== -1) {
-    const beforeQuery = beforeHash.slice(0, queryIndex);
-    const query = beforeHash.slice(queryIndex + 1);
-    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
-      query,
-      encodeRewriteQueryParamValue,
-    )}${replaceParams(hash, (value) => value)}`;
-  }
-
-  return replaceParams(destination, (value) => value);
+// End of the `scheme://authority` prefix of an absolute URL. Like the URL
+// parser for special schemes, any run of `/` or `\` after the scheme belongs
+// to the prefix, and the ASCII tab/newline characters it strips do not end it.
+// A destination that is neither a path nor a literal absolute URL (Next.js
+// rejects these) has its first segment treated the same way, so a param can
+// never supply the `:` or slashes of a scheme.
+function getAbsoluteUrlAuthorityEnd(value: string): number {
+  const scheme = /^[a-z][a-z0-9+.-]*:[/\\\t\n\r]*/i.exec(value);
+  if (!scheme && /^[/\\]/.test(value)) return 0;
+  const start = scheme ? scheme[0].length : 0;
+  const pathStart = value.slice(start).search(/[/\\]/);
+  return pathStart === -1 ? value.length : start + pathStart;
 }
 
 /**
@@ -126,6 +153,12 @@ function getDestinationParamRegex(params: Record<string, string>): RegExp | null
   }
 
   return paramRe;
+}
+
+// The host parser decodes `%XX` once and rejects forbidden code points, so a
+// kept escape (`%23`) still makes the host invalid rather than ending it.
+function encodeAuthorityParam(value: string): string {
+  return value.replace(/%(?![0-9a-f]{2})|[^A-Za-z0-9._~%-]/giu, encodeURIComponent);
 }
 
 function encodeRewriteQueryParamValue(value: string): string {

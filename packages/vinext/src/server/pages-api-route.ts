@@ -7,12 +7,12 @@ import {
   urlQueryToSearchParams,
 } from "../utils/query.js";
 import {
-  createPagesReqRes,
+  createPagesApiReqRes,
   markVinextStreamedApiResponse,
   parsePagesApiBody,
   type PagesRequestQuery,
   type PagesReqResRequest,
-  type PagesReqResResponse,
+  type PagesApiReqResResponse,
   PagesApiBodyParseError,
 } from "./pages-node-compat.js";
 import { resolveBodyParserConfig } from "./pages-body-parser-config.js";
@@ -64,7 +64,7 @@ type PagesApiRouteConfig = {
   };
 };
 
-type PagesNodeApiRouteHandler = (req: PagesReqResRequest, res: PagesReqResResponse) => unknown;
+type PagesNodeApiRouteHandler = (req: PagesReqResRequest, res: PagesApiReqResResponse) => unknown;
 
 type PagesEdgeApiRouteHandler = (request: Request) => Response | Promise<Response>;
 
@@ -116,6 +116,7 @@ type HandlePagesApiRouteOptions = {
     allowedRevalidateHeaderKeys?: readonly string[];
     i18n?: NextI18nConfig | null;
     trailingSlash?: boolean;
+    skipTrailingSlashRedirect?: boolean;
   };
   trustedRevalidateOrigin?: string;
 };
@@ -175,6 +176,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
                 basePath: options.nextConfig.basePath,
                 i18n: options.nextConfig.i18n ?? undefined,
                 trailingSlash: options.nextConfig.trailingSlash,
+                skipTrailingSlashRedirect: options.nextConfig.skipTrailingSlashRedirect,
               },
             }
           : undefined,
@@ -226,7 +228,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       ? await parsePagesApiBody(options.request, bodyParserConfig.sizeLimit)
       : undefined;
 
-    const { req, res, responsePromise } = createPagesReqRes({
+    const { req, res, responsePromise } = createPagesApiReqRes({
       allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
       initialResponseHeaders: options.initialResponseHeaders,

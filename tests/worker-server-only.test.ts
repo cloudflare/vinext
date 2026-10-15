@@ -414,3 +414,143 @@ self.postMessage("worker.ts:" + typeof keyLength);
     expect(workerJavaScript).not.toContain("({}).u");
   }, 120_000);
 });
+
+// Next.js compiles workers as part of the browser graph, so a worker that
+// imports a "use cache" module receives the same `createServerReference(...)`
+// proxies as client components, and inline "use cache" functions in worker
+// modules fail the build as they do in Client Components.
+describe("Cache functions in browser Web Worker graphs", () => {
+  const CACHE_BODY_MARKER = "__VINEXT_WORKER_CACHE_BODY__";
+
+  function cacheReferenceIds(javaScript: string): string[] {
+    return [...javaScript.matchAll(/[`"']([^`"'\s]+#\$\$vinext_cache_[0-9a-f]+)[`"']/g)].map(
+      (match) => match[1]!,
+    );
+  }
+
+  const CACHE_MODULE_SOURCE = `"use cache";
+
+const BODY = ${JSON.stringify(CACHE_BODY_MARKER)};
+
+export async function keyLength(suffix: string) {
+  return BODY + suffix;
+}
+`;
+
+  function writeWorker(root: string, specifier: string) {
+    writeFile(
+      root,
+      "app/worker.ts",
+      `import { keyLength } from ${JSON.stringify(specifier)};
+
+self.postMessage("worker.ts:" + typeof keyLength);
+`,
+    );
+  }
+
+  // Other fixture workers import cache functions too; read only this one.
+  function readWorkerJavaScript(workerDir: string): string {
+    return fs
+      .readdirSync(workerDir)
+      .filter((file) => /^worker-[^.]+\.js$/.test(file))
+      .map((file) => fs.readFileSync(path.join(workerDir, file), "utf8"))
+      .join("");
+  }
+
+  it("emits server references with the client graph's ids instead of the module body", async () => {
+    const root = copyFixture();
+    writeFile(root, "app/worker-cache.ts", CACHE_MODULE_SOURCE);
+    writeWorker(root, "./worker-cache");
+    // The client page imports the same module so the main client graph's
+    // reference ids can be compared with the worker's.
+    const pagePath = path.join(root, "app/module/page.js");
+    fs.writeFileSync(
+      pagePath,
+      fs
+        .readFileSync(pagePath, "utf8")
+        .replace(
+          'import { useState } from "react";',
+          'import { useState } from "react";\nimport { keyLength } from "../worker-cache";\nglobalThis.__workerCacheKeyLength = keyLength;',
+        ),
+    );
+
+    await buildFixture(root);
+    const clientDir = path.join(root, "dist/client");
+    const workerDir = path.join(clientDir, "_next/static/workers");
+    expect(readClientJavaScript(clientDir)).not.toContain(CACHE_BODY_MARKER);
+    const workerIds = cacheReferenceIds(readWorkerJavaScript(workerDir));
+    expect(workerIds).toHaveLength(1);
+    expect(cacheReferenceIds(readClientJavaScript(clientDir, workerDir))).toEqual(workerIds);
+  }, 120_000);
+
+  it.each(["?worker-query", "#worker-hash"])(
+    "emits server references for cache function imports with a %s postfix",
+    async (postfix) => {
+      const root = copyFixture();
+      writeFile(root, "app/worker-cache.ts", CACHE_MODULE_SOURCE);
+      writeWorker(root, `./worker-cache.ts${postfix}`);
+
+      await buildFixture(root);
+      const clientDir = path.join(root, "dist/client");
+      expect(readClientJavaScript(clientDir)).not.toContain(CACHE_BODY_MARKER);
+      expect(
+        cacheReferenceIds(readWorkerJavaScript(path.join(clientDir, "_next/static/workers"))),
+      ).toHaveLength(1);
+    },
+    120_000,
+  );
+
+  it("emits server references for virtual cache function modules", async () => {
+    const root = copyFixture();
+    writeWorker(root, "virtual:worker-cache");
+    const virtualCache: import("vite").Plugin = {
+      name: "test:virtual-worker-cache",
+      resolveId: (source) => (source === "virtual:worker-cache" ? "\0virtual:worker-cache" : null),
+      load: (id) =>
+        id === "\0virtual:worker-cache" ? CACHE_MODULE_SOURCE.replace(": string", "") : null,
+    };
+
+    await buildFixture(root, [virtualCache]);
+    const clientDir = path.join(root, "dist/client");
+    expect(readClientJavaScript(clientDir)).not.toContain(CACHE_BODY_MARKER);
+    expect(
+      cacheReferenceIds(readWorkerJavaScript(path.join(clientDir, "_next/static/workers"))),
+    ).toHaveLength(1);
+  }, 120_000);
+
+  it("leaves worker stylesheets that mention the directive untouched", async () => {
+    const root = copyFixture();
+    writeFile(root, "app/worker-cache.css", `.worker-cache { content: "use cache"; }\n`);
+    writeFile(
+      root,
+      "app/worker.ts",
+      `import css from "./worker-cache.css?inline";
+
+self.postMessage("worker.ts:" + css);
+`,
+    );
+
+    await buildFixture(root);
+    const workerDir = path.join(root, "dist/client/_next/static/workers");
+    expect(readWorkerJavaScript(workerDir)).toContain("use cache");
+  }, 120_000);
+
+  it("rejects inline cache functions in worker modules", async () => {
+    const root = copyFixture();
+    writeFile(
+      root,
+      "app/worker.ts",
+      `async function keyLength() {
+  "use cache";
+  return ${JSON.stringify(CACHE_BODY_MARKER)}.length;
+}
+
+self.postMessage("worker.ts:" + typeof keyLength);
+`,
+    );
+
+    await expect(buildFixture(root)).rejects.toThrow(
+      /not allowed to define inline "use cache" annotated functions in Client Components.*\(worker: .*worker\.ts\)/,
+    );
+  }, 120_000);
+});

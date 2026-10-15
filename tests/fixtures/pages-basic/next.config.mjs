@@ -37,6 +37,15 @@ const nextConfig = {
         destination: "/about?next=/:next&safe=1",
         permanent: false,
       },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — a decoded
+      // query capture at the start of a local destination must not become
+      // protocol-relative.
+      {
+        source: "/query-capture-redirect",
+        destination: "/:to",
+        permanent: false,
+        has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
+      },
       // Used by E2E: pages-router-prod/redirect-conditions.spec.ts — header and
       // cookie condition values are server-only and must stay out of the
       // public client bundle.
@@ -126,6 +135,14 @@ const nextConfig = {
         {
           source: "/rewrite-navigation-same/3",
           destination: "/rewrite-navigation-same/003",
+        },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination host must not be able to
+        // retarget the proxy.
+        {
+          source: "/proxy-external-host-capture",
+          has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
+          destination: "http://:proxyHost.invalid/host-capture",
         },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1

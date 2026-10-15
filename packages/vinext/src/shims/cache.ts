@@ -605,15 +605,22 @@ function scheduleUnstableCacheBackgroundRevalidation(
 async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   fn: (...args: Args) => Promise<Result>,
   args: Args,
+  keyedArgs: string,
   cacheKey: string,
   tags: string[],
   revalidateSeconds: number | false | undefined,
 ): Promise<Result> {
+  // As in Next.js, the callback gets the caller's arguments, which are keyed
+  // when the cached function is called but read only after the cache is.
+  // Unlike Next.js, a result for arguments changed in the meantime isn't
+  // stored under the key built from the old ones.
+  const argsUnchanged = serializeArgsOrNull(args) === keyedArgs;
   const result = await _unstableCacheAls.run(true, () =>
     _unstableCacheCallbackAls.run({ useCacheContext: _useCacheContextAls.getStore() }, () =>
       fn(...args),
     ),
   );
+  if (!argsUnchanged) return result;
 
   const cacheValue: CachedFetchValue = {
     kind: "FETCH",
@@ -637,6 +644,14 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   });
 
   return result;
+}
+
+function serializeArgsOrNull(args: unknown[]): string | null {
+  try {
+    return JSON.stringify(args);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -674,7 +689,8 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   const revalidateSeconds = options?.revalidate;
 
   const cachedFn = async (...args: Parameters<T>) => {
-    const invocationKey = `${fixedKey}${JSON.stringify(args)}`;
+    const keyedArgs = JSON.stringify(args);
+    const invocationKey = `${fixedKey}${keyedArgs}`;
     addCollectedRequestTags(tags);
     recordUnstableCacheObservation({
       kind: "unstable_cache",
@@ -714,7 +730,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
           if (existing.cacheState === "stale") {
             if (shouldServeStaleUnstableCacheEntry()) {
               scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
-                refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+                refreshUnstableCacheResult(fn, args, keyedArgs, cacheKey, tags, revalidateSeconds),
               );
               return cached.value;
             }
@@ -732,7 +748,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     if (isDraftMode) {
       return await _unstableCacheAls.run(true, () => fn(...args));
     }
-    return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+    return await refreshUnstableCacheResult(fn, args, keyedArgs, cacheKey, tags, revalidateSeconds);
   };
 
   return cachedFn as T;

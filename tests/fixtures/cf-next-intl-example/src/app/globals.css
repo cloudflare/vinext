@@ -1,0 +1,3 @@
+/* vinext: Tailwind v4 entry, loading upstream's v3 config. */
+@import 'tailwindcss';
+@config '../../tailwind.config.mjs';

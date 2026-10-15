@@ -406,6 +406,33 @@ describe("Link prefetch pure decisions", () => {
         expected: "/path?tab=1#section",
       },
       {
+        name: "same-origin URL with a // pathname",
+        input: {
+          href: "https://example.com//evil.com/path?q=1",
+          basePath: "",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/evil.com/path?q=1",
+      },
+      {
+        name: "same-origin URL with a // pathname after basePath",
+        input: {
+          href: "https://example.com/docs//evil.com/path",
+          basePath: "/docs",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/evil.com/path",
+      },
+      {
+        name: "same-origin URL with a // pathname before basePath",
+        input: {
+          href: "https://example.com//docs/path",
+          basePath: "/docs",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/path",
+      },
+      {
         name: "same-origin without required basePath",
         input: {
           href: "https://example.com/path",
@@ -3080,6 +3107,52 @@ describe("Link prefetch scheduling", () => {
           priority: "low",
         }),
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("promotes only prefetch entries for the hovered // pathname on the app origin", async () => {
+    stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/.//attacker.example/z",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+    const { createRscRequestHeaders, createRscRequestUrl } =
+      await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const targetRscUrl = await createRscRequestUrl(
+      "/.//attacker.example/z",
+      createRscRequestHeaders(),
+    );
+    // A rendered-path alias key for a different page whose path starts with
+    // "//". Resolved against the page URL it would read as pathname
+    // "//attacker.example/z" on host "a".
+    const otherPageKey = "//a//attacker.example/z";
+    const createEntry = () => ({
+      cacheForNavigation: false,
+      outcome: "cache-seeded" as const,
+      snapshot: {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: targetRscUrl,
+      },
+      timestamp: Date.now(),
+    });
+
+    try {
+      getPrefetchCache().set(targetRscUrl, createEntry());
+      getPrefetchCache().set(otherPageKey, createEntry());
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(getPrefetchCache().get(targetRscUrl)?.cacheForNavigation).toBe(true);
+      expect(getPrefetchCache().get(otherPageKey)?.cacheForNavigation).toBe(false);
     } finally {
       result.restoreNodeEnv();
     }

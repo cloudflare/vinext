@@ -93,7 +93,10 @@ describe("automatically static Pages prerender cache", () => {
   });
 });
 
-describe("dynamic Pages prerender cache", () => {
+// Mirrors Next.js production gating in packages/next/src/server/route-modules/pages/pages-handler.ts
+// Production requests never call getStaticPaths; a stored entry for the path is
+// served (fresh or stale) on every cache backend, not only packaged prerenders.
+describe("dynamic Pages stored entry", () => {
   const values: Array<[string, IncrementalCacheValue | null]> = [
     [
       "page",
@@ -116,12 +119,14 @@ describe("dynamic Pages prerender cache", () => {
   ];
 
   it.each(
-    [false, true].flatMap((isDataReq) =>
-      values.map(([name, value]) => ({ isDataReq, name, value })),
+    [true, undefined].flatMap((hasPrerenderedPages) =>
+      [false, true].flatMap((isDataReq) =>
+        values.map(([name, value]) => ({ hasPrerenderedPages, isDataReq, name, value })),
+      ),
     ),
   )(
-    "serves packaged $name without rerunning getStaticPaths (data: $isDataReq)",
-    async ({ isDataReq, value }) => {
+    "serves stored $name without rerunning getStaticPaths (data: $isDataReq, prerendered adapter: $hasPrerenderedPages)",
+    async ({ hasPrerenderedPages, isDataReq, value }) => {
       // Next.js checks its built prerender manifest before fallback exclusion.
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
       const getStaticPaths = vi.fn(() => {
@@ -130,7 +135,7 @@ describe("dynamic Pages prerender cache", () => {
       const getStaticProps = vi.fn(async () => ({ props: {} }));
       const options = createOptions({
         isDataReq,
-        hasPrerenderedPages: true,
+        hasPrerenderedPages,
         route: { isDynamic: true },
         pageModule: { getStaticPaths, getStaticProps },
         isrGet: vi.fn<ResolvePagesPageDataOptions["isrGet"]>(async () => ({
@@ -159,34 +164,105 @@ describe("dynamic Pages prerender cache", () => {
     },
   );
 
-  it("admits a nonce request by its packaged entry but renders it fresh", async () => {
-    // The packaged HTML cannot carry this request's nonce, but its existence
-    // still proves the path was generated at build time.
+  it.each([true, undefined])(
+    "admits a nonce request by its stored entry but renders it fresh (prerendered adapter: %s)",
+    async (hasPrerenderedPages) => {
+      // The stored HTML cannot carry this request's nonce, but its existence
+      // still proves the path was admitted.
+      const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: false as const }));
+      const getStaticProps = vi.fn(async () => ({ props: { fresh: true } }));
+      const options = createOptions({
+        hasPrerenderedPages,
+        scriptNonce: "request-nonce",
+        route: { isDynamic: true },
+        pageModule: { getStaticPaths, getStaticProps },
+        isrGet: vi.fn<ResolvePagesPageDataOptions["isrGet"]>(async () => ({
+          isStale: false,
+          value: { lastModified: 0, cacheControl: { revalidate: false }, value: values[0][1] },
+        })),
+      });
+      const result = await resolvePagesPageData(options);
+      expect(getStaticPaths).not.toHaveBeenCalled();
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(result.kind).toBe("render");
+    },
+  );
+
+  it.each([false, true])(
+    "serves a stale stored page without rerunning getStaticPaths (data: %s)",
+    async (isDataReq) => {
+      const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: false as const }));
+      const getStaticProps = vi.fn(async () => ({ props: {} }));
+      const options = createOptions({
+        isDataReq,
+        route: { isDynamic: true },
+        pageModule: { getStaticPaths, getStaticProps },
+        isrGet: vi.fn<ResolvePagesPageDataOptions["isrGet"]>(async () => ({
+          isStale: true,
+          value: { lastModified: 0, cacheControl: { revalidate: 60 }, value: values[0][1] },
+        })),
+      });
+      const result = await resolvePagesPageData(options);
+      expect(getStaticPaths).not.toHaveBeenCalled();
+      expect(options.triggerBackgroundRegeneration).toHaveBeenCalledOnce();
+      expect(options.isrGet).toHaveBeenCalledExactlyOnceWith("pages:/posts/post");
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") throw new Error("expected cached response");
+      expect(result.response.headers.get("x-vinext-cache")).toBe("STALE");
+    },
+  );
+
+  it.each([false, true])(
+    "renders an adapter-stored entry regeneration without rerunning getStaticPaths (data: %s)",
+    async (isDataReq) => {
+      // Response Store keeps its entries outside isrGet; its trusted
+      // regeneration callback proves the path was admitted for this build.
+      const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: true as const }));
+      const getStaticProps = vi.fn(async () => ({ props: { regenerated: true }, revalidate: 60 }));
+      const options = createOptions({
+        isDataReq,
+        regeneratesStoredEntry: true,
+        route: { isDynamic: true },
+        pageModule: { getStaticPaths, getStaticProps },
+      });
+      const result = await resolvePagesPageData(options);
+      expect(getStaticPaths).not.toHaveBeenCalled();
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        kind: "render",
+        isFallback: false,
+        pageProps: { regenerated: true },
+      });
+      // No data-first entry: the stored entry already exists.
+      expect(options.isrSet).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not run getStaticPaths for a draft-mode request", async () => {
+    // Next.js skips the fallback gate in draft mode (`hasStaticPaths && !isDraftMode`).
     const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: false as const }));
-    const getStaticProps = vi.fn(async () => ({ props: { fresh: true } }));
+    const getStaticProps = vi.fn(async () => ({ props: { draft: true } }));
     const options = createOptions({
-      hasPrerenderedPages: true,
-      scriptNonce: "request-nonce",
+      previewData: {},
       route: { isDynamic: true },
       pageModule: { getStaticPaths, getStaticProps },
-      isrGet: vi.fn<ResolvePagesPageDataOptions["isrGet"]>(async () => ({
-        isStale: false,
-        value: { lastModified: 0, cacheControl: { revalidate: false }, value: values[0][1] },
-      })),
     });
     const result = await resolvePagesPageData(options);
     expect(getStaticPaths).not.toHaveBeenCalled();
     expect(getStaticProps).toHaveBeenCalledOnce();
-    expect(result.kind).toBe("render");
+    expect(result).toMatchObject({ kind: "render", pageProps: { draft: true } });
   });
 
-  it.each(["adapter", "preview", "on-demand", "missing", "stale", "expired"])(
-    "still resolves runtime static paths for a %s bypass or unusable entry",
-    async (reason) => {
+  it.each(
+    [true, undefined].flatMap((hasPrerenderedPages) =>
+      ["on-demand", "missing", "expired"].map((reason) => ({ hasPrerenderedPages, reason })),
+    ),
+  )(
+    "still resolves runtime static paths for a $reason request (prerendered adapter: $hasPrerenderedPages)",
+    async ({ hasPrerenderedPages, reason }) => {
       const getStaticPaths = vi.fn(async () => ({ paths: [], fallback: false }));
       const options = createOptions({
-        hasPrerenderedPages: reason !== "adapter",
-        previewData: reason === "preview" ? {} : false,
+        hasPrerenderedPages,
         isOnDemandRevalidate: reason === "on-demand",
         route: { isDynamic: true },
         pageModule: { getStaticPaths, getStaticProps: async () => ({ props: {} }) },
@@ -194,7 +270,7 @@ describe("dynamic Pages prerender cache", () => {
           reason === "missing"
             ? null
             : {
-                isStale: reason === "stale",
+                isStale: reason === "expired",
                 isExpired: reason === "expired",
                 value: {
                   lastModified: 0,
@@ -206,7 +282,7 @@ describe("dynamic Pages prerender cache", () => {
       });
       await resolvePagesPageData(options);
       expect(getStaticPaths).toHaveBeenCalledOnce();
-      if (["adapter", "on-demand"].includes(reason)) expect(options.isrGet).not.toHaveBeenCalled();
+      if (reason === "on-demand") expect(options.isrGet).not.toHaveBeenCalled();
     },
   );
 });

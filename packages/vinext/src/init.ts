@@ -7,7 +7,8 @@
  *   2. Add "type": "module" to package.json
  *   3. Rename CJS config files to .cjs
  *   4. Add vinext scripts to package.json
- *   5. Generate vite.config.ts and platform files
+ *   5. Generate vite.config.ts and platform files, plus a Tailwind PostCSS
+ *      config when Tailwind is only set up as a Turbopack loader
  *   6. Update .gitignore to include /dist/ and .vinext/
  *   7. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
  *   8. Print summary
@@ -190,6 +191,115 @@ export function scanCssModuleFiles(root: string): boolean {
     .some((entry) => /\.module\.(css|scss|sass)$/.test(entry.name));
 }
 
+// ─── Tailwind CSS via PostCSS ────────────────────────────────────────────────
+
+const NEXT_CONFIG_FILES = [
+  "next.config.ts",
+  "next.config.mts",
+  "next.config.mjs",
+  "next.config.js",
+  "next.config.cjs",
+];
+const TAILWIND_LOADERS = ["@tailwindcss/turbopack", "@tailwindcss/webpack"];
+
+const TAILWIND_POSTCSS_CONFIG = `const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+`;
+
+/**
+ * Whether the project gets Tailwind from a Turbopack loader (as create-next-app
+ * 16.4+ sets up in `turbopack.rules`) rather than from PostCSS, which is the
+ * only way vinext compiles Tailwind. The config is not evaluated: a Next config
+ * that names the loader, or a declared loader package, is enough.
+ */
+function usesTailwindTurbopackLoader(root: string): boolean {
+  for (const file of NEXT_CONFIG_FILES) {
+    const configPath = path.join(root, file);
+    if (!fs.existsSync(configPath)) continue;
+    const source = fs.readFileSync(configPath, "utf-8");
+    if (TAILWIND_LOADERS.some((loader) => source.includes(loader))) return true;
+  }
+  return TAILWIND_LOADERS.some((loader) => isDepInstalled(root, loader));
+}
+
+// postcss-load-config's search order, as Vite uses it; package.json counts
+// only when it has a `postcss` field.
+const POSTCSS_CONFIG_SEARCH_ORDER = [
+  ".postcssrc",
+  ".postcssrc.json",
+  ".postcssrc.yaml",
+  ".postcssrc.yml",
+  ".postcssrc.ts",
+  ".postcssrc.cts",
+  ".postcssrc.mts",
+  ".postcssrc.js",
+  ".postcssrc.cjs",
+  ".postcssrc.mjs",
+  "postcss.config.ts",
+  "postcss.config.cts",
+  "postcss.config.mts",
+  "postcss.config.js",
+  "postcss.config.cjs",
+  "postcss.config.mjs",
+];
+
+/** The source of the PostCSS config Vite would load, which init never replaces. */
+function readPostcssConfig(root: string): string | undefined {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
+    // Like the loader, skip falsy values.
+    if (pkg.postcss) return JSON.stringify(pkg.postcss);
+  } catch {
+    // An unreadable package.json has no PostCSS config.
+  }
+  for (const file of POSTCSS_CONFIG_SEARCH_ORDER) {
+    const configPath = path.join(root, file);
+    if (!fs.existsSync(configPath)) continue;
+    // Like the loader, skip blank config files.
+    const source = fs.readFileSync(configPath, "utf-8");
+    if (source.trim() !== "") return source;
+  }
+  return undefined;
+}
+
+/**
+ * How init sets Tailwind up for vinext when Next.js gets it from a Turbopack
+ * loader. Next.js runs PostCSS after that loader, on CSS Tailwind has already
+ * compiled, so adding the PostCSS config leaves Next's output unchanged.
+ *
+ * - `generate`: write `postcss.config.mjs` and install `@tailwindcss/postcss`.
+ * - `install`: the config already uses `@tailwindcss/postcss` (for example
+ *   the one an earlier run generated before its install failed), so only the
+ *   package may be missing.
+ * - `manual`: the config in effect does not mention Tailwind. Init leaves it
+ *   alone and asks the user to set Tailwind up.
+ * - `none`: no Turbopack loader, or Tailwind is already handled.
+ *
+ * Pass `viteConfigPath` only when init keeps that Vite config.
+ */
+type TailwindPostcssSetup = "generate" | "install" | "manual" | "none";
+
+function getTailwindPostcssSetup(root: string, viteConfigPath?: string): TailwindPostcssSetup {
+  if (!usesTailwindTurbopackLoader(root)) return "none";
+  const viteConfig = viteConfigPath ? fs.readFileSync(viteConfigPath, "utf-8") : "";
+  // Vite ignores PostCSS config files when its config sets `css.postcss` or the
+  // Lightning CSS transformer, and a Vite config that mentions Tailwind (e.g.
+  // `@tailwindcss/vite`) handles it there.
+  const config = /postcss|lightningcss|tailwindcss/.test(viteConfig)
+    ? viteConfig
+    : readPostcssConfig(root);
+  if (config === undefined) return "generate";
+  // Lightning CSS replaces PostCSS whatever the PostCSS options say.
+  if (/lightningcss/.test(config) && !config.includes("@tailwindcss/vite")) return "manual";
+  if (config.includes("@tailwindcss/postcss")) return "install";
+  return config.includes("tailwindcss") ? "none" : "manual";
+}
+
 // ─── Script Addition ─────────────────────────────────────────────────────────
 
 /**
@@ -303,6 +413,7 @@ export function getInitDependencyGroups(
   platform: InitPlatform,
   cloudflare?: CloudflareInitOptions,
   hasCssModules = false,
+  tailwindPostcss = false,
 ): InitDependencyGroups {
   const dependencies = ["vinext"];
   const devDependencies = ["vite", "@vitejs/plugin-react"];
@@ -327,6 +438,7 @@ export function getInitDependencyGroups(
     }
   }
   if (hasCssModules) devDependencies.push("vite-css-modules", "postcss");
+  if (tailwindPostcss) devDependencies.push("@tailwindcss/postcss");
   return { dependencies, devDependencies };
 }
 
@@ -430,7 +542,7 @@ function addDependencyEntries(root: string, deps: string[], { dev }: { dev: bool
  * Check if react/react-dom need upgrading for react-server-dom-webpack compatibility.
  *
  * react-server-dom-webpack versions are pinned to match their React version
- * (e.g. rsdw@19.2.6 requires react@^19.2.6). When a project has an older
+ * (e.g. rsdw@19.3.1 requires react@^19.3.1). When a project has an older
  * React (e.g. create-next-app ships react@19.2.3), we need to upgrade
  * react/react-dom BEFORE installing rsdw to avoid peer-dep conflicts.
  *
@@ -744,6 +856,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const isApp = detectProject(root).isAppRouter;
   const hasCssModules = !options.skipCssModules && scanCssModuleFiles(root);
+  // Node init with --force replaces the existing Vite config.
+  const tailwindPostcssSetup = getTailwindPostcssSetup(
+    root,
+    platform === "node" && options.force ? undefined : existingViteConfigPath,
+  );
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
@@ -835,13 +952,23 @@ export async function init(options: InitOptions): Promise<InitResult> {
       : setupNodePlatform(setupContext);
   const { generatedViteConfig, skippedViteConfig, generatedPlatformFiles } = platformSetup;
 
+  if (tailwindPostcssSetup === "generate") {
+    fs.writeFileSync(path.join(root, "postcss.config.mjs"), TAILWIND_POSTCSS_CONFIG, "utf-8");
+  }
+
   // ── Step 5: Update .gitignore ──────────────────────────────────────────
 
   const updatedGitignore = updateGitignore(root, platform, options.cloudflare?.legacyWrangler);
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
-  const neededDeps = getInitDependencyGroups(isApp, platform, options.cloudflare, hasCssModules);
+  const neededDeps = getInitDependencyGroups(
+    isApp,
+    platform,
+    options.cloudflare,
+    hasCssModules,
+    tailwindPostcssSetup === "generate" || tailwindPostcssSetup === "install",
+  );
   const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
   const missingDevDependencies = neededDeps.devDependencies.filter(
     (dep) => !isDepInstalled(root, dep),
@@ -851,11 +978,20 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const devDependencyEntriesAdded: string[] = [];
 
   // For App Router: react-server-dom-webpack requires react/react-dom versions
-  // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
+  // to match exactly (e.g. rsdw@19.3.1 needs react@^19.3.1). If the installed
   // React is too old (common with create-next-app), upgrade it first as a
-  // regular dependency to avoid ERESOLVE peer-dep conflicts.
-  if (isApp && (!shouldInstall || missingDependencies.includes("react-server-dom-webpack"))) {
-    const reactUpgrade = getReactUpgradeDeps(root, { fromManifest: !shouldInstall });
+  // regular dependency to avoid ERESOLVE peer-dep conflicts. An already
+  // declared RSDW below the floor is upgraded here too. Installing also checks
+  // declared pins, which a clean install would resolve below the floor.
+  if (isApp) {
+    const reactUpgrade = shouldInstall
+      ? [
+          ...new Set([
+            ...getReactUpgradeDeps(root),
+            ...getReactUpgradeDeps(root, { fromManifest: true, installing: true }),
+          ]),
+        ]
+      : getReactUpgradeDeps(root, { fromManifest: true });
     if (reactUpgrade.length > 0) {
       console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);
       console.log(
@@ -979,6 +1115,15 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   if (hasCssModules) {
     console.log(`    ${terminalStyle.green("\u2713")} Configured vite-css-modules for CSS Modules`);
+  }
+  if (tailwindPostcssSetup === "generate") {
+    console.log(
+      `    ${terminalStyle.green("\u2713")} Generated postcss.config.mjs for Tailwind CSS (vinext does not run turbopack.rules loaders)`,
+    );
+  } else if (tailwindPostcssSetup === "manual") {
+    console.log(
+      `    ${terminalStyle.yellow("!")} Tailwind CSS is set up as a Turbopack loader, which vinext does not run; set up "@tailwindcss/postcss" or "@tailwindcss/vite" for vinext`,
+    );
   }
   if (configKeepingWorkerName) {
     console.log(

@@ -28,6 +28,42 @@ Set `output: "standalone"` in `next.config`. A production build then emits a sel
 
 Set `PORT` and `HOST` to change the default bind address. Unlike Next.js standalone output, vinext uses `HOST`, not `HOSTNAME`.
 
+### Behind a reverse proxy
+
+Any client can send forwarding headers, so by default the Node server (`vinext start`, standalone output, and `vinext dev`) ignores them. If the server only receives traffic through a reverse proxy or load balancer you control, set one of these environment variables:
+
+<table>
+  <thead>
+    <tr>
+      <th>Variable</th>
+      <th>Effect</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>`VINEXT_TRUST_PROXY=1`</td>
+      <td>
+        Trust the proxy's headers: `X-Forwarded-Proto` sets the protocol of `request.url`, and
+        client IP and location headers populate `request.ip` and `request.geo`.
+      </td>
+    </tr>
+    <tr>
+      <td>`VINEXT_TRUSTED_HOSTS`</td>
+      <td>
+        Comma-separated hosts, such as `example.com,www.example.com`, that `X-Forwarded-Host` may
+        set as the host of `request.url`. Other values fall back to the `Host` header. Setting this
+        also enables `VINEXT_TRUST_PROXY`.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+`request.ip` and `request.geo` on `NextRequest` are vinext extensions; Next.js removed them in version 15. Without proxy trust they're `undefined` on the Node server. With it, `request.ip` reads `CF-Connecting-IP`, then `X-Real-IP`, then the first `X-Forwarded-For` entry. `request.geo` reads Cloudflare's `CF-IPCountry`, `CF-IPCity`, `CF-Region`, `CF-IPLatitude` and `CF-IPLongitude` headers, or the matching `X-Vercel-IP-*` headers.
+
+Proxy trust trusts all of these headers, so your proxy must overwrite or strip any it doesn't set itself. Otherwise a client can still choose its own IP or location. That includes a Node server behind Cloudflare, which needs `VINEXT_TRUST_PROXY=1` to read `CF-Connecting-IP`; make sure the server only accepts traffic from Cloudflare.
+
+On Cloudflare Workers, neither variable is needed. `request.ip` comes from `CF-Connecting-IP`, which Cloudflare sets, and `request.geo` comes from the request's `cf` metadata.
+
 ### Custom standalone entries
 
 The generated `server.js` is a small wrapper around `startProdServer` from `vinext/server/prod-server`. To control where the server loads the build output from, write your own entry and call `startProdServer` directly. All options are optional:

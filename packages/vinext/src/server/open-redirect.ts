@@ -30,7 +30,7 @@ const REDIRECT_LOCATION_BASE = "http://vinext.invalid";
 /**
  * What a request entry answers for a raw path containing a backslash or a
  * repeated slash: Next.js's 308, or a 404 when the collapsed path would still
- * be open-redirect shaped.
+ * be open-redirect shaped or the raw target is not origin-form.
  */
 export type RepeatedSlashRedirect = { status: 308; location: string } | { status: 404 };
 
@@ -48,15 +48,22 @@ export type RepeatedSlashRedirect = { status: 308; location: string } | { status
  * `//evil.com` → `/evil.com`. Percent-encoded `%2F`/`%5C` are not touched and
  * keep falling through to `isOpenRedirectShaped` (404), as in Next.js.
  *
- * The Location is always same-origin. Absolute-form request targets
- * (`GET http://host//x`) are left alone. A collapsed path that still starts
+ * The Location is always same-origin. A collapsed path that still starts
  * with an encoded slash or backslash (`//%2Fevil.com`, `/.//%2Fevil.com`) is
  * never echoed into a Location or routed: it gets a 404 instead.
+ *
+ * A raw Node request target that is not origin-form (`GET http://evil.example/x`,
+ * which Node's parser accepts, or `OPTIONS *`) also gets a 404. Next.js never
+ * routes these either: it 308s absolute-form targets to their own URL (the
+ * `//` after the scheme trips the same check) and 500s `OPTIONS *`. Routing
+ * them would let the request line choose the origin of `request.url` that
+ * middleware and handlers see, bypassing the Host trust policy. Request-based
+ * entries always pass a pathname.
  *
  * @param rawUrl - The raw request target: pathname plus optional `?query`
  */
 export function getRepeatedSlashRedirect(rawUrl: string): RepeatedSlashRedirect | null {
-  if (!rawUrl.startsWith("/")) return null;
+  if (!rawUrl.startsWith("/")) return { status: 404 };
   const urlParts = rawUrl.split("?");
   const pathname = urlParts[0];
   if (!REPEATED_SLASH_OR_BACKSLASH_RE.test(pathname)) return null;
@@ -77,7 +84,7 @@ function repeatedSlashRedirectHeaders(location: string): Record<string, string> 
 
 /**
  * Build the Response for a raw request path containing a backslash or a
- * repeated slash. See `getRepeatedSlashRedirect`.
+ * repeated slash, or a non-origin-form target. See `getRepeatedSlashRedirect`.
  */
 export function repeatedSlashRedirectResponse(rawUrl: string): Response | null {
   const redirect = getRepeatedSlashRedirect(rawUrl);

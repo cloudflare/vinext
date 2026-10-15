@@ -987,6 +987,20 @@ describe("app browser entry navigation scheduling", () => {
     ).toBe("/rewrite?_rsc=prefetch-digest");
   });
 
+  it("keeps same-origin prefetch response pathnames that start with // on the app origin", () => {
+    const responseUrl = resolvePrefetchNavigationResponseUrl({
+      additionalRscUrls: [],
+      origin: "https://example.com",
+      responseUrl: "https://example.com//a//attacker.example/z?_rsc=prefetch-digest",
+      visibleRscUrl: "/.//a//attacker.example/z",
+    });
+
+    expect(responseUrl).toBe("/.//a//attacker.example/z?_rsc=prefetch-digest");
+    expect(new URL(responseUrl, "https://example.com/current").href).toBe(
+      "https://example.com//a//attacker.example/z?_rsc=prefetch-digest",
+    );
+  });
+
   it("preserves cross-origin prefetch response URLs for navigation validation", () => {
     expect(
       resolvePrefetchNavigationResponseUrl({
@@ -1158,10 +1172,10 @@ describe("app browser entry navigation scheduling", () => {
     expect(resolveServerActionOperationLane("staticAndDynamic")).toBe("refresh");
   });
 
-  it("restores action HTTP fallback errors from response status", () => {
+  it("restores action HTTP fallback errors from response status", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
-    const fallback = normalizeServerActionThrownValue(new Error("sanitized"), 404);
+    const fallback = await normalizeServerActionThrownValue(new Error("sanitized"), 404);
 
     expect(fallback).toBeInstanceOf(Error);
     if (fallback instanceof Error && "digest" in fallback) {
@@ -1188,10 +1202,17 @@ describe("app browser entry navigation scheduling", () => {
     ).toBe(false);
   });
 
-  it("preserves ordinary server action errors for 500 responses", () => {
+  it("preserves ordinary server action errors for 500 responses", async () => {
     const error = new Error("sanitized action failure");
 
-    expect(normalizeServerActionThrownValue(error, 500)).toBe(error);
+    await expect(normalizeServerActionThrownValue(error, 500)).resolves.toBe(error);
+  });
+
+  it("returns the rejection of a failed action result as the thrown value", async () => {
+    // Next.js sends a failed action's result as a rejected promise.
+    const error = Object.assign(new Error("sanitized action failure"), { digest: "123" });
+
+    await expect(normalizeServerActionThrownValue(Promise.reject(error), 500)).resolves.toBe(error);
   });
 
   it("uses text/plain action response bodies as boundary errors", async () => {
@@ -4558,6 +4579,43 @@ describe("app browser navigation controller", () => {
       detach();
       vi.unstubAllEnvs();
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("commits a failed same-URL server action's tree before its thrown value settles", async () => {
+    const initialState = createState({
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings");
+    const nextElements = Promise.resolve(
+      createResolvedElements("route:/settings/account", "/", null, {
+        "page:/settings/account": React.createElement("main", null, "account"),
+      }),
+    );
+    const thrown = new Error("action failed");
+    let settleThrownValue: (value: unknown) => void = () => {};
+    const thrownValue = new Promise<unknown>((resolve) => {
+      settleThrownValue = resolve;
+    });
+
+    try {
+      const result = controller.commitSameUrlNavigatePayload(
+        nextElements,
+        stateRef.current.navigationSnapshot,
+        { data: thrownValue, ok: false },
+      );
+      const rejection = expect(result).rejects.toBe(thrown);
+
+      await vi.waitFor(() => {
+        expect(stateRef.current.routeId).toBe("route:/settings/account");
+      });
+      settleThrownValue(thrown);
+      await rejection;
+    } finally {
+      detach();
     }
   });
 

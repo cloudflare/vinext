@@ -889,6 +889,23 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === name)).toBeDefined();
   });
 
+  it("reports skipTrailingSlashRedirect as supported", () => {
+    writeFile("next.config.mjs", `export default { skipTrailingSlashRedirect: true };`);
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "skipTrailingSlashRedirect")?.status).toBe("supported");
+  });
+
+  it("reports the legacy experimental.skipTrailingSlashRedirect as supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default { experimental: { skipTrailingSlashRedirect: true } };`,
+    );
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.skipTrailingSlashRedirect")?.status).toBe(
+      "supported",
+    );
+  });
+
   it("reads next.config.ts files", () => {
     writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
 
@@ -903,7 +920,6 @@ describe("analyzeConfig", () => {
         cacheHandler: "./cache-handler.js",
         cacheHandlers: { default: "./handler.js" },
         cacheLife: { blog: { revalidate: 60 } },
-        skipTrailingSlashRedirect: true,
         reactCompiler: true,
         modularizeImports: {},
         typedRoutes: true,
@@ -918,7 +934,6 @@ describe("analyzeConfig", () => {
     expect(status("cacheHandlers")).toBe("unsupported");
     expect(status("cacheLife")).toBe("unsupported");
     expect(status("experimental.cacheLife")).toBe("unsupported");
-    expect(status("skipTrailingSlashRedirect")).toBe("unsupported");
     expect(status("compiler.relay")).toBe("unsupported");
     expect(status("experimental.dynamicIO")).toBe("unsupported");
     // Ignored, but the app still works — it only loses an optimization or type check.
@@ -1052,16 +1067,29 @@ describe("checkLibraries", () => {
     expect(items[0].detail).toContain("clerkMiddleware");
   });
 
-  it("reports next-intl and @sentry/nextjs as partial", () => {
+  it("reports next-intl as supported and names the experimental options that don't work", () => {
     writeFile(
       "package.json",
       JSON.stringify({
-        dependencies: { "next-intl": "^4.0.0", "@sentry/nextjs": "^10.0.0" },
+        dependencies: { "next-intl": "^4.0.0" },
+      }),
+    );
+
+    const [item] = checkLibraries(tmpDir);
+    expect(item.status).toBe("supported");
+    expect(item.detail).toContain("precompile");
+    expect(item.detail).not.toContain("No intl context found");
+  });
+
+  it("reports @sentry/nextjs as partial", () => {
+    writeFile(
+      "package.json",
+      JSON.stringify({
+        dependencies: { "@sentry/nextjs": "^10.0.0" },
       }),
     );
 
     const items = checkLibraries(tmpDir);
-    expect(items.find((i) => i.name === "next-intl")?.status).toBe("partial");
     expect(items.find((i) => i.name === "@sentry/nextjs")?.status).toBe("partial");
   });
 
@@ -1101,7 +1129,7 @@ describe("checkLibraries", () => {
         dependencies: {
           tailwindcss: "^3.0.0",
           "next-auth": "^4.0.0",
-          "next-intl": "^4.0.0",
+          "@sentry/nextjs": "^10.0.0",
         },
       }),
     );

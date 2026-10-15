@@ -10,6 +10,7 @@ import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "./headers.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
 import type { TrustedPrerenderState } from "./prerender-route-params.js";
 import { attachRequestCfMetadata } from "./request-pipeline.js";
+import { restoreImageOptimizationSignalFromTransport } from "./image-optimization.js";
 import { restoreStaticFileSignalFromTransport } from "./static-file-signal.js";
 
 export type AppRequestStageDispatchOptions = {
@@ -104,7 +105,10 @@ export async function dispatchAppRequestStage(
       },
       { cache: "bypass" },
     );
-    return await restoreStaticFileSignalFromTransport(response, staticFileSignalToken);
+    return await restoreImageOptimizationSignalFromTransport(
+      await restoreStaticFileSignalFromTransport(response, staticFileSignalToken),
+      staticFileSignalToken,
+    );
   }
   return options.handleRequest(request, ctx, false, dispatchResponseStage, options.probeMode);
 }

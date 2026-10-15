@@ -199,6 +199,60 @@ describe("deprecated config warnings", () => {
     }
   });
 
+  it("resolves skipTrailingSlashRedirect", async () => {
+    await expect(resolveNextConfig({})).resolves.toMatchObject({
+      skipTrailingSlashRedirect: false,
+    });
+    await expect(resolveNextConfig(null)).resolves.toMatchObject({
+      skipTrailingSlashRedirect: false,
+    });
+    await expect(resolveNextConfig({ skipTrailingSlashRedirect: true })).resolves.toMatchObject({
+      skipTrailingSlashRedirect: true,
+    });
+  });
+
+  it("moves the legacy experimental.skipTrailingSlashRedirect over the top-level key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      resolveNextConfig({
+        skipTrailingSlashRedirect: false,
+        experimental: { skipTrailingSlashRedirect: true },
+      }),
+    ).resolves.toMatchObject({ skipTrailingSlashRedirect: true });
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "`experimental.skipTrailingSlashRedirect` has been moved to `skipTrailingSlashRedirect`. Please update your next.config.js file accordingly.",
+    ]);
+  });
+
+  it("keeps the top-level skipTrailingSlashRedirect when the legacy key is nullish", async () => {
+    // A config file name no other test warns for, so warn-once cannot hide a warning.
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.ts"), "export default {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      // Next.js drops undefined/null nested config values before moving the
+      // legacy key (assignDefaults in packages/next/src/server/config.ts).
+      for (const legacy of [undefined, null]) {
+        await expect(
+          resolveNextConfig(
+            {
+              skipTrailingSlashRedirect: true,
+              experimental: { skipTrailingSlashRedirect: legacy } as never,
+            },
+            root,
+          ),
+        ).resolves.toMatchObject({ skipTrailingSlashRedirect: true });
+      }
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves both URL-normalization option names", async () => {
     await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
       skipProxyUrlNormalize: true,
@@ -2625,6 +2679,7 @@ describe("detectNextIntlConfig", () => {
       assetPrefix: "",
       basePath: "",
       trailingSlash: false,
+      skipTrailingSlashRedirect: false,
       compress: true,
       skipProxyUrlNormalize: false,
       typescript: {},

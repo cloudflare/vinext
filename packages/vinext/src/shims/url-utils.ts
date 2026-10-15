@@ -34,6 +34,16 @@ export function getWindowOrigin(): string | null {
 }
 
 /**
+ * A same-origin pathname can start with "//" (e.g. `https://app.com//evil.com`),
+ * and as a local path that is a protocol-relative reference to another host.
+ * Collapse the leading slashes: Next.js does the same for these URLs, on the
+ * client (`resolveHref`) or with its server's repeated-slash 308.
+ */
+export function collapseLeadingSlashes(pathname: string): string {
+  return pathname.replace(/^\/{2,}/, "/");
+}
+
+/**
  * If `url` is an absolute same-origin URL, return the local path
  * (pathname + search + hash). Returns null for truly external URLs
  * or on the server (where origin is unknown).
@@ -44,7 +54,7 @@ export function toSameOriginPath(url: string): string | null {
   try {
     const parsed = url.startsWith("//") ? new URL(url, origin) : new URL(url);
     if (parsed.origin === origin) {
-      return parsed.pathname + parsed.search + parsed.hash;
+      return collapseLeadingSlashes(parsed.pathname) + parsed.search + parsed.hash;
     }
   } catch {
     // not a valid absolute URL — ignore
@@ -66,7 +76,7 @@ export function toSameOriginAppPath(url: string, basePath: string): string | nul
     if (!hasBasePath(parsed.pathname, basePath)) {
       return null;
     }
-    const pathname = stripBasePath(parsed.pathname, basePath);
+    const pathname = collapseLeadingSlashes(stripBasePath(parsed.pathname, basePath));
     return pathname + parsed.search + parsed.hash;
   } catch {
     return localPath;
@@ -120,9 +130,15 @@ function removeRouteTrailingSlash(route: string): string {
  *   `.well-known`-aware redirect rule shipped in `routes-manifest.json`.
  * - Query strings and hash fragments are preserved verbatim.
  * - Idempotent: already-canonical paths round-trip unchanged.
+ * - With `skipTrailingSlashRedirect`, every path is returned as written, like
+ *   Next.js's `__NEXT_MANUAL_TRAILING_SLASH` short-circuit.
  */
 export function normalizePathTrailingSlash(path: string, trailingSlash: boolean): string {
-  if (!path.startsWith("/") || path.startsWith("//")) {
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    process.env.__VINEXT_MANUAL_TRAILING_SLASH === "true"
+  ) {
     return path;
   }
 

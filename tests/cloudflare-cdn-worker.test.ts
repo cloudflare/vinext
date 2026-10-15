@@ -569,6 +569,153 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Last-Modified")).toBeNull();
   });
 
+  it.each<{ name: string; props: Record<string, unknown>; headers: Record<string, string> }>([
+    {
+      name: "an ETag revalidation of a Pages page",
+      props: { kind: "pages-page" },
+      headers: { "If-None-Match": 'W/"stored"' },
+    },
+    {
+      name: "a Last-Modified revalidation of a Pages page",
+      props: { kind: "pages-page" },
+      headers: { "If-Modified-Since": "Tue, 06 Oct 2026 00:00:00 GMT" },
+    },
+    {
+      name: "a revalidation of a hybrid Pages page",
+      props: { kind: "hybrid-pages", resourceKind: "page" },
+      headers: { "If-Modified-Since": "Tue, 06 Oct 2026 00:00:00 GMT" },
+    },
+  ])("regenerates the stored entry for $name", async ({ props, headers }) => {
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    await createEntrypoint(responseStageInvocation(props)).fetch(
+      new Request("https://example.com/page", { headers }),
+    );
+
+    expect(stages.response.mock.calls[0]?.[5]).toEqual({
+      cache: "shared",
+      regeneratesStoredEntry: true,
+    });
+  });
+
+  it.each<{ name: string; props: Record<string, unknown>; headers: Record<string, string> }>([
+    { name: "an unconditional Pages page render", props: { kind: "pages-page" }, headers: {} },
+    {
+      name: "a deployment warm-up of a Pages page",
+      props: { kind: "pages-page" },
+      headers: { "User-Agent": "vinext-cloudflare-cdn-warm" },
+    },
+    {
+      name: "a revalidation of a Pages API route",
+      props: { kind: "pages-api" },
+      headers: { "If-None-Match": 'W/"stored"' },
+    },
+    {
+      name: "a revalidation of a hybrid Pages API route",
+      props: { kind: "hybrid-pages", resourceKind: "api" },
+      headers: { "If-None-Match": 'W/"stored"' },
+    },
+  ])("does not regenerate a stored entry for $name", async ({ props, headers }) => {
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    await createEntrypoint(responseStageInvocation(props)).fetch(
+      new Request("https://example.com/page", { headers }),
+    );
+
+    expect(stages.response.mock.calls[0]?.[5]).toEqual({ cache: "shared" });
+  });
+
+  it.each<{ name: string; props: Record<string, unknown> }>([
+    { name: "Pages page", props: { kind: "pages-page" } },
+    { name: "hybrid Pages page", props: { kind: "hybrid-pages", resourceKind: "page" } },
+  ])("gives a cacheable $name render a Last-Modified validator", async ({ props }) => {
+    stages.response.mockResolvedValue(
+      new Response("rendered", {
+        headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation(props)).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    const lastModified = response.headers.get("Last-Modified");
+    expect(lastModified).not.toBeNull();
+    expect(Number.isNaN(Date.parse(lastModified!))).toBe(false);
+  });
+
+  it.each<{ name: string; props: Record<string, unknown>; status: number }>([
+    { name: "a Pages page 404", props: { kind: "pages-page" }, status: 404 },
+    { name: "a Pages page redirect", props: { kind: "pages-page" }, status: 308 },
+    { name: "a Pages API response", props: { kind: "pages-api" }, status: 200 },
+  ])("adds no Last-Modified to $name", async ({ props, status }) => {
+    stages.response.mockResolvedValue(
+      new Response(status === 308 ? null : "rendered", {
+        headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+        status,
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation(props)).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.headers.get("Last-Modified")).toBeNull();
+  });
+
+  it.each<{ name: string; headers: Record<string, string> }>([
+    {
+      name: "an ETag from a cacheable",
+      headers: { ETag: '"bot-404"', "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+    },
+    {
+      name: "a Last-Modified from a cacheable",
+      headers: {
+        "Last-Modified": "Tue, 06 Oct 2026 00:00:00 GMT",
+        "Cloudflare-CDN-Cache-Control": "public, max-age=300",
+      },
+    },
+    {
+      name: "an ETag from a no-cache",
+      headers: { ETag: '"bot-404"', "Cache-Control": "no-cache" },
+    },
+    {
+      name: "an ETag from a qualified private",
+      headers: { ETag: '"bot-404"', "Cache-Control": 'private="Set-Cookie", max-age=300' },
+    },
+    {
+      name: "an ETag from a quoted-private",
+      headers: { ETag: '"bot-404"', "Cache-Control": 'max-age=300, ext="a, private, b"' },
+    },
+    { name: "an ETag from a policy-less", headers: { ETag: '"bot-404"' } },
+  ])("strips $name Pages page 404", async ({ headers }) => {
+    stages.response.mockResolvedValue(new Response("not found", { headers, status: 404 }));
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "pages-page" })).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("ETag")).toBeNull();
+    expect(response.headers.get("Last-Modified")).toBeNull();
+  });
+
+  it.each<{ name: string; init: { headers: Record<string, string>; status: number } }>([
+    { name: "a Pages page 304", init: { headers: { ETag: '"bot-page"' }, status: 304 } },
+    {
+      name: "a non-cacheable Pages page 404",
+      init: { headers: { "Cache-Control": "private, no-store", ETag: '"bot-404"' }, status: 404 },
+    },
+  ])("keeps the ETag on $name", async ({ init }) => {
+    stages.response.mockResolvedValue(new Response(init.status === 304 ? null : "body", init));
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "pages-page" })).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.headers.get("ETag")).toBe(init.headers.ETag);
+  });
+
   it("rejects an expected build identity when the named stage has no identity", async () => {
     const response = await createEntrypoint({
       ...responseStageInvocation({ kind: "app-page" }),

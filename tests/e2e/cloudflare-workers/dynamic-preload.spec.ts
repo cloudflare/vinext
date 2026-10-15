@@ -89,4 +89,129 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
       hidesCfAfterLock: true,
     });
   });
+
+  // Workers sends async iterable fetch bodies, so cached POSTs that differ only
+  // in that body must not share a data cache entry.
+  test("keys cached fetches by their async iterable bodies", async ({ request }) => {
+    type CachedOrigin = {
+      body: { caseId: string; visibility: string };
+      originRequestId: string;
+    };
+    const caseId = crypto.randomUUID();
+    const readCase = async (visibility: string): Promise<CachedOrigin> => {
+      const response = await request.get(
+        `${BASE_URL}/api/fetch-cache-iterable-body?case=${caseId}&visibility=${visibility}`,
+      );
+      expect(response.status()).toBe(200);
+      return (await response.json()) as CachedOrigin;
+    };
+
+    // Read until the private response is served from the data cache, so the
+    // public read below would find it if both bodies shared a key.
+    let privateEntry: CachedOrigin | undefined;
+    await expect
+      .poll(async () => {
+        const read = await readCase("private");
+        expect(read.body).toEqual({ caseId, visibility: "private" });
+        const servedFromCache = read.originRequestId === privateEntry?.originRequestId;
+        privateEntry = read;
+        return servedFromCache;
+      })
+      .toBe(true);
+
+    const publicRead = await readCase("public");
+    expect(publicRead.body).toEqual({ caseId, visibility: "public" });
+    expect(publicRead.originRequestId).not.toBe(privateEntry?.originRequestId);
+  });
+
+  // Workers sends the bytes of ArrayBuffer and other typed array chunks in a
+  // stream or async iterable fetch body, so cached POSTs are keyed by them.
+  // Views with shadowed byte range properties are keyed by the bytes sent too.
+  const chunkCases = [
+    ...["stream", "iterable"].flatMap((source) =>
+      ["dataview", "arraybuffer", "uint16array"].map((chunk) => ({ source, chunk, shadow: false })),
+    ),
+    ...["dataview", "uint16array"].map((chunk) => ({ source: "stream", chunk, shadow: true })),
+  ];
+  for (const { source, chunk, shadow } of chunkCases) {
+    const shadowed = shadow ? " shadowed" : "";
+    test(`keys cached fetches by the bytes of${shadowed} ${chunk} ${source} body chunks`, async ({
+      request,
+    }) => {
+      type CachedOrigin = {
+        body: { caseId: string; variant: string };
+        originRequestId: string;
+      };
+      const caseId = crypto.randomUUID();
+      const readCase = async (variant: string): Promise<CachedOrigin> => {
+        const response = await request.get(
+          `${BASE_URL}/api/fetch-cache-stream-chunk-body?case=${caseId}&variant=${variant}&chunk=${chunk}&source=${source}${shadow ? "&shadow" : ""}`,
+        );
+        expect(response.status()).toBe(200);
+        return (await response.json()) as CachedOrigin;
+      };
+
+      // Read until the first body is served from the data cache, so the read
+      // of the equal-length second body would find it if both shared a key.
+      let first: CachedOrigin | undefined;
+      await expect
+        .poll(
+          async () => {
+            const read = await readCase("aa");
+            expect(read.body).toEqual({ caseId, variant: "aa" });
+            const servedFromCache = read.originRequestId === first?.originRequestId;
+            first = read;
+            return servedFromCache;
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+
+      // The bodies differ only at an odd byte offset, which a Uint16Array
+      // chunk's elements wouldn't keep if they were truncated to bytes.
+      const second = await readCase("ab");
+      expect(second.body).toEqual({ caseId, variant: "ab" });
+      expect(second.originRequestId).not.toBe(first?.originRequestId);
+    });
+  }
+
+  // A cached fetch keys and sends its request as it was when fetch was called,
+  // so a change right after the call can't store one request's response under
+  // another's key.
+  for (const input of ["url", "headers", "request-headers", "body"]) {
+    test(`keys and sends a cached fetch's ${input} as it was when fetch was called`, async ({
+      request,
+    }) => {
+      type CachedOrigin = { received: string; originRequestId: string };
+      const caseId = crypto.randomUUID();
+      const readCase = async (user: string, change: boolean): Promise<CachedOrigin> => {
+        const response = await request.get(
+          `${BASE_URL}/api/fetch-cache-changed-request?case=${caseId}&input=${input}&user=${user}${change ? "&change" : ""}`,
+        );
+        expect(response.status()).toBe(200);
+        return (await response.json()) as CachedOrigin;
+      };
+
+      // Read until alice's response is served from the data cache. Each read
+      // changes the request to bobby's after the call.
+      let alice: CachedOrigin | undefined;
+      await expect
+        .poll(
+          async () => {
+            const read = await readCase("alice", true);
+            expect(read.received).toContain("alice");
+            expect(read.received).not.toContain("bobby");
+            const servedFromCache = read.originRequestId === alice?.originRequestId;
+            alice = read;
+            return servedFromCache;
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+
+      const bobby = await readCase("bobby", false);
+      expect(bobby.received).toContain("bobby");
+      expect(bobby.originRequestId).not.toBe(alice?.originRequestId);
+    });
+  }
 });

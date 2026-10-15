@@ -277,5 +277,9 @@ export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): Reg
   }
 
   route += `${delimiterRegex}?$`;
-  return new RegExp(route, "i");
+  // Next.js keeps only path-to-regexp's `.source` and recompiles it without
+  // flags, so matchers are case-sensitive. A case-insensitive negative
+  // lookahead would skip middleware for case variants like `/API/x`.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
+  return new RegExp(route);
 }

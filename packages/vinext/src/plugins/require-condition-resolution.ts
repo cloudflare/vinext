@@ -1,11 +1,12 @@
 import MagicString from "magic-string";
 import { readFile } from "node:fs/promises";
 import path from "pathslash";
-import { createIdResolver, parseAst, type ESTree, type Plugin } from "vite";
+import { createIdResolver, type ESTree, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
   isIdentifierNamed,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
@@ -62,9 +63,9 @@ function isPackageSpecifier(specifier: string): boolean {
 }
 
 function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, { lang: scriptParserLanguage(id) ?? "jsx" });
+    ast = parseProgram(code, { lang: scriptParserLanguage(id) ?? "jsx" });
   } catch {
     return [];
   }

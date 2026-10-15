@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { parseAst, type ESTree, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import {
   mayContainDynamicImport,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
@@ -68,9 +69,9 @@ function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): bo
 }
 
 function moduleDependencySpecifiers(code: string, id: string): string[] {
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, { lang: scriptParserLanguage(id) ?? "jsx" });
+    ast = parseProgram(code, { lang: scriptParserLanguage(id) ?? "jsx" });
   } catch {
     return [];
   }

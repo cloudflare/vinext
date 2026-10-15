@@ -381,7 +381,9 @@ describe("pages page response", () => {
     });
 
     expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
-    expect(response.headers.get("x-vinext-revalidated-cache-tag")).toBe("_N_T_/posts/resolved");
+    expect(response.headers.get("x-vinext-revalidated-cache-tag")).toBe(
+      encodeURIComponent("_N_T_/posts/resolved"),
+    );
   });
 
   it("persists indefinite Pages results while formatting a static response policy", async () => {

@@ -33,6 +33,8 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  formatRscRequestPath,
+  parseRscRequestPath,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -82,7 +84,8 @@ import {
   resolveDirectHybridClientRouteOwner,
   type HybridClientOwner,
 } from "./internal/hybrid-client-route-owner-direct.js";
-import { retryScrollTo, scrollToHashTarget, scrollToHashTargetOnNextFrame } from "./hash-scroll.js";
+import { disableSmoothScrollDuringRouteTransition } from "./disable-smooth-scroll.js";
+import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -584,7 +587,7 @@ export function resolvePrefetchCacheEntryMountedSlotsHeader(
 
 function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
   try {
-    const url = new URL(rscUrl, "http://vinext.local");
+    const url = parseRscRequestPath(rscUrl);
     stripRscCacheBustingSearchParam(url);
     return `${url.pathname}${url.search}`;
   } catch {
@@ -594,7 +597,7 @@ function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
 
 function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
   try {
-    const url = new URL(rscUrl, "http://vinext.local");
+    const url = parseRscRequestPath(rscUrl);
     return stripRscSuffix(url.pathname);
   } catch {
     return null;
@@ -917,8 +920,10 @@ function toAppPrefetchDestination(href: string): string | null {
     __trailingSlash,
   );
   try {
-    const url = new URL(browserHref, window.location.href);
-    return `${url.pathname}${url.search}`;
+    // A pathname that starts with "//" must not come back as a
+    // protocol-relative reference: the prefetch path resolves this value
+    // against the current URL again and would read its first segment as a host.
+    return formatRscRequestPath(new URL(browserHref, window.location.href));
   } catch {
     return browserHref.split("#", 1)[0];
   }
@@ -2496,7 +2501,13 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
     // Browsers can apply their own scroll restoration after the navigation's
     // commit microtasks. Defer the fallback to the next frame so that native
     // work cannot immediately reset the requested fragment scroll.
-    scrollToHashTargetOnNextFrame(intent.hash, () => isLatestAppRouterScrollIntent(intent));
+    const hash = intent.hash;
+    requestAnimationFrame(() => {
+      if (!isLatestAppRouterScrollIntent(intent)) return;
+      disableSmoothScrollDuringRouteTransition(() => {
+        scrollToHashTarget(hash);
+      });
+    });
     return;
   }
 
@@ -2511,7 +2522,9 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
     return;
   }
 
-  document.documentElement.scrollTop = 0;
+  disableSmoothScrollDuringRouteTransition(() => {
+    document.documentElement.scrollTop = 0;
+  });
 }
 
 function scheduleAppRouterScrollFallback(intent: AppRouterScrollIntent): void {

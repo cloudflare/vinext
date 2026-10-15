@@ -36,11 +36,14 @@ jobs:
         id: names
         shell: bash
         run: |
+          # Never redeploy over a live Worker: after a deploy the previous version
+          # keeps serving some requests for up to a minute, and the store keys
+          # all data by the client's version ID, so those requests miss.
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             prefix="pr-${{ github.event.pull_request.number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             service_name="${prefix}-rs-service"
           else
-            prefix="main"
+            prefix="main-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             service_name="vinext-workers-response-store-service-poc"
           fi
           {
@@ -109,7 +112,7 @@ jobs:
           vp run test:live
 
       - name: Clean up live Response Store Workers
-        if: always() && github.event_name == 'pull_request'
+        if: always()
         continue-on-error: true
         working-directory: packages/workers-response-store
         env:
@@ -127,7 +130,6 @@ jobs:
     # Skip entirely for fork and Dependabot PRs — they don't have access to deploy secrets.
     if: github.event_name == 'push' || (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
     name: Deploy ${{ matrix.example.name }}
-    needs: response_store
     runs-on: ubuntu-latest
     permissions:
       contents: read

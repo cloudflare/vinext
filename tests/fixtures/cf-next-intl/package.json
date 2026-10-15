@@ -1,0 +1,25 @@
+{
+  "name": "vinext-cf-next-intl",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@mdx-js/react": "catalog:",
+    "@mdx-js/rollup": "catalog:",
+    "@next/mdx": "catalog:",
+    "@radix-ui/react-dropdown-menu": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
+    "next-intl": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "wrangler": "catalog:",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/mdx": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

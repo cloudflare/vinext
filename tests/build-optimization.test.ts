@@ -1006,6 +1006,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.include).toContain(
         "use-sync-external-store/with-selector",
       );
+      expect(workerEnvConfig.optimizeDeps.include).toContain(
+        "vinext > @vitejs/plugin-rsc/react/rsc",
+      );
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
@@ -1079,6 +1082,61 @@ describe("optimizeDeps.exclude for vinext", () => {
       "browser",
     );
   }, 15000);
+
+  it.each([
+    { include: [], exclude: ["@vitejs/plugin-rsc"] },
+    { include: ["@vitejs/plugin-rsc/react/rsc"], exclude: [] },
+  ])(
+    "respects worker opt-outs of the nested plugin-rsc include (%o)",
+    async ({ include, exclude }) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const plugins = vinext();
+      const mainPlugin = plugins.find(
+        (p: any) =>
+          p.name === "vinext:config" &&
+          typeof p.config === "function" &&
+          typeof p.configResolved === "function",
+      );
+      expect(mainPlugin).toBeDefined();
+
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-rsc-include-"));
+      await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "index.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+      await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+      try {
+        await (mainPlugin as any).config(
+          {
+            root: tmpDir,
+            build: {},
+            plugins: [{ name: "vite-plugin-cloudflare" }],
+          },
+          { command: "serve" },
+        );
+
+        const workerConfig = { optimizeDeps: { include: [...include], exclude: [...exclude] } };
+        (mainPlugin as any).configEnvironment("worker", workerConfig);
+        await (mainPlugin as any).configResolved({
+          cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { worker: workerConfig },
+          logger: createLogger("silent"),
+          plugins: [],
+        });
+
+        expect(workerConfig.optimizeDeps.include).not.toContain(
+          "vinext > @vitejs/plugin-rsc/react/rsc",
+        );
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    15000,
+  );
 
   it.each([false, true])(
     "scopes optional worker warnings (explicit include: %s)",

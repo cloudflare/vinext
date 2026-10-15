@@ -17,6 +17,7 @@ import {
   isAppWorkerResponseStageProps,
   type AppWorkerResponseStageProps,
 } from "./app-worker-stages.js";
+import { serializeImageOptimizationSignalForTransport } from "./image-optimization.js";
 import { serializeStaticFileSignalForTransport } from "./static-file-signal.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { validateCdnRequest } from "./cache-control.js";
@@ -103,6 +104,8 @@ export async function handleResponseStage(
   );
   if (props.kind === "app-full-request" && props.prerenderDiscovery) {
     ctx = { ...ctx, isPrerenderPathDiscovery: true };
+  } else if (props.kind === "hybrid-pages" && options.regeneratesStoredEntry === true) {
+    ctx = { ...ctx, isStoredEntryRegeneration: true };
   }
   return withResponseStageCacheability(
     {
@@ -159,8 +162,9 @@ export async function handleResponseStage(
           failure = error;
           result = new Response("Internal Server Error", { status: 500 });
         }
-        const serialized = serializeStaticFileSignalForTransport(
-          result,
+        // The image signal shares the static-file signal's token.
+        const serialized = serializeImageOptimizationSignalForTransport(
+          serializeStaticFileSignalForTransport(result, props.staticFileSignalToken),
           props.staticFileSignalToken,
         );
         return attachFrameworkRequestRoute(

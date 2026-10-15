@@ -132,9 +132,12 @@ type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
   requestMode?: AppRouteRequestMode;
+  /** Host signal for the client connection (UnifiedRequestContext.requestSignal). */
+  signal?: AbortSignal;
   staticGenerationErrorMessage?: (expression?: string) => string;
 };
 
@@ -192,8 +195,14 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
   basePath?: string;
   i18n?: NextI18nConfig;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
 } | null {
-  if (!options.basePath && !options.i18n && !options.trailingSlash) {
+  if (
+    !options.basePath &&
+    !options.i18n &&
+    !options.trailingSlash &&
+    !options.skipTrailingSlashRedirect
+  ) {
     return null;
   }
 
@@ -201,12 +210,29 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
     basePath: options.basePath,
     i18n: options.i18n ?? undefined,
     trailingSlash: options.trailingSlash,
+    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
   };
+}
+
+/**
+ * Undici's Request follows its input's signal through a WeakRef, and so does
+ * every clone between the host signal and the handler's request. A handler
+ * that only listens on `request.signal` (e.g. to stop a stream) would miss the
+ * abort once GC collects any of them, so the request follows the host signal
+ * directly and stays reachable for as long as that signal is.
+ */
+const requestsByHostSignal = new WeakMap<AbortSignal, Request[]>();
+
+function retainWhileSignalLives(signal: AbortSignal, request: Request): void {
+  const requests = requestsByHostSignal.get(signal);
+  if (requests) requests.push(request);
+  else requestsByHostSignal.set(signal, [request]);
 }
 
 function createForceStaticNextRequest(
   input: Request,
   nextConfig: ReturnType<typeof buildNextConfig>,
+  signal: AbortSignal | undefined,
 ): NextRequest {
   // Rebuild from standard fields instead of a Request object so Workers does
   // not copy the inbound request's internal cf slot onto the branded target.
@@ -229,7 +255,7 @@ function createForceStaticNextRequest(
     redirect: read<RequestRedirect>("redirect"),
     referrer: read<string>("referrer"),
     referrerPolicy: read<ReferrerPolicy>("referrerPolicy"),
-    signal: read<AbortSignal>("signal"),
+    signal: signal ?? read<AbortSignal>("signal"),
     nextConfig: nextConfig ?? undefined,
   });
 }
@@ -431,10 +457,16 @@ export function createTrackedAppRouteRequest(
       : Reflect.get(requestWithOverrides, "cf", requestWithOverrides);
     const nextRequest =
       requestMode === "force-static"
-        ? createForceStaticNextRequest(requestWithOverrides, nextConfig)
-        : requestWithOverrides instanceof NextRequest && sourceCfDescriptor?.configurable !== false
+        ? createForceStaticNextRequest(requestWithOverrides, nextConfig, options.signal)
+        : requestWithOverrides instanceof NextRequest &&
+            sourceCfDescriptor?.configurable !== false &&
+            !options.signal
           ? requestWithOverrides
-          : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
+          : new NextRequest(requestWithOverrides, {
+              nextConfig: nextConfig ?? undefined,
+              signal: options.signal,
+            });
+    if (options.signal) retainWhileSignalLives(options.signal, nextRequest);
     const rawCfMetadata = sourceCfAccessor
       ? undefined
       : sourceCfMetadata === undefined

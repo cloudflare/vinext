@@ -15,6 +15,8 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { GENERIC_RSC_ERROR } from "../action-error-sanitization";
+import { waitForAppRouterHydration } from "../helpers";
 
 /**
  * Tests that verify the startup state. register() is called once at server
@@ -93,6 +95,60 @@ test.describe("instrumentation.ts onRequestError", () => {
     const data = await stateRes.json();
     expect(data.errors.length).toBeGreaterThanOrEqual(2);
   });
+
+  // Next.js reports a thrown fetch action through the Flight render of its
+  // rejected result, with routeType "action".
+  // Reproduced against next@16.2.7: onRequestError() gets the thrown value as
+  // an Error. In dev the browser gets React's description of it; a production
+  // build sends only React's generic message and a digest.
+  for (const { trigger, clientText, message } of [
+    {
+      trigger: "throw-error",
+      clientText: "Error: connect postgres://admin:s3cret@10.0.0.5:5432/prod failed",
+      message: "connect postgres://admin:s3cret@10.0.0.5:5432/prod failed",
+    },
+    {
+      trigger: "throw-structured",
+      clientText: "Error: {code: ..., connectionString: ..., stack: ...}",
+      message:
+        /^\{"code":"DB_CONNECTION_FAILED","connectionString":"postgres:\/\/admin:s3cret@10\.0\.0\.5:5432\/prod","stack":"Error: structured failure\\n/,
+    },
+  ]) {
+    test(`onRequestError() is called when a fetch action throws (${trigger})`, async ({
+      page,
+      request,
+    }, testInfo) => {
+      // The only project that runs this spec against a production build.
+      const production = testInfo.project.name === "cloudflare-workers";
+      await page.goto("/action-error-sanitization");
+      await waitForAppRouterHydration(page);
+      await page.click(`#${trigger}`);
+      await expect(page.locator("#error-text")).toHaveText(
+        production ? GENERIC_RSC_ERROR : clientText,
+      );
+      await expect(page.locator("#error-digest")).toHaveText(/^\S+$/);
+      await expect(page.locator("#error-keys")).toHaveText(
+        production ? "digest" : "digest,environmentName,name",
+      );
+
+      await expect(async () => {
+        const data = await (await request.get("/api/instrumentation-test")).json();
+        const actionErrors = data.errors.filter(
+          (error: { path: string }) => error.path === "/action-error-sanitization",
+        );
+        expect(actionErrors).toEqual([
+          {
+            message: typeof message === "string" ? message : expect.stringMatching(message),
+            method: "POST",
+            path: "/action-error-sanitization",
+            routePath: "/action-error-sanitization",
+            routeType: "action",
+            routerKind: "App Router",
+          },
+        ]);
+      }).toPass({ timeout: 5_000 });
+    });
+  }
 
   test("successful requests do not trigger onRequestError()", async ({ request }) => {
     // A normal successful API request should not produce an error entry.

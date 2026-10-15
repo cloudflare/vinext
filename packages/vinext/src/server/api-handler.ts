@@ -409,6 +409,7 @@ export async function handleApiRoute(
     trustedRevalidateOrigin?: string;
     allowedRevalidateHeaderKeys?: readonly string[];
     trailingSlash?: boolean;
+    skipTrailingSlashRedirect?: boolean;
   },
 ): Promise<boolean> {
   const match = matchRoute(url, apiRoutes);
@@ -431,6 +432,7 @@ export async function handleApiRoute(
                 basePath: nextConfig.basePath,
                 i18n: nextConfig.i18n ?? undefined,
                 trailingSlash: nextConfig.trailingSlash,
+                skipTrailingSlashRedirect: nextConfig.skipTrailingSlashRedirect,
               },
             }
           : undefined,

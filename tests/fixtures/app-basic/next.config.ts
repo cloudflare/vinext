@@ -102,6 +102,14 @@ const nextConfig: NextConfig = {
         destination: "/about?next=/:next&safe=1",
         permanent: false,
       },
+      // Used by E2E: config-redirect.spec.ts — a decoded query capture at the
+      // start of a local destination must not become protocol-relative.
+      {
+        source: "/query-capture-redirect",
+        destination: "/:to",
+        permanent: false,
+        has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
+      },
       // Ported from Next.js v16.2.6:
       // test/e2e/app-dir/rsc-query-routing/next.config.js
       {
@@ -149,12 +157,42 @@ const nextConfig: NextConfig = {
             : "/encoded-parity/rewrite/:path*",
           destination: "/encoded-parity/page/:path*",
         },
+        // Used by E2E: app-router-encoded-basepath-i18n — every rewrite phase
+        // serializes a literal non-ASCII destination like Next.js, but keeps a
+        // substituted `..` capture verbatim instead of resolving it.
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/before"
+            : "/encoded-parity-pages/before",
+          destination: "/encoded-parity-café",
+        },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/before-dynamic"
+            : "/encoded-parity-pages/before-dynamic",
+          destination: "/pages-to-app/café",
+        },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/before-capture"
+            : "/encoded-parity-pages/before-capture",
+          has: [{ type: "query", key: "n", value: "(?<n>.*)" }],
+          destination: "/pages-to-app/:n",
+        },
         // Used by Vitest: app-router.test.ts
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/rewrite-about"
             : "/rewrite-about",
           destination: "/about",
+        },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination host must not be able to
+        // retarget the proxy.
+        {
+          source: "/proxy-external-host-capture",
+          has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
+          destination: "http://:proxyHost.invalid/host-capture",
         },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
@@ -209,6 +247,26 @@ const nextConfig: NextConfig = {
         },
       ],
       afterFiles: [
+        // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/after"
+            : "/encoded-parity-pages/after",
+          destination: "/encoded-parity-café",
+        },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/after-dynamic"
+            : "/encoded-parity-pages/after-dynamic",
+          destination: "/pages-to-app/café",
+        },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/after-capture"
+            : "/encoded-parity-pages/after-capture",
+          has: [{ type: "query", key: "n", value: "(?<n>.*)" }],
+          destination: "/pages-to-app/:n",
+        },
         // Used by Vitest: app-router.test.ts
         { source: "/after-rewrite-about", destination: "/about" },
         // Ported from Next.js: test/e2e/app-dir/revalidate-path-with-rewrites/next.config.js
@@ -245,6 +303,26 @@ const nextConfig: NextConfig = {
         },
       ],
       fallback: [
+        // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/fallback"
+            : "/encoded-parity-pages/fallback",
+          destination: "/encoded-parity-café",
+        },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/fallback-dynamic"
+            : "/encoded-parity-pages/fallback-dynamic",
+          destination: "/pages-to-app/café",
+        },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity-pages/fallback-capture"
+            : "/encoded-parity-pages/fallback-capture",
+          has: [{ type: "query", key: "n", value: "(?<n>.*)" }],
+          destination: "/pages-to-app/:n",
+        },
         // Used by Vitest: app-router.test.ts — fallback rewrite gated on a
         // cookie injected by middleware. Fallback runs after middleware and
         // after a 404 from route matching, so it should see middleware-injected

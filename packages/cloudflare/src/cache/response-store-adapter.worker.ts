@@ -26,7 +26,7 @@ import {
   SHARED_RESPONSE_STAGE_HEADER,
   type SharedResponseStage,
 } from "./browser-cache-policy.js";
-import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import { hasSharedCacheCredentials, isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
@@ -115,7 +115,7 @@ function replayHeaders(request: Request): [string, string][] {
 function isReplayableInvocation(request: Request, props: unknown): boolean {
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "HEAD") return false;
-  if (request.headers.has("authorization") || request.headers.has("cookie")) return false;
+  if (hasSharedCacheCredentials(request.headers)) return false;
   return !(
     props &&
     typeof props === "object" &&
@@ -182,7 +182,10 @@ async function invokeResponseStage(
   props: unknown,
   env: VinextResponseStoreEnv,
   ctx: WorkerExecutionContext,
-  stageOptions: Pick<VinextResponseStageDispatchOptions, "cache" | "renderWholeDocument">,
+  stageOptions: Pick<
+    VinextResponseStageDispatchOptions,
+    "cache" | "regeneratesStoredEntry" | "renderWholeDocument"
+  >,
   capture?: ResponseStoreInvocationCapture,
   invocation?: SerializedInvocation,
 ): Promise<Response> {
@@ -225,13 +228,15 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
       if (input.id === ROUTE_REVALIDATOR_ID) {
         const invocation = parseInvocation(input.args.at(-1));
         // No client waits on a regeneration, so it renders the document
-        // whole, as Next.js renders a static page.
+        // whole, as Next.js renders a static page. Only the store invokes
+        // this callback, and only for an entry it holds, so the render may
+        // skip request-time admission such as getStaticPaths().
         const response = await invokeResponseStage(
           restoreRequest(invocation),
           invocation.props,
           env,
           ctx,
-          { cache: "shared", renderWholeDocument: true },
+          { cache: "shared", regeneratesStoredEntry: true, renderWholeDocument: true },
         );
         if (!isCacheable(response)) {
           await response.body?.cancel().catch(() => {});

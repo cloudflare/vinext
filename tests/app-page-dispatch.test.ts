@@ -33,6 +33,7 @@ import {
 import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -405,6 +406,7 @@ type CreateDispatchOptionsOverrides = {
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
   request?: Request;
   revalidateSeconds?: number | null;
+  rootParams?: DispatchOptions["rootParams"];
   resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
   resolveRouteRevalidateSeconds?: DispatchOptions["resolveRouteRevalidateSeconds"];
   resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
@@ -510,6 +512,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     renderToReadableStream,
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
+    rootParams: overrides.rootParams,
     renderWholeDocument: overrides.renderWholeDocument,
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
     resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
@@ -3724,6 +3727,61 @@ describe("app page dispatch", () => {
     expect(afterRan).toBe(true);
   });
 
+  it("exposes the request's root params to a stale HTML regeneration", async () => {
+    // Background regeneration runs in its own request context. Without the
+    // request's root params, `next/root-params` getters resolve to undefined
+    // and the regenerated entry is rendered for the wrong root segment.
+    const route = createRoute({ pattern: "/[lang]/posts", routeSegments: ["[lang]", "posts"] });
+    let scheduledRender: unknown = null;
+    let renderedLang: unknown = "unset";
+    const isrSet = vi.fn(async () => {});
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => {
+        renderedLang = await getRootParam("lang");
+        return React.createElement("main", null, "fresh");
+      },
+      cleanPathname: "/en/posts",
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream() {
+        return createStream(["flight"]);
+      },
+      revalidateSeconds: 60,
+      rootParams: { lang: "en" },
+      route,
+      scheduleBackgroundRegeneration: (_key, renderFn) => {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    expect(renderedLang).toBe("en");
+    expect(isrSet).toHaveBeenCalled();
+  });
+
   it("regenerates stale HTML-captured RSC data under the plain key without interception context", async () => {
     let scheduledRender: unknown = null;
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
@@ -4939,7 +4997,8 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
     expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    // The query-bearing render is a cache candidate, so its MISS is final.
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     await expect(response.text()).resolves.toContain("fresh render");
     expect(buildPageElement).toHaveBeenCalled();
   });
@@ -5578,38 +5637,62 @@ describe("query-free App page ISR entries", () => {
 
   // Ported from Next.js app-static.test.ts:4622-4700 and the plan's canary
   // test: useSearchParams() inside Suspense keeps the page cached with the
-  // fallback, and the stored entry never carries the query.
-  it("keeps a canary query out of a static Suspense useSearchParams() page's HTML and RSC entries", async () => {
-    const canary = crypto.randomUUID();
-    const { cache, isrGet, isrSet } = createCache();
-    const renders: (boolean | undefined)[] = [];
-    const overrides = { isrGet, isrSet, loadSsrHandler: createProductionSsrHandler(renders) };
+  // fallback, and the stored entry never carries the query. A cacheComponents
+  // build prerenders the same page as fully static, so it shares the rule,
+  // and also stores a dynamic route without generateStaticParams.
+  it.each([
+    { build: "a standard build", generateStaticParams: undefined, pprRuntime: undefined },
+    {
+      build: "a cacheComponents build",
+      generateStaticParams: undefined,
+      pprRuntime: appPagePprRuntime,
+    },
+    {
+      build: "a cacheComponents build without generateStaticParams",
+      generateStaticParams: null,
+      pprRuntime: appPagePprRuntime,
+    },
+  ])(
+    "keeps a canary query out of a static Suspense useSearchParams() page's HTML and RSC entries in $build",
+    async ({ generateStaticParams, pprRuntime }) => {
+      const canary = crypto.randomUUID();
+      const { cache, isrGet, isrSet } = createCache();
+      const renders: (boolean | undefined)[] = [];
+      const overrides = {
+        // Without generateStaticParams, the route's own lifetime makes it storable.
+        ...(generateStaticParams === null ? { generateStaticParams, revalidateSeconds: 60 } : {}),
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler(renders),
+        pprRuntime,
+      };
 
-    const miss = await dispatchQuery(`?canary=${canary}`, overrides);
+      const miss = await dispatchQuery(`?canary=${canary}`, overrides);
 
-    expect(renders).toEqual([true]);
-    expect(miss.response.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(miss.body).toContain("<p>search-fallback</p>");
-    expect(miss.body).not.toContain(canary);
-    expect([...cache.keys()].sort()).toEqual(["html:/posts/hello", "rsc:/posts/hello"]);
-    expectEntryFreeOf(cache.get("html:/posts/hello"), canary);
-    expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
+      expect(renders).toEqual([true]);
+      expect(miss.response.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(miss.body).toContain("<p>search-fallback</p>");
+      expect(miss.body).not.toContain(canary);
+      expect([...cache.keys()].sort()).toEqual(["html:/posts/hello", "rsc:/posts/hello"]);
+      expectEntryFreeOf(cache.get("html:/posts/hello"), canary);
+      expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
 
-    const stored = cache.get("html:/posts/hello")!.value.value as CachedAppPageValue;
-    const storedRsc = new TextDecoder().decode(
-      (cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue).rscData,
-    );
-    for (const search of ["", "?other=1"]) {
-      const html = await dispatchQuery(search, overrides);
-      expect(html.response.headers.get("x-vinext-cache"), search).toBe("HIT");
-      expect(html.body, search).toBe(stored.html);
-      const rsc = await dispatchQuery(search, { ...overrides, isRscRequest: true });
-      expect(rsc.response.headers.get("x-vinext-cache"), search).toBe("HIT");
-      expect(rsc.body, search).toBe(storedRsc);
-    }
-    expect(renders).toEqual([true]);
-    expect(isrSet).toHaveBeenCalledTimes(2);
-  });
+      const stored = cache.get("html:/posts/hello")!.value.value as CachedAppPageValue;
+      const storedRsc = new TextDecoder().decode(
+        (cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue).rscData,
+      );
+      for (const search of ["", "?other=1"]) {
+        const html = await dispatchQuery(search, overrides);
+        expect(html.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+        expect(html.body, search).toBe(stored.html);
+        const rsc = await dispatchQuery(search, { ...overrides, isRscRequest: true });
+        expect(rsc.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+        expect(rsc.body, search).toBe(storedRsc);
+      }
+      expect(renders).toEqual([true]);
+      expect(isrSet).toHaveBeenCalledTimes(2);
+    },
+  );
 
   // A client page that reads searchParams, built by the production element
   // builder from the query the dispatcher hands it. An RSC-only render never

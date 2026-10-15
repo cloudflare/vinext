@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, type Project } from "@playwright/test";
 
 const appRouterBrowserSpecificTests = "**/app-router/**/*.browser.spec.ts";
 const appRouterServer = {
@@ -21,6 +21,25 @@ const appRouterBfcacheServer = {
   timeout: 30_000,
 };
 
+// Port of next-intl's App Router playground, built for Workers and served
+// through Miniflare. Like upstream, each NEXT_PUBLIC_USE_CASE gets its own build
+// and runs only its own spec file. Preview binds IPv4 because the domain specs
+// map their hostnames to 127.0.0.1.
+function cloudflareNextIntlProject(useCase: string, port: number) {
+  return {
+    testDir: "./tests/e2e",
+    testMatch: [`**/cloudflare-next-intl/${useCase}.spec.ts`],
+    use: { baseURL: `http://localhost:${port}` },
+    server: {
+      command: `NEXT_PUBLIC_USE_CASE=${useCase} npx vp build && NEXT_PUBLIC_USE_CASE=${useCase} npx vp preview --host 127.0.0.1 --port ${port}`,
+      cwd: "./tests/fixtures/cf-next-intl",
+      port,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  };
+}
+
 /**
  * Each project maps to a single webServer. Some browser-specific projects share
  * a server with the base project, and shared servers are de-duped by port.
@@ -29,10 +48,16 @@ const appRouterBfcacheServer = {
  * When PLAYWRIGHT_PROJECT is set
  * (e.g. in CI matrix jobs), only that project and its server are configured,
  * so each CI runner only starts the one server it needs.
+ * Specs matched by isolatedTestMatch run in a separate `<name>-isolated`
+ * project after the rest of the project finishes, whether it passed or not.
  */
 const projectServers = {
   "pages-router": {
     testDir: "./tests/e2e/pages-router",
+    // Fast Refresh specs write syntax errors into fixture pages on the shared
+    // dev server. Vite broadcasts those errors and vinext sends full reloads to
+    // every open page, so they must not run alongside other specs.
+    isolatedTestMatch: ["**/pages-router/hmr.spec.ts"],
     use: { baseURL: "http://localhost:4173" },
     server: {
       command: "npx vp run vinext#build && npx vp dev --port 4173",
@@ -59,13 +84,19 @@ const projectServers = {
   "app-router-isr-prod": {
     testDir: "./tests/e2e",
     testMatch: [
+      "app-router/action-bound-args.spec.ts",
       "app-router/isr.spec.ts",
       "app-router/metadata-react-cache.spec.ts",
+      "app-router-prod/action-error-sanitization.spec.ts",
       "app-router-prod/special-error-navigation.spec.ts",
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
       "app-router-prod/public-file-encoding.spec.ts",
       "app-router-prod/image-middleware.spec.ts",
+      "app-router-prod/pages-res-revalidate.spec.ts",
+      "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
+      "app-router/preload-rejection.spec.ts",
+      "app-router/external-rewrite-host-capture.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {
@@ -202,6 +233,35 @@ const projectServers = {
       port: 4193,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+    },
+  },
+  "cloudflare-next-intl": cloudflareNextIntlProject("main", 4223),
+  "cloudflare-next-intl-locale-prefix-never": cloudflareNextIntlProject(
+    "locale-prefix-never",
+    4231,
+  ),
+  "cloudflare-next-intl-trailing-slash": cloudflareNextIntlProject("trailing-slash", 4232),
+  "cloudflare-next-intl-base-path": cloudflareNextIntlProject("base-path", 4233),
+  "cloudflare-next-intl-domains": cloudflareNextIntlProject("domains", 4234),
+  "cloudflare-next-intl-domains-locale-prefix": cloudflareNextIntlProject(
+    "domains-locale-prefix",
+    4235,
+  ),
+  "cloudflare-next-intl-locale-cookie-false": cloudflareNextIntlProject(
+    "locale-cookie-false",
+    4236,
+  ),
+  // Port of next-intl's canonical App Router example (static rendering with
+  // `setRequestLocale`), built for Workers and served through Miniflare.
+  "cloudflare-next-intl-example": {
+    testDir: "./tests/e2e/cloudflare-next-intl-example",
+    use: { baseURL: "http://localhost:4237" },
+    server: {
+      command: "npx vp build && npx vp preview --port 4237",
+      cwd: "./tests/fixtures/cf-next-intl-example",
+      port: 4237,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
     },
   },
   "cloudflare-sentry-app-workers-cache": {
@@ -585,6 +645,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-dev-run-worker-first": {
+    testDir: "./tests/e2e/cloudflare-dev-run-worker-first",
+    use: { baseURL: "http://localhost:4204" },
+    server: {
+      // Dev with the runWorkerFirst pattern that `vinext init` generates
+      command: "CF_APP_BASIC_RUN_WORKER_FIRST=1 npx vp dev --port 4204",
+      cwd: "./tests/fixtures/cf-app-basic",
+      port: 4204,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  },
   "web-worker-vinext": {
     testDir: "./tests/e2e/web-worker",
     use: { baseURL: "http://localhost:4200" },
@@ -696,16 +768,31 @@ export default defineConfig({
     // Most projects use Chromium by default. Browser-specific projects override this.
     browserName: "chromium",
   },
-  projects: activeProjects.map((name) => {
+  projects: activeProjects.flatMap((name): Project[] => {
     const p = projectServers[name];
-    return {
+    const isolatedTestMatch = "isolatedTestMatch" in p ? p.isolatedTestMatch : [];
+    const testIgnore = [...("testIgnore" in p ? p.testIgnore : []), ...isolatedTestMatch];
+    const project = {
       name,
       testDir: p.testDir,
       ...("testMatch" in p ? { testMatch: p.testMatch } : {}),
-      ...("testIgnore" in p ? { testIgnore: p.testIgnore } : {}),
+      ...(testIgnore.length > 0 ? { testIgnore } : {}),
       ...("grep" in p ? { grep: p.grep } : {}),
       ...("use" in p ? { use: p.use } : {}),
     };
+    if (isolatedTestMatch.length === 0) return [project];
+    // A teardown project runs once its setup project and all of that project's
+    // dependents finish, even when they fail, unlike a dependent project.
+    const isolatedName = `${name}-isolated`;
+    return [
+      { ...project, teardown: isolatedName },
+      {
+        name: isolatedName,
+        testDir: p.testDir,
+        testMatch: isolatedTestMatch,
+        ...("use" in p ? { use: p.use } : {}),
+      },
+    ];
   }),
   webServer: [
     ...new Map(

@@ -21,6 +21,7 @@
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
+import { cloneRequestWithUrl } from "./request-pipeline.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
@@ -285,7 +286,7 @@ export function normalizePagesDataRequest(
     : pagePathname;
   return {
     isDataReq: true,
-    request: new Request(normalizedUrl, request),
+    request: cloneRequestWithUrl(request, normalizedUrl.href),
     normalizedPathname: pagePathname,
     search: reqUrl.search,
     notFoundResponse: null,

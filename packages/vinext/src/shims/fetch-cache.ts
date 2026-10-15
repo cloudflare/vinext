@@ -58,7 +58,7 @@ export type { FetchCacheMode, FetchCacheState } from "./fetch-cache-state.js";
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v6";
+const CACHE_KEY_PREFIX = "v8";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -153,7 +153,7 @@ function encodeBodyBytes(bytes: Uint8Array): string {
   return encoded;
 }
 
-function concatBodyBytes(chunks: Uint8Array[]): Uint8Array {
+function concatBodyBytes(chunks: Uint8Array[]): Uint8Array<ArrayBuffer> {
   const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
   const bytes = new Uint8Array(length);
   let offset = 0;
@@ -251,6 +251,60 @@ function normalizeFetchMethod(method: string): string {
   return NORMALIZED_FETCH_METHODS.has(upperMethod) ? upperMethod : method;
 }
 
+// A view's own properties can shadow `buffer`, `byteOffset` and `byteLength`,
+// but runtimes send the bytes its internal slots cover. These intrinsic getters
+// read those slots.
+function getIntrinsic<T>(prototype: object, key: PropertyKey): (target: unknown) => T {
+  // The getter is deliberately invoked with Reflect.apply on the target.
+  // oxlint-disable-next-line typescript/unbound-method
+  const getter = Object.getOwnPropertyDescriptor(prototype, key)?.get;
+  if (!getter) throw new Error(`Missing intrinsic getter: ${String(key)}`);
+  return (target) => Reflect.apply(getter, target, []) as T;
+}
+const typedArrayPrototype: object = Object.getPrototypeOf(Uint8Array.prototype);
+// Undefined for anything that isn't a typed array, rather than throwing.
+const getTypedArrayTag = getIntrinsic<string | undefined>(typedArrayPrototype, Symbol.toStringTag);
+const getTypedArrayBuffer = getIntrinsic<ArrayBufferLike>(typedArrayPrototype, "buffer");
+const getTypedArrayByteOffset = getIntrinsic<number>(typedArrayPrototype, "byteOffset");
+const getTypedArrayByteLength = getIntrinsic<number>(typedArrayPrototype, "byteLength");
+const getDataViewBuffer = getIntrinsic<ArrayBufferLike>(DataView.prototype, "buffer");
+const getDataViewByteOffset = getIntrinsic<number>(DataView.prototype, "byteOffset");
+const getDataViewByteLength = getIntrinsic<number>(DataView.prototype, "byteLength");
+const getArrayBufferByteLength = getIntrinsic<number>(ArrayBuffer.prototype, "byteLength");
+
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  if (!(value instanceof ArrayBuffer)) return false;
+  try {
+    getArrayBufferByteLength(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The bytes sent for a binary body chunk: the bytes an ArrayBuffer holds, or
+ * those a typed array or DataView covers. Undefined for any other chunk.
+ */
+function getBinaryChunkBytes(value: unknown): Uint8Array | undefined {
+  if (ArrayBuffer.isView(value)) {
+    if (getTypedArrayTag(value) !== undefined) {
+      return new Uint8Array(
+        getTypedArrayBuffer(value),
+        getTypedArrayByteOffset(value),
+        getTypedArrayByteLength(value),
+      );
+    }
+    return new Uint8Array(
+      getDataViewBuffer(value),
+      getDataViewByteOffset(value),
+      getDataViewByteLength(value),
+    );
+  }
+  if (isArrayBuffer(value)) return new Uint8Array(value);
+  return undefined;
+}
+
 async function readRequestBodyChunksWithinLimit(
   request: Request,
   effectiveHeaders: Headers,
@@ -280,13 +334,18 @@ async function readRequestBodyChunksWithinLimit(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // A runtime may pass other chunk types through (Workers does for
+      // iterable bodies). Binary chunks are keyed by their bytes, and others
+      // are not keyed.
+      const bytes = getBinaryChunkBytes(value);
+      if (!bytes) throw new SkipCacheKeyGenerationError();
 
-      totalBodyBytes += value.byteLength;
+      totalBodyBytes += bytes.byteLength;
       if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
         throw new BodyTooLargeForCacheKeyError();
       }
 
-      chunks.push(value);
+      chunks.push(bytes);
     }
   } catch (err) {
     void reader.cancel().catch(() => {});
@@ -294,6 +353,111 @@ async function readRequestBodyChunksWithinLimit(
   }
 
   return { chunks, contentType };
+}
+
+// Requests the patched fetch builds for bodies serializeBody doesn't key. They
+// are never FormData, so their bytes are keyed as sent, without form parsing.
+const builtBodyRequests = new WeakSet<Request>();
+
+/**
+ * Whether serializeBody keys this init body type itself. Only genuine
+ * instances count, so an array (which has keys()) or a Response (which has
+ * arrayBuffer()) is sent however the runtime sends it.
+ */
+function isKeyableInitBody(body: BodyInit): boolean {
+  return (
+    typeof body === "string" ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body) ||
+    body instanceof URLSearchParams ||
+    body instanceof ReadableStream ||
+    body instanceof FormData ||
+    body instanceof Blob
+  );
+}
+
+/**
+ * Copy a cacheable fetch's request when fetch is called, as fetch itself does.
+ * Its cache key is built, and it is sent, only after awaits. A URL, headers,
+ * body or `cf` the caller changes in the meantime must reach neither: the
+ * request would be sent with values its key doesn't hold, and its response
+ * cached for the values the key does hold. A stream body is read after the
+ * call, as fetch reads it, and sent as the bytes its key is built from.
+ */
+function snapshotFetchRequest(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+): { input: string | URL | Request; init: RequestInit } {
+  const snapshotInit: RequestInit & { cf?: unknown } = { ...init };
+  // A Request's URL and method can't change, but its headers and `cf` can, so
+  // they're copied onto init. Its body is sent as the bytes it's keyed by.
+  // RequestInit headers and `cf` replace a Request input's, like the Request
+  // constructor.
+  const headers =
+    snapshotInit.headers !== undefined
+      ? snapshotInit.headers
+      : input instanceof Request
+        ? input.headers
+        : undefined;
+  if (headers !== undefined) {
+    snapshotInit.headers = new Headers(headers);
+  }
+  const cf =
+    snapshotInit.cf !== undefined
+      ? snapshotInit.cf
+      : input instanceof Request
+        ? (input as { cf?: unknown }).cf
+        : undefined;
+  if (cf !== null && typeof cf === "object") {
+    snapshotInit.cf = snapshotCf(cf);
+  }
+  if (snapshotInit.body !== undefined && snapshotInit.body !== null) {
+    snapshotInit.body = snapshotBody(snapshotInit.body);
+  }
+  return {
+    // fetch reads a URL input as a string when it is called.
+    input: input instanceof Request ? input : String(input),
+    init: snapshotInit,
+  };
+}
+
+// `cf` options are plain data, some of them nested (`image`, `cacheTags`).
+// Workers copies them as JSON when fetch is called, which drops values JSON
+// can't hold, like functions.
+function snapshotCf(cf: object): object {
+  try {
+    return JSON.parse(JSON.stringify(cf)) as object;
+  } catch {
+    // Options JSON can't hold, like a cycle, are left for the runtime to reject.
+    return cf;
+  }
+}
+
+function snapshotBody(body: BodyInit): BodyInit {
+  const bytes = getBinaryChunkBytes(body);
+  if (bytes) return bytes.slice();
+  if (body instanceof URLSearchParams) return new URLSearchParams(body);
+  if (body instanceof FormData) {
+    const formData = new FormData();
+    for (const [name, value] of body) {
+      formData.append(name, typeof value === "string" ? value : snapshotBlob(value));
+    }
+    return formData;
+  }
+  if (body instanceof Blob) return snapshotBlob(body);
+  // Strings can't change. A stream can't be read synchronously, so, as in
+  // fetch, its chunks are read after the call. They're sent as the bytes
+  // they're keyed by, as is any other body, which is built into a Request.
+  return body;
+}
+
+// A Blob's bytes can't change, but the properties and methods it's keyed and
+// sent through can be redefined on it. A new Blob copies its bytes.
+function snapshotBlob(blob: Blob): Blob {
+  if (blob instanceof File) {
+    return new File([blob], blob.name, { type: blob.type, lastModified: blob.lastModified });
+  }
+  return new Blob([blob], { type: blob.type });
 }
 
 /**
@@ -332,11 +496,9 @@ async function serializeBody(
   };
   const getTotalBodyBytes = (): number => totalBodyBytes;
 
-  if (init?.body instanceof ArrayBuffer || (init?.body && ArrayBuffer.isView(init.body))) {
-    const bytes =
-      init.body instanceof ArrayBuffer
-        ? new Uint8Array(init.body)
-        : new Uint8Array(init.body.buffer, init.body.byteOffset, init.body.byteLength);
+  const directBodyBytes = getBinaryChunkBytes(init?.body);
+  if (init?.body && directBodyBytes) {
+    const bytes = directBodyBytes;
     if (bytes.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
@@ -344,7 +506,7 @@ async function serializeBody(
     (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
-    const readableBody = init.body as ReadableStream<Uint8Array | string>;
+    const readableBody = init.body as ReadableStream<unknown>;
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
     (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
@@ -354,14 +516,23 @@ async function serializeBody(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const bytes = typeof value === "string" ? encoder.encode(value) : value;
+        // Workers also sends the bytes of ArrayBuffer and other typed array
+        // chunks, so those are keyed by their bytes. Other chunks are not keyed.
+        const bytes =
+          typeof value === "string" ? encoder.encode(value) : getBinaryChunkBytes(value);
+        if (!bytes) throw new SkipCacheKeyGenerationError();
         totalBodyBytes += bytes.byteLength;
         if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
           throw new BodyTooLargeForCacheKeyError();
         }
         chunks.push(bytes);
       }
-      bodyChunks.push(encodeBodyBytes(concatBodyBytes(chunks)));
+      const bytes = concatBodyBytes(chunks);
+      bodyChunks.push(encodeBodyBytes(bytes));
+      // Send the bytes the key was built from, as Next.js does, rather than
+      // chunks the caller could still change.
+      (init as ExtendedRequestInit)._ogBody = bytes;
+      void bodyForFetch.cancel().catch(() => {});
     } catch (err) {
       // Do not await cancellation of one tee branch: it may not settle until
       // the fallback fetch starts consuming the other branch.
@@ -429,7 +600,14 @@ async function serializeBody(
       }
       throw new SkipCacheKeyGenerationError();
     }
-    const formContentType = getParsedFormContentType(contentType);
+    // Send the bytes the key is built from rather than the Request's own body,
+    // whose chunks the caller could still change.
+    if (init) {
+      (init as ExtendedRequestInit)._ogBody = concatBodyBytes(chunks);
+    }
+    const formContentType = builtBodyRequests.has(input)
+      ? undefined
+      : getParsedFormContentType(contentType);
 
     if (formContentType) {
       try {
@@ -1225,7 +1403,20 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     const softTags = _getState().currentFetchSoftTags;
-    let fetchInit = stripNextFromInit(init, cacheDirective);
+    let fetchInit: RequestInit | undefined;
+    ({ input, init: fetchInit } = snapshotFetchRequest(
+      input,
+      stripNextFromInit(init, cacheDirective),
+    ));
+    const initBody = fetchInit.body;
+    if (initBody !== undefined && initBody !== null && !isKeyableInitBody(initBody)) {
+      // Any other body (an async iterable, or an object the runtime converts
+      // to a string) is built into a Request as fetch itself would, and that
+      // Request's bytes are keyed and it is sent.
+      input = new Request(input, fetchInit);
+      builtBodyRequests.add(input);
+      fetchInit = {};
+    }
     let cacheKey: string;
     try {
       cacheKey = await buildFetchCacheKey(input, fetchInit);
@@ -1406,8 +1597,9 @@ function stripNextFromInit(
 // ---------------------------------------------------------------------------
 // Fetch patching — install once, not per-request.
 // The patched fetch uses _getState() internally, which reads from ALS
-// (concurrent) or _fallbackState (single-threaded), so per-request
-// isolation is handled at the state level, not by swapping globalThis.fetch.
+// (concurrent), _fallbackState while withFetchCache() is active, or a
+// throwaway state, so per-request isolation is handled at the state level,
+// not by swapping globalThis.fetch.
 // ---------------------------------------------------------------------------
 
 const _PATCH_KEY = Symbol.for("vinext.fetchCache.patchInstalled");

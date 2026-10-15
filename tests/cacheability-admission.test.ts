@@ -812,6 +812,49 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("private");
   });
 
+  it.each(
+    (["app-route", "pages-api"] as const).flatMap((kind) =>
+      ["none", "authorization", "cookie", "proxy-authorization", "x-api-key"].map((credential) => ({
+        kind,
+        credential,
+      })),
+    ),
+  )(
+    "admits an explicit $kind provider policy only without credentials ($credential)",
+    async ({ kind, credential }) => {
+      const adapter = new CloudflareCdnCacheAdapter();
+      setCdnCacheAdapter(adapter);
+      const headers = new Headers({ Accept: "*/*" });
+      if (credential !== "none") headers.set(credential, "secret");
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/api/data", { headers }),
+        null,
+        "build-a",
+        true,
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind, pattern: "/api/data" };
+      state.explicitResponseCachePolicy = true;
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("public", {
+          headers: {
+            "Cache-Control": "public, max-age=10",
+            "Cloudflare-CDN-Cache-Control": "max-age=3600",
+          },
+        }),
+        context,
+      );
+
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=10");
+      expect(adapter.responsePolicy.readCacheControl(response.headers)).toBe(
+        credential === "none" ? "public, max-age=3600" : "no-store",
+      );
+      await expect(response.text()).resolves.toBe("public");
+    },
+  );
+
   it("preserves a safely completed Route Handler public policy", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },

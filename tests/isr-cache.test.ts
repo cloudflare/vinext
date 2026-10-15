@@ -533,6 +533,58 @@ describe("ISR expire ceiling", () => {
   });
 });
 
+// ─── Tag invalidation durability ────────────────────────────────────────
+
+describe("MemoryCacheHandler tag invalidation durability", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Next.js keeps every tag invalidation in an unbounded map, so an entry
+  // stored before an invalidation is never served again, however many other
+  // tags are revalidated later.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/incremental-cache/tags-manifest.external.ts
+  it("keeps unread entries invalidated after many later revalidations", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const pathname = "/posts/secret";
+    const tags = buildPageCacheTags(pathname, [], ["posts", "[slug]"], "page");
+    const policy = { cacheControl: { revalidate: false as const }, tags };
+    await isrSet(appIsrHtmlKey(pathname), buildAppPageCacheValue("<p>draft</p>"), policy);
+    await isrSet(
+      appIsrRscKey(pathname),
+      buildAppPageCacheValue("", new TextEncoder().encode("<p>draft (rsc)</p>").buffer),
+      policy,
+    );
+    // A fetch made by the page carries only its own tags; the page's implicit
+    // tags reach it as read-time soft tags.
+    const fetchValue: CachedFetchValue = {
+      kind: "FETCH",
+      data: { headers: {}, body: "draft", url: "https://api.example/posts/secret" },
+      tags: [],
+      revalidate: false,
+    };
+    await handler.set("fetch:secret", fetchValue, { tags: [] });
+
+    vi.setSystemTime(2_000);
+    await Promise.resolve(revalidatePath(pathname));
+    expect(await isrGet(appIsrHtmlKey(pathname))).toBeNull();
+    expect(await handler.get("fetch:secret", { softTags: tags })).toBeNull();
+
+    // Revalidate more distinct paths than the old 10,000-marker cap held.
+    vi.setSystemTime(3_000);
+    for (let i = 0; i <= 10_000; i++) {
+      await Promise.resolve(revalidatePath(`/posts/other-${i}`));
+    }
+
+    expect(await isrGet(appIsrRscKey(pathname))).toBeNull();
+    expect(await handler.get("fetch:secret", { softTags: tags })).toBeNull();
+  });
+});
+
 // ─── triggerBackgroundRegeneration ───────────────────────────────────────
 
 describe("triggerBackgroundRegeneration", () => {

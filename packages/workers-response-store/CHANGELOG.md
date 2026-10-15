@@ -1,5 +1,17 @@
 # @cloudflare/workers-response-store
 
+## 1.1.1
+
+Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
+
+### Bug Fixes
+
+- **Cloudflare:** keep Workers Cache off Worker-wide in every generated config (#3820)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.0
 
 ### Features

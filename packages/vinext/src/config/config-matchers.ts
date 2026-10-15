@@ -30,6 +30,7 @@ import {
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
+import { attachRequestCfMetadata } from "../server/request-pipeline.js";
 import {
   substituteDestinationParams,
   substituteRedirectDestinationQuery,
@@ -464,6 +465,7 @@ export function applyMiddlewareRequestHeaders(
 
   if (nextHeaders) {
     // Headers may be immutable (Workers), so always clone via new Headers().
+    const source = request;
     request = new Request(request.url, {
       method: request.method,
       headers: nextHeaders,
@@ -473,6 +475,7 @@ export function applyMiddlewareRequestHeaders(
       // @ts-expect-error — duplex needed for streaming request bodies
       duplex: request.body ? "half" : undefined,
     });
+    attachRequestCfMetadata(request, source);
   }
 
   return { request, postMwReqCtx: requestContextFromRequest(request) };
@@ -1000,10 +1003,26 @@ export function matchRewrite(
         ...conditionParams,
       };
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      return substituteAndSanitizeRewriteDestination(rewrite.destination, rewriteParams);
+      return substituteAndSanitizeRewriteDestination(
+        serializeRewriteDestinationTemplate(rewrite.destination),
+        rewriteParams,
+      );
     }
   }
   return null;
+}
+
+/**
+ * Next.js prepareDestination URL-parses the destination template before it
+ * substitutes params, so a literal `é` routes as `%C3%A9` while substituted
+ * values stay verbatim: a captured `../admin` is never resolved to `/admin`.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ */
+function serializeRewriteDestinationTemplate(destination: string): string {
+  if (!destination.startsWith("/") || destination.startsWith("//")) return destination;
+  const parsed = new URL(destination, "http://n");
+  return parsed.pathname + parsed.search + parsed.hash;
 }
 
 /**
@@ -1149,18 +1168,22 @@ function appendQueryParams(url: string, params: Iterable<[string, string]>): str
  * users off-site.
  *
  * This function collapses any leading double (or more) slashes to a single
- * slash for non-external (relative) destinations.
+ * slash for non-external (relative) destinations, including tab/newline and
+ * leading C0 control characters that browsers ignore while parsing.
  */
 export function sanitizeDestination(dest: string): string {
   // External URLs (http://, https://) are intentional — don't touch them
   if (dest.startsWith("http://") || dest.startsWith("https://")) {
     return dest;
   }
-  // Normalize leading backslashes to forward slashes. Browsers interpret
-  // backslash as forward slash in URL contexts, so "\/evil.com" becomes
-  // "//evil.com" (protocol-relative redirect). Replace any mix of leading
-  // slashes and backslashes with a single forward slash.
-  dest = dest.replace(/^[\\/]+/, "/");
+  // Collapse the leading run of slashes and backslashes to a single "/".
+  // Browsers treat a backslash as "/" in URL contexts, and the WHATWG URL
+  // parser removes ASCII tab/newline anywhere and trims leading C0
+  // controls/space before parsing, so "\/evil.com" and "/<TAB>/evil.com" both
+  // resolve as the protocol-relative "//evil.com". Only the leading prefix is
+  // rewritten, so the rest of the path is left as substituted.
+  // oxlint-disable-next-line no-control-regex -- matching C0 controls is the point (WHATWG URL leading trim)
+  dest = dest.replace(/^[\u0000-\u0020]*(?:[\\/][\t\n\r]*)+/, "/");
   return dest;
 }
 
@@ -1238,6 +1261,14 @@ export function preserveRedirectDestinationQuery(
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
 }
 
+function parseExternalRewriteUrl(externalUrl: string): URL | null {
+  try {
+    return new URL(externalUrl);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Proxy an incoming request to an external URL and return the upstream response.
  *
@@ -1253,7 +1284,14 @@ export async function proxyExternalRequest(
 ): Promise<Response> {
   // Build the full external URL, preserving query parameters from the original request
   const originalUrl = new URL(request.url);
-  const targetUrl = new URL(externalUrl);
+  // A param substituted into the destination host can make it invalid (see
+  // substituteDestinationParams). Next.js answers an unparsable proxy target
+  // with a 500; throwing here would surface as a Workers exception page.
+  const targetUrl = parseExternalRewriteUrl(externalUrl);
+  if (!targetUrl) {
+    console.error("[vinext] Invalid external rewrite destination:", externalUrl);
+    return new Response("Internal Server Error", { status: 500 });
+  }
   const destinationKeys = new Set(targetUrl.searchParams.keys());
 
   // If the rewrite destination already has query params, merge them.

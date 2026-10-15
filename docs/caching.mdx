@@ -433,7 +433,7 @@ You can run `vinext init --platform=cloudflare` to configure these choices. The 
 Pages Router uses the page's data-fetching methods to determine its caching behavior:
 
 - **`getStaticProps()`:** caches the rendered page and its JSON data. Omitting `revalidate` or returning `revalidate: false` keeps the entry fresh until it is invalidated or removed by the cache backend. Return a positive `revalidate` interval in seconds to enable ISR.
-- **`getStaticPaths()`:** supplies concrete paths for a dynamic `getStaticProps()` page. Its `fallback` setting determines whether paths outside that list can be generated on demand.
+- **`getStaticPaths()`:** supplies concrete paths for a dynamic `getStaticProps()` page. Its `fallback` setting determines whether paths outside that list can be generated on demand. In production, Next.js only calls `getStaticPaths()` at build time. vinext calls it at request time in the deployed server or Worker when a path has no fresh or stale cached entry, including paths outside the list that return 404 under `fallback: false`, expired entries, and on-demand revalidation. Cache hits, stale responses, and draft-mode requests do not call it.
 - **Pages without `getServerSideProps()` or `getInitialProps()`:** qualify for automatic static optimization and response caching through Workers Response Store, Workers Cache, or prerendering with Static Assets. A custom `_app.getInitialProps` disables this for pages without `getStaticProps()`.
 - **`getServerSideProps()` or page `getInitialProps()`:** render per request by default. An explicitly authored public cache policy can opt a response into Workers Response Store or Workers Cache; use this only when the response can be shared between visitors.
 
@@ -474,7 +474,7 @@ A static page defaults to `revalidate = false`, as in Next.js, unless a `revalid
 
 Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `cache: "no-store"` outside a cache scope, and reading `searchParams`. Under `dynamic = "force-static"` they return empty values or don't count, so the page is still stored.
 
-`useSearchParams()` in a client component doesn't make a page dynamic, and returns empty search params under `dynamic = "force-static"`. Otherwise, in production and outside `cacheComponents`, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
+`useSearchParams()` in a client component doesn't make a page dynamic, and returns empty search params under `dynamic = "force-static"`. Otherwise, in production, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
 
 ## Query strings
 
@@ -506,6 +506,21 @@ The adapter changes where entries live and how they are served, but it should no
 ## How `"use cache"` arguments are keyed
 
 As in Next.js, a `"use cache"` function's arguments are serialized with React's Server Function argument encoder, and that serialized form is the cache key. Files and Blobs are keyed by their bytes alone, so files with the same contents share an entry even if their names, types, or timestamps differ. Values the encoder can't serialize, such as JSX, functions, and class instances, are passed through without affecting the key; the function can render or return them but can't read their properties.
+
+## How cached `fetch` request bodies are keyed
+
+A cached `fetch` call's request body is part of its cache key, so requests that differ only in their body get separate entries. Strings, binary data, `ReadableStream`s, `URLSearchParams`, `FormData` and `Blob`s are keyed by their contents. Any other body, such as an async iterable or an object the runtime converts to a string, is built into a `Request` the way `fetch` itself does, and keyed by that request's bytes. Next.js doesn't key these other bodies, so it gives requests that differ only in such a body the same entry.
+
+A stream's chunks, whether from a `ReadableStream`, an async iterable or a `Request`, are keyed by the bytes sent for them. Workers sends the bytes of `ArrayBuffer`, `DataView` and other typed array chunks as well as `Uint8Array`s, so those are keyed too.
+
+Some requests with a body are fetched without the cache:
+
+- **Large bodies.** A body over 1 MiB isn't keyed.
+- **Other chunk types.** A body isn't keyed if it streams anything other than binary chunks (or, in a `ReadableStream` body, strings). Node.js converts an async iterable's chunks to `Uint8Array`s, but Workers passes them through, so on Workers an async iterable that yields strings is fetched uncached.
+
+A cached `fetch` reads the body, up to 1 MiB, before it sends the request. A body that waits for the response, or for anything else that happens after the request starts, never finishes, so the fetch doesn't either. Aborting the request takes effect only once that read ends. Next.js also reads a stream body before it sends the request.
+
+Like `fetch` itself, a cached `fetch` copies its URL, headers, `cf` and body when it is called. It keys and sends that copy, so changing those objects after the call changes neither. A stream body, from a `ReadableStream` or a `Request`, can't be copied then: as with `fetch`, its chunks are read after the call, so a chunk changed before it is read is sent changed. It is keyed by the bytes read, and sent as those same bytes, as in Next.js. Next.js sends the caller's other objects, though, so a request changed after its key is built is sent, and its response stored, under the key of the request it was changed from.
 
 ## Where generated metadata goes
 

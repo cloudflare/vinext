@@ -12,13 +12,12 @@
  */
 
 import type { ESTree, Plugin } from "vite";
-import { parseAst } from "vite";
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import path, { toSlash } from "pathslash";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
-import { collectBindingNames, getAstName } from "./ast-utils.js";
+import { collectBindingNames, getAstName, parseProgram } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
@@ -341,9 +340,9 @@ async function buildExportMapFromFile(
   const content = initialContent ?? (await readFile(filePath));
   if (!content) return new Map();
 
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(content);
+    ast = parseProgram(content);
   } catch {
     return new Map();
   }
@@ -653,7 +652,7 @@ export function createOptimizeImportsPlugin(
   // or shape mismatches that the return-type check alone would accept silently.
   return {
     name: "vinext:optimize-imports",
-    // No enforce — runs after JSX transform so parseAst gets plain JS.
+    // No enforce — runs after JSX transform so parseProgram gets plain JS.
     // The transform hook still rewrites imports before Vite resolves them.
 
     buildStart() {
@@ -718,9 +717,9 @@ export function createOptimizeImportsPlugin(
         const packages = optimizedPackages;
         if (!hasOptimizedImportSource(code)) return null;
 
-        let ast: ReturnType<typeof parseAst>;
+        let ast: ESTree.Program;
         try {
-          ast = parseAst(code);
+          ast = parseProgram(code);
         } catch {
           return null;
         }

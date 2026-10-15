@@ -1238,3 +1238,49 @@ describe("middleware matching for raw data requests", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe("middleware rewrite carrying x-middleware-next", () => {
+  // next-intl's App Router playground proxy builds a rewrite from the headers
+  // of the `NextResponse.next()` its i18n middleware returned, so the response
+  // carries both `x-middleware-next` and `x-middleware-rewrite`. Next.js drops
+  // `x-middleware-next` and applies the rewrite:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  // https://github.com/amannn/next-intl/blob/main/examples/example-app-router-playground/src/proxy.ts
+  it("applies the rewrite instead of continuing to the original path", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default(request: Request) {
+          const next = NextResponse.next({ headers: { "x-from-next": "1" } });
+          return NextResponse.rewrite(new URL("/de/about/v2", request.url), {
+            headers: next.headers,
+          });
+        },
+      },
+      request: new Request("http://localhost:3000/de/about"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/de/about/v2");
+    expect(result.responseHeaders?.get("x-from-next")).toBe("1");
+    expect(result.responseHeaders?.has("x-middleware-next")).toBe(false);
+  });
+
+  it("still lets a redirect win over x-middleware-next", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default: () =>
+          new Response(null, {
+            status: 307,
+            headers: { Location: "/elsewhere", "x-middleware-next": "1" },
+          }),
+      },
+      request: new Request("http://localhost:3000/start"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toBe("/elsewhere");
+  });
+});

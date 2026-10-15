@@ -49,6 +49,45 @@ describe("default loader emits /_next/image URLs (issue #1513)", () => {
     );
   });
 
+  async function importWithRouterEnv(basePath: string, trailingSlash: boolean) {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", basePath);
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", String(trailingSlash));
+    vi.resetModules();
+    return import("../packages/vinext/src/shims/image.js");
+  }
+
+  // Ported from Next.js: test/integration/next-image-new/base-path/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/next-image-new/base-path/test/index.test.ts
+  it("prefixes the endpoint, not the source, with basePath", async () => {
+    try {
+      const { imageOptimizationUrl } = await importWithRouterEnv("/docs", false);
+      expect(imageOptimizationUrl("/docs/test.jpg", 828)).toBe(
+        "/docs/_next/image?url=%2Fdocs%2Ftest.jpg&w=828&q=75",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  // Ported from Next.js: test/integration/next-image-new/both-basepath-trailingslash/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/next-image-new/both-basepath-trailingslash/test/index.test.ts
+  it("adds a trailing slash to the endpoint when trailingSlash is enabled", async () => {
+    try {
+      const { getImageProps: getRoutedImageProps } = await importWithRouterEnv("/prefix", true);
+      const { props } = getRoutedImageProps({
+        alt: "string-img",
+        src: "/prefix/test.jpg",
+        width: 200,
+        height: 200,
+      });
+      expect(props.src).toBe("/prefix/_next/image/?url=%2Fprefix%2Ftest.jpg&w=640&q=75");
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("Image SSR src starts with /_next/image, not /_vinext/image", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {

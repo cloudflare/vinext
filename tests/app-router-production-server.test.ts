@@ -83,7 +83,7 @@ function getInlineStyleText(html: string): string {
 
 async function rawHttpRequest(
   url: URL,
-  options: { method?: string; headers?: Record<string, string> } = {},
+  options: { method?: string; path?: string; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
   return new Promise((resolve, reject) => {
     const request = http.request(url, options, (response) => {
@@ -432,6 +432,36 @@ describe("App Router Production server (startProdServer)", () => {
     await expectRepeatedSlashRedirects(baseUrl);
   });
 
+  // Without VINEXT_TRUST_PROXY / VINEXT_TRUSTED_HOSTS, any client can send
+  // these headers to the Node server, so NextRequest.ip / .geo must not
+  // report them.
+  it("ignores client-supplied IP and geo headers without proxy trust", async () => {
+    const res = await fetch(`${baseUrl}/api/request-ip-geo`, {
+      headers: {
+        "cf-connecting-ip": "10.0.0.1",
+        "x-real-ip": "10.0.0.2",
+        "x-forwarded-for": "10.0.0.3, 10.0.0.4",
+        "cf-ipcountry": "US",
+        "cf-ipcity": "San Francisco",
+        "x-vercel-ip-country": "US",
+      },
+    });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ip: null, geo: null });
+  });
+
+  it("never lets an absolute-form request target choose the request origin", async () => {
+    // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
+    // request.url))`, so routing this request would echo the target's origin.
+    const res = await rawHttpRequest(new URL(baseUrl), {
+      path: "http://evil.example/middleware-redirect",
+      headers: { host: "app.example" },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.body.toString()).not.toContain("evil.example");
+  });
+
   it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
     const res = await fetch(`${baseUrl}/middleware-redirect-double-slash`, { redirect: "manual" });
     expect(res.status).toBe(307);
@@ -623,6 +653,28 @@ describe("App Router Production server (startProdServer)", () => {
     });
     expect(forcedRange.status).toBe(206);
     expect(forcedRange.body).toEqual(full.body.subarray(0, 3));
+  });
+
+  // https://github.com/cloudflare/vinext/issues/3919
+  it("fails a dynamic = 'error' page that passes searchParams to a client component", async () => {
+    // Like Next.js, React's read of the prop's `then` fails the render, so the
+    // response must finish as an error instead of leaving the stream open.
+    const readBody = (res: Response) =>
+      Promise.race([
+        res.text(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("response body did not finish")), 5_000),
+        ),
+      ]);
+    const pathname = "/nextjs-compat/dynamic-error-client-search-params/client-prop";
+    const rsc = await fetch(`${baseUrl}${pathname}.rsc?foo=bar`, { headers: { RSC: "1" } });
+    await expect(readBody(rsc)).resolves.toBeTypeOf("string");
+
+    const res = await fetch(`${baseUrl}${pathname}?foo=bar`);
+    expect(res.status).toBe(500);
+    const html = await readBody(res);
+    expect(html).toContain("</html>");
+    expect(html).not.toContain('data-testid="search-params-label"');
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
@@ -1938,7 +1990,7 @@ describe("App Router Production server (startProdServer)", () => {
     for (const [query, status] of [
       ["url=%2Fheart.png&w=65&q=75", 400],
       ["url=%2Flogo%2Flogo.svg&w=64&q=75", 400],
-      ["url=%2Fmissing.png&w=64&q=75", 404],
+      ["url=%2Fmissing.png&w=64&q=75", 400],
     ] as const) {
       const res = await fetch(`${baseUrl}/_next/image?${query}`);
       expect(res.status, query).toBe(status);
@@ -2001,25 +2053,29 @@ describe("App Router Production server (startProdServer)", () => {
       const withoutBasePathRes = await fetch(`${tmpBaseUrl}/logo/logo.svg`);
       expect(withoutBasePathRes.status).toBe(404);
 
-      // Middleware runs before the image endpoint reads a source, in both the
-      // Next.js form and the unprefixed form vinext's next/image emits.
-      for (const imagePath of [
-        "/app/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
-        "/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75",
-      ]) {
-        const imageRes = await fetch(`${tmpBaseUrl}${imagePath}`);
-        expect(imageRes.status, imagePath).toBe(403);
-        expect(await imageRes.text(), imagePath).toBe("image endpoint blocked by middleware");
-      }
-      const imageRes = await fetch(`${tmpBaseUrl}/_next/image?url=%2Fheart.png&w=640&q=75`);
+      // Next.js serves the image endpoint only under basePath, and middleware
+      // runs before it reads a source, which must carry the basePath itself.
+      const guardedRes = await fetch(
+        `${tmpBaseUrl}/app/_next/image?url=%2Fimage-endpoint-guarded.png&w=640&q=75`,
+      );
+      expect(guardedRes.status).toBe(403);
+      expect(await guardedRes.text()).toBe("image endpoint blocked by middleware");
+      const unprefixedRes = await fetch(
+        `${tmpBaseUrl}/_next/image?url=%2Fapp%2Fheart.png&w=640&q=75`,
+      );
+      expect(unprefixedRes.status).toBe(404);
+      await unprefixedRes.arrayBuffer();
+      const imageRes = await fetch(
+        `${tmpBaseUrl}/app/_next/image?url=%2Fapp%2Fheart.png&w=640&q=75`,
+      );
       expect(imageRes.status).toBe(200);
       expect(imageRes.headers.get("content-type")).toBe("image/png");
       await imageRes.arrayBuffer();
       const protectedImageRes = await fetch(
-        `${tmpBaseUrl}/_next/image?url=%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
+        `${tmpBaseUrl}/app/_next/image?url=%2Fapp%2Fmembers%20only%2Fprivate.png&w=640&q=75`,
       );
-      expect(protectedImageRes.status).toBe(404);
-      await protectedImageRes.arrayBuffer();
+      expect(protectedImageRes.status).toBe(400);
+      expect(await protectedImageRes.text()).toBe("The requested resource isn't a valid image.");
     } finally {
       basePathServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

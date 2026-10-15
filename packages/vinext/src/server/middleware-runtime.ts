@@ -47,6 +47,8 @@ export type MiddlewareResult = {
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
+  /** False when a same-origin rewrite target was outside the basePath. */
+  rewriteHadBasePath?: boolean;
   rewriteStatus?: number;
   status?: number;
   responseHeaders?: Headers;
@@ -114,6 +116,12 @@ type ExecuteMiddlewareOptions = {
    * `new URL('/x', req.url)`.
    */
   trailingSlash?: boolean;
+  /**
+   * next.config `skipTrailingSlashRedirect`. Middleware then sees requests in
+   * either slash form, so NextURL keeps each request's own trailing slash and
+   * redirect Locations keep theirs, as Next.js's `getNextPathnameInfo` does.
+   */
+  skipTrailingSlashRedirect?: boolean;
 };
 
 function reportProxyError(options: ExecuteMiddlewareOptions, error: unknown): Promise<void> {
@@ -283,6 +291,7 @@ function createNextRequest(
   trailingSlash?: boolean,
   hadBasePath?: boolean,
   requestBodyAlreadyIsolated = false,
+  skipTrailingSlashRedirect = false,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
@@ -307,12 +316,13 @@ function createNextRequest(
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
-  const hasNextConfig = basePath || i18nConfig || trailingSlash;
+  const hasNextConfig = basePath || i18nConfig || trailingSlash || skipTrailingSlashRedirect;
   const nextConfig = hasNextConfig
     ? {
         basePath: basePath ?? "",
         i18n: i18nConfig ?? undefined,
         trailingSlash: trailingSlash ?? undefined,
+        skipTrailingSlashRedirect,
       }
     : undefined;
 
@@ -527,6 +537,7 @@ async function executeMiddlewareModule(
     options.trailingSlash,
     hadBasePath,
     options.requestBodyAlreadyIsolated,
+    options.skipTrailingSlashRedirect,
   );
   if (options.isDataRequest) {
     Object.defineProperty(nextRequest, "__isData", {
@@ -582,16 +593,6 @@ async function executeMiddlewareModule(
     return { continue: true, waitUntilPromises };
   }
 
-  if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
-    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
-    return {
-      continue: true,
-      responseHeaders: collectMiddlewareHeaders(response),
-      status: response.status !== 200 ? response.status : undefined,
-      waitUntilPromises,
-    };
-  }
-
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? response.headers.get("location");
     if (location) {
@@ -603,8 +604,11 @@ async function executeMiddlewareModule(
       // Normalize trailing slash on middleware redirect Locations that came
       // from a plain `new URL(...)` rather than `request.nextUrl`. NextURL
       // already applies the policy at stringify time, but plain URLs bypass it.
+      // Next.js formats a redirect Location from its own slash; only the
+      // trailing-slash redirect would re-slash it on the next request, and
+      // `skipTrailingSlashRedirect` disables that redirect.
       let normalizedLocation = relativeLocation;
-      if (options.trailingSlash !== undefined) {
+      if (options.trailingSlash !== undefined && !options.skipTrailingSlashRedirect) {
         try {
           const loc = new URL(relativeLocation, options.request.url);
           if (loc.origin === new URL(options.request.url).origin) {
@@ -676,6 +680,7 @@ async function executeMiddlewareModule(
   const rewriteUrl = response.headers.get(MIDDLEWARE_REWRITE_HEADER);
   if (rewriteUrl) {
     let rewritePath: string;
+    let rewriteHadBasePath: boolean | undefined;
     try {
       const rewriteParsed = new URL(rewriteUrl, options.request.url);
       const requestOrigin = new URL(options.request.url).origin;
@@ -698,6 +703,8 @@ async function executeMiddlewareModule(
         // but callers (pages pipeline, App Router handler) always operate on
         // basePath-stripped paths. This mirrors the Next.js behavior where the
         // rewrite target is normalized via getNextPathnameInfo before routing.
+        rewriteHadBasePath =
+          !options.basePath || hasBasePath(rewriteParsed.pathname, options.basePath);
         const rewritePathname = options.basePath
           ? stripBasePath(rewriteParsed.pathname, options.basePath)
           : rewriteParsed.pathname;
@@ -714,7 +721,24 @@ async function executeMiddlewareModule(
     return {
       continue: true,
       rewriteUrl: rewritePath,
+      rewriteHadBasePath,
       rewriteStatus: response.status !== 200 ? response.status : undefined,
+      responseHeaders: collectMiddlewareHeaders(response),
+      status: response.status !== 200 ? response.status : undefined,
+      waitUntilPromises,
+    };
+  }
+
+  // Checked after redirects and rewrites: a response can carry both
+  // `x-middleware-next` and `x-middleware-rewrite`, e.g.
+  // `NextResponse.rewrite(url, {headers: NextResponse.next().headers})`, which
+  // next-intl's playground proxy does. Next.js drops `x-middleware-next` and
+  // applies the rewrite.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
+    releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
+    return {
+      continue: true,
       responseHeaders: collectMiddlewareHeaders(response),
       status: response.status !== 200 ? response.status : undefined,
       waitUntilPromises,

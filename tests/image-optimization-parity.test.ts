@@ -181,6 +181,55 @@ describe("image deployment query parity", () => {
   });
 });
 
+// Ported from Next.js: test/integration/image-optimizer/test/util.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
+// ("recursive url is not allowed"). Hosts fetch a local source through the
+// application, so a source that is itself the image endpoint is rejected.
+describe("recursive image source parity", () => {
+  it("rejects a source that is the image endpoint", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    for (const source of [
+      // Verbatim from the Next.js test.
+      "/_next/image?url=test.pngw=1&q=75",
+      "/assets/_next/image?url=%2Ftest.png&w=128&q=75",
+      "/%5Fnext/image?url=%2Ftest.png&w=128&q=75",
+      "/_vinext/image?url=%2Ftest.png&w=128&q=75",
+    ]) {
+      const requestUrl = new URL("http://vinext.test/_next/image");
+      requestUrl.searchParams.set("url", source);
+      requestUrl.searchParams.set("w", "64");
+      requestUrl.searchParams.set("q", "75");
+      expect(parseImageParams(requestUrl), source).toBeNull();
+    }
+    expect(
+      parseImageParams(
+        new URL("http://vinext.test/_next/image?url=%2F_next%2Fimages.png&w=64&q=75"),
+      ),
+    ).not.toBeNull();
+  });
+});
+
+// Real Next.js 16 answers 400 for a source whose dot segments resolve to a
+// protocol-relative pathname, and serves one that stays on a single-slash path.
+describe("dot-segment image source parity", () => {
+  it("rejects a source that resolves to a protocol-relative pathname", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const parse = (source: string) => {
+      const requestUrl = new URL("http://vinext.test/_next/image");
+      requestUrl.searchParams.set("url", source);
+      requestUrl.searchParams.set("w", "64");
+      requestUrl.searchParams.set("q", "75");
+      return parseImageParams(requestUrl);
+    };
+    for (const source of ["/a/..//evil.com", "/a/%2e%2e//evil.com", "/a/..\\/evil.com"]) {
+      expect(parse(source), source).toBeNull();
+    }
+    expect(parse("/a/../heart.png")).not.toBeNull();
+  });
+});
+
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");
 
@@ -288,7 +337,7 @@ describe("Pages Router production /_next/image cache-state headers", () => {
     for (const [query, status] of [
       ["url=%2Fhello%20world.png&w=65&q=75", 400],
       ["url=%2Ficon.svg&w=64&q=75", 400],
-      ["url=%2Fmissing.png&w=64&q=75", 404],
+      ["url=%2Fmissing.png&w=64&q=75", 400],
     ] as const) {
       const res = await fetch(`${baseUrl}/_next/image?${query}`);
       expect(res.status, query).toBe(status);

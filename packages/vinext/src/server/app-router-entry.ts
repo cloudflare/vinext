@@ -41,15 +41,12 @@ import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
-import {
-  getImageOptimizer,
-  handleConfiguredImageOptimization,
-  isImageOptimizationPath,
-} from "./image-optimization.js";
+import { getImageOptimizer, readImageOptimizationSignal } from "./image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -177,7 +174,7 @@ async function handleRequest(
       const probeUrl = new URL(request.url);
       if (probeUrl.searchParams.has(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM)) {
         probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-        request = new Request(probeUrl, request);
+        request = cloneRequestWithUrl(request, probeUrl.href);
       }
     }
   }
@@ -212,14 +209,9 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
-    return handleConfiguredImageOptimization(
-      request,
-      (assetPath) => Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
-      __rscImageAllowedWidths,
-      __rscImageConfig,
-    );
-  }
+  // The image endpoint runs through middleware and rewrites like any request;
+  // the handler then signals that the Worker may serve the image itself.
+  const servesImages = Boolean(assets) && getImageOptimizer() !== null;
 
   // Redirect repeated slashes / backslashes like Next.js (//evil.com/ →
   // /evil.com/) and block encoded protocol-relative shapes (/%5Cevil.com/,
@@ -302,7 +294,32 @@ async function handleRequest(
 
   if (result instanceof Response) {
     let response = result;
-    if (assets) {
+    const imageSignal = servesImages ? readImageOptimizationSignal(response) : null;
+    if (imageSignal && assets) {
+      const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
+        await import("./worker-image-optimization.js");
+      response = await serveWorkerImageOptimization(
+        request,
+        imageSignal,
+        __rscImageAllowedWidths,
+        __rscImageConfig,
+        {
+          assets,
+          basePath: __workerBasePath,
+          assetPathPrefix: __workerAssetPathPrefix,
+          clientBuildFiles: __workerClientBuildFiles,
+          // The source runs outside this request's cacheability context.
+          fetchPublicFile: async (sourceRequest) => {
+            const sourceResult = await runWithExecutionContext(requestCtx, () =>
+              rscHandler(sourceRequest, requestCtx),
+            );
+            return sourceResult instanceof Response
+              ? fetchSignalledPublicFile(sourceResult, sourceRequest, assets)
+              : null;
+          },
+        },
+      );
+    } else if (assets) {
       const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path, requestHeaders) =>
           Promise.resolve(assets.fetch(createStaticAssetRequest(path, request, requestHeaders))),

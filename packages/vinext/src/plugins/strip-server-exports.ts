@@ -1,10 +1,10 @@
-import { parseAst, type ESTree } from "vite";
+import type { ESTree } from "vite";
 import MagicString from "magic-string";
 import { findAstBindingScope, walkAstScopes } from "./ast-scope.js";
-import { getAstName } from "./ast-utils.js";
+import { getAstName, parseProgram } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
-type ParsedAst = ReturnType<typeof parseAst>;
+type ParsedAst = ESTree.Program;
 type ASTNode = ParsedAst["body"][number]["parent"];
 // Vite's AST type is a large discriminated union whose node-specific fields
 // are not exposed after generic traversal. Runtime checks below narrow each
@@ -412,7 +412,7 @@ export function validatePageExports(code: string): void {
   if (!hasExportAllCandidate(code)) return;
   let ast: ParsedAst;
   try {
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch {
     return;
   }
@@ -443,7 +443,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
 
   let ast: ParsedAst;
   try {
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch {
     return null;
   }

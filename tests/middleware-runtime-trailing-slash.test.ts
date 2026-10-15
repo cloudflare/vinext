@@ -279,3 +279,89 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     },
   );
 });
+
+// With `skipTrailingSlashRedirect`, middleware sees requests in either slash
+// form. Next.js's getNextPathnameInfo takes NextURL's slash from the pathname
+// (the config only decides root), and the adapter formats a redirect Location
+// from its own slash.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/get-next-pathname-info.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+describe("executeMiddleware with skipTrailingSlashRedirect", () => {
+  it.each([
+    { trailingSlash: false, requestPath: "/another/" },
+    { trailingSlash: true, requestPath: "/another" },
+  ])(
+    "keeps the request's own slash on nextUrl and request.url (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, requestPath }) => {
+      let observed: { pathname: string; href: string; url: string } | undefined;
+      await executeMiddleware({
+        isProxy: false,
+        module: {
+          middleware: (request: Request & { nextUrl: URL }) => {
+            observed = {
+              pathname: request.nextUrl.pathname,
+              href: request.nextUrl.href,
+              url: request.url,
+            };
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+        request: new Request(`http://localhost${requestPath}?q=1`),
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      expect(observed).toEqual({
+        pathname: requestPath,
+        href: `http://localhost${requestPath}?q=1`,
+        url: `http://localhost${requestPath}?q=1`,
+      });
+    },
+  );
+
+  it.each([
+    { trailingSlash: false, requestPath: "/src/", expected: "/somewhere/" },
+    { trailingSlash: true, requestPath: "/src", expected: "/somewhere" },
+  ])(
+    "formats a request.nextUrl redirect from the request's slash (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, requestPath, expected }) => {
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: {
+          middleware: (request: { nextUrl: URL & { clone(): URL } }) => {
+            const url = request.nextUrl.clone();
+            url.pathname = "/somewhere";
+            return NextResponse.redirect(url);
+          },
+        },
+        request: new Request(`http://localhost${requestPath}`),
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      expect(result.redirectStatus).toBe(307);
+      expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe(expected);
+    },
+  );
+
+  it.each([
+    { trailingSlash: false, location: "/somewhere/" },
+    { trailingSlash: true, location: "/somewhere" },
+  ])(
+    "keeps a plain URL redirect's own slash (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, location }) => {
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: {
+          middleware: (request: Request) => NextResponse.redirect(new URL(location, request.url)),
+        },
+        request: new Request("http://localhost/src"),
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      expect(result.redirectStatus).toBe(307);
+      expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe(location);
+    },
+  );
+});

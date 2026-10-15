@@ -19,7 +19,7 @@
 // deliberately uses emitted identity for bundled dependencies instead: source
 // paths do not exist in Workers and must not leak from the build host, while an
 // emitted URL remains meaningful after relocating Node and Nitro output.
-import { parseAst, type ESTree, type Plugin, type ResolvedConfig } from "vite";
+import type { ESTree, Plugin, ResolvedConfig } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { randomUUID } from "node:crypto";
@@ -31,6 +31,7 @@ import {
   collectBindingNames,
   forEachAstChild,
   isIdentifierNamed,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
 } from "./ast-utils.js";
@@ -523,9 +524,9 @@ function rewriteModuleIdentity(
     cjsGlobalInitializers?: CjsGlobalInitializers;
   },
 ): MagicStringTransformResult | null {
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, {
+    ast = parseProgram(code, {
       lang: scriptParserLanguage(options.id) ?? "jsx",
       sourceType: options.cjsGlobalInitializers ? "commonjs" : undefined,
     });
@@ -536,7 +537,7 @@ function rewriteModuleIdentity(
       // syntax such as top-level await. Raw dependencies can instead contain
       // CommonJS-only syntax such as a top-level return, so accept either
       // grammar without weakening the binding analysis.
-      ast = parseAst(code, { lang: scriptParserLanguage(options.id) ?? "jsx" });
+      ast = parseProgram(code, { lang: scriptParserLanguage(options.id) ?? "jsx" });
     } catch {
       return null;
     }

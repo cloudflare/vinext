@@ -89,6 +89,23 @@ test("routes hybrid Pages by the raw Worker pathname", async () => {
   expect(alias.body).not.toContain("Pages encoded parity");
 });
 
+// Middleware matches the raw path and one decode of it. Next.js decodes at most
+// once, so a double-encoded static segment must not reach the Pages page or
+// API route that its decoded-twice spelling names.
+test("keeps double-encoded static aliases out of hybrid Pages routing", async () => {
+  const api = await getRawPath("/api/ping");
+  expect(api.status).toBe(200);
+  expect(api.body).toContain('"ok":true');
+
+  const apiAlias = await getRawPath("/api/%2570ing");
+  expect(apiAlias.status).toBe(404);
+  expect(apiAlias.body).not.toContain('"ok":true');
+
+  const pageAlias = await getRawPath("/%2570ages-encoded-parity/a");
+  expect(pageAlias.status).toBe(404);
+  expect(pageAlias.body).not.toContain("Pages encoded parity");
+});
+
 test("enforces canonical dynamicParams=false values on Workers", async () => {
   const allowed = await getRawPath("/encoded-parity/static/a%252Fb");
   expect(allowed.status).toBe(200);

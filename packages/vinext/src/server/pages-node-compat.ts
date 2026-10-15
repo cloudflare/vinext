@@ -53,13 +53,16 @@ export type PagesReqResResponse = Writable & {
   send: (data: unknown) => void;
   redirect: (statusOrUrl: number | string, url?: string) => PagesReqResResponse;
   getHeaders: () => PagesReqResHeaders;
-  revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
   setPreviewData: (
     data: object | string,
     options?: { maxAge?: number; path?: string },
   ) => PagesReqResResponse;
   clearPreviewData: (options?: { path?: string }) => PagesReqResResponse;
   setDraftMode: (options?: { enable?: boolean }) => PagesReqResResponse;
+};
+
+export type PagesApiReqResResponse = PagesReqResResponse & {
+  revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
 };
 
 type PagesRequestCookiesCarrier = {
@@ -70,18 +73,21 @@ type PagesRequestCookiesCarrier = {
 };
 
 type CreatePagesReqResOptions = {
-  allowedRevalidateHeaderKeys?: readonly string[];
   body: unknown;
   initialResponseHeaders?: Headers;
   query: PagesRequestQuery;
   request: Request;
-  trustedRevalidateOrigin?: string;
   url: string;
 };
 
-type CreatePagesReqResResult = {
+type CreatePagesApiReqResOptions = CreatePagesReqResOptions & {
+  allowedRevalidateHeaderKeys?: readonly string[];
+  trustedRevalidateOrigin?: string;
+};
+
+type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResResponse> = {
   req: PagesReqResRequest;
-  res: PagesReqResResponse;
+  res: Res;
   responsePromise: Promise<Response>;
 };
 
@@ -250,9 +256,6 @@ class PagesResponseStream extends Writable {
   constructor(
     private readonly resolveResponse: (value: Response) => void,
     private readonly rejectResponse: (error: Error) => void,
-    private readonly requestHeaders: Headers,
-    private readonly trustedRevalidateOrigin?: string,
-    private readonly allowedRevalidateHeaderKeys: readonly string[] = [],
   ) {
     super();
     this.once("error", (err) => {
@@ -351,16 +354,6 @@ class PagesResponseStream extends Writable {
       headers["set-cookie"] = this.setCookieHeaders;
     }
     return headers;
-  }
-
-  async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
-    await performOnDemandRevalidate(
-      this.requestHeaders,
-      urlPath,
-      opts,
-      this.trustedRevalidateOrigin,
-      this.allowedRevalidateHeaderKeys,
-    );
   }
 
   setPreviewData(
@@ -593,12 +586,6 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   const res: PagesReqResResponse = new PagesResponseStream(
     resolveResponse,
     rejectResponse,
-    options.request.headers,
-    // Fetch runtimes do not expose a listening socket origin. Fall back to the
-    // platform-provided Request URL origin and deliberately ignore any raw Host
-    // header carried in request.headers.
-    options.trustedRevalidateOrigin ?? new URL(options.request.url).origin,
-    options.allowedRevalidateHeaderKeys,
   ) as PagesReqResResponse;
   for (const [name, value] of options.initialResponseHeaders ?? []) {
     if (name.toLowerCase() === "set-cookie") continue;
@@ -609,4 +596,33 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };
+}
+
+/**
+ * Create the req/res pair for a Pages API route. Only API responses get
+ * `res.revalidate()`: Next.js attaches it in apiResolver
+ * (`packages/next/src/server/api-utils/node/api-resolver.ts`), so a page's
+ * getServerSideProps `res` never carries the revalidation secret.
+ */
+export function createPagesApiReqRes(
+  options: CreatePagesApiReqResOptions,
+): CreatePagesReqResResult<PagesApiReqResResponse> {
+  const { req, res, responsePromise } = createPagesReqRes(options);
+  // Fetch runtimes do not expose a listening socket origin. Fall back to the
+  // platform-provided Request URL origin and deliberately ignore any raw Host
+  // header carried in request.headers.
+  const trustedRevalidateOrigin =
+    options.trustedRevalidateOrigin ?? new URL(options.request.url).origin;
+  const apiRes = Object.assign(res, {
+    async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
+      await performOnDemandRevalidate(
+        options.request.headers,
+        urlPath,
+        opts,
+        trustedRevalidateOrigin,
+        options.allowedRevalidateHeaderKeys,
+      );
+    },
+  });
+  return { req, res: apiRes, responsePromise };
 }

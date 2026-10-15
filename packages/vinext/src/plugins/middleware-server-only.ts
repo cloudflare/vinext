@@ -1,6 +1,7 @@
 import type { Plugin } from "vite";
 import { toSlash } from "pathslash";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { isServerEnvironment } from "./environment.js";
 
 /**
  * Allow `import 'server-only'` from neutral server targets (and any module
@@ -31,10 +32,11 @@ import { stripViteModuleQuery } from "../utils/path.js";
  *      to the tainted set. This propagates the taint along the import graph
  *      synchronously, before plugin-rsc's `order: "pre"` validate-imports
  *      handler sees the next `server-only` request.
- *   3. When a tainted module imports `server-only` in a non-RSC environment,
- *      short-circuit to the no-op shim path so plugin-rsc's filter (which
- *      matches the bare `^server-only$` specifier) never fires for that
- *      import.
+ *   3. When a tainted module imports `server-only` in a non-RSC server
+ *      environment, short-circuit to the no-op shim path so plugin-rsc's
+ *      filter (which matches the bare `^server-only$` specifier) never fires
+ *      for that import. Browser environments are skipped entirely, so the
+ *      client `server-only` validators still see every import there.
  *
  * The taint set is scoped to the middleware chain only — `server-only`
  * imports from anywhere else (including client component code traversing
@@ -110,10 +112,14 @@ export function createMiddlewareServerOnlyPlugin(options: {
       // through to `return undefined` immediately.
       order: "pre",
       async handler(id, importer, opts) {
-        // Only relevant outside the RSC environment. Inside `rsc`, the
-        // react-server export condition already makes `server-only` a no-op,
-        // and plugin-rsc's validator allows it there.
-        if (this.environment?.name === "rsc") return;
+        // Only relevant in server environments other than RSC. Inside `rsc`,
+        // the react-server export condition already makes `server-only` a
+        // no-op, and plugin-rsc's validator allows it there. In a browser
+        // graph, a module reached through middleware or an API route ships to
+        // the client, so `server-only` must reach the client validators and
+        // fail the build, as in Next.js.
+        const environment = this.environment;
+        if (!environment || !isServerEnvironment(environment) || environment.name === "rsc") return;
         if (!importer) return;
         if (!isTainted(importer) && !options.isNeutralServerModule?.(canonicalizeId(importer))) {
           return;

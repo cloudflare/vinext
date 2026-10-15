@@ -231,6 +231,13 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
+          # Install the @vitejs/plugin-rsc and React versions the repo is tested
+          # with. An unversioned install can resolve an older release under
+          # pnpm's minimumReleaseAge default, which vinext rejects.
+          RSC_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('@vitejs/plugin-rsc/package.json').version")
+          vp add -D "@vitejs/plugin-rsc@$RSC_VERSION"
+          REACT_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('react-server-dom-webpack/package.json').version")
+          vp add "react@$REACT_VERSION" "react-dom@$REACT_VERSION" "react-server-dom-webpack@$REACT_VERSION"
 
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
@@ -332,6 +339,13 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          # Install the @vitejs/plugin-rsc and React versions the repo is tested
+          # with. An unversioned install can resolve an older release under
+          # pnpm's minimumReleaseAge default, which vinext rejects.
+          RSC_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('@vitejs/plugin-rsc/package.json').version")
+          vp add -D "@vitejs/plugin-rsc@$RSC_VERSION"
+          REACT_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('react-server-dom-webpack/package.json').version")
+          vp add "react@$REACT_VERSION" "react-dom@$REACT_VERSION" "react-server-dom-webpack@$REACT_VERSION"
 
       - name: Run Cloudflare init
         working-directory: ${{ runner.temp }}/cna-cloudflare
@@ -428,6 +442,13 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          # Install the @vitejs/plugin-rsc and React versions the repo is tested
+          # with. An unversioned install can resolve an older release under
+          # pnpm's minimumReleaseAge default, which vinext rejects.
+          RSC_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('@vitejs/plugin-rsc/package.json').version")
+          vp add -D "@vitejs/plugin-rsc@$RSC_VERSION"
+          REACT_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('react-server-dom-webpack/package.json').version")
+          vp add "react@$REACT_VERSION" "react-dom@$REACT_VERSION" "react-server-dom-webpack@$REACT_VERSION"
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cva-cloudflare
@@ -486,6 +507,10 @@ jobs:
             label: app-router-encoded-basepath-i18n
             shardIndex: 1
             shardTotal: 1
+          - project: use-params-app-pages
+            label: use-params-app-pages
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router
             label: app-router 3/3
             shardIndex: 3
@@ -530,6 +555,38 @@ jobs:
             label: cloudflare-sentry-app
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-next-intl
+            label: cloudflare-next-intl
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-locale-prefix-never
+            label: cloudflare-next-intl-locale-prefix-never
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-trailing-slash
+            label: cloudflare-next-intl-trailing-slash
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-base-path
+            label: cloudflare-next-intl-base-path
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-domains
+            label: cloudflare-next-intl-domains
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-domains-locale-prefix
+            label: cloudflare-next-intl-domains-locale-prefix
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-locale-cookie-false
+            label: cloudflare-next-intl-locale-cookie-false
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-example
+            label: cloudflare-next-intl-example
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-sentry-app-workers-cache
             label: cloudflare-sentry-app-workers-cache
             shardIndex: 1
@@ -548,6 +605,10 @@ jobs:
             shardTotal: 1
           - project: cloudflare-pages-router-dev
             label: cloudflare-pages-router-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-dev-run-worker-first
+            label: cloudflare-dev-run-worker-first
             shardIndex: 1
             shardTotal: 1
           - project: static-export
@@ -592,6 +653,10 @@ jobs:
             shardTotal: 1
           - project: ppr-impact-demo
             label: ppr-impact-demo
+            shardIndex: 1
+            shardTotal: 1
+          - project: cacheability-components
+            label: cacheability-components
             shardIndex: 1
             shardTotal: 1
           - project: app-front-redirect-issue

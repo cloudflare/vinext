@@ -72,9 +72,41 @@ describe("client asset sidecar builds", () => {
       expect(
         await fs.readFile(path.join(fixtureRoot, "dist/server/vinext-server.json"), "utf8"),
       ).toBe(adjacentServerManifest);
+
+      // The client bundle honours clientOutDir too, rather than landing in the
+      // default dist/client where parallel builds would clobber each other.
+      await expect(
+        fs.stat(path.join(clientOutDir, ".vite", "manifest.json")),
+      ).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(fixtureRoot, "dist", "client"))).rejects.toThrow();
     } finally {
       await fs.rm(fixtureRoot, { recursive: true, force: true });
       await fs.rm(outRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a clientOutDir that contains a server output directory", async () => {
+    const fixtureRoot = await createFixture();
+    try {
+      // The client build runs last and empties its outDir, which would delete
+      // build/rsc/index.js and leave no request handler.
+      await expect(
+        createBuilder({
+          root: fixtureRoot,
+          configFile: false,
+          logLevel: "silent",
+          plugins: [
+            vinext({
+              appDir: fixtureRoot,
+              clientOutDir: "build",
+              rscOutDir: "build/rsc",
+              ssrOutDir: "build/ssr",
+            }),
+          ],
+        }),
+      ).rejects.toThrow('clientOutDir "build" contains rscOutDir "build/rsc"');
+    } finally {
+      await fs.rm(fixtureRoot, { recursive: true, force: true });
     }
   });
 

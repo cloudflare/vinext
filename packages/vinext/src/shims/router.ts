@@ -86,6 +86,7 @@ import {
   type UrlQuery,
 } from "../utils/query.js";
 import { matchRoutePattern, routePattern, routePatternParts } from "../routing/route-pattern.js";
+import { disableSmoothScrollDuringRouteTransition } from "./disable-smooth-scroll.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
 import {
   installPagesRouterRuntime,
@@ -264,19 +265,9 @@ function scrollToPagesRouterPosition({ x, y }: ScrollPosition): void {
     return;
   }
 
-  const htmlElement = document.documentElement;
-  const shouldDisableSmoothScroll = htmlElement.dataset.scrollBehavior === "smooth";
-
-  if (!shouldDisableSmoothScroll) {
+  disableSmoothScrollDuringRouteTransition(() => {
     window.scrollTo(x, y);
-    return;
-  }
-
-  const previousScrollBehavior = htmlElement.style.scrollBehavior;
-  htmlElement.style.scrollBehavior = "auto";
-  htmlElement.getClientRects();
-  window.scrollTo(x, y);
-  htmlElement.style.scrollBehavior = previousScrollBehavior;
+  });
 }
 
 function isAtScrollPosition({ x, y }: ScrollPosition): boolean {
@@ -1725,12 +1716,6 @@ function isAppComponent(value: unknown): value is NonNullable<Window["__VINEXT_A
 function resolveSameOriginRedirectedUrl(responseUrl: string): string | null {
   const appPath = toSameOriginAppPath(responseUrl, __basePath);
   if (appPath === null) return null;
-  // Keep a same-origin absolute URL when stripping its origin/basePath would
-  // expose a leading `//`; performNavigation uses that absolute form for the
-  // history URL while retaining the app path for route state and fetching.
-  if (appPath.startsWith("//")) {
-    return normalizePathTrailingSlash(responseUrl, __trailingSlash);
-  }
   // Followed HTML redirects re-enter performNavigation(), so return its
   // app-relative input rather than a browser URL that already has basePath.
   return normalizePathTrailingSlash(appPath, __trailingSlash);
@@ -1764,7 +1749,14 @@ function resolveLocalRedirectUrl(location: string): string | null {
       // Data redirect headers can already be browser paths with basePath.
       // Convert back to app paths before toBrowserNavigationHref re-applies it.
       const parsed = new URL(location, "http://vinext.local");
-      appPath = stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+      const pathname = stripBasePath(parsed.pathname, __basePath);
+      // A leading `//` (from stripping basePath, or dot segments such as
+      // `/docs/..//x` escaping it) would point at another host as a local
+      // path. Resolve it as a browser URL so toSameOriginAppPath() collapses
+      // it and checks basePath on the normalized path.
+      appPath = pathname.startsWith("//")
+        ? toSameOriginAppPath(new URL(location, window.location.href).href, __basePath)
+        : pathname + parsed.search + parsed.hash;
     } catch {
       appPath = location;
     }
@@ -1773,19 +1765,6 @@ function resolveLocalRedirectUrl(location: string): string | null {
   }
 
   if (appPath === null) return null;
-  // Stripping an origin or basePath can expose a leading `//` that the browser
-  // would reinterpret as a different authority. Resolve the original target
-  // to a validated same-origin absolute URL; recursive navigation retains its
-  // `//` app path as route state but uses this absolute form for browser I/O.
-  if (appPath.startsWith("//")) {
-    try {
-      const browserUrl = new URL(location, window.location.href);
-      if (browserUrl.origin !== getWindowOrigin()) return null;
-      return normalizePathTrailingSlash(browserUrl.href, __trailingSlash);
-    } catch {
-      return null;
-    }
-  }
   // Internal redirects are re-dispatched through performNavigation(), whose
   // input contract is app-relative. Keep basePath stripped here so the fresh
   // navigation applies it exactly once when deriving its browser URL.
@@ -3327,6 +3306,13 @@ async function performNavigation(
   const currentRoute =
     window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath);
   const currentAs = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  // Next.js prepareUrlAs() resolves relative hrefs against the current route
+  // before locale handling. Doing the same keeps locale prefixes and
+  // cross-domain locale URLs from being joined to a path without a leading `/`.
+  const resolveRelativeRoutePath = (href: string): string =>
+    href === "" || /^[/?#]/.test(href) || isAbsoluteUrl(href)
+      ? href
+      : resolvePagesRouterHref(href, { pathname: currentRoute, asPath: currentAs }, __basePath);
   const preparedHistoryHref =
     (isAbsoluteUrl(inputHref) ? toSameOriginAppPath(inputHref, __basePath) : null) ??
     absoluteHistoryUrl ??
@@ -3350,7 +3336,7 @@ async function performNavigation(
     credentialedHistoryAs ?? (!as ? credentialedHistoryHref : undefined);
 
   // Next.js treats a falsy `as` as omitted in prepareUrlAs().
-  as = as ? resolveUrl(as, true) : undefined;
+  as = as ? resolveRelativeRoutePath(resolveUrl(as, true)) : undefined;
 
   // Defence-in-depth dangerous-scheme guard. The synchronous guard inside
   // `Router.push` / `Router.replace` (see RouterMethods below) is the primary
@@ -3369,7 +3355,7 @@ async function performNavigation(
   const urlForResolution = isQueryOnlyString
     ? `${stripBasePath(window.location.pathname, __basePath)}${url}`
     : url;
-  const unlocalizedRouteHref = resolveUrl(urlForResolution);
+  const unlocalizedRouteHref = resolveRelativeRoutePath(resolveUrl(urlForResolution));
   const localRouteHref = isExternalUrl(unlocalizedRouteHref)
     ? toSameOriginAppPath(unlocalizedRouteHref, __basePath)
     : unlocalizedRouteHref;
@@ -3802,7 +3788,7 @@ async function performNavigation(
     // ordering of scroll-during-commit, then completion event.
     if (doScroll) {
       if (hash) scrollToHashTarget(hash);
-      else window.scrollTo(0, 0);
+      else scrollToPagesRouterPosition({ x: 0, y: 0 });
     }
   }
   onStateUpdate?.();

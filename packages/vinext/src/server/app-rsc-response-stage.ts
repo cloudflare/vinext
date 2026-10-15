@@ -160,6 +160,9 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   if (props.kind === "app-full-request") {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
+  // Read before cloning, like the full App RSC lifecycle: route handlers
+  // follow this signal directly instead of the clone chain below.
+  const rawRequestSignal = rawRequest.signal;
   options.registerCacheAdapters();
   await options.ensureInstrumentation?.();
 
@@ -236,6 +239,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   const requestContext = createRequestContext({
     headersContext,
     executionContext,
+    requestSignal: executionContext?.requestSignal ?? rawRequestSignal,
     unstableCacheRevalidation: "background",
   });
   const middlewareContext: AppMiddlewareContext = {

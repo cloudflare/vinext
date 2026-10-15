@@ -174,6 +174,8 @@ export type MiddlewareResult = {
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
+  /** False when a same-origin rewrite target was outside the basePath. */
+  rewriteHadBasePath?: boolean;
   rewriteStatus?: number;
   status?: number;
   responseHeaders?: Iterable<[string, string]>;
@@ -187,6 +189,8 @@ export type PagesPipelineDeps = {
   assetPrefix?: string;
   basePath: string;
   trailingSlash: boolean;
+  /** next.config `skipTrailingSlashRedirect`: serve both slash forms without a 308. */
+  skipTrailingSlashRedirect?: boolean;
   i18nConfig: NextI18nConfig | null;
   configRedirects: NextRedirect[];
   configRewrites: {
@@ -283,6 +287,8 @@ export type PagesPipelineDeps = {
         phase: FilesystemRoutePhase,
         resolvedUrl: string,
         request: Request,
+        /** Whether the resolved pathname is under the basePath, as Next.js checks before serving filesystem items. */
+        resolvedPathnameHasBasePath: boolean,
       ) => Promise<boolean | Response>)
     | null;
 };
@@ -309,7 +315,8 @@ export function wrapMiddlewareWithBasePath(
   return (request, ctx, opts) => {
     const mwUrl = new URL(request.url);
     mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
-    return runMiddleware(new Request(mwUrl, request), ctx, opts);
+    // Keep Workers `cf` metadata, which NextRequest.ip / .geo rely on.
+    return runMiddleware(cloneRequestWithUrl(request, mwUrl.toString()), ctx, opts);
   };
 }
 
@@ -369,6 +376,7 @@ export async function runPagesRequest(
   const {
     basePath,
     trailingSlash,
+    skipTrailingSlashRedirect,
     i18nConfig,
     configRedirects,
     configRewrites,
@@ -404,11 +412,13 @@ export async function runPagesRequest(
 
   // Step 2: Trailing-slash normalization. Adapters must rewrite `_next/data`
   // URLs to page paths and classify them via `isDataReq`; those requests must
-  // never receive path redirects.
+  // never receive path redirects. `skipTrailingSlashRedirect` drops these
+  // redirects entirely, like Next.js omitting them from the routes manifest.
   {
-    const trailingSlashRedirect = isDataReq
-      ? null
-      : normalizeTrailingSlash(pathname, basePath, trailingSlash, search);
+    const trailingSlashRedirect =
+      isDataReq || skipTrailingSlashRedirect
+        ? null
+        : normalizeTrailingSlash(pathname, hadBasePath ? basePath : "", trailingSlash, search);
     if (trailingSlashRedirect) {
       return { type: "response", response: trailingSlashRedirect };
     }
@@ -464,6 +474,14 @@ export async function runPagesRequest(
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
+  // Rewrites carry or drop the basePath: middleware by its target URL, config
+  // rules unless they set `basePath: false`. Like Next.js, post-middleware
+  // rules match against the current state.
+  let resolvedPathnameHasBasePath = hadBasePath;
+  const currentBasePathState = (): BasePathMatchState => ({
+    basePath,
+    hadBasePath: resolvedPathnameHasBasePath,
+  });
   const middlewareHeaders: HeaderRecord = {};
   const mergeConfigHeadersIntoEarlyResponse = (response: Response): Response => {
     if (configHeaders.length === 0) return response;
@@ -489,6 +507,7 @@ export async function runPagesRequest(
       phase,
       resolvedUrl,
       request,
+      resolvedPathnameHasBasePath,
     );
     if (served instanceof Response) {
       const isStaticMethodNotAllowed =
@@ -603,6 +622,7 @@ export async function runPagesRequest(
     if (result.rewriteUrl) {
       resolvedUrl = result.rewriteUrl;
       resolvedPathnameIsRequestPathname = false;
+      resolvedPathnameHasBasePath = result.rewriteHadBasePath ?? true;
     }
 
     // Reconciled superset: result.status takes priority over result.rewriteStatus
@@ -708,7 +728,7 @@ export async function runPagesRequest(
       configSourcePathname(),
       [rewrite],
       rewriteRequestContext(),
-      basePathState,
+      currentBasePathState(),
       configSourcePathname(),
       conditionalRewriteCacheability,
     );
@@ -720,6 +740,7 @@ export async function runPagesRequest(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       resolvedPathnameIsRequestPathname = false;
+      resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
       configRewriteFired = true;
     }
   }
@@ -821,7 +842,7 @@ export async function runPagesRequest(
         configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
-        basePathState,
+        currentBasePathState(),
         configSourcePathname(),
         conditionalRewriteCacheability,
       );
@@ -833,6 +854,7 @@ export async function runPagesRequest(
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
+        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
         configRewriteFired = true;
         resolvedPathnameChanged = true;
         const afterFilesFilesystemResult = await serveFilesystemRoute(
@@ -875,7 +897,7 @@ export async function runPagesRequest(
           configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
-          basePathState,
+          currentBasePathState(),
           configSourcePathname(),
           conditionalRewriteCacheability,
         );
@@ -889,6 +911,7 @@ export async function runPagesRequest(
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
+        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
         configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
@@ -932,7 +955,7 @@ export async function runPagesRequest(
           configSourcePathname(),
           [rewrite],
           rewriteRequestContext(),
-          basePathState,
+          currentBasePathState(),
           configSourcePathname(),
           conditionalRewriteCacheability,
         );
@@ -947,6 +970,7 @@ export async function runPagesRequest(
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
+        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
         configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
@@ -1045,7 +1069,7 @@ export async function runPagesRequest(
         configSourcePathname(),
         [rewrite],
         rewriteRequestContext(),
-        basePathState,
+        currentBasePathState(),
         configSourcePathname(),
         conditionalRewriteCacheability,
       );
@@ -1057,6 +1081,7 @@ export async function runPagesRequest(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       resolvedPathnameIsRequestPathname = false;
+      resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
       configRewriteFired = true;
       const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
       if (fallbackFilesystemResult) return fallbackFilesystemResult;

@@ -1176,8 +1176,11 @@ export async function draftMode(): Promise<DraftModeResult> {
 // RequestCookies implementation
 // ---------------------------------------------------------------------------
 
-const APPLY_RESPONSE_COOKIE = Symbol("vinext.apply-response-cookie");
-const SYNCHRONIZE_REQUEST_COOKIES = Symbol("vinext.synchronize-request-cookies");
+// Registered symbols: the request context (and its RequestCookies) is shared
+// through globalThis, so another headers module instance — e.g. Vite's
+// prebundled `next/headers` in dev — must be able to call these methods.
+const APPLY_RESPONSE_COOKIE = Symbol.for("vinext.apply-response-cookie");
+const SYNCHRONIZE_REQUEST_COOKIES = Symbol.for("vinext.synchronize-request-cookies");
 
 class RequestCookies {
   private _cookies: Map<string, string>;

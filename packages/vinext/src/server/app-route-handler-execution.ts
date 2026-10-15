@@ -104,6 +104,7 @@ type RunAppRouteHandlerOptions = {
   i18n?: NextI18nConfig | null;
   isDraftMode?: boolean;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -112,6 +113,8 @@ type RunAppRouteHandlerOptions = {
    */
   params: AppRouteParams | null;
   request: Request;
+  /** Host signal for the client connection; only the foreground request has one. */
+  requestSignal?: AbortSignal;
   routePattern?: string;
   setHeadersAccessPhase?: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
@@ -282,6 +285,7 @@ export async function runAppRouteHandler(
     basePath: options.basePath,
     i18n: options.i18n,
     trailingSlash: options.trailingSlash,
+    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
     middlewareHeaders: options.middlewareRequestHeaders,
     onDynamicAccess() {
       options.markDynamicUsage();
@@ -290,6 +294,7 @@ export async function runAppRouteHandler(
       options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
         ? options.dynamicConfig
         : "auto",
+    signal: options.requestSignal,
     staticGenerationErrorMessage(expression) {
       return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
     },

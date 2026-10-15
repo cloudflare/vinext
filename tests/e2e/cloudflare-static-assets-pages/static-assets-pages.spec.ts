@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
+import { chromium, expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -246,6 +246,43 @@ test("i18n domains render their own context instead of a locale-only snapshot", 
     const html = await response.text();
     expect(html).toContain('id="locale">en</p>');
     expect(html).toContain(`id="default-locale">${defaultLocale}</p>`);
+  }
+});
+
+// Next.js prepareUrlAs() resolves a relative href against the current route
+// before building the cross-domain locale URL, so the configured host is always
+// followed by a `/` path and the href cannot change the authority.
+test("cross-domain locale navigation keeps relative hrefs on the configured domain", async () => {
+  test.skip(deployed, "workers.dev routing cannot receive the configured i18n domain hosts");
+  const port = new URL(i18nBaseURL).port;
+  const browser = await chromium.launch({
+    args: [
+      `--host-resolver-rules=MAP en.example 127.0.0.1:${port}, MAP fr.example 127.0.0.1:${port}`,
+    ],
+  });
+  try {
+    for (const [href, expected] of [
+      ["@evil.com", /^https:\/\/fr\.example\/@evil\.com\/?$/],
+      [".evil.com/x", /^https:\/\/fr\.example\/\.evil\.com\/x\/?$/],
+    ] as const) {
+      const page = await browser.newPage();
+      await page.route(
+        (url) => url.hostname !== "en.example",
+        (route) => route.abort(),
+      );
+      await page.goto("http://en.example/dynamic/");
+      await page.waitForFunction(() => (window as any).next?.router);
+      const hardNavigation = page.waitForRequest(
+        (request) => new URL(request.url()).hostname !== "en.example",
+      );
+      await page.evaluate((target) => {
+        void (window as any).next.router.push(target, undefined, { locale: "fr" });
+      }, href);
+      expect((await hardNavigation).url()).toMatch(expected);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
   }
 });
 

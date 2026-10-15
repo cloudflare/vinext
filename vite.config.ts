@@ -35,6 +35,11 @@ export default defineConfig({
       // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
       "tests/e2e/sentry-nextjs-16-static/fixture/**",
       "tests/fixtures/ecosystem/**",
+      // Ported from next-intl's playground; kept in upstream style for diffing.
+      "tests/fixtures/cf-next-intl/**",
+      "tests/e2e/cloudflare-next-intl/**",
+      "tests/fixtures/cf-next-intl-example/**",
+      "tests/e2e/cloudflare-next-intl-example/**",
       "examples/**",
       "packages/types/next/upstream/**",
     ],
@@ -226,6 +231,7 @@ export default defineConfig({
             "tests/features.test.ts",
             "tests/favicon-short-circuit.test.ts",
             "tests/hybrid-i18n-api-handoff.test.ts",
+            "tests/skip-trailing-slash-redirect.test.ts",
             "tests/image-optimization-parity.test.ts",
             "tests/instrumentation-dev.test.ts",
             "tests/invalid-static-asset-404.test.ts",
@@ -315,6 +321,7 @@ export default defineConfig({
             "tests/favicon-short-circuit.test.ts",
             "tests/features.test.ts",
             "tests/hybrid-i18n-api-handoff.test.ts",
+            "tests/skip-trailing-slash-redirect.test.ts",
             "tests/image-optimization-parity.test.ts",
             "tests/instrumentation-dev.test.ts",
             "tests/invalid-static-asset-404.test.ts",

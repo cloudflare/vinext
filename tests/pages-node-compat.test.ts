@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { once } from "node:events";
-import { createPagesReqRes } from "../packages/vinext/src/server/pages-node-compat.js";
+import {
+  createPagesApiReqRes,
+  createPagesReqRes,
+} from "../packages/vinext/src/server/pages-node-compat.js";
 import type { NextApiHandler, NextApiRequest, NextApiResponse, PreviewData } from "next";
 
 declare module "next" {
@@ -99,6 +102,27 @@ describe("Pages Node compat response", () => {
       expect((res as unknown as { bufferedChunks: Buffer[] }).bufferedChunks).toHaveLength(0);
     },
   );
+
+  // Next.js only attaches res.revalidate() in apiResolver:
+  // packages/next/src/server/api-utils/node/api-resolver.ts
+  it("only exposes revalidate() on API route responses", () => {
+    const request = new Request("https://example.test/page");
+    const { res: pageRes } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request,
+      url: "/page",
+    });
+    const { res: apiRes } = createPagesApiReqRes({
+      body: undefined,
+      query: {},
+      request,
+      url: "/page",
+    });
+
+    expect(pageRes).not.toHaveProperty("revalidate");
+    expect(typeof apiRes.revalidate).toBe("function");
+  });
 
   it("does not expose process environment variables on the request", () => {
     const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;

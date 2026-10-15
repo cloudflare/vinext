@@ -12,7 +12,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { createServer, build, type ViteDevServer } from "vite";
+import { createServer, build, type PluginOption, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
@@ -93,6 +93,8 @@ export async function startFixtureServer(
     /** The vinext() `cache` option (declarative cache adapters). */
     cache?: VinextCacheConfig;
     listen?: boolean;
+    /** Plugins listed ahead of vinext() in the plugins array. */
+    prependPlugins?: PluginOption[];
     publicDir?: string | false;
     resolve?: { preserveSymlinks?: boolean };
     server?: {
@@ -119,7 +121,7 @@ export async function startFixtureServer(
   } else {
     plugin = vinext({ appDir: opts?.appDir ?? fixtureDir, cache: opts?.cache });
   }
-  const plugins = [plugin];
+  const plugins = [...(opts?.prependPlugins ?? []), plugin];
 
   const server = await createServer({
     root: fixtureDir,
@@ -286,7 +288,8 @@ export async function requestNodeServerWithHost(
 /**
  * Raw request targets and what `next start` (Next.js 16.2.7) answers for
  * them: literal repeated slashes and backslashes get a 308 to the collapsed
- * path, percent-encoded leading delimiters stay a 404.
+ * path, percent-encoded leading delimiters stay a 404. Absolute-form targets
+ * get vinext's deliberate 404 where Next.js would echo a cross-origin Location.
  */
 const REPEATED_SLASH_CASES: ReadonlyArray<readonly [string, string | 404]> = [
   ["//", "/"],
@@ -303,6 +306,12 @@ const REPEATED_SLASH_CASES: ReadonlyArray<readonly [string, string | 404]> = [
   ["/%2F/evil.com", 404],
   ["/%5C%5Cevil.com", 404],
   ["/.//%2Fevil.com", 404],
+  // Absolute-form targets: Next.js 308s to the target's own URL (another
+  // origin) without routing it. vinext never routes them either, but answers
+  // 404 rather than echoing a cross-origin Location.
+  ["http://evil.example/", 404],
+  ["http://evil.example/about", 404],
+  ["https://evil.example//evil.com?a=1", 404],
 ];
 
 /**

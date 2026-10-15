@@ -24,6 +24,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   closeAfterResponse,
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
@@ -99,6 +100,7 @@ type DispatchAppRouteHandlerOptions = {
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   middlewareContext: RouteHandlerMiddlewareContext;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -306,6 +308,7 @@ async function dispatchAppRouteHandlerImpl(
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
+      skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
       isAutoHead,
       appendResponseLink,
       isrDebug: options.isrDebug,
@@ -374,6 +377,7 @@ async function dispatchAppRouteHandlerImpl(
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
+      skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
       isAutoHead,
       initialDraftModeCookie,
       isDraftMode,
@@ -390,6 +394,7 @@ async function dispatchAppRouteHandlerImpl(
         return reportRequestError(error, request, context);
       },
       request: options.request,
+      requestSignal: getRequestContext().requestSignal ?? undefined,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
       revalidateReason,
