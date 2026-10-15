@@ -166,6 +166,14 @@ describe("vinext build React version check", () => {
     }
   });
 
+  it("checks the package that owns the working directory", async () => {
+    pluginRsc.version = "0.5.37";
+    root = createAppWithReact("19.3.1");
+    const cwd = path.join(root, "app");
+    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    await expect(createAppBuilder(root)).resolves.toBeDefined();
+  });
+
   it("uses plugin-rsc's bundled RSDW once it is at the floor", async () => {
     root = createAppWithReact("19.3.1", { declareRsdw: false });
     await expect(createAppBuilder(root)).resolves.toBeDefined();

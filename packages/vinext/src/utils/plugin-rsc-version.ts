@@ -22,15 +22,22 @@ export function assertPluginRscVersion(resolvedRscPath: string): string {
 }
 
 // 0.5.37 and older bundle react-server-dom-webpack 19.3.0, below the React
-// floor. plugin-rsc uses the app's own copy instead only when the
-// package.json in the working directory declares it and it is installed.
+// floor. plugin-rsc uses the app's own copy instead only when the package.json
+// closest to the working directory declares it and it is installed.
 const FIRST_PLUGIN_RSC_WITH_SUPPORTED_RSDW: [number, number, number] = [0, 5, 38];
 
-/** Whether `dir` must install its own react-server-dom-webpack. */
+/** Whether the package owning `dir` must install its own react-server-dom-webpack. */
 export function needsAppReactServerDom(dir: string, pluginRscVersion: string): boolean {
   if (!isVersionBelow(pluginRscVersion, FIRST_PLUGIN_RSC_WITH_SUPPORTED_RSDW)) return false;
+  // plugin-rsc reads the closest package.json at or above the working directory.
+  let manifest = path.join(dir, "package.json");
+  while (!fs.existsSync(manifest)) {
+    const parent = path.dirname(path.dirname(manifest));
+    if (parent === path.dirname(manifest)) return true;
+    manifest = path.join(parent, "package.json");
+  }
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf-8")) as {
+    const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8")) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
@@ -40,7 +47,7 @@ export function needsAppReactServerDom(dir: string, pluginRscVersion: string): b
     ) {
       return true;
     }
-    createRequire(path.join(dir, "package.json")).resolve("react-server-dom-webpack");
+    createRequire(manifest).resolve("react-server-dom-webpack");
     return false;
   } catch {
     return true;
