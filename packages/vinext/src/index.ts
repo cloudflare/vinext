@@ -63,6 +63,7 @@ import {
   CACHEABILITY_REQUEST_PROJECTION_MODULE,
 } from "./server/cacheability-manifest.js";
 import { PREGENERATED_CONCRETE_PATHS_MODULE } from "./server/pregenerated-concrete-paths.js";
+import { rewriteOutputRootExternals } from "./build/output-root-externals.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
@@ -1312,6 +1313,13 @@ const RESOLVED_CACHEABILITY_REQUEST_PROJECTION =
   VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_REQUEST_PROJECTION;
 const VIRTUAL_PREGENERATED_CONCRETE_PATHS = "virtual:vinext-pregenerated-concrete-paths";
 const RESOLVED_PREGENERATED_CONCRETE_PATHS = VIRTUAL_PREFIX + VIRTUAL_PREGENERATED_CONCRETE_PATHS;
+// Worker builds keep these virtual ids external; renderChunk points each import
+// at the module vinext emits (and deploy steps fill) at the output root.
+const OUTPUT_ROOT_SERVER_EXTERNALS: ReadonlyMap<string, string> = new Map([
+  [VIRTUAL_CACHEABILITY_MANIFEST, CACHEABILITY_MANIFEST_MODULE],
+  [VIRTUAL_CACHEABILITY_REQUEST_PROJECTION, CACHEABILITY_REQUEST_PROJECTION_MODULE],
+  [VIRTUAL_PREGENERATED_CONCRETE_PATHS, PREGENERATED_CONCRETE_PATHS_MODULE],
+]);
 const VIRTUAL_APP_REQUEST_ENTRY = "virtual:vinext-app-request-entry";
 const RESOLVED_APP_REQUEST_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_REQUEST_ENTRY;
 const VIRTUAL_APP_RESPONSE_ENTRY = "virtual:vinext-app-response-entry";
@@ -1767,6 +1775,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   });
   const pagesClientAssetsOutputDirs = new Set<string>();
+  // Output-root-relative path of each build environment's client assets module.
+  const pagesClientAssetsExternalTargets = new Map<string, ReadonlyMap<string, string>>();
   // Workers must keep this module inside their deployable output directory.
   const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
     !selectedMultiStageOutput && !hasAppDir && !hasCloudflarePlugin && environmentName === "ssr"
@@ -4767,7 +4777,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? this.environment?.name === "rsc"
               : this.environment !== undefined && isServerEnvironment(this.environment);
             if (isWorkerBuildEnvironment && this.environment.config?.command === "build") {
-              return { id: `./${CACHEABILITY_MANIFEST_MODULE}`, external: true };
+              return { id: VIRTUAL_CACHEABILITY_MANIFEST, external: true };
             }
             return RESOLVED_CACHEABILITY_MANIFEST;
           }
@@ -4777,7 +4787,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               this.environment?.name === "rsc" &&
               this.environment.config?.command === "build"
             ) {
-              return { id: `./${CACHEABILITY_REQUEST_PROJECTION_MODULE}`, external: true };
+              return { id: VIRTUAL_CACHEABILITY_REQUEST_PROJECTION, external: true };
             }
             return RESOLVED_CACHEABILITY_REQUEST_PROJECTION;
           }
@@ -4786,7 +4796,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? this.environment?.name === "rsc"
               : this.environment !== undefined && isServerEnvironment(this.environment);
             if (isWorkerBuildEnvironment && this.environment.config?.command === "build") {
-              return { id: `./${PREGENERATED_CONCRETE_PATHS_MODULE}`, external: true };
+              return { id: VIRTUAL_PREGENERATED_CONCRETE_PATHS, external: true };
             }
             return RESOLVED_PREGENERATED_CONCRETE_PATHS;
           }
@@ -5280,14 +5290,24 @@ export const loadServerActionClient = ${
             this.environment.name,
             environmentOutDir,
           );
-          let externalId = path.relative(
-            environmentOutDir,
-            path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE),
+          pagesClientAssetsExternalTargets.set(
+            this.environment.name,
+            new Map([
+              [
+                VIRTUAL_PAGES_CLIENT_ASSETS,
+                path.relative(environmentOutDir, path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE)),
+              ],
+            ]),
           );
-          if (!externalId.startsWith(".")) externalId = `./${externalId}`;
           pagesClientAssetsOutputDirs.add(sidecarDir);
-          return { id: externalId, external: true };
+          return { id: VIRTUAL_PAGES_CLIENT_ASSETS, external: true };
         },
+      },
+
+      renderChunk(code, chunk) {
+        const targets = pagesClientAssetsExternalTargets.get(this.environment.name);
+        if (!targets) return null;
+        return rewriteOutputRootExternals(code, chunk.fileName, targets);
       },
 
       outputOptions(output) {
@@ -5490,6 +5510,10 @@ export const loadServerActionClient = ${
     {
       name: "vinext:cacheability-manifest-asset",
       apply: "build",
+
+      renderChunk(code, chunk) {
+        return rewriteOutputRootExternals(code, chunk.fileName, OUTPUT_ROOT_SERVER_EXTERNALS);
+      },
 
       generateBundle() {
         const isWorkerBuildEnvironment = hasAppDir
