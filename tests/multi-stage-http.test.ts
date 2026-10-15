@@ -425,6 +425,19 @@ describe("generic HTTP multi-stage transport", () => {
     },
   );
 
+  it("orders a hybrid Pages API route's cookie after middleware's refresh of it", async () => {
+    const res = await fetch(`${requestServer.origin}/api/session-logout`, {
+      headers: { cookie: "session=old" },
+    });
+    expect(res.status).toBe(200);
+    const sessionCookies = res.headers
+      .getSetCookie()
+      .filter((cookie) => cookie.startsWith("session="));
+    expect(sessionCookies).toHaveLength(2);
+    expect(sessionCookies[0]).toMatch(/^session=old; .*Max-Age=600/);
+    expect(sessionCookies[1]).toMatch(/^session=; /);
+  });
+
   it("clears stale shared-cache policy when an admitted response becomes private", () => {
     expect(
       createHttpStageCacheAdapter().buildResponseHeaders({

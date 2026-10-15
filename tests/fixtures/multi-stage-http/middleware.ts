@@ -18,7 +18,11 @@ export function middleware(request: NextRequest) {
   // Sliding-session refresh: re-issue the session cookie with a renewed
   // expiry. The route handler's logout/rotation cookie must still win.
   const session = request.cookies.get("session");
-  if (request.nextUrl.pathname === "/api/session-refresh" && session) {
+  if (
+    (request.nextUrl.pathname === "/api/session-refresh" ||
+      request.nextUrl.pathname === "/api/session-logout") &&
+    session
+  ) {
     response.cookies.set("session", session.value, { path: "/", httpOnly: true, maxAge: 600 });
   }
   return response;
