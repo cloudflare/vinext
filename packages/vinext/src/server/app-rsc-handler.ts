@@ -2619,16 +2619,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return buildNextDataNotFoundResponse();
   }
 
-  if (!progressiveActionHandled) {
+  if (isProgressiveActionRequest && !progressiveActionHandled) {
     const finalRouteMatch = renderedRouteMatch(match);
     // The action renders the final route, so it sees that route's root params.
-    if (isProgressiveActionRequest) {
-      setRootParams(
-        finalRouteMatch
-          ? pickRootParams(finalRouteMatch.params, finalRouteMatch.route.rootParamNames)
-          : null,
-      );
-    }
+    setRootParams(
+      finalRouteMatch
+        ? pickRootParams(finalRouteMatch.params, finalRouteMatch.route.rootParamNames)
+        : null,
+    );
     const progressiveActionResult = await handleProgressiveAction(finalRouteMatch, match);
     if (progressiveActionResult instanceof Response) return progressiveActionResult;
     progressiveActionFormState = progressiveActionResult;
