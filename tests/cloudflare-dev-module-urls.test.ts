@@ -444,6 +444,11 @@ describe("cloudflare dev module URLs plugin", () => {
           assetModule('export default "/route.svg"', "/route.svg?import&inline"),
           // A string literal that isn't Vite's `new URL()` output
           importedBy("/app/icon.ts", 'import icon from "/route.svg?raw"; fetch("/route.svg");'),
+          // An authored `new URL()` against another base
+          importedBy(
+            "/app/link.ts",
+            'import icon from "/route.svg?raw"; new URL("/route.svg", location.href);',
+          ),
         ],
         // A URL character, not a delimiter, and a function other than `url()`
         "/project/data.json": [

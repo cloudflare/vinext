@@ -262,7 +262,11 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
         const code = importer.transformResult?.code;
         if (!code) continue;
         const css = isCSSRequest(importer.url);
-        if (urls.some((u) => (css ? containsCssUrl(code, u) : code.includes(`new URL("${u}", `)))) {
+        if (
+          urls.some((u) =>
+            css ? containsCssUrl(code, u) : code.includes(`new URL("${u}", '' + import.meta.url)`),
+          )
+        ) {
           return true;
         }
       }
