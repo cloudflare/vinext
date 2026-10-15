@@ -26,15 +26,17 @@ import type { Connect, Plugin, ViteDevServer } from "vite";
 /**
  * Vite's internal middlewares that serve module requests (`/@vite/client`,
  * `/@id/*`, JS and CSS source files) and `/@fs/*` paths, preceded by the one
- * that strips a non-root `base` from the URL. If Vite renames them, none are
- * found and every request falls through, which is the behavior without this
- * plugin.
+ * that strips a non-root `base` from the URL and the one that answers the HMR
+ * client's reconnect ping (`Accept: text/x-vite-ping`) with a 204 instead of
+ * the Worker rendering a page for it. If Vite renames them, none are found and
+ * every request falls through, which is the behavior without this plugin.
  *
  * `viteServePublicMiddleware` is deliberately excluded so that `public/` files
  * reach the Worker and middleware, as they do in production.
  */
 const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
   "viteBaseMiddleware",
+  "viteHMRPingMiddleware",
   "viteTransformMiddleware",
   "viteServeRawFsMiddleware",
 ]);

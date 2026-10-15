@@ -38,12 +38,21 @@ function baseMiddleware(base: string, calls: string[]): ViteMiddleware {
   });
 }
 
+/** Mirrors Vite's HMR ping middleware, recording the URL it answers. */
+function hmrPingMiddleware(calls: string[]): ViteMiddleware {
+  return named("viteHMRPingMiddleware", (req, _res, next) => {
+    if (req.headers.accept === "text/x-vite-ping") calls.push(`viteHMRPingMiddleware ${req.url}`);
+    else next();
+  });
+}
+
+/** A module graph node: the file's importers and their transformed code. */
+type FakeModule = { importers: { transformResult: { code: string } | null }[] };
+
 /**
  * Builds a fake dev server, runs the plugin's `configureServer`, then appends
  * Vite's internal middlewares after it, in the order Vite registers them.
  */
-/** A module graph node: the file's importers and their transformed code. */
-type FakeModule = { importers: { transformResult: { code: string } | null }[] };
 
 function setup(options: {
   enabled: boolean;
@@ -84,10 +93,10 @@ function setup(options: {
    * Sends a request through the plugin's middleware and resolves with the
    * `next` arguments and the request URL at the time `next` was called.
    */
-  const run = (url = "/@vite/client") => {
+  const run = (url = "/@vite/client", headers: Record<string, string> = {}) => {
     const [middleware] = pluginMiddlewares;
     if (!middleware) throw new Error("expected the plugin to register a middleware");
-    const req = { url } as Connect.IncomingMessage;
+    const req = { url, headers } as Connect.IncomingMessage;
     return new Promise<{ args: unknown[]; url: string | undefined }>((resolve) => {
       middleware(req, {}, (...args: unknown[]) => resolve({ args, url: req.url }));
     });
@@ -226,6 +235,44 @@ describe("cloudflare dev module URLs plugin", () => {
     expect(calls).toEqual([]);
   });
 
+  it("answers the HMR client's ping instead of sending it to the Worker", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      viteMiddlewares: [
+        hmrPingMiddleware(calls),
+        passThrough("viteServePublicMiddleware", calls),
+        passThrough("viteTransformMiddleware", calls),
+      ],
+    });
+
+    let answered = false;
+    void run("/", { accept: "text/x-vite-ping" }).then(() => {
+      answered = true;
+    });
+    await Promise.resolve();
+    expect(answered).toBe(false);
+    expect(calls).toEqual(["viteHMRPingMiddleware /"]);
+
+    // A page navigation to the same URL still reaches the Worker
+    calls.length = 0;
+    expect(await run("/", { accept: "text/html" })).toEqual({ args: [], url: "/" });
+    expect(calls).toEqual(["viteTransformMiddleware /"]);
+  });
+
+  it("answers the HMR client's ping under a non-root base", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      base: "/docs/",
+      viteMiddlewares: [baseMiddleware("/docs/", calls), hmrPingMiddleware(calls)],
+    });
+
+    void run("/docs/", { accept: "text/x-vite-ping" });
+    await Promise.resolve();
+    expect(calls).toEqual(["viteBaseMiddleware /docs/", "viteHMRPingMiddleware /"]);
+  });
+
   it("serves an asset whose URL a module that imports it references", async () => {
     const calls: string[] = [];
     const { run } = setup({
@@ -257,6 +304,53 @@ describe("cloudflare dev module URLs plugin", () => {
       "viteTransformMiddleware /app/bg.png",
       "viteServeStaticMiddleware /app/bg.png",
     ]);
+  });
+
+  it("serves a referenced asset requested with a query or an encoded name", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      viteMiddlewares: [
+        named("viteServeStaticMiddleware", (req) => {
+          calls.push(`viteServeStaticMiddleware ${req.url}`);
+        }),
+      ],
+      modulesByFile: {
+        "/project/app/logo.svg": [
+          {
+            importers: [{ transformResult: { code: 'import logo from "/app/logo.svg?import";' } }],
+          },
+        ],
+        "/project/app/my logo.png": [
+          { importers: [{ transformResult: { code: '"/app/my%20logo.png"' } }] },
+        ],
+        "/project/app/café.png": [
+          { importers: [{ transformResult: { code: '"/app/café.png"' } }] },
+        ],
+      },
+    });
+
+    // HMR re-requests assets with a `?t=` timestamp
+    void run("/app/logo.svg?t=1700000000000");
+    void run("/app/my%20logo.png");
+    void run("/app/caf%C3%A9.png");
+    await Promise.resolve();
+    expect(calls).toEqual([
+      "viteServeStaticMiddleware /app/logo.svg?t=1700000000000",
+      "viteServeStaticMiddleware /app/my%20logo.png",
+      "viteServeStaticMiddleware /app/caf%C3%A9.png",
+    ]);
+  });
+
+  it("sends a URL that cannot be decoded to the Worker", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      viteMiddlewares: [passThrough("viteServeStaticMiddleware", calls)],
+    });
+
+    expect(await run("/app/%E0%A4%A.png")).toEqual({ args: [], url: "/app/%E0%A4%A.png" });
+    expect(calls).toEqual([]);
   });
 
   it("sends project files that no importer references to the Worker", async () => {
