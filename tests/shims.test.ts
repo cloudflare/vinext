@@ -8213,31 +8213,39 @@ describe('"use cache" runtime', () => {
       "",
     );
 
-    await expect(
-      cached(
-        asPageInvocation({
-          params: makeThenableParams({ slug: "same" }),
-          searchParams: makeThenableParams({ q: "first" }),
-        }),
-      ),
-    ).resolves.toBe("done");
     const { consumeInvalidDynamicUsageError } =
       await import("../packages/vinext/src/shims/headers.js");
-    consumeInvalidDynamicUsageError();
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext({
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
     let caught: unknown;
+    await runWithRequestContext(requestContext, async () => {
+      await expect(
+        cached(
+          asPageInvocation({
+            params: makeThenableParams({ slug: "same" }),
+            searchParams: makeThenableParams({ q: "first" }),
+          }),
+        ),
+      ).resolves.toBe("done");
+    });
+    // Read later, outside that request's scope.
     try {
       Reflect.get(escaped!, "then");
     } catch (error) {
       caught = error;
     }
     expect(String(caught)).toMatch(/`searchParams` cannot be called inside "use cache"/);
-    // The caught access is still recorded, like Next.js's
-    // `workStore.invalidDynamicUsageError`.
-    expect(consumeInvalidDynamicUsageError()).toBe(caught);
+    // The caught access is still recorded on the request the value was made
+    // for, like Next.js's `workStore.invalidDynamicUsageError`.
+    await runWithRequestContext(requestContext, async () => {
+      expect(consumeInvalidDynamicUsageError()).toBe(caught);
+    });
     expect(() => Reflect.get(escaped!, "q")).toThrow(
       /`searchParams` cannot be called inside "use cache"/,
     );
-    consumeInvalidDynamicUsageError();
 
     // Another "use cache" that catches the read still fails, so it can't
     // store a fallback.
@@ -8253,7 +8261,6 @@ describe('"use cache" runtime', () => {
       "",
     );
     await expect(fallsBack()).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
-    consumeInvalidDynamicUsageError();
 
     // A read inside another cache scope fails with the same error.
     const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
@@ -8264,7 +8271,6 @@ describe('"use cache" runtime', () => {
     await expect(readsEscaped()).rejects.toThrow(
       /`searchParams` cannot be called inside "use cache"/,
     );
-    consumeInvalidDynamicUsageError();
   });
 
   // Next.js keeps the first invalid access (`workStore.invalidDynamicUsageError

@@ -51,7 +51,6 @@ import { getOrCreateAls } from "./internal/als-registry.js";
 import { isWellKnownProperty } from "./internal/thenable-well-known-properties.js";
 import {
   createUseCacheAccessError,
-  getHeadersShimState,
   recordInvalidDynamicUsageError,
 } from "./internal/headers-state.js";
 import {
@@ -1502,7 +1501,7 @@ function makeErroringPageSearchParams(): Promise<Record<string, never>> {
   // invalid use on the cache scope and request the value was made for, even
   // after it escapes the cache function.
   const cacheContext = cacheContextStorage.getStore() ?? null;
-  const state = getHeadersShimState();
+  const requestContext = isInsideUnifiedScope() ? getRequestContext() : null;
   const promise = Promise.resolve({});
   return new Proxy(promise, {
     get(target, prop, receiver) {
@@ -1518,7 +1517,7 @@ function makeErroringPageSearchParams(): Promise<Record<string, never>> {
         if (activeCacheContext && activeCacheContext !== cacheContext) {
           activeCacheContext.invalidDynamicUsageError ??= error;
         }
-        recordInvalidDynamicUsageError(state, error);
+        if (requestContext) recordInvalidDynamicUsageError(requestContext, error);
         throw error;
       }
       const value: unknown = Reflect.get(target, prop, receiver);
