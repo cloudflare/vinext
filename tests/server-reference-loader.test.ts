@@ -44,7 +44,8 @@ describe("isolateServerReferenceLoads", () => {
   });
 
   it("keeps the request that starts a load alive until it settles", async () => {
-    // plugin-rsc memoizes the load for every later request in the isolate.
+    // plugin-rsc memoizes the load and returns it to every later request in
+    // the isolate.
     let release: () => void = () => {};
     const loaded = new Promise<void>((resolve) => {
       release = resolve;
@@ -52,13 +53,18 @@ describe("isolateServerReferenceLoads", () => {
     globalThis.__vite_rsc_server_require__ = () => loaded;
     isolateServerReferenceLoads();
     const creator = { waitUntil: vi.fn() };
+    const joiner = { waitUntil: vi.fn() };
 
     const load = runWithExecutionContext(creator, () =>
       globalThis.__vite_rsc_server_require__!("/app/actions.ts"),
     );
+    const joined = runWithExecutionContext(joiner, () =>
+      globalThis.__vite_rsc_server_require__!("/app/actions.ts"),
+    );
     expect(creator.waitUntil).toHaveBeenCalledOnce();
+    expect(joiner.waitUntil).not.toHaveBeenCalled();
     release();
-    await load;
+    await Promise.all([load, joined]);
   });
 
   it("wraps the loader once", () => {

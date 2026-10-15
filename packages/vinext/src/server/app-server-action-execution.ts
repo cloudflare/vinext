@@ -243,6 +243,8 @@ type DecodeServerActionReplyOptions<TTemporaryReferences> = {
  * The imports are shared with every later request that names the same modules,
  * and the server-reference loader cannot see this request's execution context
  * once it has been left, so the request is kept alive here until they settle.
+ * From here a request that starts a load cannot be told apart from one that
+ * joins it, so each keeps its own decode alive; it awaits that decode anyway.
  */
 function loadOutsideRequestScopes<T>(load: () => T | PromiseLike<T>): Promise<T> {
   const ctx = getRequestExecutionContext();

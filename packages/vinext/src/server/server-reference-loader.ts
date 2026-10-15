@@ -26,13 +26,17 @@ type ServerReferenceRequire = (id: string) => unknown;
 export function isolateServerReferenceLoads(): void {
   const load: ServerReferenceRequire | undefined = globalThis.__vite_rsc_server_require__;
   if (typeof load !== "function" || ISOLATED in load) return;
+  // plugin-rsc memoizes each load for the isolate and returns the same promise
+  // to every later caller, so only its first caller started it.
+  const started = new WeakSet<Promise<unknown>>();
   const isolated: ServerReferenceRequire = (id) => {
-    // plugin-rsc memoizes each load for the isolate. Resolve the requesting
-    // request before leaving its scopes so that request stays alive until the
-    // shared load settles.
+    // Resolve the requesting request before leaving its scopes so the request
+    // that starts a load stays alive until the shared load settles.
     const ctx = getRequestExecutionContext();
     const loaded = runOutsideRequestScopes(() => load(id));
-    return loaded instanceof Promise ? shareIsolatePromise(loaded, ctx) : loaded;
+    if (!(loaded instanceof Promise) || started.has(loaded)) return loaded;
+    started.add(loaded);
+    return shareIsolatePromise(loaded, ctx);
   };
   Object.defineProperty(isolated, ISOLATED, { value: true });
   globalThis.__vite_rsc_server_require__ = isolated;
