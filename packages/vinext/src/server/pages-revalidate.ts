@@ -62,6 +62,14 @@ export async function performOnDemandRevalidate(
 
   const executionContext = getRequestExecutionContext();
   const dispatchRevalidate = executionContext?.dispatchPagesRevalidate;
+  // Like Next.js without `trustHostHeader`, never address the credential-
+  // bearing request from the inbound Host: it must stay in-process or go to a
+  // server-owned origin.
+  if (!dispatchRevalidate && !trustedOrigin) {
+    throw new Error(
+      `Cannot revalidate ${urlPath}: no in-process dispatcher or server-owned origin is available`,
+    );
+  }
   const target = createRevalidateTarget(source, urlPath, trustedOrigin);
 
   const headers: Record<string, string> = {

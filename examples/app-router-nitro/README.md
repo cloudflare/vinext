@@ -2,7 +2,7 @@
 
 A minimal example of a Next.js App Router application.
 
-Demonstrates server components, client components, dynamic routes, and API route handlers.
+Demonstrates server components, client components, dynamic routes, and API route handlers, plus a Pages Router API route that revalidates a Pages ISR page.
 
 ## Running Locally
 

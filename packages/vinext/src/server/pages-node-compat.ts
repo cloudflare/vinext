@@ -5,6 +5,7 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   clearPagesPreviewData,
   getPagesPreviewState,
@@ -608,13 +609,17 @@ export function createPagesApiReqRes(
   options: CreatePagesApiReqResOptions,
 ): CreatePagesReqResResult<PagesApiReqResResponse> {
   const { req, res, responsePromise } = createPagesReqRes(options);
-  // Fetch runtimes do not expose a listening socket origin. Fall back to the
-  // platform-provided Request URL origin and deliberately ignore any raw Host
-  // header carried in request.headers.
-  const trustedRevalidateOrigin =
-    options.trustedRevalidateOrigin ?? new URL(options.request.url).origin;
   const apiRes = Object.assign(res, {
     async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
+      // Fetch runtimes do not expose a listening socket origin. An in-process
+      // dispatcher addresses its internal request with the Request URL origin,
+      // but that origin must never receive the credential over the network:
+      // Node fetch hosts such as srvx derive it from the client Host header.
+      const trustedRevalidateOrigin =
+        options.trustedRevalidateOrigin ??
+        (getRequestExecutionContext()?.dispatchPagesRevalidate
+          ? new URL(options.request.url).origin
+          : undefined);
       await performOnDemandRevalidate(
         options.request.headers,
         urlPath,
