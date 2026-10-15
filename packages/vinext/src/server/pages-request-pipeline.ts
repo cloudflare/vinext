@@ -760,14 +760,19 @@ export async function runPagesRequest(
   const isMissingBuildAsset = () =>
     isNextStaticPath(resolvedPathname, "", assetPrefixPathname(deps.assetPrefix ?? ""));
   const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
+  // Like Next.js, keep the routing response headers (config headers and
+  // middleware next() headers) on the outside-basePath 404.
   const outOfBasePathNotFound = (): PagesPipelineResult => ({
     type: "response",
     response: isMissingBuildAsset()
       ? notFoundStaticAssetResponse(headersFromRecord(middlewareHeaders))
-      : new Response("This page could not be found", {
-          status: 404,
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        }),
+      : mergeHeaders(
+          new Response("This page could not be found", {
+            status: 404,
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          }),
+          middlewareHeaders,
+        ),
   });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {

@@ -22,6 +22,8 @@ test.describe("public files outside basePath", () => {
     const outside = await request.get(`${BASE}/open.txt`, { maxRedirects: 0 });
     expect(outside.status()).toBe(404);
     expect(await outside.text()).not.toContain("open file");
+    // Next.js keeps a matching basePath: false header on the 404.
+    expect(outside.headers()["x-outside-basepath"]).toBe("1");
   });
 
   test("does not bypass a middleware matcher by omitting basePath", async ({ request }) => {
