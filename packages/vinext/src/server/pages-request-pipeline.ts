@@ -32,6 +32,7 @@ import {
 import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
@@ -328,7 +329,16 @@ export type PagesPipelineResult =
   // passthrough responses (middleware short-circuits, external proxies, redirects),
   // which Node sends verbatim without injecting a Content-Type — matching the
   // pre-refactor behavior.
-  | { type: "response"; response: Response; defaultContentType?: string }
+  //
+  // `finalCachePolicy` marks a response whose Cache-Control the pipeline owns
+  // (an unmatched data request's never-cache 404). A caller that restores an
+  // outer policy over a shared artifact must leave it as is.
+  | {
+      type: "response";
+      response: Response;
+      defaultContentType?: string;
+      finalCachePolicy?: true;
+    }
   // `handled`: an adapter-supplied callback (e.g. Node public-file serving) already
   // wrote the response to its own output; the adapter should just return.
   | { type: "handled" }
@@ -1006,6 +1016,8 @@ export async function runPagesRequest(
     }
 
     const matchedPathHeaders = { ...middlewareHeaders };
+    // Next.js router-server.ts answers a middleware app's data miss with a
+    // JSON 404 naming the requested path instead of rendering the 404 page.
     if (
       (isDataReq || isDataRequest) &&
       deps.hasMiddleware &&
@@ -1016,11 +1028,19 @@ export async function runPagesRequest(
       const headers = new Headers(response.headers);
       headers.set("content-type", "application/json");
       headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
-      const notFoundResponse = new Response("{}", { status: 200, headers });
+      const notFoundResponse = mergeHeaders(
+        new Response("{}", { status: 404, headers }),
+        matchedPathHeaders,
+        undefined,
+      );
+      // Applied after the merge, so staged config or middleware headers can't
+      // restore a cacheable policy (including adapter-owned edge headers).
+      applyCdnResponseHeaders(notFoundResponse.headers, { cacheControl: NEVER_CACHE_CONTROL });
       return {
         type: "response",
-        response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        response: notFoundResponse,
         defaultContentType: "application/json",
+        finalCachePolicy: true,
       };
     }
     if (

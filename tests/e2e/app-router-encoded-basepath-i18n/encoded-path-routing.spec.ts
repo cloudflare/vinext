@@ -225,3 +225,20 @@ test("does not report URL-parser encoding as a hybrid Pages data rewrite", async
     expect(response.headers["x-nextjs-rewrite"], slug).toBeUndefined();
   }
 });
+
+// Next.js router-server.ts sends a hybrid app's data miss to the App not-found
+// route: a 404 without the Pages-only JSON matched-path response.
+test("answers a hybrid data miss with a 404", async () => {
+  const html = (await getRawPath("/docs/pages-to-app/x")).body;
+  const buildId = html.match(/"buildId":"([^"]+)"/)?.[1];
+  expect(buildId).toBeTruthy();
+
+  for (const page of ["encoded-parity-missing", "fr/encoded-parity-missing"]) {
+    const response = await getRawPath(`/docs/_next/data/${buildId}/${page}.json`);
+    expect(response.status, page).toBe(404);
+    expect(response.headers["x-nextjs-matched-path"], page).toBeUndefined();
+    expect(response.headers["cache-control"], page).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  }
+});

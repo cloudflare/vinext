@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
   configHeaders: [] as Array<Record<string, unknown>>,
   ensureInstrumentation: vi.fn(),
   ensureResponseInstrumentation: vi.fn(),
+  hasMiddleware: false,
   matchApiRoute: vi.fn((url: string) =>
     url === "/api/hello"
       ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
@@ -102,7 +103,9 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
     "/literal%name.js",
     "/literal%2Fname.js",
   ]),
-  hasMiddleware: false,
+  get hasMiddleware() {
+    return mocks.hasMiddleware;
+  },
   hasRequestAwareDocument: false,
   matchApiRoute: mocks.matchApiRoute,
   matchPageRoute: mocks.matchPageRoute,
@@ -635,6 +638,61 @@ describe("Pages Worker request stage", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("cdn-cache-control")).toBe("public, max-age=60");
     await expect(response.text()).resolves.toBe("cached page");
+  });
+
+  // Next.js router-server.ts sets its never-cache policy on a data miss after
+  // middleware's response headers, so a middleware Cache-Control can't win.
+  it("keeps the never-cache policy on a middleware data miss", async () => {
+    mocks.hasMiddleware = true;
+    vi.resetModules();
+    try {
+      const { handleRequestStage: handleWithMiddleware } =
+        await import("../packages/vinext/src/server/pages-request-stage-entry.js");
+      mocks.matchPageRoute.mockImplementation(() => null);
+      mocks.normalizeDataRequest.mockImplementation((request: Request) => {
+        const url = new URL(request.url);
+        url.pathname = "/missing";
+        return {
+          isDataReq: true,
+          normalizedPathname: "/missing",
+          notFoundResponse: null,
+          request: new Request(url, request),
+        };
+      });
+      mocks.runMiddleware.mockResolvedValue({
+        continue: true,
+        responseHeaders: new Headers({ "Cache-Control": "public, s-maxage=3600" }),
+      });
+      const dispatch = vi.fn<DispatchWorkerResponseStage>(
+        async () => new Response("miss", { status: 404 }),
+      );
+
+      const response = await handleWithMiddleware(
+        new Request("https://example.com/_next/data/request-build/missing.json"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-matched-path")).toBe("/en/missing");
+      expect(response.headers.get("Cache-Control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      await expect(response.text()).resolves.toBe("{}");
+    } finally {
+      mocks.hasMiddleware = false;
+      mocks.matchPageRoute.mockReset();
+      mocks.matchPageRoute.mockImplementation((url: string) => ({
+        route: {
+          dataKind: url.startsWith("/gssp") ? "server" : "static",
+          isDynamic: false,
+          pattern: url.startsWith("/gssp") ? "/gssp" : "/page",
+        },
+      }));
+      vi.resetModules();
+    }
   });
 
   // Next.js applies middleware/config response headers before rendering, and
