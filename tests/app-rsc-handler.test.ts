@@ -9,6 +9,8 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-combined-handler.js";
+import { createTrackedAppRouteRequest } from "../packages/vinext/src/server/app-route-handler-runtime.js";
+import { getRequestContext } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   type AppWorkerResponseStageProps,
@@ -623,6 +625,76 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedRouteHandler).toHaveBeenCalledWith(
       expect.objectContaining({ bypassInterceptionContextCache: true, cleanPathname: "/about" }),
     );
+  });
+
+  it("keeps a split route handler's request.signal following the inbound signal after GC", async () => {
+    // Undici's Request follows its input's signal through a WeakRef, so the
+    // response stage's request clones are weak links to the inbound signal.
+    const v8 = await import("node:v8");
+    const vm = await import("node:vm");
+    v8.setFlagsFromString("--expose-gc");
+    const gc = vm.runInNewContext("gc") as () => void;
+
+    const route = createPageRoute({
+      __loadPage: undefined,
+      page: null,
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["about"],
+    });
+    let dispatched = false;
+    let aborted = false;
+    const handler = createHandler({
+      // Builds the handler's request the way dispatchAppRouteHandler does.
+      dispatchMatchedRouteHandler: async ({ request }) => {
+        dispatched = true;
+        const signal = getRequestContext().requestSignal ?? undefined;
+        const tracked = createTrackedAppRouteRequest(request, { signal });
+        tracked.request.signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+        return new Response("route");
+      },
+      matchRequestRoute: (pathname) => (pathname === "/about" ? { params: {}, route } : null),
+    });
+
+    // The platform holds the inbound request (and its signal) for its lifetime.
+    const inbound = new AbortController();
+    const inboundRequest = new Request("https://example.test/about", { signal: inbound.signal });
+    const response = await handler.handleResponseStage(inboundRequest, null, {
+      kind: "app-route-handler",
+      buildId: "build-id",
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+      bypassInterceptionContextCache: false,
+      cachePathname: "/about",
+      canUseCanonicalLoadingShell: false,
+      canonicalPathname: "/about",
+      cleanPathname: "/about",
+      draftModeCookie: null,
+      interceptionContext: null,
+      interceptionId: null,
+      isRscRequest: false,
+      matchKind: "request",
+      middlewareCookieOverlay: null,
+      mountedSlotsHeader: null,
+      params: {},
+      protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestOrigin: "https://example.test",
+      renderMode: "navigation",
+      resolvedUrl: "/about",
+      routePattern: "/about",
+      routePathname: "/about",
+      scriptNonce: null,
+    });
+    expect(response.status).toBe(200);
+    expect(dispatched).toBe(true);
+    for (let round = 0; round < 3; round += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      gc();
+    }
+
+    inbound.abort(new Error("client disconnected"));
+    expect(inboundRequest.signal.aborted).toBe(true);
+    expect(aborted).toBe(true);
   });
 
   it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {
