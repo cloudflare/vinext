@@ -65,12 +65,14 @@ function importedBy(url: string, code: string): FakeModule {
 
 /**
  * Builds a fake dev server, runs the plugin's `configureServer`, then appends
- * Vite's internal middlewares after it, in the order Vite registers them.
+ * the Cloudflare plugin's `runWorkerFirst` middleware and Vite's internal
+ * middlewares after it, in the order they're registered.
  */
-
 function setup(options: {
   enabled: boolean;
   viteMiddlewares: ViteMiddleware[];
+  /** Whether the Cloudflare plugin registered its `runWorkerFirst` middleware. */
+  runWorkerFirst?: boolean;
   base?: string;
   origin?: string;
   alias?: { find: string | RegExp; replacement: string }[];
@@ -84,6 +86,7 @@ function setup(options: {
       base: options.base ?? "/",
       root: "/project",
       server: { origin: options.origin },
+      assetsInclude: (file: string) => /\.(?:avif|png|svg|wasm)$/.test(file),
       resolve: { alias: options.alias ?? [] },
     },
     environments: {
@@ -108,6 +111,14 @@ function setup(options: {
   void plugin.configureServer.call({} as never, server);
   const pluginMiddlewares = stack.map((layer) => layer.handle as ViteMiddleware);
 
+  if (options.runWorkerFirst ?? true) {
+    stack.push({
+      route: "",
+      handle: named("cloudflarePreMiddleware", () => {
+        throw new Error("the plugin must not run the Cloudflare middleware");
+      }),
+    });
+  }
   for (const handle of options.viteMiddlewares) stack.push({ route: "", handle });
 
   /**
@@ -130,6 +141,18 @@ describe("cloudflare dev module URLs plugin", () => {
   it("registers nothing without the Cloudflare plugin", () => {
     const { pluginMiddlewares } = setup({ enabled: false, viteMiddlewares: [] });
     expect(pluginMiddlewares).toHaveLength(0);
+  });
+
+  it("leaves Vite's middleware order alone without runWorkerFirst", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      runWorkerFirst: false,
+      viteMiddlewares: [passThrough("viteTransformMiddleware", calls)],
+    });
+
+    expect(await run()).toEqual({ args: [], url: "/@vite/client" });
+    expect(calls).toEqual([]);
   });
 
   it("stops at the first Vite middleware that handles the request", () => {
@@ -418,8 +441,14 @@ describe("cloudflare dev module URLs plugin", () => {
           assetModule('export default "/route.svg"', "/route.svg?import&inline"),
           importedBy("/app/icon.ts", 'import icon from "/route.svg?raw";'),
         ],
-        // A URL character, not a delimiter
-        "/project/data.json": [importedBy("/app/a.css", "b { background: url(/x+/data.json) }")],
+        // A URL character, not a delimiter, and a function other than `url()`
+        "/project/data.json": [
+          importedBy("/app/a.css", "b { background: url(/x+/data.json); --v: myurl(/data.json) }"),
+        ],
+        // JSON whose contents are its own path
+        "/project/api/value.json": [
+          assetModule('export default "/api/value.json"', "/api/value.json?import"),
+        ],
       },
     });
 
@@ -427,6 +456,7 @@ describe("cloudflare dev module URLs plugin", () => {
     expect(await run("/a.png")).toEqual({ args: [], url: "/a.png" });
     expect(await run("/route.svg")).toEqual({ args: [], url: "/route.svg" });
     expect(await run("/data.json")).toEqual({ args: [], url: "/data.json" });
+    expect(await run("/api/value.json")).toEqual({ args: [], url: "/api/value.json" });
     expect(await run("/package.json")).toEqual({ args: [], url: "/package.json" });
     expect(calls).toEqual([]);
   });
@@ -474,6 +504,9 @@ describe("cloudflare dev module URLs plugin", () => {
       modulesByFile: {
         "/project/app/dark.svg": [assetModule('export default "/app/dark.svg?variant=dark"')],
         "/project/app/icons.svg": [assetModule('export default "/app/icons.svg#icon"')],
+        "/project/app/data.json": [
+          assetModule('export default "/app/data.json"', "/app/data.json?import&url"),
+        ],
         "/project/app/logo.svg": [
           assetModule('export default "http://localhost:5173/app/logo.svg"'),
         ],
@@ -482,11 +515,13 @@ describe("cloudflare dev module URLs plugin", () => {
 
     void run("/app/dark.svg?variant=dark");
     void run("/app/icons.svg");
+    void run("/app/data.json");
     void run("/app/logo.svg");
     await Promise.resolve();
     expect(calls).toEqual([
       "viteServeStaticMiddleware /app/dark.svg?variant=dark",
       "viteServeStaticMiddleware /app/icons.svg",
+      "viteServeStaticMiddleware /app/data.json",
       "viteServeStaticMiddleware /app/logo.svg",
     ]);
   });

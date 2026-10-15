@@ -56,6 +56,13 @@ const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
  */
 const VITE_STATIC_MIDDLEWARE_NAME = "viteServeStaticMiddleware";
 
+/**
+ * The Cloudflare plugin's middleware that sends requests matching
+ * `runWorkerFirst` to the Worker. It's only registered when `runWorkerFirst` is
+ * set, and without it Vite's middlewares already run in their usual order.
+ */
+const CLOUDFLARE_PRE_MIDDLEWARE_NAME = "cloudflarePreMiddleware";
+
 type CloudflareDevModuleUrlsOptions = {
   /** Whether the Cloudflare Vite plugin is present. Read when the dev server starts. */
   isEnabled: () => boolean;
@@ -115,7 +122,12 @@ function runViteModuleMiddlewares(
   // after the plugins' `configureServer` hooks have run. The base middleware is
   // only present with a non-root `base`, and strips it from `req.url` before
   // the module middlewares see the request.
-  const handles = server.middlewares.stack.flatMap((layer): Connect.NextHandleFunction[] => {
+  const stack = server.middlewares.stack;
+  if (!stack.some((layer) => getHandleName(layer.handle) === CLOUDFLARE_PRE_MIDDLEWARE_NAME)) {
+    next();
+    return;
+  }
+  const handles = stack.flatMap((layer): Connect.NextHandleFunction[] => {
     const handle = layer.handle;
     if (typeof handle !== "function") return [];
     if (VITE_MODULE_MIDDLEWARE_NAMES.has(handle.name)) {
@@ -166,6 +178,10 @@ function runViteModuleMiddlewares(
   tryNext();
 }
 
+function getHandleName(handle: unknown): string | undefined {
+  return typeof handle === "function" ? handle.name : undefined;
+}
+
 /**
  * Whether the transform middleware rejected a request because it is for a
  * `public/` file, which `viteServePublicMiddleware` would normally serve.
@@ -186,8 +202,9 @@ function isPublicFileLoadError(error: unknown): boolean {
  * The browser only learns an asset URL from a module Vite has transformed:
  * - The asset's own JS module (`import logo from "./logo.svg"` or `?url`),
  *   whose code is `export default "<url>"`, possibly followed by a query or
- *   fragment (`?t=` after HMR). `?raw` and `?inline` modules export the
- *   file's contents instead, so they don't count.
+ *   fragment (`?t=` after HMR). Only files Vite treats as assets and `?url`
+ *   imports count: other modules, such as JSON or `?raw` and `?inline`
+ *   imports, export the file's contents, which could look like a URL.
  * - A JS module that uses `new URL("./logo.svg", import.meta.url)`, which Vite
  *   rewrites to the URL as a string literal.
  * - A stylesheet whose `url()` or `image-set()` Vite resolved.
@@ -225,13 +242,14 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
     ),
   ];
   const file = resolveStaticFile(server, decodedPathname);
+  const isAsset = server.config.assetsInclude(file);
 
   for (const environment of Object.values(server.environments)) {
     for (const module of environment.moduleGraph.getModulesByFile(file) ?? []) {
       const code = module.transformResult?.code;
       if (
         code &&
-        !CONTENTS_QUERY_RE.test(module.url) &&
+        isAssetUrlModule(module.url, isAsset) &&
         urls.some((u) => containsAssetUrl(code, u))
       ) {
         return true;
@@ -249,8 +267,15 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
   return false;
 }
 
-/** Vite's queries for importing a file's contents rather than its URL. */
-const CONTENTS_QUERY_RE = /[?&](?:raw|inline)(?:&|$)/;
+/**
+ * Whether a module for the file exports the file's URL: a `?url` import, or an
+ * import of an asset without Vite's `raw` or `inline` queries, which export its
+ * contents.
+ */
+function isAssetUrlModule(moduleUrl: string, isAsset: boolean): boolean {
+  if (/[?&]url(?:&|$)/.test(moduleUrl)) return true;
+  return isAsset && !/[?&](?:raw|inline)(?:&|$)/.test(moduleUrl);
+}
 
 /**
  * Whether an asset module's code exports `url` as a JS string, possibly with a
@@ -296,9 +321,12 @@ function containsCssUrl(code: string, url: string): boolean {
   for (let index = code.indexOf(url); index !== -1; index = code.indexOf(url, index + 1)) {
     const after = code[index + url.length];
     if (after === undefined || !/[)"',?#\\\s]/.test(after)) continue;
-    const before = code.slice(Math.max(0, index - 16), index);
-    // `url(/a.png)`, `url("/a.png")`, or `url(\"/a.png\")` in a JS string
-    if (/url\(\s*\\?["']?$/.test(before)) return true;
+    const start = Math.max(0, index - 32);
+    const before = code.slice(start, index);
+    // `url(/a.png)`, `url("/a.png")`, or `url(\"/a.png\")` in a JS string, with
+    // the same boundary before `url(` as Vite's own CSS URL matching
+    const urlFunction = /(^|[^\w\-\u0080-\uffff])url\(\s*\\?["']?$/.exec(before);
+    if (urlFunction && (urlFunction[1] !== "" || start === 0)) return true;
     // A quoted entry in an `image-set()` list in the same declaration
     if (!/["']$/.test(before)) continue;
     const imageSet = code.lastIndexOf("image-set(", index);
