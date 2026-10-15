@@ -2,10 +2,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createBuilder, type InlineConfig } from "vite";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 import vinext from "../packages/vinext/src/index.js";
 import { testCacheDir } from "./helpers.js";
+
+// The workspace installs a plugin-rsc that vendors RSDW 19.3.1, so a test can
+// report an older version to exercise the bundled-RSDW gate.
+const pluginRsc = vi.hoisted(() => ({ version: undefined as string | undefined }));
+vi.mock("../packages/vinext/src/utils/plugin-rsc-version.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../packages/vinext/src/utils/plugin-rsc-version.js")>();
+  return {
+    ...actual,
+    assertPluginRscVersion: (resolvedRscPath: string) =>
+      pluginRsc.version ?? actual.assertPluginRscVersion(resolvedRscPath),
+  };
+});
 
 const repoNodeModules = path.resolve(import.meta.dirname, "../node_modules");
 
@@ -54,6 +67,7 @@ describe("vinext build React version check", () => {
   afterEach(() => {
     if (root) fs.rmSync(root, { recursive: true, force: true });
     root = undefined;
+    pluginRsc.version = undefined;
   });
 
   function createAppBuilder(appRoot: string) {
@@ -88,6 +102,7 @@ describe("vinext build React version check", () => {
   });
 
   it("requires an app RSDW while plugin-rsc bundles RSDW 19.3.0", async () => {
+    pluginRsc.version = "0.5.37";
     root = createAppWithReact("19.3.1", { declareRsdw: false });
 
     await expect(createAppBuilder(root)).rejects.toThrow(
@@ -95,5 +110,10 @@ describe("vinext build React version check", () => {
         "@vitejs/plugin-rsc 0.5.37 bundles an older react-server-dom-webpack, so add the latest to your package.json.\n" +
         "Run: npm install react-server-dom-webpack@latest",
     );
+  });
+
+  it("uses plugin-rsc's bundled RSDW once it is at the floor", async () => {
+    root = createAppWithReact("19.3.1", { declareRsdw: false });
+    await expect(createAppBuilder(root)).resolves.toBeDefined();
   });
 });
