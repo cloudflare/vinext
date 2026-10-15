@@ -15,16 +15,16 @@ const og = vi.hoisted(() => {
 // @vercel/og is a dependency of vinext, not of the repo root.
 vi.mock("../packages/vinext/node_modules/@vercel/og", () => ({
   ImageResponse: class extends Response {
-    constructor() {
-      super(
-        new ReadableStream<Uint8Array>({
-          async start(controller) {
-            await og.initialized;
-            controller.enqueue(new Uint8Array([1]));
-            controller.close();
-          },
-        }),
-      );
+    constructor(_element: unknown, options: { status?: number } = {}) {
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await og.initialized;
+          controller.enqueue(new Uint8Array([1]));
+          controller.close();
+        },
+      });
+      // Like @vercel/og, read the options only after its stream has started.
+      super(body, { status: options.status });
     }
   },
 }));
@@ -44,7 +44,12 @@ describe("next/og initialization lifetime", () => {
     expect(() =>
       runWithExecutionContext(invalid, () => new ImageResponse(element, { status: 204 })),
     ).toThrow(TypeError);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // @vercel/og's constructor throws for `null` options, which the types forbid.
+    const nullOptions = runWithExecutionContext(
+      invalid,
+      () => new ImageResponse(element, null as unknown as undefined),
+    );
+    await expect((await nullOptions).arrayBuffer()).rejects.toThrow(TypeError);
     expect(invalid.waitUntil).not.toHaveBeenCalled();
 
     const first = runWithExecutionContext(creator, () => new ImageResponse(element));

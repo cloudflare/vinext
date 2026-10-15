@@ -29,6 +29,10 @@ export class ImageResponse extends Response {
         // @vercel/og validates the same response init only after its own
         // render has started, so wait until it is known to be valid here.
         await constructed;
+        // @vercel/og defaults only `undefined` options, so `null` makes its
+        // constructor throw. Fail the same way before its initialization starts.
+        if (options === null)
+          throw new TypeError("Cannot read properties of null (reading 'headers')");
         // @vercel/og starts loading its WASM and fallback font when it is
         // evaluated and memoizes them for the isolate. workerd drops a
         // canceled request's pending I/O, so the request that imports it stays
