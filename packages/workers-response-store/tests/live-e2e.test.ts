@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "vitest";
+import { liveFetch } from "./live-fetch";
 
 const base =
   process.env.LIVE_CACHE_BASE ?? "https://vinext-programmatic-cache-poc-user.vinext.workers.dev";
@@ -31,7 +32,7 @@ async function put(path: string, body: BodyInit, options: PutOptions = {}): Prom
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
   if (options.revalidator) headers.set("X-Revalidator-Args", JSON.stringify(options.revalidator));
   if (options.purgeExisting) headers.set("X-Purge-Existing", "1");
-  const response = await fetch(`${base}/admin/put${path}`, {
+  const response = await liveFetch(`${base}/admin/put${path}`, {
     method: "PUT",
     headers,
     body,
@@ -43,11 +44,11 @@ async function put(path: string, body: BodyInit, options: PutOptions = {}): Prom
 
 function read(path: string, options: { host?: string } = {}): Promise<Response> {
   const headers = options.host ? { "X-Cache-Host": options.host } : undefined;
-  return fetch(`${base}/cache${path}`, { headers });
+  return liveFetch(`${base}/cache${path}`, { headers });
 }
 
 async function refreshSelectors(options: { pathPrefixes?: string[]; tags?: string[] }) {
-  return fetch(`${base}/admin/refresh`, {
+  return liveFetch(`${base}/admin/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(options),
@@ -59,7 +60,7 @@ async function purge(options: {
   purgeEverything?: boolean;
   tags?: string[];
 }): Promise<any> {
-  const response = await fetch(`${base}/admin/purge`, {
+  const response = await liveFetch(`${base}/admin/purge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(options),

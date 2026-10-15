@@ -183,13 +183,10 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
     body,
   });
   const text = await response.text();
-  let parsed: any;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
+  if (response.status !== 200) {
     throw new Error(`put fixture returned ${response.status}: ${text}`);
   }
-  return { response, json: parsed };
+  return { response, json: JSON.parse(text) };
 }
 
 async function read(
