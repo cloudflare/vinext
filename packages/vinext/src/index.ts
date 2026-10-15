@@ -241,6 +241,7 @@ import {
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
+import { createCloudflareDevModuleUrlsPlugin } from "./plugins/cloudflare-dev-module-urls.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
@@ -8689,6 +8690,7 @@ export const loadServerActionClient = ${
       },
     },
   });
+  plugins.push(createCloudflareDevModuleUrlsPlugin({ isEnabled: () => hasCloudflarePlugin }));
   plugins.push(buildLifecyclePlugins[1]);
 
   return plugins;
