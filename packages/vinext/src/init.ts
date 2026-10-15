@@ -252,13 +252,16 @@ const POSTCSS_CONFIG_SEARCH_ORDER = [
 function readPostcssConfig(root: string): string | undefined {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
-    if (pkg.postcss !== undefined) return JSON.stringify(pkg.postcss);
+    if (pkg.postcss != null) return JSON.stringify(pkg.postcss);
   } catch {
     // An unreadable package.json has no PostCSS config.
   }
   for (const file of POSTCSS_CONFIG_SEARCH_ORDER) {
     const configPath = path.join(root, file);
-    if (fs.existsSync(configPath)) return fs.readFileSync(configPath, "utf-8");
+    if (!fs.existsSync(configPath)) continue;
+    // Like the loader, skip blank config files.
+    const source = fs.readFileSync(configPath, "utf-8");
+    if (source.trim() !== "") return source;
   }
   return undefined;
 }
@@ -273,7 +276,7 @@ function readPostcssConfig(root: string): string | undefined {
  *   the one an earlier run generated before its install failed), so only the
  *   package may be missing.
  * - `manual`: the config in effect does not mention Tailwind. Init leaves it
- *   alone and asks the user to add the plugin.
+ *   alone and asks the user to set Tailwind up.
  * - `none`: no Turbopack loader, or Tailwind is already handled.
  *
  * Pass `viteConfigPath` only when init keeps that Vite config.
@@ -283,9 +286,12 @@ type TailwindPostcssSetup = "generate" | "install" | "manual" | "none";
 function getTailwindPostcssSetup(root: string, viteConfigPath?: string): TailwindPostcssSetup {
   if (!usesTailwindTurbopackLoader(root)) return "none";
   const viteConfig = viteConfigPath ? fs.readFileSync(viteConfigPath, "utf-8") : "";
-  // Vite ignores PostCSS config files when its config sets `css.postcss`, and a
-  // Vite config that mentions Tailwind (e.g. `@tailwindcss/vite`) handles it there.
-  const config = /postcss|tailwindcss/.test(viteConfig) ? viteConfig : readPostcssConfig(root);
+  // Vite ignores PostCSS config files when its config sets `css.postcss` or the
+  // Lightning CSS transformer, and a Vite config that mentions Tailwind (e.g.
+  // `@tailwindcss/vite`) handles it there.
+  const config = /postcss|lightningcss|tailwindcss/.test(viteConfig)
+    ? viteConfig
+    : readPostcssConfig(root);
   if (config === undefined) return "generate";
   if (config.includes("@tailwindcss/postcss")) return "install";
   return config.includes("tailwindcss") ? "none" : "manual";
@@ -1113,7 +1119,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     );
   } else if (tailwindPostcssSetup === "manual") {
     console.log(
-      `    ${terminalStyle.yellow("!")} Tailwind CSS is set up as a Turbopack loader, which vinext does not run; install "@tailwindcss/postcss" and add it to your PostCSS config`,
+      `    ${terminalStyle.yellow("!")} Tailwind CSS is set up as a Turbopack loader, which vinext does not run; set up "@tailwindcss/postcss" or "@tailwindcss/vite" for vinext`,
     );
   }
   if (configKeepingWorkerName) {

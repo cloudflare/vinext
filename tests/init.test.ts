@@ -2059,6 +2059,7 @@ describe("init — CJS config renaming", () => {
 // ─── Tailwind CSS from a Turbopack loader ────────────────────────────────────
 
 describe("init — Tailwind CSS Turbopack loader", () => {
+  const TAILWIND_HINT = 'set up "@tailwindcss/postcss" or "@tailwindcss/vite" for vinext';
   // create-next-app 16.4 sets Tailwind up as a Turbopack loader, without PostCSS.
   function setupTailwindLoaderProject(loader: string): void {
     setupProject(tmpDir, {
@@ -2145,7 +2146,7 @@ export default nextConfig;
       content.includes("@tailwindcss/postcss"),
     );
     // A config without Tailwind gets a hint instead of an edit.
-    expect(output.includes("add it to your PostCSS config")).toBe(!content.includes("tailwindcss"));
+    expect(output.includes(TAILWIND_HINT)).toBe(!content.includes("tailwindcss"));
   });
 
   it("still installs @tailwindcss/postcss when a run fails after generating the config", async () => {
@@ -2179,18 +2180,31 @@ export default nextConfig;
     expect(result.installedDeps).toContain("@tailwindcss/postcss");
   });
 
-  it("does not write a config file that an inline Vite css.postcss would ignore", async () => {
+  it.each(["postcss: { plugins: [] }", 'transformer: "lightningcss"'])(
+    "does not write a config file that Vite css { %s } would ignore",
+    async (css) => {
+      setupTailwindLoaderProject("@tailwindcss/turbopack");
+      const viteConfig = `import vinext from "vinext";\nexport default { plugins: [vinext()], css: { ${css} } };\n`;
+      writeFile(tmpDir, "vite.config.ts", viteConfig);
+
+      const { result, output } = await runInit(tmpDir, { platform: "node" });
+
+      expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(false);
+      expect(readFile(tmpDir, "vite.config.ts")).toBe(viteConfig);
+      expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
+      expect(output).toContain(TAILWIND_HINT);
+    },
+  );
+
+  it("ignores a null package.json postcss field and blank config files, as Vite does", async () => {
     setupTailwindLoaderProject("@tailwindcss/turbopack");
-    const viteConfig =
-      'import vinext from "vinext";\nexport default { plugins: [vinext()], css: { postcss: { plugins: [] } } };\n';
-    writeFile(tmpDir, "vite.config.ts", viteConfig);
+    writeFile(tmpDir, "package.json", JSON.stringify({ ...readPkg(tmpDir), postcss: null }));
+    writeFile(tmpDir, ".postcssrc.json", "  \n");
 
-    const { result, output } = await runInit(tmpDir, { platform: "node" });
+    const { result } = await runInit(tmpDir, { platform: "node" });
 
-    expect(fs.existsSync(path.join(tmpDir, "postcss.config.mjs"))).toBe(false);
-    expect(readFile(tmpDir, "vite.config.ts")).toBe(viteConfig);
-    expect(result.installedDeps).not.toContain("@tailwindcss/postcss");
-    expect(output).toContain('install "@tailwindcss/postcss" and add it to your PostCSS config');
+    expect(readFile(tmpDir, "postcss.config.mjs")).toContain('"@tailwindcss/postcss": {}');
+    expect(result.installedDeps).toContain("@tailwindcss/postcss");
   });
 
   it("leaves a package.json postcss config untouched", async () => {
@@ -2223,14 +2237,12 @@ export default nextConfig;
 
     // package.json wins, then .postcssrc*, then postcss.config.*.
     const first = await runInit(tmpDir, { platform: "node" });
-    expect(first.output).toContain(
-      'install "@tailwindcss/postcss" and add it to your PostCSS config',
-    );
+    expect(first.output).toContain(TAILWIND_HINT);
     expect(first.result.installedDeps).not.toContain("@tailwindcss/postcss");
 
     writeFile(tmpDir, "package.json", JSON.stringify(pkg));
     const second = await runInit(tmpDir, { platform: "node" });
-    expect(second.output).toContain("add it to your PostCSS config");
+    expect(second.output).toContain(TAILWIND_HINT);
     expect(readFile(tmpDir, "postcss.config.mjs")).toBe(tailwindConfig);
   });
 
