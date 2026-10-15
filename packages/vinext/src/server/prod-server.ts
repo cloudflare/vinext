@@ -708,6 +708,12 @@ function staticCacheLookupPath(pathname: string): string | null {
   return lookupPath;
 }
 
+// Next.js serves public files under basePath, so a direct request outside it
+// never matches one; only a rewrite can bring it into the public filesystem.
+function isOutsideBasePathDirectLookup(phase: FilesystemRoutePhase, hasBasePath: boolean): boolean {
+  return phase === "direct" && !hasBasePath;
+}
+
 /** Pathnames the Pages Router serves from routes rather than the client directory. */
 function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRoutePhase): boolean {
   return (
@@ -2669,8 +2675,16 @@ async function createPagesRouterRequestHandler(
                 : null,
             renderPage: null,
             handleApi: null,
-            serveFilesystemRoute: async (candidate, _stagedHeaders, phase) => {
+            serveFilesystemRoute: async (
+              candidate,
+              _stagedHeaders,
+              phase,
+              _resolvedUrl,
+              _request,
+              candidateHasBasePath,
+            ) => {
               if (
+                isOutsideBasePathDirectLookup(phase, candidateHasBasePath) ||
                 isImageOptimizationPath(candidate) ||
                 isPagesFilesystemExcludedPath(candidate, phase)
               ) {
@@ -2861,7 +2875,12 @@ async function createPagesRouterRequestHandler(
             res.end(INVALID_IMAGE_SOURCE_MESSAGE);
             return true;
           }
-          if (isPagesFilesystemExcludedPath(requestPathname, phase)) return false;
+          if (
+            isOutsideBasePathDirectLookup(phase, resolvedPathnameHasBasePath) ||
+            isPagesFilesystemExcludedPath(requestPathname, phase)
+          ) {
+            return false;
+          }
           return tryServeStatic(
             req,
             res,

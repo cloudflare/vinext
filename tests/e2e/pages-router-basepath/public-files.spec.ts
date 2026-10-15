@@ -1,0 +1,54 @@
+import { expect, test } from "@playwright/test";
+
+const BASE = "http://localhost:4190";
+
+// next/image emits the trailing-slash endpoint when trailingSlash is set.
+const imagePath = (source: string) =>
+  `${BASE}/docs/_next/image/?url=${encodeURIComponent(source)}&w=64&q=75`;
+
+// Next.js answers a local source that yields no image with this 400.
+const INVALID_IMAGE = "The requested resource isn't a valid image.";
+
+// Next.js' filesystem lookup returns no item for a path outside basePath
+// (getItem in packages/next/src/server/lib/router-utils/filesystem.ts), so
+// public files exist only under basePath, where basePath-prefixed middleware
+// matchers apply to them.
+test.describe("public files outside basePath", () => {
+  test("serves public files only under basePath", async ({ request }) => {
+    const open = await request.get(`${BASE}/docs/open.txt`, { maxRedirects: 0 });
+    expect(open.status()).toBe(200);
+    expect(await open.text()).toBe("open file\n");
+
+    const outside = await request.get(`${BASE}/open.txt`, { maxRedirects: 0 });
+    expect(outside.status()).toBe(404);
+    expect(await outside.text()).not.toContain("open file");
+  });
+
+  test("does not bypass a middleware matcher by omitting basePath", async ({ request }) => {
+    const gated = await request.get(`${BASE}/docs/private/report.txt`, { maxRedirects: 0 });
+    expect(gated.status()).toBe(403);
+    expect(await gated.text()).toBe("blocked by middleware");
+
+    const outside = await request.get(`${BASE}/private/report.txt`, { maxRedirects: 0 });
+    expect(outside.status()).toBe(404);
+    expect(await outside.text()).not.toContain("private report");
+  });
+
+  test("resolves an image source only under basePath", async ({ request }) => {
+    const admitted = await request.get(imagePath("/docs/pixel.png"), { maxRedirects: 0 });
+    expect(admitted.status()).toBe(200);
+    expect(admitted.headers()["content-type"]).toBe("image/png");
+
+    for (const source of [
+      "/pixel.png",
+      "/private/photo.png",
+      // Middleware denies this source under basePath.
+      "/docs/private/photo.png",
+    ]) {
+      const image = await request.get(imagePath(source), { maxRedirects: 0 });
+      expect(image.status(), source).toBe(400);
+      expect(await image.text(), source).toBe(INVALID_IMAGE);
+      expect(image.headers()["content-type"] ?? "", source).not.toContain("image/");
+    }
+  });
+});
