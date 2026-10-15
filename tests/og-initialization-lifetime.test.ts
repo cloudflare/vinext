@@ -37,9 +37,20 @@ describe("next/og initialization lifetime", () => {
     const element = React.createElement("div");
     const creator = { waitUntil: vi.fn() };
     const joiner = { waitUntil: vi.fn() };
+    const invalid = { waitUntil: vi.fn() };
+
+    // A response init that fails validation (a body with a null-body status)
+    // throws before it starts the shared initialization, like Next.js.
+    expect(() =>
+      runWithExecutionContext(invalid, () => new ImageResponse(element, { status: 204 })),
+    ).toThrow(TypeError);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invalid.waitUntil).not.toHaveBeenCalled();
 
     const first = runWithExecutionContext(creator, () => new ImageResponse(element));
     const second = runWithExecutionContext(joiner, () => new ImageResponse(element));
+    // Rendering starts once each constructor has validated its response init.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(creator.waitUntil).toHaveBeenCalledOnce();
     expect(joiner.waitUntil).not.toHaveBeenCalled();

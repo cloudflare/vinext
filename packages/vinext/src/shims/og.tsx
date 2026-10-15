@@ -20,8 +20,15 @@ export class ImageResponse extends Response {
   static displayName = "ImageResponse";
 
   constructor(element: ReactElement, options?: ImageResponseOptions) {
+    let startRendering!: () => void;
+    const constructed = new Promise<void>((resolve) => {
+      startRendering = resolve;
+    });
     const readable = new ReadableStream<Uint8Array>({
       async start(controller) {
+        // @vercel/og validates the same response init only after its own
+        // render has started, so wait until it is known to be valid here.
+        await constructed;
         // @vercel/og starts loading its WASM and fallback font when it is
         // evaluated and memoizes them for the isolate. workerd drops a
         // canceled request's pending I/O, so the request that imports it stays
@@ -79,6 +86,7 @@ export class ImageResponse extends Response {
       status: options?.status,
       statusText: options?.statusText,
     });
+    startRendering();
   }
 }
 
