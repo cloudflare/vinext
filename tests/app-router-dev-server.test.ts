@@ -2404,6 +2404,7 @@ describe("App Router integration", () => {
     expect(textRes.status).toBe(202);
     expect(await textRes.json()).toEqual({ message: "ok", name, email: null });
 
+    // The handler ignores `image`; this case guards the body limit only.
     const fileBody = new FormData();
     fileBody.append("name", "upload");
     fileBody.append("image", new Blob([name], { type: "image/bmp" }), "image.bmp");
@@ -2414,6 +2415,19 @@ describe("App Router integration", () => {
     });
     expect(fileRes.status).toBe(202);
     expect(await fileRes.json()).toEqual({ message: "ok", name: "upload", email: null });
+  });
+
+  it("delivers multipart POSTs with Server Action fields to a route handler", async () => {
+    const body = new FormData();
+    body.append("$ACTION_ID_deadbeef", "");
+    body.append("name", "not-an-action");
+    const res = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body,
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ message: "ok", name: "not-an-action", email: null });
   });
 
   it("does not apply the Server Action origin check to multipart route handler POSTs", async () => {
