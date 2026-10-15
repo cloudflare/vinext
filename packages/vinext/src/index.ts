@@ -5742,9 +5742,7 @@ export const loadServerActionClient = ${
           }
           const address = server.httpServer?.address();
           const port =
-            typeof address === "object" && address
-              ? address.port
-              : (server.config.server.port ?? 3000);
+            typeof address === "object" && address ? address.port : server.config.server.port;
           return `http://localhost:${port}`;
         };
         // Reuse the Pages SSR handler across requests. Every createSSRHandler

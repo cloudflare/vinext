@@ -460,7 +460,7 @@ function printHelp(cmd?: string) {
     --version      Show version
 
   Examples:
-    vinext dev                         Start dev server on port 3000
+    vinext dev                         Start dev server
     vinext dev --port 4000             Start dev server on port 4000
     vinext build                       Build for production
     vinext typegen                     Generate route helper types

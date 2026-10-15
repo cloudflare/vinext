@@ -39,6 +39,11 @@ function useViteCliArgv(): void {
   process.argv = [process.execPath, "/project/node_modules/vite/bin/vite.js", "dev"];
 }
 
+function ownsCliLifecycle(server: ViteDevServer | undefined): boolean {
+  if (!server) throw new Error("Expected a Vite dev server");
+  return (server.config as { __vinextDevCliLifecycle?: true }).__vinextDevCliLifecycle === true;
+}
+
 async function waitFor<T>(read: () => T | undefined, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -222,7 +227,7 @@ export default { plugins: [
   { name: "nested-before-vinext", enforce: "pre", async config() {
     const nested = await createServer({ root: ${JSON.stringify(nestedRoot)}, plugins: [vinext()], logLevel: "silent" });
     try {
-      if (nested.config.server.port !== 5173) throw new Error("Nested server claimed the CLI lifecycle");
+      if (nested.config.__vinextDevCliLifecycle) throw new Error("Nested server claimed the CLI lifecycle");
     } finally { await nested.close(); }
   } },
   vinext(),
@@ -270,7 +275,7 @@ export default { plugins: [
   { name: "nested-before-vinext", enforce: "pre", async config() {
     const nested = await createServer({ root: ${JSON.stringify(nestedRoot)}, logLevel: "silent" });
     try {
-      if (nested.config.server.port !== 5173) throw new Error("Nested server claimed the CLI lifecycle");
+      if (nested.config.__vinextDevCliLifecycle) throw new Error("Nested server claimed the CLI lifecycle");
     } finally { await nested.close(); }
   } },
   vinext(),
@@ -311,7 +316,7 @@ export default { plugins: [
   { name: "nested-before-vinext", enforce: "pre", async config() {
     const nested = await createServer({ root: ${JSON.stringify(root)}, configFile: "alternate.config.ts", logLevel: "silent" });
     try {
-      if (nested.config.server.port !== 5173) throw new Error("Alternate config claimed the CLI lifecycle");
+      if (nested.config.__vinextDevCliLifecycle) throw new Error("Alternate config claimed the CLI lifecycle");
     } finally { await nested.close(); }
   } },
   vinext(),
@@ -405,7 +410,7 @@ export default { plugins: [
     try {
       const nested = await createServer({ root: ${JSON.stringify(root)}, configFile: false, plugins: shared, logLevel: "silent", server: { middlewareMode: true } });
       try {
-        if (nested.config.server.port === 3000) throw new Error("Nested server claimed CLI defaults");
+        if (nested.config.__vinextDevCliLifecycle) throw new Error("Nested server claimed the CLI lifecycle");
       } finally { await nested.close(); }
     } finally { delete process.env.VINEXT_NESTED_CONFIGURE_TEST; }
   } },
@@ -548,7 +553,7 @@ export default { plugins: [vinext()] };
     expect(duplicate.stderr).not.toContain("node:events");
   }, 30_000);
 
-  it("applies vinext defaults without locking a server that never listens", async () => {
+  it("claims the CLI lifecycle without locking a server that never listens", async () => {
     const root = createProject();
     useViteCliArgv();
     server = await createServer({
@@ -558,7 +563,8 @@ export default { plugins: [vinext()] };
       plugins: [vinext()],
     });
 
-    expect(server.config.server).toMatchObject({ host: "localhost", port: 3000 });
+    expect(ownsCliLifecycle(server)).toBe(true);
+    expect(server.config.server).toMatchObject({ host: "localhost", port: 5173 });
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
 
     await server.close();
@@ -622,7 +628,7 @@ export default { plugins: [vinext()] };
         plugins: [vinext()],
       });
       try {
-        expect(nested.config.server.port).toBe(5173);
+        expect(ownsCliLifecycle(nested)).toBe(false);
         expect(readLockfile(getLockfilePath(root))?.port).toBe(actualPort);
       } finally {
         await nested.close();
@@ -659,7 +665,7 @@ export default { plugins: [vinext()] };
         logLevel: "silent",
         plugins: [vinext()],
       });
-      expect(nested.config.server.port).toBe(5173);
+      expect(ownsCliLifecycle(nested)).toBe(false);
       await nested.close();
     } finally {
       if (previous === undefined) delete process.env.VINEXT_NO_DEV_LOCK;
@@ -688,6 +694,32 @@ export default { plugins: [vinext()] };
     await server.close();
     server = undefined;
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
+  // https://github.com/cloudflare/vinext/issues/3918
+  it("keeps Vite's port when a config-file server restarts", async () => {
+    const root = createProject();
+    // Vite bundles file-URL imports into the loaded config, which would give
+    // each restart a fresh vinext module. Pass the plugin inline instead, so
+    // it shares module state across restarts like an installed package does.
+    fs.writeFileSync(path.join(root, "vite.config.ts"), "export default {};\n");
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    useViteCliArgv();
+    try {
+      // Mirror `vite dev`: Vite loads the config file, with no inline root or port.
+      server = await createServer({ logLevel: "silent", plugins: [vinext()] });
+      expect(ownsCliLifecycle(server)).toBe(true);
+      expect(server.config.server.port).toBe(5173);
+      await server.listen();
+
+      await server.restart();
+
+      expect(ownsCliLifecycle(server)).toBe(true);
+      expect(server.config.server.port).toBe(5173);
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 
   it("reclaims the CLI lifecycle when vinext is removed and restored on config reload", async () => {
@@ -738,7 +770,7 @@ export default { plugins: [vinext()] };
         server: {},
       });
       try {
-        expect(nested.config.server.port).toBe(5173);
+        expect(ownsCliLifecycle(nested)).toBe(false);
         expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
       } finally {
         await nested.close();
@@ -813,7 +845,7 @@ export default { plugins: [vinext()] };
     try {
       await server.restart();
 
-      expect(nested?.config.server.port).toBe(5173);
+      expect(ownsCliLifecycle(nested)).toBe(false);
       expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
     } finally {
       await nested?.close();
@@ -908,7 +940,7 @@ export default { plugins: [vinext()] };
       server: { middlewareMode: { server: createHttpServer() } },
     });
 
-    expect(server.config.server.port).toBe(5173);
+    expect(server.config.server.host).toBeUndefined();
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
@@ -946,7 +978,7 @@ export default { plugins: [vinext()] };
       plugins: [vinext()],
     });
 
-    expect(server.config.server.port).toBe(5173);
+    expect(ownsCliLifecycle(server)).toBe(false);
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
@@ -969,7 +1001,7 @@ export default { plugins: [vinext()] };
       plugins: [vinext()],
     });
     try {
-      expect(nested.config.server.port).toBe(5173);
+      expect(ownsCliLifecycle(nested)).toBe(false);
       expect(readLockfile(getLockfilePath(root))).toEqual(outerLock);
     } finally {
       await nested.close();
@@ -1008,8 +1040,8 @@ export default { plugins: [vinext()] };
           vinext(),
         ],
       });
-      expect(nested?.config.server.port).toBe(5173);
-      expect(server.config.server.port).toBe(3000);
+      expect(ownsCliLifecycle(nested)).toBe(false);
+      expect(ownsCliLifecycle(server)).toBe(true);
       await server.listen(0);
       expect(readLockfile(getLockfilePath(root))).toBeTruthy();
     } finally {
