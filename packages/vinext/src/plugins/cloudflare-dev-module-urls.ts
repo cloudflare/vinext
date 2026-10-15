@@ -21,7 +21,7 @@
  * See https://github.com/cloudflare/vinext/issues/4005.
  */
 import path from "pathslash";
-import type { Connect, Plugin, ViteDevServer } from "vite";
+import { isCSSRequest, type Connect, type Plugin, type ViteDevServer } from "vite";
 
 /**
  * Vite's internal middlewares that serve module requests (`/@vite/client`,
@@ -32,7 +32,9 @@ import type { Connect, Plugin, ViteDevServer } from "vite";
  * every request falls through, which is the behavior without this plugin.
  *
  * `viteServePublicMiddleware` is deliberately excluded so that `public/` files
- * reach the Worker and middleware, as they do in production.
+ * reach the Worker and middleware, as they do in production. Without it, the
+ * transform middleware reports a public `.js` or `.css` file as an
+ * `ERR_LOAD_PUBLIC_URL` error, which is treated as a fall-through.
  */
 const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
   "viteBaseMiddleware",
@@ -47,8 +49,10 @@ const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
  * and CSS `url(./bg.png)` both resolve to paths like `/app/logo.svg`), and only
  * this middleware serves them. It also serves every other project file, and a
  * Worker route can share its path with one (e.g. an `api/` directory and an
- * `/api/*` route handler), so it only runs for referenced assets. See
- * `isReferencedAsset`.
+ * `/api/*` route handler), so it only runs for GET and HEAD requests for
+ * referenced assets. See `isReferencedAsset`. Navigations to a referenced asset
+ * are served too: in production its URL is under `/_next/static/`, which never
+ * reaches the Worker.
  */
 const VITE_STATIC_MIDDLEWARE_NAME = "viteServeStaticMiddleware";
 
@@ -120,7 +124,9 @@ function runViteModuleMiddlewares(
       const serveStatic = handle as Connect.NextHandleFunction;
       return [
         (req, res, next) =>
-          isReferencedAsset(server, req.url) ? serveStatic(req, res, next) : next(),
+          (req.method === "GET" || req.method === "HEAD") && isReferencedAsset(server, req.url)
+            ? serveStatic(req, res, next)
+            : next(),
       ];
     }
     return [];
@@ -128,6 +134,11 @@ function runViteModuleMiddlewares(
   let index = 0;
 
   const tryNext = (error?: unknown): void => {
+    if (isPublicFileLoadError(error)) {
+      req.url = url;
+      next();
+      return;
+    }
     if (error) {
       next(error);
       return;
@@ -157,20 +168,38 @@ function runViteModuleMiddlewares(
 }
 
 /**
+ * Whether the transform middleware rejected a request because it is for a
+ * `public/` file, which `viteServePublicMiddleware` would normally serve.
+ */
+function isPublicFileLoadError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ERR_LOAD_PUBLIC_URL"
+  );
+}
+
+/**
  * Whether a request URL, with any `base` already stripped, is the URL of an
  * asset that Vite gave to a module.
  *
- * The browser only learns an asset URL from a module Vite has transformed: a
- * JS module that imports the asset, or a CSS file that references it with
- * `url()`. Both are recorded as importers of the asset's file in the module
- * graph, and their transformed code contains the URL. Other project files can
- * also be in the graph (Tailwind reports every file it scans as a dependency
- * of the stylesheet), but no importer's code contains their URL, so they keep
- * reaching the Worker.
+ * The browser only learns an asset URL from a module Vite has transformed:
+ * - The asset's own JS module (`import logo from "./logo.svg"` or `?url`),
+ *   whose code is `export default "<url>"`, with a `?t=` query after HMR.
+ * - A JS module that uses `new URL("./logo.svg", import.meta.url)`, which Vite
+ *   rewrites to the URL as a string literal.
+ * - A stylesheet whose `url()` or `image-set()` Vite resolved.
+ *
+ * The importers of the asset's file in the module graph cover the last two.
+ * Other project files can also be in the graph (Tailwind reports every file it
+ * scans as a dependency of the stylesheet), and other imports name the file
+ * with a query (`?raw` inlines its contents), but no module's code contains
+ * their bare URL in one of these forms, so they keep reaching the Worker.
  *
  * @param server - The Vite dev server whose module graphs are searched
  * @param url - The request URL, with any `base` stripped
- * @returns `true` if an importer of the file references its URL
+ * @returns `true` if a module emitted the URL for the file
  */
 function isReferencedAsset(server: ViteDevServer, url: string | undefined): boolean {
   if (!url) return false;
@@ -182,16 +211,24 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
     return false;
   }
   // Server environments import the asset without the base, and the client
-  // environment with it
+  // environment with it. JS has the URL encoded, and CSS may not.
   const base = server.config.base;
-  const urls = new Set([pathname, decodedPathname].flatMap((p) => [p, base + p.slice(1)]));
-  const file = path.join(server.config.root, decodedPathname);
+  const urls = [...new Set([pathname, decodedPathname].flatMap((p) => [p, base + p.slice(1)]))];
+  const file = resolveStaticFile(server, decodedPathname);
 
   for (const environment of Object.values(server.environments)) {
     for (const module of environment.moduleGraph.getModulesByFile(file) ?? []) {
+      const code = module.transformResult?.code;
+      if (code && urls.some((u) => code.includes(`"${u}"`) || code.includes(`"${u}?t=`))) {
+        return true;
+      }
       for (const importer of module.importers) {
         const code = importer.transformResult?.code;
-        if (code && [...urls].some((assetUrl) => containsUrl(code, assetUrl))) return true;
+        if (!code) continue;
+        const css = isCSSRequest(importer.url);
+        if (urls.some((u) => (css ? containsCssUrl(code, u) : code.includes(`"${u}"`)))) {
+          return true;
+        }
       }
     }
   }
@@ -199,23 +236,52 @@ function isReferencedAsset(server: ViteDevServer, url: string | undefined): bool
 }
 
 /**
- * Whether `code` contains `url` as a whole URL path, not as the end of a longer
- * path (`/a.png` in `/assets/a.png`) or the start of a longer name (`/a.png` in
- * `/a.pngx`).
+ * The file `viteServeStaticMiddleware` serves for a decoded pathname, applying
+ * `resolve.alias` the same way it does, so the file checked is the file served.
  *
- * @param code - Transformed module code
- * @param url - The URL path to look for
- * @returns `true` if the URL appears delimited in the code
+ * @param server - The Vite dev server
+ * @param pathname - The decoded request pathname, with any `base` stripped
+ * @returns The absolute file path
  */
-function containsUrl(code: string, url: string): boolean {
+function resolveStaticFile(server: ViteDevServer, pathname: string): string {
+  const root = server.config.root;
+  for (const { find, replacement } of server.config.resolve.alias) {
+    if (typeof find === "string" ? pathname.startsWith(find) : find.test(pathname)) {
+      const redirected = pathname.replace(find, replacement);
+      return path.join(
+        root,
+        redirected.startsWith(root + "/") ? redirected.slice(root.length) : redirected,
+      );
+    }
+  }
+  return path.join(root, pathname);
+}
+
+/** Characters that can precede and follow a URL Vite wrote into CSS. */
+const CSS_URL_START = /[("',\s]/;
+const CSS_URL_END = /[)"',?#\\\s]/;
+
+/**
+ * Whether stylesheet code contains `url` as a resolved `url()` or `image-set()`
+ * reference. The code may be the CSS itself or a JS string of it, and the URL
+ * may be quoted and may keep a query or fragment from the source.
+ *
+ * @param code - Transformed stylesheet code
+ * @param url - The URL path to look for
+ * @returns `true` if the URL appears delimited as a CSS URL
+ */
+function containsCssUrl(code: string, url: string): boolean {
   for (let index = code.indexOf(url); index !== -1; index = code.indexOf(url, index + 1)) {
     const before = code[index - 1];
     const after = code[index + url.length];
-    if (!isUrlPathChar(before) && !isUrlPathChar(after)) return true;
+    if (
+      before !== undefined &&
+      CSS_URL_START.test(before) &&
+      after !== undefined &&
+      CSS_URL_END.test(after)
+    ) {
+      return true;
+    }
   }
   return false;
-}
-
-function isUrlPathChar(char: string | undefined): boolean {
-  return char !== undefined && /[\w.~%@/-]/.test(char);
 }

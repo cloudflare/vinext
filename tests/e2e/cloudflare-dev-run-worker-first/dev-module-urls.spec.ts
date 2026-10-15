@@ -48,9 +48,25 @@ test("serves Vite's client and answers its HMR ping", async ({ request }) => {
 });
 
 test("keeps running middleware for public files", async ({ request }) => {
-  const res = await request.get("/members%20only/confidential.txt");
-  expect(res.status()).toBe(403);
-  expect(await res.text()).toBe("blocked by middleware");
+  for (const path of ["/members%20only/confidential.txt", "/members%20only/styles.css"]) {
+    const res = await request.get(path);
+    expect(res.status()).toBe(403);
+    expect(await res.text()).toBe("blocked by middleware");
+  }
+
+  // Vite's transform middleware treats `.js` and `.css` URLs as modules
+  const script = await request.get("/dev-module-urls.js");
+  expect(script.status()).toBe(200);
+  expect(await script.text()).toContain("devModuleUrlsPublicScript");
+});
+
+test("sends other methods for a referenced asset to the Worker", async ({ page, request }) => {
+  await page.goto("/dev-module-urls");
+  await expect(page.locator("#js-badge")).toHaveAttribute("data-hydrated", "true");
+
+  const res = await request.post("/app/dev-module-urls/badge.svg");
+  expect(res.status()).toBe(404);
+  expect(await res.text()).not.toContain("<svg");
 });
 
 test("keeps sending unreferenced project files and routes to the Worker", async ({ request }) => {
