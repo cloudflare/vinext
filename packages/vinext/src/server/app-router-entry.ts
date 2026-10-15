@@ -42,6 +42,7 @@ import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-con
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import { getImageOptimizer, readImageOptimizationSignal } from "./image-optimization.js";
+import { keepInitializationAlive } from "./instrumentation-keepalive.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
@@ -110,7 +111,9 @@ export default {
     ctx?: ExecutionContextLike & VinextRequestStageContext,
   ): Promise<Response> {
     const handleFetch = async () => {
-      await __ensureInstrumentation();
+      const initialization = __ensureInstrumentation();
+      keepInitializationAlive(initialization, ctx);
+      await initialization;
       const url = new URL(request.url);
       return traceFrameworkRequest({
         callback: async () =>
@@ -148,7 +151,11 @@ async function handleRequest(
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
-    if (readinessResponse.status === 204) await __ensureHybridPagesApplication();
+    if (readinessResponse.status === 204) {
+      const hybridInitialization = __ensureHybridPagesApplication();
+      keepInitializationAlive(hybridInitialization, ctx);
+      await hybridInitialization;
+    }
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
   let finalizeCacheabilityResponse:

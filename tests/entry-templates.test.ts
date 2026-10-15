@@ -1331,6 +1331,21 @@ describe("App Router entry templates", () => {
     expect(code).toContain('"canUseCanonicalLoadingShell":false');
   });
 
+  it("keeps the generated hybrid Pages initializer alive across aborted requests", () => {
+    // cloudflare/vinext#4012: the first hybrid request creates the memoized
+    // application promise, so the generated entry must register it with that
+    // request's waitUntil before awaiting it.
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      hasPagesDir: true,
+    });
+
+    expect(() => parseAst(code)).not.toThrow();
+    expect(code).toContain("keepInitializationAlive as __keepInitializationAlive");
+    expect(code).toContain("__keepInitializationAlive(__initialization)");
+    expect(code).toContain("__hybridPagesApplication = __initialization;");
+    expect(code).not.toContain("return __hybridPagesApplication ??= (async () => {");
+  });
+
   it("marks statically known force-dynamic App routes for shared-cache bypass", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-request-routes-"));
     const staticPage = path.join(tmpDir, "static-page.tsx");

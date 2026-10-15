@@ -21,6 +21,7 @@ import {
 } from "./headers.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { validateCdnRequest } from "./cache-control.js";
+import { keepInitializationAlive } from "./instrumentation-keepalive.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 
 // @ts-expect-error -- virtual modules resolved by vinext at build time
@@ -54,10 +55,12 @@ async function handleSingleStageRequest(
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
     if (readinessResponse.status === 204) {
-      await Promise.all([
+      const initialization = Promise.all([
         ensureRequestStageInstrumentation(),
         ensureResponseStageInstrumentation(),
       ]);
+      keepInitializationAlive(initialization, ctx);
+      await initialization;
     }
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }

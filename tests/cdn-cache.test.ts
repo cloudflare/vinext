@@ -41,6 +41,7 @@ import {
   buildPagesCacheValue,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function resetAdapters(): void {
   setDataCacheHandler(new MemoryCacheHandler());
@@ -138,6 +139,52 @@ describe("data cache handler aliases", () => {
       await Promise.all([proxy.get("a"), proxy.get("b")]);
 
       expect(load).toHaveBeenCalledOnce();
+      expect(getDataCacheHandler()).toBe(configured);
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete globals[key];
+        else globals[key] = value;
+      }
+    }
+  });
+
+  it("keeps the first cache use alive until the lazy adapter loads", async () => {
+    // cloudflare/vinext#4012: the adapter's dynamic import runs inside the
+    // request that first touches the cache. A canceled request would leave the
+    // memoized load promise pending for every later request in the isolate, so
+    // the creating request must be kept alive with waitUntil.
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const configuredKey = Symbol.for("vinext.configuredCacheHandler");
+    const explicitKey = Symbol.for("vinext.explicitCacheHandler");
+    const lazyKey = Symbol.for("vinext.lazyCacheHandler");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = new Map(
+      [handlerKey, configuredKey, explicitKey, lazyKey].map((key) => [key, globals[key]]),
+    );
+    for (const key of previous.keys()) delete globals[key];
+
+    try {
+      const configured = new MemoryCacheHandler();
+      let finishLoad!: () => void;
+      const load = vi.fn(() =>
+        new Promise<void>((resolve) => {
+          finishLoad = resolve;
+        }).then(() => registerDataCacheHandler(() => configured)),
+      );
+      registerLazyDataCacheHandler(load);
+      const waitUntil = vi.fn();
+
+      const proxy = getDataCacheHandler();
+      const read = runWithExecutionContext({ hostRuntime: "worker", waitUntil }, () =>
+        proxy.get("a"),
+      );
+      await Promise.resolve();
+
+      expect(load).toHaveBeenCalledOnce();
+      expect(waitUntil).toHaveBeenCalledOnce();
+
+      finishLoad();
+      await expect(read).resolves.toBeNull();
       expect(getDataCacheHandler()).toBe(configured);
     } finally {
       for (const [key, value] of previous) {

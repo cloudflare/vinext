@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createServer, type Plugin } from "vite";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 function pagesWorkerEntryVirtualModules(): Plugin {
   const modules = new Map([
@@ -25,6 +25,7 @@ export const prerenderSecret = "worker-prerender-secret";
 export let instrumentationCalls = 0;
 export function __ensureInstrumentation() {
   instrumentationCalls++;
+  return globalThis.__vinextTestInstrumentation?.();
 }
 export const publicFiles = new Set();
 export const clientBuildFiles = new Set(["/remoteEntry.js"]);
@@ -40,6 +41,7 @@ export const buildId = "worker-build";
 export let instrumentationCalls = 0;
 export function __ensureInstrumentation() {
   instrumentationCalls++;
+  return globalThis.__vinextTestInstrumentation?.();
 }
 export const pageRoutes = [];
 export const getRuntimePageDataKind = () => "static";
@@ -154,6 +156,61 @@ describe("Pages Router production Worker readiness", () => {
       expect(responseEntry.instrumentationCalls).toBe(1);
     } finally {
       await server.close();
+    }
+  });
+
+  it("keeps the readiness request alive until both stages initialize", async () => {
+    // cloudflare/vinext#4012: workerd drops the continuations of a canceled
+    // request's IoContext. The request that creates the memoized
+    // instrumentation promises must register them with waitUntil before
+    // awaiting, or every later request in the isolate hangs.
+    let finishInitialization!: () => void;
+    const initialization = new Promise<void>((resolve) => {
+      finishInitialization = resolve;
+    });
+    Reflect.set(globalThis, "__vinextTestInstrumentation", () => initialization);
+    const server = await createServer({
+      appType: "custom",
+      configFile: false,
+      logLevel: "silent",
+      plugins: [pagesWorkerEntryVirtualModules()],
+      resolve: {
+        alias: {
+          "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+        },
+      },
+      server: { middlewareMode: true },
+    });
+
+    try {
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/pages-router-entry.ts"),
+      )) as {
+        default: {
+          fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
+        };
+      };
+      const waitUntil = vi.fn();
+
+      const pending = entry.default.fetch(
+        new Request("https://example.com/__vinext/prerender/readiness", {
+          headers: {
+            "x-vinext-expected-worker-version": "version-a",
+            "x-vinext-prerender-secret": "worker-prerender-secret",
+          },
+        }),
+        undefined,
+        { waitUntil },
+      );
+      await vi.waitFor(() => expect(waitUntil).toHaveBeenCalledOnce());
+
+      finishInitialization();
+      const response = await pending;
+      expect(response.status).toBe(204);
+      expect(response.headers.get("x-vinext-prerender-readiness")).toBe("1");
+    } finally {
+      await server.close();
+      Reflect.deleteProperty(globalThis, "__vinextTestInstrumentation");
     }
   });
 

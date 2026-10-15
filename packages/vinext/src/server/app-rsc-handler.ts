@@ -121,6 +121,7 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
+import { keepInitializationAlive } from "./instrumentation-keepalive.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
@@ -3178,7 +3179,9 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // guarded call is a no-op); on Node/dev this is where they get wired, with no
     // bindings available.
     options.registerCacheAdapters();
-    await options.ensureInstrumentation?.();
+    const initialization = options.ensureInstrumentation?.();
+    keepInitializationAlive(initialization, isExecutionContextLike(ctx) ? ctx : undefined);
+    await initialization;
 
     const traceUrl = new URL(rawRequest.url);
     return traceFrameworkRequest({

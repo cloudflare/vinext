@@ -1,4 +1,5 @@
 import type { RenderObservation } from "../server/cache-proof.js";
+import { keepInitializationAlive } from "../server/instrumentation-keepalive.js";
 import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
@@ -389,20 +390,30 @@ class LazyDataCacheHandler implements CacheHandler {
   constructor(private readonly load: () => Promise<void>) {}
 
   private resolve(): Promise<CacheHandler> {
-    return (this.resolved ??= this.load().then(() => {
-      const registered = globalHandlers[HANDLER_KEY];
-      if (registered && registered !== this) {
-        this.loadedHandler = registered;
-        return registered;
-      }
+    if (this.resolved === undefined) {
+      const resolved = this.load().then(() => {
+        const registered = globalHandlers[HANDLER_KEY];
+        if (registered && registered !== this) {
+          this.loadedHandler = registered;
+          return registered;
+        }
 
-      const fallback = new MemoryCacheHandler();
-      globalHandlers[HANDLER_KEY] = fallback;
-      globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
-      delete globalHandlers[LAZY_HANDLER_KEY];
-      this.loadedHandler = fallback;
-      return fallback;
-    }));
+        const fallback = new MemoryCacheHandler();
+        globalHandlers[HANDLER_KEY] = fallback;
+        globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
+        delete globalHandlers[LAZY_HANDLER_KEY];
+        this.loadedHandler = fallback;
+        return fallback;
+      });
+      // The configured adapter loads on the first cache use, inside the
+      // request that touches the cache. Keep that request's IoContext alive
+      // until the dynamic import settles; otherwise an aborted first request
+      // would leave every later request in the isolate awaiting a promise
+      // whose continuations were dropped with it (cloudflare/vinext#4012).
+      keepInitializationAlive(resolved);
+      this.resolved = resolved;
+    }
+    return this.resolved;
   }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {

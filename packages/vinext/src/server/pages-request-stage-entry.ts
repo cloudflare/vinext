@@ -76,6 +76,7 @@ import {
 } from "./response-stage-policy.js";
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
+import { keepInitializationAlive } from "./instrumentation-keepalive.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
 import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 
@@ -257,7 +258,9 @@ function handleRequest(
 ): Promise<Response> {
   const url = new URL(request.url);
   const trace = async () => {
-    await pagesEntry.__ensureInstrumentation?.();
+    const initialization = pagesEntry.__ensureInstrumentation?.();
+    keepInitializationAlive(initialization, platformCtx);
+    await initialization;
     return traceFrameworkRequest({
       callback: () =>
         handleRequestImpl(

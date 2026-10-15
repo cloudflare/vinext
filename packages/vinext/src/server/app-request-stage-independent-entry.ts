@@ -21,6 +21,7 @@ import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-con
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import type { DispatchAppWorkerResponseStage } from "./app-worker-stages.js";
 import { getImageOptimizer, readImageOptimizationSignal } from "./image-optimization.js";
+import { keepInitializationAlive } from "./instrumentation-keepalive.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import { assetPrefixPathname } from "../utils/asset-prefix.js";
@@ -71,7 +72,9 @@ export function handleRequestStage(
 ): Promise<Response> {
   const originalRequest = request;
   const handleStage = async () => {
-    await __ensureInstrumentation();
+    const initialization = __ensureInstrumentation();
+    keepInitializationAlive(initialization, ctx);
+    await initialization;
     const url = new URL(request.url);
     return traceFrameworkRequest({
       callback: () =>
@@ -129,7 +132,9 @@ async function handleRequest(
     // dispatcher so independently hosted stages are proven ready as a unit.
     // Failed capability checks stay inside the framework-owned namespace.
     if (readinessResponse.status !== 204) return readinessResponse;
-    await __ensureHybridPagesApplication();
+    const hybridInitialization = __ensureHybridPagesApplication();
+    keepInitializationAlive(hybridInitialization, ctx);
+    await hybridInitialization;
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;

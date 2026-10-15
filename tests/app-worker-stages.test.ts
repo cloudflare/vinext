@@ -579,4 +579,70 @@ describe("App Worker response stage", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("keeps the response-stage request alive until instrumentation settles", async () => {
+    // Ported from the production hang in cloudflare/vinext#4012: workerd drops
+    // the continuations of a canceled request's IoContext, so a memoized
+    // instrumentation promise created by that request must be registered with
+    // waitUntil before it is awaited.
+    const initialization = deferred<void>();
+    stages.ensureInstrumentation.mockReturnValue(initialization.promise);
+    stages.renderResponse.mockResolvedValueOnce(new Response("rendered"));
+    const waitUntil = vi.fn();
+
+    const stage = handleResponseStage(
+      new Request("https://example.com/missing"),
+      undefined,
+      { hostRuntime: "worker", waitUntil },
+      notFoundStage,
+      async () => new Response("request-stage"),
+      { cache: "bypass" },
+    );
+    await Promise.resolve();
+
+    expect(waitUntil).toHaveBeenCalledOnce();
+    expect(stages.renderResponse).not.toHaveBeenCalled();
+
+    initialization.resolve();
+    await stage;
+
+    expect(stages.renderResponse).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the cache-function invocation alive until instrumentation settles", async () => {
+    const initialization = deferred<void>();
+    stages.ensureInstrumentation.mockReturnValue(initialization.promise);
+    const waitUntil = vi.fn();
+
+    const invocation = invokeCacheFunction(
+      {
+        encryptedArgs: "[]",
+        referenceId: "test#cached",
+        rootParams: {},
+        softTags: [],
+      },
+      undefined,
+      { hostRuntime: "worker", waitUntil },
+      async () => new Response(),
+    );
+    await Promise.resolve();
+
+    expect(waitUntil).toHaveBeenCalledOnce();
+    expect(stages.invokeCacheFunction).not.toHaveBeenCalled();
+
+    initialization.resolve();
+    await invocation;
+
+    expect(stages.invokeCacheFunction).toHaveBeenCalledOnce();
+  });
 });
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, reject, resolve };
+}

@@ -112,6 +112,10 @@ const instrumentationRuntimePath = resolveEntryPath(
   "../server/instrumentation-runtime.js",
   import.meta.url,
 );
+const instrumentationKeepalivePath = resolveEntryPath(
+  "../server/instrumentation-keepalive.js",
+  import.meta.url,
+);
 const appRscErrorHandlerPath = resolveEntryPath(
   "../server/app-rsc-error-handler.js",
   import.meta.url,
@@ -730,11 +734,19 @@ export function generateRscEntry(
     ? `
 let __hybridPagesApplication;
 export function __ensureHybridPagesApplication() {
-  return __hybridPagesApplication ??= (async () => {
-    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    await __pagesEntry.__ensureInstrumentation?.();
-    return __pagesEntry;
-  })();
+  if (!__hybridPagesApplication) {
+    const __initialization = (async () => {
+      const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      await __pagesEntry.__ensureInstrumentation?.();
+      return __pagesEntry;
+    })();
+    // The first hybrid request may be the request that creates this promise.
+    // Register it with that request's waitUntil so an aborted request cannot
+    // strand every later request in the isolate (cloudflare/vinext#4012).
+    __keepInitializationAlive(__initialization);
+    __hybridPagesApplication = __initialization;
+  }
+  return __hybridPagesApplication;
 }
 async function __loadPrerenderPagesRoutes() {
   const __gspSsrEntry = await __ensureHybridPagesApplication();
@@ -844,7 +856,8 @@ ${
   hasPagesDir
     ? `import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
-} from ${JSON.stringify(appRouteHandlerResponsePath)};`
+} from ${JSON.stringify(appRouteHandlerResponsePath)};
+import { keepInitializationAlive as __keepInitializationAlive } from ${JSON.stringify(instrumentationKeepalivePath)};`
     : ""
 }
 const __loadAppRouteHandlerDispatch = () => import(${JSON.stringify(appRouteHandlerDispatchPath)});

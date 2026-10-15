@@ -40,7 +40,9 @@ export const __assetPrefix = "";
 export const __basePath = "";
 export let hybridInitializationCalls = 0;
 export function __ensureHybridPagesApplication() { hybridInitializationCalls++; }
-export function __ensureInstrumentation() {}
+export function __ensureInstrumentation() {
+  return globalThis.__vinextTestInstrumentation?.();
+}
 export const __imageAllowedWidths = [64];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
@@ -81,7 +83,9 @@ export const __assetPrefix = "";
 export const __basePath = "";
 export let hybridInitializationCalls = 0;
 export function __ensureHybridPagesApplication() { hybridInitializationCalls++; }
-export function __ensureInstrumentation() {}
+export function __ensureInstrumentation() {
+  return globalThis.__vinextTestInstrumentation?.();
+}
 export const __imageAllowedWidths = [64];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
@@ -779,6 +783,112 @@ describe("App Router Production server worker entry compatibility", () => {
       Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
       if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
       else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("keeps the first Worker request alive until instrumentation settles", async () => {
+    // cloudflare/vinext#4012: workerd drops the continuations of a canceled
+    // request's IoContext. The request that creates the memoized instrumentation
+    // promise must register it with waitUntil before awaiting, or every later
+    // request in the isolate awaits a promise that never settles.
+    let finishInitialization!: () => void;
+    const initialization = new Promise<void>((resolve) => {
+      finishInitialization = resolve;
+    });
+    Reflect.set(globalThis, "__vinextTestInstrumentation", () => initialization);
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, () => {});
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
+      )) as {
+        default: {
+          fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
+        };
+      };
+      const waitUntil = vi.fn();
+
+      const pending = entry.default.fetch(new Request("https://example.com/hello"), undefined, {
+        waitUntil,
+      });
+      await vi.waitFor(() => expect(waitUntil).toHaveBeenCalledOnce());
+
+      finishInitialization();
+      const response = await pending;
+      expect(await response.text()).toBe("ok");
+    } finally {
+      await server?.close();
+      Reflect.deleteProperty(globalThis, "__vinextTestInstrumentation");
+      Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+    }
+  });
+
+  it("keeps the request stage alive until instrumentation settles", async () => {
+    // cloudflare/vinext#4012: the independently hosted request stage creates
+    // the shared instrumentation promise too, so it must register the promise
+    // with the platform context before awaiting it.
+    let finishInitialization!: () => void;
+    const initialization = new Promise<void>((resolve) => {
+      finishInitialization = resolve;
+    });
+    Reflect.set(globalThis, "__vinextTestInstrumentation", () => initialization);
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, () => {});
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+        ),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: { hostRuntime: "worker"; waitUntil(): void },
+          dispatchResponseStage: () => Promise<Response>,
+        ): Promise<Response>;
+      };
+      const waitUntil = vi.fn();
+
+      const pending = entry.handleRequestStage(
+        new Request("https://example.com/hello"),
+        undefined,
+        { hostRuntime: "worker", waitUntil },
+        async () => new Response("unused"),
+      );
+      await vi.waitFor(() => expect(waitUntil).toHaveBeenCalledOnce());
+
+      finishInitialization();
+      const response = await pending;
+      expect(await response.text()).toBe("ok");
+    } finally {
+      await server?.close();
+      Reflect.deleteProperty(globalThis, "__vinextTestInstrumentation");
+      Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
     }
   });
 

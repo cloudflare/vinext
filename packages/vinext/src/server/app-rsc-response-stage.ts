@@ -35,6 +35,7 @@ import {
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import { keepInitializationAlive } from "./instrumentation-keepalive.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
@@ -161,7 +162,9 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
   options.registerCacheAdapters();
-  await options.ensureInstrumentation?.();
+  const initialization = options.ensureInstrumentation?.();
+  keepInitializationAlive(initialization, isExecutionContextLike(ctx) ? ctx : undefined);
+  await initialization;
 
   const executionContext = isExecutionContextLike(ctx)
     ? ctx

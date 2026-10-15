@@ -20,6 +20,7 @@ import { beginRouteCacheability } from "vinext/shims/cacheability-classification
 import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 import { validateCdnRequest } from "./cache-control.js";
 import { createWorkerPrerenderReadinessResponse } from "./worker-prerender-discovery.js";
+import { keepInitializationAlive } from "./instrumentation-keepalive.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -88,7 +89,9 @@ export async function renderPagesResponse(
     return new Response("Invalid vinext Pages response stage", { status: 400 });
   }
 
-  await pagesEntry.__ensureInstrumentation?.();
+  const initialization = pagesEntry.__ensureInstrumentation?.();
+  keepInitializationAlive(initialization, platformCtx);
+  await initialization;
   registerConfiguredImageOptimizer(env);
   const renderHeaders = new Headers(stagedHeaders ?? props.stagedHeaders ?? []);
   // A request-stage Content-Length describes neither the page nor API body.
