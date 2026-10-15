@@ -79,8 +79,12 @@ function createAppWithReact(
 
 describe("vinext build React version check", () => {
   let root: string | undefined;
+  // Loading next.config changes into the (mocked) cwd and back, so restore it.
+  const testCwd = process.cwd();
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    process.chdir(testCwd);
     if (root) fs.rmSync(root, { recursive: true, force: true });
     root = undefined;
     pluginRsc.version = undefined;
@@ -120,6 +124,7 @@ describe("vinext build React version check", () => {
   it("requires an app RSDW while plugin-rsc bundles RSDW 19.3.0", async () => {
     pluginRsc.version = "0.5.37";
     root = createAppWithReact("19.3.1", { declareRsdw: false });
+    vi.spyOn(process, "cwd").mockReturnValue(root);
 
     await expect(createAppBuilder(root)).rejects.toThrow(
       "vinext: App Router requires react, react-dom, and react-server-dom-webpack 19.3.1 or later.\n" +
@@ -131,16 +136,34 @@ describe("vinext build React version check", () => {
   it("accepts an installed app RSDW while plugin-rsc bundles RSDW 19.3.0", async () => {
     pluginRsc.version = "0.5.37";
     root = createAppWithReact("19.3.1");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
     await expect(createAppBuilder(root)).resolves.toBeDefined();
   });
 
   it("requires the declared app RSDW to be installed", async () => {
     pluginRsc.version = "0.5.37";
     root = createAppWithReact("19.3.1", { installRsdw: false });
+    vi.spyOn(process, "cwd").mockReturnValue(root);
 
     await expect(createAppBuilder(root)).rejects.toThrow(
       "Run: npm install react-server-dom-webpack@latest",
     );
+  });
+
+  it("checks the working directory plugin-rsc crawls, not the Vite root", async () => {
+    pluginRsc.version = "0.5.37";
+    root = createAppWithReact("19.3.1");
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-react-version-cwd-"));
+    fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ name: "workspace" }));
+    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+
+    try {
+      await expect(createAppBuilder(root)).rejects.toThrow(
+        "Run: npm install react-server-dom-webpack@latest",
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("uses plugin-rsc's bundled RSDW once it is at the floor", async () => {

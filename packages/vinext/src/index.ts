@@ -2345,7 +2345,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       reactVersionChecked = true;
       // Never install during a build: fail with the command to run instead.
       const reactUpgrade = getReactUpgradeDeps(root);
-      const needsAppRsdw = rscVersion !== null && needsAppReactServerDom(root, rscVersion);
+      // plugin-rsc looks for the app's RSDW from the working directory, not
+      // the Vite root.
+      const needsAppRsdw = rscVersion !== null && needsAppReactServerDom(process.cwd(), rscVersion);
       if (needsAppRsdw && !reactUpgrade.includes("react-server-dom-webpack@latest")) {
         reactUpgrade.push("react-server-dom-webpack@latest");
       }
