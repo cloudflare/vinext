@@ -228,27 +228,49 @@ function usesTailwindTurbopackLoader(root: string): boolean {
   return TAILWIND_LOADERS.some((loader) => isDepInstalled(root, loader));
 }
 
-/** Whether the project already has a PostCSS config, which init never replaces. */
-function hasPostcssConfig(root: string): boolean {
-  if (POSTCSS_CONFIG_FILES.some((file) => fs.existsSync(path.join(root, file)))) return true;
+/** The project's own PostCSS config, which init never replaces. */
+function readPostcssConfig(root: string): string | undefined {
+  for (const file of POSTCSS_CONFIG_FILES) {
+    const configPath = path.join(root, file);
+    if (fs.existsSync(configPath)) return fs.readFileSync(configPath, "utf-8");
+  }
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
-    return pkg.postcss !== undefined;
+    return pkg.postcss === undefined ? undefined : JSON.stringify(pkg.postcss);
   } catch {
-    return false;
+    return undefined;
   }
 }
 
 /**
- * Whether init should add `@tailwindcss/postcss` and a PostCSS config. Next.js
- * runs PostCSS after the Turbopack loader, on CSS Tailwind has already
- * compiled, so the second Tailwind pass leaves Next's output unchanged.
+ * How init sets Tailwind up for vinext when Next.js gets it from a Turbopack
+ * loader. Next.js runs PostCSS after that loader, on CSS Tailwind has already
+ * compiled, so adding the PostCSS config leaves Next's output unchanged.
+ *
+ * - `generate`: write `postcss.config.mjs` and install `@tailwindcss/postcss`.
+ * - `install`: the config init generated is already there (e.g. an earlier
+ *   run whose install failed), so only the package is needed.
+ * - `manual`: an existing PostCSS config, or an inline `css.postcss` in the
+ *   Vite config (which makes Vite ignore config files), does not mention
+ *   Tailwind. Init leaves it alone and asks the user to add the plugin.
+ * - `none`: no Turbopack loader, or Tailwind is already handled.
+ *
+ * Pass `viteConfigPath` only when init keeps that Vite config.
  */
-function needsTailwindPostcssSetup(root: string, viteConfigPath?: string): boolean {
-  if (!usesTailwindTurbopackLoader(root) || hasPostcssConfig(root)) return false;
-  // A Vite config that already mentions Tailwind (e.g. `@tailwindcss/vite`)
-  // handles it there.
-  return !(viteConfigPath && fs.readFileSync(viteConfigPath, "utf-8").includes("tailwindcss"));
+type TailwindPostcssSetup = "generate" | "install" | "manual" | "none";
+
+function getTailwindPostcssSetup(root: string, viteConfigPath?: string): TailwindPostcssSetup {
+  if (!usesTailwindTurbopackLoader(root)) return "none";
+  const postcssConfig = readPostcssConfig(root);
+  if (postcssConfig === TAILWIND_POSTCSS_CONFIG) return "install";
+  const viteConfig = viteConfigPath ? fs.readFileSync(viteConfigPath, "utf-8") : "";
+  // A Vite config that mentions Tailwind (e.g. `@tailwindcss/vite`) handles it there.
+  if (viteConfig.includes("tailwindcss")) return "none";
+  const existing = [postcssConfig, viteConfig.includes("postcss") ? viteConfig : undefined].filter(
+    (source) => source !== undefined,
+  );
+  if (existing.length === 0) return "generate";
+  return existing.some((source) => source.includes("tailwindcss")) ? "none" : "manual";
 }
 
 // ─── Script Addition ─────────────────────────────────────────────────────────
@@ -807,7 +829,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const isApp = detectProject(root).isAppRouter;
   const hasCssModules = !options.skipCssModules && scanCssModuleFiles(root);
-  const setUpTailwindPostcss = needsTailwindPostcssSetup(root, existingViteConfigPath);
+  // Node init with --force replaces the existing Vite config.
+  const tailwindPostcssSetup = getTailwindPostcssSetup(
+    root,
+    platform === "node" && options.force ? undefined : existingViteConfigPath,
+  );
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
@@ -899,7 +925,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
       : setupNodePlatform(setupContext);
   const { generatedViteConfig, skippedViteConfig, generatedPlatformFiles } = platformSetup;
 
-  if (setUpTailwindPostcss) {
+  if (tailwindPostcssSetup === "generate") {
     fs.writeFileSync(path.join(root, "postcss.config.mjs"), TAILWIND_POSTCSS_CONFIG, "utf-8");
   }
 
@@ -914,7 +940,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     platform,
     options.cloudflare,
     hasCssModules,
-    setUpTailwindPostcss,
+    tailwindPostcssSetup === "generate" || tailwindPostcssSetup === "install",
   );
   const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
   const missingDevDependencies = neededDeps.devDependencies.filter(
@@ -1063,9 +1089,13 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (hasCssModules) {
     console.log(`    ${terminalStyle.green("\u2713")} Configured vite-css-modules for CSS Modules`);
   }
-  if (setUpTailwindPostcss) {
+  if (tailwindPostcssSetup === "generate") {
     console.log(
       `    ${terminalStyle.green("\u2713")} Generated postcss.config.mjs for Tailwind CSS (vinext does not run turbopack.rules loaders)`,
+    );
+  } else if (tailwindPostcssSetup === "manual") {
+    console.log(
+      `    ${terminalStyle.yellow("!")} Tailwind CSS is set up as a Turbopack loader, which vinext does not run; install "@tailwindcss/postcss" and add it to your PostCSS config`,
     );
   }
   if (configKeepingWorkerName) {
