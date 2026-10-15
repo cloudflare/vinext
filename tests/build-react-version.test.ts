@@ -174,6 +174,32 @@ describe("vinext build React version check", () => {
     await expect(createAppBuilder(root)).resolves.toBeDefined();
   });
 
+  it("checks the RSDW version in the working directory plugin-rsc crawls", async () => {
+    pluginRsc.version = "0.5.37";
+    root = createAppWithReact("19.3.1");
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-react-version-cwd-"));
+    fs.writeFileSync(
+      path.join(cwd, "package.json"),
+      JSON.stringify({ name: "workspace", dependencies: { "react-server-dom-webpack": "19.3.0" } }),
+    );
+    const rsdw = path.join(cwd, "node_modules", "react-server-dom-webpack");
+    fs.mkdirSync(rsdw, { recursive: true });
+    fs.writeFileSync(
+      path.join(rsdw, "package.json"),
+      JSON.stringify({ name: "react-server-dom-webpack", version: "19.3.0", main: "index.js" }),
+    );
+    fs.writeFileSync(path.join(rsdw, "index.js"), "module.exports = {};");
+    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+
+    try {
+      await expect(createAppBuilder(root)).rejects.toThrow(
+        "Run: npm install react-server-dom-webpack@latest",
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("uses plugin-rsc's bundled RSDW once it is at the floor", async () => {
     root = createAppWithReact("19.3.1", { declareRsdw: false });
     await expect(createAppBuilder(root)).resolves.toBeDefined();

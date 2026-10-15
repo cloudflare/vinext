@@ -29,7 +29,7 @@ function getDependencyUpgradeDeps(
  * Lowest React accepted for App Router builds. react-server-dom-webpack 19.3.0
  * shares typed-array buffers across Flight chunks, fixed in 19.3.1.
  */
-const MINIMUM_REACT_VERSION: [number, number, number] = [19, 3, 1];
+export const MINIMUM_REACT_VERSION: [number, number, number] = [19, 3, 1];
 
 export function getReactUpgradeDeps(
   root: string,
