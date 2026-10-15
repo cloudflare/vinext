@@ -8,22 +8,30 @@
  * These builds copy checked-in App Router apps (the Cloudflare Workers example
  * and the Node fixture) and add a page rendering a Client Component that
  * imports one of those APIs. Next.js 16.2.7 fails the build for each graph
- * with both webpack and Turbopack, using the messages asserted below.
+ * with both webpack and Turbopack, using the messages asserted below. Pages
+ * Router pages are client layer too: the Pages builds copy the checked-in
+ * Pages apps and import a request API from a page's module graph.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder, createLogger, createServer, type Plugin } from "vite";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  createClientGraphServerApisPlugin,
   createInvalidClientImportMessage,
   findInvalidClientImports,
 } from "../packages/vinext/src/plugins/client-graph-server-apis.js";
 
 const CF_EXAMPLE_DIR = path.resolve(import.meta.dirname, "../examples/app-router-cloudflare");
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/app-basic");
+const PAGES_CF_EXAMPLE_DIR = path.resolve(
+  import.meta.dirname,
+  "../examples/pages-router-cloudflare",
+);
+const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/pages-basic");
 const WORKSPACE_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
 const CLIENT_COMPONENT_MESSAGE =
@@ -490,6 +498,500 @@ export async function getCachedProbe() {
   }, 120_000);
 });
 
+// A module that captures the request at module scope.
+const SESSION_LIB = `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`;
+
+function prependImport(root: string, file: string, specifier: string) {
+  const absPath = path.join(root, file);
+  fs.writeFileSync(
+    absPath,
+    `import ${JSON.stringify(specifier)};\n${fs.readFileSync(absPath, "utf8")}`,
+  );
+}
+
+function writeDataExportProbePage(root: string, file: string, libSpecifier: string) {
+  writeFile(
+    root,
+    file,
+    `import { readSession } from ${JSON.stringify(libSpecifier)};
+
+export async function getServerSideProps() {
+  return { props: { session: typeof readSession } };
+}
+
+export default function ClientGraphProbe({ session }: { session: string }) {
+  return <p>{session}</p>;
+}
+`,
+  );
+}
+
+// Next.js 16.2.7 (webpack and Turbopack) checks every module reachable from a
+// Pages Router page, in its SSR compile too, with or without app/.
+const PAGES_PROBES: Array<[form: string, setup: (root: string) => void]> = [
+  [
+    "a page component imports",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "../lib/client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      );
+    },
+  ],
+  [
+    "only getServerSideProps uses",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+    },
+  ],
+  [
+    "only the SSR graph resolves for a page component",
+    (root) => {
+      const packageJsonPath = path.join(root, "package.json");
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      packageJson.imports = {
+        "#client-graph-session": {
+          browser: "./lib/client-graph-session-browser.ts",
+          default: "./lib/client-graph-session.ts",
+        },
+      };
+      fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      writeFile(
+        root,
+        "lib/client-graph-session-browser.ts",
+        `export const readSession = () => undefined;
+`,
+      );
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "#client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      );
+    },
+  ],
+  [
+    "pages/_app imports",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      prependImport(root, "pages/_app.tsx", "../lib/client-graph-session");
+    },
+  ],
+  [
+    "pages/_document imports",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      prependImport(root, "pages/_document.tsx", "../lib/client-graph-session");
+    },
+  ],
+];
+
+/**
+ * Move the probe page's source out of pages/, leaving a harmless page, and
+ * return a resolveId hook that redirects only `entryId`'s import of it.
+ */
+function redirectProbePageFrom(root: string, entryId: string): Plugin {
+  fs.mkdirSync(path.join(root, "page-sources"));
+  const replacement = path.join(root, "page-sources/client-graph-probe.tsx");
+  fs.renameSync(path.join(root, "pages/client-graph-probe.tsx"), replacement);
+  writeFile(
+    root,
+    "pages/client-graph-probe.tsx",
+    `export default function ClientGraphProbe() {
+  return null;
+}
+`,
+  );
+  return {
+    name: "test:redirect-entry-page",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (importer === entryId && source.endsWith("/pages/client-graph-probe.tsx")) {
+        return replacement;
+      }
+      return null;
+    },
+  };
+}
+
+const PAGES_ROUTER_MESSAGE = `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`;
+
+describe("Pages Router builds of the Node fixture", () => {
+  it.each(PAGES_PROBES)(
+    "reject next/headers in a module that %s",
+    async (_form, setup) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      setup(root);
+
+      await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+    },
+    120_000,
+  );
+
+  it.each([false, true])(
+    "reject next/headers that only the SSR graph resolves for a symlinked page (preserveSymlinks: %s)",
+    async (preserveSymlinks) => {
+      // The page's module id is its real path, outside pages/, unless
+      // preserveSymlinks keeps the logical path.
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      const [, setupConditionalProbe] = PAGES_PROBES[2];
+      setupConditionalProbe(root);
+      fs.mkdirSync(path.join(root, "page-sources"));
+      fs.renameSync(
+        path.join(root, "pages/client-graph-probe.tsx"),
+        path.join(root, "page-sources/client-graph-probe.tsx"),
+      );
+      fs.symlinkSync(
+        path.join(root, "page-sources/client-graph-probe.tsx"),
+        path.join(root, "pages/client-graph-probe.tsx"),
+      );
+
+      if (preserveSymlinks) {
+        // The og plugin resolves satori from @vercel/og's module id, which
+        // only works on the realpath.
+        fs.rmSync(path.join(root, "pages/api/og.tsx"));
+        // Logical package paths only resolve dependencies hoisted beside them.
+        const hoisted = path.join(WORKSPACE_NODE_MODULES, ".pnpm/node_modules");
+        for (const entry of fs.readdirSync(hoisted)) {
+          const target = path.join(root, "node_modules", entry);
+          if (!fs.existsSync(target)) {
+            fs.symlinkSync(path.join(hoisted, entry), target, "junction");
+          }
+        }
+      }
+      const preserveSymlinksPlugin: Plugin = {
+        name: "test:preserve-symlinks",
+        config: () => ({ resolve: { preserveSymlinks } }),
+      };
+      await expect(buildFixture(root, [preserveSymlinksPlugin])).rejects.toThrow(
+        PAGES_ROUTER_MESSAGE,
+      );
+    },
+    120_000,
+  );
+
+  it("reject next/headers that only the SSR graph resolves for an aliased page", async () => {
+    // The page's module id is the alias replacement, outside pages/.
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    const [, setupConditionalProbe] = PAGES_PROBES[2];
+    setupConditionalProbe(root);
+    fs.mkdirSync(path.join(root, "page-sources"));
+    fs.renameSync(
+      path.join(root, "pages/client-graph-probe.tsx"),
+      path.join(root, "page-sources/client-graph-probe.tsx"),
+    );
+    writeFile(
+      root,
+      "pages/client-graph-probe.tsx",
+      `export default function ClientGraphProbe() {
+  return null;
+}
+`,
+    );
+    const pagePath = path.join(root, "pages/client-graph-probe.tsx");
+    const replacement = path.join(root, "page-sources/client-graph-probe.tsx");
+    const aliasPlugin: Plugin = {
+      name: "test:alias-page",
+      config: () => ({
+        resolve: {
+          alias: [pagePath, fs.realpathSync(pagePath)].map((find) => ({ find, replacement })),
+        },
+      }),
+    };
+
+    await expect(buildFixture(root, [aliasPlugin])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+
+  it("reject next/headers that only the SSR graph resolves for a page redirected from the Pages entry", async () => {
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    const [, setupConditionalProbe] = PAGES_PROBES[2];
+    setupConditionalProbe(root);
+    const redirectPlugin = redirectProbePageFrom(root, "\0virtual:vinext-server-entry");
+
+    await expect(buildFixture(root, [redirectPlugin])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+
+  // Next.js compiles these in the react-server layer, or without the check.
+  const SERVER_LAYER_FILES = [
+    "pages/api/client-graph-probe.ts",
+    "middleware.ts",
+    "instrumentation.ts",
+  ];
+
+  it.each(SERVER_LAYER_FILES)(
+    "build next/headers in a module that only %s imports",
+    async (file) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      if (fs.existsSync(path.join(root, file))) {
+        prependImport(root, file, "./lib/client-graph-session");
+      } else {
+        writeFile(
+          root,
+          file,
+          `import { readSession } from "../../lib/client-graph-session";
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+        );
+      }
+
+      await expect(buildFixture(root)).resolves.toBeUndefined();
+    },
+    120_000,
+  );
+});
+
+describe("Pages Router builds that Next.js accepts", () => {
+  it("build next/headers in a module that an API route imports, when only an entry this build never loads redirects a page to it", async () => {
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeFile(
+      root,
+      "pages/api/client-graph-probe.ts",
+      `import { readSession } from "../../lib/client-graph-session";
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+    );
+    const session = fs.realpathSync(path.join(root, "lib/client-graph-session.ts"));
+    // The Node build loads only the server entry, not the response entry.
+    const redirectPlugin: Plugin = {
+      name: "test:redirect-inactive-entry-page",
+      enforce: "pre",
+      resolveId(source, importer) {
+        if (
+          importer === "\0virtual:vinext-pages-response-entry" &&
+          source.endsWith("/pages/index.tsx")
+        ) {
+          return session;
+        }
+        return null;
+      },
+    };
+
+    await expect(buildFixture(root, [redirectPlugin])).resolves.toBeUndefined();
+  }, 120_000);
+
+  it('build next/headers in a "use client" module that only an API route imports', async () => {
+    // Pages-only apps have no Client Components; Next.js compiles API routes
+    // without the check, whatever their modules' directives.
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", `"use client";\n\n${SESSION_LIB}`);
+    writeFile(
+      root,
+      "pages/api/client-graph-probe.ts",
+      `import { readSession } from "../../lib/client-graph-session";
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+    );
+
+    await expect(buildFixture(root)).resolves.toBeUndefined();
+  }, 120_000);
+
+  it.each(["pages/admin/_app/index.tsx", "pages/docs/[...slug]/edit.tsx", "pages/.session.tsx"])(
+    "build next/headers in %s, which the Pages Router does not serve, imported only by an API route",
+    async (file) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(root, file, SESSION_LIB);
+      const importPath = path.relative(path.join(root, "pages/api"), path.join(root, file));
+      writeFile(
+        root,
+        "pages/api/client-graph-probe.ts",
+        `import { readSession } from ${JSON.stringify(importPath.replace(/\.tsx$/, ""))};
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+      );
+
+      await expect(buildFixture(root)).resolves.toBeUndefined();
+    },
+    120_000,
+  );
+});
+
+describe("Pages Router directive modules that Next.js skips", () => {
+  // Pages-only apps have no RSC transform to replace these modules, and
+  // Next.js skips the check for them in every layer.
+  it.each([
+    ["use server", "resolves"],
+    ["use cache", "resolves"],
+    ["use cache: remote", "resolves"],
+    // Next.js does not recognize these as cache directives.
+    ["use cachex", "rejects"],
+    ["use cache:remote", "rejects"],
+  ] as const)(
+    'check next/headers in a "%s" module that a page imports (build %s)',
+    async (directive, outcome) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(
+        root,
+        "lib/client-graph-session.ts",
+        `"${directive}";
+
+import { cookies } from "next/headers";
+
+export async function readSession() {
+  return (await cookies()).get("session")?.value;
+}
+`,
+      );
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "../lib/client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      );
+
+      if (outcome === "resolves") {
+        await expect(buildFixture(root)).resolves.toBeUndefined();
+      } else {
+        await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+      }
+    },
+    120_000,
+  );
+  it.each([
+    ["use client", "use server"],
+    ["use client", "use cache"],
+    // Next.js matches directives by decoded value.
+    ["use\\u0020client", "use server"],
+  ])(
+    'reject next/headers in a "%s" module that also says "%s"',
+    async (clientDirective, serverDirective) => {
+      // Next.js rejects the directive conflict, so no exemption applies.
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(
+        root,
+        "lib/client-graph-session.ts",
+        `"${clientDirective}";\n"${serverDirective}";\n\n${SESSION_LIB}`,
+      );
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "../lib/client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      );
+
+      await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+    },
+    120_000,
+  );
+});
+
+describe("Pages Router builds alongside the App Router", () => {
+  it("reject next/headers in a module only getServerSideProps uses", async () => {
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+
+    await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+});
+
+describe("Pages Router builds of the Cloudflare Workers example", () => {
+  it("reject next/headers in a module only getServerSideProps uses", async () => {
+    // The Worker environment rendering the pages is not named "ssr".
+    const root = copyFixture(PAGES_CF_EXAMPLE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+    const { cloudflare } = (await import(
+      pathToFileURL(
+        path.join(PAGES_CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
+      ).href
+    )) as { cloudflare: (options?: unknown) => Plugin };
+
+    // As in the example's vite.config.ts.
+    await expect(buildFixture(root, [cloudflare()])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+
+  it("reject next/headers that only the SSR graph resolves for a page redirected from the response entry", async () => {
+    // The Worker imports pages through the multi-stage response entry.
+    const root = copyFixture(PAGES_CF_EXAMPLE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+    const redirectPlugin = redirectProbePageFrom(root, "\0virtual:vinext-pages-response-entry");
+    const { cloudflare } = (await import(
+      pathToFileURL(
+        path.join(PAGES_CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
+      ).href
+    )) as { cloudflare: (options?: unknown) => Plugin };
+
+    await expect(buildFixture(root, [redirectPlugin, cloudflare()])).rejects.toThrow(
+      PAGES_ROUTER_MESSAGE,
+    );
+  }, 120_000);
+});
+
+describe("Pages Router dev server", () => {
+  it("rejects a page whose getServerSideProps uses next/headers", async () => {
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+
+    const server = await createServer({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      server: { host: "127.0.0.1", port: 0 },
+      customLogger: createLogger("silent"),
+    });
+    try {
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address !== "object") throw new Error("dev server did not listen");
+
+      const errors: unknown[] = [];
+      const consoleError = vi.spyOn(console, "error").mockImplementation((...args) => {
+        errors.push(...args);
+      });
+      try {
+        const page = await fetch(`http://127.0.0.1:${address.port}/client-graph-probe`);
+        expect(page.status).toBe(500);
+      } finally {
+        consoleError.mockRestore();
+      }
+      // The Pages error page hides the message; the server logs it.
+      expect(errors.map(String).join("\n")).toContain("you are using it in the Pages Router");
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
+});
+
 describe("App Router dev server", () => {
   it("rejects a Client Component that imports next/headers", async () => {
     const [, clientSource, extraFiles] = PROBES[0];
@@ -523,6 +1025,271 @@ describe("App Router dev server", () => {
     }
   }, 120_000);
 });
+
+describe("client-graph dev boundaries", () => {
+  it("drops a boundary loaded with a query when its file changes", async () => {
+    const plugin = createClientGraphServerApisPlugin({ getAppDir: () => "/repo/app" });
+    const boundaryId = "/repo/app/client.tsx?variant";
+    const environment = {
+      name: "ssr",
+      mode: "dev",
+      config: { consumer: "server" },
+      moduleGraph: {
+        getModuleById: (id: string) =>
+          id === "/repo/lib/session.ts" ? { importers: [{ id: boundaryId }] } : undefined,
+      },
+    };
+    const error = vi.fn((message: unknown) => {
+      throw new Error(String(message));
+    });
+    const context = { environment, error, resolve: async () => null };
+    const transform = plugin.transform as unknown as {
+      handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
+    };
+    const watchChange = plugin.watchChange as unknown as (this: typeof context, id: string) => void;
+
+    await transform.handler.call(
+      context,
+      `"use client";\nimport { readSession } from "../lib/session";\nexport { readSession };\n`,
+      boundaryId,
+    );
+    // The edit removes the directive, and the boundary's next transform no
+    // longer matches the code filter.
+    watchChange.call(context, "/repo/app/client.tsx");
+    await transform.handler.call(
+      context,
+      `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
+      "/repo/lib/session.ts",
+    );
+
+    expect(error).not.toHaveBeenCalled();
+  });
+});
+
+describe("client-graph dev restarts", () => {
+  it("does not carry boundaries into a restarted server's environment", async () => {
+    const plugin = createClientGraphServerApisPlugin({ getAppDir: () => "/repo/app" });
+    const boundaryId = "/repo/app/client.tsx";
+    const createEnvironment = () => ({
+      name: "ssr",
+      mode: "dev",
+      config: { consumer: "server" },
+      moduleGraph: {
+        getModuleById: (id: string) =>
+          id === "/repo/lib/session.ts" ? { importers: [{ id: boundaryId }] } : undefined,
+      },
+    });
+    const createContext = (environment: ReturnType<typeof createEnvironment>) => ({
+      environment,
+      error: (message: unknown) => {
+        throw new Error(String(message));
+      },
+      resolve: async () => null,
+    });
+    const transform = plugin.transform as unknown as {
+      handler: (
+        this: ReturnType<typeof createContext>,
+        code: string,
+        id: string,
+      ) => Promise<unknown>;
+    };
+
+    await transform.handler.call(
+      createContext(createEnvironment()),
+      `"use client";\nimport { readSession } from "../lib/session";\nexport { readSession };\n`,
+      boundaryId,
+    );
+    // After server.restart(), a config-dependent transform dropped the
+    // directive, so the boundary's new code never reaches this plugin.
+    const check = transform.handler.call(
+      createContext(createEnvironment()),
+      INVALID_HELPER_CODE,
+      "/repo/lib/session.ts",
+    );
+
+    await expect(check).resolves.toBeNull();
+  });
+});
+
+describe("client-graph server environments", () => {
+  it.each([
+    ["ssr", true],
+    // An auxiliary Worker renders no Client Components.
+    ["aux_worker", false],
+  ])(
+    'treats a "use client" module in the %s environment as a client root: %s',
+    async (name, rejects) => {
+      const plugin = createClientGraphServerApisPlugin({ getAppDir: () => "/repo/app" });
+      const boundaryId = "/repo/worker/client.ts";
+      const environment = {
+        name,
+        mode: "dev",
+        config: { consumer: "server" },
+        moduleGraph: {
+          getModuleById: (id: string) =>
+            id === "/repo/lib/session.ts" ? { importers: [{ id: boundaryId }] } : undefined,
+        },
+      };
+      const context = {
+        environment,
+        error: (message: unknown) => {
+          throw new Error(String(message));
+        },
+        resolve: async () => null,
+      };
+      const transform = plugin.transform as unknown as {
+        handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
+      };
+
+      await transform.handler.call(
+        context,
+        `"use client";\nimport { readSession } from "../lib/session";\nexport { readSession };\n`,
+        boundaryId,
+      );
+      const check = transform.handler.call(
+        context,
+        `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
+        "/repo/lib/session.ts",
+      );
+
+      if (rejects) await expect(check).rejects.toThrow('depends on "next/headers"');
+      else await expect(check).resolves.toBeNull();
+    },
+  );
+});
+
+describe("client-graph Pages roots", () => {
+  it("are not built for an environment that loaded no Pages entry", async () => {
+    // An auxiliary Worker that imports a Pages route file for shared code.
+    const pagePath = "/repo/pages/shared.tsx";
+    const plugin = createClientGraphServerApisPlugin({
+      getAppDir: () => null,
+      getPagesPages: async () => new Set([pagePath]),
+      pagesEntryIds: ["\0virtual:vinext-server-entry"],
+    });
+    const context = createBuildContext("aux_worker", {
+      "/repo/worker/index.ts": { importers: [] },
+      [pagePath]: { code: INVALID_HELPER_CODE, importers: ["/repo/worker/index.ts"] },
+    });
+
+    await expect(callBuildEnd(plugin, context)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["ssr", true],
+    // An auxiliary Worker that imports a Pages route file for shared code.
+    ["aux_worker", false],
+  ])(
+    "in dev include directly loaded pages only in the Pages environment (%s rejects: %s)",
+    async (name, rejects) => {
+      const pagePath = "/repo/pages/shared.tsx";
+      const plugin = createClientGraphServerApisPlugin({
+        getAppDir: () => null,
+        getPagesPages: async () => new Set([pagePath]),
+        pagesEntryIds: ["\0virtual:vinext-server-entry"],
+        isPagesDevEnvironment: (environment) => (environment as { name: string }).name === "ssr",
+      });
+      const context = {
+        environment: {
+          name,
+          mode: "dev",
+          config: { consumer: "server" },
+          moduleGraph: {
+            getModuleById: (id: string) =>
+              id === "/repo/lib/session.ts" ? { importers: [{ id: pagePath }] } : undefined,
+          },
+        },
+        error: (message: unknown) => {
+          throw new Error(String(message));
+        },
+        resolve: async (source: string) => ({ id: source }),
+      };
+      const transform = plugin.transform as unknown as {
+        handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
+      };
+
+      const check = transform.handler.call(
+        context,
+        `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
+        "/repo/lib/session.ts",
+      );
+
+      if (rejects) await expect(check).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+      else await expect(check).resolves.toBeNull();
+    },
+  );
+
+  it("skip buildEnd in dev, where perEnvironmentStartEndDuringDev runs it", async () => {
+    const plugin = createClientGraphServerApisPlugin({ getAppDir: () => null });
+    const context = {
+      ...createBuildContext("ssr", { "/repo/lib/session.ts": { importers: [] } }),
+      environment: { name: "ssr", mode: "dev", config: { consumer: "server" } },
+      getModuleInfo: () => {
+        throw new Error("getModuleInfo().code is not supported in dev");
+      },
+    };
+
+    await expect(callBuildEnd(plugin, context)).resolves.toBeUndefined();
+  });
+
+  it("check each build's final module code, whatever a watch rebuild reused", async () => {
+    const pagePath = "/repo/pages/index.tsx";
+    const entryId = "\0virtual:vinext-server-entry";
+    const helperId = "\0virtual:session";
+    const plugin = createClientGraphServerApisPlugin({
+      getAppDir: () => null,
+      getPagesPages: async () => new Set([pagePath]),
+      pagesEntryIds: [entryId],
+    });
+    const build = (helperCode: string, helperImporters: string[]) =>
+      callBuildEnd(
+        plugin,
+        createBuildContext("ssr", {
+          [entryId]: { importers: [] },
+          [pagePath]: { importers: [entryId] },
+          [helperId]: { code: helperCode, importers: helperImporters },
+        }),
+      );
+
+    // Only an API route imports the helper.
+    await expect(
+      build(INVALID_HELPER_CODE, ["/repo/pages/api/session.ts"]),
+    ).resolves.toBeUndefined();
+    // A rebuild where the page imports it, though its transform was cached.
+    await expect(build(INVALID_HELPER_CODE, [pagePath])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+    // A rebuild where the regenerated module no longer imports next/headers.
+    await expect(
+      build("export const readSession = () => null;\n", [pagePath]),
+    ).resolves.toBeUndefined();
+  });
+});
+
+const INVALID_HELPER_CODE = `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`;
+
+/** A build-mode plugin context over a fixed module graph. */
+function createBuildContext(
+  environmentName: string,
+  modules: Record<string, { code?: string; importers: string[] }>,
+) {
+  return {
+    environment: { name: environmentName, mode: "build", config: { consumer: "server" } },
+    error: (error: string | { message: string }) => {
+      throw new Error(typeof error === "string" ? error : error.message);
+    },
+    resolve: async (source: string) => ({ id: source }),
+    getModuleIds: () => Object.keys(modules)[Symbol.iterator](),
+    getModuleInfo: (id: string) => {
+      const module = modules[id];
+      return module
+        ? { code: module.code ?? "", importers: module.importers, dynamicImporters: [] }
+        : null;
+    },
+  };
+}
+
+function callBuildEnd(plugin: Plugin, context: object) {
+  return (plugin.buildEnd as unknown as (this: object) => Promise<void>).call(context);
+}
 
 describe("findInvalidClientImports", () => {
   it("matches Next.js' client-graph import list", () => {
@@ -589,6 +1356,10 @@ describe("findInvalidClientImports", () => {
     );
     expect(createInvalidClientImportMessage("next/headers", "/repo/lib/c.tsx", "/repo/app")).toBe(
       `You're importing a module that depends on "next/headers". ${OUTSIDE_APP_MESSAGE}\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components`,
+    );
+    // Without app/, every module gets the Pages Router message.
+    expect(createInvalidClientImportMessage("next/headers", "/repo/app/c.tsx", null)).toContain(
+      OUTSIDE_APP_MESSAGE,
     );
   });
 });
