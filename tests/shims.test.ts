@@ -12539,8 +12539,8 @@ describe("NextURL basePath and locale properties", () => {
 
   it("detects the domain locale from the Host header before the URL hostname", async () => {
     // Ported from Next.js: packages/next/src/shared/lib/get-hostname.ts
-    // On Node, middleware's URL carries the server's own origin while the
-    // Host header still names the domain the client asked for.
+    // On Node, middleware's URL carries the server's own origin, so it passes
+    // the host the client asked for.
     const { NextRequest, NextURL } = await import("../packages/vinext/src/shims/server.js");
     const nextConfig = {
       i18n: {
@@ -12559,8 +12559,8 @@ describe("NextURL basePath and locale properties", () => {
     expect(url.clone().domainLocale?.domain).toBe("example.fr");
 
     const request = new NextRequest("http://localhost:3000/about", {
-      headers: { host: "example.fr" },
       nextConfig,
+      requestHost: "example.fr",
     });
     expect(request.nextUrl.defaultLocale).toBe("fr");
     expect(request.nextUrl.href).toBe("http://localhost:3000/about");

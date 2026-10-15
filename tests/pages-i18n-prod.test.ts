@@ -225,7 +225,7 @@ describe("Pages i18n domain routing (production)", () => {
 
   it("resolves the middleware domain locale from the Host header", async () => {
     // Middleware's URL carries the server's own origin on Node, so the domain
-    // locale must come from the Host header, as in Next.js.
+    // locale must come from the host the client asked for.
     for (const [host, domain] of [
       ["example.fr", "example.fr"],
       ["example.com", "example.com"],

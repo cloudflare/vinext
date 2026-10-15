@@ -112,6 +112,11 @@ export type RequestInit = globalThis.RequestInit & {
     trailingSlash?: boolean;
     skipTrailingSlashRedirect?: boolean;
   };
+  /**
+   * vinext-internal: the host the request was made to, when the URL carries
+   * the server's own origin instead. It picks the i18n domain locale.
+   */
+  requestHost?: string;
   signal?: AbortSignal;
   duplex?: "half";
 };
@@ -203,9 +208,9 @@ export class NextRequest extends Request {
     // with NextResponse, and so `javascript:` / `data:` URIs are blocked too.
     const rawUrl = typeof input !== "string" && "url" in input ? input.url : String(input);
     validateURL(rawUrl);
-    // Strip nextConfig before passing to super() — it's vinext-internal,
-    // not a valid RequestInit property.
-    const { nextConfig: _nextConfig, ...plainInit } = init ?? {};
+    // Strip nextConfig and requestHost before passing to super() — they're
+    // vinext-internal, not valid RequestInit properties.
+    const { nextConfig: _nextConfig, requestHost, ...plainInit } = init ?? {};
     // A Request passed as init (e.g. `new NextRequest(url, request)`) keeps its
     // method, headers and body on Request.prototype, so the spread above copies
     // none of them. Hand it to super() as-is, like Next.js does.
@@ -250,11 +255,10 @@ export class NextRequest extends Request {
           })),
         }
       : undefined;
-    const hostHeader = this.headers.get("host");
     const urlConfig: NextURLConfig | undefined = _nextConfig
       ? {
           basePath: _nextConfig.basePath,
-          headers: hostHeader === null ? undefined : { host: hostHeader },
+          headers: requestHost === undefined ? undefined : { host: requestHost },
           nextConfig: {
             i18n,
             trailingSlash: _nextConfig.trailingSlash,

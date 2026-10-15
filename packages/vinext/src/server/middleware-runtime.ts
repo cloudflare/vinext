@@ -335,10 +335,14 @@ function createNextRequest(
       }
     : undefined;
 
+  // On the server's own origin the URL no longer names the host the client
+  // asked for, which still decides the i18n domain locale.
+  const requestUrl = new URL(request.url);
+  const requestHost = requestUrl.origin === url.origin ? undefined : requestUrl.host;
   const nextRequest =
     mwRequest instanceof NextRequest && (!mwRequest.body || mwRequest.bodyUsed)
       ? mwRequest
-      : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+      : new NextRequest(mwRequest, nextConfig ? { nextConfig, requestHost } : undefined);
   if (mwRequest !== request && mwRequest.body && !mwRequest.bodyUsed && !mwRequest.body.locked) {
     void mwRequest.body.cancel().catch(() => {});
   }

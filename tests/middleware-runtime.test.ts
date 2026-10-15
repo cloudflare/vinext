@@ -3,6 +3,7 @@ import {
   executeMiddleware,
   runGeneratedMiddleware,
 } from "../packages/vinext/src/server/middleware-runtime.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
 describe("middleware pathname matching", () => {
@@ -1282,5 +1283,54 @@ describe("middleware rewrite carrying x-middleware-next", () => {
 
     expect(result.continue).toBe(false);
     expect(result.redirectUrl).toBe("/elsewhere");
+  });
+});
+
+describe("middleware origin", () => {
+  const i18nConfig = {
+    defaultLocale: "en",
+    domains: [{ defaultLocale: "fr", domain: "example.fr" }],
+    locales: ["en", "fr"],
+  };
+
+  async function observe(request: Request, middlewareOrigin?: string) {
+    let seen: { domain?: string; url: string } | undefined;
+    const run = () =>
+      executeMiddleware({
+        i18nConfig,
+        isProxy: false,
+        module: {
+          default(req: NextRequest) {
+            seen = { domain: req.nextUrl.domainLocale?.domain, url: req.url };
+          },
+        },
+        request,
+      });
+    if (middlewareOrigin) {
+      await runWithExecutionContext({ middlewareOrigin, waitUntil() {} }, run);
+    } else {
+      await run();
+    }
+    return seen;
+  }
+
+  it("runs on a server-owned origin with the requested host's domain locale", async () => {
+    const request = new Request("http://example.fr/about", { headers: { host: "example.fr" } });
+    expect(await observe(request, "http://localhost:3000")).toEqual({
+      domain: "example.fr",
+      url: "http://localhost:3000/about",
+    });
+  });
+
+  it("keeps the request URL's host for the domain locale without a server origin", async () => {
+    // A trusted X-Forwarded-Host keeps the request origin, while Host can
+    // still name the upstream.
+    const request = new Request("http://example.fr/about", {
+      headers: { host: "origin.internal" },
+    });
+    expect(await observe(request)).toEqual({
+      domain: "example.fr",
+      url: "http://example.fr/about",
+    });
   });
 });
