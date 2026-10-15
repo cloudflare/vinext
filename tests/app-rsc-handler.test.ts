@@ -7198,6 +7198,59 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("runs progressive actions for a page that an afterFiles rewrite reaches from a dynamic route handler", async () => {
+    const dynamicRouteHandler = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      isDynamic: true,
+      page: null,
+      pattern: "/api/:slug",
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["api", "[slug]"],
+    });
+    const aboutPage = createPageRoute();
+    const emptyParams: Record<string, string | string[]> = {};
+    const handleProgressiveActionRequest = vi.fn<
+      NonNullable<HandlerOptions["handleProgressiveActionRequest"]>
+    >(async () => null);
+    const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+      async () => new Response("route", { status: 200 }),
+    );
+    const dispatchMatchedPage = vi.fn(
+      async ({ route }: { route: TestRoute }) =>
+        new Response(`page:${route.pattern}`, { status: 200 }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        afterFiles: [{ source: "/api/legacy-form", destination: "/about" }],
+        beforeFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      dispatchMatchedRouteHandler,
+      handleProgressiveActionRequest,
+      matchRoute: (pathname) => {
+        if (pathname === "/about") return { params: emptyParams, route: aboutPage };
+        if (pathname.startsWith("/api/")) {
+          return { params: { slug: pathname.slice("/api/".length) }, route: dynamicRouteHandler };
+        }
+        return null;
+      },
+    });
+    const body = new FormData();
+    body.set("message", "hello");
+
+    const response = await handler(
+      new Request("https://example.test/docs/api/legacy-form", { method: "POST", body }),
+      null,
+    );
+
+    expect(await response.text()).toBe("page:/about");
+    expect(handleProgressiveActionRequest).toHaveBeenCalledOnce();
+    expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
+  });
+
   it("marks progressive action page renders even when decoded form state is null", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({

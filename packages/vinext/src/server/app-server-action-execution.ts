@@ -260,9 +260,9 @@ export type HandleProgressiveServerActionRequestOptions = {
    * Whether the posted-to route resolves to an App Router *page* (as opposed to
    * a route handler or no match). Multipart form POSTs to a page are always
    * server-action attempts in Next.js, so a body that decodes to no action must
-   * surface as 404 action-not-found rather than rendering the page. Directly
-   * matched route handlers never reach this dispatch (#3886); other requests
-   * without a page match fall through. See issue #1340.
+   * surface as 404 action-not-found rather than rendering the page.
+   * Statically matched route handlers skip this dispatch (#3886); other
+   * requests without a page match fall through. See issue #1340.
    */
   hasPageRoute: boolean;
   maxActionBodySize: number;
