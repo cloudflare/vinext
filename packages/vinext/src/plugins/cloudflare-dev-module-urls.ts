@@ -14,22 +14,33 @@
  * gives Vite's module-serving middlewares the first chance to handle each
  * request. Vite decides what it serves: page navigations, non-GET requests, and
  * unknown paths fall through to the Cloudflare plugin unchanged.
- * `viteServePublicMiddleware` is deliberately excluded so `public/` files still
- * reach the Worker and middleware, as they do in production.
+ *
+ * The same change was made in the Cloudflare plugin itself in
+ * https://github.com/cloudflare/workers-sdk/pull/16281.
  *
  * See https://github.com/cloudflare/vinext/issues/4005.
  */
 import type { Connect, Plugin, ViteDevServer } from "vite";
 
 /**
- * Vite's internal middlewares that serve module URLs, `/@fs/*` paths, and files
- * under the project root. If Vite renames them, none are found and every
- * request falls through, which is the behavior without this plugin.
+ * Vite's internal middlewares that serve module requests (`/@vite/client`,
+ * `/@id/*`, JS and CSS source files) and `/@fs/*` paths, preceded by the one
+ * that strips a non-root `base` from the URL. If Vite renames them, none are
+ * found and every request falls through, which is the behavior without this
+ * plugin.
+ *
+ * Two middlewares are deliberately excluded so that their files still respect
+ * `runWorkerFirst`:
+ * - `viteServePublicMiddleware`, so that `public/` files reach the Worker and
+ *   middleware, as they do in production.
+ * - `viteServeStaticMiddleware`, because it serves any file under the project
+ *   root, and a Worker route can share its path with one of them (e.g. an
+ *   `api/` directory and an `/api/*` route handler).
  */
 const VITE_MODULE_MIDDLEWARE_NAMES = new Set([
+  "viteBaseMiddleware",
   "viteTransformMiddleware",
   "viteServeRawFsMiddleware",
-  "viteServeStaticMiddleware",
 ]);
 
 type CloudflareDevModuleUrlsOptions = {
@@ -79,8 +90,17 @@ function runViteModuleMiddlewares(
   res: Parameters<Connect.NextHandleFunction>[1],
   next: Connect.NextFunction,
 ): void {
+  // With a non-root `base` (vinext sets it to `basePath + "/"`), Vite only
+  // serves URLs under it, so any other request goes straight to the Worker.
+  const url = req.url;
+  if (!url?.startsWith(server.config.base)) {
+    next();
+    return;
+  }
   // Read the stack per request because Vite adds its internal middlewares
-  // after the plugins' `configureServer` hooks have run.
+  // after the plugins' `configureServer` hooks have run. The base middleware is
+  // only present with a non-root `base`, and strips it from `req.url` before
+  // the module middlewares see the request.
   const handles = server.middlewares.stack
     .map((layer) => layer.handle)
     .filter(
@@ -97,6 +117,9 @@ function runViteModuleMiddlewares(
 
     const handle = handles[index++];
     if (!handle) {
+      // The Cloudflare plugin matches `runWorkerFirst` against `req.url`, and
+      // the Worker routes on it, so undo any rewrite by Vite's middlewares.
+      req.url = url;
       next();
       return;
     }
