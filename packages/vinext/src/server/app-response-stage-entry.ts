@@ -46,7 +46,7 @@ export async function invokeCacheFunction(
   platformCtx: ExecutionContextLike | undefined,
   dispatchRequestStage: VinextRequestStageTransport,
 ): Promise<void> {
-  await __ensureInstrumentation();
+  await __ensureInstrumentation(platformCtx);
   const [{ loadServerAction }, { invokeCacheFunction: invokeRegisteredCacheFunction }] =
     await Promise.all([
       import("@vitejs/plugin-rsc/core/rsc"),
@@ -92,9 +92,9 @@ export async function handleResponseStage(
   if (props.buildId !== currentBuildId) {
     return new Response("Incompatible vinext App response stage", { status: 409 });
   }
-  await __ensureInstrumentation();
+  await __ensureInstrumentation(platformCtx);
   if (props.kind === "app-full-request" && props.prerenderDiscovery) {
-    await __ensureHybridPagesApplication();
+    await __ensureHybridPagesApplication(platformCtx);
   }
   registerConfiguredImageOptimizer(env);
   let ctx = createWorkerRevalidationContext(

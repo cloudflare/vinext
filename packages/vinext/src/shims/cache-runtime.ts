@@ -77,6 +77,7 @@ import {
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { suppressHangingPromiseAbortRejections } from "./internal/make-hanging-promise.js";
 import type { VinextCacheFunctionInvocation } from "../server/multi-stage.js";
+import { shareIsolatePromise } from "../server/isolate-shared-promise.js";
 
 import {
   snapshotFlightReply,
@@ -287,7 +288,9 @@ export function buildUseCacheKey(
 let _rscModule: Promise<RscModule> | undefined;
 
 function getRscModule(): Promise<RscModule> {
-  return (_rscModule ??= import("@vitejs/plugin-rsc/react/rsc") as Promise<RscModule>);
+  return (_rscModule ??= shareIsolatePromise(
+    import("@vitejs/plugin-rsc/react/rsc") as Promise<RscModule>,
+  ));
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@
  */
 
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
 type LazyModuleThunk = () => Promise<unknown>;
 type LazyModuleLoaderArray = readonly (LazyModuleThunk | null | undefined)[];
@@ -176,19 +177,21 @@ async function hydrateInterceptModule(
 
   const loading =
     loadState?.[loadingField] ??
-    runOutsideRequestScopes(loader)
-      .then((module) => {
-        intercept[field] = module;
-        if (loadState) {
-          loadState[field] = module;
-          loadState[loadingField] = null;
-        }
-        return module;
-      })
-      .catch((error: unknown) => {
-        if (loadState) loadState[loadingField] = null;
-        throw error;
-      });
+    shareIsolatePromise(
+      runOutsideRequestScopes(loader)
+        .then((module) => {
+          intercept[field] = module;
+          if (loadState) {
+            loadState[field] = module;
+            loadState[loadingField] = null;
+          }
+          return module;
+        })
+        .catch((error: unknown) => {
+          if (loadState) loadState[loadingField] = null;
+          throw error;
+        }),
+    );
   if (loadState) loadState[loadingField] = loading;
   // Each matched interception is a request-local clone that shares only
   // `__loadState`. A concurrent caller can therefore observe the in-flight
@@ -218,15 +221,17 @@ export function loadAppInterceptLayouts(
   pushArrayLoads(loads, intercept.interceptLoadings, intercept.__loadInterceptLoadings);
   if (loads.length === 0) return Promise.resolve(intercept.interceptLayouts ?? []);
 
-  const loading = Promise.all(loads)
-    .then(() => {
-      if (loadState) loadState.interceptLayoutsLoading = null;
-      return intercept.interceptLayouts ?? [];
-    })
-    .catch((error: unknown) => {
-      if (loadState) loadState.interceptLayoutsLoading = null;
-      throw error;
-    });
+  const loading = shareIsolatePromise(
+    Promise.all(loads)
+      .then(() => {
+        if (loadState) loadState.interceptLayoutsLoading = null;
+        return intercept.interceptLayouts ?? [];
+      })
+      .catch((error: unknown) => {
+        if (loadState) loadState.interceptLayoutsLoading = null;
+        throw error;
+      }),
+  );
   if (loadState) loadState.interceptLayoutsLoading = loading;
   return loading;
 }
@@ -279,22 +284,24 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     return route;
   }
 
-  const loading = Promise.all(loads)
-    .then(() => {
-      route.__loaded = true;
-      route.__loading = null;
-      return route;
-    })
-    .catch((error: unknown) => {
-      // A rejected dynamic import() must not be cached: clearing `__loading`
-      // (and leaving `__loaded` false) lets the next request retry instead of
-      // wedging the route into a permanent failure for the isolate's lifetime.
-      // Re-throw so the current request still observes the error. This mirrors
-      // the eager model, where a module-eval failure is retried per isolate
-      // rather than stuck on a stored rejected promise.
-      route.__loading = null;
-      throw error;
-    });
+  const loading = shareIsolatePromise(
+    Promise.all(loads)
+      .then(() => {
+        route.__loaded = true;
+        route.__loading = null;
+        return route;
+      })
+      .catch((error: unknown) => {
+        // A rejected dynamic import() must not be cached: clearing `__loading`
+        // (and leaving `__loaded` false) lets the next request retry instead of
+        // wedging the route into a permanent failure for the isolate's lifetime.
+        // Re-throw so the current request still observes the error. This mirrors
+        // the eager model, where a module-eval failure is retried per isolate
+        // rather than stuck on a stored rejected promise.
+        route.__loading = null;
+        throw error;
+      }),
+  );
 
   route.__loading = loading;
   return loading;

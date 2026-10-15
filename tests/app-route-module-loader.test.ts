@@ -356,7 +356,81 @@ describe("lazy hydration request-context isolation", () => {
 
     expect(moduleScopeExecutionContext).toBeNull();
     expect(moduleScopeAfter).toBe("`after()` was called outside a request scope");
-    // Nothing was attached to the first request's lifecycle.
-    expect(waitUntil).not.toHaveBeenCalled();
+    // The module attached nothing to the request's lifecycle. The only
+    // waitUntil() is the one keeping the shared load itself alive.
+    expect(waitUntil).toHaveBeenCalledOnce();
+  });
+});
+
+describe("lazy hydration request lifetime", () => {
+  function deferred<T>() {
+    let resolve: (value: T) => void = () => {};
+    let reject: (error: unknown) => void = () => {};
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  // workerd drops a canceled request's pending I/O, so a load shared with later
+  // requests must keep the request that started it alive until it settles.
+  it.each<[string, (load: () => Promise<unknown>) => unknown]>([
+    [
+      "route modules",
+      (load: () => Promise<unknown>) =>
+        ensureAppRouteModulesLoaded({ page: null, __loadPage: load } as LazyLoadableRoute),
+    ],
+    [
+      "intercept layouts",
+      (load: () => Promise<unknown>) =>
+        loadAppInterceptLayouts({
+          interceptLayouts: [null],
+          __loadInterceptLayouts: [load],
+          __loadState: { interceptLayoutsLoading: null },
+        }),
+    ],
+    [
+      "an intercept page",
+      (load: () => Promise<unknown>) =>
+        loadAppInterceptPage({
+          page: null,
+          __pageLoader: load,
+          __loadState: { interceptLayoutsLoading: null },
+        }),
+    ],
+  ])("keeps the request that starts loading %s alive until it settles", async (_label, start) => {
+    const load = deferred<unknown>();
+    const creator = { waitUntil: vi.fn() };
+    const loading = runWithExecutionContext(creator, () => start(() => load.promise));
+
+    expect(creator.waitUntil).toHaveBeenCalledOnce();
+    let kept = false;
+    void creator.waitUntil.mock.calls[0][0].then(() => {
+      kept = true;
+    });
+    await Promise.resolve();
+    expect(kept).toBe(false);
+
+    load.reject(new Error("chunk load failed"));
+    await expect(loading).rejects.toThrow("chunk load failed");
+    // waitUntil() only extends the request; it never sees the rejection.
+    await creator.waitUntil.mock.calls[0][0];
+    expect(kept).toBe(true);
+  });
+
+  it("does not extend a request that joins a load already in flight", async () => {
+    const load = deferred<unknown>();
+    const route: LazyLoadableRoute = { page: null, __loadPage: () => load.promise };
+    const creator = { waitUntil: vi.fn() };
+    const joiner = { waitUntil: vi.fn() };
+
+    const first = runWithExecutionContext(creator, () => ensureAppRouteModulesLoaded(route));
+    const second = runWithExecutionContext(joiner, () => ensureAppRouteModulesLoaded(route));
+    load.resolve({ default: () => null });
+    await Promise.all([first, second]);
+
+    expect(creator.waitUntil).toHaveBeenCalledOnce();
+    expect(joiner.waitUntil).not.toHaveBeenCalled();
   });
 });

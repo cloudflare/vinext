@@ -318,6 +318,7 @@ describe("Pages Worker request stage", () => {
           headers: { "Cache-Control": "no-store", "X-Vinext-Prerender-Readiness": "1" },
         }),
     );
+    const ctx = { waitUntil: vi.fn() };
     const response = await handleRequestStage(
       new Request("https://example.com/__vinext/prerender/readiness?attempt=one", {
         headers: {
@@ -326,12 +327,14 @@ describe("Pages Worker request stage", () => {
         },
       }),
       undefined,
-      undefined,
+      ctx,
       dispatch,
     );
 
     expect(response.status).toBe(204);
-    expect(mocks.ensureInstrumentation).toHaveBeenCalledOnce();
+    // Initialization starts before the request's execution-context scope, so
+    // it needs the platform ctx to keep the request alive.
+    expect(mocks.ensureInstrumentation).toHaveBeenCalledExactlyOnceWith(ctx);
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.any(Request),
       {

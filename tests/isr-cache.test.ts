@@ -22,6 +22,7 @@ import {
   buildAppPageCacheValue,
   normalizeMountedSlotsHeader,
   triggerBackgroundRegeneration,
+  coalesceOnDemandRevalidation,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
@@ -586,6 +587,32 @@ describe("MemoryCacheHandler tag invalidation durability", () => {
 });
 
 // ─── triggerBackgroundRegeneration ───────────────────────────────────────
+
+describe("coalesceOnDemandRevalidation", () => {
+  it("keeps the request that starts a shared revalidation alive until it settles", async () => {
+    // Concurrent res.revalidate() calls for the page await the same render,
+    // and workerd drops a canceled request's pending I/O.
+    let finish: () => void = () => {};
+    const rendered = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const creator = { waitUntil: vi.fn() };
+    const joiner = { waitUntil: vi.fn() };
+
+    const first = runWithExecutionContext(creator, () =>
+      coalesceOnDemandRevalidation("coalesce-lifetime", () => rendered),
+    );
+    const second = runWithExecutionContext(joiner, () =>
+      coalesceOnDemandRevalidation("coalesce-lifetime", () => rendered),
+    );
+
+    expect(second).toBe(first);
+    expect(creator.waitUntil).toHaveBeenCalledOnce();
+    expect(joiner.waitUntil).not.toHaveBeenCalled();
+    finish();
+    await first;
+  });
+});
 
 describe("triggerBackgroundRegeneration", () => {
   it("calls the render function", async () => {

@@ -71,7 +71,7 @@ export function handleRequestStage(
 ): Promise<Response> {
   const originalRequest = request;
   const handleStage = async () => {
-    await __ensureInstrumentation();
+    await __ensureInstrumentation(ctx);
     const url = new URL(request.url);
     return traceFrameworkRequest({
       callback: () =>
@@ -129,7 +129,7 @@ async function handleRequest(
     // dispatcher so independently hosted stages are proven ready as a unit.
     // Failed capability checks stay inside the framework-owned namespace.
     if (readinessResponse.status !== 204) return readinessResponse;
-    await __ensureHybridPagesApplication();
+    await __ensureHybridPagesApplication(ctx);
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;

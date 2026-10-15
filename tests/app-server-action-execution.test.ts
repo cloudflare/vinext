@@ -3760,6 +3760,63 @@ describe("server reference module loading", () => {
     expect(observed).toBe("no-request");
   });
 
+  // The imports are memoized for the isolate, and workerd drops a canceled
+  // request's pending I/O, so the caller stays alive until they settle.
+  it.each([
+    ["decodes a progressive action", "progressive"],
+    ["loads a fetch action", "fetch"],
+  ] as const)("keeps the request that %s alive until its references load", async (_name, kind) => {
+    let entered: () => void = () => {};
+    const loading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release: () => void = () => {};
+    const loaded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = async () => {
+      entered();
+      await loaded;
+    };
+    const waitUntil = vi.fn();
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const request = kind === "progressive" ? createMultipartRequest() : createFetchActionRequest();
+
+    const handled = runWithRequestContext(
+      createRequestContext({
+        executionContext: { waitUntil },
+        headersContext: headersContextFromRequest(request),
+      }),
+      () =>
+        kind === "progressive"
+          ? handleProgressiveServerActionRequest(
+              createOptions({
+                request,
+                async decodeAction() {
+                  await load();
+                  return async () => {};
+                },
+                readFormDataWithLimit: () => Promise.resolve(formData),
+              }),
+            )
+          : handleServerActionRscRequest(
+              createRscOptions({
+                request,
+                async loadServerAction() {
+                  await load();
+                  return async () => "ok";
+                },
+              }),
+            ),
+    );
+
+    await loading;
+    expect(waitUntil).toHaveBeenCalledOnce();
+    release();
+    await handled;
+  });
+
   it("decodes progressive action references outside the caller's request", async () => {
     const request = createMultipartRequest({ cookie: "session=first-caller" });
     const formData = new FormData();

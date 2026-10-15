@@ -8,6 +8,7 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -712,6 +713,35 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(html).toContain("global-not-found");
     // Root layout was NOT applied — it would have rendered <html lang="en">.
     expect(html).not.toContain('lang="en"');
+  });
+
+  it("keeps the request that starts the global-not-found import alive until it settles", async () => {
+    // The import is shared by every later route miss in the worker, and
+    // workerd drops a canceled request's pending I/O.
+    let releaseImport: () => void = () => {};
+    const imported = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    const { renderer } = createRenderer({
+      globalNotFoundEnabled: true,
+      globalNotFoundLoader: async () => {
+        await imported;
+        return globalNotFoundModule;
+      },
+      rootLayoutModules: [rootLayoutModule],
+    });
+    const request = new Request("https://example.com/does-not-exist");
+    const creator = { waitUntil: vi.fn() };
+
+    const rendering = runWithExecutionContext(creator, () =>
+      renderer.renderNotFound(null, false, request, undefined, undefined, {
+        headers: null,
+        status: null,
+      }),
+    );
+    await vi.waitFor(() => expect(creator.waitUntil).toHaveBeenCalledOnce());
+    releaseImport();
+    expect((await rendering)?.status).toBe(404);
   });
 
   it("loads global-not-found outside the request context that triggered the 404", async () => {

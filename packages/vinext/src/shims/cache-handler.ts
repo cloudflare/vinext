@@ -1,4 +1,5 @@
 import type { RenderObservation } from "../server/cache-proof.js";
+import { shareIsolatePromise } from "../server/isolate-shared-promise.js";
 import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
@@ -389,20 +390,22 @@ class LazyDataCacheHandler implements CacheHandler {
   constructor(private readonly load: () => Promise<void>) {}
 
   private resolve(): Promise<CacheHandler> {
-    return (this.resolved ??= this.load().then(() => {
-      const registered = globalHandlers[HANDLER_KEY];
-      if (registered && registered !== this) {
-        this.loadedHandler = registered;
-        return registered;
-      }
+    return (this.resolved ??= shareIsolatePromise(
+      this.load().then(() => {
+        const registered = globalHandlers[HANDLER_KEY];
+        if (registered && registered !== this) {
+          this.loadedHandler = registered;
+          return registered;
+        }
 
-      const fallback = new MemoryCacheHandler();
-      globalHandlers[HANDLER_KEY] = fallback;
-      globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
-      delete globalHandlers[LAZY_HANDLER_KEY];
-      this.loadedHandler = fallback;
-      return fallback;
-    }));
+        const fallback = new MemoryCacheHandler();
+        globalHandlers[HANDLER_KEY] = fallback;
+        globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
+        delete globalHandlers[LAZY_HANDLER_KEY];
+        this.loadedHandler = fallback;
+        return fallback;
+      }),
+    ));
   }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {

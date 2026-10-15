@@ -639,7 +639,7 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    * dedup'd. Provided by the generated RSC entry; absent in older entries.
    */
   ensureRouteLoaded?: (route: TRoute) => unknown;
-  ensureInstrumentation?: () => Promise<void>;
+  ensureInstrumentation?: (ctx: ExecutionContextLike | null) => Promise<void>;
   /**
    * Register cache adapters configured via the vinext() `cache` option. Wired
    * from the generated RSC entry (which can import `virtual:vinext-cache-adapters`)
@@ -3185,7 +3185,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // guarded call is a no-op); on Node/dev this is where they get wired, with no
     // bindings available.
     options.registerCacheAdapters();
-    await options.ensureInstrumentation?.();
+    await options.ensureInstrumentation?.(isExecutionContextLike(ctx) ? ctx : null);
 
     const traceUrl = new URL(rawRequest.url);
     return traceFrameworkRequest({

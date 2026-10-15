@@ -1735,6 +1735,16 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("keeps the request that starts hybrid Pages initialization alive until it settles", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      hasPagesDir: true,
+    });
+
+    expect(code).toContain("__hybridPagesApplication ??= __shareIsolatePromise((async () => {");
+    expect(code).toContain("await __pagesEntry.__ensureInstrumentation?.(ctx);");
+    expect(code).toContain("})(), ctx);");
+  });
+
   // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
   it("registers Node instrumentation before App Router user modules", () => {
@@ -1761,7 +1771,9 @@ describe("App Router entry templates", () => {
     expect(registrationIndex).toBeGreaterThan(loaderIndex);
     expect(userModuleIndex).toBeGreaterThan(registrationIndex);
     expect(code).toContain("async function __initializeApplication()");
-    expect(code).toContain("return __applicationInitialization ??= __initializeApplication()");
+    expect(code).toContain(
+      "return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx)",
+    );
     expect(code).not.toContain("const mod_0 = await import(");
     expect(
       generateRscEntry(
@@ -2472,7 +2484,9 @@ describe("Pages Router entry template", () => {
       expect(registrationIndex).toBeGreaterThan(loaderIndex);
       expect(userModuleIndex).toBeGreaterThan(registrationIndex);
       expect(code).toContain("async function __initializeApplication()");
-      expect(code).toContain("return __applicationInitialization ??= __initializeApplication()");
+      expect(code).toContain(
+        "return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx)",
+      );
       expect(code).not.toContain(`const page_0 = await import(${JSON.stringify(pagePath)})`);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

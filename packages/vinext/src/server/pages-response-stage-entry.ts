@@ -88,7 +88,7 @@ export async function renderPagesResponse(
     return new Response("Invalid vinext Pages response stage", { status: 400 });
   }
 
-  await pagesEntry.__ensureInstrumentation?.();
+  await pagesEntry.__ensureInstrumentation?.(platformCtx);
   registerConfiguredImageOptimizer(env);
   const renderHeaders = new Headers(stagedHeaders ?? props.stagedHeaders ?? []);
   // A request-stage Content-Length describes neither the page nor API body.

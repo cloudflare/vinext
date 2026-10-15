@@ -164,11 +164,10 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   // follow this signal directly instead of the clone chain below.
   const rawRequestSignal = rawRequest.signal;
   options.registerCacheAdapters();
-  await options.ensureInstrumentation?.();
-
   const executionContext = isExecutionContextLike(ctx)
     ? ctx
     : (getRequestExecutionContext() ?? null);
+  await options.ensureInstrumentation?.(executionContext);
   const filteredHeaders = executionContext?.isInternalPagesRevalidation
     ? new Headers(rawRequest.headers)
     : filterInternalHeaders(rawRequest.headers);

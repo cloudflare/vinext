@@ -1,5 +1,8 @@
 import type { ImageResponseOptions } from "@vercel/og";
 import type { ReactElement } from "react";
+import { shareIsolatePromise } from "../server/isolate-shared-promise.js";
+
+let vercelOg: Promise<typeof import("@vercel/og")> | undefined;
 
 const CACHE_HEADERS = {
   noCache: "no-cache, no-store",
@@ -19,25 +22,43 @@ export class ImageResponse extends Response {
   constructor(element: ReactElement, options?: ImageResponseOptions) {
     const readable = new ReadableStream<Uint8Array>({
       async start(controller) {
-        // Lazily import @vercel/og so its ~800 KB runtime (satori + resvg +
-        // embedded wasm/fonts) is code-split into its own chunk instead of being
-        // inlined into the main worker entry, regardless of whether the app
-        // imports next/og statically or dynamically.
-        const { ImageResponse: VercelImageResponse } = await import("@vercel/og");
-        const imageResponse = new VercelImageResponse(element, options);
-        if (!imageResponse.body) {
-          controller.close();
-          return;
+        // @vercel/og starts loading its WASM and fallback font when it is
+        // evaluated and memoizes them for the isolate. workerd drops a
+        // canceled request's pending I/O, so the request that imports it stays
+        // alive until its own render, which awaits them, produces output.
+        let settleInitialization: (() => void) | undefined;
+        if (!vercelOg) {
+          // Lazily import @vercel/og so its ~800 KB runtime (satori + resvg +
+          // embedded wasm/fonts) is code-split into its own chunk instead of
+          // being inlined into the main worker entry, regardless of whether the
+          // app imports next/og statically or dynamically.
+          vercelOg = import("@vercel/og");
+          void shareIsolatePromise(
+            new Promise<void>((resolve) => {
+              settleInitialization = resolve;
+            }),
+          );
         }
-
-        const reader = imageResponse.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
+        try {
+          const { ImageResponse: VercelImageResponse } = await vercelOg;
+          const imageResponse = new VercelImageResponse(element, options);
+          if (!imageResponse.body) {
             controller.close();
             return;
           }
-          controller.enqueue(value);
+
+          const reader = imageResponse.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            settleInitialization?.();
+            if (done) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(value);
+          }
+        } finally {
+          settleInitialization?.();
         }
       },
     });

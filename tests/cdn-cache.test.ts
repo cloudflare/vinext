@@ -41,6 +41,7 @@ import {
   buildPagesCacheValue,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function resetAdapters(): void {
   setDataCacheHandler(new MemoryCacheHandler());
@@ -135,9 +136,18 @@ describe("data cache handler aliases", () => {
 
       expect(load).not.toHaveBeenCalled();
       const proxy = getDataCacheHandler();
-      await Promise.all([proxy.get("a"), proxy.get("b")]);
+      // The load is shared by every later request, so it keeps the request that
+      // starts it alive until it settles.
+      const creator = { waitUntil: vi.fn() };
+      const joiner = { waitUntil: vi.fn() };
+      await Promise.all([
+        runWithExecutionContext(creator, () => proxy.get("a")),
+        runWithExecutionContext(joiner, () => proxy.get("b")),
+      ]);
 
       expect(load).toHaveBeenCalledOnce();
+      expect(creator.waitUntil).toHaveBeenCalledOnce();
+      expect(joiner.waitUntil).not.toHaveBeenCalled();
       expect(getDataCacheHandler()).toBe(configured);
     } finally {
       for (const [key, value] of previous) {

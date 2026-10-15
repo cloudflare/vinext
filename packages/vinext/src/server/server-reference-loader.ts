@@ -15,6 +15,8 @@
  * store, where those calls throw.
  */
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
 const ISOLATED = Symbol.for("vinext.serverReferenceRequire.isolated");
 
@@ -24,7 +26,14 @@ type ServerReferenceRequire = (id: string) => unknown;
 export function isolateServerReferenceLoads(): void {
   const load: ServerReferenceRequire | undefined = globalThis.__vite_rsc_server_require__;
   if (typeof load !== "function" || ISOLATED in load) return;
-  const isolated: ServerReferenceRequire = (id) => runOutsideRequestScopes(() => load(id));
+  const isolated: ServerReferenceRequire = (id) => {
+    // plugin-rsc memoizes each load for the isolate. Resolve the requesting
+    // request before leaving its scopes so that request stays alive until the
+    // shared load settles.
+    const ctx = getRequestExecutionContext();
+    const loaded = runOutsideRequestScopes(() => load(id));
+    return loaded instanceof Promise ? shareIsolatePromise(loaded, ctx) : loaded;
+  };
   Object.defineProperty(isolated, ISOLATED, { value: true });
   globalThis.__vite_rsc_server_require__ = isolated;
 }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   consumeDynamicUsage,
@@ -358,6 +358,13 @@ describe("render dynamic latch", () => {
     });
 
     describe("an unstable_cache background refresh", () => {
+      // The first "use cache" call in an isolate also keeps its request alive
+      // for the shared RSC codec import. Load it outside any request so each
+      // scenario's only kept-alive work is its refresh.
+      beforeAll(async () => {
+        await registerCachedFunction(async () => null, "test:refresh:load-codec")();
+      });
+
       // Serves every unstable_cache entry stale, so each call schedules a refresh.
       class StaleUnstableCacheHandler extends MemoryCacheHandler {
         readonly refreshedBodies: string[] = [];

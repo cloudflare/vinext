@@ -257,7 +257,7 @@ function handleRequest(
 ): Promise<Response> {
   const url = new URL(request.url);
   const trace = async () => {
-    await pagesEntry.__ensureInstrumentation?.();
+    await pagesEntry.__ensureInstrumentation?.(platformCtx);
     return traceFrameworkRequest({
       callback: () =>
         handleRequestImpl(

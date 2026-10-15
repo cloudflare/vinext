@@ -9,6 +9,7 @@ import {
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { DEFAULT_GLOBAL_NOT_FOUND_MODULE } from "./default-global-not-found-module.js";
 import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
@@ -222,8 +223,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   function resolveGlobalNotFoundModule(): Promise<TModule | null | undefined> | null {
     if (!loadGlobalNotFoundModule) return null;
     if (globalNotFoundModulePromise === null) {
-      globalNotFoundModulePromise = runOutsideRequestScopes(() =>
-        Promise.resolve().then(loadGlobalNotFoundModule),
+      globalNotFoundModulePromise = shareIsolatePromise(
+        runOutsideRequestScopes(() => Promise.resolve().then(loadGlobalNotFoundModule)),
       );
     }
     return globalNotFoundModulePromise;

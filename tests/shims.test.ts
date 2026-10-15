@@ -7069,6 +7069,9 @@ describe('"use cache" runtime', () => {
         );
 
       await expect(request()).resolves.toEqual({ tags: ["fetch-tag-1"], value: 1 });
+      // The miss can keep its request alive for the shared RSC codec import
+      // when it is the isolate's first "use cache" call.
+      waitUntil.length = 0;
       vi.advanceTimersByTime(1_500);
       // The background regeneration's fetch tags stay out of the stale response.
       await expect(request()).resolves.toEqual({ tags: [], value: 1 });

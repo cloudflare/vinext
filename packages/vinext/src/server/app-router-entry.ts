@@ -110,7 +110,7 @@ export default {
     ctx?: ExecutionContextLike & VinextRequestStageContext,
   ): Promise<Response> {
     const handleFetch = async () => {
-      await __ensureInstrumentation();
+      await __ensureInstrumentation(ctx);
       const url = new URL(request.url);
       return traceFrameworkRequest({
         callback: async () =>
@@ -148,7 +148,7 @@ async function handleRequest(
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
-    if (readinessResponse.status === 204) await __ensureHybridPagesApplication();
+    if (readinessResponse.status === 204) await __ensureHybridPagesApplication(ctx);
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
   let finalizeCacheabilityResponse:

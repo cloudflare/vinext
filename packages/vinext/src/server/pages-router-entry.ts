@@ -55,8 +55,8 @@ async function handleSingleStageRequest(
   if (readinessResponse) {
     if (readinessResponse.status === 204) {
       await Promise.all([
-        ensureRequestStageInstrumentation(),
-        ensureResponseStageInstrumentation(),
+        ensureRequestStageInstrumentation(ctx),
+        ensureResponseStageInstrumentation(ctx),
       ]);
     }
     return (await validateCdnRequest(request)) ?? readinessResponse;

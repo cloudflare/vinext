@@ -91,6 +91,7 @@ describe("App Worker response stage", () => {
   });
 
   it("initializes instrumentation before targeted cache-function invocation", async () => {
+    const ctx = { waitUntil: vi.fn() };
     await invokeCacheFunction(
       {
         encryptedArgs: "[]",
@@ -99,11 +100,13 @@ describe("App Worker response stage", () => {
         softTags: [],
       },
       undefined,
-      undefined,
+      ctx,
       async () => new Response(),
     );
 
-    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
+    // The stage runs outside the request's execution-context scope, so the
+    // initialization it may start needs the platform ctx to stay alive.
+    expect(stages.ensureInstrumentation).toHaveBeenCalledExactlyOnceWith(ctx);
     expect(stages.invokeCacheFunction).toHaveBeenCalledWith(
       expect.objectContaining({ referenceId: "test#cached" }),
       stages.loadServerAction,
@@ -176,10 +179,11 @@ describe("App Worker response stage", () => {
       trustedPrerenderState: null,
     } satisfies AppWorkerResponseStageProps;
 
+    const ctx = { waitUntil: vi.fn() };
     const response = await handleResponseStage(
       request,
       { binding: "value" },
-      undefined,
+      ctx,
       props,
       async () => new Response("request-stage"),
       { cache: "bypass" },
@@ -188,8 +192,8 @@ describe("App Worker response stage", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
-    expect(stages.ensureHybridPagesApplication).toHaveBeenCalledOnce();
-    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
+    expect(stages.ensureHybridPagesApplication).toHaveBeenCalledExactlyOnceWith(ctx);
+    expect(stages.ensureInstrumentation).toHaveBeenCalledExactlyOnceWith(ctx);
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(validateRequest).toHaveBeenCalledWith(request);
     expect(stages.renderResponse).not.toHaveBeenCalled();

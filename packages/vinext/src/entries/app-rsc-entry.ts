@@ -112,6 +112,10 @@ const instrumentationRuntimePath = resolveEntryPath(
   "../server/instrumentation-runtime.js",
   import.meta.url,
 );
+const isolateSharedPromisePath = resolveEntryPath(
+  "../server/isolate-shared-promise.js",
+  import.meta.url,
+);
 const appRscErrorHandlerPath = resolveEntryPath(
   "../server/app-rsc-error-handler.js",
   import.meta.url,
@@ -434,13 +438,14 @@ ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
+import { shareIsolatePromise as __shareIsolatePromise } from ${JSON.stringify(isolateSharedPromisePath)};
 let __applicationInitialization;
 async function __initializeApplication() {
   await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))});
   ${middlewarePath ? `middlewareModule = await import(${JSON.stringify(toSlash(middlewarePath))});` : ""}
 }
-export function __ensureInstrumentation() {
-  return __applicationInitialization ??= __initializeApplication();
+export function __ensureInstrumentation(ctx) {
+  return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx);
 }`
     : "export function __ensureInstrumentation() {}"
 }
@@ -463,8 +468,8 @@ import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareCont
 
 ${
   hasPagesDir
-    ? `export function __ensureHybridPagesApplication() {
-  return __pagesRequestEntry.__ensureInstrumentation?.();
+    ? `export function __ensureHybridPagesApplication(ctx) {
+  return __pagesRequestEntry.__ensureInstrumentation?.(ctx);
 }`
     : "export function __ensureHybridPagesApplication() {}"
 }
@@ -540,7 +545,7 @@ const __requestHandler = createAppRscRequestHandler({
   devForwardedMiddlewareContextKey: ${JSON.stringify(config?.devForwardedMiddlewareContextKey ?? null)},
   dispatchMatchedPage() { throw new Error("App request stage attempted to render a page inline"); },
   dispatchMatchedRouteHandler() { throw new Error("App request stage attempted to render a route handler inline"); },
-  ${instrumentationPath ? "ensureInstrumentation() { return __ensureInstrumentation(); }," : ""}
+  ${instrumentationPath ? "ensureInstrumentation(ctx) { return __ensureInstrumentation(ctx); }," : ""}
   i18nConfig: ${JSON.stringify(config?.i18n ?? null)},
   imageConfig: ${JSON.stringify(config?.imageConfig)},
   isMetadataRoute: __isMetadataPath,
@@ -729,12 +734,12 @@ export function generateRscEntry(
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
 let __hybridPagesApplication;
-export function __ensureHybridPagesApplication() {
-  return __hybridPagesApplication ??= (async () => {
+export function __ensureHybridPagesApplication(ctx) {
+  return __hybridPagesApplication ??= __shareIsolatePromise((async () => {
     const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    await __pagesEntry.__ensureInstrumentation?.();
+    await __pagesEntry.__ensureInstrumentation?.(ctx);
     return __pagesEntry;
-  })();
+  })(), ctx);
 }
 async function __loadPrerenderPagesRoutes() {
   const __gspSsrEntry = await __ensureHybridPagesApplication();
@@ -757,8 +762,8 @@ ${metaRouteEntries.join(",\n")}
   rootLayouts = [${rootLayoutVars.join(", ")}];
   __fallbackRenderer = __createFallbackRenderer();
 }
-export function __ensureInstrumentation() {
-  return __applicationInitialization ??= __initializeApplication();
+export function __ensureInstrumentation(ctx) {
+  return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx);
 }`
     : "export function __ensureInstrumentation() {}";
 
@@ -799,6 +804,7 @@ import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { getRequestExecutionContext as __getRequestExecutionContext } from "vinext/shims/request-context";
+import { shareIsolatePromise as __shareIsolatePromise } from ${JSON.stringify(isolateSharedPromisePath)};
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${
@@ -1650,8 +1656,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     instrumentationPath
-      ? `ensureInstrumentation() {
-    return __ensureInstrumentation();
+      ? `ensureInstrumentation(ctx) {
+    return __ensureInstrumentation(ctx);
   },`
       : ""
   }

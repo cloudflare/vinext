@@ -39,6 +39,10 @@ const _instrumentationRuntimePath = resolveEntryPath(
   "../server/instrumentation-runtime.js",
   import.meta.url,
 );
+const _isolateSharedPromisePath = resolveEntryPath(
+  "../server/isolate-shared-promise.js",
+  import.meta.url,
+);
 
 async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
   const source = await readFile(filePath, "utf8");
@@ -120,7 +124,8 @@ export async function generatePagesRequestEntry(
   });
   const instrumentationImportCode = instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};
-import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};`
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};
+import { shareIsolatePromise as __shareIsolatePromise } from ${JSON.stringify(_isolateSharedPromisePath)};`
     : "";
   const instrumentationInitCode = instrumentationPath
     ? `let __applicationInitialization;
@@ -128,8 +133,8 @@ async function __initializeApplication() {
   await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});
   ${middlewarePath ? `middlewareModule = await import(${JSON.stringify(middlewarePath)});` : ""}
 }
-export function __ensureInstrumentation() {
-  return __applicationInitialization ??= __initializeApplication();
+export function __ensureInstrumentation(ctx) {
+  return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx);
 }`
     : "export function __ensureInstrumentation() {}";
   const middlewareImportCode = middlewarePath
@@ -139,7 +144,7 @@ export function __ensureInstrumentation() {
     : "";
   const middlewareExportCode = middlewarePath
     ? `export async function runMiddleware(request, ctx, options) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
@@ -154,8 +159,8 @@ export function __ensureInstrumentation() {
     trailingSlash: vinextConfig.trailingSlash,
   });
 }`
-    : `export async function runMiddleware() {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+    : `export async function runMiddleware(request, ctx) {
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return { continue: true };
 }`;
 
@@ -399,7 +404,8 @@ export async function generateServerEntry(
   // all code within the Worker (same global scope).
   const instrumentationImportCode = instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};
-import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};`
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};
+import { shareIsolatePromise as __shareIsolatePromise } from ${JSON.stringify(_isolateSharedPromisePath)};`
     : "";
 
   const specialModuleInitializers = instrumentationPath
@@ -426,8 +432,8 @@ async function __initializeApplication() {
   _errorPageRoute.module = ErrorPageModule;
   _renderPage = __createRenderPage();
 }
-export function __ensureInstrumentation() {
-  return __applicationInitialization ??= __initializeApplication();
+export function __ensureInstrumentation(ctx) {
+  return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx);
 }`
     : "export function __ensureInstrumentation() {}";
   const openTelemetryLoaderCode = options.nodeOpenTelemetryLoader
@@ -458,7 +464,7 @@ if (process.env.VINEXT_PRERENDER !== "1" && !globalThis[__openTelemetryLoaderKey
     ? middlewarePath
       ? `
 export async function runMiddleware(request, ctx, options) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
@@ -475,8 +481,8 @@ export async function runMiddleware(request, ctx, options) {
 }
 `
       : `
-export async function runMiddleware(request) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+export async function runMiddleware(request, ctx) {
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return { continue: true };
 }
 `
@@ -740,7 +746,7 @@ function __createRenderPage() {
 ${instrumentationPath ? "let _renderPage;" : "const _renderPage = __createRenderPage();"}
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options, initialResponseHeaders) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   __registerConfiguredCacheAdapters();
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders));
   return _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders);
@@ -749,7 +755,7 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker", initialResponseHeaders) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({

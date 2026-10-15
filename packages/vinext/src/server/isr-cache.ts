@@ -25,6 +25,7 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
@@ -235,13 +236,15 @@ export function coalesceOnDemandRevalidation<T>(
 
   // Defer invocation until after the promise is registered, matching Next.js's
   // response-cache scheduler and closing the same-tick stampede window.
-  const promise = Promise.resolve()
-    .then(renderFn)
-    .finally(() => {
-      if (pendingOnDemandRegenerations.get(key) === promise) {
-        pendingOnDemandRegenerations.delete(key);
-      }
-    });
+  const promise: Promise<T> = shareIsolatePromise(
+    Promise.resolve()
+      .then(renderFn)
+      .finally(() => {
+        if (pendingOnDemandRegenerations.get(key) === promise) {
+          pendingOnDemandRegenerations.delete(key);
+        }
+      }),
+  );
   pendingOnDemandRegenerations.set(key, promise);
   return promise;
 }

@@ -740,6 +740,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       () => true,
     );
     pendingR2Reads.set(readKey, pending);
+    // Later reads of this key await the pending read. workerd drops a canceled
+    // call's I/O, so keep this call alive until the read settles.
+    this.ctx.waitUntil(pending);
     try {
       return await read;
     } finally {
@@ -1370,7 +1373,17 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         cacheTags,
       );
     })();
-    if (options.coalesce) pendingPuts.set(pendingPutKey, write);
+    if (options.coalesce) {
+      pendingPuts.set(pendingPutKey, write);
+      // Later coalesced puts of this key await the write. workerd drops a
+      // canceled call's I/O, so keep this call alive until the write settles.
+      this.ctx.waitUntil(
+        write.then(
+          () => {},
+          () => {},
+        ),
+      );
+    }
     try {
       const result = await write;
       if (!result.published || !result.entry) {

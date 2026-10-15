@@ -131,10 +131,11 @@ describe("Pages Worker response stage", () => {
       { headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" } },
     );
 
+    const ctx = { waitUntil: vi.fn() };
     const response = await handleResponseStage(
       request,
       { binding: "value" },
-      undefined,
+      ctx,
       {
         buildId: "test-build",
         cacheability: {
@@ -154,7 +155,7 @@ describe("Pages Worker response stage", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
-    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
+    expect(stages.ensureInstrumentation).toHaveBeenCalledExactlyOnceWith(ctx);
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(validateRequest).toHaveBeenCalledWith(request);
     expect(stages.renderPage).not.toHaveBeenCalled();
