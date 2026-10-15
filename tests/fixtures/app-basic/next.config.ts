@@ -405,6 +405,24 @@ const nextConfig: NextConfig = {
         has: [{ type: "query", key: "preview", value: "1" }],
         headers: [{ key: "X-Preview-Header", value: "true" }],
       },
+      // Used by E2E: config-redirect.spec.ts — path-to-regexp modifiers and
+      // nested regex groups in header sources match like Next.js.
+      {
+        source: "/dashboard/:path*",
+        headers: [{ key: "X-Dashboard-Path-Star", value: "1" }],
+      },
+      {
+        source: "/dashboard/:path+",
+        headers: [{ key: "X-Dashboard-Path-Plus", value: "1" }],
+      },
+      {
+        source: "/dashboard/:section?",
+        headers: [{ key: "X-Dashboard-Optional", value: "1" }],
+      },
+      {
+        source: "/dashboard/((?!missing).*)",
+        headers: [{ key: "X-Dashboard-Lookahead", value: "1" }],
+      },
       // Used by E2E: config-redirect.spec.ts (catch-all for e2e header test)
       {
         source: "/(.*)",

@@ -236,11 +236,25 @@ function unsafeTokenReason(token: MiddlewarePathKey, namedGroups: boolean): stri
   if (patternMatches(token.pattern, "") || patternMatches(token.pattern, "/")) {
     return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
   }
+  // The token's own suffix + prefix also joins the repetitions (the `.` in
+  // `/x.:ext([^/]+)+`), so the constraint must not match it either.
+  const separator = token.suffix + token.prefix;
+  if (
+    separator &&
+    [separator, ...separator.split("")].some((part) => patternMatches(token.pattern, part))
+  ) {
+    return `repeated parameter "${token.name}" may match its repeat separator`;
+  }
 
   return null;
 }
 
-function validateTokens(tokens: MiddlewarePathToken[]): string | null {
+/**
+ * Check the user-supplied parameter patterns in parsed path-to-regexp tokens.
+ * The structure path-to-regexp wraps around them is generated and safe; only
+ * the patterns need checking. Returns the reason when a pattern is unsafe.
+ */
+export function validatePathTokens(tokens: MiddlewarePathToken[]): string | null {
   // Every token pattern is compiled into one RegExp, so a named group in any
   // of them turns `\k<name>` in another into a backreference.
   const namedGroups = tokens.some(
@@ -272,7 +286,7 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
     };
   }
 
-  const unsafeReason = validateTokens(tokens);
+  const unsafeReason = validatePathTokens(tokens);
   if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
 
   try {
@@ -281,7 +295,7 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
     const normalizedTokens = normalizeMiddlewarePathTokens(tokens);
-    const normalizedUnsafeReason = validateTokens(normalizedTokens);
+    const normalizedUnsafeReason = validatePathTokens(normalizedTokens);
     if (normalizedUnsafeReason) return { kind: "unsafe", error: normalizedUnsafeReason };
     try {
       return { regexp: middlewarePathTokensToRegExp(normalizedTokens) };

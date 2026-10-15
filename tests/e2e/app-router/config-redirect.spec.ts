@@ -188,6 +188,42 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
     expect(res.headers()["x-page-header"]).toBe("about-page");
   });
 
+  test("header sources with path-to-regexp modifiers match like Next.js", async ({ request }) => {
+    const headersFor = async (path: string, status = 200) => {
+      const res = await request.get(`${BASE}${path}`);
+      expect(res.status()).toBe(status);
+      const headers = res.headers();
+      return {
+        star: headers["x-dashboard-path-star"],
+        plus: headers["x-dashboard-path-plus"],
+        optional: headers["x-dashboard-optional"],
+        lookahead: headers["x-dashboard-lookahead"],
+      };
+    };
+
+    // `:path*` and `:section?` also cover the base path.
+    expect(await headersFor("/dashboard")).toEqual({
+      star: "1",
+      plus: undefined,
+      optional: "1",
+      lookahead: undefined,
+    });
+    expect(await headersFor("/dashboard/settings")).toEqual({
+      star: "1",
+      plus: "1",
+      optional: "1",
+      lookahead: "1",
+    });
+    // `(?!missing)` excludes this notFound() page; config headers still apply
+    // to the 404 response.
+    expect(await headersFor("/dashboard/missing", 404)).toEqual({
+      star: "1",
+      plus: "1",
+      optional: "1",
+      lookahead: undefined,
+    });
+  });
+
   test("custom header applied to API routes", async ({ request }) => {
     const res = await request.get(`${BASE}/api/hello`);
     expect(res.status()).toBe(200);
