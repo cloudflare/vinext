@@ -1507,9 +1507,13 @@ type WorkerAppRouterEntry = {
   fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
 };
 
-function createNodeExecutionContext(trustedRevalidateOrigin?: string): ExecutionContextLike {
+function createNodeExecutionContext(
+  trustedRevalidateOrigin?: string,
+  requestSignal?: AbortSignal,
+): ExecutionContextLike {
   return {
     hostRuntime: "node",
+    requestSignal,
     waitUntil(promise: Promise<unknown>) {
       // Node doesn't provide a Workers lifecycle, but we still attach a
       // rejection handler so background waitUntil work doesn't surface as an
@@ -2082,15 +2086,19 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // handler must receive the original URL so its request boundary decodes
       // each segment exactly once. Passing `pathname` here would make encoded
       // percent signs eligible for a second decode inside normalizeRscRequest.
+      const signal = signalFromNodeResponse(res);
       const request = nodeToWebRequest(
         req,
         rawUrl,
         prerenderSecret,
         appRouterI18nConfig,
         appRouterAuthorizeOnDemandRevalidate,
-        signalFromNodeResponse(res),
+        signal,
       );
-      const ctx = createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port));
+      const ctx = createNodeExecutionContext(
+        resolveTrustedNodeRevalidateOrigin(req, host, port),
+        signal,
+      );
       const recorded: { marker?: PrerenderSpecialErrorMarker } = {};
       if (purpose === "prerender") {
         ctx.recordPrerenderSpecialError = (marker) => {

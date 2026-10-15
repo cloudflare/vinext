@@ -183,6 +183,33 @@ describe("app route handler runtime helpers", () => {
     expect(() => clonedNextUrl.search).toThrow(expectedMessage("nextUrl.search"));
   });
 
+  it("keeps request.signal following the host signal after GC", async () => {
+    // Undici's Request follows its input's signal through a WeakRef, so a
+    // handler that only listened on request.signal lost the abort once GC
+    // collected its request or a clone between it and the host signal.
+    const v8 = await import("node:v8");
+    const vm = await import("node:vm");
+    v8.setFlagsFromString("--expose-gc");
+    const gc = vm.runInNewContext("gc") as () => void;
+
+    const host = new AbortController();
+    let reason: unknown;
+    (() => {
+      const inbound = new Request("https://example.com/stream", { signal: host.signal });
+      const tracked = createTrackedAppRouteRequest(new Request(inbound), { signal: host.signal });
+      tracked.request.signal.addEventListener("abort", function (this: AbortSignal) {
+        reason = this.reason;
+      });
+    })();
+    for (let round = 0; round < 3; round += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      gc();
+    }
+
+    host.abort(new Error("client disconnected"));
+    expect(reason).toBe(host.signal.reason);
+  });
+
   it("tracks request.url access for query parsing", () => {
     const accesses: string[] = [];
     const tracked = createTrackedAppRouteRequest(

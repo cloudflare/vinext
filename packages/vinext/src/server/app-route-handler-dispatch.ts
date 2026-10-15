@@ -24,6 +24,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   closeAfterResponse,
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
@@ -393,6 +394,7 @@ async function dispatchAppRouteHandlerImpl(
         return reportRequestError(error, request, context);
       },
       request: options.request,
+      requestSignal: getRequestContext().requestSignal ?? undefined,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
       revalidateReason,

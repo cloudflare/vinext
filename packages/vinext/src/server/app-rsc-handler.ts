@@ -2982,6 +2982,10 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
     transportedPrerenderState?: TrustedPrerenderState | null,
   ): Promise<Response> => {
+    // Read before anything clones the request: in dev, srvx returns its own
+    // connection signal only until a clone materializes its native Request,
+    // whose signal merely follows it.
+    const rawRequestSignal = rawRequest.signal;
     // Strip forged internal headers at the App Router request boundary.
     // Must happen BEFORE headersContextFromRequest() and
     // requestContextFromRequest() so the captured context never contains
@@ -3081,6 +3085,9 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     const requestContext = createRequestContext({
       headersContext,
       executionContext,
+      // The Node production server's request already follows its signal, so
+      // it passes the signal itself.
+      requestSignal: executionContext?.requestSignal ?? rawRequestSignal,
       unstableCacheRevalidation: "background",
     });
     let interceptionResponseUncacheable = false;

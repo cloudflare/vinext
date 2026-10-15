@@ -48,6 +48,11 @@ export type UnifiedRequestContext = {
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
+  /**
+   * The host's client-connection signal for the incoming request, before any
+   * clone follows it. Null for requests vinext creates itself (regeneration).
+   */
+  requestSignal: AbortSignal | null;
 
   // ── cache-for-request.ts ──────────────────────────────────────────
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
@@ -139,6 +144,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     currentFetchDedupeEntries: new Map(),
     nextFetchId: 1,
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    requestSignal: null,
     requestCache: new WeakMap(),
     afterContext: {
       callbacks: [],

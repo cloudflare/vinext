@@ -113,6 +113,8 @@ type RunAppRouteHandlerOptions = {
    */
   params: AppRouteParams | null;
   request: Request;
+  /** Host signal for the client connection; only the foreground request has one. */
+  requestSignal?: AbortSignal;
   routePattern?: string;
   setHeadersAccessPhase?: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
@@ -292,6 +294,7 @@ export async function runAppRouteHandler(
       options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
         ? options.dynamicConfig
         : "auto",
+    signal: options.requestSignal,
     staticGenerationErrorMessage(expression) {
       return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
     },
