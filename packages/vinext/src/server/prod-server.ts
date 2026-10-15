@@ -1556,9 +1556,7 @@ function resolveTrustedNodeRevalidateOrigin(
   configuredHost: string,
   configuredPort: number,
 ): string {
-  const port = req.socket.localPort ?? configuredPort;
-  const host = normalizeInternalFetchHost(configuredHost);
-  return `http://${host}:${port}`;
+  return `http://${resolveNodeServerHost(req, configuredHost, configuredPort)}`;
 }
 
 /**
@@ -1567,7 +1565,8 @@ function resolveTrustedNodeRevalidateOrigin(
  * port, it never counts as the server's origin. Otherwise a client could send
  * the host of an external middleware rewrite target and turn that rewrite into
  * an internal one, skipping middleware's checks for the target path. A trusted
- * `X-Forwarded-Host` is operator-approved, so it keeps the request origin.
+ * `X-Forwarded-Host` is operator-approved, so it keeps the request origin, and
+ * rewrites to that host stay internal.
  */
 function resolveNodeMiddlewareOrigin(
   req: IncomingMessage,
@@ -1577,8 +1576,17 @@ function resolveNodeMiddlewareOrigin(
 ): string {
   const url = new URL(requestUrl);
   if (resolveTrustedForwardedHost(req) !== undefined) return url.origin;
+  return `${url.protocol}//${resolveNodeServerHost(req, configuredHost, configuredPort)}`;
+}
+
+/** The `host:port` this server is reachable at locally. */
+function resolveNodeServerHost(
+  req: IncomingMessage,
+  configuredHost: string,
+  configuredPort: number,
+): string {
   const port = req.socket.localPort ?? configuredPort;
-  return `${url.protocol}//${normalizeInternalFetchHost(configuredHost)}:${port}`;
+  return `${normalizeInternalFetchHost(configuredHost)}:${port}`;
 }
 
 function normalizeInternalFetchHost(host: string): string {
@@ -2748,7 +2756,7 @@ async function createPagesRouterRequestHandler(
         hasMiddleware,
         middlewareRequest,
         dataNotFoundResponse,
-        ctx: undefined, // Node has no ExecutionContext
+        ctx: undefined, // Node has no platform ExecutionContext; middleware gets middlewareCtx
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
         authorizeOnDemandRevalidate:

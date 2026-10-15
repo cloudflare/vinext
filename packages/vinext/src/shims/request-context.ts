@@ -56,9 +56,10 @@ export type ExecutionContextLike = {
    */
   requestSignal?: AbortSignal;
   /**
-   * Server-owned origin middleware runs against. Set by the Node server, whose
-   * request URL comes from the client's Host header. Workers leave it unset:
-   * the platform routes by hostname, so the request URL is authoritative.
+   * Server-owned origin middleware runs against. Set by the Node production
+   * server, whose request URL comes from the client's Host header. Without it
+   * middleware uses the request URL's origin, which Workers can trust because
+   * the platform routes by hostname.
    */
   middlewareOrigin?: string;
   /** Worker-owned in-process dispatcher for authenticated Pages revalidation. */

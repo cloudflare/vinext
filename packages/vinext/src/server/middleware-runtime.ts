@@ -295,7 +295,7 @@ function withOrigin(url: URL, origin: string): URL {
 
 function createNextRequest(
   request: Request,
-  middlewareOrigin: string,
+  url: URL,
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
   trailingSlash?: boolean,
@@ -303,7 +303,6 @@ function createNextRequest(
   requestBodyAlreadyIsolated = false,
   skipTrailingSlashRedirect = false,
 ): NextRequest {
-  const url = withOrigin(new URL(request.url), middlewareOrigin);
   // Middleware gets an isolated body branch; downstream routing keeps owning
   // the original request body.
   let mwRequest =
@@ -550,7 +549,7 @@ async function executeMiddlewareModule(
   );
   const nextRequest = createNextRequest(
     options.request,
-    middlewareUrl.origin,
+    middlewareUrl,
     options.i18nConfig,
     options.basePath,
     options.trailingSlash,
