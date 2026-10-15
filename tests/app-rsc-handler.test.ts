@@ -4138,6 +4138,38 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each(["afterFiles", "fallback"] as const)(
+    "checks public files after an out-of-basePath %s rewrite",
+    async (phase) => {
+      const handleProgressiveActionRequest = vi.fn(async () => new Response("progressive-action"));
+      const rewrite = { source: "/outside", destination: "/logo.svg", basePath: false as const };
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: phase === "afterFiles" ? [rewrite] : [],
+          fallback: phase === "fallback" ? [rewrite] : [],
+        },
+        handleProgressiveActionRequest,
+        publicFiles: new Set(["/logo.svg"]),
+      });
+
+      const getResponse = await handler(new Request("https://example.test/outside"), null);
+      const postResponse = await handler(
+        new Request("https://example.test/outside", {
+          method: "POST",
+          headers: { "content-type": "multipart/form-data; boundary=vinext" },
+        }),
+        null,
+      );
+
+      expect(readStaticFileSignal(getResponse)).toBe("%2Flogo.svg");
+      expect(postResponse.status).toBe(405);
+      expect(postResponse.headers.get("allow")).toBe("GET, HEAD");
+      expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+    },
+  );
+
   it("lets a Pages route claim an out-of-basePath progressive POST before fallback rewrites", async () => {
     const handleProgressiveActionRequest = vi.fn(async () => new Response("progressive-action"));
     const renderPagesFallback = vi.fn<NonNullable<HandlerOptions["renderPagesFallback"]>>(
