@@ -24,7 +24,6 @@ export type ThenableParamsObserver = Readonly<{
    * before React counts any pending work, as Next.js does.
    */
   observeThenRead?: () => void;
-  observeReactPromiseStatus?: boolean;
 }>;
 
 const paramsState = new WeakMap<
@@ -279,10 +278,6 @@ function createThenableParams<T extends Record<string, unknown>>(
         // after counting a pending chunk. Like Next.js, return what React
         // wrote without counting a param access.
         return Reflect.get(target, prop);
-      }
-
-      if (prop === "status" && observer?.observeReactPromiseStatus === true) {
-        observeAllParamKeys(observer, plain);
       }
 
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {

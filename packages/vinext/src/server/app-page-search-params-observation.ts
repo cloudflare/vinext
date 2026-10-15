@@ -12,10 +12,6 @@ import {
 import type { AppPageSearchParams } from "./app-page-head.js";
 import { searchParamsToRecord } from "../utils/query.js";
 
-type AppPageSearchParamsObservationOptions = {
-  observeReactPromiseStatus?: boolean;
-};
-
 type ClientPageSsrSearchParamsOptions = {
   isForceStatic?: boolean;
   isPprFallbackShell?: boolean;
@@ -41,16 +37,8 @@ export function createAppPageSearchParamsObserver(): ThenableParamsObserver {
 
 export function makeObservedAppPageSearchParamsThenable(
   pageSearchParams: AppPageSearchParams,
-  options: AppPageSearchParamsObservationOptions = {},
 ): ThenableParams<AppPageSearchParams> {
-  const observer = createAppPageSearchParamsObserver();
-  if (options.observeReactPromiseStatus === true) {
-    return makeThenableParams(pageSearchParams, {
-      ...observer,
-      observeReactPromiseStatus: true,
-    });
-  }
-  return makeThenableParams(pageSearchParams, observer);
+  return makeThenableParams(pageSearchParams, createAppPageSearchParamsObserver());
 }
 
 /**
