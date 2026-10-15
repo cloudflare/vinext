@@ -411,6 +411,16 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-dev-runtime",
 ]);
 
+// vinext's cache runtime lazily imports plugin-rsc's React serializer. The
+// Worker scan never crawls vinext's own server modules, so without this the
+// optimizer discovers it while the Worker entry is loading and rewrites the
+// deps directory mid-import. Nested through vinext because plugin-rsc is an
+// optional peer that apps need not depend on directly.
+const PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
+  "use-sync-external-store/with-selector",
+  "vinext > @vitejs/plugin-rsc/react/rsc",
+]);
+
 // In dev, @vitejs/plugin-rsc can serve "use client" modules nested inside a
 // package straight from node_modules, and Vite does not discover new deps from
 // imports in those files. ESM packages commonly import this CommonJS-only
@@ -840,7 +850,11 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
       record,
       parserLanguageForScript(cleanModulePath),
     )) {
-      const resolved = await resolve(specifier, cleanModulePath, { skipSelf: true });
+      // The reader runs inside vinext:config's load hook. Keep vinext's own
+      // resolveId in the chain so shimmed specifiers such as next/navigation
+      // resolve to the shim instead of real Next.js, which the Worker dep
+      // optimizer would otherwise discover and re-bundle during startup.
+      const resolved = await resolve(specifier, cleanModulePath, { skipSelf: false });
       if (!resolved?.id) continue;
 
       if (isStylesheetSpecifier(specifier) || isStylesheetSpecifier(resolved.id)) {
@@ -4432,13 +4446,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
                 : []
               : name !== "client"
-                ? ["use-sync-external-store/with-selector"]
+                ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
                 : [];
             for (const id of optionalIncludes) {
+              const depId = id.slice(id.lastIndexOf(">") + 1).trim();
               if (
                 optimizer.include?.includes(id) ||
+                optimizer.include?.includes(depId) ||
                 optimizer.exclude?.some(
-                  (excluded) => id === excluded || id.startsWith(`${excluded}/`),
+                  (excluded) => depId === excluded || depId.startsWith(`${excluded}/`),
                 )
               ) {
                 continue;

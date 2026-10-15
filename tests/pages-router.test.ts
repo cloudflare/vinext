@@ -4649,6 +4649,47 @@ describe("Virtual server entry generation", () => {
     }
   });
 
+  it("dev Pages client assets resolve shimmed next/* imports through vinext", async () => {
+    // The stylesheet walker resolves from vinext's own load hook. Skipping
+    // vinext's resolveId there resolved next/navigation to real Next.js, which
+    // a server dep optimizer with discovery (the Cloudflare Worker) then
+    // registered and re-bundled mid-startup.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-shim-assets-"));
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "_app.tsx"),
+      'import { usePathname } from "next/navigation";\n' +
+        "export default function App({ Component, pageProps }: any) {\n" +
+        "  usePathname();\n" +
+        "  return <Component {...pageProps} />;\n" +
+        "}\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      "export default function Home() { return <div>Home</div>; }\n",
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      environments: { ssr: { optimizeDeps: { noDiscovery: false } } },
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const depsOptimizer = testServer.environments.ssr.depsOptimizer;
+      expect(depsOptimizer).toBeDefined();
+      expect(Object.keys(depsOptimizer!.metadata.discovered)).not.toContain("next/navigation");
+      expect(Object.keys(depsOptimizer!.metadata.optimized)).not.toContain("next/navigation");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("dev Pages dependency metadata reuses exact module ids", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-shared-assets-"));
     fs.mkdirSync(path.join(tmpDir, "lib"), { recursive: true });
