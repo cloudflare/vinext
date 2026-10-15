@@ -42,10 +42,28 @@ function baseMiddleware(base: string, calls: string[]): ViteMiddleware {
  * Builds a fake dev server, runs the plugin's `configureServer`, then appends
  * Vite's internal middlewares after it, in the order Vite registers them.
  */
-function setup(options: { enabled: boolean; viteMiddlewares: ViteMiddleware[]; base?: string }) {
+/** A module graph node: the file's importers and their transformed code. */
+type FakeModule = { importers: { transformResult: { code: string } | null }[] };
+
+function setup(options: {
+  enabled: boolean;
+  viteMiddlewares: ViteMiddleware[];
+  base?: string;
+  /** Module graph nodes by file, for a single environment. */
+  modulesByFile?: Record<string, FakeModule[]>;
+}) {
   const stack: { route: string; handle: unknown }[] = [];
+  const modulesByFile = options.modulesByFile ?? {};
   const server = {
-    config: { base: options.base ?? "/" },
+    config: { base: options.base ?? "/", root: "/project" },
+    environments: {
+      client: {
+        moduleGraph: {
+          getModulesByFile: (file: string) =>
+            file in modulesByFile ? new Set(modulesByFile[file]) : undefined,
+        },
+      },
+    },
     middlewares: {
       stack,
       use: (handle: unknown) => stack.push({ route: "", handle }),
@@ -119,8 +137,8 @@ describe("cloudflare dev module URLs plugin", () => {
     });
 
     expect(await run("/hello.txt")).toEqual({ args: [], url: "/hello.txt" });
-    // Public files and other project files must keep reaching the Worker, so
-    // middleware runs for them and Worker routes are not shadowed by files.
+    // Public files must keep reaching the Worker so middleware runs for them,
+    // and project files that are not referenced assets must not shadow Worker routes.
     expect(calls).toEqual([
       "viteTransformMiddleware /hello.txt",
       "viteServeRawFsMiddleware /hello.txt",
@@ -206,6 +224,99 @@ describe("cloudflare dev module URLs plugin", () => {
     expect(await run("/@vite/client")).toEqual({ args: [], url: "/@vite/client" });
     expect(await run("/docs")).toEqual({ args: [], url: "/docs" });
     expect(calls).toEqual([]);
+  });
+
+  it("serves an asset whose URL a module that imports it references", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      viteMiddlewares: [
+        passThrough("viteTransformMiddleware", calls),
+        named("viteServeStaticMiddleware", (req) => {
+          calls.push(`viteServeStaticMiddleware ${req.url}`);
+        }),
+      ],
+      modulesByFile: {
+        "/project/app/logo.svg": [
+          {
+            importers: [{ transformResult: { code: 'import logo from "/app/logo.svg?import";' } }],
+          },
+        ],
+        "/project/app/bg.png": [
+          { importers: [{ transformResult: { code: '"body { background: url(/app/bg.png) }"' } }] },
+        ],
+      },
+    });
+
+    void run("/app/logo.svg");
+    void run("/app/bg.png");
+    await Promise.resolve();
+    expect(calls).toEqual([
+      "viteTransformMiddleware /app/logo.svg",
+      "viteServeStaticMiddleware /app/logo.svg",
+      "viteTransformMiddleware /app/bg.png",
+      "viteServeStaticMiddleware /app/bg.png",
+    ]);
+  });
+
+  it("sends project files that no importer references to the Worker", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      viteMiddlewares: [passThrough("viteServeStaticMiddleware", calls)],
+      modulesByFile: {
+        // Tailwind reports scanned files as dependencies of the stylesheet
+        "/project/api/notes.txt": [
+          { importers: [{ transformResult: { code: '"body { color: red }"' } }] },
+        ],
+        // Only part of a longer path or name
+        "/project/a.png": [
+          {
+            importers: [
+              { transformResult: { code: '"/assets/a.png" "/a.pngx"' } },
+              { transformResult: null },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(await run("/api/notes.txt")).toEqual({ args: [], url: "/api/notes.txt" });
+    expect(await run("/a.png")).toEqual({ args: [], url: "/a.png" });
+    expect(await run("/package.json")).toEqual({ args: [], url: "/package.json" });
+    expect(calls).toEqual([]);
+  });
+
+  it("serves an asset under a non-root base", () => {
+    const calls: string[] = [];
+    const { pluginMiddlewares } = setup({
+      enabled: true,
+      base: "/docs/",
+      viteMiddlewares: [
+        baseMiddleware("/docs/", calls),
+        named("viteServeStaticMiddleware", (req) => {
+          calls.push(`viteServeStaticMiddleware ${req.url}`);
+        }),
+      ],
+      modulesByFile: {
+        "/project/app/logo.svg": [
+          {
+            importers: [
+              { transformResult: { code: 'import logo from "/docs/app/logo.svg?import";' } },
+            ],
+          },
+        ],
+      },
+    });
+
+    pluginMiddlewares[0]?.({ url: "/docs/app/logo.svg" } as Connect.IncomingMessage, {}, () => {
+      throw new Error("expected the static middleware to handle the request");
+    });
+
+    expect(calls).toEqual([
+      "viteBaseMiddleware /docs/app/logo.svg",
+      "viteServeStaticMiddleware /app/logo.svg",
+    ]);
   });
 
   it("forwards errors passed to next", async () => {
