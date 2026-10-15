@@ -3,6 +3,7 @@ import {
   analyzeRegexSafety,
   mayHaveNamedGroups,
   regexAtomsMayOverlap,
+  repeatSeparatorIsUnambiguous,
 } from "../utils/regex-safety.js";
 import {
   middlewarePathTokensToRegExp,
@@ -236,14 +237,16 @@ function unsafeTokenReason(token: MiddlewarePathKey, namedGroups: boolean): stri
   if (patternMatches(token.pattern, "") || patternMatches(token.pattern, "/")) {
     return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
   }
-  // The token's own suffix + prefix also joins the repetitions (the `.` in
-  // `/x.:ext([^/]+)+`), so the constraint must not match it either.
+  // The token's own suffix + prefix joins the repetitions (the `.` in
+  // `/x.:ext([^/]+)+`). If the constraint can consume that separator, each
+  // occurrence can end one repetition or stay inside it. (path-to-regexp
+  // refuses to compile a repeat without a separator.)
   const separator = token.suffix + token.prefix;
   if (
     separator &&
-    [separator, ...separator.split("")].some((part) => patternMatches(token.pattern, part))
+    !repeatSeparatorIsUnambiguous(token.pattern, separator, { ignoreCase: true, namedGroups })
   ) {
-    return `repeated parameter "${token.name}" may match its repeat separator`;
+    return `repeated parameter "${token.name}" may match across its repeat separator`;
   }
 
   return null;

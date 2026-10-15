@@ -331,9 +331,9 @@ function compileHeaderSource(source: string): RegExp | null {
   try {
     const tokens = parseMiddlewarePath(source, options);
     // The generated repeat structure (`(?:\/[^\/]+?)*`) trips the whole-regex
-    // safeRegExp() check. Validate each parameter pattern the way the
-    // middleware matcher does, then analyze the route with repeats unrolled to
-    // catch overlap between neighbouring parameters.
+    // safeRegExp() check. Validate each parameter pattern (including its repeat
+    // separator) the way the middleware matcher does, then analyze the route
+    // with repeats unrolled to catch overlap between neighbouring parameters.
     let unsafeReason = validatePathTokens(tokens);
     if (!unsafeReason) {
       const analysisRoute = pathTokensToRegExpSource(tokens, { ...options, unrollRepeats: true });

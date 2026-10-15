@@ -14575,6 +14575,9 @@ describe("matchHeaders source matching parity with Next.js", () => {
     "/blog-:slug",
     "/:auth-method",
     "/x{-:y}?",
+    // Fixed-width repeat chunks are unambiguous; Next.js accepts these.
+    "/x{--:id(-)}+/end",
+    "/file.:ext+",
   ];
   const pathnames = [
     "/",
@@ -14609,6 +14612,11 @@ describe("matchHeaders source matching parity with Next.js", () => {
     "/a/b/c/d",
     "/x",
     "/x-z",
+    "/x---/end",
+    "/x------/end",
+    "/x--/end",
+    "/file.js",
+    "/file.tar.gz",
     "//",
   ];
 
@@ -14649,6 +14657,8 @@ describe("matchHeaders source matching parity with Next.js", () => {
     "/unsafe/x.:ext([^/]+)+/end",
     // Neighbouring parameters with overlapping constraints.
     "/unsafe/:a(a+):b(a+):c(a+):d(a+)",
+    // A constraint that can consume the `/` separator plus adjacent text.
+    "/unsafe/:x(a(?:/a)?)+/end",
   ])("ignores the unsafe source %s", async (source) => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

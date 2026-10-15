@@ -9,7 +9,7 @@
  */
 type RegexNode =
   | { kind: "atom"; symbol: RegexSymbol | null; fixedWidth: boolean }
-  | { kind: "assertion"; child: RegexNode }
+  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean }
   | { kind: "sequence"; children: RegexNode[] }
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
@@ -233,12 +233,14 @@ class RegexParser {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
     }
     let assertion = false;
+    let negativeLookahead = false;
     if (this.pattern[this.index] === "?") {
       const marker = this.pattern[this.index + 1];
       if (marker === ":") {
         this.index += 2;
       } else if (marker === "=" || marker === "!") {
         assertion = true;
+        negativeLookahead = marker === "!";
         this.index += 2;
       } else if (
         marker === "<" &&
@@ -262,7 +264,12 @@ class RegexParser {
     const child = this.parseAlternation();
     if (this.pattern[this.index] === ")") this.index++;
     this.depth--;
-    return assertion ? this.node({ kind: "assertion", child }) : child;
+    if (!assertion) return child;
+    return this.node(
+      negativeLookahead
+        ? { kind: "assertion", child, negativeLookahead }
+        : { kind: "assertion", child },
+    );
   }
 
   private skipGroup(): void {
@@ -935,6 +942,90 @@ export function analyzeRegexSafety(
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
   return findSafetyIssue(node);
+}
+
+/**
+ * Whether `node` may consume a character that starts `separator`. A negative
+ * lookahead for a prefix of the separator (path-to-regexp's default
+ * `(?:(?!\.)[^\/])+?`) shields the atom right after it, because the pattern
+ * cannot continue at a position where the separator starts.
+ */
+function mayConsumeSeparatorStart(
+  node: RegexNode,
+  separator: RegexSymbol[],
+  budget: WordBudget,
+): boolean {
+  switch (node.kind) {
+    case "atom":
+      return !node.symbol || symbolsMayOverlap(node.symbol, separator[0]);
+    case "assertion":
+      return false;
+    case "repeat":
+      return node.max > 0 && mayConsumeSeparatorStart(node.child, separator, budget);
+    case "alternation":
+      return node.branches.some((branch) => mayConsumeSeparatorStart(branch, separator, budget));
+    case "sequence":
+      for (let index = 0; index < node.children.length; index++) {
+        const child = node.children[index];
+        const next = node.children[index + 1];
+        if (
+          child.kind === "assertion" &&
+          child.negativeLookahead &&
+          next?.kind === "atom" &&
+          next.fixedWidth &&
+          excludesSeparatorPrefix(child.child, separator, budget)
+        ) {
+          index++;
+          continue;
+        }
+        if (mayConsumeSeparatorStart(child, separator, budget)) return true;
+      }
+      return false;
+  }
+}
+
+function excludesSeparatorPrefix(
+  node: RegexNode,
+  separator: RegexSymbol[],
+  budget: WordBudget,
+): boolean {
+  const words = fixedWords(node, budget);
+  if (!words || words.length !== 1) return false;
+  const [word] = words;
+  return (
+    word.length > 0 &&
+    word.length <= separator.length &&
+    word.every((symbol, index) => symbol.key === separator[index].key)
+  );
+}
+
+/**
+ * Whether `pattern(?:separator pattern)*` splits every input one way. That
+ * holds when `pattern` has a fixed width (every chunk is the same length), or
+ * when `pattern` can never consume a character where the separator starts
+ * (each repetition must end at the next occurrence of it). Unknown constructs
+ * fail closed.
+ */
+export function repeatSeparatorIsUnambiguous(
+  pattern: string,
+  separator: string,
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+): boolean {
+  if (!separator || pattern.length > MAX_PATTERN_LENGTH) return false;
+  const ignoreCase = options.ignoreCase === true;
+  const parser = new RegexParser(
+    pattern,
+    ignoreCase,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
+  const node = parser.parse();
+  if (parser.exceededBudget) return false;
+  if (exactWidth(node) !== null) return true;
+  const separatorSymbols = separator
+    .split("")
+    .map((character) => literalSymbol(character, ignoreCase));
+  const budget = { words: 0, symbols: 0, exceeded: false };
+  return !mayConsumeSeparatorStart(node, separatorSymbols, budget) && !budget.exceeded;
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
