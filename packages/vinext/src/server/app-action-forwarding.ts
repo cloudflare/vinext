@@ -1,4 +1,5 @@
 import { RequestCookies, ResponseCookies } from "vinext/shims/internal/cookies";
+import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
@@ -161,6 +162,23 @@ export function areServerActionsOwnedByRoute(
       (currentRoutePattern !== null && ownerPatterns?.includes(currentRoutePattern) === true)
     );
   });
+}
+
+/**
+ * The execution context a forwarded action re-enters the app handler with.
+ * Middleware runs again there, so it keeps the server-owned middleware origin.
+ */
+export function createForwardedActionContext(
+  executionContext: ExecutionContextLike | null | undefined,
+): { actionForwarded: true } & Partial<ExecutionContextLike> {
+  if (!executionContext) return { actionForwarded: true };
+  return {
+    actionForwarded: true,
+    cache: executionContext.cache,
+    middlewareOrigin: executionContext.middlewareOrigin,
+    passThroughOnException: executionContext.passThroughOnException?.bind(executionContext),
+    waitUntil: executionContext.waitUntil.bind(executionContext),
+  };
 }
 
 export async function forwardServerActionIfNeeded(

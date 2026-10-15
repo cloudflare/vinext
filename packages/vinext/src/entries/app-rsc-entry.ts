@@ -1673,6 +1673,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     } = await __loadAppServerActionExecution();
     const {
       areServerActionsOwnedByRoute: __areServerActionsOwnedByRoute,
+      createForwardedActionContext: __createForwardedActionContext,
       forwardServerActionIfNeeded: __forwardServerActionIfNeeded,
     } = await __loadAppActionForwarding();
     // A multipart form POST to a page is always a server-action attempt, so a
@@ -1716,17 +1717,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           clearRequestContext: __clearRequestContext,
           currentRoutePattern: routeMatch?.route.pattern ?? null,
           dispatch(__forwardRequest) {
-            const __executionContext = __getRequestExecutionContext();
             return __appRscHandler(
               __forwardRequest,
-              __executionContext
-                ? {
-                    actionForwarded: true,
-                    cache: __executionContext.cache,
-                    passThroughOnException: __executionContext.passThroughOnException?.bind(__executionContext),
-                    waitUntil: __executionContext.waitUntil.bind(__executionContext),
-                  }
-                : { actionForwarded: true },
+              __createForwardedActionContext(__getRequestExecutionContext()),
             );
           },
           middlewareContext,
@@ -1766,8 +1759,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     sourceConfigHeaders,
     searchParams,
   }) {
-    const { forwardServerActionIfNeeded: __forwardServerActionIfNeeded } =
-      await __loadAppActionForwarding();
+    const {
+      createForwardedActionContext: __createForwardedActionContext,
+      forwardServerActionIfNeeded: __forwardServerActionIfNeeded,
+    } = await __loadAppActionForwarding();
     const __currentActionMatch = routeMatch;
     const __forwardResponse = await __forwardServerActionIfNeeded({
       actionId,
@@ -1777,17 +1772,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       clearRequestContext: __clearRequestContext,
       currentRoutePattern: __currentActionMatch?.route.pattern ?? null,
       dispatch(__forwardRequest) {
-        const __executionContext = __getRequestExecutionContext();
         return __appRscHandler(
           __forwardRequest,
-          __executionContext
-            ? {
-                actionForwarded: true,
-                cache: __executionContext.cache,
-                passThroughOnException: __executionContext.passThroughOnException?.bind(__executionContext),
-                waitUntil: __executionContext.waitUntil.bind(__executionContext),
-              }
-            : { actionForwarded: true },
+          __createForwardedActionContext(__getRequestExecutionContext()),
         );
       },
       middlewareContext,
