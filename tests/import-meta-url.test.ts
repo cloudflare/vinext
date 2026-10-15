@@ -241,6 +241,7 @@ describe("vinext:import-meta-url plugin", () => {
         `if (import.meta.hot) {`,
         `  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {});`,
         `}`,
+        `other.__hmr_import(import.meta.url);`,
         ``,
       ].join("\n"),
       pagePath,
@@ -250,6 +251,7 @@ describe("vinext:import-meta-url plugin", () => {
 
     expect(result?.code).toContain(`RefreshRuntime.__hmr_import(import.meta.url)`);
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
+    expect(result?.code).toContain(`other.__hmr_import("file:///ROOT/pages/index.tsx")`);
   });
 
   it("rewrites optional chained import.meta.url reads", () => {

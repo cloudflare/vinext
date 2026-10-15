@@ -1039,8 +1039,10 @@ function isNewUrlExpression(value: ESTree.Node): value is ESTree.NewExpression {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
 }
 
-// Matches `RefreshRuntime.__hmr_import(...)` from the React Refresh dev footer.
-// The callee is a plain member read, so it can't hold an import.meta.url read.
+// Matches `RefreshRuntime.__hmr_import(...)` from the JS React Refresh footer
+// (@vitejs/plugin-react 5 without the native wrapper, plugin-react-swc < 4.3).
+// The callee is `RefreshRuntime.__hmr_import`, so it can't hold an
+// import.meta.url read.
 function isHmrImportCall(value: ESTree.Node): value is ESTree.CallExpression & {
   arguments: [ESTree.Node, ...ESTree.Node[]];
 } {
@@ -1049,6 +1051,7 @@ function isHmrImportCall(value: ESTree.Node): value is ESTree.CallExpression & {
     value.arguments.length > 0 &&
     value.callee.type === "MemberExpression" &&
     !value.callee.computed &&
+    isIdentifierNamed(value.callee.object, "RefreshRuntime") &&
     isIdentifierNamed(value.callee.property, "__hmr_import")
   );
 }
