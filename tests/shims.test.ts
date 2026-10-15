@@ -8239,6 +8239,22 @@ describe('"use cache" runtime', () => {
     );
     consumeInvalidDynamicUsageError();
 
+    // Another "use cache" that catches the read still fails, so it can't
+    // store a fallback.
+    const fallsBack = registerCachedFunction(
+      async () => {
+        try {
+          return typeof Reflect.get(escaped!, "then");
+        } catch {
+          return "fallback";
+        }
+      },
+      "/fixture/app/cached/escape-fallback.tsx:default",
+      "",
+    );
+    await expect(fallsBack()).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+    consumeInvalidDynamicUsageError();
+
     // A read inside another cache scope fails with the same error.
     const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
     const readsEscaped = unstable_cache(

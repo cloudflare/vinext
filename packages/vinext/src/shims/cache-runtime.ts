@@ -1513,6 +1513,11 @@ function makeErroringPageSearchParams(): Promise<Record<string, never>> {
       ) {
         const error = createUseCacheAccessError("searchParams");
         if (cacheContext) cacheContext.invalidDynamicUsageError ??= error;
+        // A cache the value escaped into must not store a result either.
+        const activeCacheContext = cacheContextStorage.getStore();
+        if (activeCacheContext && activeCacheContext !== cacheContext) {
+          activeCacheContext.invalidDynamicUsageError ??= error;
+        }
         recordInvalidDynamicUsageError(state, error);
         throw error;
       }
