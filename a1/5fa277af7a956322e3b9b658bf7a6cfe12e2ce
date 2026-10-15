@@ -1,0 +1,21 @@
+packages/vinext/src/index.ts
+  s_c53ad7609d57e4::t_28c612c4cfe6e9 244,8693
+tests/cloudflare-dev-module-urls.test.ts
+  s_c53ad7609d57e4::t_eb5ae178fb2011 1-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a15fa277af7a956322e3b9b658bf7a6cfe12e2ce",
+  "prompts": {},
+  "sessions": {
+    "s_c53ad7609d57e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "721c15aa-411a-4f15-8265-527858cabdf4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
