@@ -8161,6 +8161,35 @@ describe('"use cache" runtime', () => {
     ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
   });
 
+  // Next.js: `makeErroringSearchParamsForUseCache` throws when `then` is read,
+  // so React fails while it checks the value, before it counts pending work.
+  it("fails a read of searchParams.then inside the cache scope", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => typeof Reflect.get(props.searchParams!, "then"),
+      "/fixture/app/cached/then-read/page.tsx:default",
+      "",
+    );
+
+    await expect(
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams({ q: "first" }),
+        }),
+      ),
+    ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+  });
+
   // Next.js passes `$$isPage` to a "use cache" function invoked as a page
   // component or page metadata resolver (create-component-tree.tsx,
   // resolve-metadata.ts), so page semantics also hold for a cache function

@@ -1469,11 +1469,13 @@ function toReplayablePageArgs(args: readonly unknown[], index: number): unknown[
 function withErroringPageSearchParams(args: readonly unknown[], index: number): readonly unknown[] {
   const props = args[index];
   if (!isPagePropsObject(props) || "searchParams" in props) return args;
+  const throwForAccess = () => throwIfInsideCacheScope("searchParams");
   return replaceArgument(args, index, {
     ...props,
+    // Like Next.js, reading `then` throws too, not only calling it.
     searchParams: makeThenableParams(
       {},
-      { observeParamAccess: () => throwIfInsideCacheScope("searchParams") },
+      { observeParamAccess: throwForAccess, observeThenRead: throwForAccess },
     ),
   });
 }
