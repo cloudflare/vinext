@@ -115,7 +115,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
     });
   });
 
-  it("follows response-URL redirects without discarding the body", () => {
+  it("follows live response-URL redirects and requires body discard", () => {
     const decision = classify({
       effectiveHistoryUpdateMode: "push",
       redirectDepth: 2,
@@ -124,7 +124,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
     });
 
     expect(decision).toEqual({
-      discardBody: false,
+      discardBody: true,
       kind: "followRedirect",
       redirect: {
         href: "/target?tab=1",
