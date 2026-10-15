@@ -68,3 +68,28 @@ export function mergeMiddlewareResponseHeaders(
     target.set(key, value);
   }
 }
+
+/**
+ * Merge middleware response headers onto an already-built response's headers.
+ *
+ * Next.js writes middleware response headers before the handler runs and then
+ * appends the handler response's Set-Cookie values, so middleware cookies come
+ * first. Keeping that order makes a handler's cookie for the same name (a
+ * logout deletion or session rotation) the one the browser applies last.
+ */
+export function mergeMiddlewareResponseHeadersBeforeResponseCookies(
+  target: Headers,
+  middlewareHeaders: Headers | null,
+): void {
+  if (!middlewareHeaders?.has("set-cookie")) {
+    mergeMiddlewareResponseHeaders(target, middlewareHeaders);
+    return;
+  }
+
+  const responseCookies = target.getSetCookie();
+  target.delete("set-cookie");
+  mergeMiddlewareResponseHeaders(target, middlewareHeaders);
+  for (const cookie of responseCookies) {
+    target.append("set-cookie", cookie);
+  }
+}

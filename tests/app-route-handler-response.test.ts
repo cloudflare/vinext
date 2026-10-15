@@ -72,7 +72,7 @@ describe("app route handler response helpers", () => {
     await expect(result.text()).resolves.toBe("hello");
   });
 
-  it("appends additive middleware headers for Set-Cookie and Vary", async () => {
+  it("merges Vary and places middleware Set-Cookie before the response's own", async () => {
     const response = new Response("hello", {
       status: 200,
       headers: [
@@ -92,10 +92,12 @@ describe("app route handler response helpers", () => {
     });
 
     expect(result.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+    // Next.js sets middleware headers before the handler runs and appends the
+    // handler's Set-Cookie afterwards, so the handler's cookie is applied last.
     expect(result.headers.getSetCookie()).toEqual([
-      "existing=1; Path=/",
       "mw=1; Path=/",
       "mw=2; Path=/; HttpOnly",
+      "existing=1; Path=/",
     ]);
     await expect(result.text()).resolves.toBe("hello");
   });

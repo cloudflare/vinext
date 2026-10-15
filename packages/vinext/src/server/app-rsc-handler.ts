@@ -69,6 +69,7 @@ import {
 import { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
+import { mergeMiddlewareResponseHeadersBeforeResponseCookies } from "./middleware-response-headers.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import type {
   AppPrerenderRootParamNamesMap,
@@ -404,7 +405,7 @@ function applyMiddlewareContextToResponse(
 
   const headers = new Headers(response.headers);
   const responseLink = appendToPostConfigLink ? headers.get("link") : null;
-  mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+  mergeMiddlewareResponseHeadersBeforeResponseCookies(headers, middlewareContext.headers);
   const middlewareLink = middlewareContext.headers?.get("link");
   if (responseLink && middlewareLink) {
     headers.set("link", `${middlewareLink}, ${responseLink}`);

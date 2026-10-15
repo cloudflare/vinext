@@ -154,6 +154,17 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     response.headers.set("x-mw-has-session", "true");
   }
 
+  // Sliding-session refresh: re-issue the session cookie with a renewed
+  // expiry. The route handler's logout/rotation cookie must still win.
+  if (pathname === "/api/session-refresh" && sessionToken) {
+    response.cookies.set("session", sessionToken.value, {
+      path: "/",
+      httpOnly: true,
+      maxAge: 600,
+    });
+    return response;
+  }
+
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
   // Ref: opennextjs-cloudflare middleware.ts — redirect with set-cookie header
   // Same-origin redirect to a double-slash path. vinext must keep the
@@ -525,6 +536,7 @@ export const config = {
     "/headers/override-from-middleware",
     "/header-override-delete",
     "/api/header-override-delete",
+    "/api/session-refresh",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-fallback-to-app/:path*",

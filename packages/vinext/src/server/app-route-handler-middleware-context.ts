@@ -1,4 +1,4 @@
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { mergeMiddlewareResponseHeadersBeforeResponseCookies } from "./middleware-response-headers.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -15,7 +15,7 @@ export function applyRouteHandlerMiddlewareContext(
   }
 
   const responseHeaders = new Headers(response.headers);
-  mergeMiddlewareResponseHeaders(responseHeaders, middlewareContext.headers);
+  mergeMiddlewareResponseHeadersBeforeResponseCookies(responseHeaders, middlewareContext.headers);
 
   return new Response(response.body, {
     status: middlewareContext.status ?? response.status,

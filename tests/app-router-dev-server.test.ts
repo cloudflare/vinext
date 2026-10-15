@@ -1121,6 +1121,31 @@ describe("App Router integration", () => {
     expect(deleteCookie).toContain("Expires=");
   });
 
+  // Next.js writes middleware response headers before the handler runs and
+  // appends the handler's Set-Cookie afterwards, so the browser keeps the
+  // handler's cookie when middleware refreshes the same one.
+  it.each([
+    { method: "POST", status: 200, session: /^session=; / },
+    { method: "PUT", status: 200, session: /^session=rotated; / },
+    { method: "DELETE", status: 307, session: /^session=; / },
+  ])(
+    "orders a route handler's $method cookie after middleware's refresh of it",
+    async ({ method, status, session }) => {
+      const res = await fetch(`${baseUrl}/api/session-refresh`, {
+        method,
+        headers: { cookie: "session=old" },
+        redirect: "manual",
+      });
+      expect(res.status).toBe(status);
+      const sessionCookies = res.headers
+        .getSetCookie()
+        .filter((cookie: string) => cookie.startsWith("session="));
+      expect(sessionCookies).toHaveLength(2);
+      expect(sessionCookies[0]).toMatch(/^session=old; .*Max-Age=600/);
+      expect(sessionCookies[1]).toMatch(session);
+    },
+  );
+
   it("renders custom not-found.tsx for unmatched routes", async () => {
     const res = await fetch(`${baseUrl}/does-not-exist`);
     expect(res.status).toBe(404);
