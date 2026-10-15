@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { createBuilder, type InlineConfig } from "vite";
@@ -21,8 +22,20 @@ vi.mock("../packages/vinext/src/utils/plugin-rsc-version.js", async (importOrigi
 });
 
 const repoNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+// RSDW is a vinext dev dependency, so it is not linked at the repo root.
+const repoRsdw = path.dirname(
+  createRequire(path.resolve(import.meta.dirname, "../packages/vinext/package.json")).resolve(
+    "react-server-dom-webpack/package.json",
+  ),
+);
 
-function createAppWithReact(version: string, { declareRsdw = true } = {}): string {
+function createAppWithReact(
+  version: string,
+  {
+    declareRsdw = true,
+    installRsdw = declareRsdw,
+  }: { declareRsdw?: boolean; installRsdw?: boolean } = {},
+): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-react-version-"));
   fs.writeFileSync(
     path.join(root, "package.json"),
@@ -50,6 +63,9 @@ function createAppWithReact(version: string, { declareRsdw = true } = {}): strin
   for (const entry of fs.readdirSync(repoNodeModules)) {
     if (entry === "react" || entry.startsWith(".")) continue;
     fs.symlinkSync(path.join(repoNodeModules, entry), path.join(nodeModules, entry), "junction");
+  }
+  if (installRsdw) {
+    fs.symlinkSync(repoRsdw, path.join(nodeModules, "react-server-dom-webpack"), "junction");
   }
   const react = path.join(nodeModules, "react");
   fs.mkdirSync(react);
@@ -107,8 +123,23 @@ describe("vinext build React version check", () => {
 
     await expect(createAppBuilder(root)).rejects.toThrow(
       "vinext: App Router requires react, react-dom, and react-server-dom-webpack 19.3.1 or later.\n" +
-        "@vitejs/plugin-rsc 0.5.37 bundles an older react-server-dom-webpack, so add the latest to your package.json.\n" +
+        "@vitejs/plugin-rsc 0.5.37 bundles an older react-server-dom-webpack, so install the latest in your app.\n" +
         "Run: npm install react-server-dom-webpack@latest",
+    );
+  });
+
+  it("accepts an installed app RSDW while plugin-rsc bundles RSDW 19.3.0", async () => {
+    pluginRsc.version = "0.5.37";
+    root = createAppWithReact("19.3.1");
+    await expect(createAppBuilder(root)).resolves.toBeDefined();
+  });
+
+  it("requires the declared app RSDW to be installed", async () => {
+    pluginRsc.version = "0.5.37";
+    root = createAppWithReact("19.3.1", { installRsdw: false });
+
+    await expect(createAppBuilder(root)).rejects.toThrow(
+      "Run: npm install react-server-dom-webpack@latest",
     );
   });
 
