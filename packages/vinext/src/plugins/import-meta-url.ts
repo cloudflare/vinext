@@ -725,9 +725,13 @@ function importMetaUrlValue(
 
 function collectImportMetaUrlRanges(ast: ESTree.Program): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
-  const hasRefreshRuntimeImport = hasReactRefreshRuntimeImport(ast);
+  const reactRefreshFooterUrls = collectReactRefreshFooterUrls(ast);
 
   function visit(value: ESTree.Node): void {
+    // React Refresh's dev footer re-imports the module by its own URL. The
+    // browser must fetch the real module URL, not the file:///ROOT identity.
+    if (reactRefreshFooterUrls.has(value)) return;
+
     if (isImportMetaUrlNode(value)) {
       ranges.push({ start: value.start, end: value.end });
       return;
@@ -746,15 +750,6 @@ function collectImportMetaUrlRanges(ast: ESTree.Program): Array<{ start: number;
       }
       // The callee is always the bare `URL` identifier (see isNewUrlExpression),
       // so it can never contain an import.meta.url read — no need to visit it.
-      return;
-    }
-
-    if (hasRefreshRuntimeImport && isHmrImportCall(value)) {
-      // React Refresh's dev footer re-imports the module by its own URL. The
-      // browser must fetch the real module URL, not the file:///ROOT identity.
-      const [first, ...rest] = value.arguments;
-      if (!isImportMetaUrlNode(first)) visit(first);
-      for (const arg of rest) visit(arg);
       return;
     }
 
@@ -1041,9 +1036,36 @@ function isNewUrlExpression(value: ESTree.Node): value is ESTree.NewExpression {
 }
 
 // The JS React Refresh footer (@vitejs/plugin-react 5 without the native
-// wrapper, plugin-react-swc < 4.3) imports the runtime as
-// `import * as RefreshRuntime from "<host>/@react-refresh"`. A module-scope
-// import is the only `RefreshRuntime` binding the footer's call can see.
+// wrapper, plugin-react-swc < 4.3) appends at module scope:
+//
+//   import * as RefreshRuntime from "<host>/@react-refresh";
+//   if (import.meta.hot && !inWebWorker) {
+//     RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+//
+// Only that top-level shape is matched. Its `RefreshRuntime` can only resolve
+// to the runtime import unless the `if` block itself declares the name.
+function collectReactRefreshFooterUrls(ast: ESTree.Program): Set<ESTree.Node> {
+  const urls = new Set<ESTree.Node>();
+  if (!hasReactRefreshRuntimeImport(ast)) return urls;
+  for (const statement of ast.body) {
+    if (statement.type !== "IfStatement" || statement.consequent.type !== "BlockStatement") {
+      continue;
+    }
+    const block = statement.consequent.body;
+    if (blockDeclaresName(block, "RefreshRuntime")) continue;
+    for (const child of block) {
+      if (child.type !== "ExpressionStatement") continue;
+      const call = child.expression;
+      if (call.type !== "CallExpression" || call.callee.type !== "MemberExpression") continue;
+      const hmrImport = call.callee.object;
+      if (!isHmrImportCall(hmrImport)) continue;
+      const [url] = hmrImport.arguments;
+      if (isImportMetaUrlNode(url)) urls.add(url);
+    }
+  }
+  return urls;
+}
+
 function hasReactRefreshRuntimeImport(ast: ESTree.Program): boolean {
   return ast.body.some(
     (statement) =>
@@ -1058,14 +1080,21 @@ function hasReactRefreshRuntimeImport(ast: ESTree.Program): boolean {
   );
 }
 
-// Matches the footer's `RefreshRuntime.__hmr_import(...)` call. The callee is
-// `RefreshRuntime.__hmr_import`, so it can't hold an import.meta.url read.
-function isHmrImportCall(value: ESTree.Node): value is ESTree.CallExpression & {
-  arguments: [ESTree.Node, ...ESTree.Node[]];
-} {
+function blockDeclaresName(statements: ESTree.Statement[], name: string): boolean {
+  const names = new Set<string>();
+  for (const statement of statements) {
+    if (statement.type === "VariableDeclaration") {
+      for (const declarator of statement.declarations) collectBindingNames(declarator.id, names);
+    } else if (statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") {
+      collectBindingNames(statement.id, names);
+    }
+  }
+  return names.has(name);
+}
+
+function isHmrImportCall(value: ESTree.Node): value is ESTree.CallExpression {
   return (
     value.type === "CallExpression" &&
-    value.arguments.length > 0 &&
     value.callee.type === "MemberExpression" &&
     !value.callee.computed &&
     isIdentifierNamed(value.callee.object, "RefreshRuntime") &&

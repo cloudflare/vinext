@@ -268,6 +268,29 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`RefreshRuntime.__hmr_import("file:///ROOT/pages/index.tsx")`);
   });
 
+  it("rewrites __hmr_import calls on a nested RefreshRuntime binding", () => {
+    const result = rewriteImportMetaUrl(
+      [
+        `import * as RefreshRuntime from "/@react-refresh";`,
+        `export function load(RefreshRuntime) {`,
+        `  if (import.meta.hot) {`,
+        `    RefreshRuntime.__hmr_import(import.meta.url).then(() => {});`,
+        `  }`,
+        `}`,
+        `if (import.meta.hot) {`,
+        `  const RefreshRuntime = runtime;`,
+        `  RefreshRuntime.__hmr_import(import.meta.url).then(() => {});`,
+        `}`,
+        ``,
+      ].join("\n"),
+      pagePath,
+      linkedRoot,
+      "client",
+    );
+
+    expect(result?.code).not.toContain(`__hmr_import(import.meta.url)`);
+  });
+
   it("rewrites optional chained import.meta.url reads", () => {
     const result = rewriteImportMetaUrl(
       `export const url = import.meta?.url;\n`,
