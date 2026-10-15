@@ -1,5 +1,44 @@
 # vinext
 
+## 1.2.1
+
+### Bug Fixes
+
+#### App Router
+
+- match prefetch and visited cache entries for // pathnames on the app origin (#3999)
+- keep router.prefetch destinations for // pathnames on the app origin (#3987)
+- keep RSC request URLs for // pathnames on the app origin (#3981)
+- don't report a platform-cancelled render as a server error (#3994)
+
+#### Misc
+
+- **Dev:** stop Pages Worker deps re-optimizing during Cloudflare startup (#4019)
+- **Build:** resolve output-root externals from nested chunks (#4021)
+- **Init:** set up Tailwind PostCSS when Next uses the Turbopack loader (#4016)
+- **Dev:** stop defaulting the vite dev port to 3000 (#4009)
+- **Cloudflare:** serve Vite module URLs before runWorkerFirst in dev (#4010)
+- **Deps:** require React 19.3.1 (#3995)
+- **Headers:** share RequestCookies method symbols across shim module instances (#4001)
+- **Nitro:** stop generating Nitro SWR route rules from revalidate exports (#3979)
+- **Head:** drop on* attributes in any case from next/head tags (#3984)
+- **Middleware:** match matcher paths case-sensitively like Next.js (#3978)
+- **Build:** compile "use cache" imports in browser Web Workers as references (#3980)
+- **Server:** 404 absolute-form request targets on Node entries (#3986)
+- **Navigation:** never treat a same-origin // pathname as a protocol-relative local path (#3992)
+- **Image:** keep encoded dot segments in _next/static sources literal on Workers (#3982)
+- **Image:** reject image sources whose dot segments resolve to a protocol-relative path (#3983)
+- **Server:** only trust NextRequest.ip/geo from Cloudflare metadata or a trusted proxy (#3989)
+- **i18n:** keep relative hrefs on the configured locale domain (#3990)
+
+### Performance
+
+- replace deprecated parseAst and read imports from oxc's module record (#3997)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.2.0
 
 Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
@@ -123,7 +162,7 @@ Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the h
 - **Prerender:** write /index artifacts apart from the root page's (#3888)
 - **PPR:** key fallback shells apart from the pages of their literal paths (#3891)
 - **Preview:** run Node Pages Router builds in vite preview (#3839)
-- serve client build files outside _next/static before routing (#3838)
+- serve client build files outside \_next/static before routing (#3838)
 - **Metadata:** substitute streamed icon keys with a replacer function (#3868)
 - **Router:** route hybrid Pages fallbacks by the raw request pathname (#3859)
 - **Init:** disable the Workers Cache left by an earlier setup when switching CDN cache (#3814)
