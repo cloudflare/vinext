@@ -2390,6 +2390,46 @@ describe("App Router integration", () => {
     expect(await res.text()).toBe("Server action not found.");
   });
 
+  // Next.js only runs Server Action handling for App pages, so a Route
+  // Handler receives multipart POSTs without the action body limit (#3886).
+  it("delivers multipart POSTs larger than the Server Action body limit to a route handler", async () => {
+    const name = "x".repeat(1024 * 1024 + 1);
+    const textBody = new FormData();
+    textBody.append("name", name);
+    const textRes = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body: textBody,
+    });
+    expect(textRes.status).toBe(202);
+    expect(await textRes.json()).toEqual({ message: "ok", name, email: null });
+
+    const fileBody = new FormData();
+    fileBody.append("name", "upload");
+    fileBody.append("image", new Blob([name], { type: "image/bmp" }), "image.bmp");
+    const fileRes = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body: fileBody,
+    });
+    expect(fileRes.status).toBe(202);
+    expect(await fileRes.json()).toEqual({ message: "ok", name: "upload", email: null });
+  });
+
+  it("does not apply the Server Action origin check to multipart route handler POSTs", async () => {
+    const body = new FormData();
+    body.append("name", "cross-origin");
+    const res = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      // The dev origin guard admits any *.localhost origin; the Server Action
+      // check would reject it as cross-origin.
+      headers: { Origin: "http://other.localhost", Host: new URL(baseUrl).host },
+      body,
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ message: "ok", name: "cross-origin", email: null });
+  });
+
   it("returns action-not-found before reading cyclic multipart payloads for stale ids", async () => {
     const body = new FormData();
     body.set("0", '["$Q0"]');

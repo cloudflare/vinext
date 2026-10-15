@@ -1677,9 +1677,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     } = await __loadAppActionForwarding();
     // A multipart form POST to a page is always a server-action attempt, so a
     // body that decodes to no action must surface as 404 action-not-found
-    // (#1340). Route handlers run after this dispatch and accept raw multipart
-    // POSTs, so only flag actual page routes. The __loadPage / __loadRouteHandler
-    // markers are static and available before lazy module hydration.
+    // (#1340). Route handlers never reach this dispatch (#3886) and unmatched
+    // routes fall through, so only flag actual page routes. The __loadPage /
+    // __loadRouteHandler markers are static and available before lazy module
+    // hydration.
     //
     // Only the progressive (multipart, no actionId) POST path consults
     // hasPageRoute, so skip the route match entirely for every other request

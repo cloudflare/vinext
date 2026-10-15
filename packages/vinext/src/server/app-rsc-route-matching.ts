@@ -159,7 +159,9 @@ function appRscPathnameParts(pathname: string, isNormalized = false): string[] {
     : splitPathnameForRouteMatch(normalizedPathname);
 }
 
-function isAppRouteHandlerRoute(route: AppRscRouteForMatching): boolean {
+export function isAppRouteHandlerRoute(
+  route: Pick<AppRscRouteForMatching, "__loadRouteHandler" | "routeHandler">,
+): boolean {
   // Generated manifests retain the lazy loader before the first request and
   // hydrate routeHandler afterwards. Classification must not change when that
   // module load completes.
