@@ -48,6 +48,7 @@ import {
   runWithDetachedFetchObservations,
 } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { createUseCacheAccessError } from "./internal/headers-state.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -1469,13 +1470,22 @@ function toReplayablePageArgs(args: readonly unknown[], index: number): unknown[
 function withErroringPageSearchParams(args: readonly unknown[], index: number): readonly unknown[] {
   const props = args[index];
   if (!isPagePropsObject(props) || "searchParams" in props) return args;
-  const throwForAccess = () => throwIfInsideCacheScope("searchParams");
   return replaceArgument(args, index, {
     ...props,
     // Like Next.js, reading `then` throws too, not only calling it.
     searchParams: makeThenableParams(
       {},
-      { observeParamAccess: throwForAccess, observeThenRead: throwForAccess },
+      {
+        observeParamAccess: throwForPageSearchParamsAccess,
+        observeThenRead: throwForPageSearchParamsAccess,
+      },
     ),
   });
+}
+
+function throwForPageSearchParamsAccess(): never {
+  // Inside the cache scope, this also records the invalid dynamic usage.
+  throwIfInsideCacheScope("searchParams");
+  // Like Next.js, the value keeps throwing after it escapes the cache scope.
+  throw createUseCacheAccessError("searchParams");
 }
