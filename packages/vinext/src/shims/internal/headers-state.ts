@@ -178,6 +178,18 @@ function propagateInvalidDynamicUsageError(state: VinextHeadersShimState, error:
   });
 }
 
+/**
+ * Record an invalid dynamic API use on `state`, keeping the first one, like
+ * Next.js's `workStore.invalidDynamicUsageError ??= error`.
+ */
+export function recordInvalidDynamicUsageError(
+  state: VinextHeadersShimState,
+  error: unknown,
+): void {
+  state.invalidDynamicUsageError ??= error;
+  propagateInvalidDynamicUsageError(state, error);
+}
+
 export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
   getHeadersShimState().renderRequestApiUsage.add(kind);
 }

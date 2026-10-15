@@ -48,7 +48,11 @@ import {
   runWithDetachedFetchObservations,
 } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { createUseCacheAccessError } from "./internal/headers-state.js";
+import {
+  createUseCacheAccessError,
+  getHeadersShimState,
+  recordInvalidDynamicUsageError,
+} from "./internal/headers-state.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -1463,29 +1467,41 @@ function toReplayablePageArgs(args: readonly unknown[], index: number): unknown[
 
 /**
  * Give page props at `index` without `searchParams` (a Response Store replay of
- * args encoded by `toReplayablePageArgs`) a value that throws on
- * access inside the cache scope, like Next.js's
- * `makeErroringSearchParamsForUseCache`, instead of `undefined`.
+ * args encoded by `toReplayablePageArgs`) an erroring value instead of
+ * `undefined`.
  */
 function withErroringPageSearchParams(args: readonly unknown[], index: number): readonly unknown[] {
   const props = args[index];
   if (!isPagePropsObject(props) || "searchParams" in props) return args;
   return replaceArgument(args, index, {
     ...props,
-    // Like Next.js, reading `then` throws too, not only calling it.
-    searchParams: makeThenableParams(
-      {},
-      {
-        observeParamAccess: throwForPageSearchParamsAccess,
-        observeThenRead: throwForPageSearchParamsAccess,
-      },
-    ),
+    searchParams: makeErroringPageSearchParams(),
   });
 }
 
-function throwForPageSearchParamsAccess(): never {
-  // Inside the cache scope, this also records the invalid dynamic usage.
-  throwIfInsideCacheScope("searchParams");
-  // Like Next.js, the value keeps throwing after it escapes the cache scope.
-  throw createUseCacheAccessError("searchParams");
+/**
+ * Like Next.js's `makeErroringSearchParamsForUseCache`, throw on a read of
+ * `then` or of any param, even after the value escapes the cache function.
+ * `catch`, `finally` and listing the (empty) keys go through.
+ */
+function makeErroringPageSearchParams() {
+  // Next.js closes over the workStore, so an access after the cache function
+  // returns still records the invalid use on the request it was made for.
+  const state = getHeadersShimState();
+  const throwForAccess = (): never => {
+    // Inside the cache scope, this records the invalid use and throws.
+    throwIfInsideCacheScope("searchParams");
+    const error = createUseCacheAccessError("searchParams");
+    recordInvalidDynamicUsageError(state, error);
+    throw error;
+  };
+  return makeThenableParams(
+    {},
+    {
+      observeParamAccess(keys) {
+        if (keys.length > 0) throwForAccess();
+      },
+      observeThenRead: throwForAccess,
+    },
+  );
 }

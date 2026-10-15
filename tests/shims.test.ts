@@ -8221,12 +8221,56 @@ describe('"use cache" runtime', () => {
         }),
       ),
     ).resolves.toBe("done");
-    expect(() => Reflect.get(escaped!, "then")).toThrow(
-      /`searchParams` cannot be called inside "use cache"/,
-    );
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    consumeInvalidDynamicUsageError();
+    let caught: unknown;
+    try {
+      Reflect.get(escaped!, "then");
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toMatch(/`searchParams` cannot be called inside "use cache"/);
+    // The caught access is still recorded, like Next.js's
+    // `workStore.invalidDynamicUsageError`.
+    expect(consumeInvalidDynamicUsageError()).toBe(caught);
     expect(() => Reflect.get(escaped!, "q")).toThrow(
       /`searchParams` cannot be called inside "use cache"/,
     );
+    consumeInvalidDynamicUsageError();
+  });
+
+  // Next.js binds `catch` and `finally` to the underlying promise, so they
+  // don't read `then` through the erroring proxy.
+  it("lets catch and finally on the page searchParams settle", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => [
+        await props.searchParams!.catch(() => "rejected"),
+        await props.searchParams!.finally(() => {}),
+        Object.keys(props.searchParams!),
+      ],
+      "/fixture/app/cached/catch-finally/page.tsx:default",
+      "",
+    );
+
+    await expect(
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams({ q: "first" }),
+        }),
+      ),
+    ).resolves.toEqual([{}, {}, []]);
   });
 
   // Next.js passes `$$isPage` to a "use cache" function invoked as a page
