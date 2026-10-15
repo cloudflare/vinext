@@ -601,6 +601,10 @@ jobs:
             label: cloudflare-pages-router-dev
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-dev-run-worker-first
+            label: cloudflare-dev-run-worker-first
+            shardIndex: 1
+            shardTotal: 1
           - project: static-export
             label: static-export
             shardIndex: 1

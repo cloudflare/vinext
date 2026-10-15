@@ -639,6 +639,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-dev-run-worker-first": {
+    testDir: "./tests/e2e/cloudflare-dev-run-worker-first",
+    use: { baseURL: "http://localhost:4204" },
+    server: {
+      // Dev with the runWorkerFirst pattern that `vinext init` generates
+      command: "CF_APP_BASIC_RUN_WORKER_FIRST=1 npx vp dev --port 4204",
+      cwd: "./tests/fixtures/cf-app-basic",
+      port: 4204,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  },
   "web-worker-vinext": {
     testDir: "./tests/e2e/web-worker",
     use: { baseURL: "http://localhost:4200" },
