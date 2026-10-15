@@ -144,10 +144,14 @@ export async function renderPagesFallback(
     ? buildRequestHeaders(request.headers, middlewareContext.requestHeaders)
     : null;
 
-  let pagesRequest = request;
-  if (pagesRequestHeaders) {
-    pagesRequest = cloneRequestWithHeaders(request, pagesRequestHeaders);
-  }
+  // Matching only reads headers. Moving the body into a header-overriding
+  // clone before a Pages route claims the request would leave it unusable for
+  // the App Router when no Pages route matches.
+  const matchRequest = pagesRequestHeaders
+    ? new Request(request.url, { headers: pagesRequestHeaders, method: request.method })
+    : request;
+  const claimPagesRequest = () =>
+    pagesRequestHeaders ? cloneRequestWithHeaders(request, pagesRequestHeaders) : request;
 
   const queryIndex = pathname.indexOf("?");
   const pagesPathname = queryIndex === -1 ? pathname : pathname.slice(0, queryIndex);
@@ -161,7 +165,7 @@ export async function renderPagesFallback(
     if (typeof pagesEntry.handleApiRoute !== "function") return null;
     const hasApiMatcher = typeof pagesEntry.matchApiRoute === "function";
     const apiMatch = hasApiMatcher
-      ? (pagesEntry.matchApiRoute?.(pagesUrl, pagesRequest) ?? null)
+      ? (pagesEntry.matchApiRoute?.(pagesUrl, matchRequest) ?? null)
       : null;
     if (hasApiMatcher && apiMatch === null) return null;
     if (apiMatch !== null && matchKind === "static" && apiMatch.route.isDynamic) return null;
@@ -178,6 +182,7 @@ export async function renderPagesFallback(
       beginRouteCacheability("pages-api", apiMatch.route.pattern);
     }
     const executionContext = getRequestExecutionContext();
+    const pagesRequest = claimPagesRequest();
     const apiArgs = [
       pagesRequest,
       pagesUrl,
@@ -198,7 +203,7 @@ export async function renderPagesFallback(
   if (typeof pagesEntry.renderPage !== "function") return null;
   const hasPageMatcher = typeof pagesEntry.matchPageRoute === "function";
   const pageMatch = hasPageMatcher
-    ? (pagesEntry.matchPageRoute?.(pagesUrl, pagesRequest) ?? null)
+    ? (pagesEntry.matchPageRoute?.(pagesUrl, matchRequest) ?? null)
     : null;
   if (hasPageMatcher && pageMatch === null) return null;
   if (pageMatch !== null && matchKind === "static" && pageMatch.route.isDynamic) return null;
@@ -215,6 +220,7 @@ export async function renderPagesFallback(
     // admission finalizer can apply the Pages manifest decision.
     beginRouteCacheability("pages-page", pageMatch.route.pattern);
   }
+  const pagesRequest = claimPagesRequest();
   const renderRequest = pagesDataRequest
     ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)
     : pagesRequest;

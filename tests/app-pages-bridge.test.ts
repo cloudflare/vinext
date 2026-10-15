@@ -212,6 +212,65 @@ describe("renderPagesFallback", () => {
     expect(renderPage).toHaveBeenCalledOnce();
   });
 
+  it("keeps the request body for the App Router when no Pages route matches", async () => {
+    const body = new FormData();
+    body.set("message", "hello");
+    const request = new Request("http://localhost/contact", { method: "POST", body });
+    const matchPageRoute = vi.fn<NonNullable<PagesEntry["matchPageRoute"]>>(() => null);
+    const renderPage = vi.fn<NonNullable<PagesEntry["renderPage"]>>(() => new Response("page"));
+
+    const response = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: {
+          headers: null,
+          requestHeaders: new Headers({ "x-from-middleware": "1" }),
+          status: null,
+        },
+        request,
+        url: new URL(request.url),
+      },
+      { ...defaultDeps, loadPagesEntry: () => ({ matchPageRoute, renderPage }) },
+    );
+
+    expect(response).toBeNull();
+    expect(matchPageRoute.mock.calls[0]?.[1].headers.get("x-from-middleware")).toBe("1");
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(request.bodyUsed).toBe(false);
+    expect((await request.formData()).get("message")).toBe("hello");
+  });
+
+  it("passes the request body and middleware headers to a matched Pages route", async () => {
+    const request = new Request("http://localhost/contact", { method: "POST", body: "hello" });
+    const renderPage = vi.fn<NonNullable<PagesEntry["renderPage"]>>(async (pagesRequest) => {
+      expect(pagesRequest.headers.get("x-from-middleware")).toBe("1");
+      return new Response(await pagesRequest.text());
+    });
+
+    const response = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: {
+          headers: null,
+          requestHeaders: new Headers({ "x-from-middleware": "1" }),
+          status: null,
+        },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({ params: {}, route: { isDynamic: false, pattern: "/contact" } }),
+          renderPage,
+        }),
+      },
+    );
+
+    expect(await response?.text()).toBe("hello");
+    expect(renderPage).toHaveBeenCalledOnce();
+  });
+
   it("returns null for RSC requests and does not call the Pages loader", async () => {
     const loadPagesEntry = vi.fn(() => ({}) as PagesEntry);
     const res = await renderPagesFallback(

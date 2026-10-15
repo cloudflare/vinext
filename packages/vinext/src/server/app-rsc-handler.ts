@@ -2182,19 +2182,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   // Next.js only handles Server Actions while rendering App pages. Route
   // Handlers and Pages routes receive multipart POSTs untouched, without the
-  // action origin check or body size limit. A static App match is final here;
-  // otherwise afterFiles and fallback rewrites or Pages routes may still claim
-  // the request, so the action waits for the final route.
+  // action origin check or body size limit. A static or interception App match
+  // is final here; otherwise afterFiles and fallback rewrites or Pages routes
+  // may still claim the request, so the action waits for the final route.
   let progressiveActionHandled = false;
   let progressiveActionFormState: ProgressiveActionFormStateResult | null = null;
-  let formState: ReactFormState | null = null;
-  let actionFailed = false;
-  let normalizedProgressiveActionError: unknown;
   const handleProgressiveAction = async (
     routeMatch: AppRscRouteMatch<TRoute> | null,
     unrenderedRouteMatch: AppRscRouteMatch<TRoute> | null,
-  ): Promise<Response | null> => {
-    progressiveActionHandled = true;
+  ): Promise<Response | ProgressiveActionFormStateResult | null> => {
     if (!filesystemRouteEligible || !isProgressiveActionRequest) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
     if (!options.handleProgressiveActionRequest) {
@@ -2213,35 +2209,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
     if (progressiveActionResult instanceof Response) return progressiveActionResult;
     if (progressiveActionResult?.kind !== "form-state") return null;
-    progressiveActionFormState = progressiveActionResult;
-    formState = progressiveActionResult.formState;
-    if (!("actionError" in progressiveActionResult)) return null;
-    actionFailed = true;
-    const actionError = progressiveActionResult.actionError;
-    const actionErrorDigest =
-      actionError && typeof actionError === "object" && "digest" in actionError
-        ? String(actionError.digest)
-        : null;
-    const actionHttpFallbackStatus = actionErrorDigest
-      ? (parseNextHttpErrorDigest(actionErrorDigest)?.status ?? null)
-      : null;
-    normalizedProgressiveActionError =
-      actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
-        ? actionError
-        : { digest: "NEXT_NOT_FOUND" };
     // Other errors answer a plain 500 before the render, so this is an action
     // that failed to find another Server Action.
-    if (middlewareContext.status === null && actionHttpFallbackStatus === null) {
+    if (
+      "actionError" in progressiveActionResult &&
+      middlewareContext.status === null &&
+      progressiveActionHttpFallbackStatus(progressiveActionResult.actionError) === null
+    ) {
       middlewareContext.status = 500;
     }
-    return null;
+    return progressiveActionResult;
   };
   if (preActionMatch && (isInterceptionMatch || !preActionMatch.route.isDynamic)) {
-    const progressiveActionResponse = await handleProgressiveAction(
+    progressiveActionHandled = true;
+    const progressiveActionResult = await handleProgressiveAction(
       renderedPreActionMatch,
       preActionMatch,
     );
-    if (progressiveActionResponse) return progressiveActionResponse;
+    if (progressiveActionResult instanceof Response) return progressiveActionResult;
+    progressiveActionFormState = progressiveActionResult;
   }
 
   let sourceConfigHeaders: Headers | null = null;
@@ -2632,11 +2618,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   if (!progressiveActionHandled) {
-    const progressiveActionResponse = await handleProgressiveAction(
-      renderedRouteMatch(match),
-      match,
-    );
-    if (progressiveActionResponse) return progressiveActionResponse;
+    const finalRouteMatch = renderedRouteMatch(match);
+    // The action renders the final route, so it sees that route's root params.
+    if (finalRouteMatch) {
+      setRootParams(pickRootParams(finalRouteMatch.params, finalRouteMatch.route.rootParamNames));
+    }
+    const progressiveActionResult = await handleProgressiveAction(finalRouteMatch, match);
+    if (progressiveActionResult instanceof Response) return progressiveActionResult;
+    progressiveActionFormState = progressiveActionResult;
   }
 
   if (!match) {
@@ -2853,6 +2842,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
   }
 
+  const failedProgressiveActionResult =
+    progressiveActionFormState && "actionError" in progressiveActionFormState
+      ? progressiveActionFormState
+      : null;
+  const actionHttpFallbackStatus = failedProgressiveActionResult
+    ? progressiveActionHttpFallbackStatus(failedProgressiveActionResult.actionError)
+    : null;
+  const normalizedProgressiveActionError =
+    actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
+      ? failedProgressiveActionResult?.actionError
+      : { digest: "NEXT_NOT_FOUND" };
   const renderedPageResponse = matchedResponseStage
     ? await matchedResponseStage(responseStageRequest(), {
         kind: "app-page",
@@ -2886,9 +2886,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         clientReuseManifest,
         cleanPathname,
         displayPathname: canonicalPathname,
-        formState,
+        formState: progressiveActionFormState?.formState ?? null,
         actionError: normalizedProgressiveActionError,
-        actionFailed,
+        actionFailed: failedProgressiveActionResult !== null,
         handlerStart,
         interceptionContext: interceptionSourceContext,
         interceptionId: interceptionIdHeader,
@@ -2936,6 +2936,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState);
   }
   return pageResponse;
+}
+
+function progressiveActionHttpFallbackStatus(actionError: unknown): number | null {
+  const actionErrorDigest =
+    actionError && typeof actionError === "object" && "digest" in actionError
+      ? String(actionError.digest)
+      : null;
+  return actionErrorDigest ? (parseNextHttpErrorDigest(actionErrorDigest)?.status ?? null) : null;
 }
 
 /**

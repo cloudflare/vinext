@@ -7382,6 +7382,54 @@ describe("createAppRscHandler", () => {
       );
     });
 
+    it("skips them when a Pages route outranks a dynamic page match", async () => {
+      const { dispatchMatchedPage, handleProgressiveActionRequest, handler } =
+        createProgressiveHandler({
+          matchRoute: (pathname) => ({ params: { slug: pathname.slice(1) }, route: dynamicPage }),
+          renderPagesFallback: async () => new Response("pages", { status: 200 }),
+        });
+
+      const response = await handler(multipartPost("/contact"), null);
+
+      expect(await response.text()).toBe("pages");
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("runs them with the root params of the page an afterFiles rewrite reaches", async () => {
+      const localizedPage = createPageRoute({
+        isDynamic: true,
+        params: ["lang"],
+        pattern: "/:lang/contact",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "contact"],
+      });
+      let observedRootParams: unknown = null;
+      const handleProgressiveActionRequest = vi.fn<
+        NonNullable<HandlerOptions["handleProgressiveActionRequest"]>
+      >(async () => {
+        const { getCurrentRootParams } =
+          await import("../packages/vinext/src/shims/root-params.js");
+        observedRootParams = getCurrentRootParams();
+        return null;
+      });
+      const { handler } = createProgressiveHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/contact-alias", destination: "/en/contact" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        handleProgressiveActionRequest,
+        matchRoute: (pathname) =>
+          pathname === "/en/contact" ? { params: { lang: "en" }, route: localizedPage } : null,
+      });
+
+      await handler(multipartPost("/contact-alias"), null);
+
+      expect(handleProgressiveActionRequest).toHaveBeenCalledOnce();
+      expect(observedRootParams).toEqual({ lang: "en" });
+    });
+
     it("still runs them for an unmatched route", async () => {
       const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
         matchRoute: () => null,
