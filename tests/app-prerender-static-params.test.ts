@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 describe("createAppPrerenderStaticParamsResolver", () => {
   it("returns null when there are no sources at all", () => {
@@ -31,6 +32,33 @@ describe("createAppPrerenderStaticParamsResolver", () => {
     // Memoized: a second call does not re-import.
     await resolver!({ params: {} });
     expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the request that starts lazy source resolution alive until it settles", async () => {
+    // The resolution is memoized for the isolate, and workerd drops a canceled
+    // request's pending I/O, so a timed-out discovery request must not strand it.
+    let release: () => void = () => {};
+    const loaded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const resolver = createAppPrerenderStaticParamsResolver([
+      {
+        load: async () => {
+          await loaded;
+          return { generateStaticParams: () => [{ slug: "x" }] };
+        },
+      },
+    ]);
+    const creator = { waitUntil: vi.fn() };
+    const joiner = { waitUntil: vi.fn() };
+
+    const first = runWithExecutionContext(creator, () => resolver!({ params: {} }));
+    const second = runWithExecutionContext(joiner, () => resolver!({ params: {} }));
+
+    expect(creator.waitUntil).toHaveBeenCalledOnce();
+    expect(joiner.waitUntil).not.toHaveBeenCalled();
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([[{ slug: "x" }], [{ slug: "x" }]]);
   });
 
   it("returns the null sentinel when a lazy page has no generateStaticParams", async () => {
