@@ -1000,11 +1000,57 @@ function excludesSeparatorPrefix(node: RegexNode, separator: RegexSymbol[]): boo
 }
 
 /**
- * Whether `pattern(?:separator pattern)*` splits every input one way. That
- * holds when `pattern` has a fixed width (every chunk is the same length), or
- * when `pattern` can never consume a character where the separator starts
- * (each repetition must end at the next occurrence of it). Unknown constructs
- * fail closed.
+ * Conservative check that `node` matches any string in at most one way. Under
+ * a generated repetition every extra parse of one chunk multiplies across all
+ * chunks, so alternatives must be prefix-free, inner repeats must have
+ * fixed-width iterations, and variable-width parts must not be able to trade
+ * characters with what follows them. Lookarounds are atomic in JavaScript.
+ */
+function isUnambiguous(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+      return node.symbol !== null;
+    case "assertion":
+      return true;
+    case "repeat": {
+      if (!isUnambiguous(node.child)) return false;
+      if (node.min === node.max && Number.isFinite(node.max)) return true;
+      const width = exactWidth(node.child);
+      return width !== null && width > 0;
+    }
+    case "alternation":
+      return node.branches.every(isUnambiguous) && hasPrefixFreeFiniteLanguage(node).safe;
+    case "sequence": {
+      const comparisons = { count: 0 };
+      // End symbols of variable-width children that later input may still
+      // reach: a following child that can start with one of them could be
+      // matched by either side.
+      let pendingEnds: Array<RegexSymbol[] | null> = [];
+      for (const child of node.children) {
+        if (!isUnambiguous(child)) return false;
+        const starts = firstSymbols(child);
+        const reachable = pendingEnds.filter((ends) =>
+          boundariesMayOverlap(ends, starts, comparisons),
+        );
+        if (exactWidth(child) === null) {
+          if (reachable.length > 0) return false;
+          const ends = lastSymbols(child);
+          pendingEnds = isNullable(child) ? [...pendingEnds, ends] : [ends];
+        } else if (!isNullable(child)) {
+          pendingEnds = reachable;
+        }
+      }
+      return true;
+    }
+  }
+}
+
+/**
+ * Whether `pattern(?:separator pattern)*` matches every input one way. Each
+ * chunk must have one parse (see isUnambiguous), and the chunk boundaries must
+ * be fixed: either `pattern` has a fixed width, or it can never consume a
+ * character where the separator starts (each repetition must end at the next
+ * occurrence of it). Unknown constructs fail closed.
  */
 export function repeatSeparatorIsUnambiguous(
   pattern: string,
@@ -1020,6 +1066,7 @@ export function repeatSeparatorIsUnambiguous(
   );
   const node = parser.parse();
   if (parser.exceededBudget) return false;
+  if (!isUnambiguous(node)) return false;
   if (exactWidth(node) !== null) return true;
   const separatorSymbols = separator
     .split("")

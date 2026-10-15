@@ -239,14 +239,15 @@ function unsafeTokenReason(token: MiddlewarePathKey, namedGroups: boolean): stri
   }
   // The token's own suffix + prefix joins the repetitions (the `.` in
   // `/x.:ext([^/]+)+`). If the constraint can consume that separator, each
-  // occurrence can end one repetition or stay inside it. (path-to-regexp
-  // refuses to compile a repeat without a separator.)
+  // occurrence can end one repetition or stay inside it; if it can match one
+  // chunk in two ways (`a|A`), every repetition doubles the backtracking.
+  // (path-to-regexp refuses to compile a repeat without a separator.)
   const separator = token.suffix + token.prefix;
   if (
     separator &&
     !repeatSeparatorIsUnambiguous(token.pattern, separator, { ignoreCase: true, namedGroups })
   ) {
-    return `repeated parameter "${token.name}" may match across its repeat separator`;
+    return `repeated parameter "${token.name}" can match its repetitions in more than one way`;
   }
 
   return null;
