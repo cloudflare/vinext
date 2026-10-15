@@ -55,6 +55,12 @@ export type ExecutionContextLike = {
    * App RSC handler takes it from here (UnifiedRequestContext.requestSignal).
    */
   requestSignal?: AbortSignal;
+  /**
+   * Server-owned origin middleware runs against. Set by the Node server, whose
+   * request URL comes from the client's Host header. Workers leave it unset:
+   * the platform routes by hostname, so the request URL is authoritative.
+   */
+  middlewareOrigin?: string;
   /** Worker-owned in-process dispatcher for authenticated Pages revalidation. */
   dispatchPagesRevalidate?: (request: Request) => Promise<Response>;
   /** Marks a request currently executing through the internal revalidation dispatcher. */

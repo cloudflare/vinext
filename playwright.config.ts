@@ -95,6 +95,7 @@ const projectServers = {
       "app-router-prod/image-middleware.spec.ts",
       "app-router-prod/pages-res-revalidate.spec.ts",
       "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
+      "app-router-prod/middleware-external-rewrite-host.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
     ],

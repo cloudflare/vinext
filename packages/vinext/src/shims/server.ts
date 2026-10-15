@@ -250,9 +250,11 @@ export class NextRequest extends Request {
           })),
         }
       : undefined;
+    const hostHeader = this.headers.get("host");
     const urlConfig: NextURLConfig | undefined = _nextConfig
       ? {
           basePath: _nextConfig.basePath,
+          headers: hostHeader === null ? undefined : { host: hostHeader },
           nextConfig: {
             i18n,
             trailingSlash: _nextConfig.trailingSlash,
@@ -454,6 +456,11 @@ export class NextResponse<_Body = unknown> extends Response {
 
 export type NextURLConfig = {
   basePath?: string;
+  /**
+   * Request headers. As in Next.js's `getHostname`, a Host header decides the
+   * domain locale before the URL's own hostname.
+   */
+  headers?: Record<string, string | string[] | undefined>;
   nextConfig?: {
     i18n?: {
       locales: string[];
@@ -503,9 +510,11 @@ export class NextURL {
   private _domainLocale:
     | NonNullable<NonNullable<NonNullable<NextURLConfig["nextConfig"]>["i18n"]>["domains"]>[number]
     | undefined;
+  private _headers: NextURLConfig["headers"];
 
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
+    this._headers = config?.headers;
     this._configBasePath = config?.basePath ?? "";
     this._basePath = this._configBasePath;
     this._configTrailingSlash = config?.nextConfig?.trailingSlash ?? false;
@@ -571,7 +580,12 @@ export class NextURL {
     if (!this._locales || !this._configDefaultLocale) return;
     const detectedLocale = this._detectPathnameLocale(this._locales);
     const detectedLocaleLower = detectedLocale?.toLowerCase();
-    const hostname = this._url.hostname.toLowerCase();
+    const hostHeader = this._headers?.host;
+    const hostname = (
+      typeof hostHeader === "string" && hostHeader
+        ? hostHeader.split(":", 1)[0]
+        : this._url.hostname
+    ).toLowerCase();
     this._domainLocale = this._domains?.find(
       (domain) =>
         domain.domain.split(":", 1)[0].toLowerCase() === hostname ||
@@ -779,6 +793,7 @@ export class NextURL {
       // current pathname. Next.js retains the original constructor options in
       // clone(), allowing a later href assignment to re-activate the prefix.
       basePath: this._configBasePath,
+      headers: this._headers,
       nextConfig: Object.keys(nextConfig).length > 0 ? nextConfig : undefined,
     };
     // Pass the full href (with locale/basePath re-added) so the constructor

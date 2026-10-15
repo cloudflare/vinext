@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { APIRequestContext, Page, Request } from "@playwright/test";
 import { expect } from "@playwright/test";
@@ -123,4 +123,53 @@ export async function expectHostCaptureCannotRetargetProxy(
       listener.close((error) => (error ? reject(error) : resolve())),
     );
   }
+}
+
+/** GET `path` with a raw Host header, which fetch() cannot set. */
+export function getWithHost(
+  baseURL: string,
+  path: string,
+  host: string,
+  headers: Record<string, string> = {},
+): Promise<{ body: string; headers: IncomingHttpHeaders; status: number }> {
+  const { hostname, port } = new URL(baseURL);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { headers: { ...headers, host }, host: hostname, path, port },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => resolve({ body, headers: res.headers, status: res.statusCode ?? 0 }));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
+ * Start a listener standing in for the external host a middleware rewrite
+ * proxies to. Resolves with its `host:port` and the paths it received.
+ */
+export async function startRewriteUpstream(): Promise<{
+  close: () => Promise<void>;
+  host: string;
+  hits: string[];
+}> {
+  const hits: string[] = [];
+  const listener = createServer((req, res) => {
+    hits.push(req.url ?? "");
+    res.end("external upstream");
+  });
+  await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+  const { port } = listener.address() as AddressInfo;
+  return {
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        listener.close((error) => (error ? reject(error) : resolve())),
+      ),
+    host: `127.0.0.1:${port}`,
+    hits,
+  };
 }
