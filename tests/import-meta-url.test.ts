@@ -232,6 +232,26 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("preserves the import.meta.url argument of the React Refresh __hmr_import footer", () => {
+    // The dev React Refresh footer re-imports the module by its own URL; a
+    // file:///ROOT URL can't be fetched by the browser.
+    const result = rewriteImportMetaUrl(
+      [
+        `export const url = import.meta.url;`,
+        `if (import.meta.hot) {`,
+        `  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {});`,
+        `}`,
+        ``,
+      ].join("\n"),
+      pagePath,
+      linkedRoot,
+      "client",
+    );
+
+    expect(result?.code).toContain(`RefreshRuntime.__hmr_import(import.meta.url)`);
+    expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
+  });
+
   it("rewrites optional chained import.meta.url reads", () => {
     const result = rewriteImportMetaUrl(
       `export const url = import.meta?.url;\n`,

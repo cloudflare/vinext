@@ -748,6 +748,15 @@ function collectImportMetaUrlRanges(ast: ESTree.Program): Array<{ start: number;
       return;
     }
 
+    if (isHmrImportCall(value)) {
+      // React Refresh's dev footer re-imports the module by its own URL. The
+      // browser must fetch the real module URL, not the file:///ROOT identity.
+      const [first, ...rest] = value.arguments;
+      if (!isImportMetaUrlNode(first)) visit(first);
+      for (const arg of rest) visit(arg);
+      return;
+    }
+
     forEachAstChild(value, visit);
   }
 
@@ -1028,6 +1037,20 @@ function isChainExpressionWrappingImportMetaUrl(
 // `new window.URL(...)`. Matches Vite's own asset-detection scope.
 function isNewUrlExpression(value: ESTree.Node): value is ESTree.NewExpression {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
+}
+
+// Matches `RefreshRuntime.__hmr_import(...)` from the React Refresh dev footer.
+// The callee is a plain member read, so it can't hold an import.meta.url read.
+function isHmrImportCall(value: ESTree.Node): value is ESTree.CallExpression & {
+  arguments: [ESTree.Node, ...ESTree.Node[]];
+} {
+  return (
+    value.type === "CallExpression" &&
+    value.arguments.length > 0 &&
+    value.callee.type === "MemberExpression" &&
+    !value.callee.computed &&
+    isIdentifierNamed(value.callee.property, "__hmr_import")
+  );
 }
 
 function findDirectivePrologueEnd(ast: ESTree.Program): number {
