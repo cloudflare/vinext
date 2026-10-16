@@ -114,11 +114,11 @@ function applyPagesMiddlewareContext(
 
 /**
  * Compose request-stage middleware headers onto a Pages API response returned
- * by a response stage. The stage installed them on the handler's `res` before
- * it ran (handler values win, as in Next.js) and removed the inherited
- * cookies, so only the headers the response lacks (for example on a framework
- * error response) and middleware's cookies, ahead of the response's own, are
- * re-added here.
+ * by a response stage. The stage's API route already applied them per runtime
+ * (before a Node handler ran, over an edge handler's) and removed the
+ * inherited cookies, so only headers the response lacks (for example on a
+ * stage protocol error) and middleware's cookies, ahead of the response's
+ * own, are re-added here.
  */
 export function applyMiddlewareHeadersToStagedPagesApiResponse(
   response: Response,

@@ -8,6 +8,7 @@ import {
 } from "../utils/query.js";
 import {
   createPagesApiReqRes,
+  hasUserSetPagesResponseHeader,
   markVinextStreamedApiResponse,
   parsePagesApiBody,
   type PagesRequestQuery,
@@ -165,8 +166,8 @@ export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): 
 }
 
 /**
- * Whether user code authored a CDN policy. A middleware value installed on
- * the response (or merged onto it) is not the handler's explicit policy.
+ * Whether the response carries a CDN policy other than middleware's. Node
+ * handler writes of middleware's own value are recorded on `res` instead.
  */
 function hasHandlerCdnResponsePolicy(
   headers: Headers,
@@ -312,6 +313,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       }
     };
     const finalizeResponse = (response: Response) => {
+      // A middleware value installed on `res` is not the handler's policy, but
+      // the handler re-setting that same value is.
+      if (hasUserSetPagesResponseHeader(res, isCdnResponsePolicyHeader)) {
+        markRouteCacheabilityExplicitResponsePolicy();
+      }
       // The response resolves on the first write; if `end()` still has not
       // been called by the time it settles, the body is a live stream (e.g. a
       // piped proxy upstream). Mark it so buffering adapters forward it as a

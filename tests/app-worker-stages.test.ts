@@ -227,6 +227,7 @@ describe("App Worker response stage", () => {
               kind,
               matchKind: "dynamic",
               middlewareCookieOverlay: null,
+              middlewareResponseHeaders: null,
               preHandlerHeaders: null,
               protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
               requestOrigin: "https://example.com",

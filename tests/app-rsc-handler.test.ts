@@ -3423,6 +3423,7 @@ describe("createAppRscHandler", () => {
         kind: "hybrid-pages",
         matchKind: "static",
         middlewareCookieOverlay: null,
+        middlewareResponseHeaders: null,
         preHandlerHeaders: [
           ["x-config-variant", "preview"],
           ["x-from-middleware", "present"],

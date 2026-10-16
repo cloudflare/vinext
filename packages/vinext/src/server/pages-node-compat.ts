@@ -75,6 +75,8 @@ type PagesRequestCookiesCarrier = {
 type CreatePagesReqResOptions = {
   body: unknown;
   initialResponseHeaders?: Headers;
+  /** Middleware response headers, installed on `res` before user code runs. */
+  middlewareResponseHeaders?: Headers | null;
   query: PagesRequestQuery;
   request: Request;
   url: string;
@@ -82,8 +84,6 @@ type CreatePagesReqResOptions = {
 
 type CreatePagesApiReqResOptions = CreatePagesReqResOptions & {
   allowedRevalidateHeaderKeys?: readonly string[];
-  /** Middleware response headers, installed on `res` before the handler runs. */
-  middlewareResponseHeaders?: Headers | null;
   trustedRevalidateOrigin?: string;
 };
 
@@ -249,6 +249,8 @@ class PagesResponseStream extends Writable {
   private readonly resHeaders: Record<string, string | number | boolean> = {};
   private readonly setCookieHeaders: string[] = [];
   private middlewareSetCookieHeaders: readonly string[] = [];
+  private seeding = false;
+  private readonly userSetHeaderNames = new Set<string>();
   private resolved = false;
   private controller: ReadableStreamDefaultController | null = null;
   private readonly bufferedChunks: Buffer[] = [];
@@ -303,13 +305,33 @@ class PagesResponseStream extends Writable {
    * replaces Set-Cookie (Next.js `patchSetHeaderWithCookieSupport`).
    */
   seedMiddlewareResponseHeaders(headers: Headers): void {
-    for (const [name, value] of headers) {
-      if (name.toLowerCase() !== "set-cookie") this.setHeaderValue(name, value);
-    }
+    this.seedResponseHeaders(headers);
     const cookies = headers.getSetCookie();
     if (cookies.length === 0) return;
     this.setCookieHeaders.push(...cookies);
     this.middlewareSetCookieHeaders = [...this.middlewareSetCookieHeaders, ...cookies];
+  }
+
+  /** Install framework-owned headers without recording them as user writes. */
+  seedResponseHeaders(headers: Headers, options: { cookies?: boolean } = {}): void {
+    this.seeding = true;
+    try {
+      for (const [name, value] of headers) {
+        if (name.toLowerCase() !== "set-cookie") this.setHeaderValue(name, value);
+      }
+      const cookies = options.cookies ? headers.getSetCookie() : [];
+      if (cookies.length > 0) this.setHeaderValue("Set-Cookie", cookies);
+    } finally {
+      this.seeding = false;
+    }
+  }
+
+  /** Whether user code set a matching header before the response committed. */
+  hasUserSetHeader(matches: (lowerName: string) => boolean): boolean {
+    for (const name of this.userSetHeaderNames) {
+      if (matches(name)) return true;
+    }
+    return false;
   }
 
   getHeader(name: string): string | number | boolean | string[] | undefined {
@@ -473,6 +495,7 @@ class PagesResponseStream extends Writable {
   }
 
   private setHeaderValue(name: string, value: string | number | boolean | string[]): void {
+    if (!this.seeding && !this.resolved) this.userSetHeaderNames.add(name.toLowerCase());
     if (name.toLowerCase() === "set-cookie") {
       // getHeader() exposes this array like Node's ServerResponse. Snapshot it
       // before replacement so passing that live value back does not clear it.
@@ -576,6 +599,14 @@ export function markVinextStreamedApiResponse(response: Response): void {
   (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse = true;
 }
 
+/** Whether user code set a matching header on a Pages `res` before it committed. */
+export function hasUserSetPagesResponseHeader(
+  res: PagesReqResResponse,
+  matches: (lowerName: string) => boolean,
+): boolean {
+  return res instanceof PagesResponseStream && res.hasUserSetHeader(matches);
+}
+
 export function isVinextStreamedApiResponse(response: Response): boolean {
   return (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse === true;
 }
@@ -605,16 +636,15 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     resolveResponse = resolve;
     rejectResponse = reject;
   });
-  const res: PagesReqResResponse = new PagesResponseStream(
-    resolveResponse,
-    rejectResponse,
-  ) as PagesReqResResponse;
-  for (const [name, value] of options.initialResponseHeaders ?? []) {
-    if (name.toLowerCase() === "set-cookie") continue;
-    res.setHeader(name, value);
+  const stream = new PagesResponseStream(resolveResponse, rejectResponse);
+  const res = stream as PagesReqResResponse;
+  if (options.initialResponseHeaders) {
+    stream.seedResponseHeaders(options.initialResponseHeaders, { cookies: true });
   }
-  const initialCookies = options.initialResponseHeaders?.getSetCookie() ?? [];
-  if (initialCookies.length > 0) res.setHeader("Set-Cookie", initialCookies);
+  // Before the preview API: its expired preview cookies follow middleware's.
+  if (options.middlewareResponseHeaders) {
+    stream.seedMiddlewareResponseHeaders(options.middlewareResponseHeaders);
+  }
   attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };
@@ -630,9 +660,6 @@ export function createPagesApiReqRes(
   options: CreatePagesApiReqResOptions,
 ): CreatePagesReqResResult<PagesApiReqResResponse> {
   const { req, res, responsePromise } = createPagesReqRes(options);
-  if (options.middlewareResponseHeaders && res instanceof PagesResponseStream) {
-    res.seedMiddlewareResponseHeaders(options.middlewareResponseHeaders);
-  }
   // Fetch runtimes do not expose a listening socket origin. Fall back to the
   // platform-provided Request URL origin and deliberately ignore any raw Host
   // header carried in request.headers.

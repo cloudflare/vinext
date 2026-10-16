@@ -11,6 +11,7 @@ import {
   type PagesApiRouteMatch,
 } from "../packages/vinext/src/server/pages-api-route.js";
 import { isVinextStreamedApiResponse } from "../packages/vinext/src/server/pages-node-compat.js";
+import { CACHEABILITY_REQUEST_STATE } from "../packages/vinext/src/shims/cacheability-classification.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type {
   FrameworkTracingBackendSpan,
@@ -153,6 +154,51 @@ describe("pages api route", () => {
     });
 
     expect(response.headers.getSetCookie()).toEqual(["middleware=1; Path=/"]);
+  });
+
+  it.each([
+    { name: "re-sets middleware's own value", resets: true },
+    { name: "leaves middleware's value alone", resets: false },
+  ])("records an explicit policy only when a Node handler $name", async ({ resets }) => {
+    const state: { explicitResponseCachePolicy?: boolean } = {};
+    const ctx = { waitUntil() {} };
+    Reflect.set(ctx, CACHEABILITY_REQUEST_STATE, state);
+
+    const response = await handlePagesApiRoute({
+      ctx,
+      match: createMatch((_req, res) => {
+        if (resets) res.setHeader("Cache-Control", "public, s-maxage=60");
+        res.end("ok");
+      }),
+      middlewareResponseHeaders: new Headers({ "Cache-Control": "public, s-maxage=60" }),
+      request: new Request("https://example.com/api/policy"),
+      url: "/api/policy",
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    expect(state.explicitResponseCachePolicy === true).toBe(resets);
+  });
+
+  it("installs middleware cookies ahead of expired preview cookies", async () => {
+    const middlewareResponseHeaders = new Headers();
+    middlewareResponseHeaders.append("Set-Cookie", "middleware=1; Path=/");
+
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.end("ok");
+      }),
+      middlewareResponseHeaders,
+      request: new Request("https://example.com/api/preview", {
+        headers: { cookie: "__prerender_bypass=stale" },
+      }),
+      url: "/api/preview",
+    });
+
+    const cookies = response.headers.getSetCookie();
+    expect(cookies).toHaveLength(3);
+    expect(cookies[0]).toBe("middleware=1; Path=/");
+    expect(cookies[1]).toMatch(/^__prerender_bypass=;/);
+    expect(cookies[2]).toMatch(/^__next_preview_data=;/);
   });
 
   it("keeps middleware headers ahead of an edge handler's own", async () => {
