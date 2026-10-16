@@ -47,6 +47,7 @@ export type PagesReqResResponse = Writable & {
   readonly headersSent: boolean;
   writeHead: (code: number, headers?: PagesReqResHeaders) => PagesReqResResponse;
   setHeader: (name: string, value: string | number | boolean | string[]) => PagesReqResResponse;
+  appendHeader: (name: string, value: string | string[]) => PagesReqResResponse;
   getHeader: (name: string) => string | number | boolean | string[] | undefined;
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
@@ -282,14 +283,21 @@ class PagesResponseStream extends Writable {
     this.resStatusCode = code;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
-        this.setHeaderValue(key, value, { replaceSetCookie: true });
+        this.setHeaderValue(key, value, { append: false });
       }
     }
     return this as PagesReqResResponse;
   }
 
   setHeader(name: string, value: string | number | boolean | string[]): PagesReqResResponse {
-    this.setHeaderValue(name, value, { replaceSetCookie: true });
+    this.setHeaderValue(name, value, { append: false });
+    return this as PagesReqResResponse;
+  }
+
+  // Node's ServerResponse.appendHeader (Node 18.3+): adds to any existing
+  // value instead of replacing it.
+  appendHeader(name: string, value: string | string[]): PagesReqResResponse {
+    this.setHeaderValue(name, value, { append: true });
     return this as PagesReqResResponse;
   }
 
@@ -456,20 +464,24 @@ class PagesResponseStream extends Writable {
   private setHeaderValue(
     name: string,
     value: string | number | boolean | string[],
-    options: { replaceSetCookie: boolean },
+    options: { append: boolean },
   ): void {
-    if (name.toLowerCase() === "set-cookie") {
+    const key = name.toLowerCase();
+    if (key === "set-cookie") {
       // getHeader() exposes this array like Node's ServerResponse. Snapshot it
       // before replacement so passing that live value back does not clear it.
       const values = Array.isArray(value) ? value.map(String) : [String(value)];
-      if (options.replaceSetCookie) {
+      if (!options.append) {
         this.setCookieHeaders.length = 0;
       }
       this.setCookieHeaders.push(...values);
       return;
     }
 
-    this.resHeaders[name.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value;
+    const nextValue = Array.isArray(value) ? value.join(", ") : value;
+    const existing = this.resHeaders[key];
+    this.resHeaders[key] =
+      options.append && existing !== undefined ? `${existing}, ${nextValue}` : nextValue;
   }
 
   private releasePendingWrite(error?: Error | null): void {

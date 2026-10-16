@@ -24,6 +24,13 @@ export function middleware(request: NextRequest) {
       }),
     );
   }
+  // Middleware cookies must precede the API route's res.appendHeader cookies.
+  // Coverage: tests/pages-router.test.ts
+  if (url.pathname === "/api/append-header") {
+    const res = NextResponse.next();
+    res.cookies.set("mw", "1");
+    return res;
+  }
   if (url.pathname === "/api/edge-request-signal") {
     if (!url.searchParams.has("override")) return NextResponse.next();
     const headers = new Headers(request.headers);
@@ -358,6 +365,7 @@ export const config = {
   matcher: [
     "/api/edge-search-params",
     "/api/edge-request-signal",
+    "/api/append-header",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
     {

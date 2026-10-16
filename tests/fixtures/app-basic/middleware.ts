@@ -26,6 +26,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Middleware cookies must precede the Pages API route's res.appendHeader
+  // cookies. Coverage: tests/app-router-production-server.test.ts
+  if (pathname === "/api/pages-append-header") {
+    const response = NextResponse.next();
+    response.cookies.set("mw", "1");
+    return response;
+  }
+
   if (pathname === "/internal-header-secret.txt") {
     return new Response("blocked by middleware", {
       status: 403,
@@ -539,6 +547,7 @@ export const config = {
     "/api/session-refresh",
     "/api/header-override-stray",
     "/api/pages-og",
+    "/api/pages-append-header",
     "/api/pages-fallback-to-app/:path*",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",
