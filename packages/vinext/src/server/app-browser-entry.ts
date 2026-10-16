@@ -2090,6 +2090,7 @@ function bootstrapHydration(
       navigationKind === "traverse"
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
         : null;
+    let startedHardNavigation = false;
     const performHardNavigationForScrollIntent = (
       targetHref: string,
       mode?: "assign" | "replace",
@@ -2101,7 +2102,10 @@ function bootstrapHydration(
         targetHref,
         mode ?? (currentHistoryMode === "push" ? "assign" : "replace"),
       );
-      if (!didNavigate) {
+      if (didNavigate) {
+        startedHardNavigation = true;
+        browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
+      } else {
         clearAppNavigationFailureTarget(targetHref);
       }
       return didNavigate;
@@ -2429,6 +2433,10 @@ function bootstrapHydration(
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
           });
+          if (cachedRenderOutcome === "hard-navigate") {
+            startedHardNavigation = true;
+            browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
+          }
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
             deleteVisitedResponse(rscUrl, requestInterceptionContext);
@@ -2819,6 +2827,10 @@ function bootstrapHydration(
           // preparation-failed entries keep the ordinary transition path.
           visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
         });
+        if (renderOutcome === "hard-navigate") {
+          startedHardNavigation = true;
+          browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
+        }
         if (renderOutcome !== "committed") return;
         if (hasSupplementalRefresh) {
           clearVisitedResponseCache();
@@ -2954,6 +2966,11 @@ function bootstrapHydration(
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
       discardedServerActionRefreshScheduler.markNavigationSettled();
+      if (startedHardNavigation) {
+        // Like navigateExternal, a navigation the document load replaces never
+        // finishes, so callers keep its pending state until unload.
+        await unresolvedMpaNavigation;
+      }
     }
   };
 

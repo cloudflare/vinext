@@ -141,6 +141,7 @@ type BrowserNavigationController = {
     stateRef: BrowserRouterStateRef,
   ): () => void;
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
+  abandonPendingBrowserRouterState(pending: PendingBrowserRouterState | null | undefined): void;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
   discardPendingNavigation(visibleState: AppRouterState | null): boolean;
   flushCommittingNavigationUrl(): void;
@@ -456,6 +457,20 @@ export function createAppBrowserNavigationController(
     pending.settled = true;
     pending.resolve(getBrowserRouterState());
 
+    if (activePendingBrowserRouterState === pending) {
+      activePendingBrowserRouterState = null;
+    }
+  }
+
+  // A started hard navigation leaves its pending state unresolved, like
+  // Next.js's MPA navigation: resolving it would commit the old tree and the
+  // navigation's transition (dropping useTransition's isPending) before unload.
+  function abandonPendingBrowserRouterState(
+    pending: PendingBrowserRouterState | null | undefined,
+  ): void {
+    if (!pending || pending.settled) return;
+
+    pending.settled = true;
     if (activePendingBrowserRouterState === pending) {
       activePendingBrowserRouterState = null;
     }
@@ -992,13 +1007,20 @@ export function createAppBrowserNavigationController(
       }
 
       if (approval.decision.disposition === "hard-navigate") {
-        settlePendingBrowserRouterState(options.pendingRouterState);
         pendingNavigationFailureTargets.delete(renderId);
         pendingNavigationCommits.delete(renderId);
         consumeAppRouterScrollIntent(options.scrollIntent ?? null);
-        if (performHardNavigation(options.targetHref)) {
+        // Like Next.js's completeHardNavigation, only a push adds a history entry.
+        if (
+          performHardNavigation(
+            options.targetHref,
+            options.historyUpdateMode === "push" ? "assign" : "replace",
+          )
+        ) {
+          abandonPendingBrowserRouterState(options.pendingRouterState);
           return "hard-navigate";
         }
+        settlePendingBrowserRouterState(options.pendingRouterState);
         if (failureTarget) {
           clearAppNavigationFailureTarget(failureTarget);
         }
@@ -1205,6 +1227,7 @@ export function createAppBrowserNavigationController(
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,
     beginPendingBrowserRouterState,
+    abandonPendingBrowserRouterState,
     finalizeNavigation,
     discardPendingNavigation,
     flushCommittingNavigationUrl,

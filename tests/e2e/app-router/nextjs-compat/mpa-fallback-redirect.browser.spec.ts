@@ -81,10 +81,58 @@ test("a page redirect to a Pages Router route loads the target once", async ({ p
     if (new URL(request.url()).pathname === "/old-school") targetDocumentRequests++;
   });
 
+  const historyLength = await page.evaluate(() => window.history.length);
+
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.locator("h1")).toHaveText("Old School Pages Directory", { timeout: 10_000 });
   await page.waitForTimeout(2_000);
   expect(targetDocumentRequests).toBe(1);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+});
+
+test("a pushed navigation whose RSC fetch fails adds a history entry", async ({ page }) => {
+  await page.goto(`${baseUrl}${SOURCE_PATH}/restore`);
+  await waitForAppRouterHydration(page);
+
+  await page.route(/[?&]_rsc=/, (route) => {
+    if (new URL(route.request().url()).pathname !== TARGET_PATH) return route.continue();
+    return route.fulfill({ status: 503, body: "" });
+  });
+  const historyLength = await page.evaluate(() => window.history.length);
+
+  await page.getByRole("link", { name: "Login" }).click();
+  await expect(page.locator("#mpa-fallback-login")).toHaveText("login", { timeout: 10_000 });
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength + 1);
+});
+
+// Next.js keeps the navigation's transition suspended until the document
+// unloads: "useTransition isPending should stay true until the page unloads".
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx
+test("a transition whose RSC fetch fails stays pending during the document load", async ({
+  page,
+}) => {
+  await page.goto(`${baseUrl}${SOURCE_PATH}/restore`);
+  await waitForAppRouterHydration(page);
+
+  // A 204 keeps this document alive so its state can be read afterwards.
+  await page.route(
+    (url) => url.pathname === TARGET_PATH,
+    (route) => {
+      if (route.request().isNavigationRequest()) return route.fulfill({ status: 204 });
+      return route.fulfill({ status: 503, body: "" });
+    },
+  );
+  let targetDocumentRequests = 0;
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest()) return;
+    if (new URL(request.url()).pathname === TARGET_PATH) targetDocumentRequests++;
+  });
+
+  await page.getByRole("button", { name: "Push in transition" }).click();
+  await expect.poll(() => targetDocumentRequests).toBe(1);
+  await page.waitForTimeout(1_000);
+  await expect(page.locator("#mpa-restore-pending")).toHaveText("true");
+  await expect(page.locator("#mpa-restore-pushed")).toHaveText("false");
 });
 
 // Ported from Next.js: test/production/bfcache-routing/index.test.ts
