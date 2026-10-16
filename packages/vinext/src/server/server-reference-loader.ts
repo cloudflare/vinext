@@ -32,6 +32,14 @@ export function isolateServerReferenceLoads(): void {
   const isolated: ServerReferenceRequire = (id) => {
     // Resolve the requesting request before leaving its scopes so the request
     // that starts a load stays alive until the shared load settles.
+    //
+    // A caller that has already left the request scopes (React's action
+    // decoding, inside `loadOutsideRequestScopes()`) has no context here, so
+    // nothing is registered for the load it starts. Its I/O still belongs to
+    // that caller's request, which only the caller can keep alive; a later
+    // request joining the load cannot. Any such caller must keep its own
+    // request alive until the loads it starts settle, as
+    // `loadOutsideRequestScopes()` does.
     const ctx = getRequestExecutionContext();
     const loaded = runOutsideRequestScopes(() => load(id));
     if (!(loaded instanceof Promise) || started.has(loaded)) return loaded;
