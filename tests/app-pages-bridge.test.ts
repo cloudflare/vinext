@@ -5,6 +5,7 @@ import {
 import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  applyMiddlewareHeadersToStagedPagesApiResponse,
   renderPagesFallback,
   type PagesEntry,
 } from "../packages/vinext/src/server/app-pages-bridge.js";
@@ -943,5 +944,27 @@ describe("renderPagesFallback", () => {
 
     expect(renderPage).toHaveBeenCalledTimes(1);
     expect(res).toBeNull();
+  });
+});
+
+describe("applyMiddlewareHeadersToStagedPagesApiResponse", () => {
+  it("keeps the staged response's headers and puts middleware cookies first", () => {
+    const response = new Response("ok", {
+      headers: [
+        ["WWW-Authenticate", 'Bearer realm="handler"'],
+        ["Set-Cookie", "handler=1; Path=/"],
+      ],
+    });
+    const middlewareHeaders = new Headers([
+      ["WWW-Authenticate", 'Basic realm="middleware"'],
+      ["x-middleware", "1"],
+      ["Set-Cookie", "middleware=1; Path=/"],
+    ]);
+
+    const merged = applyMiddlewareHeadersToStagedPagesApiResponse(response, middlewareHeaders);
+
+    expect(merged.headers.get("www-authenticate")).toBe('Bearer realm="handler"');
+    expect(merged.headers.get("x-middleware")).toBe("1");
+    expect(merged.headers.getSetCookie()).toEqual(["middleware=1; Path=/", "handler=1; Path=/"]);
   });
 });
