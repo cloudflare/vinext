@@ -609,21 +609,25 @@ export async function buildPageElements<
       return createElement(PageComponent, withUseCachePageMarker(PageComponent, invocationProps));
     }
 
-    const PageInvoker = () => {
-      const invocationProps: Record<string, unknown> = { ...props };
-      if (searchParams) {
-        invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
-          : makeThenableParams(pageSearchParams);
-      }
-
+    const invokePage = (
+      component: AppPageComponent,
+      componentProps: Readonly<Record<string, unknown>>,
+    ): React.ReactNode | Promise<React.ReactNode> => {
+      let cssWrapped = false;
       try {
-        // Like Next.js (create-component-tree.tsx), a "use cache" page
-        // component receives `$$isPage` so its cache omits searchParams.
-        const result = invokeAppComponent(
-          PageComponent,
-          withUseCachePageMarker(PageComponent, invocationProps),
-        );
+        const result = invokeAppComponent(component, componentProps, (innerPage, innerProps) => {
+          // A CSS-wrapped page is invoked, and releases the dependency, after
+          // the CSS, so the stylesheet streams while it is pending.
+          cssWrapped = true;
+          function CssWrappedPage() {
+            return invokePage(innerPage, innerProps);
+          }
+          CssWrappedPage.displayName = innerPage.displayName ?? innerPage.name;
+          return createElement(CssWrappedPage);
+        });
+        if (cssWrapped) {
+          return result;
+        }
         if (isPromiseLike(result)) {
           if (renderDependency) {
             // A declared-async page reaches its first continuation before this
@@ -665,6 +669,18 @@ export async function buildPageElements<
         renderDependency?.release();
         throw error;
       }
+    };
+
+    const PageInvoker = () => {
+      const invocationProps: Record<string, unknown> = { ...props };
+      if (searchParams) {
+        invocationProps.searchParams = observePageSearchParamsAccess
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+          : makeThenableParams(pageSearchParams);
+      }
+      // Like Next.js (create-component-tree.tsx), a "use cache" page
+      // component receives `$$isPage` so its cache omits searchParams.
+      return invokePage(PageComponent, withUseCachePageMarker(PageComponent, invocationProps));
     };
     return createElement(PageInvoker as unknown as AppPageComponent);
   };

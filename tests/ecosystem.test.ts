@@ -217,6 +217,18 @@ describe("next-intl", () => {
     expect(html).not.toContain("Hello World");
   });
 
+  it("renders German SSR content for a page that imports CSS", async () => {
+    // The CSS import wraps the page export in a synchronous component, which
+    // must not let the layout resolve its messages before the page sets the
+    // request locale.
+    const { html, status } = await fetchPage("/de/styled");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="de"');
+    expect(html).toMatch(/data-testid="title"[^>]*>Hallo Welt</);
+    expect(html).toMatch(/data-testid="client-greeting"[^>]*>Hallo Welt</);
+    expect(html).not.toContain("Hello World");
+  });
+
   it("renders a server component below a layout that sets the request locale", async () => {
     // next-intl's static rendering setup (#3671): Nav reads the locale the
     // layout stored through React cache().

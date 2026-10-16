@@ -110,6 +110,18 @@ function createSyntheticPageModule(defaultExport?: unknown): AppPageModule {
   return {} as AppPageModule;
 }
 
+/** The shape of @vitejs/plugin-rsc's `__vite_rsc_wrap_css__` wrapper. */
+function wrapCss<P extends object>(Component: React.ComponentType<P>): React.ComponentType<P> {
+  return function CssWrapper(props: P) {
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("link", { rel: "stylesheet", href: "/page.css" }),
+      React.createElement(Component, props),
+    );
+  };
+}
+
 function createSyntheticPageModuleWithoutDefault(): AppPageModule {
   return { generateMetadata: vi.fn() } as AppPageModule;
 }
@@ -462,7 +474,7 @@ describe("buildPageElements", () => {
     ).toEqual(["__PAGE__", "", "broken"]);
   });
 
-  it.each(["plain", "memo", "lazy", "forwardRef"] as const)(
+  it.each(["plain", "memo", "lazy", "forwardRef", "CSS-wrapped"] as const)(
     "renders a %s page before layouts that consume page-initialized request state",
     async (pageKind) => {
       // Regression from nodejs.org's next-intl integration, where the page calls
@@ -497,7 +509,9 @@ describe("buildPageElements", () => {
                   observedForwardRef = ref;
                   return LocalePage(props);
                 })
-              : LocalePage;
+              : pageKind === "CSS-wrapped"
+                ? wrapCss(LocalePage)
+                : LocalePage;
 
       const route = createSyntheticRoute({
         page: createSyntheticPageModule(PageComponent),
@@ -671,45 +685,48 @@ describe("buildPageElements", () => {
     expect(html).not.toContain("layout:en");
   });
 
-  it("waits for a sync use() page before a synchronous layout without loading UI", async () => {
-    let resolveLocale!: (locale: string) => void;
-    const localePromise = new Promise<string>((resolve) => {
-      resolveLocale = resolve;
-    });
-    let requestLocale = "en";
+  it.each([false, true])(
+    "waits for a sync use() page before a synchronous layout without loading UI (CSS-wrapped: %s)",
+    async (cssWrapped) => {
+      let resolveLocale!: (locale: string) => void;
+      const localePromise = new Promise<string>((resolve) => {
+        resolveLocale = resolve;
+      });
+      let requestLocale = "en";
 
-    function LocalePage() {
-      requestLocale = React.use(localePromise);
-      return React.createElement("main", null, `page:${requestLocale}`);
-    }
+      function LocalePage() {
+        requestLocale = React.use(localePromise);
+        return React.createElement("main", null, `page:${requestLocale}`);
+      }
 
-    function LocaleLayout(props: Record<string, unknown>) {
-      return React.createElement(
-        "section",
-        null,
-        `layout:${requestLocale}`,
-        props.children as React.ReactNode,
-      );
-    }
+      function LocaleLayout(props: Record<string, unknown>) {
+        return React.createElement(
+          "section",
+          null,
+          `layout:${requestLocale}`,
+          props.children as React.ReactNode,
+        );
+      }
 
-    const route = createSyntheticRoute({
-      page: createSyntheticPageModule(LocalePage),
-      layouts: [createSyntheticPageModule(LocaleLayout)],
-      layoutTreePositions: [0],
-      routeSegments: ["sync-use"],
-      pattern: "/sync-use",
-    });
+      const route = createSyntheticRoute({
+        page: createSyntheticPageModule(cssWrapped ? wrapCss(LocalePage) : LocalePage),
+        layouts: [createSyntheticPageModule(LocaleLayout)],
+        layoutTreePositions: [0],
+        routeSegments: ["sync-use"],
+        pattern: "/sync-use",
+      });
 
-    const result = await buildPageElements(createBaseOptions({ route, routePath: "/sync-use" }));
-    const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
-    await Promise.resolve();
-    resolveLocale("de");
-    const html = await htmlPromise;
+      const result = await buildPageElements(createBaseOptions({ route, routePath: "/sync-use" }));
+      const htmlPromise = renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+      await Promise.resolve();
+      resolveLocale("de");
+      const html = await htmlPromise;
 
-    expect(html).toContain("layout:de");
-    expect(html).toContain("page:de");
-    expect(html).not.toContain("layout:en");
-  });
+      expect(html).toContain("layout:de");
+      expect(html).toContain("page:de");
+      expect(html).not.toContain("layout:en");
+    },
+  );
 
   it("does not wait for an omitted page during loading-shell prefetches", async () => {
     const Page = vi.fn(() => React.createElement("main", null, "Page content"));

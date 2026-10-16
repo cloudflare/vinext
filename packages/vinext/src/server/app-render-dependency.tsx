@@ -58,18 +58,43 @@ export function isReactOwnedAppComponent(component: unknown): boolean {
   );
 }
 
+/**
+ * Renders the component a CSS wrapper wraps (see `invokeCssWrappedComponent`)
+ * as an element without props.
+ */
+export type RenderCssWrappedComponent = (
+  component: ComponentType<Record<string, unknown>>,
+  props: Readonly<Record<string, unknown>>,
+) => ReactNode;
+
+function renderCssWrappedComponentElement(
+  component: ComponentType<Record<string, unknown>>,
+  props: Readonly<Record<string, unknown>>,
+): ReactNode {
+  function CssWrappedComponent() {
+    return invokeAppComponent(component, props);
+  }
+  CssWrappedComponent.displayName = component.displayName ?? component.name;
+  return createElement(CssWrappedComponent);
+}
+
 export function invokeAppComponent(
   component: ComponentType<Record<string, unknown>>,
   props: Readonly<Record<string, unknown>>,
+  renderCssWrappedComponent: RenderCssWrappedComponent = renderCssWrappedComponentElement,
 ): ReactNode | Promise<ReactNode> {
   const candidate = component as AppDependencyComponent;
 
   if (candidate.$$typeof === REACT_MEMO && candidate.type) {
-    return invokeAppComponent(candidate.type, props);
+    return invokeAppComponent(candidate.type, props, renderCssWrappedComponent);
   }
 
   if (candidate.$$typeof === REACT_LAZY && candidate._init) {
-    return invokeAppComponent(candidate._init(candidate._payload), props);
+    return invokeAppComponent(
+      candidate._init(candidate._payload),
+      props,
+      renderCssWrappedComponent,
+    );
   }
 
   if (candidate.$$typeof === REACT_FORWARD_REF && candidate.render) {
@@ -84,7 +109,9 @@ export function invokeAppComponent(
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode | Promise<ReactNode>;
   const result = ServerComponent(props);
-  return isPromiseLike(result) ? result : invokeCssWrappedComponent(result, props);
+  return isPromiseLike(result)
+    ? result
+    : invokeCssWrappedComponent(result, props, renderCssWrappedComponent);
 }
 
 /**
@@ -121,13 +148,15 @@ function isElementOfProps(
  * `<><Css /><Component {...props} /></>`, so a component vinext invokes
  * directly renders as an element with its props after all. React's dev build
  * serializes an element's props as debug info and calls `then` on `params`
- * and `searchParams`, which counts as reading them. Invoke the inner
- * component from an element without props instead, as for an export without
- * CSS.
+ * and `searchParams`, which counts as reading them. Render the inner
+ * component as an element without props instead, which invokes it as for an
+ * export without CSS. As in the wrapper, the CSS comes first, so Flight sends
+ * the stylesheet while the component is still pending or suspended.
  */
 function invokeCssWrappedComponent(
   result: ReactNode,
   props: Readonly<Record<string, unknown>>,
+  renderCssWrappedComponent: RenderCssWrappedComponent,
 ): ReactNode {
   if (
     !isValidElement<{ children?: unknown }>(result) ||
@@ -152,12 +181,7 @@ function invokeCssWrappedComponent(
   if (!isElementOfProps(inner.props, props, component.defaultProps)) return result;
 
   // The element's props, so the component gets its defaultProps as before.
-  const componentProps = inner.props;
-  function CssWrappedComponent() {
-    return invokeAppComponent(component, componentProps);
-  }
-  CssWrappedComponent.displayName = component.displayName ?? component.name;
-  return createElement(Fragment, null, css, createElement(CssWrappedComponent));
+  return createElement(Fragment, null, css, renderCssWrappedComponent(component, inner.props));
 }
 
 const appElementRenderDependencies = new WeakMap<
@@ -257,8 +281,16 @@ export function renderAppComponentWithDependencyBarrier(
   // tied to their actual result; client references and classes remain owned by
   // React and only need their element to be produced synchronously.
   function AppComponentDependencyBarrier() {
+    let cssWrapped = false;
     try {
-      const result = invokeAppComponent(component, props);
+      // A CSS-wrapped component gets its own barrier, after the CSS.
+      const result = invokeAppComponent(component, props, (innerComponent, innerProps) => {
+        cssWrapped = true;
+        return renderAppComponentWithDependencyBarrier(innerComponent, innerProps, dependency);
+      });
+      if (cssWrapped) {
+        return result;
+      }
       if (isPromiseLike(result)) {
         return Promise.resolve(result).then(
           (resolvedResult) => {
