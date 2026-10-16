@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../../helpers";
@@ -18,15 +19,22 @@ const TARGET_PATH = "/nextjs-compat/mpa-fallback-redirect/login";
 test.setTimeout(60_000);
 
 let server: ChildProductionServer | null = null;
+let cacheDir = "";
 let baseUrl = "";
 
 test.beforeAll(async () => {
-  server = await startChildViteDevServer(path.resolve("tests/fixtures/app-basic"));
+  // The app-router project's dev server also serves app-basic, so this one
+  // keeps its own optimizer cache. Prebundled deps resolve bare imports from
+  // the cache's location, so it stays inside the fixture's node_modules.
+  const fixtureRoot = path.resolve("tests/fixtures/app-basic");
+  cacheDir = await fs.mkdtemp(path.join(fixtureRoot, "node_modules", ".vite-mpa-fallback-"));
+  server = await startChildViteDevServer(fixtureRoot, { cacheDir });
   baseUrl = `http://127.0.0.1:${server.port}`;
 });
 
 test.afterAll(async () => {
   if (server) await stopChildProductionServer(server);
+  if (cacheDir) await fs.rm(cacheDir, { recursive: true, force: true });
 });
 
 for (const mode of ["first-aborts", "all-503"] as const) {
@@ -62,7 +70,8 @@ for (const mode of ["first-aborts", "all-503"] as const) {
     // Give a looping RedirectBoundary time to show up as extra requests.
     await page.waitForTimeout(2_000);
     expect(targetRscReads).toBe(1);
-    // The source's refresh and the target's failed read, as in Next.js.
+    // The source's refresh and the target's failed read, as in a Next.js
+    // production build (dev's StrictMode runs the boundary's effect twice).
     expect(rscRequests).toBe(2);
     expect(targetDocumentRequests).toBe(1);
     // The boundary follows the redirect with router.replace, so the document
@@ -71,8 +80,9 @@ for (const mode of ["first-aborts", "all-503"] as const) {
   });
 }
 
-// A Pages Router target loads as a document. Next.js gets there through the
-// same MPA state, because the target's RSC request answers with HTML.
+// A Pages Router target loads as a document. vinext knows the route is a Pages
+// route from its route manifest; Next.js reaches the same MPA state because the
+// target's RSC request answers with HTML.
 test("a page redirect to a Pages Router route loads the target once", async ({ page }) => {
   await page.goto(`${baseUrl}${SOURCE_PATH}/to-pages`);
   await waitForAppRouterHydration(page);
@@ -191,6 +201,8 @@ test("a document restored after a hard navigation renders and navigates again", 
 
 // Ported from Next.js: test/production/bfcache-routing/index.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/production/bfcache-routing/index.test.ts
+// As above, a 204 and a synthetic pagehide/pageshow pair stand in for the
+// headed browser's real bfcache restore.
 test("a document restored after an external navigation stays put", async ({ page }) => {
   await page.goto(`${baseUrl}${SOURCE_PATH}/restore`);
   await waitForAppRouterHydration(page);
