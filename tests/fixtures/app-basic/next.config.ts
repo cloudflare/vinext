@@ -357,6 +357,19 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      // Used by Vitest: app-router-dev-server.test.ts, app-router-production-server.test.ts
+      {
+        source: "/api/config-cookie",
+        headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
+      },
+      {
+        source: "/config-cookie-redirect",
+        headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
+      },
+      {
+        source: "/config-cookie-response",
+        headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
+      },
       // Used by Vitest: app-router.test.ts
       {
         source: "/api/(.*)",
