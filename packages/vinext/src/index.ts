@@ -180,6 +180,10 @@ import {
 } from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import {
+  registerNitroPublicFiles,
+  type NitroPublicFilesOptions,
+} from "./build/nitro-public-files.js";
+import {
   emitNextClientRuntimeManifests,
   getPagesManifestPage,
 } from "./build/next-client-runtime-manifests.js";
@@ -1354,6 +1358,8 @@ const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-ind
 const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
 const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
+const NITRO_PUBLIC_FILES_ENTRY = resolveRuntimeEntryModule("nitro-public-files");
+const NITRO_PUBLIC_FILES_PLUGIN = resolveRuntimeEntryModule("nitro-public-files-plugin");
 const WORKER_ROUTER_ENTRIES = new Set([
   resolveRuntimeEntryModule("app-router-entry"),
   resolveRuntimeEntryModule("pages-router-entry"),
@@ -1690,7 +1696,7 @@ type InternalUserConfig = UserConfig & {
 };
 
 type NitroSetupContext = {
-  options: {
+  options: NitroPublicFilesOptions & {
     buildDir?: string;
     exportConditions?: string[];
     traceDeps?: string[];
@@ -1767,6 +1773,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
+  // Whether vinext's Nitro runtime plugin serves the public files the router
+  // resolves through Nitro's static handler.
+  let nitroPublicFiles = false;
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
@@ -4902,7 +4911,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               : "vinext/server/pages-router-entry";
             if (!hasAppDir && hasNitroPlugin) {
               return [
-                `import worker from ${JSON.stringify(entry)};`,
+                `import pagesWorker from ${JSON.stringify(entry)};`,
+                ...(nitroPublicFiles
+                  ? [
+                      `import { withNitroPagesPublicFiles } from ${JSON.stringify(NITRO_PUBLIC_FILES_ENTRY)};`,
+                      "const worker = withNitroPagesPublicFiles(pagesWorker);",
+                    ]
+                  : ["const worker = pagesWorker;"]),
                 "export default { fetch(request, env, ctx) {",
                 `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
                 "} };",
@@ -5110,7 +5125,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
             recordServerEntryLoad(this.environment?.name, id);
-            return generateSsrEntry(hasPagesDir);
+            return generateSsrEntry(
+              hasPagesDir,
+              nitroPublicFiles ? NITRO_PUBLIC_FILES_ENTRY : null,
+            );
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
             const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
@@ -8153,6 +8171,8 @@ export const loadServerActionClient = ${
             : "node";
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
+
+          nitroPublicFiles = registerNitroPublicFiles(nitro.options, NITRO_PUBLIC_FILES_PLUGIN);
 
           if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [

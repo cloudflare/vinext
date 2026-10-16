@@ -643,6 +643,10 @@ jobs:
             label: app-router-nitro-dev
             shardIndex: 1
             shardTotal: 1
+          - project: pages-router-nitro
+            label: pages-router-nitro
+            shardIndex: 1
+            shardTotal: 1
           - project: standalone-output
             label: standalone-output
             shardIndex: 1
